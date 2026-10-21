@@ -382,3 +382,15 @@ public sealed record AttendanceRawEventDto(
         r.Latitude, r.Longitude, r.IpAddress, r.PhotoReference, r.RawPayloadJson, r.SyncBatchReference, r.VerificationMethod,
         r.ConfidenceScore, r.IsProcessed, r.CreatedAtUtc, r.CreatedBy, hasSelfie);
 }
+
+
+/// <summary>The day an attendance exception is about, for the drill-down.</summary>
+public record AttendanceExceptionDayDto(string Status, DateTime? FirstInUtc, DateTime? LastOutUtc, int LateMinutes, int EarlyExitMinutes, bool MissingPunch);
+
+/// <summary>One attendance exception on HR's Attendance → Exceptions list.</summary>
+public record AttendanceExceptionDto(
+    Guid Id, int EmployeeId, string EmployeeName, string EmployeeCode, DateOnly WorkDate, string ExceptionType, string Severity,
+    string Description, bool IsResolved, string? Resolution, DateTime CreatedAtUtc, AttendanceExceptionDayDto? Day);
+
+/// <summary>HR's resolution of an exception: the reason is required.</summary>
+public record ResolveAttendanceExceptionRequest(string Reason);

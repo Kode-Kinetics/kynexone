@@ -501,13 +501,49 @@ test('workspace overview distinguishes blockers from recommendations and present
   await expect(page.getByText('Blocks payroll', { exact: true })).toBeVisible();
 });
 
+test('a missing government ID opens the Identity step of Edit Employee, and Compliance offers Edit identity', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  // Category and fix exactly as EmployeeFieldRegistry emits them for IdNumber.
+  fixture.readinessBody.set(901, {
+    ...readinessForTest(),
+    blocking: [{ key: 'IdNumber', label: 'Government ID number', category: 'identity', reason: 'statutory', gate: 'activate', fix: { kind: 'field', target: 'idNumber' } }],
+    payBlocking: [],
+  });
+  await page.goto('/people/901?section=overview');
+  await expect(page.getByText('Complete Government ID number', { exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Open section' }).click();
+  await expect(page).toHaveURL(/\/people\/901\/edit\?section=compliance-documents/);
+  const flow = page.getByTestId('employee-edit-flow');
+  await expect(flow.getByRole('button', { name: /^Step 5: Identity/ })).toHaveAttribute('aria-current', 'step');
+
+  await page.goto('/people/901?section=compliance-documents');
+  await page.getByRole('link', { name: 'Edit identity' }).click();
+  await expect(page).toHaveURL(/\/people\/901\/edit\?section=compliance-documents/);
+  await expect(page.getByTestId('employee-edit-flow').getByRole('button', { name: /^Step 5: Identity/ })).toHaveAttribute('aria-current', 'step');
+});
+
+test('a read-only user sees the next action disabled with the reason, not a link to a permission wall', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page, { permissions: ['employees.read'] });
+  fixture.readinessBody.set(901, {
+    ...readinessForTest(),
+    blocking: [{ key: 'IdNumber', label: 'Government ID number', category: 'identity', reason: 'statutory', gate: 'activate', fix: { kind: 'field', target: 'idNumber' } }],
+  });
+  await page.goto('/people/901?section=overview');
+  await expect(page.getByText('Complete Government ID number', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open section' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open section' })).toBeDisabled();
+  await expect(page.getByText(/completing it needs edit access/)).toBeVisible();
+});
+
 test('route-owned employment editing preserves tenant values and follows organization master data', async ({ page }) => {
   await bootEmployeeWorkspaceFixture(page);
   await page.goto('/people/901/edit?section=employment');
 
   await expect(page.getByRole('heading', { name: 'Review employment details' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Employment type' })).toHaveValue('Seasonal');
-  await expect(page.getByRole('combobox', { name: 'Contract type' })).toHaveValue('Unlimited Term');
+  // The row stores the English labels (saved before the forms stored codes): it still selects its value, by code.
+  await expect(page.getByRole('combobox', { name: 'Employment type' })).toHaveValue('SEASONAL');
+  await expect(page.getByRole('combobox', { name: 'Employment type' }).locator('option:checked')).toHaveText('Seasonal');
+  await expect(page.getByRole('combobox', { name: 'Contract type' })).toHaveValue('UNLIMITED_TERM');
   await expect(page.getByRole('combobox', { name: 'Department' })).toHaveValue('QA Finance');
 
   await page.getByRole('combobox', { name: 'Department' }).selectOption({ label: 'QA Operations' });
@@ -516,6 +552,37 @@ test('route-owned employment editing preserves tenant values and follows organiz
   await expect(page.getByLabel('Cost center')).toHaveValue('QA-OPS-CC-18');
   await expect(page.getByRole('combobox', { name: 'Line manager' })).toHaveValue('902');
   await expect(page.getByRole('combobox', { name: 'Line manager' }).locator('option')).toHaveText(['Select', 'Second Route Employee (EMP-SA-QA-OPS-18-2026-0002)']);
+});
+
+test('reference values read the same for a legacy-label row and a code row', async ({ page }) => {
+  const fixture = await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901?section=personal');
+  await expect(page.getByRole('heading', { name: 'Personal details' })).toBeVisible();
+  await expect(page.getByText('Female', { exact: true })).toBeVisible(); // stored as the label "Female"
+  await page.goto('/people/902?section=personal');
+  await expect(page.getByText('Male', { exact: true })).toBeVisible(); // stored as the code "MALE"
+  await expect(page.getByText('MALE', { exact: true })).toHaveCount(0);
+
+  // Choosing a value stores its code; an untouched legacy value is never re-sent.
+  await page.goto('/people/901/edit?mode=guided&section=personal');
+  const flow = page.getByTestId('employee-edit-flow');
+  const gender = flow.getByRole('combobox', { name: /^Gender/ });
+  await expect(gender).toHaveValue('FEMALE');
+  await gender.selectOption({ label: 'Male' });
+  await flow.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(flow).toContainText('From Female to Male');
+  await flow.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(page).toHaveURL(/\/people\/901\?section=personal/);
+  expect(fixture.mutations.at(-1)?.body).toMatchObject({ changes: { gender: 'MALE' } });
+});
+
+test('Arabic readers see the Arabic label of a code row and of a legacy-label row', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page, { locale: 'ar' });
+  await page.goto('/people/901?section=employment');
+  await expect(page.getByText('موسمي', { exact: true })).toBeVisible(); // stored as the label "Seasonal"
+  await expect(page.getByText('Seasonal', { exact: true })).toHaveCount(0);
+  await page.goto('/people/902?section=personal');
+  await expect(page.getByText('ذكر', { exact: true })).toBeVisible(); // stored as the code "MALE"
 });
 
 test('compliance view uses the nationality-resolved identity catalogue', async ({ page }) => {

@@ -132,44 +132,65 @@ public class EmployeeFieldWiringTests
 
     // ── 3: the five silently-discarded edit fields ───────────────────────────
 
+    /// <summary>
+    /// The national ID and the identity-card expiries are approval-gated (SensitiveFields), exactly like the passport
+    /// and visa: PUT answers 202 with a pending change, the stored value does not move until the change is approved,
+    /// and the approved value is then persisted — never dropped (the original defect here was a silent discard).
+    /// </summary>
     [Theory]
-    [InlineData("AE", "emiratesIdExpiryDate")]
-    [InlineData("QA", "qidExpiryDate")]
-    [InlineData("KW", "civilIdExpiryDate")]
-    public async Task GccCardExpiry_IsPersisted_NotDropped(string country, string editKey)
+    [InlineData("AE", "emiratesIdExpiryDate", "2027-03-01")]
+    [InlineData("QA", "qidExpiryDate", "2027-03-01")]
+    [InlineData("KW", "civilIdExpiryDate", "2027-03-01")]
+    [InlineData("SA", "iqamaExpiryDate", "2027-03-01")]
+    [InlineData("SA", "idNumber", "1012345678")]
+    public async Task IdentityValues_RouteThroughApproval_AndPersistOnceApproved(string country, string editKey, string value)
     {
         await using var db = CreateDb();
-        var (tenantId, employee) = await SeedEmployee(db, country, "Indian");
+        var (tenantId, employee) = await SeedEmployee(db, country, country == "SA" ? "Saudi" : "Indian");
+        var before = Stored(await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id), editKey);
 
-        var res = await Controller(db, tenantId).UpdateEmployee(employee.Id,
-            new EmployeeUpdateRequest(Today, Changes((editKey, "2027-03-01"))), CancellationToken.None);
+        var res = await Controller(db, tenantId, Guid.NewGuid()).UpdateEmployee(employee.Id,
+            new EmployeeUpdateRequest(Today, Changes((editKey, value))), CancellationToken.None);
 
-        res.Should().NotBeOfType<BadRequestObjectResult>();
+        res.Should().BeOfType<AcceptedResult>("an identity value is a sensitive change that needs approval");
         db.ChangeTracker.Clear();
-        var saved = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id);
-        var stored = editKey switch
-        {
-            "emiratesIdExpiryDate" => saved.EmiratesIdExpiryDate,
-            "qidExpiryDate" => saved.QidExpiryDate,
-            _ => saved.CivilIdExpiryDate,
-        };
-        stored.Should().Be(new DateOnly(2027, 3, 1),
-            "these are fail-closed PAY gates — dropping the edit leaves the employee payroll-blocked with no way to fix it");
+        Stored(await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id), editKey)
+            .Should().Be(before, "nothing changes until the change is approved");
+        var change = await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(c => c.TenantId == tenantId);
+        change.SensitiveFields.Should().Contain(editKey);
+
+        await ApprovalCenterDriver.ApproveChangeAsync(db, tenantId, change.Id);
+        db.ChangeTracker.Clear();
+        Stored(await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id), editKey)
+            .Should().Be(value, "an approved identity value is persisted, never dropped");
     }
 
-    [Fact]
-    public async Task IdNumber_IsPersisted_NotDropped()
+    [Theory]
+    [InlineData("idNumber", "1012345678")]
+    [InlineData("iqamaExpiryDate", "2027-03-01")]
+    public async Task IdentityValues_AreRefused_WithoutTheSensitivePermission_LikeThePassport(string editKey, string value)
     {
         await using var db = CreateDb();
         var (tenantId, employee) = await SeedEmployee(db, "SA", "Saudi");
+        var before = Stored(employee, editKey);
 
-        await Controller(db, tenantId).UpdateEmployee(employee.Id,
-            new EmployeeUpdateRequest(Today, Changes(("idNumber", "1012345678"))), CancellationToken.None);
+        var res = await Controller(db, tenantId, Guid.NewGuid(), sensitive: false).UpdateEmployee(employee.Id,
+            new EmployeeUpdateRequest(Today, Changes((editKey, value))), CancellationToken.None);
 
+        res.Should().BeOfType<ForbidResult>();
         db.ChangeTracker.Clear();
-        (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id))
-            .IdNumber.Should().Be("1012345678");
+        Stored(await db.Employees.AsNoTracking().SingleAsync(e => e.Id == employee.Id), editKey).Should().Be(before);
+        (await db.EmployeeChangeRequests.CountAsync(c => c.TenantId == tenantId)).Should().Be(0);
     }
+
+    private static string Stored(Employee e, string key) => key switch
+    {
+        "idNumber" => e.IdNumber,
+        "iqamaExpiryDate" => e.IqamaExpiryDate?.ToString("yyyy-MM-dd") ?? "",
+        "emiratesIdExpiryDate" => e.EmiratesIdExpiryDate?.ToString("yyyy-MM-dd") ?? "",
+        "qidExpiryDate" => e.QidExpiryDate?.ToString("yyyy-MM-dd") ?? "",
+        _ => e.CivilIdExpiryDate?.ToString("yyyy-MM-dd") ?? "",
+    };
 
     /// <summary>`qiwaContractNumber` is a SensitiveField, so it routes to the Approval Center and is applied
     /// by the Approval Center. It was dropped there — AFTER a human approved it, which is the worst version of the
@@ -492,8 +513,10 @@ public class EmployeeFieldWiringTests
         return (tenant.Id, employee);
     }
 
-    private static EmployeesController Controller(ZayraDbContext db, Guid tenantId, Guid? userId = null)
+    private static EmployeesController Controller(ZayraDbContext db, Guid tenantId, Guid? userId = null, bool sensitive = true)
     {
+        // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
+        TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
         var audit = new AuditService(db);
         var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), audit, new FakeDocs(),
             new FakeNotifications(), new FakeHijri(), new DataScopeService(db), new FakeLetters(),
@@ -506,7 +529,7 @@ public class EmployeeFieldWiringTests
             new Claim(ClaimTypes.Role, "Admin"),
             new Claim("permission", "employees.read"),
             new Claim("permission", "employees.write"),
-            new Claim("permission", "employees.sensitive"),
+            new Claim("permission", sensitive ? "employees.sensitive" : "employees.read"),
             new Claim("permission", "employees.bulk_import"),
             new Claim("permission", "organization.establishment.write"),
             new Claim("is_group_scope", "true"),

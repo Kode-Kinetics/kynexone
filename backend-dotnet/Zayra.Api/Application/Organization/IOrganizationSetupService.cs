@@ -5,13 +5,16 @@ namespace Zayra.Api.Application.Organization;
 
 public interface IOrganizationSetupService
 {
-    Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken);
+    /// <param name="accessibleCompanyIds">null = every company of the tenant (group scope); otherwise only these.</param>
+    Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null);
     Task<CompanyDto?> GetCompanyAsync(Guid tenantId, Guid id, CancellationToken cancellationToken);
     Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken, bool asDraft = false);
     Task<CompanyDto?> UpdateCompanyAsync(Guid tenantId, Guid id, CompanyRequest request, RequestContext context, CancellationToken cancellationToken);
 
-    Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken);
-    Task<BranchDto?> GetBranchAsync(Guid tenantId, Guid id, CancellationToken cancellationToken);
+    /// <param name="accessibleCompanyIds">null = every company of the tenant (group scope); otherwise only
+    /// branches of these companies are returned.</param>
+    Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null);
+    Task<BranchDto?> GetBranchAsync(Guid tenantId, Guid id, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null);
     Task<BranchDto> CreateBranchAsync(Guid tenantId, BranchRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<BranchDto?> UpdateBranchAsync(Guid tenantId, Guid id, BranchRequest request, RequestContext context, CancellationToken cancellationToken);
 

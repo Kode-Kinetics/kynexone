@@ -609,7 +609,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           ).toHaveCount(0);
           await content(maker.page).getByRole('button', { name: 'Approve → Send to Finance' }).click();
           await expect(
-            approvalCard(maker.page).getByText('Pending Finance Review', { exact: true }),
+            approvalCard(maker.page).getByText('Pending finance review', { exact: true }),
           ).toBeVisible({ timeout: 60_000 });
           ctx.note(
             `Screen and API agree: ${employeeCount} employees, gross ${currency} ${parsed![3]}, `
@@ -679,7 +679,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           await openTab(finance.page, 'Approvals');
           expect(await selectRun(finance.page, 'Select payroll run to approve', period)).toBe(runId);
           await expect(
-            approvalCard(finance.page).getByText('Pending Finance Review', { exact: true }),
+            approvalCard(finance.page).getByText('Pending finance review', { exact: true }),
             'the finance approver must pick the run up exactly where the maker left it',
           ).toBeVisible();
           await expect(
@@ -935,7 +935,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           + "employee and a total equal to the run's net pay. The run stays Locked, the batch is not "
           + 'settled, and no payment record says paid.',
         record: { type: 'PayrollPaymentBatch', id: batchId },
-        mustShowOnScreen: 'File Generated',
+        mustShowOnScreen: 'File generated',
         act: async (ctx) => {
           const attempt = admin.page.waitForResponse(
             (r) => r.url().includes(`/api/payroll/payment-batches/${batchId}/wps-file`)
@@ -962,7 +962,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           await openTab(admin.page, 'Bank / WPS Files');
           expect(await selectRun(admin.page, 'Select payroll run', period)).toBe(runId);
           const filed = batchCard(admin.page, batchNumber);
-          await expect(filed, 'a batch with a wage file must read as File Generated').toContainText('File Generated');
+          await expect(filed, 'a batch with a wage file must read as File Generated').toContainText('File generated');
           await expect(
             filed.getByRole('button', { name: 'Generate WPS/SIF' }),
             'a batch that already has a wage file must not offer to generate another',

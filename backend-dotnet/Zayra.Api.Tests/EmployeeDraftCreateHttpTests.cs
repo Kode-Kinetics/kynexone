@@ -159,6 +159,8 @@ public sealed class EmployeeDraftCreateHttpFixture : IAsyncLifetime
                 Grant(writer.Id, "employees.write"), Grant(writer.Id, "employees.read"), Grant(writer.Id, "employees.sensitive"),
                 Grant(editor.Id, "employees.write"), Grant(editor.Id, "employees.read"), Grant(reader.Id, "employees.read"));
             await db.SaveChangesAsync();
+            // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
+            await TestApprovalConfig.EnsureDeciderAsync(db, TenantId);
         }
         using (var scope = Host.Services.CreateScope())
         {

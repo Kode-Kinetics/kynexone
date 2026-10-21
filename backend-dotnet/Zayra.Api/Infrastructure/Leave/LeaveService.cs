@@ -257,6 +257,7 @@ public class LeaveService : ILeaveService
             .Where(c => c.TenantId == tenantId)
             .Select(c => new { c.Id, c.CountryCode })
             .ToDictionaryAsync(c => c.Id, c => c.CountryCode, ct);
+        var referenceLists = await PolicyReferenceLists.LoadAsync(_db, tenantId, ct);
 
         // Which leave types are ANNUAL leave? The Art. 109 tier applies to annual leave only — it must
         // not silently inflate a sick, maternity or unpaid balance. Matches the same way the rest of
@@ -297,7 +298,7 @@ public class LeaveService : ILeaveService
                 var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
                     ? companyCountry
                     : string.Empty;
-                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender))
+                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, referenceLists))
                     continue;
                 // Several active policies can overlap (for example a tenant default and a
                 // company-specific override). Accrue only the same most-specific policy that
@@ -307,7 +308,7 @@ public class LeaveService : ILeaveService
                     .Where(p => p.LeaveTypeId == policy.LeaveTypeId
                         && IsPolicyEligible(p, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId,
                             emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType,
-                            emp.ContractType, emp.Gender))
+                            emp.ContractType, emp.Gender, referenceLists))
                     .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, emp.DepartmentId, emp.GradeId))
                     .ThenByDescending(p => p.UpdatedAtUtc)
                     .FirstOrDefault();
@@ -890,6 +891,12 @@ public class LeaveService : ILeaveService
                     ?? await _router.ResolveAsync(tenantId, request.EmployeeId, nameof(LeaveRequest), ct);
         var firstStep = route.FirstStep;
         var firstApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, firstStep, ct);
+        // Nobody at all could decide the first step ⇒ refused (typed 422), and this transaction rolls back with
+        // no balance reserved. Its own approver cannot act but Admin/approvals.override can ⇒ that queue, audited.
+        var firstRequester = requestedByUserId ?? employee.UserAccountId;
+        var firstOverride = await EnsureSomeoneCanDecideAsync(tenantId, request.EmployeeId, firstStep, firstApprover,
+            new[] { firstRequester }, atSubmission: true, ct);
+        if (firstOverride is not null) firstApprover = firstOverride;
         request.Status = StatusForPendingStep(firstStep);
         var firstApproverEmployeeId = firstApprover.EmployeeId;
         var firstApproval = BuildPendingApproval(tenantId, request.Id, firstStep, firstApprover);
@@ -926,6 +933,8 @@ public class LeaveService : ILeaveService
 
         await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "Submitted",
             string.Empty, "Submitted", "Leave request submitted", request.EmployeeName, ct);
+        if (firstOverride is not null)
+            await LogOverrideRoutingAsync(tenantId, request, firstStep, ct);
         if (statutoryKind is { } declaredKind && IsDeclaredSeparate(request, declaredKind))
             await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "StatutoryEventDeclaredSeparate",
                 string.Empty, $"event_date={request.StatutoryEventDate:yyyy-MM-dd}", request.SeparateEventReason!,
@@ -981,6 +990,16 @@ public class LeaveService : ILeaveService
                 ?? throw new ApprovalRouteInvalidException(tenantId, nameof(LeaveRequest), route.WorkflowId, route.Code,
                     $"step {currentStepNumber} is not final and no step follows it.");
             var nextApprover = await _router.ResolveApproverAsync(tenantId, request.EmployeeId, nextStep, ct);
+            // Mid-chain the earlier approval stands: a next step nobody can decide moves to the override queue.
+            var routedProjection = _db.ApprovalRequests.Local.FirstOrDefault(x => x.Id == request.Id)
+                ?? await _db.ApprovalRequests.FirstAsync(x => x.TenantId == tenantId && x.Id == request.Id, ct);
+            var earlierDeciders = await _db.ApprovalDecisions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.ApprovalRequestId == request.Id && d.DecidedByUserId != null)
+                .Select(d => d.DecidedByUserId)
+                .ToListAsync(ct);
+            var nextOverride = await EnsureSomeoneCanDecideAsync(tenantId, request.EmployeeId, nextStep, nextApprover,
+                earlierDeciders.Append(routedProjection.RequestedByUserId).Append(approverId).ToArray(), atSubmission: false, ct);
+            if (nextOverride is not null) nextApprover = nextOverride;
             request.Status = StatusForPendingStep(nextStep);
             var nextApproval = BuildPendingApproval(tenantId, requestId, nextStep, nextApprover);
             _db.LeaveApprovals.Add(nextApproval);
@@ -989,6 +1008,8 @@ public class LeaveService : ILeaveService
 
             await LogAuditAsync(tenantId, "LeaveRequest", requestId.ToString(), "ApprovalStepApproved",
                 previousStatus, request.Status, notes ?? string.Empty, approverName, ct);
+            if (nextOverride is not null)
+                await LogOverrideRoutingAsync(tenantId, request, nextStep, ct);
             await _db.SaveChangesAsync(ct);
             return request;
         }
@@ -1510,16 +1531,43 @@ public class LeaveService : ILeaveService
     public async Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default)
     {
         if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
-            return await CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, ct);
+            return await AfterCancellationAsync(tenantId,
+                await CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, ct), ct);
 
         // The pending-impact delete below is a set-based DELETE that runs immediately, so it needs the
         // same transaction as the cancellation's SaveChanges: otherwise a failed save would leave the
         // leave un-cancelled with its unpaid deduction already gone.
-        return await RunCancellationTransactionAsync(
+        return await AfterCancellationAsync(tenantId, await RunCancellationTransactionAsync(
             retryCt => CancelRequestCoreAsync(tenantId, requestId, cancelledByName, reason, decidingCancellation: false, retryCt),
             retryCt => _db.LeaveRequests.AsNoTracking()
                 .AnyAsync(r => r.TenantId == tenantId && r.Id == requestId && r.Status == "Cancelled", retryCt),
-            ct);
+            ct), ct);
+    }
+
+    /// <summary>
+    /// After a cancellation has COMMITTED: the leave's days that attendance already settled are recomputed, so a day
+    /// recorded as "On leave" becomes what it now is (Absent, a rest day, a holiday, or a worked day) and its deduction
+    /// is raised — or, on a day payroll already paid, a PaidAttendanceChanged flag is raised instead. One day per
+    /// transaction under the day's lock (AttendanceService.RecomputeDaysAsync), and only once the leave lock's
+    /// transaction has ended, so this never holds the leave lock and a day lock at once (the order payroll and leave
+    /// rely on). Inside a caller's transaction nothing is recomputed: that caller owns the commit, and the next range
+    /// run or the payroll stale-attendance check picks the days up.
+    /// </summary>
+    private async Task<LeaveRequest> AfterCancellationAsync(Guid tenantId, LeaveRequest cancelled, CancellationToken ct)
+    {
+        if (cancelled.Status != "Cancelled") return cancelled;
+        if (_db.Database.IsRelational() && _db.Database.CurrentTransaction is not null) return cancelled;
+        var days = await _db.AttendanceDailyRecords.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.EmployeeId == cancelled.EmployeeId
+                     && d.WorkDate >= cancelled.StartDate && d.WorkDate <= cancelled.EndDate)
+            .Select(d => d.WorkDate).ToListAsync(ct);
+        if (days.Count == 0) return cancelled;
+        if (_db.ChangeTracker.HasChanges()) await _db.SaveChangesAsync(ct);
+        await Zayra.Api.Infrastructure.Attendance.AttendanceService.ForRecompute(_db).RecomputeDaysAsync(tenantId,
+            days.Select(d => (cancelled.EmployeeId, d)).ToList(),
+            new Zayra.Api.Application.Auth.RequestContext(null, null, null, tenantId),
+            $"leave request {cancelled.Id} was cancelled", ct);
+        return cancelled;
     }
 
     /// <summary>
@@ -1533,14 +1581,15 @@ public class LeaveService : ILeaveService
     public async Task<LeaveRequest> ApproveCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default)
     {
         if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
-            return await ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, _ => { }, ct);
+            return await AfterCancellationAsync(tenantId,
+                await ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, _ => { }, ct), ct);
         // An ambiguous commit is settled by THIS cancellation row's id: an earlier cancellation of the same leave
         // decided by the same reviewer must not be mistaken for this one.
         Guid? decidedId = null;
-        return await RunCancellationTransactionAsync(
+        return await AfterCancellationAsync(tenantId, await RunCancellationTransactionAsync(
             retryCt => ApproveCancellationCoreAsync(tenantId, requestId, reviewerName, notes, cid => decidedId = cid, retryCt),
             retryCt => IsCancellationDecidedAsync(tenantId, decidedId, "Approved", retryCt),
-            ct);
+            ct), ct);
     }
 
     /// <summary>
@@ -1921,7 +1970,7 @@ public class LeaveService : ILeaveService
     }
 
     private static readonly string[] InactiveRequestStatuses = { "Rejected", "Cancelled", "Withdrawn", "Draft" };
-    private static readonly string[] ApprovedRequestStatuses = { "Approved", "CancellationRequested" };
+    private static readonly string[] ApprovedRequestStatuses = Zayra.Api.Application.Leave.LeaveTakenStatuses.All;
 
     /// <summary>
     /// The employee's requests of the same statutory kind, oldest first, excluding
@@ -2484,9 +2533,39 @@ public class LeaveService : ILeaveService
     /// records its approver type (the label LeaveRequestsController authorises against). An escalated
     /// person step records the HR Manager queue it was escalated to.
     /// </summary>
+    /// <summary>
+    /// The "someone can decide this" check for a leave step (<see cref="IApprovalRouter.CheckDeciderAsync"/>),
+    /// excluding <paramref name="alsoExcluded"/> and every login of the employee on leave. The leave screen
+    /// lets HR Officer decide an "HR" step, so that role counts there. Returns null when the step stands as
+    /// routed, else the override-queue approver to route to. At submission, with nobody even in the override
+    /// queue, throws <see cref="ApprovalNoEligibleDeciderException"/>.
+    /// </summary>
+    private async Task<ResolvedApprover?> EnsureSomeoneCanDecideAsync(Guid tenantId, int employeeId, ApprovalRouteStep step,
+        ResolvedApprover approver, IEnumerable<Guid?> alsoExcluded, bool atSubmission, CancellationToken ct)
+    {
+        var excluded = alsoExcluded.Where(x => x is not null).Select(x => x!.Value).ToHashSet();
+        foreach (var linked in await ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, employeeId, ct)) excluded.Add(linked);
+        var alsoAccepted = !approver.Escalated && string.Equals(step.ApproverType, "HR", StringComparison.OrdinalIgnoreCase)
+            ? new[] { "HR Officer" }
+            : null;
+        var check = await _router.CheckDeciderAsync(tenantId, approver, excluded, alsoAccepted, ct);
+        if (check.Eligible) return null;
+        if (atSubmission && !check.OverrideAvailable)
+            throw new ApprovalNoEligibleDeciderException(tenantId, nameof(LeaveRequest), step.StepOrder, step.StepName, check.Owner, check.NamedPerson);
+        return ApprovalRouter.OverrideQueue(step.ApproverType);
+    }
+
+    private Task LogOverrideRoutingAsync(Guid tenantId, LeaveRequest request, ApprovalRouteStep step, CancellationToken ct)
+        => LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "ApprovalRoutedToOverride",
+            $"step {step.StepOrder}: {step.ApproverType}{(string.IsNullOrWhiteSpace(step.ApproverRole) ? string.Empty : $" ({step.ApproverRole.Trim()})")}",
+            IApprovalRouter.OverrideQueueRole,
+            "Nobody other than the requester, the employee and earlier approvers could decide this step as configured, so it was moved to the Admin queue.",
+            request.EmployeeName, ct);
+
     private static string ResolvedApproverRole(ApprovalRouteStep step, ResolvedApprover approver)
     {
-        if (approver.Escalated) return ApprovalRouter.HrManagerRole;
+        // Escalated: the queue the router sent it to (HR Manager for a person who cannot act; Admin for the override queue).
+        if (approver.Escalated) return string.IsNullOrWhiteSpace(approver.QueueRole) ? ApprovalRouter.HrManagerRole : approver.QueueRole;
         return string.Equals(step.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)
                && !string.IsNullOrWhiteSpace(step.ApproverRole)
             ? step.ApproverRole.Trim()
@@ -2579,6 +2658,7 @@ public class LeaveService : ILeaveService
 
     private async Task<LeavePolicy?> ResolveLeavePolicyAsync(Guid tenantId, Employee employee, Guid leaveTypeId, Guid? requestedPolicyId, CancellationToken ct)
     {
+        var referenceLists = await PolicyReferenceLists.LoadAsync(_db, tenantId, ct);
         var policies = await _db.LeavePolicies
             .Where(p => p.TenantId == tenantId && p.LeaveTypeId == leaveTypeId && p.Status == "Active")
             .ToListAsync(ct);
@@ -2597,13 +2677,13 @@ public class LeaveService : ILeaveService
             var requested = policies.FirstOrDefault(p => p.Id == requestedPolicyId.Value);
             if (requested is null)
                 throw new InvalidOperationException("Selected leave policy is not active for this leave type.");
-            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender))
+            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, referenceLists))
                 throw new InvalidOperationException("Selected leave policy is not eligible for the employee's country, legal entity, branch, department, grade, employment type, or contract type.");
             return requested;
         }
 
         return policies
-            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender))
+            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, referenceLists))
             .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, employee.DepartmentId, employee.GradeId))
             .ThenByDescending(p => p.UpdatedAtUtc)
             .FirstOrDefault();
@@ -2621,16 +2701,19 @@ public class LeaveService : ILeaveService
         string? grade,
         string? employmentType,
         string? contractType,
-        string? gender)
+        string? gender,
+        PolicyReferenceLists lists)
     {
         if (!CountryMatches(policy.CountryCode, countryCode)) return false;
         if (policy.CompanyId.HasValue && policy.CompanyId != companyId) return false;
         if (policy.BranchId.HasValue && policy.BranchId != branchId) return false;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName) && !string.Equals(policy.DepartmentName, departmentName, StringComparison.OrdinalIgnoreCase)) return false;
         if (!string.IsNullOrWhiteSpace(policy.Grade) && !string.Equals(policy.Grade, grade, StringComparison.OrdinalIgnoreCase)) return false;
-        if (!string.IsNullOrWhiteSpace(policy.EmploymentType) && !string.Equals(policy.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) return false;
-        if (!string.IsNullOrWhiteSpace(policy.ContractType) && !string.Equals(policy.ContractType, contractType, StringComparison.OrdinalIgnoreCase)) return false;
-        if (!string.IsNullOrWhiteSpace(policy.Gender) && !string.Equals(policy.Gender, gender, StringComparison.OrdinalIgnoreCase)) return false;
+        // Reference-list values: a policy or employee may hold the code (FULL_TIME) or the older English label
+        // (Full-Time); ReferenceList.Same treats them as one value.
+        if (!string.IsNullOrWhiteSpace(policy.EmploymentType) && !lists.EmploymentType.Same(policy.EmploymentType, employmentType)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.ContractType) && !lists.ContractType.Same(policy.ContractType, contractType)) return false;
+        if (!string.IsNullOrWhiteSpace(policy.Gender) && !lists.Gender.Same(policy.Gender, gender)) return false;
 
         var scopedRows = rows.Where(r => r.LeavePolicyId == policy.Id).ToList();
         if (scopedRows.Count == 0) return true;
@@ -2640,8 +2723,8 @@ public class LeaveService : ILeaveService
             (!r.BranchId.HasValue || r.BranchId == branchId) &&
             (!r.DepartmentId.HasValue || r.DepartmentId == departmentId) &&
             (!r.GradeId.HasValue || r.GradeId == gradeId) &&
-            (string.IsNullOrWhiteSpace(r.EmploymentType) || string.Equals(r.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) &&
-            (string.IsNullOrWhiteSpace(r.ContractType) || string.Equals(r.ContractType, contractType, StringComparison.OrdinalIgnoreCase)));
+            (string.IsNullOrWhiteSpace(r.EmploymentType) || lists.EmploymentType.Same(r.EmploymentType, employmentType)) &&
+            (string.IsNullOrWhiteSpace(r.ContractType) || lists.ContractType.Same(r.ContractType, contractType)));
     }
 
     /// <summary>
@@ -2657,6 +2740,18 @@ public class LeaveService : ILeaveService
     /// applies for the same reason. Unrecognised values fall back to a case-insensitive comparison
     /// of the raw strings, so nothing that matched before stops matching.</para>
     /// </summary>
+    /// <summary>The reference lists a leave policy's scope is compared through (code or label, any case).</summary>
+    internal sealed record PolicyReferenceLists(
+        Zayra.Api.Infrastructure.Setup.ReferenceList EmploymentType,
+        Zayra.Api.Infrastructure.Setup.ReferenceList ContractType,
+        Zayra.Api.Infrastructure.Setup.ReferenceList Gender)
+    {
+        public static async Task<PolicyReferenceLists> LoadAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct) => new(
+            await Zayra.Api.Infrastructure.Setup.ReferenceList.LoadAsync(db, tenantId, Zayra.Api.Infrastructure.Setup.ReferenceList.EmploymentTypeType, ct),
+            await Zayra.Api.Infrastructure.Setup.ReferenceList.LoadAsync(db, tenantId, Zayra.Api.Infrastructure.Setup.ReferenceList.ContractTypeType, ct),
+            await Zayra.Api.Infrastructure.Setup.ReferenceList.LoadAsync(db, tenantId, Zayra.Api.Infrastructure.Setup.ReferenceList.GenderType, ct));
+    }
+
     internal static bool CountryMatches(string? policyCountry, string? employeeCountry)
     {
         if (string.IsNullOrWhiteSpace(policyCountry)) return true;

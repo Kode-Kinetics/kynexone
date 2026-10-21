@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Zayra.Api.Application.AI;
 using Zayra.Api.Application.Shifts;
 using Zayra.Api.Infrastructure.AI;
+using Zayra.Api.Infrastructure.Setup;
 
 namespace Zayra.Api.Infrastructure.Shifts;
 
@@ -27,6 +28,10 @@ public sealed class RosterPlannerService : IRosterPlannerService
     private readonly AiOptions _options;
     private readonly IAiCallRecorder _recorder;
     private readonly ILogger<RosterPlannerService> _logger;
+
+    /// <summary>Gender rules match an employee by meaning, not spelling: the controller has already read both sides
+    /// through the tenant's list, and the provisioned list still matches a legacy "Male" rule to a "MALE" row.</summary>
+    private static readonly ReferenceList Genders = ReferenceList.Default(ReferenceList.GenderType);
 
     private const string Module = "roster";
     private const string Intent = "shift_roster_plan";
@@ -366,7 +371,7 @@ public sealed class RosterPlannerService : IRosterPlannerService
         List<RosterPlanShift> AllowedShifts(RosterPlanEmployee emp)
         {
             var rule = input.Policy.GenderRules
-                .FirstOrDefault(r => string.Equals(r.Gender, emp.Gender, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(r => Genders.Same(r.Gender, emp.Gender));
             IEnumerable<RosterPlanShift> pool = input.Shifts.Where(s => !voluntary.Contains(s.Code));
             if (rule is not null && rule.ShiftCodes.Count > 0 &&
                 string.Equals(rule.Mode, "required", StringComparison.OrdinalIgnoreCase))

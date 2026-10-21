@@ -9,6 +9,10 @@ public interface IAccessManagementService
     Task<PagedResult<UserListDto>> ListUsersAsync(Guid tenantId, UserListQuery query, EntityScopeContext entityScope, CancellationToken cancellationToken);
     Task<UserListDto?> GetUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, CancellationToken cancellationToken);
     Task<AuthUserDto> CreateUserAsync(Guid tenantId, CreateUserRequest request, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>The one writer of a legal-entity grant (POST /api/access/entity-grants and the create-company wizard).
+    /// The caller has already decided the grant is within its own scope; this applies the privilege ceiling, refuses a
+    /// duplicate (returns null), revokes the user's live refresh tokens and audits. Saves.</summary>
+    Task<Zayra.Api.Models.UserEntityAccess?> CreateEntityGrantAsync(Guid tenantId, Guid userId, Guid? companyId, string role, string grantMode, RequestContext context, CancellationToken cancellationToken);
     Task<UserListDto?> UpdateUserAsync(Guid tenantId, Guid userId, UpdateUserRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<AuthUserDto> AssignRolesAsync(Guid tenantId, Guid userId, AssignRolesRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<EmployeeLoginInvitationDto> InviteEmployeeLoginAsync(Guid tenantId, InviteEmployeeLoginRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);

@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-10-19",
+  "pinnedAt": "2026-10-20",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -76,7 +76,7 @@
     }
   ],
   "totals": {
-    "hardcoded": 5560,
+    "hardcoded": 5367,
     "rawStatus": 59,
     "locale": 211,
     "icons": 0,
@@ -426,7 +426,7 @@
       "locale": 1
     },
     "src/views/ApprovalsPage.tsx": {
-      "hardcoded": 35,
+      "hardcoded": 33,
       "locale": 2
     },
     "src/views/AttendancePage.tsx": {
@@ -446,7 +446,7 @@
       "hardcoded": 2
     },
     "src/views/EmployeesPage.tsx": {
-      "hardcoded": 135,
+      "hardcoded": 134,
       "locale": 5
     },
     "src/views/ExEmployeesTable.tsx": {
@@ -544,7 +544,7 @@
       "locale": 2
     },
     "src/views/SetupPage.tsx": {
-      "hardcoded": 269,
+      "hardcoded": 80,
       "rawStatus": 1,
       "locale": 3
     },
@@ -581,7 +581,7 @@
       "rawStatus": 1
     },
     "src/views/employees/EmployeeOverview.tsx": {
-      "hardcoded": 13
+      "hardcoded": 12
     },
     "src/views/employees/EmployeePayBenefitsSection.tsx": {
       "hardcoded": 15

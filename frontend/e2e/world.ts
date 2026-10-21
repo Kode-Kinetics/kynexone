@@ -186,6 +186,14 @@ export const RASALMANAR_ADMIN: FixtureUser = {
   email: 'admin@rasalmanar.com', password: RASALMANAR_PASSWORD, role: 'Admin',
   fullName: 'Ras Al-Manar Administrator',
 };
+// A second person who can decide leave. Approvals never route to the requester, so a tenant whose
+// only approver is the admin filing on employees' behalf has nobody who may decide; the leave
+// service now refuses those requests up front (approval_no_eligible_decider) instead of parking
+// them in a queue nobody can act on.
+export const RASALMANAR_HR: FixtureUser = {
+  email: 'hr@rasalmanar.com', password: RASALMANAR_PASSWORD, role: 'HR Manager',
+  fullName: 'Ras Al-Manar HR Manager',
+};
 
 export const EVOSTEL_ADMIN: FixtureUser = {
   email: 'admin@evostel.com', password: EVOSTEL_PASSWORD, role: 'Admin',
@@ -257,6 +265,8 @@ export const ALMARAI_USERS: FixtureUser[] = [
 
 export const TATA_OWNER = groupUser('owner', 'Admin', 'Tata Group Owner', TATA_SLUG);
 export const TATA_COMPLIANCE = groupUser('compliance', 'Compliance Officer', 'Tata Group Compliance Officer', TATA_SLUG);
+// Same reason as RASALMANAR_HR: someone other than the filing admin who can decide leave.
+export const TATA_HR = groupUser('hr', 'HR Manager', 'Tata Group HR Manager', TATA_SLUG);
 
 export const TENANTS: FixtureTenant[] = [
   {
@@ -293,7 +303,7 @@ export const TENANTS: FixtureTenant[] = [
     maxCompanies: 1,
     admin: RASALMANAR_ADMIN,
     companies: [saCompany('RASALMANAR-KSA')],
-    users: [],
+    users: [RASALMANAR_HR],
     // Cross-tenant isolation specs compare real employee rows against IntelliFlow's.
     employeesPerCompany: 4,
     minActiveEmployees: 4,
@@ -330,7 +340,7 @@ export const TENANTS: FixtureTenant[] = [
     maxCompanies: 0,
     admin: TATA_OWNER,
     companies: TATA_COMPANY_CODES.map((code) => ({ code, countryCode: 'IN', currency: 'INR' })),
-    users: [TATA_COMPLIANCE],
+    users: [TATA_COMPLIANCE, TATA_HR],
     employeesPerCompany: 2,
     // India pack. The group-company compliance spec reads this tenant's PROFILE for the country
     // contrast rather than its headcount, so the floor is modest — but it is not zero, because

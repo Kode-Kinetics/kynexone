@@ -75,12 +75,15 @@ export function useEmployeeEditDraft({
   canSeeSensitive,
   initialStep,
   onSaved,
+  formatValue,
 }: {
   employee: EmployeeDetail;
   canWrite: boolean;
   canSeeSensitive: boolean;
   initialStep: number;
   onSaved(status: number): Promise<void> | void;
+  /** How the review shows a stored value — e.g. a reference-list code as its label in the reader's language. */
+  formatValue?: (key: string, value: string) => string;
 }) {
   const [catalog, setCatalog] = useState<ResolvedFieldCatalog>(LOCAL_FIELD_CATALOG);
   const fields = useMemo(() => fieldsForEmployee(employee, catalog, canSeeSensitive), [employee, catalog, canSeeSensitive]);
@@ -188,8 +191,8 @@ export function useEmployeeEditDraft({
 
   const displayValue = useCallback((field: EmployeeEditField, before = false) => {
     const value = (before ? original : form)[field.key];
-    return value || 'Not provided';
-  }, [form, original]);
+    return (value && formatValue ? formatValue(field.key, value) : value) || 'Not provided';
+  }, [form, formatValue, original]);
 
   const reviewSections = EMPLOYEE_EDIT_STEP_LABELS.slice(0, 5).map((title, index) => ({
     title,

@@ -131,7 +131,12 @@ public class TableBudgetRatchetTests
         // OfferCompanyPolicies (per-company currency precision and required pay components) and OfferLetterTemplates
         // (reusable letter designs). Retention: kept with the job application; removed by whole-tenant erasure
         // (OfferArtifactErasure). No per-candidate retention job yet — P2 follow-up.
-        DeclaredDbSets().Should().HaveCount(373,
+        // Create-company wizard (AddCompanySetupDrafts; docs/design/company-setup-wizard.md Decision 9; owner HR Core).
+        // One table, 373 -> 374. CompanySetupDrafts: a group admin's half-finished company setup, server-side so it
+        // survives sign-out and devices, and the commit's idempotency witness (status + result_company_id). No existing
+        // table can hold it: every organisation table is a business row and a draft must never write one. Retention:
+        // Open drafts idle 90 days are deleted (CompanySetupDraftRetentionRule); Submitted/Discarded kept for audit.
+        DeclaredDbSets().Should().HaveCount(374,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

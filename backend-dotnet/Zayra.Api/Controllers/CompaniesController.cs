@@ -74,41 +74,14 @@ public class CompaniesController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    public async Task<ActionResult<CompanyDto>> Get(Guid id, CancellationToken cancellationToken)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        var company = await _organization.GetCompanyAsync(tenantId.Value, id, cancellationToken);
-        return company is null ? NotFound() : Ok(company);
-    }
+    public Task<ActionResult<CompanyDto>> Get(Guid id, CancellationToken cancellationToken)
+        => CompanyEndpoints.GetAsync(this, _organization, id, cancellationToken);
 
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<CompanyDto>> Create(CompanyRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var tenantId = this.GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            if (!this.HasGroupEntityScope())
-                return StatusCode(StatusCodes.Status403Forbidden, new
-                {
-                    error = "group_scope_required",
-                    message = "Only a group administrator can create another company."
-                });
-
-            // The subscription limit and the three governance gates live in CompanyCreationGate so
-            // that the CSV importer further down passes exactly the same four checks this form does.
-            var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId.Value, cancellationToken);
-            if (!gate.Allowed) return GateRefusal(gate);
-            if (EmailDomainNeedsSecurityAdmin(null, request.EmailDomain)) return EmailDomainForbidden();
-
-            var company = await _organization.CreateCompanyAsync(tenantId.Value, request, Context(), cancellationToken, gate.AsDraft);
-            return CreatedAtAction(nameof(Get), new { id = company.Id }, company);
-        }
-        catch (EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<CompanyDto>> Create(CompanyRequest request, CancellationToken cancellationToken)
+        => CompanyEndpoints.CreateAsync(this, _organization, _db, request, Context(),
+            company => CreatedAtAction(nameof(Get), new { id = company.Id }, company), cancellationToken);
 
     /// <summary>
     /// Suspend or reactivate a legal entity. Deactivating the last active company is
@@ -131,35 +104,13 @@ public class CompaniesController : ControllerBase
 
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<ActionResult<CompanyDto>> Update(Guid id, CompanyRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var tenantId = this.GetTenantId();
-            if (tenantId is null) return Unauthorized();
-            var current = await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id && !c.IsDeleted)
-                .Select(c => c.EmailDomain).FirstOrDefaultAsync(cancellationToken);
-            if (current is not null && EmailDomainNeedsSecurityAdmin(current, request.EmailDomain)) return EmailDomainForbidden();
-            var company = await _organization.UpdateCompanyAsync(tenantId.Value, id, request, Context(), cancellationToken);
-            return company is null ? NotFound() : Ok(company);
-        }
-        catch (EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
-    }
+    public Task<ActionResult<CompanyDto>> Update(Guid id, CompanyRequest request, CancellationToken cancellationToken)
+        => CompanyEndpoints.UpdateAsync(this, _organization, _db, id, request, Context(), cancellationToken);
 
-    private const string EmailDomainSecurityMessage =
-        "Only a security administrator can set or change a company's email domain, because it decides who can sign in.";
+    private const string EmailDomainSecurityMessage = CompanyEndpoints.EmailDomainSecurityMessage;
 
-    /// <summary>F5: setting or changing EmailDomain needs security.manage. <paramref name="current"/> null = a new company.</summary>
     private bool EmailDomainNeedsSecurityAdmin(string? current, string? requested)
-    {
-        var next = CompanyEmailDomainRules.Normalize(requested);
-        var changes = current is null ? next.Length > 0 : !string.Equals(CompanyEmailDomainRules.Normalize(current), next, StringComparison.Ordinal);
-        return changes && !User.HasPermission(CompanyEmailDomainRules.SecurityPermission);
-    }
-
-    private ObjectResult EmailDomainForbidden() =>
-        StatusCode(StatusCodes.Status403Forbidden, new { code = "email_domain_needs_security_admin", message = EmailDomainSecurityMessage });
+        => CompanyEndpoints.EmailDomainNeedsSecurityAdmin(this, current, requested);
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
@@ -167,7 +118,7 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await _organization.DeleteCompanyAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
+        return await CompanyEndpoints.DeleteAsync(this, _organization, id, Context(), cancellationToken);
     }
 
     // ── Export ────────────────────────────────────────────────────────────────
@@ -178,8 +129,12 @@ public class CompaniesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // Same scope as Search: a company-scoped caller exports only the companies they hold.
+        var scope = this.GetEntityScope();
+        var accessible = scope.IsGroupLevel ? null : scope.AccessibleCompanyIds.ToList();
         var companies = await _db.Companies.AsNoTracking()
             .Where(c => c.TenantId == tenantId.Value && !c.IsDeleted)
+            .Where(c => accessible == null || accessible.Contains(c.Id))
             .OrderBy(c => c.LegalNameEn).ToListAsync(ct);
         var rows = companies.Select(c => (IReadOnlyList<object?>)new object?[]
         {
@@ -221,22 +176,6 @@ public class CompaniesController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         return await RunCommitAsync(tenantId.Value, req.Csv, ct);
     }
-
-    /// <summary>Render a gate refusal as the HTTP status the form has always returned for it.</summary>
-    private ObjectResult GateRefusal(CompanyCreationGateDecision gate) => gate.Verdict switch
-    {
-        CompanyCreationVerdict.SubscriptionLimitReached => StatusCode(402, new
-        {
-            error = gate.ErrorCode,
-            currentCount = gate.CurrentCount,
-            maxAllowed = gate.MaxAllowed,
-            message = gate.Message,
-            upgradeRequired = true,
-        }),
-        CompanyCreationVerdict.PlatformControlled => StatusCode(403, new { error = gate.ErrorCode, message = gate.Message }),
-        CompanyCreationVerdict.SingleCompanyAccount => Conflict(new { error = gate.ErrorCode, message = gate.Message }),
-        _ => Unauthorized(new { error = gate.ErrorCode, message = gate.Message }),
-    };
 
     /// <summary>
     /// One row of the companies CSV, validated. Kept separate from the writing so preview and commit

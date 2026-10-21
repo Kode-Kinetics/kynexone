@@ -41,10 +41,10 @@ public class LeaveReportsController : ControllerBase
         if (allowedIds is not null) leaveQuery = leaveQuery.Where(r => allowedIds.Contains(r.EmployeeId));
         if (companyFilterIds is not null) leaveQuery = leaveQuery.Where(r => companyFilterIds.Contains(r.EmployeeId));
 
-        var onLeaveToday = await leaveQuery.CountAsync(r => r.Status == "Approved" && r.StartDate <= today && r.EndDate >= today, ct);
+        var onLeaveToday = await leaveQuery.CountAsync(r => Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status) && r.StartDate <= today && r.EndDate >= today, ct);
         var pendingApprovals = await leaveQuery.CountAsync(r => pendingStatuses.Contains(r.Status), ct);
         var pendingCancellations = await leaveQuery.CountAsync(r => r.Status == "CancellationRequested", ct);
-        var upcomingLeaves = await leaveQuery.CountAsync(r => r.Status == "Approved" && r.StartDate > today && r.StartDate <= today.AddDays(14), ct);
+        var upcomingLeaves = await leaveQuery.CountAsync(r => Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status) && r.StartDate > today && r.StartDate <= today.AddDays(14), ct);
 
         var encashQuery = _db.LeaveEncashmentRequests.Where(e => e.TenantId == tenantId);
         if (allowedIds is not null) encashQuery = encashQuery.Where(e => allowedIds.Contains(e.EmployeeId));
@@ -125,7 +125,7 @@ public class LeaveReportsController : ControllerBase
         var to = toDate ?? DateOnly.FromDateTime(DateTime.UtcNow);
 
         var query = _db.LeaveRequests
-            .Where(r => r.TenantId == tenantId && r.Status == "Approved" && r.StartDate >= from && r.StartDate <= to);
+            .Where(r => r.TenantId == tenantId && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status) && r.StartDate >= from && r.StartDate <= to);
 
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
@@ -155,7 +155,7 @@ public class LeaveReportsController : ControllerBase
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         var query = _db.LeaveRequests
-            .Where(r => r.TenantId == tenantId && r.Status == "Approved" && r.StartDate <= today && r.EndDate >= today);
+            .Where(r => r.TenantId == tenantId && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status) && r.StartDate <= today && r.EndDate >= today);
 
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));
@@ -212,7 +212,7 @@ public class LeaveReportsController : ControllerBase
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         var query = _db.LeaveRequests
-            .Where(r => r.TenantId == tenantId && sickLeaveTypeIds.Contains(r.LeaveTypeId) && r.Status == "Approved" && r.StartDate >= twelveMonthsAgo && r.StartDate <= today);
+            .Where(r => r.TenantId == tenantId && sickLeaveTypeIds.Contains(r.LeaveTypeId) && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(r.Status) && r.StartDate >= twelveMonthsAgo && r.StartDate <= today);
 
         if (!scope.IsUnrestricted)
             query = query.Where(r => scope.AllowedEmployeeIds!.Contains(r.EmployeeId));

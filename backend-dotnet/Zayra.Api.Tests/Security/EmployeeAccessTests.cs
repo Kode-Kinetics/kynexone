@@ -652,7 +652,13 @@ public sealed class EmployeeAccessTests
     {
         var w = await SeedAsync();
         await using var db = _fx.CreateDb();
-        OrganizationController Org(Guid caller) => new(new OrganizationSetupService(db, new AuditService(db)))
+        // Both company endpoints apply the creation gate; this tenant must be a group to add a company.
+        var tenant = await db.Tenants.IgnoreQueryFilters().SingleAsync(t => t.Id == w.TenantId);
+        tenant.AccountType = TenantAccountTypes.Group;
+        await db.SaveChangesAsync();
+        // The token carries the caller's permissions, as a real one does: both company endpoints check
+        // security.manage on the token before the service re-checks the caller in the database.
+        OrganizationController Org(Guid caller, params string[] permissions) => new(new OrganizationSetupService(db, new AuditService(db)), db)
         {
             ControllerContext = new ControllerContext
             {
@@ -662,7 +668,7 @@ public sealed class EmployeeAccessTests
                     {
                         new Claim("tenant_id", w.TenantId.ToString()), new Claim(ClaimTypes.NameIdentifier, caller.ToString()),
                         new Claim(ClaimTypes.Role, "HR Manager"),
-                    }, "Test")),
+                    }.Concat(permissions.Select(p => new Claim("permission", p))), "Test")),
                 },
             },
         };
@@ -677,7 +683,7 @@ public sealed class EmployeeAccessTests
         Assert.IsType<ObjectResult>((await Org(w.HrManagerId).UpdateCompany(w.CompanyId, update, default)).Result).StatusCode.Should().Be(403);
         Assert.IsType<OkObjectResult>((await Org(w.HrManagerId).UpdateCompany(w.CompanyId, update with { EmailDomain = w.Domain }, default)).Result);
         // The security admin may.
-        Assert.IsType<CreatedResult>((await Org(w.AdminId).CreateCompany(request, default)).Result);
+        Assert.IsType<CreatedResult>((await Org(w.AdminId, CompanyEmailDomainRules.SecurityPermission).CreateCompany(request, default)).Result);
     }
 
     [Theory]

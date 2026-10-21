@@ -119,6 +119,8 @@ public sealed class JawazatPostgresTests(PostgresFixture fixture)
         workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenant, WorkflowId = workflow.Id, StepOrder = 1, StepName = "HR", ApproverType = "Role", ApproverRole = "HR Manager", IsFinalStep = true });
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
+        // Someone besides the requester and the employee holds the step's role (routing refuses otherwise).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         return new(tenant, company.Id, employee.Id, userId, Guid.NewGuid());
     }
 

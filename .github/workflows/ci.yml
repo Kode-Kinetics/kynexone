@@ -954,6 +954,19 @@ jobs:
           EMPLOYEE_WORKSPACE_BASE_URL: http://127.0.0.1:5173
         run: npx playwright test -c e2e/playwright.employee-workspace.config.ts
 
+      # The Setup layout contracts check fit and overflow at their own desktop and phone viewports, so
+      # under the chromium project below they skip or run at the wrong size. Run only those 16 cases
+      # (about 45s) against this job's production frontend; their API calls are mocked in the spec.
+      - name: Setup layout contracts at desktop and phone viewports
+        working-directory: frontend
+        env:
+          SETUP_EXPERIENCE_BASE_URL: http://127.0.0.1:5173
+          SETUP_LAYOUT_TESTS: 'on desktop$|contained navigation$| workspace_axe_(en|ar)$| rtl_mobile_long_labels_remain_accessible_(en|ar)$'
+        run: |
+          set -euo pipefail
+          npx playwright test -c e2e/playwright.setup-experience.config.ts --project=desktop --project=mobile --grep "$SETUP_LAYOUT_TESTS"
+          npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop --project=mobile --grep "$SETUP_LAYOUT_TESTS"
+
       # The admin identity, password and employee floor come from e2e/world.ts. The E2E_DEFAULT_* and
       # E2E_MIN_EMPLOYEES overrides this step used to pass were a second declaration of the same
       # facts; they are retired and the preflight refuses them if set.

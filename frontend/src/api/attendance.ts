@@ -1,6 +1,33 @@
 import client from './client';
 import type { PagedResult } from './organization';
 
+/** The day an attendance exception is about (GET /api/attendance/exceptions). */
+export interface AttendanceExceptionDay {
+  status: string;
+  firstInUtc?: string | null;
+  lastOutUtc?: string | null;
+  lateMinutes: number;
+  earlyExitMinutes: number;
+  missingPunch: boolean;
+}
+
+/** One exception on Attendance → Exceptions. */
+export interface AttendanceExceptionItem {
+  id: string;
+  employeeId: number;
+  employeeName: string;
+  employeeCode: string;
+  workDate: string;
+  /** MissingPunch | PaidAttendanceChanged | ImportedDayHasPunches */
+  exceptionType: string;
+  severity: string;
+  description: string;
+  isResolved: boolean;
+  resolution?: string | null;
+  createdAtUtc: string;
+  day?: AttendanceExceptionDay | null;
+}
+
 export interface AttendanceDevice {
   id: string;
   deviceName: string;
@@ -299,4 +326,11 @@ export const attendanceApi = {
   },
 
   aiInsights: () => client.get<AttendanceAIInsight[]>('/api/attendance/ai/insights').then((r) => r.data),
+
+  exceptions: (params: { state?: 'open' | 'resolved' | 'all'; type?: string; from?: string; to?: string; employeeId?: number; page?: number; pageSize?: number } = {}) =>
+    client.get<PagedResult<AttendanceExceptionItem>>('/api/attendance/exceptions', { params }).then((r) => r.data),
+
+  /** The reason is required; the resolution is kept with the exception. */
+  resolveException: (id: string, reason: string) =>
+    client.post<AttendanceExceptionItem>(`/api/attendance/exceptions/${id}/resolve`, { reason }).then((r) => r.data),
 };

@@ -8,6 +8,7 @@ import {
   AlertTriangle, BarChart2, BookOpen, Clock, Download, Play, Plus, RefreshCw, Save, Trash2, ToggleLeft, ToggleRight,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { reportsApi, analyticsApi } from '../api/reports';
 import { reportRunStatusLabel, reportRunStatusTone } from '../lib/integrationDeliveryState';
 
@@ -33,6 +34,7 @@ import type {
 } from '../api/reports';
 import { Modal } from '../components/Modal';
 import { useAuth } from '../contexts/AuthContext';
+import { useLocale } from '../contexts/LocaleContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 
 type Tab = 'analytics' | 'library' | 'saved' | 'schedules' | 'executions';
@@ -51,14 +53,25 @@ function fmt(n: number | null | undefined) {
   return n == null ? 'Restricted' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-/** A null value is a figure the server withheld because the caller lacks that data permission — never a zero. */
-function KpiCard({ label, value, sub }: { label: string; value: string | number | null | undefined; sub?: string }) {
+/**
+ * A null value is a figure the server withheld because the caller lacks that data permission — never a zero.
+ * Every tile says what it counts (AnalyticsController.GetKPIs) and, where a list or report holds exactly those
+ * records, links to it. Tiles with no such list yet show the definition only.
+ */
+function KpiCard({ label, value, sub, definition, drill }: {
+  label: string; value: string | number | null | undefined; sub?: string; definition: string; drill?: { href: string; label: string };
+}) {
+  const { t } = useLocale();
   const withheld = value == null;
   return (
-    <div className="surface p-4">
+    <div className="surface flex flex-col p-4">
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
-      <p className={`mt-1 font-bold ${withheld ? 'text-sm text-slate-400' : 'text-2xl text-slate-900 dark:text-white'}`}>{withheld ? 'Restricted' : value}</p>
-      {withheld ? <p className="mt-0.5 text-xs text-slate-400">Needs access to this data</p> : sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+      <p className={`mt-1 font-bold ${withheld ? 'text-sm text-slate-400' : 'text-2xl text-slate-900 dark:text-white'}`}>{withheld ? t('Restricted') : value}</p>
+      {withheld ? <p className="mt-0.5 text-xs text-slate-400">{t('Needs access to this data')}</p> : sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+      <p className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">{definition}</p>
+      {drill && !withheld && (
+        <Link href={drill.href} className="mt-2 text-xs font-semibold text-sapphire underline underline-offset-2">{drill.label}</Link>
+      )}
     </div>
   );
 }
@@ -105,6 +118,7 @@ const ANALYTICS_SOURCE_LABELS = {
 type AnalyticsSource = keyof typeof ANALYTICS_SOURCE_LABELS;
 
 function AnalyticsDashboard() {
+  const { t } = useLocale();
   const [kpis, setKpis] = useState<AnalyticsKPIs | null>(null);
   const [headcountTrend, setHeadcountTrend] = useState<{ period: string; headcount: number }[]>([]);
   const [payrollTrend, setPayrollTrend] = useState<{ period: string; TotalNetSalary: number; TotalGrossSalary: number }[]>([]);
@@ -175,37 +189,47 @@ function AnalyticsDashboard() {
           <div>
             <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Workforce</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <KpiCard label="Active Employees" value={kpis.headcount.totalActive} />
-              <KpiCard label="New This Month" value={kpis.headcount.newThisMonth} />
-              <KpiCard label="Exits This Month" value={kpis.headcount.exitsThisMonth} />
-              <KpiCard label="Open Positions" value={kpis.recruitment.openPositions} />
+              <KpiCard label={t('Active Employees')} value={kpis.headcount.totalActive} definition={t('Employees whose status is Active.')}
+                drill={{ href: '/people?status=Active', label: t('Show these employees') }} />
+              <KpiCard label={t('New This Month')} value={kpis.headcount.newThisMonth} definition={t('Employees whose joining date falls in this calendar month.')} />
+              <KpiCard label={t('Exits This Month')} value={kpis.headcount.exitsThisMonth}
+                definition={t('Resigned or terminated employees whose contract ends in this calendar month.')} />
+              <KpiCard label={t('Open Positions')} value={kpis.recruitment.openPositions} definition={t('Job openings whose status is Open.')} />
             </div>
           </div>
           <div>
             <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Today</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <KpiCard label="Present Today" value={kpis.attendance.presentToday} />
-              <KpiCard label="Late Today" value={kpis.attendance.lateToday} />
-              <KpiCard label="On Leave" value={kpis.leave.onLeaveToday} />
-              <KpiCard label="Pending Leave" value={kpis.leave.pendingLeave} />
+              <KpiCard label={t('Present Today')} value={kpis.attendance.presentToday} definition={t("Today's attendance records marked present, late or half day.")} />
+              <KpiCard label={t('Late Today')} value={kpis.attendance.lateToday} definition={t("Today's attendance records with late minutes.")} />
+              <KpiCard label={t('On Leave')} value={kpis.leave.onLeaveToday} definition={t('Approved leave requests that cover today.')} />
+              <KpiCard label={t('Pending Leave')} value={kpis.leave.pendingLeave} definition={t('Leave requests submitted and waiting for a decision.')}
+                drill={{ href: '/reports?report=leave.pending', label: t('Open the Pending Leave Approvals report') }} />
             </div>
           </div>
           <div>
             <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Finance & Compliance</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <KpiCard label="Pending OT" value={kpis.overtime.pendingOT} />
-              <KpiCard label="Active Loans" value={kpis.financial.activeLoans} sub={`Outstanding: ${fmt(kpis.financial.outstandingLoanBalance)}`} />
-              <KpiCard label="Visas Expiring (30d)" value={kpis.compliance.visasExpiring} />
-              <KpiCard label="Passports Expiring (30d)" value={kpis.compliance.passportsExpiring} />
+              <KpiCard label={t('Pending OT')} value={kpis.overtime.pendingOT} definition={t('Overtime requests waiting for a decision.')} />
+              <KpiCard label={t('Active Loans')} value={kpis.financial.activeLoans} sub={t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance) })}
+                definition={t('Active employee loans. Outstanding is what is still to be repaid on them.')}
+                drill={{ href: '/reports?report=finance.loan-balance', label: t('Open the Loan Balance report') }} />
+              <KpiCard label={t('Visas Expiring (30d)')} value={kpis.compliance.visasExpiring} definition={t('Active visas that expire in the next 30 days.')} />
+              <KpiCard label={t('Passports Expiring (30d)')} value={kpis.compliance.passportsExpiring} definition={t('Active passports that expire in the next 30 days.')} />
             </div>
           </div>
           {kpis.payroll.lastRunYear && (
             <div>
               <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Last Payroll Run</h3>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <KpiCard label="Period" value={`${kpis.payroll.lastRunYear}-${String(kpis.payroll.lastRunMonth).padStart(2, '0')}`} />
-                <KpiCard label="Status" value={kpis.payroll.lastRunStatus ?? '—'} />
-                <KpiCard label="Total Net Salary" value={kpis.payroll.totalNetSalary ? fmt(kpis.payroll.totalNetSalary) : '—'} />
+                <KpiCard label={t('Period')} value={`${kpis.payroll.lastRunYear}-${String(kpis.payroll.lastRunMonth).padStart(2, '0')}`}
+                  definition={t('The latest pay period with a payroll run. Draft and voided runs are not counted.')}
+                  drill={{ href: '/payroll', label: t('Open the payroll runs') }} />
+                <KpiCard label={t('Status')} value={kpis.payroll.lastRunStatus ?? '—'} definition={t("The status of that period's payroll runs.")}
+                  drill={{ href: '/payroll', label: t('Open the payroll runs') }} />
+                <KpiCard label={t('Total Net Salary')} value={kpis.payroll.totalNetSalary ? fmt(kpis.payroll.totalNetSalary) : '—'}
+                  definition={t("Net pay of that period's payroll runs. Shown only when they are all in one currency.")}
+                  drill={{ href: '/payroll', label: t('Open the payroll runs') }} />
               </div>
             </div>
           )}
@@ -870,7 +894,11 @@ function ExecutionHistoryTab() {
 // ── ReportsPage ───────────────────────────────────────────────────────────────
 
 export function ReportsPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('analytics');
+  // ?report={key} (a KPI tile's drill-down, the command palette) opens that report in the library.
+  const searchParams = useSearchParams();
+  const requestedReport = searchParams?.get('report') ?? null;
+  const [activeTab, setActiveTab] = useState<Tab>(requestedReport ? 'library' : 'analytics');
+  useEffect(() => { if (requestedReport) setActiveTab('library'); }, [requestedReport]);
 
   return (
     <div className="space-y-5">

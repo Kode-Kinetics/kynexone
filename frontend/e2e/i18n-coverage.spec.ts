@@ -458,3 +458,21 @@ test.describe('i18n coverage ratchet', () => {
     expect(read('src/lib/format.ts')).toContain('-u-nu-latn');
   });
 });
+
+// A translated <option> with no `value` submits its translated TEXT. In Arabic that stored
+// "استحقاق" instead of "Earning" as a pay component's type, and payroll, which compares
+// against the canonical value, dropped the component. Every translated option names its value.
+test('every translated <option> carries an explicit value', () => {
+  const offenders: string[] = [];
+  for (const d of SCANNED_DIRS) {
+    for (const full of walk(path.join(FRONTEND_ROOT, d))) {
+      const src = fs.readFileSync(full, 'utf8');
+      src.split('\n').forEach((line, i) => {
+        if (/<option(\s+(?![^>]*\bvalue=)[^>]*)?>\s*\{\s*(t|msg)\(/.test(line)) {
+          offenders.push(`${path.relative(FRONTEND_ROOT, full)}:${i + 1}`);
+        }
+      });
+    }
+  }
+  expect(offenders, 'translated <option> without value= (it would store the translated label)').toEqual([]);
+});

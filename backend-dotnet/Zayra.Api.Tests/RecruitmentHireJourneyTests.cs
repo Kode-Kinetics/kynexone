@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Controllers;
 using Zayra.Api.Controllers.Recruitment;
 using Zayra.Api.Data;
@@ -189,6 +190,99 @@ public sealed class RecruitmentHireJourneyTests
         employee.FullName.Should().Be("Noura Al Mansoori");
         (await verify.OnboardingTasks.AsNoTracking().SingleAsync(x => x.TenantId == seeded.TenantId))
             .EmployeeId.Should().Be(employee.PublicId, "pre-joining tasks follow the hire onto the employee");
+    }
+
+    // ── Activation -> default onboarding checklist ───────────────────────────
+
+    [Fact]
+    public async Task ActivatingAnAcceptedOffer_AttachesTheTenantsDefaultChecklistOnce_EvenWhenApprovedTwice()
+    {
+        var seeded = await SeedAsync(offerStatus: "Sent");
+        await SeedOfferPlacementAsync(seeded.TenantId);
+        Guid checklistId;
+        await using (var db = _fixture.CreateDb())
+        {
+            var checklist = new OnboardingChecklist { TenantId = seeded.TenantId, Code = "STD", Name = "Standard joiner", ApplicableTo = "All" };
+            db.OnboardingChecklists.Add(checklist);
+            db.OnboardingChecklistTemplateTasks.AddRange(
+                new OnboardingChecklistTemplateTask { TenantId = seeded.TenantId, ChecklistId = checklist.Id, TaskTitle = "Issue laptop", Category = "IT", DueOffsetDays = 0, OrderIndex = 1 },
+                new OnboardingChecklistTemplateTask { TenantId = seeded.TenantId, ChecklistId = checklist.Id, TaskTitle = "Sign code of conduct", Category = "Policy", DueOffsetDays = 7, OrderIndex = 2 },
+                new OnboardingChecklistTemplateTask { TenantId = seeded.TenantId, ChecklistId = checklist.Id, TaskTitle = "Retired step", OrderIndex = 3, IsActive = false });
+            // A department-only checklist is not the default and is never attached automatically.
+            var sales = new OnboardingChecklist { TenantId = seeded.TenantId, Code = "SALES", Name = "Sales joiner", ApplicableTo = "ByDepartment", DepartmentName = "Sales" };
+            db.OnboardingChecklists.Add(sales);
+            db.OnboardingChecklistTemplateTasks.Add(new OnboardingChecklistTemplateTask { TenantId = seeded.TenantId, ChecklistId = sales.Id, TaskTitle = "CRM access", OrderIndex = 1 });
+            await db.SaveChangesAsync();
+            checklistId = checklist.Id;
+        }
+        var draftId = await AcceptAndPrepareDraftAsync(seeded);
+
+        await using (var db = _fixture.CreateDb())
+            (await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None)).Result
+                .Should().BeOfType<OkObjectResult>();
+        // A second approval of the same draft (a double click, a retried request) is refused and adds nothing.
+        await using (var db = _fixture.CreateDb())
+            (await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None)).Result
+                .Should().NotBeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateDb();
+        var employee = await verify.Employees.AsNoTracking().SingleAsync(x => x.TenantId == seeded.TenantId);
+        var tasks = await verify.OnboardingTasks.AsNoTracking().Where(x => x.TenantId == seeded.TenantId).OrderBy(x => x.OrderIndex).ToListAsync();
+        tasks.Select(x => x.TaskTitle).Should().Equal("Issue laptop", "Sign code of conduct");
+        tasks.Should().OnlyContain(x => x.ChecklistId == checklistId && x.EmployeeId == employee.PublicId
+            && x.ApplicationId == seeded.ApplicationId && x.Status == "Pending");
+        tasks[1].DueDate.Should().Be(DateOnly.FromDateTime(employee.JoiningDate).AddDays(7));
+        (await verify.RecruitmentAuditLogs.AsNoTracking().CountAsync(x => x.TenantId == seeded.TenantId && x.Action == "DefaultChecklistAttached"))
+            .Should().Be(1);
+
+        // Run again inside a fresh context (what a retried activation delegate does): nothing new is attached.
+        (await verify.AttachForActivatedDraftAsync(seeded.TenantId, draftId, employee, null, CancellationToken.None)).Outcome
+            .Should().Be(DefaultChecklistOutcome.AlreadyAttached);
+        await verify.SaveChangesAsync();
+        (await verify.OnboardingTasks.AsNoTracking().CountAsync(x => x.TenantId == seeded.TenantId)).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ActivatingAnAcceptedOffer_WithNoDefaultChecklist_AttachesNothing_AndStillActivates()
+    {
+        var seeded = await SeedAsync(offerStatus: "Sent");
+        await SeedOfferPlacementAsync(seeded.TenantId);
+        await using (var db = _fixture.CreateDb())
+        {
+            // An inactive "All" checklist and an "All" checklist with no active tasks are not a default.
+            var off = new OnboardingChecklist { TenantId = seeded.TenantId, Code = "OFF", Name = "Old joiner", ApplicableTo = "All", IsActive = false };
+            var empty = new OnboardingChecklist { TenantId = seeded.TenantId, Code = "EMPTY", Name = "Empty", ApplicableTo = "All" };
+            db.OnboardingChecklists.AddRange(off, empty);
+            db.OnboardingChecklistTemplateTasks.Add(new OnboardingChecklistTemplateTask { TenantId = seeded.TenantId, ChecklistId = off.Id, TaskTitle = "Old step", OrderIndex = 1 });
+            await db.SaveChangesAsync();
+        }
+        var draftId = await AcceptAndPrepareDraftAsync(seeded);
+
+        await using (var db = _fixture.CreateDb())
+            (await Employees(db, seeded.TenantId, Guid.NewGuid()).ApproveDraft(draftId, CancellationToken.None)).Result
+                .Should().BeOfType<OkObjectResult>();
+
+        await using var verify = _fixture.CreateDb();
+        (await verify.Employees.AsNoTracking().SingleAsync(x => x.TenantId == seeded.TenantId)).Status.Should().Be(EmployeeStatuses.Active);
+        (await verify.OnboardingTasks.AsNoTracking().CountAsync(x => x.TenantId == seeded.TenantId)).Should().Be(0);
+        (await verify.RecruitmentAuditLogs.AsNoTracking().CountAsync(x => x.TenantId == seeded.TenantId && x.Action == "DefaultChecklistAttached"))
+            .Should().Be(0);
+    }
+
+    private async Task<Guid> AcceptAndPrepareDraftAsync(Seeded seeded)
+    {
+        var recruiter = Guid.NewGuid();
+        await using (var db = _fixture.CreateDb())
+            (await Applications(db, seeded.TenantId, recruiter).AcceptOffer(seeded.OfferId, CancellationToken.None, await OfferWorkflowTestSupport.ResponseAsync(db, seeded.OfferId)))
+                .Should().BeOfType<OkObjectResult>();
+        Guid draftId;
+        await using (var db = _fixture.CreateDb())
+            draftId = (await db.JobApplications.AsNoTracking().SingleAsync(x => x.Id == seeded.ApplicationId)).OnboardingDraftId!.Value;
+        await using (var db = _fixture.CreateDb())
+            await DraftStatutoryIdentity.ApplyAsync(db, draftId, "AE");
+        await using (var db = _fixture.CreateDb())
+            await OfferWorkflowTestSupport.ConfirmCompensationAsync(db, draftId, recruiter);
+        return draftId;
     }
 
     [Fact]

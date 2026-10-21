@@ -34,6 +34,7 @@ using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Setup;
 
 namespace Zayra.Api.Controllers;
 
@@ -60,7 +61,11 @@ public class EmployeesController : ControllerBase
         "socialInsuranceReference",
         // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
         "bankRoutingCode", "accountNumber",
-        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown"
+        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown",
+        // The national ID and the four identity-card expiries take the same route as the passport and visa beside
+        // them: they identify the person and gate activation/payroll, so a change is approved before it applies.
+        // Creating an employee is not a change and still sets them directly.
+        "idNumber", "iqamaExpiryDate", "emiratesIdExpiryDate", "qidExpiryDate", "civilIdExpiryDate"
     };
 
     private readonly ZayraDbContext _db;
@@ -887,6 +892,9 @@ public class EmployeesController : ControllerBase
             // pure Evaluate primitive (never aborts the file). Blank status ⇒ Draft; explicit Active with
             // activate-blockers ⇒ downgraded to Draft + warning (row still created).
             var readinessPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
+            // Reference-list columns (Gender, MaritalStatus, EmploymentType, ContractType) accept a code or a label in
+            // either language; a recognised value is stored as its code, an unknown one as typed (never blocked).
+            var importReferenceLists = await ImportReferenceLists.LoadAsync(_db, tenantId, ct);
 
             async Task<(string Landing, EmployeeReadiness Readiness, bool HasPolicy, string PolicyCountry)> ResolveRowLandingAsync(
                 Dictionary<string, string> row, Guid? companyId, Guid? deptId, Guid? desigId, DateTime jd, string csvStatus)
@@ -1272,7 +1280,7 @@ public class EmployeesController : ControllerBase
                     RowWarn(rowNum, $"Work email '{workEmail}' already belongs to an existing login — check it is the same person before linking that login to this record.");
 
                 // SHARED with ImportPreview: the same builder records the same data:unparsed* gaps in both.
-                var employee = BuildImportedEmployee(tenantId, row, resolved, name, finalCode, workEmail, rowStatus, jd, resolved.Gaps);
+                var employee = BuildImportedEmployee(tenantId, row, resolved, name, finalCode, workEmail, rowStatus, jd, resolved.Gaps, importReferenceLists);
                 employee.ReadinessState = rowReadiness.State;
                 employee.ActivationBlockersCount = rowReadiness.Blocking.Count;
                 employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
@@ -2252,7 +2260,8 @@ public class EmployeesController : ControllerBase
     /// (EmployeeImportStorageGuard) as the commit. Readiness columns are stamped by the caller.
     /// </summary>
     private static Employee BuildImportedEmployee(Guid tenantId, Dictionary<string, string> row, ResolvedImportRow resolved,
-        string name, string finalCode, string workEmail, string status, DateTime joiningDate, List<ImportGap> gaps)
+        string name, string finalCode, string workEmail, string status, DateTime joiningDate, List<ImportGap> gaps,
+        ImportReferenceLists referenceLists)
     {
         var deptNameRaw = row.GetValueOrDefault("Department", string.Empty).Trim();
         var desigTitleRaw = row.GetValueOrDefault("Designation", string.Empty).Trim();
@@ -2270,10 +2279,10 @@ public class EmployeesController : ControllerBase
             PersonalEmail = row.GetValueOrDefault("PersonalEmail", string.Empty),
             WorkEmail = workEmail,
             Phone = row.GetValueOrDefault("Phone", string.Empty),
-            Gender = row.GetValueOrDefault("Gender", string.Empty),
+            Gender = referenceLists.Gender.Normalize(row.GetValueOrDefault("Gender", string.Empty)),
             DateOfBirth = ReadCsvDate(row, "DateOfBirth", gaps),
             Nationality = row.GetValueOrDefault("Nationality", string.Empty),
-            MaritalStatus = row.GetValueOrDefault("MaritalStatus", string.Empty),
+            MaritalStatus = referenceLists.MaritalStatus.Normalize(row.GetValueOrDefault("MaritalStatus", string.Empty)),
             // Explicit CountryCode column wins, else the EMPLOYING company's country — the one rule, the
             // one helper. A blank country resolves an EMPTY statutory floor, so a file without the column
             // used to import a whole workforce with no jurisdiction gate applied to any of it.
@@ -2287,8 +2296,8 @@ public class EmployeesController : ControllerBase
             PositionId = resolved.PositionId,
             Grade = resolved.FinalGradeCode,
             JobTitle = row.GetValueOrDefault("JobTitle", desigTitleRaw),
-            EmploymentType = row.GetValueOrDefault("EmploymentType", "Full-time"),
-            ContractType = row.GetValueOrDefault("ContractType", string.Empty),
+            EmploymentType = referenceLists.EmploymentType.Normalize(row.GetValueOrDefault("EmploymentType", "Full-time")),
+            ContractType = referenceLists.ContractType.Normalize(row.GetValueOrDefault("ContractType", string.Empty)),
             Status = status,
             // Kept EXACTLY as parsed: `default` means "the file gave no readable joining date"; the readiness
             // evaluator blocks activation on it. Re-defaulting it here would reinstate the guess.
@@ -2931,6 +2940,7 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
+        catch (SalaryStructureRefusedException ex) { return SalaryStructureRefused(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -3656,6 +3666,11 @@ public class EmployeesController : ControllerBase
                         tenantId, employee, requestContext with { TenantId = tenantId }, ct);
                     await _db.LinkOnboardingTasksForActivatedDraftAsync(
                         tenantId, draftId, employee, ct);
+                    var checklist = await _db.AttachForActivatedDraftAsync(tenantId, draftId, employee, requestContext.UserId, ct);
+                    if (checklist.Outcome is DefaultChecklistOutcome.NoDefaultChecklist or DefaultChecklistOutcome.AmbiguousDefaultChecklist)
+                        _logger?.LogInformation(
+                            "Hire activation: no onboarding checklist attached for draft {DraftId} in tenant {TenantId} ({Outcome}).",
+                            draftId, tenantId, checklist.Outcome);
 
                     draft.Status = EmployeeDraftStatuses.Activated;
                     draft.CurrentStep = EmployeeDraftStatuses.Activated;
@@ -3734,6 +3749,11 @@ public class EmployeesController : ControllerBase
         {
             _db.ChangeTracker.Clear();
             return UnprocessableEntity(new { message = ex.Message });
+        }
+        catch (SalaryStructureRefusedException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return SalaryStructureRefused(ex);
         }
         catch (WorkEmailPlusAddressException)
         {
@@ -3919,6 +3939,7 @@ public class EmployeesController : ControllerBase
                     throw new InvalidOperationException("Save a future salary package separately from other approval-required changes.");
             }
         }
+        catch (SalaryStructureRefusedException ex) { return SalaryStructureRefused(ex, " No change was applied."); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
         // F02 — refused up front, not at approval: ReadDateOnly turns an unparseable value into NULL, so a
         // bad string would be approved as "a date" and then silently clear the person's GOSI cohort.
@@ -3966,6 +3987,40 @@ public class EmployeesController : ControllerBase
                     });
                 }
 
+                // A DIFFERENT pending change to one of these fields: refused, nothing applied. Two waiting
+                // changes to one field let the older value win if they were approved newest-first
+                // (EmployeeChangeOverlap explains why this refuses rather than cancelling the older one).
+                if (await EmployeeChangeOverlap.FindPendingOverlapAsync(_db, tenantId, employee.Id, sensitiveChanges.Keys, null, cancellationToken) is { } overlap)
+                {
+                    var fields = DashboardController.FormatChangedFields(string.Join(',', overlap.Keys)) ?? string.Join(", ", overlap.Keys);
+                    return Conflict(new
+                    {
+                        error = "change_already_pending",
+                        message = $"A change to {fields} is already awaiting approval for this employee. " +
+                                  "Wait for it to be decided, or withdraw it (if you raised it) or ask an approver to reject it, then submit again. No change was applied.",
+                        fields = overlap.Keys,
+                        changeRequestId = overlap.Change.Id,
+                        approvalRequestId = overlap.Change.ApprovalRequestId,
+                    });
+                }
+
+                // Routed BEFORE anything is written: a change nobody could ever decide is refused here with nothing saved —
+                // neither the change row nor the non-sensitive fields that ride along with it. (The workflow itself is
+                // provisioned first; that is configuration, idempotent, and not part of the employee's record.)
+                var routingWorkflow = await EnsureEmployeeChangeWorkflowAsync(tenantId, cancellationToken);
+                if (_db.Entry(routingWorkflow).State != EntityState.Unchanged || _db.ChangeTracker.Entries<ApprovalWorkflowStep>().Any(e => e.State != EntityState.Unchanged))
+                    await _db.SaveChangesAsync(cancellationToken);
+                try
+                {
+                    await _approvalWorkflow.EnsureRoutableAsync(tenantId, new CreateApprovalRequest(routingWorkflow.Id, nameof(EmployeeChangeRequest),
+                        Guid.Empty.ToString(), $"Employee change approval - {employee.EmployeeCode} {employee.FullName}", employee.Id, employee.CompanyId, "High"),
+                        Context(), cancellationToken);
+                }
+                catch (ApprovalRoutingException ex)
+                {
+                    return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message, appliedFields = new List<string>() });
+                }
+
                 if (immediateChanges.Count > 0)
                 {
                     ApplyChanges(employee, immediateChanges);
@@ -4005,18 +4060,39 @@ public class EmployeesController : ControllerBase
                 {
                     await _db.SaveChangesAsync(cancellationToken);
                 }
-                var approval = await _approvalWorkflow.CreateRequestAsync(
-                    tenantId,
-                    new CreateApprovalRequest(
-                        workflow.Id,
-                        nameof(EmployeeChangeRequest),
-                        change.Id.ToString(),
-                        $"Employee change approval - {employee.EmployeeCode} {employee.FullName}",
-                        employee.Id,
-                        employee.CompanyId,
-                        "High"),
-                    Context(),
-                    cancellationToken);
+                ApprovalRequestDto approval;
+                try
+                {
+                    approval = await _approvalWorkflow.CreateRequestAsync(
+                        tenantId,
+                        new CreateApprovalRequest(
+                            workflow.Id,
+                            nameof(EmployeeChangeRequest),
+                            change.Id.ToString(),
+                            $"Employee change approval - {employee.EmployeeCode} {employee.FullName}",
+                            employee.Id,
+                            employee.CompanyId,
+                            "High"),
+                        Context(),
+                        cancellationToken);
+                }
+                catch (ApprovalRoutingException ex)
+                {
+                    // Nobody could ever decide it (or no workflow applies): the change row saved above must not
+                    // linger as PendingApproval with no approval behind it. Closed, with the reason, and refused.
+                    change.Status = EmployeeChangeStatuses.Cancelled;
+                    change.RejectionReason = ex.Message.Length <= 1000 ? ex.Message : ex.Message[..1000];
+                    await _db.SaveChangesAsync(cancellationToken);
+                    return UnprocessableEntity(new
+                    {
+                        error = ex.Code,
+                        code = ex.Code,
+                        message = ex.Message + (immediateChanges.Count > 0
+                            ? $" The other fields you edited ({string.Join(", ", immediateChanges.Keys)}) do not need approval and were saved."
+                            : string.Empty),
+                        appliedFields = immediateChanges.Keys.ToList(),
+                    });
+                }
                 change.ApprovalRequestId = approval.Id;
                 await _db.SaveChangesAsync(cancellationToken);
                 await Notify("Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}. Routed to {approval.CurrentQueue}. Due {approval.DueAtUtc:yyyy-MM-dd HH:mm} UTC.", "ApprovalRequest", approval.Id.ToString(), cancellationToken);
@@ -4582,6 +4658,10 @@ public class EmployeesController : ControllerBase
         if (failed > 0) parts.Add($"{failed} failed");
         return string.Join(", ", parts);
     }
+
+    /// <summary>One 422 shape for a refused salary structure on every employee salary path (see SalaryStructureRefusedException).</summary>
+    private UnprocessableEntityObjectResult SalaryStructureRefused(SalaryStructureRefusedException ex, string suffix = "") =>
+        UnprocessableEntity(new { error = ex.ErrorCode, code = ex.ErrorCode, salaryStructureCode = ex.StructureCode, message = ex.Message + suffix });
 
     private static object ReadinessItemDto(Zayra.Api.Infrastructure.Employees.ReadinessItem i) => new
     {

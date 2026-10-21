@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, Building2, RefreshCw } from 'lucide-react';
+import Link from 'next/link';
+import { AlertTriangle, Building2, Plus, RefreshCw } from 'lucide-react';
 import { groupApi, type GroupDashboard } from '@/src/api/group';
 import { useCompany } from '@/src/contexts/CompanyContext';
+import { useAuth } from '@/src/contexts/AuthContext';
+import { useT } from '@/src/hooks/useT';
 
 /**
  * Group Overview: one card per accessible legal entity with live operational counts.
@@ -13,7 +16,13 @@ import { useCompany } from '@/src/contexts/CompanyContext';
  */
 export default function GroupDashboardPage() {
   const router = useRouter();
-  const { setSelectedCompany, companyVersion } = useCompany();
+  const { setSelectedCompany, companyVersion, isGroupScope } = useCompany();
+  const { hasPermission } = useAuth();
+  const t = useT();
+  // The wizard itself checks role, plan and creation mode at step 1 and says why not.
+  const createCompany = isGroupScope && hasPermission('organization.write')
+    ? <Link href="/setup/new-company" className="btn-primary"><Plus className="h-4 w-4" aria-hidden="true" />{t('Create company')}</Link>
+    : null;
   const [data, setData] = useState<GroupDashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -67,17 +76,19 @@ export default function GroupDashboardPage() {
         <Building2 className="h-10 w-10 text-slate-300 dark:text-slate-600" />
         <p className="text-sm font-medium text-slate-600 dark:text-slate-300">No companies to show yet.</p>
         <p className="text-xs text-slate-400">Companies appear here once they are created and you have access to them.</p>
+        {createCompany}
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">Group Overview</h1>
           <p className="text-xs text-slate-400">{companies.length} legal entit{companies.length === 1 ? 'y' : 'ies'} in view</p>
         </div>
+        {createCompany}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">

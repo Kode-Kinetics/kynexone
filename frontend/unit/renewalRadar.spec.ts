@@ -5,7 +5,7 @@ import { translate } from '../src/i18n/translations';
 import { createFormatter } from '../src/lib/format';
 import {
   actionKeys, badgeKeys, badgeText, closedStateKeys, consequenceCodes, nextLineKeys, fill, filterItems, formatDay, gapReasonKeys, holdReasonKeys, linkKindKeys,
-  nextLine, stageKeys, stepKeys, toggleAll, toggleSelection, unopenedReasonKeys,
+  nextLine, selectionEnabled, stageKeys, stepKeys, toggleAll, toggleSelection, unopenedReasonKeys,
 } from '../src/lib/renewalRadar';
 
 // Release A R4: the renewal dashboard's sentences come from server codes through these maps. Every code has an
@@ -95,4 +95,13 @@ test('only rows eligible for the fast lane can be selected for it', () => {
   const all = toggleAll(new Set(), [eligible, blocked, item({ caseId: 'f', fastLaneEligible: true })]);
   expect([...all].sort()).toEqual(['e', 'f']);
   expect([...toggleAll(all, [eligible, blocked, item({ caseId: 'f', fastLaneEligible: true })])]).toEqual([]);
+});
+
+test('rows are selectable only when the screen has a batch action to run on them', () => {
+  // The contract-renewals route passes no batch actions today: no checkboxes, no bar whose only button is Clear.
+  expect(selectionEnabled(true, false)).toBe(false);
+  expect(selectionEnabled(false, false)).toBe(false);
+  // Batch actions exist, but the person cannot manage renewals: still nothing to select.
+  expect(selectionEnabled(false, true)).toBe(false);
+  expect(selectionEnabled(true, true)).toBe(true);
 });

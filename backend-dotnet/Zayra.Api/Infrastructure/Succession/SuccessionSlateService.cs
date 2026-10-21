@@ -170,10 +170,17 @@ public sealed class SuccessionSlateService(ZayraDbContext db, IAuditService audi
             snapshot = await BuildSnapshotAsync(actor.TenantId, position, entries, ct);
             await SuccessionSlateApprovalSync.EnsureDefaultWorkflowAsync(db, actor.TenantId, ct);
             var sha = snapshot.Sha256();
-            var request = await approvals.CreateRequestAsync(actor.TenantId,
-                new CreateApprovalRequest(null, SuccessionSlateApprovalSync.EntityName, slate.Id.ToString(),
-                    $"Succession slate v{slate.VersionNo} · {sha[..12]}", RequestedForEmployeeId: null, CompanyId: position.CompanyId, Priority: "Normal"),
-                actor.Request, ct);
+            ApprovalRequestDto request;
+            try
+            {
+                request = await approvals.CreateRequestAsync(actor.TenantId,
+                    new CreateApprovalRequest(null, SuccessionSlateApprovalSync.EntityName, slate.Id.ToString(),
+                        $"Succession slate v{slate.VersionNo} · {sha[..12]}", RequestedForEmployeeId: null, CompanyId: position.CompanyId, Priority: "Normal"),
+                    actor.Request, ct);
+            }
+            // Nobody could ever decide it (or no usable workflow): refused as a 422 with the reason, and this transaction
+            // rolls back, so the slate stays a Draft and nothing is half-written.
+            catch (ApprovalRoutingException ex) { throw new SuccessionException(422, ex.Code, ex.Message); }
             approvalId = request.Id;
             var approval = await db.ApprovalRequests.FirstAsync(a => a.Id == request.Id, ct);
             approval.Payload = JsonSerializer.Serialize(new

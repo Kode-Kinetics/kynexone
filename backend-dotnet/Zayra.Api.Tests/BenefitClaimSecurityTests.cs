@@ -22,6 +22,18 @@ public class BenefitClaimSecurityTests
     private static readonly DateOnly Today = new(2026, 10, 9);
 
     [Fact]
+    public async Task AClaimNobodyCouldDecide_IsRefusedBeforeAnythingIsWritten()
+    {
+        await using var db = Db();
+        var f = await Seed(db);
+        await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, f.Tenant));
+
+        await Assert.ThrowsAsync<ApprovalNoEligibleDeciderException>(() => Submit(db, f));
+        db.ChangeTracker.Clear();
+        Assert.Empty(db.ApprovalRequests);
+    }
+
+    [Fact]
     public async Task PendingAndApprovedClaimsReserveLimit_ApprovalNeverCreatesPayroll()
     {
         await using var db = Db(); var f = await Seed(db);
@@ -304,6 +316,8 @@ public class BenefitClaimSecurityTests
         var workflow = new ApprovalWorkflow { TenantId = tenant, Code = "CLAIM", Name = "Benefit claim authority", EntityName = BenefitClaims.EntityName, IsActive = true, IsDefault = true };
         workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenant, WorkflowId = workflow.Id, StepOrder = 1, StepName = "HR review", ApproverType = "Role", ApproverRole = "HR Manager", IsFinalStep = true });
         db.AddRange(employee, plan, component, workflow); await db.SaveChangesAsync();
+        // Someone besides the requester and the employee holds the step's role (routing refuses otherwise).
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         if (configured)
         {
             plan.PaymentPolicyJson = await BenefitPaymentPolicies.ConfigureAsync(db, plan, new("Reimbursement", SalaryComponentId: component.Id,

@@ -3,7 +3,7 @@ import { FlatList, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTranslation } from 'react-i18next';
-import { approvalsApi } from '@/api/services';
+import { approvalsApi, type EmployeeChangeField } from '@/api/services';
 import { useAuthStore } from '@/auth/authStore';
 import { hasEffectivePermission } from '@/auth/accessPolicy';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -534,6 +534,21 @@ function DecisionSheet({
   const [reasonMissing, setReasonMissing] = useState(false);
   const [context, setContext] = useState<LeaveContext | null>(null);
   const [contextState, setContextState] = useState<'idle' | 'loading' | 'failed'>('idle');
+  // Before → after for an employee change. Only fetched when the caller can decide it: the server answers 404 to
+  // anyone else, so a non-decider keeps the field names only.
+  const [changeFields, setChangeFields] = useState<EmployeeChangeField[] | null>(null);
+  const [changeState, setChangeState] = useState<'idle' | 'loading' | 'failed'>('idle');
+
+  const loadChangeDetail = useCallback(async (target: InboxItem) => {
+    if (target.kind !== 'EMPLOYEE_CHANGE' || target.source !== 'workflow' || !target.canDecide) return;
+    setChangeState('loading');
+    try {
+      setChangeFields(await approvalsApi.getEmployeeChangeDetail(target.id));
+      setChangeState('idle');
+    } catch {
+      setChangeState('failed');
+    }
+  }, []);
 
   const loadContext = useCallback(async (target: InboxItem) => {
     if (target.kind !== 'LEAVE' || !target.entityId) return;
@@ -553,8 +568,13 @@ function DecisionSheet({
     setBusy(null);
     setContext(null);
     setContextState('idle');
-    if (item) void loadContext(item);
-  }, [item, loadContext]);
+    setChangeFields(null);
+    setChangeState('idle');
+    if (item) {
+      void loadContext(item);
+      void loadChangeDetail(item);
+    }
+  }, [item, loadContext, loadChangeDetail]);
 
   const decide = async (decision: 'approve' | 'reject') => {
     if (!item || busy) return;
@@ -741,8 +761,31 @@ function DecisionSheet({
             )
           ) : null}
 
-          {!item.overtime && item.kind !== 'LEAVE' && item.changeSummary ? (
+          {!item.overtime && item.kind !== 'LEAVE' && item.changeSummary && !changeFields?.length ? (
             <FactRow label={t('manager.approvals.sheet.changes')} value={item.changeSummary} />
+          ) : null}
+          {changeFields?.length ? (
+            <View>
+              {changeFields.map((field) => (
+                <FactRow
+                  key={field.key}
+                  label={field.label}
+                  value={t('manager.approvals.sheet.changeProposed', { value: field.proposedValue ?? t('manager.approvals.sheet.changeNotSet') })}
+                  sub={t('manager.approvals.sheet.changeNow', { value: field.currentValue ?? t('manager.approvals.sheet.changeNotSet') })}
+                />
+              ))}
+              {changeFields.some((field) => field.masked) ? (
+                <Text style={[theme.typography.footnote, { color: theme.colors.textMuted }]}>{t('manager.approvals.sheet.changeMaskedNote')}</Text>
+              ) : null}
+            </View>
+          ) : null}
+          {changeState === 'failed' ? (
+            <View style={styles.inlineRetry}>
+              <Text style={[theme.typography.footnote, styles.flex, { color: theme.colors.status.warning.fg }]}>
+                {t('manager.approvals.sheet.changeError')}
+              </Text>
+              <LiquidButton label={t('kit.retry')} variant="secondary" size="compact" onPress={() => void loadChangeDetail(item)} />
+            </View>
           ) : null}
 
           <View>

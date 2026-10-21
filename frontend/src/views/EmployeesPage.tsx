@@ -87,39 +87,30 @@ import {
   SALARY_BREAKDOWN_EDIT_FIELDS,
 } from '../api/employeeFieldCatalog';
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
-import { masterDataApi, type MasterDataValue } from '../api/setup';
+import { EMPLOYEE_REFERENCE_TYPES, EMPTY_EMPLOYEE_REFERENCE_LISTS, loadEmployeeReferenceLists, type EmployeeReferenceKey, type EmployeeReferenceLists } from '../hooks/useReferenceLists';
+import { referenceCode, referenceDefault, referenceLabel, referenceOptions, type ReferenceOption } from '../lib/referenceLists';
 import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
+import { SalaryStructureSelect } from '../components/SalaryStructureSelect';
+import { useLiveGrades } from '../hooks/useLiveGrades';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
 type EditField = EmployeeEditField;
 
-type EmployeeMasterDataKey = 'gender' | 'maritalStatus' | 'employmentType' | 'contractType';
-type EmployeeMasterDataChoice = { options: string[]; defaultValue: string };
-type EmployeeMasterDataState = Record<EmployeeMasterDataKey, EmployeeMasterDataChoice>;
-
-const EMPLOYEE_MASTER_DATA_FALLBACK: EmployeeMasterDataState = {
+/**
+ * Gender, marital status, employment and contract type come from Setup → Reference lists. The forms store the
+ * value's CODE and show its label in the reader's language; rows saved earlier with the English label still read
+ * and select correctly (lib/referenceLists). These labels are offered only when the tenant's list cannot be read.
+ */
+const EMPLOYEE_REFERENCE_FALLBACK: Record<EmployeeReferenceKey, { options: string[]; defaultValue: string }> = {
   gender: { options: GENDER_OPTIONS, defaultValue: '' },
   maritalStatus: { options: MARITAL_STATUS_OPTIONS, defaultValue: '' },
   employmentType: { options: EMPLOYMENT_TYPE_OPTIONS, defaultValue: EMPLOYMENT_TYPE_OPTIONS[0] },
   contractType: { options: CONTRACT_TYPE_OPTIONS, defaultValue: CONTRACT_TYPE_OPTIONS[0] },
 };
 
-function resolveMasterDataChoice(values: MasterDataValue[], fallback: EmployeeMasterDataChoice): EmployeeMasterDataChoice {
-  const activeValues = values
-    .filter((item) => item.isActive !== false && item.valueEn.trim().length > 0)
-    .sort((left, right) => left.sortOrder - right.sortOrder)
-    .filter((item, index, all) => all.findIndex((candidate) => candidate.valueEn === item.valueEn) === index);
-  if (activeValues.length === 0) return fallback;
-  return {
-    options: activeValues.map((item) => item.valueEn),
-    defaultValue: activeValues.find((item) => item.isDefault)?.valueEn ?? '',
-  };
-}
-
-function retainCurrentOption(choice: EmployeeMasterDataChoice, current?: string): string[] {
-  const value = current?.trim();
-  return value && !choice.options.includes(value) ? [...choice.options, value] : choice.options;
+function isEmployeeReferenceKey(key: string): key is EmployeeReferenceKey {
+  return Object.prototype.hasOwnProperty.call(EMPLOYEE_REFERENCE_TYPES, key);
 }
 
 function employeeEditStep(field: EditField): number {
@@ -319,7 +310,7 @@ interface EmployeeUsageData {
 
 export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } = {}) {
   const wizardFormat = useFormat();
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const directoryQuery = usePeopleDirectoryQuery();
   const { currencyCode } = useTenantSettings();
   const { hasPermission, hasRole, user } = useAuth();
@@ -441,7 +432,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
-  const [grades, setGrades] = useState<GradeDto[]>([]);
+  // Live: refetched when Setup changes a grade (this tab or another) and when the user returns to the tab.
+  const { grades } = useLiveGrades();
   const [gradeBenefits, setGradeBenefits] = useState<GradeBenefitDefault[]>([]);
   const [gradeBenefitsLoading, setGradeBenefitsLoading] = useState(false);
   const [gradeBenefitsError, setGradeBenefitsError] = useState<string | null>(null);
@@ -451,7 +443,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
   // Employee reference values come from tenant-wide Master Data. The constants remain a deliberate
   // offline fallback so a temporary setup API failure never leaves a required create control empty.
-  const [employeeMasterData, setEmployeeMasterData] = useState<EmployeeMasterDataState>(EMPLOYEE_MASTER_DATA_FALLBACK);
+  const [employeeReferenceLists, setEmployeeReferenceLists] = useState<EmployeeReferenceLists>(EMPTY_EMPLOYEE_REFERENCE_LISTS);
   const [employeeMasterDataLoaded, setEmployeeMasterDataLoaded] = useState(false);
   // Field catalog: resolved by the backend EmployeeFieldRegistry on TWO axes — company country ×
   // employee nationality — via GET /api/employees/field-catalog. LOCAL_FIELD_CATALOG is only the
@@ -611,12 +603,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const loadLookups = useCallback(async () => {
     // Every row of each lookup, page by page. One page of 100 left the 101st department,
     // designation or active manager missing from the form's selects with nothing to say so.
-    const [companyRes, branchRes, deptRes, desigRes, gradeRes, costRes, managerRes] = await Promise.all([
+    const [companyRes, branchRes, deptRes, desigRes, costRes, managerRes] = await Promise.all([
       companiesApi.listAll(),
       branchesApi.listAll(),
       departmentsApi.listAll(),
       designationsApi.listAll(),
-      gradesApi.listAll(),
       costCentersApi.listAll(),
       employeesApi.listAll({ status: 'Active' }),
     ]);
@@ -624,31 +615,27 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setBranches(branchRes);
     setDepartments(deptRes);
     setDesignations(desigRes);
-    setGrades(gradeRes);
     setCostCenters(costRes);
     setManagerCandidates(managerRes);
   }, []);
 
   const loadEmployeeMasterData = useCallback(async () => {
-    const specs: Array<[EmployeeMasterDataKey, string]> = [
-      ['gender', 'Gender'],
-      ['maritalStatus', 'MaritalStatus'],
-      ['employmentType', 'EmploymentType'],
-      ['contractType', 'ContractType'],
-    ];
-    const results = await Promise.allSettled(specs.map(([, typeCode]) => masterDataApi.listValuesByCode(typeCode, true)));
-    setEmployeeMasterData((current) => {
-      const next = { ...current };
-      specs.forEach(([key], index) => {
-        const result = results[index];
-        next[key] = result.status === 'fulfilled'
-          ? resolveMasterDataChoice(result.value, EMPLOYEE_MASTER_DATA_FALLBACK[key])
-          : EMPLOYEE_MASTER_DATA_FALLBACK[key];
-      });
-      return next;
-    });
+    setEmployeeReferenceLists(await loadEmployeeReferenceLists());
     setEmployeeMasterDataLoaded(true);
   }, []);
+  const referenceChoices = useCallback(
+    (key: EmployeeReferenceKey, current?: string | null): ReferenceOption[] =>
+      referenceOptions(employeeReferenceLists[key], locale, EMPLOYEE_REFERENCE_FALLBACK[key].options, current),
+    [employeeReferenceLists, locale],
+  );
+  const referenceValue = useCallback(
+    (key: EmployeeReferenceKey, current?: string | null) => referenceCode(employeeReferenceLists[key], current),
+    [employeeReferenceLists],
+  );
+  const referenceText = useCallback(
+    (key: EmployeeReferenceKey, current?: string | null) => referenceLabel(employeeReferenceLists[key], current, locale),
+    [employeeReferenceLists, locale],
+  );
 
   useEffect(() => { load(); }, [load, employeeQuery]);
   useEffect(() => { loadLookups().catch(() => setError('Could not load organization setup data.')); }, [loadLookups]);
@@ -933,24 +920,17 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const editFields = useMemo(
     () => {
       const currentValues = selectedEmployee as unknown as Record<string, unknown> | null;
-      const masterOptions: Partial<Record<string, EmployeeMasterDataChoice>> = {
-        gender: employeeMasterData.gender,
-        maritalStatus: employeeMasterData.maritalStatus,
-        employmentType: employeeMasterData.employmentType,
-        contractType: employeeMasterData.contractType,
-      };
-      const fields = editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode).map((field) => {
-        const choice = masterOptions[field.key];
-        return choice
-          ? { ...field, options: retainCurrentOption(choice, String(currentValues?.[field.key] ?? '')) }
-          : field;
-      });
+      const fields = editFieldsForCountry(fieldCatalog, selectedEmployeeCountryCode).map((field) => (
+        isEmployeeReferenceKey(field.key)
+          ? { ...field, choices: referenceChoices(field.key, String(currentValues?.[field.key] ?? '')) }
+          : field
+      ));
       return selectedEmployee && Object.prototype.hasOwnProperty.call(selectedEmployee, 'salaryBreakdown')
         && (selectedEmployee.salaryBreakdown != null || Number(selectedEmployee.salary ?? 0) <= 0)
         ? [...fields.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS]
         : fields;
     },
-    [fieldCatalog, selectedEmployeeCountryCode, selectedEmployee, employeeMasterData],
+    [fieldCatalog, selectedEmployeeCountryCode, selectedEmployee, referenceChoices],
   );
 
   // Two-axis catalog fetch. The catalog is resolved by the backend on (company country × employee
@@ -999,8 +979,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     [grades, form.gradeId],
   );
   const eligibleGrades = useMemo(
-    () => selectedDesignation?.gradeId ? grades.filter((grade) => grade.id === selectedDesignation.gradeId) : grades,
-    [grades, selectedDesignation],
+    () => {
+      // Retired grades are not offered for a new hire (the edit form already filters them); one already chosen
+      // on a resumed draft stays visible so the select never shows a value it has no option for.
+      const offered = grades.filter((grade) => grade.isActive || grade.id === form.gradeId);
+      return selectedDesignation?.gradeId ? offered.filter((grade) => grade.id === selectedDesignation.gradeId) : offered;
+    },
+    [grades, selectedDesignation, form.gradeId],
   );
   const salaryTotal = useMemo(() => {
     const s = form.salaryBreakdown;
@@ -1110,10 +1095,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     complianceCacheRef.current = {}; // fresh draft — drop any remembered statutory values
     setDuplicateWarning([]);
     const next = emptyEmployee();
-    next.gender = employeeMasterData.gender.defaultValue;
-    next.maritalStatus = employeeMasterData.maritalStatus.defaultValue;
-    next.employmentType = employeeMasterData.employmentType.defaultValue || EMPLOYEE_MASTER_DATA_FALLBACK.employmentType.defaultValue;
-    next.contractType = employeeMasterData.contractType.defaultValue || EMPLOYEE_MASTER_DATA_FALLBACK.contractType.defaultValue;
+    // A new record starts on the list's default value (its code), else the built-in default read through the list.
+    next.gender = referenceDefault(employeeReferenceLists.gender, EMPLOYEE_REFERENCE_FALLBACK.gender.defaultValue);
+    next.maritalStatus = referenceDefault(employeeReferenceLists.maritalStatus, EMPLOYEE_REFERENCE_FALLBACK.maritalStatus.defaultValue);
+    next.employmentType = referenceDefault(employeeReferenceLists.employmentType, EMPLOYEE_REFERENCE_FALLBACK.employmentType.defaultValue);
+    next.contractType = referenceDefault(employeeReferenceLists.contractType, EMPLOYEE_REFERENCE_FALLBACK.contractType.defaultValue);
     if (defaultCompany) {
       next.companyId = defaultCompany.id;
       next.payrollProfile = {
@@ -1186,6 +1172,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         [key]: ['salaryStructureCode', 'effectiveDate', 'currency'].includes(key) ? value : (value === '' ? undefined : Number(value)),
       },
     }));
+
+  const setSalaryStructure = useCallback((code: string) =>
+    setForm((current) => ({
+      ...current,
+      salaryBreakdown: { ...current.salaryBreakdown, salaryStructureCode: code },
+      payrollProfile: { ...current.payrollProfile!, salaryStructureReference: code },
+    })), []);
 
   const setComplianceValue = (index: number, key: string, value: string | boolean) =>
     setForm((current) => {
@@ -1288,9 +1281,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     { title: 'Profile', rows: [
       ['English full name', form.englishName], ['Arabic full name', form.arabicName],
       ['Preferred name', form.preferredName], ['Employee code', form.employeeCode || t('Assigned automatically')],
-      ['Manual override', form.manualEmployeeCode ? 'Yes' : 'No'], ['Gender', form.gender],
+      ['Manual override', form.manualEmployeeCode ? 'Yes' : 'No'], ['Gender', referenceText('gender', form.gender)],
       ['Nationality', form.nationality], ['Date of birth', form.dateOfBirth],
-      ['Marital status', form.maritalStatus], ['Personal email', form.personalEmail], ['Mobile number', form.mobileNumber],
+      ['Marital status', referenceText('maritalStatus', form.maritalStatus)], ['Personal email', form.personalEmail], ['Mobile number', form.mobileNumber],
     ] },
     { title: 'Employment', rows: [
       ['Company', nameById(companies, form.companyId, 'legalNameEn')], ['Branch', nameById(branches, form.branchId, 'nameEn')],
@@ -1299,7 +1292,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       ...(!releaseA && form.gradeId ? [[t('Default benefits'), gradeBenefitsLoading ? t('Loading grade benefits…') : gradeBenefitsError ? t('Grade benefits preview unavailable') : gradeBenefits.filter(item => item.eligible).map(item => item.name).join(', ') || t('No eligible grade benefits')],
         ...(gradeBenefits.some(item => !item.eligible) ? [[t('Not yet eligible'), gradeBenefits.filter(item => !item.eligible).map(item => `${item.name}: ${item.blockingReason}`).join('; ')]] : [])] as Array<[string, string]> : []),
       ['Cost center', nameById(costCenters, form.costCenterId, 'name')], ['Job title', form.jobTitle],
-      ['Employment type', form.employmentType], ['Contract type', form.contractType],
+      ['Employment type', referenceText('employmentType', form.employmentType)], ['Contract type', referenceText('contractType', form.contractType)],
       ['Joining date', form.joiningDate], ['Work location', form.workLocation], ['Work email', form.workEmail],
     ] },
     { title: 'Payroll', rows: [
@@ -1307,13 +1300,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       ['Account number', form.payrollProfile?.accountNumber], ['Bank routing / sort code', form.payrollProfile?.bankRoutingCode],
       ['MOL ID / National labour number', form.payrollProfile?.molId],
       ['Salary currency', form.payrollProfile?.salaryCurrency || currencyCode], ['Payment method', form.payrollProfile?.paymentMethod],
-      ['Payroll group', form.payrollProfile?.payrollGroup], ['Salary structure reference', form.payrollProfile?.salaryStructureReference],
+      ['Payroll group', form.payrollProfile?.payrollGroup],
     ] },
     { title: 'Salary', rows: [
       ['Basic salary', form.salaryBreakdown?.basicSalary], ['Housing allowance', form.salaryBreakdown?.housingAllowance],
       ['Transport allowance', form.salaryBreakdown?.transportAllowance], ['Food allowance', form.salaryBreakdown?.foodAllowance],
       ['Mobile allowance', form.salaryBreakdown?.mobileAllowance], ['Other allowance', form.salaryBreakdown?.otherAllowance],
       ['Fixed deduction', form.salaryBreakdown?.fixedDeduction],
+      ['Salary structure', form.salaryBreakdown?.salaryStructureCode || t('Default for the grade')],
       ['Currency', form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode],
       ['Effective date', form.salaryBreakdown?.effectiveDate || form.joiningDate],
       ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
@@ -1326,7 +1320,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   ];
   const createReviewSections = allCreateReviewSections.map((section, step) => ({ ...section, step, rows: section.rows.filter(([, value]) => value !== undefined && value !== null && value !== '' && value !== '-') }))
     .filter(section => section.step < 2 || fullSetup
-      || (section.step === 2 && !!(form.payrollProfile?.bankName || form.payrollProfile?.iban || form.payrollProfile?.accountNumber || form.payrollProfile?.molId || form.payrollProfile?.bankRoutingCode || form.payrollProfile?.payrollGroup || form.payrollProfile?.salaryStructureReference))
+      || (section.step === 2 && !!(form.payrollProfile?.bankName || form.payrollProfile?.iban || form.payrollProfile?.accountNumber || form.payrollProfile?.molId || form.payrollProfile?.bankRoutingCode || form.payrollProfile?.payrollGroup))
       || (section.step === 3 && (salaryTotal > 0 || Object.entries(form.salaryBreakdown ?? {}).some(([key, value]) => !['currency', 'effectiveDate'].includes(key) && value !== undefined && value !== '')))
       || (section.step === 4 && section.rows.length > 0));
 
@@ -2433,7 +2427,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                       {field.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}
                       {editChangedKeys.includes(field.key) && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}
                     </span>
-                    {field.type === 'select' && field.options && field.options.length > 0 ? (
+                    {field.choices && isEmployeeReferenceKey(field.key) ? (
+                      <select id={`edit-field-${field.key}`} value={referenceValue(field.key, editForm[field.key])} onChange={(event) => setEditForm((current) => ({ ...current, [field.key]: event.target.value }))} className="select mt-1.5 w-full">
+                        <option value="">{t('Select')}</option>
+                        {field.choices.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
+                    ) : field.type === 'select' && field.options && field.options.length > 0 ? (
                       <select id={`edit-field-${field.key}`} value={editForm[field.key] ?? ''} onChange={(event) => setEditForm((current) => ({ ...current, [field.key]: event.target.value }))} className="select mt-1.5 w-full">
                         <option value="">{t('Select')}</option>
                         {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -2632,9 +2631,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <Input label="Mobile number" ltr value={form.mobileNumber ?? ''} onChange={(v) => setField('mobileNumber', v)} info="Personal mobile with country code, e.g. +971 50 123 4567." infoKey="employees.mobile_number" />
             <EmployeeAdditionalDetails title="Additional personal details">
             <Input label="Preferred name" value={form.preferredName ?? ''} onChange={(v) => setField('preferredName', v)} />
-            <Select label="Gender" value={form.gender} onChange={(v) => setField('gender', v)} options={retainCurrentOption(employeeMasterData.gender, form.gender)} />
+            <Select label="Gender" value={referenceValue('gender', form.gender)} onChange={(v) => setField('gender', v)} options={referenceChoices('gender', form.gender)} />
             <Input label="Date of birth" value={form.dateOfBirth ?? ''} onChange={(v) => setField('dateOfBirth', v)} type="date" info="Used for statutory records and — for some jurisdictions — required before the employee can be activated." infoKey="employees.date_of_birth" />
-            <Select label="Marital status" value={form.maritalStatus ?? ''} onChange={(v) => setField('maritalStatus', v)} options={retainCurrentOption(employeeMasterData.maritalStatus, form.maritalStatus)} />
+            <Select label="Marital status" value={referenceValue('maritalStatus', form.maritalStatus)} onChange={(v) => setField('maritalStatus', v)} options={referenceChoices('maritalStatus', form.maritalStatus)} />
             <div className="col-span-full grid gap-2.5 sm:grid-cols-2">
             <Input label="Employee code" ltr value={form.employeeCode ?? ''} onChange={(v) => setField('employeeCode', v)} placeholder="Leave blank for auto generation" info="Unique staff ID, e.g. KNX-0001. Leave blank and the system generates the next number automatically; tick 'Manual override' to type your own." infoKey="employees.employee_code" />
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2717,8 +2716,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <EmployeeAdditionalDetails title="More employment details">
             <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
             <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
-            <Select label="Employment type" value={form.employmentType ?? ''} onChange={(v) => setField('employmentType', v)} options={retainCurrentOption(employeeMasterData.employmentType, form.employmentType)} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
-            <Select label="Contract type" value={form.contractType ?? ''} onChange={(v) => setField('contractType', v)} options={retainCurrentOption(employeeMasterData.contractType, form.contractType)} />
+            <Select label="Employment type" value={referenceValue('employmentType', form.employmentType)} onChange={(v) => setField('employmentType', v)} options={referenceChoices('employmentType', form.employmentType)} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
+            <Select label="Contract type" value={referenceValue('contractType', form.contractType)} onChange={(v) => setField('contractType', v)} options={referenceChoices('contractType', form.contractType)} />
             <Input label="Work location" value={form.workLocation ?? ''} onChange={(v) => setField('workLocation', v)} />
             </EmployeeAdditionalDetails>
           </Section>
@@ -2736,7 +2735,6 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <Input label="Bank routing / sort code" ltr value={form.payrollProfile?.bankRoutingCode ?? ''} onChange={(v) => setPayrollField('bankRoutingCode', v)} info="Bank branch routing or sort code used in the UAE WPS SIF (6-digit code). Saudi bank files take the bank from the IBAN and the approved BIC." infoKey="employees.bankRoutingCode" />
             <Input label="MOL ID / National labour number" ltr value={form.payrollProfile?.molId ?? ''} onChange={(v) => setPayrollField('molId', v)} info="Ministry of Labour employee registration number used in the UAE WPS SIF. Saudi wage files use the employee's own national ID or Iqama number instead." infoKey="employees.molId" />
             <Input label="Payroll group" value={form.payrollProfile?.payrollGroup ?? ''} onChange={(v) => setPayrollField('payrollGroup', v)} />
-            <Input label="Salary structure reference" value={form.payrollProfile?.salaryStructureReference ?? ''} onChange={(v) => setPayrollField('salaryStructureReference', v)} />
             </EmployeeAdditionalDetails>
           </Section>
 
@@ -2746,6 +2744,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
             <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
+            {/* A choice of the company's active structures, never free text (an unknown code is refused, 422). The
+                payroll profile's reference follows the choice. */}
+            <SalaryStructureSelect
+              companyId={form.companyId}
+              value={form.salaryBreakdown?.salaryStructureCode ?? ''}
+              retainCurrent={false}
+              onChange={setSalaryStructure}
+            />
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
               <p className="font-semibold text-slate-800 dark:text-white">Gross package: {(form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode)} {salaryTotal.toLocaleString()}</p>
               {releaseA && form.gradeId && <p className="mt-1">{t('Leave an allowance blank to fill it from Benefits by grade for this grade on the effective date. If the grade has no value there, you will be asked to enter it.')}</p>}
@@ -3090,14 +3096,16 @@ function Input({ label, value, onChange, inputId, required, optional, type = 'te
   );
 }
 
-function Select({ label, value, onChange, options, required, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; options: string[]; required?: boolean; info?: string; infoKey?: string }) {
+function Select({ label, value, onChange, options, required, info, infoKey }: { label: string; value: string; onChange: (value: string) => void; options: Array<string | ReferenceOption>; required?: boolean; info?: string; infoKey?: string }) {
   const controlId = useId();
   return (
     <label htmlFor={controlId} className="block min-w-0 text-sm font-medium text-slate-700 dark:text-slate-300">
       <span className="flex min-w-0 items-center gap-1.5 leading-snug">{label} {required && <span className="text-red-500">*</span>}{info && <InfoTip text={info} fieldKey={infoKey} className="ms-1" />}</span>
       <select id={controlId} value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {options.map((option) => typeof option === 'string'
+          ? <option key={option} value={option}>{option}</option>
+          : <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </label>
   );

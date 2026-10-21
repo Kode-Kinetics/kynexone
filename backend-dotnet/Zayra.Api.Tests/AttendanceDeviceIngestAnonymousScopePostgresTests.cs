@@ -74,8 +74,10 @@ public sealed class AttendanceDeviceIngestAnonymousScopePostgresTests : IClassFi
 
     /// <summary>
     /// One device batch: employee A punched Monday, employee B punched Tuesday, and A is on approved leave Tuesday.
-    /// Ingest recomputes every matched employee for every date in the batch, so A's Tuesday is recomputed with no
-    /// punches — the one case where the day's status consults the approved leave.
+    /// Ingest used to recompute every matched employee for every date in the batch, so A's Tuesday was recomputed with
+    /// no punches — the one case where the day's status consults the approved leave — and, on the anonymous webhook,
+    /// read no leave and deducted an absence. Ingest now processes each employee only on the work dates of their own
+    /// punches (#239), so A's leave day is not touched at all, and it never carries an absence deduction.
     /// </summary>
     [Fact]
     public async Task DeviceIngest_RecomputingAnApprovedLeaveDayWithNoPunches_KeepsItOnLeave_WithNoAbsenceDeduction()
@@ -92,8 +94,8 @@ public sealed class AttendanceDeviceIngestAnonymousScopePostgresTests : IClassFi
 
         await using var db = _fx.CreateDb();
         var leaveDay = await db.AttendanceDailyRecords.IgnoreQueryFilters()
-            .SingleAsync(d => d.TenantId == tenantId && d.EmployeeId == onLeaveId && d.WorkDate == WorkDay);
-        Assert.Equal("On leave", leaveDay.Status);
+            .SingleOrDefaultAsync(d => d.TenantId == tenantId && d.EmployeeId == onLeaveId && d.WorkDate == WorkDay);
+        Assert.True(leaveDay is null, $"a colleague's punch must not recompute A's leave day (found '{leaveDay?.Status}')");
         Assert.False(await db.AttendancePayrollImpacts.IgnoreQueryFilters().AnyAsync(i =>
                 i.TenantId == tenantId && i.EmployeeId == onLeaveId && i.WorkDate == WorkDay && i.ImpactType == "Absence deduction"),
             "an approved leave day is never deducted as an absence");

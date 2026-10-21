@@ -218,56 +218,90 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
     /// </summary>
     public async Task<AttemptResultDto> SubmitAttemptAsync(LearningActor actor, int employeeId, Guid attemptId, SubmitAttemptInput input, CancellationToken ct)
     {
-        var attempt = await db.LearningAttempts.FirstOrDefaultAsync(a => a.TenantId == actor.TenantId && a.Id == attemptId && a.EmployeeId == employeeId, ct)
-            ?? throw LearningException.NotFound("Attempt");
-        var enrollment = await db.LearningEnrollments.FirstAsync(e => e.Id == attempt.EnrollmentId, ct);
-        var course = await db.LearningCourses.AsNoTracking().FirstAsync(c => c.Id == enrollment.CourseId, ct);
-        var bank = LearningAssessment.Parse(course.AssessmentJson);
-        if (attempt.Status != LearningAttemptStatuses.InProgress) return await StoredResultAsync(attempt, enrollment, bank, ct);
-
-        var assignment = await db.LearningAssignments.FirstAsync(a => a.Id == enrollment.AssignmentId, ct);
-        if (!LearningAssignmentStatuses.Active.Contains(assignment.Status) || enrollment.Status is LearningEnrollmentStatuses.Cancelled)
-            throw LearningException.Conflict("assignment_not_live", "This learning is no longer assigned to you.");
-
-        var answers = ValidAnswers(bank, input.Answers);
-        var score = LearningAssessment.Score(bank, answers, attempt.PassMarkPercent);
-        var now = clock.GetUtcNow().UtcDateTime;
-        attempt.AnswersJson = JsonSerializer.Serialize(answers);
-        attempt.ScorePercent = score.ScorePercent;
-        attempt.Status = score.Passed ? LearningAttemptStatuses.Passed : LearningAttemptStatuses.Failed;
-        attempt.SubmittedAtUtc = now;
-        attempt.Version++;
-        enrollment.ScorePercent = score.ScorePercent;
-        enrollment.LastActivityAtUtc = now;
-
+        LearningAttempt attempt = null!;
+        LearningEnrollment enrollment = null!;
+        LearningAssignment assignment = null!;
+        AssessmentBank bank = null!;
+        AssessmentScore score = default!;
         LearningCredential? credential = null;
-        if (score.Passed && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
-            credential = await CompleteAsync(enrollment, assignment, course, LearningCompletionSources.Assessment, attempt.Id.ToString(), score.ScorePercent, now, ct);
-        else if (!score.Passed && enrollment.AttemptsUsed >= enrollment.AttemptAllowance && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
-        {
-            enrollment.Status = LearningEnrollmentStatuses.Locked;
-            enrollment.LockedAtUtc = now;
-        }
-        enrollment.Version++;
+        AttemptResultDto? stored = null;
+        LearningAssignment? completedAssignment = null;
         try
         {
-            await db.SaveChangesAsync(ct);
+            // One submit of an attempt at a time. The attempt is read FOR UPDATE inside the transaction, so a second
+            // submit of the same attempt (a double click, a retried request) waits here until the first commits, then
+            // reads it again, finds it scored and answers with the stored result. Without the lock the second request
+            // could read the attempt as in progress, then find the assignment the first had just completed and refuse
+            // with "no longer assigned" — a false error for a learner who has passed.
+            await LearningDb.InTransactionAsync(db, async () =>
+            {
+                // A retry of the execution strategy starts again from the database, never from a rolled-back attempt.
+                db.ChangeTracker.Clear();
+                stored = null;
+                credential = null;
+                attempt = await db.LearningAttempts.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                    .FirstOrDefaultAsync(a => a.TenantId == actor.TenantId && a.Id == attemptId && a.EmployeeId == employeeId, ct)
+                    ?? throw LearningException.NotFound("Attempt");
+                enrollment = await db.LearningEnrollments.FirstAsync(e => e.Id == attempt.EnrollmentId, ct);
+                var course = await db.LearningCourses.AsNoTracking().FirstAsync(c => c.Id == enrollment.CourseId, ct);
+                bank = LearningAssessment.Parse(course.AssessmentJson);
+                if (attempt.Status != LearningAttemptStatuses.InProgress)
+                {
+                    stored = await StoredResultAsync(attempt, enrollment, bank, ct);
+                    return;
+                }
+
+                assignment = await db.LearningAssignments.FirstAsync(a => a.Id == enrollment.AssignmentId, ct);
+                if (!LearningAssignmentStatuses.Active.Contains(assignment.Status) || enrollment.Status is LearningEnrollmentStatuses.Cancelled)
+                    throw LearningException.Conflict("assignment_not_live", "This learning is no longer assigned to you.");
+
+                var answers = ValidAnswers(bank, input.Answers);
+                score = LearningAssessment.Score(bank, answers, attempt.PassMarkPercent);
+                var now = clock.GetUtcNow().UtcDateTime;
+                attempt.AnswersJson = JsonSerializer.Serialize(answers);
+                attempt.ScorePercent = score.ScorePercent;
+                attempt.Status = score.Passed ? LearningAttemptStatuses.Passed : LearningAttemptStatuses.Failed;
+                attempt.SubmittedAtUtc = now;
+                attempt.Version++;
+                enrollment.ScorePercent = score.ScorePercent;
+                enrollment.LastActivityAtUtc = now;
+
+                if (score.Passed && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
+                    credential = await CompleteAsync(enrollment, assignment, course, LearningCompletionSources.Assessment, attempt.Id.ToString(), score.ScorePercent, now, ct);
+                else if (!score.Passed && enrollment.AttemptsUsed >= enrollment.AttemptAllowance && !LearningEnrollmentStatuses.IsDone(enrollment.Status))
+                {
+                    enrollment.Status = LearningEnrollmentStatuses.Locked;
+                    enrollment.LockedAtUtc = now;
+                }
+                enrollment.Version++;
+                await db.SaveChangesAsync(ct);
+
+                // The audit rows commit WITH the score (same context, same transaction). Written after the commit, a
+                // commit-then-disconnect retry would take the stored-result branch above and the pass, the lock and the
+                // credential would never be audited.
+                await audit.WriteAsync(score.Passed ? "learning.attempt.passed" : "learning.attempt.failed", nameof(LearningAttempt), attempt.Id.ToString(),
+                    actor.Request, JsonSerializer.Serialize(new { attempt.EnrollmentId, attempt.AttemptNo, attempt.ScorePercent, attempt.PassMarkPercent }), ct);
+                if (enrollment.Status == LearningEnrollmentStatuses.Locked)
+                    await audit.WriteAsync("learning.enrollment.locked", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
+                        JsonSerializer.Serialize(new { enrollment.AttemptsUsed, enrollment.AttemptAllowance }), ct);
+                if (score.Passed) await WriteCompletionAuditAsync(actor.Request, enrollment, assignment, credential, ct);
+                // Not reset on a retry: if this execution's commit landed, the assignment it completed is announced below.
+                if (score.Passed && assignment.Status == LearningAssignmentStatuses.Completed) completedAssignment = assignment;
+            }, ct);
         }
         catch (DbUpdateConcurrencyException)
         {
-            // The same attempt was submitted concurrently and the other request won: answer with what it stored.
+            // The attempt lock serialises submits; the enrollment or assignment can still change under another request
+            // (HR reset, cancellation). If that request scored this attempt, answer with what it stored; otherwise refuse.
             db.ChangeTracker.Clear();
-            var stored = await db.LearningAttempts.AsNoTracking().FirstAsync(a => a.Id == attemptId, ct);
-            var current = await db.LearningEnrollments.AsNoTracking().FirstAsync(e => e.Id == stored.EnrollmentId, ct);
-            if (stored.Status == LearningAttemptStatuses.InProgress) throw;
-            return await StoredResultAsync(stored, current, bank, ct);
+            var latest = await db.LearningAttempts.AsNoTracking().FirstAsync(a => a.Id == attemptId, ct);
+            var current = await db.LearningEnrollments.AsNoTracking().FirstAsync(e => e.Id == latest.EnrollmentId, ct);
+            if (latest.Status == LearningAttemptStatuses.InProgress) throw;
+            return await StoredResultAsync(latest, current, bank, ct);
         }
-        await audit.WriteAsync(score.Passed ? "learning.attempt.passed" : "learning.attempt.failed", nameof(LearningAttempt), attempt.Id.ToString(),
-            actor.Request, JsonSerializer.Serialize(new { attempt.EnrollmentId, attempt.AttemptNo, attempt.ScorePercent, attempt.PassMarkPercent }), ct);
-        if (enrollment.Status == LearningEnrollmentStatuses.Locked)
-            await audit.WriteAsync("learning.enrollment.locked", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
-                JsonSerializer.Serialize(new { enrollment.AttemptsUsed, enrollment.AttemptAllowance }), ct);
-        if (score.Passed) await AuditCompletionAsync(actor.Request, enrollment, assignment, credential, ct);
+        if (completedAssignment is not null) await NotifyAssignmentCompletedAsync(completedAssignment, ct);
+        if (stored is not null) return stored;
+
         return new AttemptResultDto(attempt.Id, attempt.AttemptNo, attempt.Status, score.ScorePercent, attempt.PassMarkPercent, score.Correct, score.Total,
             Math.Max(0, enrollment.AttemptAllowance - enrollment.AttemptsUsed), enrollment.Status, credential?.Id, credential?.CertificateNumber);
     }
@@ -466,6 +500,15 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
     internal async Task AuditCompletionAsync(RequestContext request, LearningEnrollment enrollment, LearningAssignment assignment,
         LearningCredential? credential, CancellationToken ct)
     {
+        await WriteCompletionAuditAsync(request, enrollment, assignment, credential, ct);
+        if (enrollment.Status != LearningEnrollmentStatuses.PendingVerification && assignment.Status == LearningAssignmentStatuses.Completed)
+            await NotifyAssignmentCompletedAsync(assignment, ct);
+    }
+
+    /// <summary>The completion's audit rows only. Safe inside the caller's transaction (the audit shares this context).</summary>
+    private async Task WriteCompletionAuditAsync(RequestContext request, LearningEnrollment enrollment, LearningAssignment assignment,
+        LearningCredential? credential, CancellationToken ct)
+    {
         if (enrollment.Status == LearningEnrollmentStatuses.PendingVerification)
         {
             // Content-reported, not yet a completion: "completed" is audited once, when HR verifies it.
@@ -479,19 +522,22 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
             await audit.WriteAsync("learning.credential.issued", nameof(LearningCredential), credential.Id.ToString(), request,
                 JsonSerializer.Serialize(new { credential.EmployeeId, credential.CertificateNumber, credential.CourseCode, credential.ExpiresOn, credential.SupersedesCredentialId }), ct);
         if (assignment.Status == LearningAssignmentStatuses.Completed)
-        {
             await audit.WriteAsync("learning.assignment.completed", nameof(LearningAssignment), assignment.Id.ToString(), request,
                 JsonSerializer.Serialize(new { assignment.EmployeeId, assignment.PathId, assignment.Cycle }), ct);
-            // After the completion committed: modules that follow an assignment (SUC development-plan actions) hear about it.
-            // A listener failure never undoes the learner's completion; listeners also reconcile on read and in their sweep.
-            foreach (var listener in services.GetServices<ILearningAssignmentCompletedListener>())
+    }
+
+    /// <summary>Call only after the completion committed.</summary>
+    private async Task NotifyAssignmentCompletedAsync(LearningAssignment assignment, CancellationToken ct)
+    {
+        // Modules that follow an assignment (SUC development-plan actions) hear about it. A listener failure never undoes
+        // the learner's completion; listeners also reconcile on read and in their sweep.
+        foreach (var listener in services.GetServices<ILearningAssignmentCompletedListener>())
+        {
+            try { await listener.OnAssignmentCompletedAsync(assignment.TenantId, assignment.Id, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                try { await listener.OnAssignmentCompletedAsync(assignment.TenantId, assignment.Id, ct); }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    services.GetService<ILogger<LearningProgressService>>()?.LogWarning(
-                        "Learning: a completion listener failed for assignment {AssignmentId} ({Error}).", assignment.Id, ex.GetType().Name);
-                }
+                services.GetService<ILogger<LearningProgressService>>()?.LogWarning(
+                    "Learning: a completion listener failed for assignment {AssignmentId} ({Error}).", assignment.Id, ex.GetType().Name);
             }
         }
     }

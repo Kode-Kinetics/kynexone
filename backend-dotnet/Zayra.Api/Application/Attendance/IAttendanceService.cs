@@ -53,6 +53,10 @@ public interface IAttendanceService
     Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthlyAsync(Guid tenantId, int year, int month, CancellationToken ct);
     Task<IReadOnlyCollection<AttendanceDailyDto>> ReportByStatusAsync(Guid tenantId, DateOnly from, DateOnly to, string status, CancellationToken ct);
     Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunchAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
+    Task<PagedResult<AttendanceExceptionDto>> GetExceptionsAsync(Guid tenantId, string? state, string? type, DateOnly? from, DateOnly? to,
+        int? employeeId, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
+    Task<AttendanceExceptionDto?> ResolveExceptionAsync(Guid tenantId, Guid id, string reason, string resolvedBy, RequestContext context,
+        CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
     Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
     Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> DeviceSyncReportAsync(Guid tenantId, CancellationToken ct, bool revealSecrets = true);
     /// <param name="visibleEmployeeIds">The caller's data scope (<c>DataScope.AllowedEmployeeIds</c>); null is org-wide.

@@ -80,13 +80,18 @@ async function boot(page: Page, options: MockOptions = {}) {
       { id: 'department-finance', branchId: 'branch-wizard', costCenterId: 'cost-finance', code: 'FIN', nameEn: 'Finance', managerEmployeeId: otherManager.id, isActive: true },
     ]));
     if (path === '/api/designations') return reply(paged([{ id: 'designation-wizard', departmentId: 'department-wizard', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true }]));
-    if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }]));
+    if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }, { ...grade, id: 'grade-retired', code: 'G0', name: 'Retired grade', isActive: false }]));
     if (path === '/api/compensation/benefits/grade-defaults') return reply([]);
     if (path.endsWith('/pay-scale')) return reply([]);
     if (path === '/api/organization/cost-centers') return reply(paged([
       { id: 'cost-wizard', companyId: company.id, code: 'OPS', name: 'Operations cost center', isActive: true },
       { id: 'cost-finance', companyId: company.id, code: 'FIN', name: 'Finance cost center', isActive: true },
     ]));
+    if (path === '/api/payroll/salary-structures') return reply([
+      { id: 'structure-company', companyId: company.id, code: 'OPS-BAND', name: 'Operations band', isActive: true },
+      { id: 'structure-retired', companyId: company.id, code: 'OPS-OLD', name: 'Retired band', isActive: false },
+      { id: 'structure-other', companyId: 'another-company', code: 'OTHER-CO', name: 'Another company band', isActive: true },
+    ]);
     if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: [] });
     if (path === '/api/localization/transliterate') {
       transliterations.push(body);
@@ -250,7 +255,7 @@ test('employee fields use active Master Data values and configured defaults', as
     isSystemDefined: false,
     isActive: true,
   });
-  const { dialog, errors } = await boot(page, {
+  const { dialog, creates, errors } = await boot(page, {
     masterData: {
       Gender: [value('gender', 'FEMALE', 'Female', 1), value('gender', 'NON_BINARY', 'Non-Binary', 2)],
       MaritalStatus: [value('marital', 'SINGLE', 'Single', 1), value('marital', 'SEPARATED', 'Separated', 2)],
@@ -270,10 +275,15 @@ test('employee fields use active Master Data values and configured defaults', as
   const employmentType = dialog.getByRole('combobox', { name: /^Employment type/ });
   const contractType = dialog.getByRole('combobox', { name: 'Contract type', exact: true });
   await expect(employmentType.locator('option')).toHaveText(['Select', 'Full-Time', 'Seasonal']);
-  await expect(employmentType).toHaveValue('Seasonal');
+  // The form stores the value's code and shows its label; the configured defaults are preselected by code.
+  await expect(employmentType).toHaveValue('SEASONAL');
   await expect(contractType.locator('option')).toHaveText(['Select', 'Limited Term', 'Unlimited Term']);
-  await expect(contractType).toHaveValue('Limited Term');
+  await expect(contractType).toHaveValue('LIMITED');
   await evidence(page, info, 'master-data-employee-fields');
+  await dialog.getByRole('button', { name: 'Save draft and exit', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({ employmentType: 'SEASONAL', contractType: 'LIMITED' });
   expect(errors).toEqual([]);
 });
 
@@ -542,6 +552,10 @@ test('retains entered values across Back and review edits and submits the existi
   await dialog.getByLabel('Housing allowance', { exact: true }).fill('2000');
   await dialog.getByLabel('Fixed deduction', { exact: true }).fill('100');
   await dialog.getByLabel('Effective date', { exact: true }).fill('2026-10-15');
+  // A choice of the company's active structures — never free text; other companies' and retired ones are not offered.
+  const structure = dialog.getByRole('combobox', { name: 'Salary structure', exact: true });
+  await expect(structure.locator('option')).toHaveText(['Default for the grade', 'Operations band (OPS-BAND)']);
+  await structure.selectOption('OPS-BAND');
   await evidence(page, info, 'salary');
   await next(dialog, 4);
   await dialog.getByLabel(/^Passport number/i).fill('TEST-PASSPORT-001');
@@ -560,8 +574,8 @@ test('retains entered values across Back and review edits and submits the existi
     personalEmail: 'alex.personal@example.test', workEmail: 'alex.it-issued@example.test', companyId: company.id,
     branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id, costCenterId: 'cost-wizard',
     reportingManagerEmployeeId: 17, jobTitle: 'Operations specialist', joiningDate: '2026-10-15',
-    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true },
-    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR' },
+    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true, salaryStructureReference: 'OPS-BAND' },
+    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR', salaryStructureCode: 'OPS-BAND' },
   });
   expect(creates[0].complianceRecords).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'passport_number', fieldValue: 'TEST-PASSPORT-001' })]));
   expect(creates[0]).not.toHaveProperty('acknowledgeDuplicate');
@@ -781,6 +795,30 @@ for (const changedDraft of ['English name changed and restored', 'Arabic name ma
   });
 }
 
+
+test('the grade list offers only active grades and follows Setup changes without a reload', async ({ page }) => {
+  const { dialog, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  const gradeSelect = dialog.getByRole('combobox', { name: 'Grade', exact: true });
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'Senior']);
+
+  // Setup adds a grade and retires another, in this tab: the open form refetches on the event.
+  let rows = [grade, { ...grade, id: 'grade-new', code: 'G7', name: 'Principal' }, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior', isActive: false }];
+  await page.route('**/api/grades?**', route => route.fulfill({ json: { items: rows, total: rows.length, page: 1, pageSize: 100 } }));
+  await page.evaluate(() => window.dispatchEvent(new Event('kynexone:grades-changed')));
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'Principal']);
+
+  // …and from another tab, over the BroadcastChannel.
+  rows = [grade, { ...grade, id: 'grade-new', code: 'G7', name: 'Principal Renamed' }];
+  const otherTab = await page.context().newPage();
+  await otherTab.route('**/*', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>other tab</title>' }));
+  await otherTab.goto(new URL('/setup', page.url()).toString());
+  await otherTab.evaluate(() => { const channel = new BroadcastChannel('kynexone:org-lookups'); channel.postMessage({ type: 'kynexone:grades-changed', from: 'another-tab' }); channel.close(); });
+  await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'Principal Renamed']);
+  await otherTab.close();
+  expect(errors).toEqual([]);
+});
 
 test('grade benefits preview follows grade and joining date and appears in review', async ({ page }, info) => {
   const { dialog, errors } = await boot(page, { quick: true });

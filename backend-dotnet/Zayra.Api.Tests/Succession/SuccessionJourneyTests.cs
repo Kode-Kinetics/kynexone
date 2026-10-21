@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Infrastructure.Performance;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Infrastructure.Succession;
 using Zayra.Api.Models;
 using static Zayra.Api.Tests.Succession.SuccessionTestWorld;
@@ -17,6 +18,26 @@ namespace Zayra.Api.Tests.Succession;
 [Trait("Category", "Integration")]
 public sealed class SuccessionJourneyTests(PostgresFixture fx)
 {
+    [Fact]
+    public async Task SubmittingASlateNobodyCouldDecide_IsRefusedWith422_AndTheSlateStaysADraft()
+    {
+        await using var w = await CreateAsync(fx);
+        var cfo = await w.DesignateCfoAsync();
+        var cara = await w.CalibratedCandidateAsync(cfo.Id, w.Cara, 3, ReadinessLevels.ReadyNow);
+        var draft = await w.DraftSlateAsync(cfo.Id, (cara.Id, 1));
+        await using (var db = fx.CreateDb())
+            // The only HR Director login leaves; nobody holds Admin or approvals.override in this tenant.
+            await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, w.TenantA, "HR Director"));
+
+        var refused = await FluentActions.Invoking(() => w.SubmitSlateAsync(draft.Id)).Should().ThrowAsync<SuccessionException>();
+
+        refused.Which.Status.Should().Be(422);
+        refused.Which.Code.Should().Be(ApprovalNoEligibleDeciderException.ErrorCode);
+        (await w.SlateRowAsync(draft.Id)).Status.Should().Be(SlateStatuses.Draft);
+        await using (var db = fx.CreateDb())
+            (await db.ApprovalRequests.IgnoreQueryFilters().AnyAsync(a => a.EntityId == draft.Id.ToString())).Should().BeFalse();
+    }
+
     [Fact]
     public async Task SUC01_Designation_UsesThePositionAuthority_AndRefusesNoCompanyAndDuplicates()
     {

@@ -24,11 +24,17 @@ public class OrganizationSetupService : IOrganizationSetupService
         _audit = audit;
     }
 
-    public async Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
-        var query = _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).OrderBy(x => x.LegalNameEn);
+        var filtered = _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        if (accessibleCompanyIds is not null)
+        {
+            var ids = accessibleCompanyIds.ToList();
+            filtered = filtered.Where(x => ids.Contains(x.Id));
+        }
+        var query = filtered.OrderBy(x => x.LegalNameEn);
         var total = await query.CountAsync(cancellationToken);
         var items = await query.Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(cancellationToken);
         return new PagedResult<CompanyDto>(items, total, page, pageSize);
@@ -44,6 +50,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
+        if (SaudiIdentifierProblem(request, creating: true) is { } saudiProblem) throw new InvalidOperationException(saudiProblem);
         await CompanyEmailDomainRules.EnsureCallerMaySetAsync(_db, tenantId, context.UserId, null, request.EmailDomain, cancellationToken);
         await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, cancellationToken);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
@@ -73,6 +80,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
+        if (SaudiIdentifierProblem(request, creating: false) is { } saudiProblem) throw new InvalidOperationException(saudiProblem);
         var changedAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
         CompanyDto? result = null;
@@ -157,6 +165,25 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (CountryCodeProblem(countryCode) is { } problem) throw new InvalidOperationException(problem);
     }
 
+    /// <summary>
+    /// Saudi establishment identifiers, as a message (null when valid). The MOL establishment number on the
+    /// company (<see cref="Company.WpsEmployerId"/>) is the authority the wage file prefers (design contract
+    /// Decision 10), so a Saudi company created with one must carry a value the wage file would accept —
+    /// <see cref="Payroll.SaudiBankExports.KsaWageFileRules.ValidateEstablishmentId"/>, the same rule the file
+    /// applies. Empty stays allowed here (today's behaviour; the wizard requires it separately). The Unified
+    /// National Number, when given, is 10 digits (<c>ValidateNationalUnifiedNo</c>).
+    /// </summary>
+    public static string? SaudiIdentifierProblem(CompanyRequest request, bool creating)
+    {
+        if (CountryCodeStandard.NormalizeToIso2(request.CountryCode) != "SA") return null;
+        var errors = new List<Payroll.SaudiBankExports.SaudiBankExportIssueDto>();
+        if (creating && !string.IsNullOrWhiteSpace(request.WpsEmployerId))
+            Payroll.SaudiBankExports.KsaWageFileRules.ValidateEstablishmentId(request.WpsEmployerId.Trim(), errors);
+        if (!string.IsNullOrWhiteSpace(request.UnifiedNationalNumber))
+            Payroll.SaudiBankExports.KsaWageFileRules.ValidateNationalUnifiedNo(request.UnifiedNationalNumber.Trim(), required: false, errors);
+        return errors.FirstOrDefault()?.Message;
+    }
+
     /// <summary>The form's country-code rule as a message (null when valid), shared with the bulk
     /// organization-structure import so both doors refuse the same values with the same words.</summary>
     public static string? CountryCodeProblem(string? countryCode) =>
@@ -188,23 +215,48 @@ public class OrganizationSetupService : IOrganizationSetupService
         @"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$",
         System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    public async Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PagedResult<BranchDto>> GetBranchesAsync(Guid tenantId, Guid? companyId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var query = _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        // Branch is tenant-owned with no ambient company filter, so the caller's companies are applied
+        // here: a company-scoped caller lists only the branches of the companies they hold.
+        if (accessibleCompanyIds is not null)
+        {
+            var ids = accessibleCompanyIds.ToList();
+            query = query.Where(x => ids.Contains(x.CompanyId));
+        }
         if (companyId.HasValue) query = query.Where(x => x.CompanyId == companyId.Value);
         var ordered = query.OrderBy(x => x.Code);
         var total = await ordered.CountAsync(cancellationToken);
-        var items = await ordered.Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(cancellationToken);
+        var branches = await ordered.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+        var names = await CompanyNamesAsync(tenantId, branches.Select(b => b.CompanyId), cancellationToken);
+        var items = branches.Select(b => WithCompanyName(b, names)).ToList();
         return new PagedResult<BranchDto>(items, total, page, pageSize);
     }
 
-    public async Task<BranchDto?> GetBranchAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
+    public async Task<BranchDto?> GetBranchAsync(Guid tenantId, Guid id, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
     {
         var branch = await _db.Branches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
-        return branch?.ToDto();
+        if (branch is null) return null;
+        if (accessibleCompanyIds is not null && !accessibleCompanyIds.Contains(branch.CompanyId)) return null;
+        return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
+
+    /// <summary>Legal names of the given companies, tenant-filtered. Branch lists carry the name so a
+    /// screen never has to show a raw CompanyId when it has not loaded that company.</summary>
+    private async Task<Dictionary<Guid, string>> CompanyNamesAsync(Guid tenantId, IEnumerable<Guid> companyIds, CancellationToken cancellationToken)
+    {
+        var ids = companyIds.Distinct().ToList();
+        if (ids.Count == 0) return new Dictionary<Guid, string>();
+        return await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && ids.Contains(c.Id))
+            .ToDictionaryAsync(c => c.Id, c => c.LegalNameEn, cancellationToken);
+    }
+
+    private static BranchDto WithCompanyName(Branch branch, IReadOnlyDictionary<Guid, string> names) =>
+        branch.ToDto() with { CompanyName = names.TryGetValue(branch.CompanyId, out var name) ? name : string.Empty };
 
     public async Task<BranchDto> CreateBranchAsync(Guid tenantId, BranchRequest request, RequestContext context, CancellationToken cancellationToken)
     {
@@ -215,7 +267,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         _db.Branches.Add(branch);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.branch_created", nameof(Branch), branch.Id.ToString(), context, null, cancellationToken);
-        return branch.ToDto();
+        return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
     public async Task<BranchDto?> UpdateBranchAsync(Guid tenantId, Guid id, BranchRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -229,7 +281,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         branch.UpdatedBy = context.UserId;
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.branch_updated", nameof(Branch), branch.Id.ToString(), context, null, cancellationToken);
-        return branch.ToDto();
+        return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
     public async Task<PagedResult<DepartmentDto>> GetDepartmentsAsync(Guid tenantId, Guid? branchId, int page, int pageSize, CancellationToken cancellationToken)
@@ -505,6 +557,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         company.WorkEmailPattern = WorkEmailPatterns.Normalize(request.WorkEmailPattern);
         if (request.ErpCompanyCode is not null)
             company.ErpCompanyCode = CleanErpCode(request.ErpCompanyCode);
+        if (request.UnifiedNationalNumber is not null)
+            company.UnifiedNationalNumber = string.IsNullOrWhiteSpace(request.UnifiedNationalNumber) ? null : request.UnifiedNationalNumber.Trim();
         if (applyLifecycle) company.IsActive = request.IsActive;
     }
 
@@ -802,8 +856,11 @@ public class OrganizationSetupService : IOrganizationSetupService
     private async Task EnsureCompanyUnique(Guid tenantId, string registrationNumber, Guid? excludedId, CancellationToken cancellationToken)
     {
         var clean = Clean(registrationNumber);
-        var exists = await _db.Companies.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.RegistrationNumber == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Company registration number already exists in this tenant.");
+        var holder = await _db.Companies
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.RegistrationNumber == clean && x.Id != excludedId)
+            .Select(x => (Guid?)x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (holder is not null) throw new CompanyRegistrationNumberTakenException(holder.Value);
     }
 
     private async Task EnsureBranchCodeUnique(Guid tenantId, Guid companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
@@ -895,4 +952,23 @@ public class OrganizationSetupService : IOrganizationSetupService
         await _audit.WriteAsync(action, typeof(T).Name, id.ToString(), context, null, cancellationToken);
         return true;
     }
+}
+
+/// <summary>A company registration number that another company of the tenant already holds. Still an
+/// <see cref="InvalidOperationException"/> (with the same message) so every existing caller - importers,
+/// the setup assistant - keeps working; the company forms catch it to put the message on the field.</summary>
+public sealed class CompanyRegistrationNumberTakenException(Guid holderCompanyId)
+    : InvalidOperationException("Company registration number already exists in this tenant.")
+{
+    public const string Code = "registration_number_taken";
+    public const string Field = "registrationNumber";
+    public const string UnavailableMessage = "This registration number can't be used.";
+
+    /// <summary>The company that already holds the number.</summary>
+    public Guid HolderCompanyId { get; } = holderCompanyId;
+
+    /// <param name="holderVisible">Whether the caller may see the holding company. When not, the
+    /// message does not confirm that another company holds the number.</param>
+    public object ToPayload(bool holderVisible = true) =>
+        new { error = Code, field = Field, message = holderVisible ? Message : UnavailableMessage };
 }

@@ -49,15 +49,35 @@ public class BranchesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await _organization.GetBranchesAsync(tenantId.Value, companyId, page, pageSize, cancellationToken));
+        return Ok(await _organization.GetBranchesAsync(tenantId.Value, companyId, page, pageSize, cancellationToken, AccessibleCompanies()));
     }
+
+    /// <summary>The companies whose branches this request may read: null for a group-level scope, else
+    /// the caller's companies (narrowed by the X-Company-Id switcher, as the company list is).</summary>
+    private IReadOnlyCollection<Guid>? AccessibleCompanies()
+    {
+        var scope = this.GetEntityScope();
+        return scope.IsGroupLevel ? null : scope.AccessibleCompanyIds;
+    }
+
+    /// <summary>Whether this caller may write branches of <paramref name="companyId"/>. Judged on the
+    /// grant: a group grant covers every company of the tenant whichever one the switcher selects; a
+    /// company-scoped caller writes only the companies they hold.</summary>
+    private bool MayWriteCompany(Guid companyId) => OrgWriteRules.MayWriteCompany(this, companyId);
+
+    /// <summary>The company that owns an existing branch of this tenant, or null when there is none.</summary>
+    private Task<Guid?> BranchCompanyAsync(Guid tenantId, Guid branchId, CancellationToken ct) =>
+        _db.Branches.AsNoTracking()
+            .Where(b => b.TenantId == tenantId && b.Id == branchId)
+            .Select(b => (Guid?)b.CompanyId)
+            .FirstOrDefaultAsync(ct);
 
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<BranchDto>> Get(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var branch = await _organization.GetBranchAsync(tenantId.Value, id, cancellationToken);
+        var branch = await _organization.GetBranchAsync(tenantId.Value, id, cancellationToken, AccessibleCompanies());
         return branch is null ? NotFound() : Ok(branch);
     }
 
@@ -69,6 +89,7 @@ public class BranchesController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
+            if (!MayWriteCompany(request.CompanyId)) return Forbid();
             var branch = await _organization.CreateBranchAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = branch.Id }, branch);
         }
@@ -83,6 +104,11 @@ public class BranchesController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
+            // Both ends of the change are checked: the branch's current company (an out-of-scope branch
+            // reads as not found, as it does on GET) and the company it is being saved under.
+            var currentCompany = await BranchCompanyAsync(tenantId.Value, id, cancellationToken);
+            if (currentCompany is null || !MayWriteCompany(currentCompany.Value)) return NotFound();
+            if (!MayWriteCompany(request.CompanyId)) return Forbid();
             var branch = await _organization.UpdateBranchAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return branch is null ? NotFound() : Ok(branch);
         }
@@ -95,6 +121,8 @@ public class BranchesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var currentCompany = await BranchCompanyAsync(tenantId.Value, id, cancellationToken);
+        if (currentCompany is null || !MayWriteCompany(currentCompany.Value)) return NotFound();
         return await _organization.DeleteBranchAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
     }
 
@@ -106,8 +134,10 @@ public class BranchesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var accessible = AccessibleCompanies()?.ToList();
         var branches = await _db.Branches.AsNoTracking()
             .Where(b => b.TenantId == tenantId.Value && !b.IsDeleted)
+            .Where(b => accessible == null || accessible.Contains(b.CompanyId))
             .Join(_db.Companies.AsNoTracking(), b => b.CompanyId, c => c.Id, (b, c) => new { b, c })
             .OrderBy(x => x.c.LegalNameEn).ThenBy(x => x.b.Code)
             .ToListAsync(ct);
@@ -169,6 +199,11 @@ public class BranchesController : ControllerBase
 
         var rows = Csv.Parse(csv);
         var context = Context();
+        // Rows are judged on the caller's grant, exactly as the single-branch form is: a company-scoped
+        // caller imports only into the companies they hold, and such a row is refused before any write.
+        var groupGrant = this.HasGroupEntityScope();
+        var scope = this.GetEntityScope();
+        bool InScope(Guid companyId) => groupGrant || scope.CanAccessCompany(companyId);
         var rowResults = new List<ImportRowResult>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int created = 0, updated = 0, skipped = 0;
@@ -184,13 +219,20 @@ public class BranchesController : ControllerBase
 
             if (string.IsNullOrWhiteSpace(companyName)) errors.Add("CompanyLegalName is required");
             else if (!companiesByName.ContainsKey(OrgCodes.Normalize(companyName)))
-                errors.Add($"Company '{companyName}' not found in this tenant");
+                // A non-group caller gets the same words for a missing company and one outside their
+                // grant, so the import does not confirm which sibling companies exist.
+                errors.Add(groupGrant
+                    ? $"Company '{companyName}' not found in this tenant"
+                    : $"Company '{companyName}' is not one of the companies you can manage.");
             if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
             if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
             if (!string.IsNullOrWhiteSpace(code) && !seen.Add(code)) errors.Add($"Duplicate Code '{code}' in this batch");
 
             existingByCode.TryGetValue(OrgCodes.Normalize(code), out var existing);
             companiesByName.TryGetValue(OrgCodes.Normalize(companyName), out var company);
+
+            if (errors.Count == 0 && company is not null && !InScope(company.Id))
+                errors.Add($"Company '{companyName}' is not one of the companies you can manage.");
 
             // Branch Code is unique tenant-WIDE, not per company. The old update path wrote every
             // other column and never re-pointed CompanyId, so a row naming Company B silently
@@ -199,7 +241,9 @@ public class BranchesController : ControllerBase
             // company that actually owns the code.
             if (errors.Count == 0 && existing is not null && company is not null && existing.CompanyId != company.Id)
             {
-                var owner = companyList.FirstOrDefault(c => c.Id == existing.CompanyId)?.LegalNameEn ?? "another company";
+                var owner = InScope(existing.CompanyId)
+                    ? companyList.FirstOrDefault(c => c.Id == existing.CompanyId)?.LegalNameEn ?? "another company"
+                    : "another company";
                 errors.Add(
                     $"Branch code '{code}' already belongs to '{owner}'. Branch codes are unique across the whole " +
                     $"tenant, so this row would have overwritten that branch. Use a different code for " +

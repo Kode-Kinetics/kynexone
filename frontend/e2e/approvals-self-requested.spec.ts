@@ -37,13 +37,25 @@ const MINE = row({
   decisionBlockedReason: 'You requested this, so someone else must approve it (maker-checker). No other active user can approve it yet: give a colleague the HR Manager or Admin role in User Management, or withdraw it.',
 });
 const THEIRS = row({
-  id: 'theirs', entityId: 'c2', requestedByUserId: 'u-other', changeSummary: 'salary', canDecide: true,
+  id: 'theirs', entityId: 'c2', requestedByUserId: 'u-other', changeSummary: 'IBAN, date of birth', canDecide: true,
+  currentStepOrder: 1, stepPosition: 1, stepCount: 2,
   title: 'Employee change approval - EMP-SA-ENG-0007 Omar Haddad',
 });
+
+// GET /approval-requests/{id}/change-detail — the server masks; the screen shows what it is sent.
+const THEIRS_DETAIL = {
+  approvalRequestId: 'theirs', changeRequestId: 'c2', employeeId: 7, employeeCode: 'EMP-SA-ENG-0007', employeeName: 'Omar Haddad',
+  effectiveDate: '2026-10-04', changeStatus: 'PendingApproval',
+  fields: [
+    { key: 'bankIban', label: 'IBAN', currentValue: '***7519', proposedValue: '***1234', masked: true },
+    { key: 'dateOfBirth', label: 'Date of birth', currentValue: '1990-01-01', proposedValue: '1991-02-02', masked: false },
+  ],
+};
 
 async function open(page: Page) {
   let withdrawn = false;
   const withdrawBodies: unknown[] = [];
+  const decisionBodies: unknown[] = [];
   await page.clock.setFixedTime(NOW);
   await page.addInitScript(() => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
@@ -62,6 +74,12 @@ async function open(page: Page) {
       withdrawBodies.push(req.postDataJSON());
       return json({ ...MINE, status: 'Cancelled', canWithdraw: false, decisionBlockedReason: null });
     }
+    if (p === '/api/approval-requests/theirs/change-detail') return json(THEIRS_DETAIL);
+    if (p === '/api/approval-requests/theirs/decisions' && req.method() === 'POST') {
+      decisionBodies.push(req.postDataJSON());
+      // Step 1 of 2 approved: the request is still Pending, now at step 2 for someone else.
+      return json({ ...THEIRS, currentStepOrder: 2, stepPosition: 2, canDecide: false, currentQueue: 'Role:HR Manager' });
+    }
     if (p === '/api/approval-requests') {
       const items = withdrawn ? [THEIRS] : [MINE, THEIRS];
       return json({ items, total: items.length, page: 1, pageSize: 25 });
@@ -70,7 +88,7 @@ async function open(page: Page) {
   });
   await page.goto('/approvals');
   await expect(page.getByRole('heading', { name: 'Approval Center' })).toBeVisible({ timeout: 30_000 });
-  return { withdrawBodies };
+  return { withdrawBodies, decisionBodies };
 }
 
 test('a self-requested change says why it cannot be approved, and what it changes', async ({ page }) => {
@@ -103,4 +121,41 @@ test('the requester can withdraw their own change, and it leaves the queue', asy
   await expect(page.getByRole('row').filter({ hasText: 'EMP-SA-ADMIN-2026-0001' })).toHaveCount(0);
   await expect(page.getByRole('row').filter({ hasText: 'Omar Haddad' })).toBeVisible();
   expect(withdrawBodies).toEqual([{ reason: 'Submitted twice by mistake' }]);
+});
+
+test('the decider sees each field before and after, masked as the server sent it', async ({ page }) => {
+  await open(page);
+  await page.getByRole('row').filter({ hasText: 'Omar Haddad' }).getByRole('button', { name: 'Review' }).click();
+  const card = page.getByRole('dialog').getByTestId('employee-change-detail');
+  await expect(card.getByRole('heading', { name: 'What this change does' })).toBeVisible();
+  const iban = card.locator('tr[data-field="bankIban"]');
+  await expect(iban.locator('[data-role="current"]')).toHaveText('***7519');
+  await expect(iban.locator('[data-role="proposed"]')).toHaveText('***1234');
+  const dob = card.locator('tr[data-field="dateOfBirth"]');
+  await expect(dob.locator('[data-role="current"]')).toHaveText('1990-01-01');
+  await expect(dob.locator('[data-role="proposed"]')).toHaveText('1991-02-02');
+  await expect(card.getByText('Identity and bank numbers show their last 4 characters only.', { exact: false })).toBeVisible();
+  if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/approvals-change-detail.png` });
+});
+
+test('the requester is not shown the proposed values (the endpoint answers deciders only)', async ({ page }) => {
+  await open(page);
+  await page.getByRole('row').filter({ hasText: 'EMP-SA-ADMIN-2026-0001' }).getByRole('button', { name: 'Details' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('employee-change-detail')).toHaveCount(0);
+  await expect(dialog.getByText('The proposed values are shown to the person who can decide this step.')).toBeVisible();
+});
+
+test('approving step 1 of 2 reads "Step 1 of 2 approved", never "Approved"', async ({ page }) => {
+  const { decisionBodies } = await open(page);
+  await page.getByRole('button', { name: 'Filter by All Queues' }).click();
+  const theirs = page.getByRole('row').filter({ hasText: 'Omar Haddad' });
+  await expect(theirs.getByText('Step 1 of 2', { exact: true })).toBeVisible();
+  await theirs.getByRole('button', { name: 'Review' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Approve' }).click();
+
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(theirs.getByText('Step 1 of 2 approved')).toBeVisible();
+  await expect(theirs.getByText('Approved', { exact: true })).toHaveCount(0);
+  expect(decisionBodies).toEqual([{ decision: 'Approve', comments: '' }]);
 });

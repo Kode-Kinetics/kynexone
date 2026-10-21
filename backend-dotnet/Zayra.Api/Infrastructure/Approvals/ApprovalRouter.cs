@@ -158,10 +158,86 @@ public sealed class ApprovalRouter : IApprovalRouter
             .Select(e => new { e.Id, e.FullName, e.Designation, e.UserAccountId })
             .FirstOrDefaultAsync(ct);
         if (person is null) return Escalate(personType);
+        // A manager, supervisor, department head... found through the reporting lines but with no active login
+        // cannot act either, so the step goes to the HR Manager queue like any other person who cannot act. A
+        // named employee (SpecificEmployee) is configuration: it stays named, and CheckDeciderAsync reports it.
+        if (type != "SPECIFICEMPLOYEE" && !await HasActiveLoginAsync(tenantId, person.UserAccountId, ct))
+            return Escalate(personType);
 
         var label = role.Length > 0 ? role : (string.IsNullOrWhiteSpace(person.Designation) ? personType : person.Designation!);
         return new ResolvedApprover(personType, label, person.Id, person.UserAccountId, person.FullName, false);
     }
+
+    public async Task<DeciderCheck> CheckDeciderAsync(Guid tenantId, ResolvedApprover approver, IReadOnlyCollection<Guid> excludedUserIds,
+        IReadOnlyCollection<string>? alsoAcceptedRoles, CancellationToken ct)
+    {
+        var excluded = excludedUserIds.Where(x => x != Guid.Empty).ToHashSet();
+        var named = approver.EmployeeId is not null || approver.UserId is not null;
+        // Every candidate is judged on what Decide itself enforces: the EFFECTIVE permission set its token would carry
+        // (role grants ∪ access-mode grants ∪ Allow overrides − Deny overrides, AuthService.GetPermissions — the one
+        // resolver token issuance uses), never on role membership alone. One batched, split read of the tenant's active
+        // logins; no query per candidate.
+        var candidates = await LoadDeciderCandidatesAsync(tenantId, excluded, ct);
+        bool eligible;
+        string owner;
+        if (named)
+        {
+            owner = string.IsNullOrWhiteSpace(approver.Name) ? "the named approver" : approver.Name.Trim();
+            eligible = approver.UserId is Guid userId && candidates.Any(c => c.UserId == userId && c.Has(DecidePermission));
+        }
+        else
+        {
+            var role = (approver.QueueRole ?? string.Empty).Trim();
+            owner = role.Length == 0 ? "Any" : role;
+            var roles = new[] { role }.Concat(alsoAcceptedRoles ?? Array.Empty<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToArray();
+            eligible = role.Length == 0 || role.Equals("Any", StringComparison.OrdinalIgnoreCase)
+                // A legacy blank/"Any" step is decided by approvals.decide holders who also hold manager.approve
+                // or approvals.override (ApprovalWorkflowService.CanDecideRequestAsync).
+                ? candidates.Any(c => c.Has(DecidePermission) && (c.Has("manager.approve") || c.Has(OverridePermission)))
+                : candidates.Any(c => c.Has(DecidePermission) && roles.Any(c.InRole));
+        }
+        // The override queue (Admin): decided by the Admin role or by approvals.override, however that permission was
+        // granted (role, access mode or a direct Allow override) — and never by someone whose approvals.decide is denied.
+        var overrideAvailable = eligible
+            || candidates.Any(c => c.Has(DecidePermission) && (c.Has(OverridePermission) || c.InRole(IApprovalRouter.OverrideQueueRole)));
+        return new DeciderCheck(eligible, overrideAvailable, owner, named);
+    }
+
+    private const string DecidePermission = "approvals.decide";
+    private const string OverridePermission = "approvals.override";
+
+    private sealed record DeciderCandidate(Guid UserId, IReadOnlySet<string> Roles, IReadOnlySet<string> Permissions)
+    {
+        public bool Has(string permission) => Permissions.Contains(permission);
+        public bool InRole(string role) => Roles.Contains(role);
+    }
+
+    private async Task<IReadOnlyList<DeciderCandidate>> LoadDeciderCandidatesAsync(Guid tenantId, IReadOnlySet<Guid> excluded, CancellationToken ct)
+    {
+        var excludedIds = excluded.ToArray();
+        // Split, not a single join: roles × permissions × overrides × account links is the cartesian shape that OOM'd login.
+        var users = await _db.Users.AsNoTracking().AsSplitQuery()
+            .Include(u => u.UserRoles).ThenInclude(ur => ur.Role).ThenInclude(r => r!.RolePermissions).ThenInclude(rp => rp.Permission)
+            .Include(u => u.EmployeeUserAccounts)
+            .Include(u => u.PermissionOverrides)
+            .Where(u => u.TenantId == tenantId && u.IsActive && !u.IsDeleted && !excludedIds.Contains(u.Id))
+            .ToListAsync(ct);
+        return users.Select(u => new DeciderCandidate(
+                u.Id,
+                u.UserRoles.Where(ur => ur.Role is { IsActive: true, IsDeleted: false } && ur.Role.TenantId == tenantId)
+                    .Select(ur => ur.Role!.Name.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                Zayra.Api.Infrastructure.Auth.AuthService.GetPermissions(u).ToHashSet(StringComparer.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    /// <summary>The override queue as a resolved approver: a role queue that Admin and approvals.override holders decide.</summary>
+    public static ResolvedApprover OverrideQueue(string approverType)
+        => new(string.IsNullOrWhiteSpace(approverType) ? "Role" : approverType, IApprovalRouter.OverrideQueueRole, null, null, string.Empty, true);
+
+    private async Task<bool> HasActiveLoginAsync(Guid tenantId, Guid? userId, CancellationToken ct)
+        => userId is Guid id && id != Guid.Empty
+           && await _db.Users.AsNoTracking().AnyAsync(u => u.TenantId == tenantId && u.Id == id && u.IsActive && !u.IsDeleted, ct);
 
     private static ResolvedApprover Escalate(string approverType)
         => new(approverType, HrManagerRole, null, null, string.Empty, true);

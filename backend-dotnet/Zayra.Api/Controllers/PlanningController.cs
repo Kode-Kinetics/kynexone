@@ -161,8 +161,10 @@ public class PlanningController : ControllerBase
         // Company-scope validation (group tenants: each company is a separate legal employer —
         // a company-scoped admin must not set another company's establishment). Departments reach
         // a company via Branch; an unbranched department is tenant-wide ⇒ group scope required.
-        var scope = this.GetEntityScope();
-        if (!scope.IsGroupLevel)
+        // Judged on the caller's GRANT (HasGroupEntityScope), not on GetEntityScope: the X-Company-Id
+        // switcher narrows what a group administrator READS, it does not take away their authority to
+        // maintain an unbranched (tenant-wide) department or one in a company other than the selected one.
+        if (!this.HasGroupEntityScope())
         {
             var companyId = dept.BranchId is null
                 ? null
@@ -170,7 +172,7 @@ public class PlanningController : ControllerBase
                     .Where(b => b.TenantId == tenantId && b.Id == dept.BranchId)
                     .Select(b => (Guid?)b.CompanyId)
                     .FirstOrDefaultAsync(ct);
-            if (!scope.CanAccessCompany(companyId)) return Forbid();
+            if (companyId is null || !this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
         }
 
         var before = new { dept.ApprovedHeadcount, dept.MonthlyBudgetAmount, dept.CostCenterId };

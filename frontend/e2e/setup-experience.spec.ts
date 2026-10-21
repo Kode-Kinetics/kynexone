@@ -10,8 +10,9 @@ import type { CompanyProfile, MigrationImportBatchDto, OrgStructureImportRequest
  */
 test('email regression: company pattern can be chosen before an optional domain', async ({ page }, info) => {
   const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
-  await page.getByRole('button', { name: 'Add Company', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add Company', exact: true });
+  // New companies are created by the wizard; the simple form now edits existing companies only.
+  await page.getByRole('row').filter({ hasText: 'Setup Fixture Company' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Company', exact: true });
   const pattern = dialog.locator('label').filter({ hasText: /^Work Email Pattern/ }).locator('..').getByRole('combobox');
   await expect(pattern).toBeEnabled();
   await pattern.selectOption('flast');
@@ -29,10 +30,13 @@ test('email regression: company pattern can be chosen before an optional domain'
 const company = {
   id: 'setup-company', legalNameEn: 'Setup Fixture Company', legalNameAr: '', tradeName: 'Setup Fixture Company',
   countryCode: 'SA', jurisdiction: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active',
+  // The server requires a registration number on every save, so the fixture carries one.
+  registrationNumber: 'CR-FIXTURE-1',
 };
 const groupCompany = {
   id: 'setup-company-two', legalNameEn: 'Group Services LLC', legalNameAr: '', tradeName: 'Group Services',
   countryCode: 'AE', jurisdiction: 'UAE', defaultCurrency: 'AED', isActive: true, approvalStatus: 'Active',
+  registrationNumber: 'CR-FIXTURE-2',
 };
 
 test('country regression: saved ISO country is selected and non-pack countries can be saved', async ({ page }, info) => {
@@ -97,6 +101,90 @@ test('country regression: unrelated edits preserve legacy country and jurisdicti
   expect(saved?.legalNameEn).toBe('Renamed Fixture');
   expect(saved?.countryCode).toBe('SAU');
   expect(saved?.jurisdiction).toBe('LEGACY-ZONE');
+  expect(state.errors).toEqual([]);
+});
+
+/** The company form edits existing companies only (creation is the wizard's); these cases run on Edit. */
+async function openEditCompany(page: Page) {
+  await page.getByRole('row').filter({ hasText: 'Setup Fixture Company' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  return page.getByRole('dialog', { name: 'Edit Company', exact: true });
+}
+const companyPut = (route: { request: () => { method: () => string } }) => route.request().method() === 'PUT';
+
+test('registration number: a blank value is flagged on the field before anything is sent', async ({ page }, info) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  const posts: string[] = [];
+  page.on('request', request => { if (request.method() === 'PUT' && new URL(request.url()).pathname === '/api/companies/setup-company') posts.push(request.url()); });
+  const dialog = await openEditCompany(page);
+  await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  const input = dialog.getByRole('textbox', { name: 'Registration Number', exact: true });
+  const message = dialog.locator('#company-registration-number-error');
+  await expect(message).toHaveText(/Registration number is required/);
+  await expect(input).toHaveAttribute('aria-invalid', 'true');
+  await expect(input).toHaveAttribute('aria-describedby', 'company-registration-number-error');
+  await expect(dialog.getByText('Failed to save. Please try again.')).toHaveCount(0);
+  await dialog.screenshot({ path: info.outputPath('registration-number-required.png') });
+  expect(posts).toEqual([]);
+  await input.fill('CR-200');
+  await expect(message).toHaveCount(0);
+  await expect(input).not.toHaveAttribute('aria-invalid', 'true');
+  expect(state.errors).toEqual([]);
+});
+
+test('registration number: a duplicate refused by the server is shown on the field, not the banner', async ({ page }) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  const duplicate = 'Company registration number already exists in this tenant.';
+  await page.route('**/api/companies/setup-company', route => companyPut(route)
+    ? route.fulfill({ status: 400, json: { error: 'registration_number_taken', field: 'registrationNumber', message: duplicate } })
+    : route.fallback());
+  const dialog = await openEditCompany(page);
+  await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('CR-100');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.locator('#company-registration-number-error')).toHaveText(duplicate);
+  await expect(dialog.getByRole('textbox', { name: 'Registration Number', exact: true })).toHaveAttribute('aria-invalid', 'true');
+  await expect(dialog.getByText(duplicate)).toHaveCount(1);
+  await expect(dialog.getByText('Failed to save. Please try again.')).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('registration number: server validation errors map to the field instead of a generic failure', async ({ page }) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  await page.route('**/api/companies/setup-company', route => companyPut(route)
+    ? route.fulfill({ status: 400, json: {
+      type: 'https://tools.ietf.org/html/rfc9110#section-15.5.1', title: 'One or more validation errors occurred.', status: 400,
+      errors: { RegistrationNumber: ['The RegistrationNumber field is required.'], TaxNumber: ['The field TaxNumber must be a string with a maximum length of 80.'] },
+    } })
+    : route.fallback());
+  const dialog = await openEditCompany(page);
+  await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('CR-300');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.locator('#company-registration-number-error')).toHaveText('Registration number is required.');
+  await expect(dialog.getByText('The field TaxNumber must be a string with a maximum length of 80.')).toBeVisible();
+  await expect(dialog.getByText('Failed to save. Please try again.')).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('branches show their company name, never a raw company id', async ({ page }, info) => {
+  const unknownCompanyId = '7d1c2f0e-5b8a-4c3d-9e21-0a6b4f8c9d10';
+  const branch = (id: string, code: string, nameEn: string, companyId: string, companyName?: string) => ({
+    id, companyId, code, nameEn, nameAr: '', countryCode: 'SA', city: 'Riyadh', addressLine1: '', addressLine2: '',
+    timeZoneId: 'Asia/Riyadh', laborOfficeCode: '', isHeadOffice: false, isActive: true, ...(companyName ? { companyName } : {}),
+  });
+  const state = await boot(page, { route: '/setup?tab=branches', groupMode: true });
+  await page.route(/\/api\/branches(?:\?.*)?$/, route => route.fulfill({ json: {
+    items: [
+      branch('b-1', 'GS1', 'Group Services HQ', groupCompany.id, 'Group Services LLC'),
+      branch('b-2', 'NM1', 'Named Only By Server', unknownCompanyId, 'Server Named Co'),
+      branch('b-3', 'UN1', 'Orphan Branch', unknownCompanyId),
+    ], total: 3, page: 1, pageSize: 100,
+  } }));
+  await page.reload();
+  await expect(page.getByRole('row').filter({ hasText: 'Group Services HQ' })).toContainText('Group Services LLC');
+  await expect(page.getByRole('row').filter({ hasText: 'Named Only By Server' })).toContainText('Server Named Co');
+  await expect(page.getByRole('row').filter({ hasText: 'Orphan Branch' })).toContainText('Unknown company');
+  await expect(page.getByText(unknownCompanyId)).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('branch-company-names.png') });
   expect(state.errors).toEqual([]);
 });
 
@@ -467,7 +555,7 @@ test('a read-only organization viewer cannot enter Setup Studio through a write-
   await expect(page.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toHaveCount(0);
   expect(state.previews).toHaveLength(0);
   expect(state.applies).toHaveLength(0);
   expect(state.unexpectedWrites).toEqual([]);
@@ -908,7 +996,7 @@ test('checks import and every settings entry screen for contained navigation', a
     await expect(page.locator('#setup-setting-content')).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Setup sections', exact: true })).toBeVisible();
     if (info.project.name === 'mobile' && tab === 'companies') {
-      const add = page.getByRole('button', { name: 'Add Company', exact: true });
+      const add = page.getByRole('button', { name: 'Create company', exact: true });
       await add.scrollIntoViewIfNeeded();
       await expect(add).toBeInViewport({ ratio: 1 });
     }
@@ -1024,4 +1112,66 @@ test('Arabic document intake is translated and contained', async ({ page }, info
   await expect(page.getByRole('button', { name: 'رفع مستند', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'رفع ومراجعة', exact: true })).toBeVisible();
   await contained(page); await evidence(page, info, 'arabic-document-intake');
+});
+
+test('reference-list editor is translated, its row actions are always visible, and delete asks in the app dialog', async ({ page }, info) => {
+  const state = await boot(page, { locale: 'ar', route: '/setup?tab=masterData' });
+  const nativeDialogs: string[] = [];
+  page.on('dialog', async dialog => { nativeDialogs.push(dialog.message()); await dialog.dismiss(); });
+  const deletes: string[] = [];
+  const genderType = { id: 'type-gender', code: 'Gender', nameEn: 'Gender', nameAr: 'الجنس', description: '', isSystemDefined: true, allowCustomValues: true, isActive: true };
+  const values = [
+    { id: 'value-male', typeId: genderType.id, code: 'MALE', valueEn: 'Male', valueAr: 'ذكر', sortOrder: 1, isDefault: true, isSystemDefined: true, isActive: true },
+    { id: 'value-other', typeId: genderType.id, code: 'OTHER', valueEn: 'Other', valueAr: 'آخر', sortOrder: 2, isDefault: false, isSystemDefined: false, isActive: true },
+  ];
+  await page.route('**/api/admin/master-data/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'DELETE') { deletes.push(path); return route.fulfill({ status: 204, body: '' }); }
+    if (path.endsWith('/types')) return route.fulfill({ json: [genderType] });
+    if (path.endsWith(`/types/${genderType.id}/values`)) return route.fulfill({ json: values.filter(v => !deletes.includes(`/api/admin/master-data/values/${v.id}`)) });
+    return route.fulfill({ json: [] });
+  });
+  await page.reload();
+
+  await page.getByRole('button', { name: /الجنس|Gender/ }).first().click();
+  const table = page.locator('table').filter({ hasText: 'MALE' });
+  await expect(table.getByRole('columnheader', { name: 'القيمة (بالإنجليزية)', exact: true })).toBeVisible();
+  await expect(table.getByRole('columnheader', { name: 'الإجراءات', exact: true })).toBeVisible();
+  await expect(table.locator('tbody').getByText('افتراضي', { exact: true })).toBeVisible();
+
+  // Row actions say what they do and are visible without hovering (no opacity-0 hover reveal).
+  const edit = table.getByRole('button', { name: 'تعديل Male', exact: true });
+  const remove = table.getByRole('button', { name: 'حذف Other', exact: true });
+  await expect(edit).toHaveText('تعديل');
+  await expect(remove).toHaveText('حذف');
+  for (const action of [edit, remove]) {
+    expect(await action.evaluate(el => Number(getComputedStyle(el.parentElement as HTMLElement).opacity))).toBe(1);
+  }
+  // A system value cannot be deleted, so it offers no delete action.
+  await expect(table.getByRole('button', { name: 'حذف Male', exact: true })).toHaveCount(0);
+
+  // Editing keeps the code fixed: employees store it, so renaming never orphans them.
+  await edit.click();
+  const valueDialog = page.getByRole('dialog', { name: 'تعديل القيمة', exact: true });
+  await expect(valueDialog.getByPlaceholder('UAE')).toBeDisabled();
+  await expect(valueDialog.getByText('تحفظ سجلات الموظفين هذا الرمز، لذا لا يمكن تغييره.', { exact: false })).toBeVisible();
+  await valueDialog.getByRole('button', { name: 'إلغاء', exact: true }).click();
+
+  // Delete asks in the app's own translated dialog; cancelling sends nothing.
+  await remove.click();
+  const confirmDialog = page.getByRole('dialog', { name: 'حذف القيمة', exact: true });
+  await expect(confirmDialog).toContainText('هل تريد حذف "Other"؟');
+  await evidence(page, info, 'reference-list-delete-confirm-ar');
+  await confirmDialog.getByRole('button', { name: 'إلغاء', exact: true }).click();
+  await expect(confirmDialog).toHaveCount(0);
+  expect(deletes).toEqual([]);
+
+  await remove.click();
+  await page.getByRole('dialog', { name: 'حذف القيمة', exact: true }).getByRole('button', { name: 'حذف', exact: true }).click();
+  await expect.poll(() => deletes).toEqual(['/api/admin/master-data/values/value-other']);
+  await expect(table.getByText('OTHER', { exact: true })).toHaveCount(0);
+  expect(nativeDialogs).toEqual([]);
+  await contained(page);
+  expect(state.errors).toEqual([]);
 });
