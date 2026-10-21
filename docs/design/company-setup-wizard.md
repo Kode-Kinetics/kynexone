@@ -48,7 +48,9 @@ creates nothing.
     validated with `KsaWageFileRules.ValidateEstablishmentId` for SA. The wage file prefers it; if
     the bank-settings `MolEstablishmentId` or `GCCComplianceSetting.WpsAgentId` is also set and
     differs, the file refuses with a named mismatch (extend the existing check at
-    `PayrollController.cs:9246-9283`). Empty company value keeps today's behaviour.
+    `PayrollController.cs:9246-9283`). Only ids recorded for THIS company are compared; the tenant-wide
+    GCC row is a fallback for companies with no number of their own. Ids are compared ignoring spaces and
+    hyphens. Empty company value keeps today's behaviour.
 11. **EOSB can't hard-fail on a new country.** If no `GCCComplianceSetting` row exists for the
     company's country, create the tenant-default row (CompanyId null) from the pack (SA: EOSB on,
     0.5 / 1.0, Fri,Sat). Never overwrite an existing row.

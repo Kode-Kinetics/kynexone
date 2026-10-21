@@ -9252,12 +9252,16 @@ public partial class PayrollController : ControllerBase
             .Where(x => x.TenantId == tenantId && (x.CompanyId == null || x.CompanyId == companyId))
             .Select(x => new { x.CompanyId, x.WpsAgentId })
             .ToListAsync(ct);
-        var agentId = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId
-                   ?? rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
+        var ownAgentId = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
+        var tenantAgentId = rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
         // Decision 10: the company's own MOL establishment number is the authority when it is recorded.
         var companyValue = companyId is Guid id
             ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id).Select(c => c.WpsEmployerId).FirstOrDefaultAsync(ct)
             : null;
+        // A recorded company number is checked only against ids recorded for THIS company. The tenant-wide row is a
+        // fallback for companies with no number of their own: in a group every legal entity has its own establishment,
+        // so the workspace default must not refuse a sister company's file.
+        var agentId = string.IsNullOrWhiteSpace(companyValue) ? ownAgentId ?? tenantAgentId : ownAgentId;
         string? mol = null;
         if (isKsa && companyId is Guid c)
             mol = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;

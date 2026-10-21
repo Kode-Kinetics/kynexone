@@ -673,6 +673,20 @@ public class KsaWpsReviewFixesTests
         JsonSerializer.Serialize(((ObjectResult)res).Value).Should().Contain("mol_establishment_id_conflict").And.Contain("7-2222222");
     }
 
+    [Fact]
+    public async Task Ksa_a_tenant_wide_wps_agent_id_does_not_refuse_a_company_with_its_own_mol_number()
+    {
+        var (db, tenant, company, batch, _) = await SeedKsaRegisterBatchAsync();
+        await SetCompanyMol(db, company, "7-1111111");
+        await SaveBankSettings(db, tenant, company, "");
+        db.GCCComplianceSettings.Add(new GCCComplianceSetting { TenantId = tenant, CompanyId = null, CountryCode = "SA", WpsAgentId = "7-3381540" });
+        await db.SaveChangesAsync();
+        var ctrl = Payroll(db, tenant, Guid.NewGuid());
+        (await ctrl.GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+        var xml = Encoding.UTF8.GetString(((FileContentResult)await ctrl.DownloadWpsFile(batch, default)).FileContents);
+        xml.Should().Contain("<MolEstablishmentId>7-1111111</MolEstablishmentId>");
+    }
+
     // ── 10. Cash/cheque and zero-net employees are left out of the bank batch, by name ──────────
 
     /// <summary>The sealed Lock audit entry, as Lock writes it, freezing who is paid by cash/cheque.</summary>
