@@ -212,7 +212,7 @@ test('company_actions_menu_keyboard_escape_and_confirmations_preserve_records', 
 test('company_actions_read_only_has_no_mutation_controls', async ({ page }) => {
   const { writes } = await boot(page, { readOnly: true, area: 'organization', setting: 'companies' });
   await expect(page.getByRole('row').filter({ hasText: 'Workspace Fixture LLC' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^(Edit|More actions|Add Company)/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^(Edit|More actions|Add Company|Create company)/ })).toHaveCount(0);
   expect(writes).toEqual([]);
 });
 
@@ -264,7 +264,7 @@ test('tenant_admin_can_revisit_and_edit_saved_settings', async ({ page }) => {
 test('read_only_user_cannot_edit', async ({ page }) => {
   const { writes, reads } = await boot(page, { readOnly: true, area: 'leave', setting: 'leavePolicies' });
   await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /Add Company|New Policy|Edit/, exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Add Company|Create company|New Policy|Edit/, exact: true })).toHaveCount(0);
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
   expect(writes).toEqual([]);
 });
@@ -454,16 +454,16 @@ test('tenant_wide_onboarding_not_labelled_company_only', async ({ page }) => {
 
 test('existing_setup_deep_links_still_work', async ({ page }) => {
   await boot(page, { area: 'organization', setting: 'companies' });
-  await expect(page.getByRole('button', { name: /Add Company/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Create company/ })).toBeVisible();
   await page.goto('/setup?tab=companies');
-  await expect(page.getByRole('button', { name: /Add Company/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Create company/ })).toBeVisible();
 });
 
 test('single_company_with_an_existing_legal_entity_does_not_offer_an_impossible_add_action', async ({ page }) => {
   const { writes } = await boot(page, { area: 'organization', setting: 'companies', singleCompany: true });
 
   await expect(page.getByRole('row').filter({ hasText: 'Workspace Fixture LLC' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toHaveCount(0);
   expect(writes).toEqual([]);
 });
 
@@ -505,32 +505,33 @@ test('department_arabic_suggestion_uses_organization_wording_instead_of_phonetic
   expect(requestBody).toEqual({ text: 'Jeddah Operations', target: 'ar', kind: 'organization-label' });
 });
 
-test('company_limit_refusal_stays_in_the_form_and_shows_the_server_reason', async ({ page }) => {
+test('company_limit_refusal_is_shown_at_the_first_wizard_step_with_the_server_reason', async ({ page }) => {
+  // Creation moved to the create-company wizard: the plan limit is refused at step 1, before any
+  // draft or company is written, with the server's own sentence.
   const refusal = 'Your plan allows up to 1 legal company. Upgrade your plan to add more.';
-  let submitted: Record<string, unknown> | undefined;
+  const companyPosts: string[] = [];
   await boot(page, { area: 'organization', setting: 'companies', intercept: async route => {
     const request = route.request();
-    if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/api/companies') return false;
-    submitted = request.postDataJSON();
-    await route.fulfill({ status: 402, json: {
-      error: 'company_limit_reached', currentCount: 1, maxAllowed: 1,
-      message: refusal, upgradeRequired: true,
-    } });
-    return true;
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && (path === '/api/companies' || path.startsWith('/api/company-setup'))) { companyPosts.push(path); }
+    if (path === '/api/company-setup/context') {
+      await route.fulfill({ json: {
+        canCreate: false, refusalCode: 'company_limit_reached', refusalMessage: refusal, creationMode: 'GroupSelfServiceWithinLimit',
+        accountType: 'Group', companiesUsed: 1, companiesAllowed: 1, isGroupScope: true, sisterCompanies: [],
+        sharedCatalog: { departments: [], designations: [], grades: [] },
+      } });
+      return true;
+    }
+    if (path === '/api/company-setup/drafts') { await route.fulfill({ json: [] }); return true; }
+    return false;
   } });
 
-  await page.getByRole('button', { name: 'Add Company', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add Company', exact: true });
-  await dialog.getByPlaceholder('Acme Corp LLC', { exact: true }).fill('Second Fixture LLC');
-  await dialog.getByRole('combobox', { name: 'Country', exact: true }).selectOption('SA');
-  await dialog.locator('label').filter({ hasText: /^Registration Number/ }).locator('..').getByRole('textbox').fill('SECOND-001');
-  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(refusal, { exact: true })).toBeVisible();
-  await expect(dialog.getByText('Failed to save. Please try again.', { exact: true })).toHaveCount(0);
-  await expect(page).toHaveURL(/area=organization&setting=companies/);
-  expect(submitted?.defaultCurrency).toBe('SAR');
+  await page.getByRole('button', { name: 'Create company', exact: true }).click();
+  await expect(page).toHaveURL(/\/setup\/new-company/);
+  await expect(page.getByText(refusal, { exact: true })).toBeVisible();
+  await expect(page.getByText('To add another company, ask your account manager to raise the company limit on your plan.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeDisabled();
+  expect(companyPosts).toEqual([]);
 });
 
 test('direct_settings_company_switch_decline_preserves_draft_and_accept_refreshes_scope', async ({ page }) => {
@@ -1789,7 +1790,7 @@ test('focused_form_replaces_area_canvas', async ({ page }) => {
   await expect(page.getByTestId('setup-focused-workspace')).toBeVisible();
   await expect(page.getByTestId('setup-area-blueprint')).toHaveCount(0);
   await expect(page.getByRole('heading', { level: 2, name: 'Companies', exact: true })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
 });
 
@@ -2193,7 +2194,7 @@ test('focused_workspace_keeps_all_area_navigator_without_extra_editor', async ({
   await expect(page.getByRole('button', { name: 'Browse all areas', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Browse all areas', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Browse all setup areas', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toHaveCount(1);
   await expect(page.getByTestId('setup-area-blueprint')).toHaveCount(0);
 });
 
