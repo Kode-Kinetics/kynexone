@@ -672,7 +672,10 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         var context = (await controller.Context(default)).Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeOfType<CompanySetupContext>().Subject;
         context.CanCreate.Should().BeFalse();
         context.RefusalCode.Should().Be("not_group_scope");
-        context.CanGrantCompanyAdmin.Should().BeFalse();
+        // Addendum A5: a company super admin may add another company-scoped admin for their OWN company (existing mode,
+        // CompanySetupExistingModePostgresTests); for a new company the planner below still refuses it.
+        context.CanGrantCompanyAdmin.Should().BeTrue();
+        context.ManageableCompanies.Should().ContainSingle().Which.Id.Should().Be(w.SisterId);
         context.SisterCompanies.Should().BeEmpty();
         ((ObjectResult)(await controller.DryRun(Body(), default)).Result!).StatusCode.Should().Be(403);
         ((ObjectResult)(await controller.CreateDraft(Body(), default)).Result!).StatusCode.Should().Be(403);

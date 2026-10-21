@@ -205,4 +205,45 @@ public class CompanySetupUnitTests
         while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "backend-dotnet", "Zayra.Api"))) dir = dir.Parent;
         return dir?.FullName ?? throw new InvalidOperationException("repository root not found");
     }
+
+    // ── Addendum A: the wire shape of existing-company mode ─────────────────────────────────────────────
+
+    [Fact]
+    public void Existing_mode_fields_are_camel_case_and_a_create_mode_body_does_not_carry_them()
+    {
+        var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var company = new Zayra.Api.Application.CompanySetup.CompanySetupCompany("Co", null, null, "SA", "SAR", "1010000001", null, null, null, null, null, null, null, null, "2026-11");
+        var rules = new Zayra.Api.Application.CompanySetup.CompanySetupRules(new("Fri,Sat", false), new(true), new(true), new("EMP", true, false, true, true, 4, 1));
+        var admin = new Zayra.Api.Application.CompanySetup.CompanySetupCompanyAdmin("groupOnly", null, null, null, null);
+        var create = new Zayra.Api.Application.CompanySetup.CompanySetupDraftBody("defaults", null, company,
+            [new("HQ", "HQ", null, "Riyadh", "Asia/Riyadh", true, [new("L1", "Site", null, null, null, null)])], [new("CC", "Cost", null)], [], [], [], rules, admin);
+        var createJson = System.Text.Json.JsonSerializer.Serialize(create, web);
+        createJson.Should().NotContain("existingCompanyId").And.NotContain("existingId", "a new-company body is unchanged on the wire");
+
+        var id = Guid.NewGuid();
+        var existing = create with
+        {
+            ExistingCompanyId = id,
+            Branches = [new("HQ", "HQ", null, "Riyadh", "Asia/Riyadh", true, [new("L1", "Site", null, null, null, null, id)], id)],
+            CostCentres = [new("CC", "Cost", null, id)],
+            Departments = [new("HR", "HR", null, null, null, null, id)],
+            Designations = [new("D", "D", null, null, null, id)],
+            Grades = [new("G", "G", null, 1, 1, 2, 3, id)],
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(existing, web);
+        json.Should().Contain($"\"existingCompanyId\":\"{id}\"");
+        System.Text.RegularExpressions.Regex.Matches(json, "\"existingId\":").Count.Should().Be(6, "branch, location, cost centre, department, designation, grade");
+        System.Text.Json.JsonSerializer.Deserialize<Zayra.Api.Application.CompanySetup.CompanySetupDraftBody>(json, web)
+            .Should().BeEquivalentTo(existing, "a draft round-trips through its JSON body");
+
+        Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.ActionUpdate.Should().Be("update");
+        Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.ActionUnchanged.Should().Be("unchanged");
+        var context = new Zayra.Api.Application.CompanySetup.CompanySetupContext(false, null, null, "", "", 0, null, true, [], new([], [], []), null)
+        {
+            ManageableCompanies = [new(id, "Co", null, "SA", 3, 9, null)],
+        };
+        System.Text.Json.JsonSerializer.Serialize(context, web).Should()
+            .Contain("\"manageableCompanies\":[{\"id\"").And.Contain("\"legalNameAr\":null").And.Contain("\"readinessDone\":3")
+            .And.Contain("\"readinessTotal\":9").And.Contain("\"openDraftId\":null");
+    }
 }
