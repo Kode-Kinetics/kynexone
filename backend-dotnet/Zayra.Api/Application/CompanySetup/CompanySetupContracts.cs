@@ -226,10 +226,14 @@ public sealed record CompanySetupResult(
     IReadOnlyList<ReadinessItem> Readiness,
     bool Replayed);
 
+/// <summary><see cref="UserId"/> is set only on the <c>companyAdmin</c> item while that admin has not signed in yet: the
+/// login the screen can send a single-use sign-in link to (<c>POST /api/access/users/{userId}/password-reset-link</c>).</summary>
 public sealed record ReadinessItem(
     string Key,
     string Label,
     string? LabelAr,
     string Status,
     string Scope,
-    string Href);
+    string Href,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? UserId = null);

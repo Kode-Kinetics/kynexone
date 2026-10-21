@@ -259,6 +259,56 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task A_commit_whose_acknowledgement_is_lost_answers_201_once_and_still_invites_the_super_admin()
+    {
+        // The execution strategy reruns the commit when COMMIT's outcome is unknown. The draft is then Submitted, but by
+        // THIS request: the rerun must answer as the creation it is (201, not a 200 replay) and still write the
+        // company super admin, which runs after the commit and a replay skips.
+        var w = await SeedAsync();
+        var admin = new CompanySetupCompanyAdmin(V.AdminInvite, null, "Lina Admin", "لينا", "lina.admin@lostack.sa");
+        // Its own email domain: a domain belongs to one workspace, and every scenario here seeds its own tenant.
+        var draft = await NewDraftAsync(w, Body(emailDomain: "lostack.sa", admin: admin));
+        var fault = new ThrowOnceAfterCommit();
+        CompanySetupOutcome<CompanySetupResult> outcome;
+        await using (var db = DbWith(fault))
+            outcome = await Service(db).CommitAsync(Caller(w), new CompanySetupCommitRequest(draft.Id, draft.Version), draft.Id, default);
+
+        fault.Injected.Should().Be(1, "the first commit landed and then reported a timeout");
+        outcome.Status.Should().Be(201, JsonSerializer.Serialize(outcome.Error));
+        outcome.Value!.Replayed.Should().BeFalse();
+        outcome.Value.Created.Should().ContainKey("company");
+        await using var verify = fixture.CreateDb();
+        (await verify.Companies.CountAsync(c => c.TenantId == w.TenantId && c.LegalNameEn == "New Gulf Co")).Should().Be(1);
+        (await verify.AuditLogs.CountAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.SetupCreatedAction)).Should().Be(1);
+        var lina = await verify.Users.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(u => u.TenantId == w.TenantId && u.NormalizedEmail == "LINA.ADMIN@LOSTACK.SA");
+        outcome.Value.Readiness.Single(r => r.Key == "companyAdmin").UserId.Should().Be(lina.Id);
+    }
+
+    [Fact]
+    public async Task A_company_form_create_whose_acknowledgement_is_lost_answers_201_with_the_one_company()
+    {
+        // The rerun used to find its own CR number taken — by the company the first attempt had in fact committed.
+        var w = await SeedAsync();
+        var fault = new ThrowOnceAfterCommit();
+        ActionResult<CompanyDto> result;
+        await using (var db = DbWith(fault))
+            result = await CompanyEndpoints.CreateAsync(Controller(db, w.TenantId, w.AdminId), new OrganizationSetupService(db, new AuditService(db)), db,
+                new CompanyRequest("Lost Ack Co", null, null, "SA", null, "1010000301", null, null, null, null, "SAR"),
+                new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId), c => new CreatedResult($"/api/companies/{c.Id}", c), default);
+
+        fault.Injected.Should().Be(1);
+        var created = result.Result.Should().BeOfType<CreatedResult>().Subject;
+        created.StatusCode.Should().Be(201);
+        var dto = created.Value.Should().BeOfType<CompanyDto>().Subject;
+        await using var verify = fixture.CreateDb();
+        var rows = await verify.Companies.AsNoTracking().Where(c => c.TenantId == w.TenantId && c.RegistrationNumber == "1010000301").ToListAsync();
+        rows.Should().ContainSingle().Which.Id.Should().Be(dto.Id);
+        (await verify.AuditLogs.CountAsync(a => a.TenantId == w.TenantId && a.Action == "organization.company_created" && a.EntityId == dto.Id.ToString()))
+            .Should().Be(1);
+    }
+
+    [Fact]
     public async Task Idempotency_key_must_be_the_draft_id()
     {
         var w = await SeedAsync();
@@ -525,8 +575,50 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         scope.Mode.Should().Be(EntityScopeModes.Companies);
         scope.CompanyIds.Should().BeEquivalentTo([companyId]);
         scope.CompanyIds.Should().NotContain(w.SisterId);
-        // Nobody typed a password for them: until they use the sign-in link, readiness says so.
-        outcome.Value.Readiness.Single(r => r.Key == "companyAdmin").Status.Should().Be(V.ReadinessTodo);
+        // Nobody typed a password for them: until they use the sign-in link, readiness says so, and names the login the
+        // screen sends that link to.
+        var item = outcome.Value.Readiness.Single(r => r.Key == "companyAdmin");
+        item.Status.Should().Be(V.ReadinessTodo);
+        item.UserId.Should().Be(user.Id);
+        item.Label.Should().Be("Send Sara Admin their sign-in link");
+        // Once they have signed in, the item is done and no longer offers a link.
+        await using (var signIn = fixture.CreateDb())
+        {
+            var row = await signIn.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == user.Id);
+            row.LastLoginAtUtc = DateTime.UtcNow;
+            await signIn.SaveChangesAsync();
+        }
+        await using var after = fixture.CreateDb();
+        var done = (await Service(after).ReadinessAsync(w.TenantId, companyId, default))!.Single(r => r.Key == "companyAdmin");
+        done.Status.Should().Be(V.ReadinessDone);
+        done.UserId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_super_admin_refused_by_the_user_limit_keeps_its_code_and_readiness_says_what_to_do()
+    {
+        var w = await SeedAsync();
+        await using (var db = fixture.CreateDb())
+        {
+            // Every seat is taken: the two seeded logins fill a two-user plan.
+            var sub = await db.TenantSubscriptions.SingleAsync(s => s.TenantId == w.TenantId);
+            sub.MaxUsers = 2;
+            await db.SaveChangesAsync();
+        }
+        var admin = new CompanySetupCompanyAdmin(V.AdminInvite, null, "Noor Admin", null, "noor.admin@seatfull.sa");
+        var draft = await NewDraftAsync(w, Body(emailDomain: "seatfull.sa", admin: admin));
+        var outcome = await CommitAsync(w, draft);
+        outcome.Status.Should().Be(201, "an admin failure never rolls the company back");
+
+        await using var verify = fixture.CreateDb();
+        (await verify.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == w.TenantId && u.NormalizedEmail == "NOOR.ADMIN@SEATFULL.SA")).Should().BeFalse();
+        var failure = await verify.AuditLogs.SingleAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.AdminFailedAction);
+        ErrorBody(JsonSerializer.Deserialize<JsonElement>(failure.Metadata!)).GetProperty("code").GetString().Should().Be(UserSeatLimit.Refusal.Code);
+        var item = outcome.Value!.Readiness.Single(r => r.Key == "companyAdmin");
+        item.Status.Should().Be(V.ReadinessTodo);
+        item.Label.Should().Contain("user limit");
+        item.LabelAr.Should().Contain("حد المستخدمين");
+        item.UserId.Should().BeNull();
     }
 
     [Fact]
@@ -662,6 +754,33 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } },
         };
+    }
+
+    /// <summary>A context like <see cref="PostgresFixture.CreateDb"/>'s, with one more interceptor.</summary>
+    private ZayraDbContext DbWith(Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor interceptor) => new(
+        new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseNpgsql(fixture.ConnectionString, PostgresFixture.ProductionProviderOptions)
+            .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance,
+                Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance, interceptor)
+            .Options);
+
+    /// <summary>The first commit succeeds and then reports a timeout, as a dropped acknowledgement would.</summary>
+    private sealed class ThrowOnceAfterCommit : Microsoft.EntityFrameworkCore.Diagnostics.DbTransactionInterceptor
+    {
+        private int _armed = 1;
+        private int _injected;
+        public int Injected => Volatile.Read(ref _injected);
+
+        public override Task TransactionCommittedAsync(System.Data.Common.DbTransaction transaction,
+            Microsoft.EntityFrameworkCore.Diagnostics.TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                Interlocked.Increment(ref _injected);
+                throw new TimeoutException("Simulated lost commit acknowledgement.");
+            }
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeTokenService : ITokenService

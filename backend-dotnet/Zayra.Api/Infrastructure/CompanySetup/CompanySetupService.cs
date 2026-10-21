@@ -46,6 +46,8 @@ public sealed class CompanySetupService
     internal static readonly JsonSerializerOptions BodyJson = new(JsonSerializerDefaults.Web);
     private const string Why = "Create-company wizard: the tenant's company register, shared catalog and drafts are read across every legal entity of the tenant whatever company the caller's switcher selects.";
     public const string SetupCreatedAction = "company.setup_created";
+    /// <summary>The audit row written when the company super admin could not be written after the commit.</summary>
+    public const string AdminFailedAction = "company.setup_admin_failed";
 
     private readonly ZayraDbContext _db;
     private readonly IOrganizationSetupService _organization;
@@ -409,6 +411,10 @@ public sealed class CompanySetupService
         CompanySetupOutcome<CompanySetupResult>? refusal = null;
         CompanySetupResult? result = null;
         CompanySetupPlanModel? executed = null;
+        // What the previous attempt of THIS request was committing. The execution strategy reruns RunAsync when a
+        // COMMIT's outcome is unknown; if that commit landed, the draft is Submitted with this company, and the rerun is
+        // this request's creation (201, and the super admin still to write), not a replay of another request's.
+        (CompanySetupResult Result, CompanySetupPlanModel Model)? committing = null;
 
         async Task RunAsync()
         {
@@ -419,6 +425,11 @@ public sealed class CompanySetupService
             if (draft is null) { refusal = CompanySetupOutcome<CompanySetupResult>.Fail(404, "draft_not_found", "Draft not found."); return; }
             if (draft.Status == CompanySetupDraftStatuses.Submitted)
             {
+                if (committing is { } mine && draft.ResultCompanyId == mine.Result.CompanyId)
+                {
+                    (result, executed) = mine;
+                    return;
+                }
                 result = await ReplayAsync(draft, ct);
                 if (result is null)
                     refusal = CompanySetupOutcome<CompanySetupResult>.Fail(409, "draft_company_removed",
@@ -456,6 +467,7 @@ public sealed class CompanySetupService
             await _db.SaveChangesAsync(ct);
             executed = model;
             result = new CompanySetupResult(companyId, created, reused, [], Replayed: false);
+            committing = (result, model);
         }
 
         if (_db.Database.IsRelational())
@@ -662,11 +674,14 @@ public sealed class CompanySetupService
     {
         var ctx = caller.Context with { TenantId = caller.TenantId };
         string? failure = null;
+        // The plan's user limit keeps the code User Management answers with (user_limit_reached), whether this preflight
+        // or the writer's recount under the tenant row lock refused it; readiness reads it back to say what to do.
+        string? code = null;
         try
         {
             if (admin.Mode == V.AdminInvite)
             {
-                if (await UserSeatLimit.CheckAsync(_db, caller.TenantId, ct) is { } seats) failure = seats.Message;
+                if (await UserSeatLimit.CheckAsync(_db, caller.TenantId, ct) is { } seats) { failure = seats.Message; code = UserSeatLimit.Refusal.Code; }
                 else
                 {
                     var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)) + "aA1!";
@@ -682,12 +697,18 @@ public sealed class CompanySetupService
         catch (Exception ex) when (ex is InvalidOperationException or PrivilegeCeilingException or DbUpdateException)
         {
             failure = ex is PrivilegeCeilingException p ? p.Refusal.MessageEn : ex.Message;
+            code = ex switch
+            {
+                UserSeatLimitReachedException => UserSeatLimit.Refusal.Code,
+                PrivilegeCeilingException ceiling => ceiling.Refusal.Code,
+                _ => null,
+            };
         }
         if (failure is null) return null;
 
         _db.ChangeTracker.Clear();
-        var row = AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, "company.setup_admin_failed", nameof(Company), companyId.ToString(), ctx,
-            JsonSerializer.Serialize(new { mode = admin.Mode, reason = failure }, BodyJson));
+        var row = AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, AdminFailedAction, nameof(Company), companyId.ToString(), ctx,
+            JsonSerializer.Serialize(new { mode = admin.Mode, code, reason = failure }, BodyJson));
         row.CompanyId = companyId;
         _db.AuditLogs.Add(row);
         try { await _db.SaveChangesAsync(ct); }

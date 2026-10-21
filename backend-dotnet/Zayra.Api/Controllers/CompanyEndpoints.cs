@@ -90,12 +90,14 @@ internal static class CompanyEndpoints
             // and the company written under the tenant setup lock (SETUP:{tenantId}, the same lock the
             // setup assistant and the create-company wizard take), so two concurrent creates cannot both
             // see room under the plan limit, or both pass the CR-number uniqueness check.
+            Guid? committing = null;
             async Task<ActionResult<CompanyDto>> GateAndCreateAsync()
             {
                 var gate = await CompanyCreationGate.EvaluateAsync(db, tenantId.Value, ct);
                 if (!gate.Allowed) return GateRefusal(c, gate);
                 if (EmailDomainNeedsSecurityAdmin(c, null, request.EmailDomain)) return EmailDomainForbidden(c);
                 var company = await organization.CreateCompanyAsync(tenantId.Value, request, context, ct, gate.AsDraft);
+                committing = company.Id;
                 return created(company);
             }
 
@@ -106,6 +108,19 @@ internal static class CompanyEndpoints
                 db.ChangeTracker.Clear();
                 await using var tx = await db.Database.BeginTransactionAsync(ct);
                 await Zayra.Api.Infrastructure.Setup.SetupTenantLock.AcquireAsync(db, tenantId.Value, ct);
+                // The execution strategy reruns this closure when a COMMIT's outcome is unknown (the connection dropped
+                // at COMMIT). If that commit landed, the rerun must answer with the company it created, not refuse its
+                // CR number as taken. The witness is exact: the id the previous attempt was committing, read under the
+                // setup lock, which that attempt held until its transaction ended one way or the other.
+                if (committing is Guid previous)
+                {
+                    committing = null;
+                    if (await organization.GetCompanyAsync(tenantId.Value, previous, ct) is { } landed)
+                    {
+                        await tx.RollbackAsync(ct);
+                        return created(landed);
+                    }
+                }
                 var result = await GateAndCreateAsync();
                 // Only a created company commits; a refusal (or an exception below) rolls back.
                 if (result.Result is ObjectResult { StatusCode: >= 200 and < 300 })

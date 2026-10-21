@@ -153,6 +153,12 @@ public class AccessManagementService : IAccessManagementService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId && x.IsActive, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
+            // The callers' preflight seat check runs before this lock, so two creates racing for the last seat could
+            // both pass it. Every create here holds the tenant row FOR UPDATE from this point to its commit, and under
+            // READ COMMITTED the count below runs after the lock is granted, so it sees the previous holder's user.
+            // (Invitations and ESS provisioning write inactive logins, which the count leaves out.)
+            if (await UserSeatLimit.CheckAsync(_db, tenantId, ct) is { } seatRefusal)
+                throw new UserSeatLimitReachedException(seatRefusal);
             if (request.CompanyId.HasValue)
             {
                 // The grant is part of this transaction. Validate its target under the same lock so

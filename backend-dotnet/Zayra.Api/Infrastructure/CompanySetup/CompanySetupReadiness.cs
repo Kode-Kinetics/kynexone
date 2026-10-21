@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CompanySetup;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
@@ -70,28 +71,35 @@ public static class CompanySetupReadiness
         }
 
         // Company super admin: an active Admin login, not group-wide, granted this company. Until that person has
-        // signed in, the item stays todo — they still need their single-use sign-in link from User Management.
+        // signed in, the item stays todo and carries their user id: the screen sends them the single-use sign-in link
+        // (or, for a caller who cannot issue links, opens User Management at the href).
         var admins = await ScopedBypass.TenantWide(db.Users, tenantId, Why).AsNoTracking()
             .Where(u => u.IsActive && !u.IsDeleted && !u.IsGroupScope
                 && u.UserRoles.Any(r => r.Role != null && r.Role.NormalizedName == "ADMIN" && r.Role.IsActive && !r.Role.IsDeleted)
                 && u.EntityAccesses.Any(e => e.IsActive && e.CompanyId == id && e.GrantMode == EntityGrantModes.SelectedCompanies))
-            .Select(u => new { u.FullName, u.LastLoginAtUtc }).ToListAsync(ct);
+            .OrderBy(u => u.CreatedAtUtc).ThenBy(u => u.Id)
+            .Select(u => new { u.Id, u.FullName, u.LastLoginAtUtc }).ToListAsync(ct);
         var adminHref = $"/user-management?companyId={id}&openCreate=1&purpose=companyAdmin";
         if (admins.Count > 0)
         {
             var signedIn = admins.Any(a => a.LastLoginAtUtc != null);
-            items.Add(new ReadinessItem("companyAdmin",
-                signedIn ? "Company super admin" : $"Send {admins[0].FullName} their sign-in link (User Management)",
-                signedIn ? "مسؤول الشركة الأعلى" : "أرسل رابط تسجيل الدخول إلى مسؤول الشركة",
-                signedIn ? V.ReadinessDone : V.ReadinessTodo, V.ScopeCompany, $"/user-management?companyId={id}"));
+            var pending = admins[0];
+            items.Add(signedIn
+                ? new ReadinessItem("companyAdmin", "Company super admin", "مسؤول الشركة الأعلى", V.ReadinessDone, V.ScopeCompany,
+                    $"/user-management?companyId={id}")
+                : new ReadinessItem("companyAdmin", $"Send {pending.FullName} their sign-in link", $"أرسل رابط تسجيل الدخول إلى {pending.FullName}",
+                    V.ReadinessTodo, V.ScopeCompany, $"/user-management?companyId={id}", pending.Id));
         }
         else
         {
             var mode = await RequestedAdminModeAsync(db, tenantId, id, ct);
             var wanted = mode is V.AdminInvite or V.AdminExisting;
+            var seatLimit = wanted && await LastAdminFailureCodeAsync(db, tenantId, id, ct) == UserSeatLimit.Refusal.Code;
             items.Add(new ReadinessItem("companyAdmin",
-                wanted ? "Company super admin could not be set up — retry from User Management" : "Company super admin (recommended)",
-                wanted ? "تعذر إعداد مسؤول الشركة — أعد المحاولة من إدارة المستخدمين" : "مسؤول الشركة الأعلى (موصى به)",
+                seatLimit ? "Company super admin not set up: your plan's user limit is reached. Free a seat or upgrade, then add them in User Management"
+                    : wanted ? "Company super admin could not be set up — retry from User Management" : "Company super admin (recommended)",
+                seatLimit ? "لم يُعَدّ مسؤول الشركة: بلغت حد المستخدمين في اشتراكك. حرّر مقعدًا أو قم بالترقية، ثم أضفه من إدارة المستخدمين"
+                    : wanted ? "تعذر إعداد مسؤول الشركة — أعد المحاولة من إدارة المستخدمين" : "مسؤول الشركة الأعلى (موصى به)",
                 wanted ? V.ReadinessTodo : V.ReadinessRecommended, V.ScopeCompany, adminHref));
         }
 
@@ -120,5 +128,22 @@ public static class CompanySetupReadiness
         if (body is null) return null;
         var row = new CompanySetupDraftRecord { Body = body };
         return CompanySetupService.ReadBody(row)?.CompanyAdmin?.Mode;
+    }
+
+    /// <summary>The refusal code the wizard recorded the last time it could not write this company's super admin.</summary>
+    private static async Task<string?> LastAdminFailureCodeAsync(ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        var metadata = await ScopedBypass.NullableTenantWide(db.AuditLogs, tenantId,
+                "Create-company readiness: why the wizard could not write this company's super admin (its own failure audit).")
+            .AsNoTracking()
+            .Where(a => a.Action == CompanySetupService.AdminFailedAction && a.EntityId == companyId.ToString())
+            .OrderByDescending(a => a.CreatedAtUtc).Select(a => a.Metadata).FirstOrDefaultAsync(ct);
+        if (string.IsNullOrEmpty(metadata)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(metadata);
+            return doc.RootElement.TryGetProperty("code", out var code) && code.ValueKind == System.Text.Json.JsonValueKind.String ? code.GetString() : null;
+        }
+        catch (System.Text.Json.JsonException) { return null; }
     }
 }

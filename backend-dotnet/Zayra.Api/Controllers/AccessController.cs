@@ -240,20 +240,16 @@ public class AccessController : ControllerBase
                 if (!targetExists) return BadRequest(new { message = "Choose an active company in this workspace." });
             }
 
-            // Enforce user limit (shared with the create-company wizard's company super admin).
+            // Enforce user limit (shared with the create-company wizard's company super admin). A preflight: the
+            // service recounts under the tenant row lock, and a seat lost to a concurrent create answers the same 422.
             if (await UserSeatLimit.CheckAsync(_db, tenantId.Value, cancellationToken) is { } seats)
-                return UnprocessableEntity(new
-                {
-                    error = UserSeatLimit.Refusal.Code,
-                    message = seats.Message,
-                    current = seats.Current,
-                    limit = seats.Limit
-                });
+                return UnprocessableEntity(seats.Body);
 
             var user = await _accessManagement.CreateUserAsync(tenantId.Value, request, GetContext(), cancellationToken);
             return CreatedAtAction(nameof(GetUser), new { userId = user.Id }, user);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_created", "User", null); }
+        catch (UserSeatLimitReachedException ex) { return UnprocessableEntity(ex.Refusal.Body); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
