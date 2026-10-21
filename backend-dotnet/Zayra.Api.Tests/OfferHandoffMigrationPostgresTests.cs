@@ -31,7 +31,7 @@ public sealed class OfferHandoffMigrationPostgresTests
         await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO employee_drafts SELECT (jsonb_populate_record(NULL::employee_drafts, {legacyJson}::jsonb)).*");
         var migration = db.Database.GetMigrations().SingleOrDefault(m => m.EndsWith("_OfferCompensationHandoff"));
         migration.Should().NotBeNull("accepted source references require their additive migration");
-        await migrator.MigrateAsync(migration!); await migrator.MigrateAsync(migration!);
+        await migrator.MigrateAsync(migration!); await migrator.MigrateAsync(migration!); await migrator.MigrateAsync(); /* later additive migrations: rows below use the CURRENT model */
         var old = await db.EmployeeDrafts.SingleAsync(d => d.Id == legacy.Id);
         old.Salary.Should().Be(777); old.AcceptedOfferId.Should().BeNull(); old.AcceptedOfferCompensationJson.Should().BeNull();
         var company = new Company { TenantId = tenant, DefaultCurrency = "SAR" }; var other = new Company { TenantId = tenant };
@@ -78,6 +78,6 @@ public sealed class OfferHandoffMigrationPostgresTests
         await OfferArtifactErasure.EraseAsync(db, new OfferMemoryStorage(), tenant, default);
         (await db.EmployeeDrafts.AsNoTracking().SingleAsync(d => d.Id == draft.Id)).AcceptedOfferId.Should().BeNull();
         (await db.EmployeeDrafts.AsNoTracking().SingleAsync(d => d.Id == anchored.Id)).OfferCompensationPlacementCompanyId.Should().BeNull();
-        await migrator.MigrateAsync("20261019152813_OfferDispatch"); await migrator.MigrateAsync(migration!);
+        await migrator.MigrateAsync("20261019152813_OfferDispatch"); await migrator.MigrateAsync(migration!); await migrator.MigrateAsync(); /* later additive migrations: rows below use the CURRENT model */
     }
 }

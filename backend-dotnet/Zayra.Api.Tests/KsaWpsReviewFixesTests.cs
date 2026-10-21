@@ -617,6 +617,76 @@ public class KsaWpsReviewFixesTests
         db.WPSFileBatches.Should().BeEmpty();
     }
 
+    // ── 9b. Decision 10: the company's MOL establishment number is the authority ────────────────
+
+    private static async Task SetCompanyMol(ZayraDbContext db, Guid company, string mol)
+    {
+        (await db.Companies.SingleAsync(c => c.Id == company)).WpsEmployerId = mol;
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Ksa_the_company_mol_number_is_used_when_no_other_id_is_recorded()
+    {
+        var (db, tenant, company, batch, _) = await SeedKsaRegisterBatchAsync();
+        await SetCompanyMol(db, company, "7-5555555");
+        // The bank-file settings still need their own fields; their MOL id left blank means "not recorded there".
+        await SaveBankSettings(db, tenant, company, "");
+        var ctrl = Payroll(db, tenant, Guid.NewGuid());
+        (await ctrl.GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+        var xml = Encoding.UTF8.GetString(((FileContentResult)await ctrl.DownloadWpsFile(batch, default)).FileContents);
+        xml.Should().Contain("<MolEstablishmentId>7-5555555</MolEstablishmentId>");
+    }
+
+    [Fact]
+    public async Task Ksa_the_company_mol_number_matching_the_bank_settings_is_accepted()
+    {
+        var (db, tenant, company, batch, _) = await SeedKsaRegisterBatchAsync();
+        await SetCompanyMol(db, company, "7-7654321");
+        await SaveBankSettings(db, tenant, company, "7-7654321");
+        (await Payroll(db, tenant, Guid.NewGuid()).GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task Ksa_refuses_when_the_company_mol_number_and_the_bank_settings_differ()
+    {
+        var (db, tenant, company, batch, _) = await SeedKsaRegisterBatchAsync();
+        await SetCompanyMol(db, company, "7-1111111");
+        await SaveBankSettings(db, tenant, company, "7-7654321");
+        var res = await Payroll(db, tenant, Guid.NewGuid()).GenerateWps(batch, true, false, default);
+        res.Should().BeOfType<UnprocessableEntityObjectResult>();
+        var json = JsonSerializer.Serialize(((ObjectResult)res).Value);
+        json.Should().Contain("mol_establishment_id_conflict").And.Contain("7-1111111").And.Contain("7-7654321");
+        db.WPSFileBatches.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Ksa_refuses_when_the_company_mol_number_and_the_gcc_wps_agent_id_differ()
+    {
+        var (db, tenant, company, batch, _) = await SeedKsaRegisterBatchAsync();
+        await SetCompanyMol(db, company, "7-1111111");
+        await SaveBankSettings(db, tenant, company, "");
+        db.GCCComplianceSettings.Add(new GCCComplianceSetting { TenantId = tenant, CompanyId = company, CountryCode = "SA", WpsAgentId = "7-2222222" });
+        await db.SaveChangesAsync();
+        var res = await Payroll(db, tenant, Guid.NewGuid()).GenerateWps(batch, true, false, default);
+        res.Should().BeOfType<UnprocessableEntityObjectResult>();
+        JsonSerializer.Serialize(((ObjectResult)res).Value).Should().Contain("mol_establishment_id_conflict").And.Contain("7-2222222");
+    }
+
+    [Fact]
+    public async Task Ksa_a_tenant_wide_wps_agent_id_does_not_refuse_a_company_with_its_own_mol_number()
+    {
+        var (db, tenant, company, batch, _) = await SeedKsaRegisterBatchAsync();
+        await SetCompanyMol(db, company, "7-1111111");
+        await SaveBankSettings(db, tenant, company, "");
+        db.GCCComplianceSettings.Add(new GCCComplianceSetting { TenantId = tenant, CompanyId = null, CountryCode = "SA", WpsAgentId = "7-3381540" });
+        await db.SaveChangesAsync();
+        var ctrl = Payroll(db, tenant, Guid.NewGuid());
+        (await ctrl.GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+        var xml = Encoding.UTF8.GetString(((FileContentResult)await ctrl.DownloadWpsFile(batch, default)).FileContents);
+        xml.Should().Contain("<MolEstablishmentId>7-1111111</MolEstablishmentId>");
+    }
+
     // ── 10. Cash/cheque and zero-net employees are left out of the bank batch, by name ──────────
 
     /// <summary>The sealed Lock audit entry, as Lock writes it, freezing who is paid by cash/cheque.</summary>

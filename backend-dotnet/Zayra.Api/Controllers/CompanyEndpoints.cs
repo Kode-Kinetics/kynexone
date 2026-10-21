@@ -86,13 +86,49 @@ internal static class CompanyEndpoints
                 });
 
             // The subscription limit and the three governance gates live in CompanyCreationGate so
-            // that the CSV importer passes exactly the same four checks this form does.
-            var gate = await CompanyCreationGate.EvaluateAsync(db, tenantId.Value, ct);
-            if (!gate.Allowed) return GateRefusal(c, gate);
-            if (EmailDomainNeedsSecurityAdmin(c, null, request.EmailDomain)) return EmailDomainForbidden(c);
+            // that the CSV importer passes exactly the same four checks this form does. They are read
+            // and the company written under the tenant setup lock (SETUP:{tenantId}, the same lock the
+            // setup assistant and the create-company wizard take), so two concurrent creates cannot both
+            // see room under the plan limit, or both pass the CR-number uniqueness check.
+            Guid? committing = null;
+            async Task<ActionResult<CompanyDto>> GateAndCreateAsync()
+            {
+                var gate = await CompanyCreationGate.EvaluateAsync(db, tenantId.Value, ct);
+                if (!gate.Allowed) return GateRefusal(c, gate);
+                if (EmailDomainNeedsSecurityAdmin(c, null, request.EmailDomain)) return EmailDomainForbidden(c);
+                var company = await organization.CreateCompanyAsync(tenantId.Value, request, context, ct, gate.AsDraft);
+                committing = company.Id;
+                return created(company);
+            }
 
-            var company = await organization.CreateCompanyAsync(tenantId.Value, request, context, ct, gate.AsDraft);
-            return created(company);
+            if (!db.Database.IsRelational()) return await GateAndCreateAsync();
+            var strategy = db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                db.ChangeTracker.Clear();
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+                await Zayra.Api.Infrastructure.Setup.SetupTenantLock.AcquireAsync(db, tenantId.Value, ct);
+                // The execution strategy reruns this closure when a COMMIT's outcome is unknown (the connection dropped
+                // at COMMIT). If that commit landed, the rerun must answer with the company it created, not refuse its
+                // CR number as taken. The witness is exact: the id the previous attempt was committing, read under the
+                // setup lock, which that attempt held until its transaction ended one way or the other.
+                if (committing is Guid previous)
+                {
+                    committing = null;
+                    if (await organization.GetCompanyAsync(tenantId.Value, previous, ct) is { } landed)
+                    {
+                        await tx.RollbackAsync(ct);
+                        return created(landed);
+                    }
+                }
+                var result = await GateAndCreateAsync();
+                // Only a created company commits; a refusal (or an exception below) rolls back.
+                if (result.Result is ObjectResult { StatusCode: >= 200 and < 300 })
+                    await tx.CommitAsync(ct);
+                else
+                    await tx.RollbackAsync(ct);
+                return result;
+            });
         }
         catch (EmailDomainRefusedException ex) { return c.StatusCode(ex.Status, new { code = ex.Code, message = ex.Message }); }
         catch (CompanyRegistrationNumberTakenException ex) { return c.BadRequest(ex.ToPayload(OrgWriteRules.MayWriteCompany(c, ex.HolderCompanyId))); }

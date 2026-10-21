@@ -104,7 +104,8 @@ public class ImportExportEngineTests
         var ctrl = new CompaniesController(svc, db);
         ctrl.ControllerContext = MakeContext(tenantId);
 
-        var csv = BuildCompanyCsv("Acme Arabia LLC,أكمي,Acme,SA,KSA-mainland,REG-001,TAX-001,WPS-001,GOSI-001,QIWA-001,SAR,true");
+        // A Saudi MOL establishment number is validated at create (KsaWageFileRules), so the fixture uses a real shape.
+        var csv = BuildCompanyCsv("Acme Arabia LLC,أكمي,Acme,SA,KSA-mainland,REG-001,TAX-001,7-1234567,GOSI-001,QIWA-001,SAR,true");
         var result = await ctrl.Import(new CompanyImportRequest(csv), CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -113,7 +114,7 @@ public class ImportExportEngineTests
 
         var company = await db.Companies.SingleAsync(c => c.TenantId == tenantId && c.LegalNameEn == "Acme Arabia LLC");
         Assert.Equal("KSA-mainland", company.Jurisdiction);
-        Assert.Equal("WPS-001", company.WpsEmployerId);
+        Assert.Equal("7-1234567", company.WpsEmployerId);
         Assert.Equal("GOSI-001", company.GosiEmployerId);
         Assert.Equal("QIWA-001", company.QiwaEstablishmentId);
     }

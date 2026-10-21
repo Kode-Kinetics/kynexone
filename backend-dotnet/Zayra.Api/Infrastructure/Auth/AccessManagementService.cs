@@ -153,6 +153,12 @@ public class AccessManagementService : IAccessManagementService
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId && x.IsActive, ct)
                 ?? throw new InvalidOperationException("Tenant not found.");
+            // The callers' preflight seat check runs before this lock, so two creates racing for the last seat could
+            // both pass it. Every create here holds the tenant row FOR UPDATE from this point to its commit, and under
+            // READ COMMITTED the count below runs after the lock is granted, so it sees the previous holder's user.
+            // (Invitations and ESS provisioning write inactive logins, which the count leaves out.)
+            if (await UserSeatLimit.CheckAsync(_db, tenantId, ct) is { } seatRefusal)
+                throw new UserSeatLimitReachedException(seatRefusal);
             if (request.CompanyId.HasValue)
             {
                 // The grant is part of this transaction. Validate its target under the same lock so
@@ -2956,6 +2962,48 @@ public class AccessManagementService : IAccessManagementService
     }
 
     /// <inheritdoc />
+    public async Task<UserEntityAccess?> CreateEntityGrantAsync(Guid tenantId, Guid userId, Guid? companyId, string role, string grantMode,
+        RequestContext context, CancellationToken cancellationToken)
+    {
+        if (userId == context.UserId)
+            throw new PrivilegeCeilingException(PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.SelfChange, null));
+        // PRIVILEGE CEILING: company access is access; nobody widens the company scope of a user above them.
+        await AssertMayChangeUserAccessAsync(tenantId, userId, context, cancellationToken);
+
+        var existing = await _db.UserEntityAccesses.AnyAsync(
+            e => e.TenantId == tenantId && e.UserId == userId && e.CompanyId == companyId && e.Role == role && e.IsActive,
+            cancellationToken);
+        if (existing) return null;
+
+        var now = DateTime.UtcNow;
+        var grant = new UserEntityAccess
+        {
+            TenantId = tenantId,
+            UserId = userId,
+            CompanyId = companyId,
+            GrantMode = grantMode,
+            Role = role,
+            CreatedBy = context.UserId,
+            GrantedBy = context.UserId,
+            GrantedAt = now,
+        };
+        _db.UserEntityAccesses.Add(grant);
+        // A wider grant must not ride on a session issued before it; the next refresh re-reads the grants.
+        var activeTokens = await _db.RefreshTokens
+            .Where(x => x.UserId == userId && x.RevokedAtUtc == null && x.ExpiresAtUtc > now)
+            .ToListAsync(cancellationToken);
+        foreach (var token in activeTokens)
+        {
+            token.RevokedAtUtc = now;
+            token.RevokedByIp = context.IpAddress;
+        }
+        _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), now, "access.entity_grant_created", "User", userId.ToString(),
+            context with { TenantId = tenantId },
+            System.Text.Json.JsonSerializer.Serialize(new { companyId, role, grantMode })));
+        await _db.SaveChangesAsync(cancellationToken);
+        return grant;
+    }
+
     public async Task AssertMayChangeUserAccessAsync(Guid tenantId, Guid targetUserId, RequestContext context, CancellationToken cancellationToken)
     {
         var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);

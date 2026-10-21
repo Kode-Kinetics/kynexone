@@ -107,12 +107,8 @@ public class SetupAssistantController : ControllerBase
         {
             _db.ChangeTracker.Clear();
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            if (_db.Database.IsNpgsql())
-            {
-                var key = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"SETUP:{GetTenantId():N}"));
-                var lockId = System.Buffers.Binary.BinaryPrimitives.ReadInt64BigEndian(key.AsSpan(0, 8));
-                await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({lockId})", ct);
-            }
+            // The shared tenant setup lock (same key as before; also taken by the company form and the wizard).
+            await SetupTenantLock.AcquireAsync(_db, GetTenantId(), ct);
             var result = await ApplyCore(req, ct);
             if (result is OkObjectResult) await tx.CommitAsync(ct);
             else { await tx.RollbackAsync(ct); _db.ChangeTracker.Clear(); }
@@ -564,52 +560,11 @@ public class SetupAssistantController : ControllerBase
         // sibling or shared calendar merely because country and year match.
         if (d.HolidayCalendar is not null && d.HolidayCalendar.Holidays.Count > 0)
         {
-            var year = d.HolidayCalendar.CalendarYear;
-            var countryCode = (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant();
-            var calendarCompanyId = company?.Id;
-            var calendar = await _db.PublicHolidayCalendars.FirstOrDefaultAsync(
-                x => x.TenantId == tenantId
-                    && x.CountryCode == countryCode
-                    && x.CalendarYear == year
-                    && x.CompanyId == calendarCompanyId,
-                ct);
-            if (calendar is null)
-            {
-                calendar = new PublicHolidayCalendar
-                {
-                    TenantId = tenantId,
-                    Name = d.HolidayCalendar.Name,
-                    CountryCode = countryCode,
-                    CompanyId = company?.Id,
-                    BranchId = defaultBranch?.Id,
-                    CalendarYear = year,
-                    IsActive = true,
-                };
-                _db.PublicHolidayCalendars.Add(calendar);
-                Bump("holidayCalendars", 1);
-            }
-
-            var existingDates = (await _db.PublicHolidays
-                .Where(x => x.TenantId == tenantId && x.CalendarId == calendar.Id)
-                .Select(x => x.Date).ToListAsync(ct)).ToHashSet();
-            foreach (var h in d.HolidayCalendar.Holidays)
-            {
-                if (!DateOnly.TryParse(h.Date, out var date)) continue;
-                if (!existingDates.Add(date)) continue;
-                _db.PublicHolidays.Add(new PublicHoliday
-                {
-                    TenantId = tenantId,
-                    CalendarId = calendar.Id,
-                    NameEn = h.NameEn,
-                    NameAr = h.NameAr ?? string.Empty,
-                    Date = date,
-                    IsRecurring = h.IsRecurring,
-                    IsOptional = h.IsOptional,
-                    HolidayType = string.IsNullOrWhiteSpace(h.HolidayType) ? "National" : h.HolidayType,
-                    Notes = h.Notes ?? string.Empty,
-                });
-                Bump("publicHolidays", 1);
-            }
+            // Shared with the create-company wizard (SetupWriters), so both doors write a calendar the same way.
+            var written = await SetupWriters.UpsertHolidayCalendarAsync(_db, tenantId, company?.Id, defaultBranch?.Id,
+                req.CountryCode, d.HolidayCalendar, ct);
+            if (written.CalendarCreated) Bump("holidayCalendars", 1);
+            if (written.HolidaysAdded > 0) Bump("publicHolidays", written.HolidaysAdded);
         }
 
         // ── Attendance policy ────────────────────────────────────────────────
@@ -731,25 +686,8 @@ public class SetupAssistantController : ControllerBase
         // ── Governance / import behaviour / employee ID rule ─────────────────
         if (d.EmployeeIdRule is not null)
         {
-            var companyId = company?.Id;
-            var rule = await _db.EmployeeIdRules.FirstOrDefaultAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.CompanyId == companyId, ct);
-            if (rule is null)
-            {
-                rule = new EmployeeIdRule { TenantId = tenantId, CompanyId = company?.Id, CreatedBy = GetUserId() };
-                _db.EmployeeIdRules.Add(rule);
-                Bump("employeeIdRules", 1);
-            }
-            rule.CompanyPrefix = d.EmployeeIdRule.CompanyPrefix;
-            rule.UseCountryPrefix = d.EmployeeIdRule.UseCountryPrefix;
-            rule.UseBranchPrefix = d.EmployeeIdRule.UseBranchPrefix;
-            rule.UseDepartmentPrefix = d.EmployeeIdRule.UseDepartmentPrefix;
-            rule.UseYear = d.EmployeeIdRule.UseYear;
-            rule.PaddingLength = d.EmployeeIdRule.PaddingLength;
-            rule.NextSequence = Math.Max(1, d.EmployeeIdRule.NextSequence);
-            rule.AllowManualOverride = d.EmployeeIdRule.AllowManualOverride;
-            rule.IsActive = true;
-            rule.UpdatedAtUtc = DateTime.UtcNow;
-            rule.UpdatedBy = GetUserId();
+            var (_, ruleCreated) = await SetupWriters.UpsertEmployeeIdRuleAsync(_db, tenantId, company?.Id, d.EmployeeIdRule, GetUserId(), ct);
+            if (ruleCreated) Bump("employeeIdRules", 1);
         }
 
         if (d.HrConfig is not null)

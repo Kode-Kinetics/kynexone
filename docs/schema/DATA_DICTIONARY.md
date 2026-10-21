@@ -858,6 +858,28 @@ in `tenant_feature_flags.config_json`: configuration nobody queries.
 - **Lifecycle** — given and withdrawn only by the employee (`/api/ess/biometric-consent`); withdrawal is always possible. Consent to an older version is closed when the employee agrees to the current one. Never updated otherwise, never deleted by the product.
 - **Retention** — employment period plus the statutory minimum (class `S` minimum, 84 months from separation): the proof of lawful basis for every selfie taken.
 
+## U. Create-company wizard (live bridge)
+
+Not part of the 76. One table and one column shipped on the **live** EF schema (migration
+`20261021033332_AddCompanySetupDrafts`) for the create-company wizard (`docs/design/company-setup-wizard.md`).
+Capability: a group administrator's half-finished company setup survives sign-out and a change of device, and the
+commit that creates the company is idempotent. No existing table can hold an un-submitted wizard state: every
+organisation table is a business row, and a draft must never write one. RLS is a target rule — the live bridge uses
+the `ITenantOwned` query filter.
+
+### `company_setup_drafts`
+- **Purpose** — one server-side draft of the create-company wizard: what the user has entered so far, the step they were on, and — once submitted — the company it created. The submitted row is the commit's idempotency witness (`Idempotency-Key` = the draft id): a retried commit finds `status = 'Submitted'` and `result_company_id` under the tenant setup lock and replays the first result.
+- **Tier** T · **Domain** Organisation · **RLS** shape (a)
+- **Keys** — `created_by_user_id`, `status` (`Open`/`Submitted`/`Discarded`), `step smallint` (1-7), `version int` (optimistic concurrency: a save names the version it read; stale → 409), `body jsonb` (the wizard's own camelCase shape, `CompanySetupDraftBody`; nobody queries, joins or reports on it — what was created lives in the business tables and `audit_logs`), `result_company_id`, `created_at_utc`, `updated_at_utc`, `submitted_at_utc`
+- **Rel** — `tenant_id → tenants` (N:1, RESTRICT), `created_by_user_id → users` (N:1, RESTRICT), `result_company_id → companies` (N:1, SET NULL: the draft and its audit trail survive the company; companies are soft-deleted in practice)
+- **Constraint** — `ck_company_setup_drafts__status` (`Open`,`Submitted`,`Discarded`), `__step` (1-7), `__body_size` (`octet_length(body::text) <= 131072`, 128 KiB), `__version` (≥ 1), `__submitted_pair` (Submitted ⇔ `submitted_at_utc`).
+- **Indexes** — `ix_company_setup_drafts__tenant_status_updated` (`tenant_id, status, updated_at_utc DESC`: `GET /api/company-setup/drafts`, a tenant's open drafts most recently touched first, and the idle-draft retention scan), `IX_company_setup_drafts_result_company_id` (EF FK index: the SET NULL action and the readiness lookup of the draft that created a company), `IX_company_setup_drafts_created_by_user_id` (EF FK index: the RESTRICT check).
+- **Lifecycle** — created `Open` (version 1) by `POST /drafts` only while the tenant may create a company now (no stranded drafts); autosaved by `PUT /drafts/{id}` (version + 1); soft-discarded by `DELETE` (`Discarded`, row kept); `Submitted` by the commit in the same transaction that creates the company. Never updated after Submitted or Discarded. Each create, discard and commit writes an `audit_logs` row; the commit's `company.setup_created` row carries the created/reused counts and the body's SHA-256.
+- **Retention** `T` — an `Open` draft untouched for 90 days is deleted (`CompanySetupDraftRetentionRule`, rule key `company-setup.draft-idle-90d`, HardDelete). Submitted and Discarded drafts are kept with the company's audit trail.
+
+### `companies.unified_national_number` (column)
+- `varchar(20) NULL` — the establishment's Unified National Number (Saudi "700 number", 10 digits, validated for SA on write). Optional; captured by the wizard and editable on the company form. **Note:** the Saudi bank-file settings (`system_settings`, category `PayrollSaudiBankExport`) also hold a `NationalUnifiedNo` for automatic WPS upload; the two are not yet reconciled (one fact, two places — tracked as a follow-up).
+
 ---
 
 ## Views (not tables)

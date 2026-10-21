@@ -1070,6 +1070,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<OfferArtifact> OfferArtifacts => Set<OfferArtifact>();
     public DbSet<OfferDispatch> OfferDispatches => Set<OfferDispatch>();
     public DbSet<OfferDispatchAttempt> OfferDispatchAttempts => Set<OfferDispatchAttempt>();
+    // ── Create-company wizard drafts (docs/design/company-setup-wizard.md) ──
+    public DbSet<CompanySetupDraftRecord> CompanySetupDrafts => Set<CompanySetupDraftRecord>();
     // ── Performance & Appraisals ─────────────────────────────────────────────
     public DbSet<PerformanceCycle> PerformanceCycles => Set<PerformanceCycle>();
     public DbSet<PerformanceScorecardTemplate> PerformanceScorecardTemplates => Set<PerformanceScorecardTemplate>();
@@ -1871,6 +1873,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.WorkEmailPattern).HasMaxLength(20).HasDefaultValue(WorkEmailPatterns.FirstLast);
             // ERP company code stamped on journal export lines (nullable: falls back to CR number).
             entity.Property(x => x.ErpCompanyCode).HasMaxLength(30);
+            // The establishment's Unified National Number (SA "700 number"). Nullable: not every company has one.
+            entity.Property(x => x.UnifiedNationalNumber).HasMaxLength(20);
         });
 
         modelBuilder.Entity<Branch>(entity =>
@@ -3020,6 +3024,35 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.DispatchId, x.LeaseToken, x.Stage }).IsUnique();
             entity.HasOne<OfferDispatch>().WithMany().HasForeignKey(x => new { x.TenantId, x.DispatchId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId }).HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // Create-company wizard drafts. Tenant-owned (RLS shape a; live bridge: the ITenantOwned query filter).
+        // body is jsonb because nobody queries it (the wizard's own shape); the CHECKs hold the state machine's
+        // vocabulary, the step range and the Submitted ⇔ submitted_at pair. The 128 KiB bound on body is
+        // Postgres-only DDL (octet_length over a jsonb cast), so it lives in the migration
+        // (AddCompanySetupDrafts.AddBodySizeCheck) and the Postgres test fixture, not in the model.
+        modelBuilder.Entity<CompanySetupDraftRecord>(entity =>
+        {
+            entity.ToTable("company_setup_drafts", t =>
+            {
+                t.HasCheckConstraint("ck_company_setup_drafts__status", "status IN ('Open', 'Submitted', 'Discarded')");
+                t.HasCheckConstraint("ck_company_setup_drafts__step", "step BETWEEN 1 AND 7");
+                t.HasCheckConstraint("ck_company_setup_drafts__version", "version >= 1");
+                t.HasCheckConstraint("ck_company_setup_drafts__submitted_pair",
+                    "(status = 'Submitted') = (submitted_at_utc IS NOT NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.Body).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Version).IsConcurrencyToken();
+            // Serves GET /api/company-setup/drafts: a tenant's open drafts, most recently touched first.
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.UpdatedAtUtc })
+                .IsDescending(false, false, true)
+                .HasDatabaseName("ix_company_setup_drafts__tenant_status_updated");
+            entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<User>().WithMany().HasForeignKey(x => x.CreatedByUserId).OnDelete(DeleteBehavior.Restrict);
+            // SET NULL: the draft (and its audit trail) survives the company; companies are soft-deleted in practice.
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.ResultCompanyId).OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<ShiftDefinition>(entity =>

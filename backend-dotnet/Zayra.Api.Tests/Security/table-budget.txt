@@ -81,6 +81,7 @@ Companies
 CompanyComplianceProfiles
 CompanyCutovers
 CompanyRatePolicies
+CompanySetupDrafts
 CompanyStatutoryOverrides
 CompanyTaxPolicies
 Competencies

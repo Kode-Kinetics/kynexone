@@ -20,8 +20,12 @@ public static class RetentionRuleKeys
     /// <summary>SUC: succession records of a person who left more than 3 years ago (anonymised, never deleted).</summary>
     public const string SuccessionPostEmployment = "succession.post-employment-3y";
 
+    /// <summary>A create-company wizard draft left Open and untouched for 90 days: the draft is deleted.</summary>
+    public const string CompanySetupDraftIdle = "company-setup.draft-idle-90d";
+
     public static readonly IReadOnlyList<string> All =
-        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired, SuccessionPostEmployment];
+        [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired, SuccessionPostEmployment,
+         CompanySetupDraftIdle];
 }
 
 /// <summary>

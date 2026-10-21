@@ -10,8 +10,9 @@ import type { CompanyProfile, MigrationImportBatchDto, OrgStructureImportRequest
  */
 test('email regression: company pattern can be chosen before an optional domain', async ({ page }, info) => {
   const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
-  await page.getByRole('button', { name: 'Add Company', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add Company', exact: true });
+  // New companies are created by the wizard; the simple form now edits existing companies only.
+  await page.getByRole('row').filter({ hasText: 'Setup Fixture Company' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Company', exact: true });
   const pattern = dialog.locator('label').filter({ hasText: /^Work Email Pattern/ }).locator('..').getByRole('combobox');
   await expect(pattern).toBeEnabled();
   await pattern.selectOption('flast');
@@ -103,19 +104,19 @@ test('country regression: unrelated edits preserve legacy country and jurisdicti
   expect(state.errors).toEqual([]);
 });
 
-async function openAddCompany(page: Page) {
-  await page.getByRole('button', { name: 'Add Company', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add Company', exact: true });
-  await dialog.locator('label').filter({ hasText: /^Legal Name \(EN\)/ }).locator('..').getByRole('textbox').fill('Second Fixture Co');
-  await dialog.getByRole('combobox', { name: 'Country', exact: true }).selectOption('SA');
-  return dialog;
+/** The company form edits existing companies only (creation is the wizard's); these cases run on Edit. */
+async function openEditCompany(page: Page) {
+  await page.getByRole('row').filter({ hasText: 'Setup Fixture Company' }).getByRole('button', { name: 'Edit', exact: true }).click();
+  return page.getByRole('dialog', { name: 'Edit Company', exact: true });
 }
+const companyPut = (route: { request: () => { method: () => string } }) => route.request().method() === 'PUT';
 
 test('registration number: a blank value is flagged on the field before anything is sent', async ({ page }, info) => {
   const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
   const posts: string[] = [];
-  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/companies') posts.push(request.url()); });
-  const dialog = await openAddCompany(page);
+  page.on('request', request => { if (request.method() === 'PUT' && new URL(request.url()).pathname === '/api/companies/setup-company') posts.push(request.url()); });
+  const dialog = await openEditCompany(page);
+  await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   const input = dialog.getByRole('textbox', { name: 'Registration Number', exact: true });
   const message = dialog.locator('#company-registration-number-error');
@@ -134,10 +135,10 @@ test('registration number: a blank value is flagged on the field before anything
 test('registration number: a duplicate refused by the server is shown on the field, not the banner', async ({ page }) => {
   const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
   const duplicate = 'Company registration number already exists in this tenant.';
-  await page.route(/\/api\/companies(?:\?.*)?$/, route => route.request().method() === 'POST'
+  await page.route('**/api/companies/setup-company', route => companyPut(route)
     ? route.fulfill({ status: 400, json: { error: 'registration_number_taken', field: 'registrationNumber', message: duplicate } })
     : route.fallback());
-  const dialog = await openAddCompany(page);
+  const dialog = await openEditCompany(page);
   await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('CR-100');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog.locator('#company-registration-number-error')).toHaveText(duplicate);
@@ -149,13 +150,13 @@ test('registration number: a duplicate refused by the server is shown on the fie
 
 test('registration number: server validation errors map to the field instead of a generic failure', async ({ page }) => {
   const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
-  await page.route(/\/api\/companies(?:\?.*)?$/, route => route.request().method() === 'POST'
+  await page.route('**/api/companies/setup-company', route => companyPut(route)
     ? route.fulfill({ status: 400, json: {
       type: 'https://tools.ietf.org/html/rfc9110#section-15.5.1', title: 'One or more validation errors occurred.', status: 400,
       errors: { RegistrationNumber: ['The RegistrationNumber field is required.'], TaxNumber: ['The field TaxNumber must be a string with a maximum length of 80.'] },
     } })
     : route.fallback());
-  const dialog = await openAddCompany(page);
+  const dialog = await openEditCompany(page);
   await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('CR-300');
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog.locator('#company-registration-number-error')).toHaveText('Registration number is required.');
@@ -554,7 +555,7 @@ test('a read-only organization viewer cannot enter Setup Studio through a write-
   await expect(page.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Add Company', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toHaveCount(0);
   expect(state.previews).toHaveLength(0);
   expect(state.applies).toHaveLength(0);
   expect(state.unexpectedWrites).toEqual([]);
@@ -995,7 +996,7 @@ test('checks import and every settings entry screen for contained navigation', a
     await expect(page.locator('#setup-setting-content')).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Setup sections', exact: true })).toBeVisible();
     if (info.project.name === 'mobile' && tab === 'companies') {
-      const add = page.getByRole('button', { name: 'Add Company', exact: true });
+      const add = page.getByRole('button', { name: 'Create company', exact: true });
       await add.scrollIntoViewIfNeeded();
       await expect(add).toBeInViewport({ ratio: 1 });
     }
