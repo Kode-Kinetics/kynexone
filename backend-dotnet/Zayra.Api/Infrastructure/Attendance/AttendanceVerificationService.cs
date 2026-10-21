@@ -915,8 +915,7 @@ public static class SelfieWaivers
     /// <summary>The tenant-local calendar day containing <paramref name="nowUtc"/>, as a UTC [start, end) window.</summary>
     public static async Task<(DateTime Start, DateTime End)> TodayAsync(ZayraDbContext db, Guid tenantId, DateTime nowUtc, CancellationToken ct)
     {
-        var tz = TenantTimeZone.FromId(await db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId).Select(l => l.DefaultTimezone).FirstOrDefaultAsync(ct));
+        var tz = await AttendanceWorkDate.TenantTimeZoneAsync(db, tenantId, ct);
         var today = TenantTimeZone.LocalDate(tz, nowUtc);
         return (TenantTimeZone.LocalDayStartUtc(tz, today), TenantTimeZone.LocalDayStartUtc(tz, today.AddDays(1)));
     }

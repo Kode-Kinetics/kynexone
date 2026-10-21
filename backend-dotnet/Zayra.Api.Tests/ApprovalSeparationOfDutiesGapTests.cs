@@ -222,6 +222,7 @@ public class ApprovalSeparationOfDutiesGapTests
             workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 1, StepName = "HR", ApproverType = "HR", IsFinalStep = true });
             seed.AddRange(companyA, companyB, leaveType, manager, workflow);
             await seed.SaveChangesAsync();
+            await TestApprovalConfig.EnsureDeciderAsync(seed, tenantId);
             var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(7));
             while (WorkWeekConfig.GccDefault.IsWeekend(start.DayOfWeek)) start = start.AddDays(1);
             seed.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
@@ -374,6 +375,8 @@ public class ApprovalSeparationOfDutiesGapTests
         var (tenantId, managerUserId, _, leaveId) = await SubmitTwoStepLeaveAsync(db);
         (await LeaveFor(db, tenantId, managerUserId).Approve(leaveId, new ApproveLeaveRequest("ok"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
+        // Step 2 was routed to HR; then the only HR Manager leaves.
+        await TestApprovalConfig.DeactivateAsync(db, await TestApprovalConfig.EnsureDeciderAsync(db, tenantId));
 
         var alone = await LeaveFor(db, tenantId, managerUserId).Approve(leaveId, new ApproveLeaveRequest("again"), CancellationToken.None);
         JsonSerializer.Serialize(alone.Should().BeOfType<BadRequestObjectResult>().Subject.Value).Should()
@@ -429,9 +432,12 @@ public class ApprovalSeparationOfDutiesGapTests
         workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, StepOrder = 1, StepName = "Anyone", ApproverRole = "Any", IsFinalStep = true });
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
+        // An approver exists when it is raised (routing refuses otherwise) and leaves before the checks below.
+        var colleague = await TestApprovalConfig.EnsureDeciderAsync(db, tenantId, "Line Approver", "approvals.decide", "manager.approve");
         var request = await Service(db).CreateRequestAsync(tenantId,
             new CreateApprovalRequest(workflow.Id, "EmployeeTransferRequest", "TR-ANY", "Transfer", RequestedForEmployeeId: subject.Id),
             new RequestContext("127.0.0.1", "xunit", Guid.NewGuid(), tenantId, ["HR Officer"], []), CancellationToken.None);
+        await TestApprovalConfig.DeactivateAsync(db, colleague);
 
         var clerkOnly = await Service(db).GetRequestAsync(tenantId, request.Id, AdminContext(tenantId, soleAdmin), CancellationToken.None);
         clerkOnly!.DecisionBlockedReason.Should().Contain("No other active user can decide it yet: give a colleague an approver role or the Admin role");
@@ -472,9 +478,13 @@ public class ApprovalSeparationOfDutiesGapTests
             workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, StepOrder = 2, StepName = "Second", ApproverRole = "HR Manager", IsFinalStep = true });
         db.ApprovalWorkflows.Add(workflow);
         await db.SaveChangesAsync();
+        // Routing refuses a request nobody could decide, so a colleague holds the role when it is raised and
+        // leaves afterwards: these tests are about what the barred person is told once nobody else can act.
+        var colleague = await TestApprovalConfig.EnsureDeciderAsync(db, tenantId);
         var request = await Service(db).CreateRequestAsync(tenantId,
             new CreateApprovalRequest(workflow.Id, "EmployeeTransferRequest", "TR-SOD-2", "Transfer", RequestedForEmployeeId: subjectEmployeeId),
             new RequestContext("127.0.0.1", "xunit", Guid.NewGuid(), tenantId, ["HR Officer"], []), CancellationToken.None);
+        await TestApprovalConfig.DeactivateAsync(db, colleague);
         return request.Id;
     }
 
@@ -522,6 +532,9 @@ public class ApprovalSeparationOfDutiesGapTests
         db.LeaveTypes.Add(leaveType);
         db.Employees.AddRange(manager, hr);
         await db.SaveChangesAsync();
+        // The manager can sign in (else step 1 goes to HR), and an HR Manager exists for step 2.
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, managerUserId);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenantId);
         var employee = new Employee { TenantId = tenantId, EmployeeCode = "EMP-1", FullName = "Employee One", ManagerEmployeeId = manager.Id, Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1) };
         db.Employees.Add(employee);
         var workflow = new ApprovalWorkflow { TenantId = tenantId, Code = "MGR-HR", Name = "Manager then HR", EntityName = nameof(LeaveRequest), IsDefault = true, IsActive = true };
@@ -550,6 +563,7 @@ public class ApprovalSeparationOfDutiesGapTests
 
     private static EmployeesController EmployeesFor(ZayraDbContext db, Guid tenantId, Guid userId)
     {
+        TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
         var audit = new AuditService(db);
         var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), audit, new NullDocumentStorage(), TestNotifications.For(db),
             new GapHijri(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new GapNoLetters(), new ApprovalWorkflowService(db, audit));

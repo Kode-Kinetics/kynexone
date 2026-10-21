@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -738,6 +739,7 @@ public sealed class PayrollVoidService
             opState.AdvancesRestored,
             opState.InstallmentsReopened,
             opState.ImpactsReleased,
+            attendanceDaysAlreadyAdjusted = opState.AttendanceDaysAlreadyAdjusted,
             opState.AdjustmentsReleased,
             // M3 — per-loan amounts, not just a count: an ExecuteUpdate-style restore is otherwise
             // invisible to the hash chain and an auditor cannot re-derive what was put back.
@@ -1057,6 +1059,36 @@ public sealed class PayrollVoidService
             }
         }
 
+        // The days this run paid are no longer paid, but nothing is recomputed here. A day that changed after it was paid
+        // (an open "paid attendance changed" flag) now carries its impacts AS PAID: the release above handed back what the
+        // run deducted, not what the day says now. Recomputing those days inside this transaction was unbounded (every
+        // flagged day's lock held until commit). Instead the next Process refuses on them (ERR_ATTENDANCE_IMPACT_STALE:
+        // a released impact carries the paid minutes, so it differs from the day), and the stale-attendance recompute,
+        // one day per transaction, puts them right and closes their flags. The flags therefore stay OPEN here.
+        //
+        // A day whose difference HR already RESOLVED (a payroll adjustment was made for it) is different: re-running the
+        // month deducts what the day says now, and the adjustment may then count twice. It is listed, not blocked.
+        var coveredEmployeeIds = await ScopedBypass.TenantWide(_db.PayrollSlips, tenantId,
+                "Run void/reopen is a system correction over the whole run: every company's slip on it says whose days it paid.")
+            .Where(s => s.RunId == runId).Select(s => s.EmployeeId).Distinct().ToListAsync(ct);
+        if (coveredEmployeeIds.Count > 0)
+        {
+            var periodStart = new DateOnly(run.Year, run.Month, 1);
+            var periodEnd = periodStart.AddMonths(1).AddDays(-1);
+            var resolved = await _db.AttendanceExceptions.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && x.IsResolved
+                         && coveredEmployeeIds.Contains(x.EmployeeId) && x.WorkDate >= periodStart && x.WorkDate <= periodEnd)
+                .Select(x => new { x.EmployeeId, x.WorkDate, x.Details })
+                .ToListAsync(ct);
+            foreach (var day in resolved.Where(x => AttendanceDerivedArtifacts.WasResolvedByHr(x.Details))
+                         .Select(x => new { x.EmployeeId, x.WorkDate }).Distinct().OrderBy(x => x.EmployeeId).ThenBy(x => x.WorkDate))
+                result.AttendanceDaysAlreadyAdjusted.Add(new
+                {
+                    employeeId = day.EmployeeId, workDate = day.WorkDate,
+                    note = "An adjustment was already made for this day's attendance change; check it before re-running the month.",
+                });
+        }
+
         var leaveIds = witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveImpact)
                                 .Select(w => w.ArtifactId).ToList();
         if (leaveIds.Count > 0)
@@ -1146,6 +1178,9 @@ public sealed class PayrollVoidService
         public int InstallmentsReopened { get; set; }
         public int ImpactsReleased { get; set; }
         public int AdjustmentsReleased { get; set; }
+        /// <summary>Paid days whose PaidAttendanceChanged difference HR resolved with an adjustment: listed for a check
+        /// before the month is re-run (the re-run deducts what the day says now). Never blocks.</summary>
+        public List<object> AttendanceDaysAlreadyAdjusted { get; } = new();
         public int WitnessRowCount { get; set; }
         /// <summary>POD-C3 — arrears lines flipped Settled → Voided, i.e. made due again.</summary>
         public int ArrearsLinesReleased { get; set; }

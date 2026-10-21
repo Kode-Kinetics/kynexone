@@ -430,8 +430,7 @@ public class AttendanceController : ControllerBase
     public async Task<IActionResult> SelfieWaivedPunches([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        var tz = TenantTimeZone.FromId(await _db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId).Select(l => l.DefaultTimezone).FirstOrDefaultAsync(ct));
+        var tz = await AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, ct);
         var today = TenantTimeZone.LocalDate(tz, DateTime.UtcNow);
         var fromDate = from ?? today.AddDays(-30);
         var toDate = to ?? today;

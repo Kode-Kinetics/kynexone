@@ -56,10 +56,9 @@ public static class EmployeeSalaryBreakdownChanges
             .FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
         if (grade is not null && ((grade.MinSalary > 0 && Gross(salary) < grade.MinSalary) || (grade.MaxSalary > 0 && Gross(salary) > grade.MaxSalary)))
             throw new InvalidOperationException($"Salary package is outside grade {grade.Code}'s salary range.");
-        var code = string.IsNullOrWhiteSpace(salary.SalaryStructureCode) ? grade is null ? "DIRECT" : $"GRADE-{grade.Code}" : salary.SalaryStructureCode.Trim();
-        var structure = await db.SalaryStructures.AsNoTracking()
-            .Where(s => s.TenantId == employee.TenantId && s.Code == code && !s.IsDeleted && (s.CompanyId == employee.CompanyId || s.CompanyId == null))
-            .OrderByDescending(s => s.CompanyId == employee.CompanyId).FirstOrDefaultAsync(ct);
+        // Refused at submit, not at approval, by the same rule the writer applies: an unknown or inactive named
+        // structure (SalaryStructureRefusedException). null = the default structure, which the writer creates.
+        var structure = await EmployeeSalaryBreakdownWriter.ResolveStructureAsync(db, employee, grade, salary.SalaryStructureCode, ct);
         if (structure is not null)
         {
             var request = new EmployeeSalaryStructureRequest(employee.Id, structure.Id, salary.BasicSalary!.Value, salary.HousingAllowance!.Value,

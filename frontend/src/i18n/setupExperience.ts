@@ -53,6 +53,7 @@ const ar: Record<string, string> = {
   'Companies, workplaces, teams and financial ownership.': 'الشركات ومواقع العمل والفرق والملكية المالية.',
   'Jobs, grades, financial years and regional employment rules.': 'الوظائف والدرجات والسنوات المالية وقواعد العمل الإقليمية.',
   'Shared reference data, numbering, notifications and audit history.': 'البيانات المرجعية المشتركة والترقيم والإشعارات وسجل التدقيق.',
+  'Registration Number': 'رقم التسجيل',
   'Legal entities, registration details and operating currencies.': 'الكيانات القانونية وبيانات التسجيل والعملات التشغيلية.',
   'Company branches and their operating locations.': 'فروع الشركة ومواقع تشغيلها.',
   'Reporting departments and their cost-center ownership.': 'الإدارات الإدارية وارتباطها بمراكز التكلفة.',

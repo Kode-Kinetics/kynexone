@@ -58,6 +58,94 @@ public sealed class LearningAssessmentRecordsTests(PostgresFixture fx)
         }
     }
 
+    /// <summary>
+    /// The double click, made deterministic. Request B reads the attempt (still in progress) and is held before its next
+    /// statement; request A then submits the same attempt. A must either wait for B (the attempt is serialised) or, if
+    /// nothing serialises it, finish first — and then B, which saw "in progress", must still answer with the stored
+    /// result. It used to throw "This learning is no longer assigned to you." because it found the assignment A had
+    /// just completed.
+    /// </summary>
+    [Fact]
+    public async Task DoubleSubmit_ALaterSubmitOfTheSameAttempt_ReturnsTheStoredResult_NeverAFalseError()
+    {
+        await using var w = await CreateAsync(fx);
+        var (pathId, _) = await w.PublishedPathAsync("RACE", [Lesson("QUIZ", LearningCompletionRules.Assessment, validityMonths: 6)]);
+        await w.AssignAsync(pathId, [w.Ops1]);
+        var enrollment = await w.EnrollmentAsync(w.Ops1, pathId, 1);
+        Guid attemptId;
+        var (s0, a0) = w.Employee(w.Ops1);
+        await using (s0) attemptId = (await Get<LearningProgressService>(s0).StartAttemptAsync(a0, w.Ops1, enrollment.Id, default)).Id;
+
+        var gate = new PauseAfterAttemptRead();
+        w.ExtraInterceptors = [gate];
+        var (sb, actorB) = w.Employee(w.Ops1);
+        var progressB = Get<LearningProgressService>(sb);
+        w.ExtraInterceptors = [];
+        var (sa, actorA) = w.Employee(w.Ops1);
+        var progressA = Get<LearningProgressService>(sa);
+        AttemptResultDto[] results;
+        await using (sb)
+        await using (sa)
+        {
+            var b = Task.Run(() => progressB.SubmitAttemptAsync(actorB, w.Ops1, attemptId, new SubmitAttemptInput(Correct()), default));
+            await gate.Paused.WaitAsync(TimeSpan.FromSeconds(30));
+            var a = Task.Run(() => progressA.SubmitAttemptAsync(actorA, w.Ops1, attemptId, new SubmitAttemptInput(Correct()), default));
+            // Release B once A has finished (nothing serialised the two) or is waiting on B's row lock (serialised).
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (!a.IsCompleted && !await WaitingOnLockAsync(fx.ConnectionString, "learning_attempts") && DateTime.UtcNow < deadline)
+                await Task.Delay(20);
+            gate.Release();
+            results = await Task.WhenAll(a, b);
+        }
+
+        results.Should().OnlyContain(r => r.Status == LearningAttemptStatuses.Passed && r.EnrollmentStatus == LearningEnrollmentStatuses.Completed);
+        results[0].CertificateNumber.Should().NotBeNull().And.Be(results[1].CertificateNumber);
+        await using var db = w.Db();
+        (await db.LearningAttempts.AsNoTracking().CountAsync(x => x.EnrollmentId == enrollment.Id)).Should().Be(1);
+        (await db.LearningCredentials.AsNoTracking().CountAsync(c => c.EnrollmentId == enrollment.Id)).Should().Be(1);
+        (await db.LearningEnrollments.AsNoTracking().SingleAsync(e => e.Id == enrollment.Id)).AttemptsUsed.Should().Be(1);
+        (await db.AuditLogs.AsNoTracking().CountAsync(x => x.Action == "learning.attempt.passed" && x.EntityId == attemptId.ToString())).Should().Be(1);
+        (await db.AuditLogs.AsNoTracking().CountAsync(x => x.Action == "learning.enrollment.completed" && x.EntityId == enrollment.Id.ToString())).Should().Be(1);
+    }
+
+    private static async Task<bool> WaitingOnLockAsync(string connectionString, string table)
+    {
+        await using var connection = new Npgsql.NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new Npgsql.NpgsqlCommand(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE @q)", connection);
+        command.Parameters.AddWithValue("q", $"%{table}%");
+        return (bool)(await command.ExecuteScalarAsync())!;
+    }
+
+    /// <summary>Holds the request before the first statement that follows its read of the attempt, until released.</summary>
+    private sealed class PauseAfterAttemptRead : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _paused = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _sawAttempt;
+        private int _held;
+        public Task Paused => _paused.Task;
+        public void Release() => _release.TrySetResult();
+
+        public override async ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken ct = default)
+        {
+            if (Volatile.Read(ref _sawAttempt) == 1)
+            {
+                if (Interlocked.Exchange(ref _held, 1) == 0)
+                {
+                    _paused.TrySetResult();
+                    await _release.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
+                }
+            }
+            else if (command.CommandText.Contains("learning_attempts", StringComparison.Ordinal))
+                Volatile.Write(ref _sawAttempt, 1);
+            return result;
+        }
+    }
+
     [Fact]
     public async Task Prerequisites_AreEnforcedOnTheServer()
     {

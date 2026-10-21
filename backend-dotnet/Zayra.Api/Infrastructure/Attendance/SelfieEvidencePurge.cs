@@ -318,9 +318,8 @@ public sealed class SelfieEvidencePurger
             .ToListAsync(ct)).ToHashSet();
     }
 
-    private async Task<TimeZoneInfo> TenantTimeZoneAsync(Guid tenantId, CancellationToken ct) =>
-        TenantTimeZone.FromId(await _db.TenantLocalizationSettings.AsNoTracking()
-            .Where(l => l.TenantId == tenantId).Select(l => l.DefaultTimezone).FirstOrDefaultAsync(ct));
+    private Task<TimeZoneInfo> TenantTimeZoneAsync(Guid tenantId, CancellationToken ct) =>
+        AttendanceWorkDate.TenantTimeZoneAsync(_db, tenantId, ct);
 
     /// <summary>
     /// Purges one row if it is still due (re-derived for that single row). Kept for one-off callers; the job uses

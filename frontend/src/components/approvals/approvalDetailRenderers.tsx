@@ -4,6 +4,7 @@ import { RenewalOfferApprovalCard } from '../renewals/RenewalOfferApprovalCard';
 import { BenefitClaimApprovalCard } from '../benefits/BenefitClaims';
 import { AdditionalBenefitApprovalCard } from '../benefits/AdditionalBenefitRequestDetail';
 import { SlateApprovalCard } from '../succession/SlateApprovalLink';
+import { EmployeeChangeApprovalCard } from './EmployeeChangeApprovalCard';
 
 export interface ApprovalDetailRendererProps {
   request: ApprovalRequest;
@@ -20,4 +21,6 @@ export const approvalDetailRenderers: Record<string, ComponentType<ApprovalDetai
   ContractRenewal: RenewalOfferApprovalCard,
   ContractRenewalBatch: RenewalOfferApprovalCard,
   SuccessionSlate: SlateApprovalCard,
+  // Before → after per field (masked), for whoever decides an employee master-data change.
+  EmployeeChangeRequest: EmployeeChangeApprovalCard,
 };

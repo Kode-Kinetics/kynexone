@@ -74,6 +74,7 @@ import type {
 } from '../api/setup';
 import { Modal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
+import { notifyGradesChanged } from '../lib/gradeEvents';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -209,12 +210,43 @@ function CompaniesTab() {
   const selectedCountryPack = availablePacks.find(p => setupCountryCode(p.countryCode) === setupCountryCode(form.countryCode));
   const jurisdictions = selectedCountryPack?.jurisdictions ?? [];
 
+  // Field-addressed save errors, shown under the input they belong to rather than in the banner.
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof CompanyRequest, string>>>({});
+  useEffect(() => { if (modalOpen) setFieldErrors({}); }, [modalOpen, editing]);
+  const companyFieldLabels: Partial<Record<keyof CompanyRequest, string>> = {
+    legalNameEn: 'Legal name (English)', countryCode: 'Country', registrationNumber: 'Registration number',
+    defaultCurrency: 'Default currency', emailDomain: 'Email domain', erpCompanyCode: 'ERP company code',
+  };
+  // Fields that render their own inline error; anything else the server names goes to the banner.
+  const inlineCompanyFields: ReadonlySet<keyof CompanyRequest> = new Set<keyof CompanyRequest>(['registrationNumber']);
+  // ASP.NET validation ProblemDetails: { errors: { "RegistrationNumber": ["The RegistrationNumber field is required."] } }.
+  const mapCompanyValidationErrors = (errors: Record<string, unknown>) => {
+    const fields: Partial<Record<keyof CompanyRequest, string>> = {};
+    const banner: string[] = [];
+    for (const [rawKey, raw] of Object.entries(errors)) {
+      const segment = (rawKey.split('.').pop() ?? rawKey).replace(/^\$/, '');
+      const key = (segment.charAt(0).toLowerCase() + segment.slice(1)) as keyof CompanyRequest;
+      const serverMessage = String(Array.isArray(raw) ? raw[0] ?? '' : raw ?? '').trim();
+      const label = companyFieldLabels[key];
+      const message = label && /required/i.test(serverMessage) ? `${label} is required.` : serverMessage || `${label ?? segment} is invalid.`;
+      if (inlineCompanyFields.has(key)) fields[key] = message;
+      else banner.push(message);
+    }
+    return { fields, banner };
+  };
+
   const handleSave = async () => {
+    setFieldErrors({});
     if (!form.legalNameEn.trim()) { setError('Legal name (English) is required'); return; }
     // The field has always been marked required; it was never enforced, which is part of how a
     // tenant's first company reached production with an empty country.
     if (!(form.countryCode ?? '').trim()) {
       setError('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.');
+      return;
+    }
+    if (!(form.registrationNumber ?? '').trim()) {
+      setError('');
+      setFieldErrors({ registrationNumber: 'Registration number is required — it identifies this legal entity on statutory filings.' });
       return;
     }
     if (!(form.defaultCurrency ?? '').trim()) { setError('Default currency is required'); return; }
@@ -242,8 +274,15 @@ function CompaniesTab() {
       // Preserve the actionable create-guardrail messaging previously owned by the
       // standalone /companies CreateCompanyModal (account-type / plan-limit / platform-
       // controlled). Only meaningful on create; edit paths never emit these codes.
-      const resp = (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data;
-      if (resp?.error === 'account_type_single_company')
+      const resp = (err as { response?: { data?: { error?: string; message?: string; field?: string; errors?: Record<string, unknown> } } })?.response?.data;
+      if (resp?.error === 'registration_number_taken' || resp?.field === 'registrationNumber')
+        setFieldErrors({ registrationNumber: resp.message ?? 'Another company in this workspace already uses this registration number.' });
+      else if (resp?.errors && typeof resp.errors === 'object') {
+        const mapped = mapCompanyValidationErrors(resp.errors);
+        setFieldErrors(mapped.fields);
+        setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : 'Failed to save. Please try again.'));
+      }
+      else if (resp?.error === 'account_type_single_company')
         setError(resp.message ?? 'This account is a single-company account. Ask your platform administrator to enable the Group account type.');
       else if (resp?.error === 'company_limit_reached')
         setError(resp.message ?? 'Your plan’s company limit is reached. Contact your account manager to upgrade.');
@@ -254,7 +293,10 @@ function CompaniesTab() {
     finally { setSaving(false); }
   };
 
-  const f = (key: keyof CompanyRequest, v: string | boolean) => setForm((x) => ({ ...x, [key]: v }));
+  const f = (key: keyof CompanyRequest, v: string | boolean) => {
+    setForm((x) => ({ ...x, [key]: v }));
+    setFieldErrors((current) => (current[key] ? { ...current, [key]: undefined } : current));
+  };
   const deleteCompany = async (id: string) => {
     if (!confirm('Delete this company? This cannot be undone.')) return;
     setDeleting(id);
@@ -428,8 +470,17 @@ function CompaniesTab() {
               ))}
             </select>
           </FormField>
-          <FormField label="Registration Number" required>
-            <input type="text" value={form.registrationNumber} onChange={(e) => f('registrationNumber', e.target.value)} className="input w-full" />
+          <FormField label={t('Registration Number')} required error={fieldErrors.registrationNumber} errorId="company-registration-number-error">
+            <input
+              type="text"
+              value={form.registrationNumber}
+              onChange={(e) => f('registrationNumber', e.target.value)}
+              className={`input w-full ${fieldErrors.registrationNumber ? 'border-red-400 focus:border-red-500 dark:border-red-500/60' : ''}`}
+              aria-label={t('Registration Number')}
+              aria-required="true"
+              aria-invalid={fieldErrors.registrationNumber ? true : undefined}
+              aria-describedby={fieldErrors.registrationNumber ? 'company-registration-number-error' : undefined}
+            />
           </FormField>
           <FormField label="Tax Number">
             <input type="text" value={form.taxNumber ?? ''} onChange={(e) => f('taxNumber', e.target.value)} className="input w-full" />
@@ -547,7 +598,9 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
     finally { setDeleting(null); }
   };
 
-  const companyName = (id: string) => companies.find((c) => c.id === id)?.legalNameEn ?? id;
+  // The server names each branch's company; the loaded company list is the fallback. Never the raw id.
+  const companyName = (b: BranchDto) =>
+    b.companyName?.trim() || companies.find((c) => c.id === b.companyId)?.legalNameEn || 'Unknown company';
 
   return (
     <>
@@ -579,7 +632,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           <tr key={b.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{b.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.nameEn}</td>
-            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(b.companyId)}</td>
+            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(b)}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{b.city || '—'}</td>
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>
@@ -959,18 +1012,22 @@ function GradesTab() {
     if (!form.code.trim() || !form.name.trim()) { setError('Code and name are required'); return; }
     if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError('Min salary cannot exceed max salary'); return; }
     setSaving(true); setError('');
+    // The grade itself is saved before its pay scale: open employee forms must hear about it even if the pay
+    // scale write then fails.
+    let gradeSaved = false;
     try {
       const saved = editing ? await gradesApi.update(editing.id, form) : await gradesApi.create(form);
+      gradeSaved = true;
       if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, payScale);
       setModalOpen(false); load();
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save. Please try again.'); }
-    finally { setSaving(false); }
+    finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
   };
   const f = (key: keyof GradeRequest, v: string | boolean | number) => setForm((x) => ({ ...x, [key]: v }));
   const deleteGrade = async (id: string) => {
     if (!confirm('Delete this grade?')) return;
     setDeleting(id);
-    try { await gradesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
+    try { await gradesApi.remove(id); load(); notifyGradesChanged(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
 
@@ -985,7 +1042,7 @@ function GradesTab() {
             entityName="Grades"
             onExport={async () => { const csv = await gradesApi.export(); downloadCsv(csv, 'grades.csv'); }}
             onDownloadTemplate={async () => { const csv = await gradesApi.importTemplate(); downloadCsv(csv, 'grades-template.csv'); }}
-            onImport={async (csv) => { const r = await gradesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
+            onImport={async (csv) => { const r = await gradesApi.import(csv); load(); notifyGradesChanged(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
       >
@@ -1170,6 +1227,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
 // ─── Master Data ─────────────────────────────────────────────────────────────
 
 function MasterDataTab() {
+  const t = useT();
   const [types, setTypes] = useState<MasterDataType[]>([]);
   const [values, setValues] = useState<MasterDataValue[]>([]);
   const [selectedType, setSelectedType] = useState<MasterDataType | null>(null);
@@ -1180,8 +1238,10 @@ function MasterDataTab() {
   const [editingType, setEditingType] = useState<MasterDataType | null>(null);
   const [editingValue, setEditingValue] = useState<MasterDataValue | null>(null);
   useSetupEditorState(typeModal || valueModal);
-  const [typeForm, setTypeForm] = useState({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true });
-  const [valueForm, setValueForm] = useState({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false });
+  // isActive travels with every edit: the API keeps the current status only when it is absent, and the
+  // form always knows it, so a rename can never silently reactivate (or retire) a record.
+  const [typeForm, setTypeForm] = useState({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true, isActive: true });
+  const [valueForm, setValueForm] = useState({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false, isActive: true });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1199,19 +1259,19 @@ function MasterDataTab() {
 
   useEffect(() => { loadTypes(); }, [loadTypes]);
 
-  const selectType = (t: MasterDataType) => {
-    setSelectedType(t);
-    loadValues(t.id);
+  const selectType = (type: MasterDataType) => {
+    setSelectedType(type);
+    loadValues(type.id);
   };
 
   const openNewType = () => {
     setEditingType(null);
-    setTypeForm({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true });
+    setTypeForm({ code: '', nameEn: '', nameAr: '', description: '', allowCustomValues: true, isActive: true });
     setError(''); setTypeModal(true);
   };
-  const openEditType = (t: MasterDataType) => {
-    setEditingType(t);
-    setTypeForm({ code: t.code, nameEn: t.nameEn, nameAr: t.nameAr, description: t.description, allowCustomValues: t.allowCustomValues });
+  const openEditType = (type: MasterDataType) => {
+    setEditingType(type);
+    setTypeForm({ code: type.code, nameEn: type.nameEn, nameAr: type.nameAr, description: type.description, allowCustomValues: type.allowCustomValues, isActive: type.isActive });
     setError(''); setTypeModal(true);
   };
   const saveType = async () => {
@@ -1219,20 +1279,21 @@ function MasterDataTab() {
     setSaving(true); setError('');
     try {
       if (editingType) await masterDataApi.updateType(editingType.id, typeForm);
-      else await masterDataApi.createType(typeForm);
+      else await masterDataApi.createType({ code: typeForm.code, nameEn: typeForm.nameEn, nameAr: typeForm.nameAr, description: typeForm.description, allowCustomValues: typeForm.allowCustomValues });
       setTypeModal(false); loadTypes();
+      if (editingType && selectedType?.id === editingType.id) setSelectedType({ ...selectedType, ...typeForm });
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
     finally { setSaving(false); }
   };
 
   const openNewValue = () => {
     setEditingValue(null);
-    setValueForm({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false });
+    setValueForm({ code: '', valueEn: '', valueAr: '', sortOrder: 0, isDefault: false, isActive: true });
     setError(''); setValueModal(true);
   };
   const openEditValue = (v: MasterDataValue) => {
     setEditingValue(v);
-    setValueForm({ code: v.code, valueEn: v.valueEn, valueAr: v.valueAr, sortOrder: v.sortOrder, isDefault: v.isDefault });
+    setValueForm({ code: v.code, valueEn: v.valueEn, valueAr: v.valueAr, sortOrder: v.sortOrder, isDefault: v.isDefault, isActive: v.isActive });
     setError(''); setValueModal(true);
   };
   const saveValue = async () => {
@@ -1240,7 +1301,7 @@ function MasterDataTab() {
     setSaving(true); setError('');
     try {
       if (editingValue) await masterDataApi.updateValue(editingValue.id, { ...valueForm });
-      else await masterDataApi.createValue(selectedType.id, { ...valueForm, isDefault: valueForm.isDefault });
+      else await masterDataApi.createValue(selectedType.id, { code: valueForm.code, valueEn: valueForm.valueEn, valueAr: valueForm.valueAr, sortOrder: valueForm.sortOrder, isDefault: valueForm.isDefault });
       setValueModal(false); loadValues(selectedType.id);
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to save.'); }
     finally { setSaving(false); }
@@ -1266,19 +1327,20 @@ function MasterDataTab() {
             <p className="py-6 text-center text-xs text-slate-400">No types yet</p>
           ) : (
             <ul className="space-y-0.5">
-              {types.map((t) => (
-                <li key={t.id}>
+              {types.map((type) => (
+                <li key={type.id}>
                   <div
                     role="button"
                     tabIndex={0}
-                    onClick={() => selectType(t)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectType(t); } }}
-                    className={`group flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm ${selectedType?.id === t.id ? 'bg-sapphire/10 text-sapphire font-semibold' : 'hover:bg-slate-50 dark:hover:bg-white/[0.03] text-slate-700 dark:text-slate-300'}`}
+                    onClick={() => selectType(type)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectType(type); } }}
+                    className={`group flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-sm ${selectedType?.id === type.id ? 'bg-sapphire/10 text-sapphire font-semibold' : 'hover:bg-slate-50 dark:hover:bg-white/[0.03] text-slate-700 dark:text-slate-300'}`}
                   >
-                    <span className="truncate">{t.nameEn}</span>
+                    <span className={`truncate ${type.isActive ? '' : 'text-slate-400 line-through'}`}>{type.nameEn}</span>
                     <div className="flex items-center gap-1">
-                      {!t.isSystemDefined && (
-                        <button type="button" aria-label="Edit type" onClick={(e) => { e.stopPropagation(); openEditType(t); }} className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-slate-200 dark:hover:bg-white/10">
+                      {!type.isActive && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{t('Inactive')}</span>}
+                      {!type.isSystemDefined && (
+                        <button type="button" aria-label="Edit type" onClick={(e) => { e.stopPropagation(); openEditType(type); }} className="opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-slate-200 dark:hover:bg-white/10">
                           <Pencil className="h-3 w-3" />
                         </button>
                       )}
@@ -1351,12 +1413,18 @@ function MasterDataTab() {
         <div className="space-y-3">
           <FormField label="Code" required><input value={typeForm.code} onChange={(e) => setTypeForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="NATIONALITY" /></FormField>
           <FormField label="Name (EN)" required><input value={typeForm.nameEn} onChange={(e) => setTypeForm(x => ({ ...x, nameEn: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Name (AR)"><input value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full" dir="rtl" /></FormField>
+          <FormField label="Name (AR)">
+            <div className="flex items-stretch gap-1.5">
+              <input value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={typeForm.nameEn} kind="organization-label" onSuggest={(s) => setTypeForm(x => ({ ...x, nameAr: s }))} />
+            </div>
+          </FormField>
           <FormField label="Description"><input value={typeForm.description} onChange={(e) => setTypeForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="allowCustom" checked={typeForm.allowCustomValues} onChange={(e) => setTypeForm(x => ({ ...x, allowCustomValues: e.target.checked }))} className="h-4 w-4 accent-sapphire" />
             <label htmlFor="allowCustom" className="text-sm text-slate-700 dark:text-slate-300">Allow custom values</label>
           </div>
+          {editingType && <FormField label={t('Status')}><select aria-label={t('Status')} value={typeForm.isActive ? 'true' : 'false'} onChange={(e) => setTypeForm(x => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>}
         </div>
       </Modal>
 
@@ -1367,12 +1435,18 @@ function MasterDataTab() {
         <div className="space-y-3">
           <FormField label="Code" required><input value={valueForm.code} onChange={(e) => setValueForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="UAE" /></FormField>
           <FormField label="Value (EN)" required><input value={valueForm.valueEn} onChange={(e) => setValueForm(x => ({ ...x, valueEn: e.target.value }))} className="input w-full" /></FormField>
-          <FormField label="Value (AR)"><input value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full" dir="rtl" /></FormField>
+          <FormField label="Value (AR)">
+            <div className="flex items-stretch gap-1.5">
+              <input value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <TransliterateButton source={valueForm.valueEn} kind="organization-label" onSuggest={(s) => setValueForm(x => ({ ...x, valueAr: s }))} />
+            </div>
+          </FormField>
           <FormField label="Sort Order"><input type="number" value={valueForm.sortOrder} onChange={(e) => setValueForm(x => ({ ...x, sortOrder: Number(e.target.value) }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="isDefault" checked={valueForm.isDefault} onChange={(e) => setValueForm(x => ({ ...x, isDefault: e.target.checked }))} className="h-4 w-4 accent-sapphire" />
             <label htmlFor="isDefault" className="text-sm text-slate-700 dark:text-slate-300">Default value</label>
           </div>
+          {editingValue && <FormField label={t('Status')}><select aria-label={t('Status')} value={valueForm.isActive ? 'true' : 'false'} onChange={(e) => setValueForm(x => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>}
         </div>
       </Modal>
     </div>
@@ -2266,7 +2340,11 @@ function ActiveBadge({ active }: { active: boolean }) {
   );
 }
 
-function FormField({ label, required, children, info }: { label: string; required?: boolean; children: React.ReactNode; info?: string }) {
+function FormField({ label, required, children, info, error, errorId }: {
+  label: string; required?: boolean; children: React.ReactNode; info?: string;
+  /** Shown under the control. Give the control aria-invalid and aria-describedby={errorId}. */
+  error?: string; errorId?: string;
+}) {
   return (
     <div>
       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -2274,6 +2352,11 @@ function FormField({ label, required, children, info }: { label: string; require
         {info && <InfoTip text={info} className="ms-1" />}
       </label>
       {children}
+      {error && (
+        <p id={errorId} role="alert" className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

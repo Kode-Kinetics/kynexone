@@ -36,6 +36,7 @@ public sealed class HrTransactionalInvariantPostgresTests
         await using (var seed = _fixture.CreateDb())
         {
             tenantId = await PostgresFixture.SeedMinimalTenant(seed);
+            await TestApprovalConfig.EnsureDeciderAsync(seed, tenantId, "Manager");
             var workflow = new ApprovalWorkflow
             {
                 TenantId = tenantId,

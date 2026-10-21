@@ -445,8 +445,10 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
                 context["totalDays"] = await attQ.CountAsync(cancellationToken);
                 context["presentDays"] = await attQ.CountAsync(r => r.Status == "Present", cancellationToken);
                 context["absentDays"] = await attQ.CountAsync(r => r.Status == "Absent", cancellationToken);
-                context["lateDays"] = await attQ.CountAsync(r => r.LateMinutes > 0, cancellationToken);
-                var lateMinutesSum = await attQ.SumAsync(r => (int?)r.LateMinutes, cancellationToken);
+                // Only deductible lateness: a half-pair day's late minutes are held (the shared rule), as in payroll.
+                var lateQ = attQ.Where(Zayra.Api.Infrastructure.Attendance.AttendanceDerivedArtifacts.LatenessCountsExpression);
+                context["lateDays"] = await lateQ.CountAsync(r => r.LateMinutes > 0, cancellationToken);
+                var lateMinutesSum = await lateQ.SumAsync(r => (int?)r.LateMinutes, cancellationToken);
                 context["totalLateMinutes"] = lateMinutesSum ?? 0;
                 context["approvedLeaveDaysCount"] = await leaveQ.SumAsync(r => (decimal?)r.TotalDays, cancellationToken) ?? 0m;
                 break;

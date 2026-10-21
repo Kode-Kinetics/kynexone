@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Reports;
 using Zayra.Api.Models;
 
@@ -267,17 +268,31 @@ public class AnalyticsController : ControllerBase
         var today = TenantTimeZone.LocalDate(timeZone, DateTime.UtcNow);
         // "Last 30 days" is 30 calendar days ending today — not 31, and nothing dated in the future.
         var from = today.AddDays(-(days - 1));
-        return Ok(await AttendanceInScope(tid)
-            .Where(x => x.WorkDate >= from && x.WorkDate <= today)
+        var window = AttendanceInScope(tid).Where(x => x.WorkDate >= from && x.WorkDate <= today);
+        var rows = await window
             .GroupBy(x => x.WorkDate)
             .Select(g => new
             {
                 date = g.Key,
                 present = g.Count(x => x.Status == AttendanceStatuses.Present || x.Status == AttendanceStatuses.Late || x.Status == AttendanceStatuses.HalfDay),
                 absent = g.Count(x => x.Status == AttendanceStatuses.Absent),
-                late = g.Count(x => x.LateMinutes > 0),
+                lateNow = g.Count(x => x.LateMinutes > 0),
             })
-            .OrderBy(x => x.date).ToListAsync(ct));
+            .ToListAsync(ct);
+        // Past days count only deductible lateness (a half-pair day's minutes are held: the shared rule), so the trend
+        // reconciles with payroll. Today counts every late clock-in, like the "late today" tile: until the clock-out
+        // arrives each of them is an In-only day.
+        var deductibleLate = (await window.Where(AttendanceDerivedArtifacts.LatenessCountsExpression)
+                .GroupBy(x => x.WorkDate).Select(g => new { date = g.Key, late = g.Count(x => x.LateMinutes > 0) })
+                .ToListAsync(ct))
+            .ToDictionary(x => x.date, x => x.late);
+        return Ok(rows
+            .Select(r => new
+            {
+                r.date, r.present, r.absent,
+                late = r.date == today ? r.lateNow : deductibleLate.GetValueOrDefault(r.date),
+            })
+            .OrderBy(x => x.date).ToList());
     }
 
     // GET /api/analytics/trends/leave

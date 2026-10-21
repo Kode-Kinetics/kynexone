@@ -132,7 +132,8 @@ export const masterDataApi = {
   createType: (body: { code: string; nameEn: string; nameAr?: string; description?: string; allowCustomValues: boolean }) =>
     client.post<MasterDataType>('/api/admin/master-data/types', body).then(r => r.data),
 
-  updateType: (id: string, body: { nameEn: string; nameAr?: string; description?: string; allowCustomValues: boolean }) =>
+  /** `isActive` omitted keeps the type's current status; system-defined types cannot be deactivated. */
+  updateType: (id: string, body: { nameEn: string; nameAr?: string; description?: string; allowCustomValues: boolean; isActive?: boolean }) =>
     client.put<MasterDataType>(`/api/admin/master-data/types/${id}`, body).then(r => r.data),
 
   deleteType: (id: string) =>
@@ -147,7 +148,8 @@ export const masterDataApi = {
   createValue: (typeId: string, body: { code: string; valueEn: string; valueAr?: string; extraJson?: string; sortOrder: number; isDefault: boolean }) =>
     client.post<MasterDataValue>(`/api/admin/master-data/types/${typeId}/values`, body).then(r => r.data),
 
-  updateValue: (id: string, body: Partial<MasterDataValue>) =>
+  /** `isActive` / `extraJson` omitted keep the value's current status and metadata. */
+  updateValue: (id: string, body: { code: string; valueEn: string; valueAr?: string; extraJson?: string; sortOrder: number; isDefault: boolean; isActive?: boolean }) =>
     client.put<MasterDataValue>(`/api/admin/master-data/values/${id}`, body).then(r => r.data),
 
   deleteValue: (id: string) =>

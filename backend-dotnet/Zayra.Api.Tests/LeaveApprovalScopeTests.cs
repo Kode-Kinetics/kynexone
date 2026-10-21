@@ -88,6 +88,7 @@ public class LeaveApprovalScopeTests
         db.LeaveTypes.Add(leaveType);
         db.Employees.Add(manager);
         await db.SaveChangesAsync();
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, managerUserId);
         var employee = new Employee
         {
             TenantId = tenantId, EmployeeCode = "EMP-FALLBACK", FullName = "Needs Approval",
@@ -195,6 +196,8 @@ public class LeaveApprovalScopeTests
         db.LeaveTypes.Add(leaveType);
         db.Employees.AddRange(manager, hr);
         await db.SaveChangesAsync();
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, managerUserId);
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, hrUserId, "HR Manager");
 
         var employee = new Employee
         {
@@ -310,6 +313,7 @@ public class LeaveApprovalScopeTests
         };
         db.AddRange(leaveType, manager);
         await db.SaveChangesAsync();
+        await TestApprovalConfig.EnsureLoginAsync(db, tenantId, managerUserId);
         var employee = new Employee
         {
             TenantId = tenantId, EmployeeCode = "EMP-CAS", FullName = "CAS Employee",

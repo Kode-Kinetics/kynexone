@@ -60,7 +60,10 @@ public record BranchDto(
     string TimeZoneId,
     string LaborOfficeCode,
     bool IsHeadOffice,
-    bool IsActive);
+    bool IsActive,
+    // The owning legal entity's English legal name, resolved server-side so a list never has to
+    // fall back to showing the raw CompanyId when the company is outside the caller's company list.
+    string CompanyName = "");
 
 public record BranchRequest(
     [Required] Guid CompanyId,

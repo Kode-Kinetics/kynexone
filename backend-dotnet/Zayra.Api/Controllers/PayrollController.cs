@@ -18,6 +18,7 @@ using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Governance;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -1677,6 +1678,19 @@ public partial class PayrollController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.PayPeriod == $"{run.Year}-{run.Month:00}" && x.Status != "Processed" && employeeIdsForRun.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
 
+        // ── ERR_ATTENDANCE_IMPACT_STALE: never deduct attendance impacts that no longer match their days ─────────
+        // This run is about to deduct the pending impacts loaded above exactly as they stand. One written by an older
+        // rule (an Out-only day's 480-minute absence, a late deduction on an In-only day), left behind by an undone run,
+        // or dated by a time zone or roster that has since changed would be deducted wrongly, and nothing downstream
+        // compares it with the day. Refuse instead, name the days, and offer the recompute of exactly those days.
+        if (run.IncludesRecurringPay)
+        {
+            var staleAttendance = await AttendanceImpactReconciliation.FindStaleDaysAsync(
+                _db, tenantId, employeeIdsForRun, periodStart, periodEnd, id, cancellationToken);
+            if (staleAttendance.Count > 0)
+                return UnprocessableEntity(StaleAttendanceRefusal(run, staleAttendance, employees));
+        }
+
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
         var loanCompanyId = company.Id;
         var activeLoans = await _db.EmployeeLoans.AsNoTracking()
@@ -3169,6 +3183,10 @@ public partial class PayrollController : ControllerBase
                 tenantId, slips.Select(s => s.EmployeeId).ToList(), cancellationToken),
             OvertimeHoursByEmployee        = otHoursByEmpForValidation,
             AttendanceProcessedEmployeeIds = attendanceProcessedEmpIds,
+            UnresolvedPaidAttendanceChanges = await UnresolvedPaidAttendanceChangesAsync(
+                tenantId, periodStart, periodEnd, employeeIdsForRun, cancellationToken),
+            HeldMissingPunchDays = await AttendanceImpactReconciliation.FindHeldDaysAsync(
+                _db, tenantId, employeeIdsForRun, periodStart, periodEnd, cancellationToken),
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
@@ -4173,6 +4191,11 @@ public partial class PayrollController : ControllerBase
             OvertimeHoursByEmployee        = valOtHoursByEmp,
             AttendanceProcessedEmployeeIds = valAttendanceEmpIds,
             // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
+            UnresolvedPaidAttendanceChanges = await UnresolvedPaidAttendanceChangesAsync(
+                tenantId, valPeriodStart, valPeriodEnd, employeeIdsForValidation, cancellationToken),
+            HeldMissingPunchDays = await AttendanceImpactReconciliation.FindHeldDaysAsync(
+                _db, tenantId, employeeIdsForValidation, valPeriodStart, valPeriodEnd, cancellationToken),
+            // Same source as Process, so /validate (which replaces the findings wholesale) keeps the warning.
             GosiRatesEffectiveFrom         = await GosiRatesEffectiveFromAsync(company.CountryCode, cancellationToken),
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
             // Mid-year cutover — re-derived with the SAME loader Process used; /validate replaces the
@@ -4747,6 +4770,7 @@ public partial class PayrollController : ControllerBase
                 paymentBatchesDeleted = batchIds.Count,
                 opState.LoansRestored, opState.AdvancesRestored, opState.InstallmentsReopened,
                 opState.ImpactsReleased, opState.AdjustmentsReleased,
+                attendanceDaysAlreadyAdjusted = opState.AttendanceDaysAlreadyAdjusted,
                 consumptionWitnessed = opState.WitnessRowCount > 0,
                 loanRestores = opState.LoanRestoreDetail,
             };
@@ -10065,24 +10089,32 @@ public partial class PayrollController : ControllerBase
             });
 
         // ── K3: THE ART. 84 WAGE BASE ────────────────────────────────────────────────────────────────
-        // The pack computes gratuity on the LAST BASIC wage; POD-A2 documented that as a per-company FLOOR,
-        // not the statutory "last wage" (basic + regular allowances). A displayed shortfall was advisory;
-        // a DISBURSED one is underpayment of a statutory entitlement, evidenced by the employer's own
-        // signed settlement. Non-zero delta requires an explicit, RECORDED acknowledgement.
+        // The pack computes gratuity on the wage base IT applies — for KSA basic + housing, plus transport
+        // unless 'eosb.include_transport' is off, with the composite "other allowances" (food, mobile, other)
+        // excluded unless 'eosb.include_other_allowances' is on (KsaEndOfServiceCalculator, A1). A non-zero
+        // delta means some of the package sits outside that base. A displayed shortfall was advisory; a
+        // DISBURSED one may be underpayment of a statutory entitlement, evidenced by the employer's own signed
+        // settlement, so it requires an explicit, RECORDED acknowledgement. The message names the base the
+        // settlement actually used (its inputs snapshot), not a fixed sentence.
         if (s.WageBaseDeltaAmount > 0.01m && !req.AcknowledgeWageBaseFloor)
+        {
+            var wageBase = DescribeEosbWageBase(s.InputsSnapshotJson, s.Currency);
             return UnprocessableEntity(new
             {
                 error   = "wage_base_floor_requires_acknowledgement",
-                message = $"This settlement pays gratuity on the BASIC wage only. Computed on the full package " +
-                          $"(basic + allowances) it would be {s.WageBaseDeltaAmount:N2} {s.Currency} HIGHER. KSA " +
-                          "Labour Law Art. 84 measures the award on the LAST WAGE, which the courts read as " +
-                          "including regular allowances — so approving this disburses a known potential shortfall. " +
+                message = $"This settlement pays gratuity on {wageBase.Text}. Computed on the full package " +
+                          $"it would be {s.WageBaseDeltaAmount:N2} {s.Currency} HIGHER. KSA " +
+                          "Labour Law Art. 84 measures the award on the LAST WAGE (Art. 2: basic plus all due increments), " +
+                          "so if an excluded allowance is a regular cash increment, approving this disburses a known potential shortfall. " +
                           "Either raise the settlement (add the difference as an other-dues line), or re-send with " +
-                          "acknowledgeWageBaseFloor=true to record who accepted the company floor. " +
+                          "acknowledgeWageBaseFloor=true to record who accepted this wage base. " +
                           "[FLAG-COMPLIANCE-KSA]",
                 wageBaseDelta = s.WageBaseDeltaAmount,
+                appliedWageBase = wageBase.Applied,
+                fullPackage = wageBase.FullPackage,
                 currency = s.Currency,
             });
+        }
 
         // ── GUARD 4: THE WAGE SIDE MUST BE DONE (the POD-C3 seam, as an assertion) ───────────────────
         // C3 pays a leaver through their last working day inside the ordinary run and stamps
@@ -10528,6 +10560,47 @@ public partial class PayrollController : ControllerBase
                       "refused rather than guessed. Set the employee's company and retry.",
             employeeId = employee.Id,
         });
+    }
+
+    /// <summary>
+    /// "a wage base of 12,500.00 SAR (basic + housing + transport, as applied by the country pack), not the full
+    /// package of 13,300.00 SAR — 800.00 SAR of other allowances (food, mobile, other) is excluded" — read from the
+    /// settlement's own inputs snapshot (appliedWageBase, the package components), so the sentence states the base
+    /// the money was computed on. Falls back to a neutral phrase when the snapshot predates those fields.
+    /// </summary>
+    internal static (string Text, decimal? Applied, decimal? FullPackage) DescribeEosbWageBase(string? inputsSnapshotJson, string currency)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(string.IsNullOrWhiteSpace(inputsSnapshotJson) ? "{}" : inputsSnapshotJson);
+            var root = doc.RootElement;
+            decimal? Read(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number && v.TryGetDecimal(out var d) ? d : null;
+            var applied = Read("appliedWageBase");
+            var gross = Read("monthlyGross");
+            if (applied is not decimal appliedBase || gross is not decimal fullPackage)
+                return ("the wage base the country pack applied, not the full package", applied, gross);
+            var basic = Read("basicWage") ?? 0m;
+            var housing = Read("packageHousing") ?? 0m;
+            var transport = Read("packageTransport") ?? 0m;
+            // What the applied base covers, in component words: basic + housing is the Art. 84 floor; transport
+            // is in when the base reaches it (the default 'eosb.include_transport' = true).
+            var covered = new List<string> { "basic" };
+            var running = basic;
+            if (housing > 0m && appliedBase + 0.005m >= running + housing) { covered.Add("housing"); running += housing; }
+            if (transport > 0m && appliedBase + 0.005m >= running + transport) { covered.Add("transport"); running += transport; }
+            var excluded = Math.Max(0m, fullPackage - appliedBase);
+            var excludedWhat = new List<string>();
+            if (transport > 0m && !covered.Contains("transport")) excludedWhat.Add("transport");
+            excludedWhat.Add("other allowances (food, mobile, other)");
+            var text = $"a wage base of {appliedBase:N2} {currency} ({string.Join(" + ", covered)}, as applied by the country pack), " +
+                       $"not the full package of {fullPackage:N2} {currency}" +
+                       (excluded > 0.005m ? $" — {excluded:N2} {currency} of {string.Join(" and ", excludedWhat)} is excluded by default" : string.Empty);
+            return (text, appliedBase, fullPackage);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return ("the wage base the country pack applied, not the full package", null, null);
+        }
     }
 
     private static string SafeEosbRule(string json)
@@ -11840,6 +11913,154 @@ public partial class PayrollController : ControllerBase
     private string GetUserName() => User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "system";
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The 422 Process answers when pending attendance impacts no longer match their days (ERR_ATTENDANCE_IMPACT_STALE).</summary>
+    private static object StaleAttendanceRefusal(PayrollRun run, IReadOnlyList<StaleAttendanceDay> stale, IReadOnlyCollection<Employee> employees)
+    {
+        var employeeCount = stale.Select(d => d.EmployeeId).Distinct().Count();
+        var byId = employees.GroupBy(e => e.Id).ToDictionary(g => g.Key, g => g.First());
+        return new
+        {
+            error = "attendance_impact_stale",
+            code = AttendanceImpactReconciliation.StaleCode,
+            message = $"{stale.Count} attendance day(s) for {employeeCount} employee(s) in {run.Year}-{run.Month:D2} have deductions that " +
+                      "no longer match their punches, so this run would deduct the wrong amounts. Recompute those days " +
+                      "(Payroll → Validation → Recompute these days), then process the run again. Nothing was saved.",
+            employeeCount,
+            dayCount = stale.Count,
+            days = stale.Take(StaleDaysListed).Select(d => new
+            {
+                d.EmployeeId,
+                employeeCode = byId.TryGetValue(d.EmployeeId, out var e) ? e.EmployeeCode : null,
+                employeeName = byId.TryGetValue(d.EmployeeId, out var n) ? n.FullName : null,
+                workDate = d.WorkDate, reason = d.Reason,
+            }),
+            recompute = new { method = "POST", path = $"/api/payroll/runs/{run.Id}/attendance/recompute-stale" },
+        };
+    }
+
+    private const int StaleDaysListed = 200;
+
+    /// <summary>
+    /// The run's attendance check, before Process: the days whose pending deductions no longer match their punches (which
+    /// block Process with ERR_ATTENDANCE_IMPACT_STALE) and the half-pair days whose late / early-exit minutes are held
+    /// (WARN_MISSING_PUNCH_HELD). Over the population Process would pay, for the run's month.
+    /// </summary>
+    [HttpGet("runs/{id:guid}/attendance-reconciliation")]
+    [HasPermission("payroll.read")]
+    public async Task<IActionResult> AttendanceReconciliation(Guid id, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var scope = await AttendanceReconciliationScopeAsync(tenantId, id, ct);
+        if (scope is null) return NotFound();
+        var (run, employees, from, to) = scope.Value;
+        var ids = employees.Select(e => e.Id).ToList();
+        IReadOnlyList<StaleAttendanceDay> stale = run.IncludesRecurringPay
+            ? await AttendanceImpactReconciliation.FindStaleDaysAsync(_db, tenantId, ids, from, to, run.Id, ct)
+            : Array.Empty<StaleAttendanceDay>();
+        var held = await AttendanceImpactReconciliation.FindHeldDaysAsync(_db, tenantId, ids, from, to, ct);
+        var byId = employees.ToDictionary(e => e.Id);
+        string? CodeOf(int employeeId) => byId.TryGetValue(employeeId, out var e) ? e.EmployeeCode : null;
+        string? NameOf(int employeeId) => byId.TryGetValue(employeeId, out var e) ? e.FullName : null;
+        return Ok(new
+        {
+            runId = run.Id, from, to,
+            consumesAttendance = run.IncludesRecurringPay,
+            stale = new
+            {
+                code = AttendanceImpactReconciliation.StaleCode,
+                employeeCount = stale.Select(d => d.EmployeeId).Distinct().Count(),
+                dayCount = stale.Count,
+                days = stale.Select(d => new { d.EmployeeId, employeeCode = CodeOf(d.EmployeeId), employeeName = NameOf(d.EmployeeId), d.WorkDate, d.Reason }),
+            },
+            held = new
+            {
+                code = AttendanceImpactReconciliation.HeldCode,
+                employeeCount = held.Select(d => d.EmployeeId).Distinct().Count(),
+                dayCount = held.Count,
+                lateMinutes = held.Sum(d => d.LateMinutes),
+                earlyExitMinutes = held.Sum(d => d.EarlyExitMinutes),
+                days = held.Select(d => new { d.EmployeeId, employeeCode = CodeOf(d.EmployeeId), employeeName = NameOf(d.EmployeeId) ?? d.EmployeeName, d.WorkDate, d.LateMinutes, d.EarlyExitMinutes }),
+            },
+        });
+    }
+
+    /// <summary>
+    /// Recomputes exactly the days the run's attendance check finds stale (the server finds them again; the client names
+    /// none), with the day processor — or, for a day with no raw punches, by re-deriving its deductions from the record.
+    /// Each day is its own transaction under the day's lock, like a range run. Paid and payroll-locked days are never
+    /// touched. Afterwards the run can be processed.
+    /// </summary>
+    [HttpPost("runs/{id:guid}/attendance/recompute-stale")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> RecomputeStaleAttendance(Guid id, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var scope = await AttendanceReconciliationScopeAsync(tenantId, id, ct);
+        if (scope is null) return NotFound();
+        var (run, employees, from, to) = scope.Value;
+        // The statuses Process refuses: such a run has already consumed its attendance.
+        if (run.Status is "Processed" or "PendingFinanceReview" or "Locked" or "Approved" or "Paid" or "Voided")
+            return BadRequest(new { error = "run_not_processable", message = $"A '{run.Status}' run has already consumed its attendance. Reopen it first." });
+        var stale = await AttendanceImpactReconciliation.FindStaleDaysAsync(_db, tenantId, employees.Select(e => e.Id).ToList(), from, to, run.Id, ct);
+        // The population read stamps selection outcomes on tracked rows; this endpoint must not save them.
+        _db.ChangeTracker.Clear();
+        var recomputed = await AttendanceService.ForRecompute(_db).RecomputeDaysAsync(tenantId,
+            stale.Select(d => (d.EmployeeId, d.WorkDate)).ToList(),
+            new Zayra.Api.Application.Auth.RequestContext(HttpContext?.Connection.RemoteIpAddress?.ToString(), null, GetUserId(), tenantId),
+            $"payroll run {run.Id}: stale attendance recomputed before processing", ct,
+            stale.Where(d => !d.FromPunches).Select(d => (d.EmployeeId, d.WorkDate)).ToHashSet());
+        var remaining = await AttendanceImpactReconciliation.FindStaleDaysAsync(_db, tenantId, employees.Select(e => e.Id).ToList(), from, to, run.Id, ct);
+        return Ok(new
+        {
+            found = stale.Count,
+            recomputed,
+            remaining = remaining.Count,
+            message = remaining.Count == 0
+                ? $"{recomputed} attendance day(s) were recomputed. Process the run again."
+                : $"{recomputed} attendance day(s) were recomputed; {remaining.Count} still differ (a payroll-locked period, or a day changed again). Review them before processing.",
+        });
+    }
+
+    /// <summary>The run, the population Process would pay, and its month — for the attendance check before Process.</summary>
+    private async Task<(PayrollRun Run, List<Employee> Employees, DateOnly From, DateOnly To)?> AttendanceReconciliationScopeAsync(
+        Guid tenantId, Guid runId, CancellationToken ct)
+    {
+        var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.Id == runId && r.TenantId == tenantId, ct);
+        if (run is null) return null;
+        var from = new DateOnly(run.Year, run.Month, 1);
+        var to = from.AddMonths(1).AddDays(-1);
+        // The same company resolution and eligible population Process uses.
+        var companies = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted).OrderBy(c => c.CreatedAtUtc).ToListAsync(ct);
+        var legacySingleCompany = companies.Count == 1;
+        var company = run.CompanyId.HasValue ? companies.FirstOrDefault(c => c.Id == run.CompanyId.Value)
+            : legacySingleCompany ? companies[0] : null;
+        if (company is null) return (run, new List<Employee>(), from, to);
+        var anyScoped = await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId.HasValue, ct);
+        var anyForCompany = await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && !e.IsDeleted && e.CompanyId == company.Id, ct);
+        var (eligible, _, _, _, _) = await LoadEligibleWithLeaversAsync(tenantId, company.Id, legacySingleCompany || !anyScoped || !anyForCompany,
+            asNoTracking: true, from, to, excludeRunId: run.Id, ct, includeSettlementLeavers: run.SettlesFinalSettlements);
+        var population = await ResolveRunPopulationAsync(tenantId, run, eligible, ct);
+        return (run, population.Employees, from, to);
+    }
+
+    /// <summary>
+    /// Unresolved "paid attendance changed" attendance exceptions for these employees in the period — Rule 10b's
+    /// WARN_PAID_ATTENDANCE_CHANGED. One source for Process and /validate.
+    /// </summary>
+    private async Task<IReadOnlyList<PaidAttendanceChange>> UnresolvedPaidAttendanceChangesAsync(
+        Guid tenantId, DateOnly from, DateOnly to, IReadOnlyCollection<int> employeeIds, CancellationToken ct)
+    {
+        var rows = await _db.AttendanceExceptions.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.ExceptionType == AttendanceDerivedArtifacts.PaidAttendanceChanged && !x.IsResolved
+                     && x.WorkDate >= from && x.WorkDate <= to && employeeIds.Contains(x.EmployeeId))
+            .OrderBy(x => x.EmployeeId).ThenBy(x => x.WorkDate)
+            .Select(x => new { x.EmployeeId, x.WorkDate, x.Details })
+            .ToListAsync(ct);
+        return rows.Select(r => new PaidAttendanceChange(r.EmployeeId, r.WorkDate, AttendanceDerivedArtifacts.DescribePaidAttendanceChange(r.Details))).ToList();
+    }
+
     /// <summary>
     /// The effective date of the newest platform GOSI rate row — what the staleness warning
     /// (WARN_GOSI_RATES_REQUIRE_SIGNOFF) ages. Read from statutory_rules, the store the payslip computes
@@ -12036,8 +12257,9 @@ public record ApproveFinalSettlementRequest(
     /// defaults to "Resignation", which silently applies the Art. 85 haircut — this is what stops an
     /// untouched default discounting a genuine termination.</summary>
     string? ConfirmTerminationReason = null,
-    /// <summary>Records that the approver accepts gratuity computed on the BASIC wage floor rather than
-    /// the Art. 84 "last wage". Required whenever the computed delta is non-zero.</summary>
+    /// <summary>Records that the approver accepts gratuity computed on the wage base the country pack applied
+    /// (KSA: basic + housing + transport by default; other allowances excluded) rather than the full package.
+    /// Required whenever the computed delta is non-zero.</summary>
     bool AcknowledgeWageBaseFloor = false,
     /// <summary>Records that the leaver's final-month wages are genuinely UNPAID and authorises adding
     /// them to this settlement as an explicit other-dues line.</summary>

@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Zayra.Api.Application.AI;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Infrastructure.AI;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
@@ -127,7 +128,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         }
         // 3. Honour section toggles + normalise.
         // The profile's currency, normalised once, wins over anything in the draft.
-        draft = ApplySectionsAndNormalise(draft, profile.Sections, NormalizeCurrency(profile.CurrencyCode));
+        draft = ApplySectionsAndNormalise(draft, profile.Sections, NormalizeCurrency(profile.CurrencyCode), iso3);
         var configuration = profile.Configuration;
         if (configuration is not null)
         {
@@ -577,7 +578,9 @@ public sealed class SetupAssistantService : ISetupAssistantService
     /// into Grade.Currency. There is no case where a model picks a tenant's currency better than
     /// the tenant did, and a mispriced band does not look mispriced: 3,000 reads the same either
     /// way.</param>
-    private static SetupDraft ApplySectionsAndNormalise(SetupDraft d, SetupSections s, string currency)
+    /// <param name="iso3">The company's country: a draft with no time zone gets the country's
+    /// (<see cref="HomeJurisdiction.TimeZoneFor"/>), never a blanket UTC.</param>
+    private static SetupDraft ApplySectionsAndNormalise(SetupDraft d, SetupSections s, string currency, string iso3)
     {
         static string Code(string? c, string fallback) =>
             (string.IsNullOrWhiteSpace(c) ? fallback : c).Trim().ToUpperInvariant().Replace(' ', '_');
@@ -733,7 +736,9 @@ public sealed class SetupAssistantService : ISetupAssistantService
         {
             DefaultLanguage = string.Equals(d.Localization.DefaultLanguage, "ar", StringComparison.OrdinalIgnoreCase) ? "ar" : "en",
             CalendarSystem = string.Equals(d.Localization.CalendarSystem, "Hijri", StringComparison.OrdinalIgnoreCase) ? "Hijri" : "Gregorian",
-            DefaultTimezone = string.IsNullOrWhiteSpace(d.Localization.DefaultTimezone) ? "UTC" : d.Localization.DefaultTimezone.Trim(),
+            // A blank zone used to become "UTC" here: a Saudi company set up without naming one was dated in UTC by every
+            // screen that reads the stored zone. The country's zone is the stated fact; UTC only for an unknown country.
+            DefaultTimezone = string.IsNullOrWhiteSpace(d.Localization.DefaultTimezone) ? HomeJurisdiction.TimeZoneFor(iso3) : d.Localization.DefaultTimezone.Trim(),
             DateFormat = string.Equals(d.Localization.DateFormat, "MM/DD/YYYY", StringComparison.OrdinalIgnoreCase) ? "MM/DD/YYYY"
                 : string.Equals(d.Localization.DateFormat, "YYYY-MM-DD", StringComparison.OrdinalIgnoreCase) ? "YYYY-MM-DD"
                 : "DD/MM/YYYY",
@@ -1280,20 +1285,8 @@ public sealed class SetupAssistantService : ISetupAssistantService
         var gulf = iso3 is "SAU" or "ARE" or "QAT" or "KWT" or "BHR" or "OMN";
         var language = Choice(p.DefaultLanguage, gulf ? "en" : "en", "en", "ar", "bilingual");
 
-        var timezone = !string.IsNullOrWhiteSpace(p.TimeZone) ? p.TimeZone!.Trim() : iso3 switch
-        {
-            "SAU" => "Asia/Riyadh",
-            "ARE" => "Asia/Dubai",
-            "QAT" => "Asia/Qatar",
-            "KWT" => "Asia/Kuwait",
-            "BHR" => "Asia/Bahrain",
-            "OMN" => "Asia/Muscat",
-            "EGY" => "Africa/Cairo",
-            "IND" => "Asia/Kolkata",
-            "GBR" => "Europe/London",
-            "USA" => "America/New_York",
-            _ => "UTC",
-        };
+        // The product's one country → zone map (it accepts ISO-3), not a second copy of it.
+        var timezone = !string.IsNullOrWhiteSpace(p.TimeZone) ? p.TimeZone!.Trim() : HomeJurisdiction.TimeZoneFor(iso3);
 
         return new DraftLocalization(
             // "bilingual" is not a value the column holds: the product ships both languages and the

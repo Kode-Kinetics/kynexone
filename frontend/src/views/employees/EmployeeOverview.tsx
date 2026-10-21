@@ -3,7 +3,9 @@
 import Link from 'next/link';
 import { AlertTriangle, ArrowRight, BadgeCheck, CircleDollarSign, ClipboardCheck } from 'lucide-react';
 import type { EmployeeDetail, EmployeeReadiness, ReadinessItem } from '../../api/employees';
-import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
+import { canActOnReadinessFix, readinessFixHref, readinessFixTarget } from '../../lib/readinessFixTarget';
+import { useAuth } from '../../contexts/AuthContext';
+import { useLocale } from '../../contexts/LocaleContext';
 
 function Requirement({ item, tone }: { item: ReadinessItem; tone: 'activation' | 'pay' | 'recommendation' }) {
   const label = tone === 'activation' ? 'Blocks activation' : tone === 'pay' ? 'Blocks payroll' : 'Recommended';
@@ -20,8 +22,11 @@ function Requirement({ item, tone }: { item: ReadinessItem; tone: 'activation' |
 }
 
 export function EmployeeOverview({ employee, readiness, returnTo }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string }) {
+  const { hasPermission } = useAuth();
+  const { t } = useLocale();
   const first = readiness?.blocking[0] ?? readiness?.payBlocking[0] ?? readiness?.recommended[0];
-  const targetSection = first?.fix?.kind === 'document' ? 'compliance-documents' : first?.category === 'pay' ? 'pay-benefits' : 'employment';
+  // A user who cannot make the fix is not sent to a permission wall: the action is shown disabled, with why.
+  const canAct = first ? canActOnReadinessFix(readinessFixTarget(first), hasPermission) : false;
   const requirements = [
     ...(readiness?.blocking.map(item => ({ item, tone: 'activation' as const })) ?? []),
     ...(readiness?.payBlocking.map(item => ({ item, tone: 'pay' as const })) ?? []),
@@ -43,7 +48,9 @@ export function EmployeeOverview({ employee, readiness, returnTo }: { employee: 
                 <p className="font-bold text-slate-950 dark:text-white">Complete {first.label}</p>
                 <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{first.reason || 'This is the highest-priority open requirement.'}</p>
               </div>
-              <Link href={employeeWorkspaceHref(employee.id, { section: targetSection, returnTo })} className="btn-primary shrink-0">Open section <ArrowRight className="h-4 w-4 rtl:rotate-180" /></Link>
+              {canAct
+                ? <Link href={readinessFixHref(employee.id, first, returnTo)} className="btn-primary shrink-0">{t('Open section')} <ArrowRight className="h-4 w-4 rtl:rotate-180" /></Link>
+                : <div className="shrink-0 sm:max-w-xs sm:text-end"><button type="button" disabled aria-describedby="employee-next-action-reason" className="btn-primary opacity-50">{t('Open section')} <ArrowRight className="h-4 w-4 rtl:rotate-180" /></button><p id="employee-next-action-reason" className="mt-1.5 text-xs text-slate-600 dark:text-slate-300">{t('You can see this requirement, but completing it needs edit access to these details. Ask an HR colleague who has it.')}</p></div>}
             </div>
           ) : (
             <div className="flex items-center gap-3 rounded-xl bg-emerald-50 p-5 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">

@@ -10,12 +10,10 @@ import {
   DEFAULT_WORK_EMAIL_PATTERN,
   departmentsApi,
   designationsApi,
-  gradesApi,
   type CompanyDto,
   type CostCenterDto,
   type DepartmentDto,
   type DesignationDto,
-  type GradeDto,
 } from '../../api/organization';
 import { masterDataApi, type MasterDataValue } from '../../api/setup';
 import { CONTRACT_TYPE_OPTIONS, EMPLOYMENT_TYPE_OPTIONS } from '../../api/employeeFieldCatalog';
@@ -24,7 +22,9 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { employeeWorkspaceHref, type EmployeeSection } from '../../lib/peopleRoutes';
 import { EMPLOYEE_EDIT_STEPS, EmployeeCreatePanel, EmployeeCreateProgress, EmployeeCreateReview } from '../../components/EmployeeCreateWizard';
 import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
+import { SalaryStructureSelect } from '../../components/SalaryStructureSelect';
 import { employeeEditStep, useEmployeeEditDraft } from './useEmployeeEditDraft';
+import { useLiveGrades } from '../../hooks/useLiveGrades';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
   if (section === 'employment' || section === 'access-onboarding') return 1;
@@ -67,12 +67,18 @@ export function EmployeeEditFlow({
   const [company, setCompany] = useState<CompanyDto | null>(null);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
-  const [grades, setGrades] = useState<GradeDto[]>([]);
+  // Live, not a one-shot fetch: a grade added or retired in Setup (any tab) reaches this dropdown without a reload.
+  const { grades: allGrades } = useLiveGrades();
+  const grades = useMemo(() => allGrades.filter((item) => item.isActive), [allGrades]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [employmentTypeOptions, setEmploymentTypeOptions] = useState(EMPLOYMENT_TYPE_OPTIONS);
   const [contractTypeOptions, setContractTypeOptions] = useState(CONTRACT_TYPE_OPTIONS);
+  // The employee's current structure is retired / superseded / another company's: a salary change on it would be
+  // refused (422), so it is blocked here with the reason. Edits that do not touch the salary package still save.
+  const [structureInvalid, setStructureInvalid] = useState(false);
   const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved });
+  const salaryBlockedByStructure = structureInvalid && draft.salaryPackageChanged;
   const viewHref = employeeWorkspaceHref(employee.id, { section, panel, returnTo });
 
   useEffect(() => {
@@ -81,18 +87,16 @@ export function EmployeeEditFlow({
       companiesApi.listAll(),
       departmentsApi.listAll(),
       designationsApi.listAll(),
-      gradesApi.listAll(),
       costCentersApi.listAll(employee.companyId),
       employeesApi.listAll(),
       masterDataApi.listValuesByCode('EmploymentType', true),
       masterDataApi.listValuesByCode('ContractType', true),
     ]).then((results) => {
       if (cancelled) return;
-      const [companyResult, departmentResult, designationResult, gradeResult, costCenterResult, employeeResult, employmentTypeResult, contractTypeResult] = results;
+      const [companyResult, departmentResult, designationResult, costCenterResult, employeeResult, employmentTypeResult, contractTypeResult] = results;
       setCompany(companyResult.status === 'fulfilled' ? companyResult.value.find((item) => item.id === employee.companyId) ?? null : null);
       setDepartments(departmentResult.status === 'fulfilled' ? departmentResult.value.filter((item) => item.isActive) : []);
       setDesignations(designationResult.status === 'fulfilled' ? designationResult.value.filter((item) => item.isActive) : []);
-      setGrades(gradeResult.status === 'fulfilled' ? gradeResult.value.filter((item) => item.isActive) : []);
       setCostCenters(costCenterResult.status === 'fulfilled' ? costCenterResult.value.filter((item) => item.isActive) : []);
       setEmployees(employeeResult.status === 'fulfilled' ? employeeResult.value : []);
       setEmploymentTypeOptions(employmentTypeResult.status === 'fulfilled' ? activeMasterOptions(employmentTypeResult.value, EMPLOYMENT_TYPE_OPTIONS) : EMPLOYMENT_TYPE_OPTIONS);
@@ -158,7 +162,7 @@ export function EmployeeEditFlow({
           {!canWrite && <p className="mb-4 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
           {draft.unavailableKeys.length > 0 && <p role="alert" className="mb-4 rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Some edited fields are no longer available. Revert the changes or reopen the employee record.')}</p>}
           {draft.notice && <p role="alert" className="mb-4 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{t(draft.notice)}</p>}
-          <form noValidate aria-busy={draft.saving} onSubmit={event => { event.preventDefault(); if (draft.step < 5) draft.setStep(draft.step + 1); else void draft.save(); }}>
+          <form noValidate aria-busy={draft.saving} onSubmit={event => { event.preventDefault(); if (draft.step < 5) draft.setStep(draft.step + 1); else if (!salaryBlockedByStructure) void draft.save(); }}>
             {EMPLOYEE_EDIT_STEPS.slice(0, 5).map((stepLabel, index) => (
               <EmployeeCreatePanel key={stepLabel.label} steps={EMPLOYEE_EDIT_STEPS} step={index} activeStep={draft.step}>
                 {draft.fields.some(field => employeeEditStep(field) === index && field.sensitive) && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Fields marked Approval are submitted for authorization before they take effect.')}</p>}
@@ -209,6 +213,16 @@ export function EmployeeEditFlow({
                         <select id="edit-field-grade" value={draft.form.grade ?? ''} onChange={event => draft.setField('grade', event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
                       </label>;
                     }
+                    if (field.key === 'salaryBreakdown.salaryStructureCode') return <SalaryStructureSelect
+                      key={field.key}
+                      id="edit-field-salaryBreakdown.salaryStructureCode"
+                      companyId={employee.companyId}
+                      value={draft.form[field.key] ?? ''}
+                      currentCode={employee.salaryBreakdown?.salaryStructureCode}
+                      onChange={(value) => draft.setField(field.key, value)}
+                      onInvalidSelectionChange={setStructureInvalid}
+                      labelSuffix={<>{field.sensitive && <span aria-hidden="true" className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}{draft.changedKeys.includes(field.key) && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}</>}
+                    />;
                     if (field.key === 'costCenter') return <label key={field.key} htmlFor="edit-field-costCenter" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                       <span>{t('Cost center')}</span>
                       <input id="edit-field-costCenter" value={draft.form.costCenter ?? ''} readOnly className="input mt-1.5 w-full bg-slate-50 dark:bg-white/5" />
@@ -237,6 +251,7 @@ export function EmployeeEditFlow({
             ))}
             <EmployeeCreatePanel steps={EMPLOYEE_EDIT_STEPS} step={5} activeStep={draft.step}>
               <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">{draft.changedKeys.length ? t('{count} fields changed. Review the before and after values before saving.', { count: draft.changedKeys.length }) : t('No changes yet. You can return to any section to update it.')}</p>
+              {salaryBlockedByStructure && <p role="alert" className="mb-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.')}</p>}
               {draft.salaryPackageChanged && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Salary changes take effect on {date}, after approval.', { date: draft.salaryEffectiveDate })}</p>}
               <EmployeeCreateReview sections={draft.reviewSections} onEdit={draft.setStep} readOnly={!canWrite} busy={draft.saving} />
             </EmployeeCreatePanel>
@@ -245,7 +260,7 @@ export function EmployeeEditFlow({
               <div className="flex items-center gap-2">
                 {draft.step > 0 && <button type="button" onClick={() => draft.setStep(draft.step - 1)} disabled={draft.saving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" />{t('Back')}</button>}
                 {draft.step < 5 ? <button type="submit" disabled={draft.saving} className="btn-primary">{t('Next: {step}', { step: t(EMPLOYEE_EDIT_STEPS[draft.step + 1].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button>
-                  : <button type="submit" disabled={draft.saving || draft.changedKeys.length === 0 || draft.unavailableKeys.length > 0} className="btn-primary disabled:opacity-50">{draft.saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t(draft.saving ? 'Saving...' : 'Save changes')}</button>}
+                  : <button type="submit" disabled={draft.saving || draft.changedKeys.length === 0 || draft.unavailableKeys.length > 0 || salaryBlockedByStructure} className="btn-primary disabled:opacity-50">{draft.saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t(draft.saving ? 'Saving...' : 'Save changes')}</button>}
               </div>
             </footer>
           </form>

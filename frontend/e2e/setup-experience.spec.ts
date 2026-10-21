@@ -29,10 +29,13 @@ test('email regression: company pattern can be chosen before an optional domain'
 const company = {
   id: 'setup-company', legalNameEn: 'Setup Fixture Company', legalNameAr: '', tradeName: 'Setup Fixture Company',
   countryCode: 'SA', jurisdiction: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active',
+  // The server requires a registration number on every save, so the fixture carries one.
+  registrationNumber: 'CR-FIXTURE-1',
 };
 const groupCompany = {
   id: 'setup-company-two', legalNameEn: 'Group Services LLC', legalNameAr: '', tradeName: 'Group Services',
   countryCode: 'AE', jurisdiction: 'UAE', defaultCurrency: 'AED', isActive: true, approvalStatus: 'Active',
+  registrationNumber: 'CR-FIXTURE-2',
 };
 
 test('country regression: saved ISO country is selected and non-pack countries can be saved', async ({ page }, info) => {
@@ -97,6 +100,90 @@ test('country regression: unrelated edits preserve legacy country and jurisdicti
   expect(saved?.legalNameEn).toBe('Renamed Fixture');
   expect(saved?.countryCode).toBe('SAU');
   expect(saved?.jurisdiction).toBe('LEGACY-ZONE');
+  expect(state.errors).toEqual([]);
+});
+
+async function openAddCompany(page: Page) {
+  await page.getByRole('button', { name: 'Add Company', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add Company', exact: true });
+  await dialog.locator('label').filter({ hasText: /^Legal Name \(EN\)/ }).locator('..').getByRole('textbox').fill('Second Fixture Co');
+  await dialog.getByRole('combobox', { name: 'Country', exact: true }).selectOption('SA');
+  return dialog;
+}
+
+test('registration number: a blank value is flagged on the field before anything is sent', async ({ page }, info) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  const posts: string[] = [];
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/companies') posts.push(request.url()); });
+  const dialog = await openAddCompany(page);
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  const input = dialog.getByRole('textbox', { name: 'Registration Number', exact: true });
+  const message = dialog.locator('#company-registration-number-error');
+  await expect(message).toHaveText(/Registration number is required/);
+  await expect(input).toHaveAttribute('aria-invalid', 'true');
+  await expect(input).toHaveAttribute('aria-describedby', 'company-registration-number-error');
+  await expect(dialog.getByText('Failed to save. Please try again.')).toHaveCount(0);
+  await dialog.screenshot({ path: info.outputPath('registration-number-required.png') });
+  expect(posts).toEqual([]);
+  await input.fill('CR-200');
+  await expect(message).toHaveCount(0);
+  await expect(input).not.toHaveAttribute('aria-invalid', 'true');
+  expect(state.errors).toEqual([]);
+});
+
+test('registration number: a duplicate refused by the server is shown on the field, not the banner', async ({ page }) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  const duplicate = 'Company registration number already exists in this tenant.';
+  await page.route(/\/api\/companies(?:\?.*)?$/, route => route.request().method() === 'POST'
+    ? route.fulfill({ status: 400, json: { error: 'registration_number_taken', field: 'registrationNumber', message: duplicate } })
+    : route.fallback());
+  const dialog = await openAddCompany(page);
+  await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('CR-100');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.locator('#company-registration-number-error')).toHaveText(duplicate);
+  await expect(dialog.getByRole('textbox', { name: 'Registration Number', exact: true })).toHaveAttribute('aria-invalid', 'true');
+  await expect(dialog.getByText(duplicate)).toHaveCount(1);
+  await expect(dialog.getByText('Failed to save. Please try again.')).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('registration number: server validation errors map to the field instead of a generic failure', async ({ page }) => {
+  const state = await boot(page, { route: '/setup?tab=companies', groupMode: true });
+  await page.route(/\/api\/companies(?:\?.*)?$/, route => route.request().method() === 'POST'
+    ? route.fulfill({ status: 400, json: {
+      type: 'https://tools.ietf.org/html/rfc9110#section-15.5.1', title: 'One or more validation errors occurred.', status: 400,
+      errors: { RegistrationNumber: ['The RegistrationNumber field is required.'], TaxNumber: ['The field TaxNumber must be a string with a maximum length of 80.'] },
+    } })
+    : route.fallback());
+  const dialog = await openAddCompany(page);
+  await dialog.getByRole('textbox', { name: 'Registration Number', exact: true }).fill('CR-300');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.locator('#company-registration-number-error')).toHaveText('Registration number is required.');
+  await expect(dialog.getByText('The field TaxNumber must be a string with a maximum length of 80.')).toBeVisible();
+  await expect(dialog.getByText('Failed to save. Please try again.')).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
+test('branches show their company name, never a raw company id', async ({ page }, info) => {
+  const unknownCompanyId = '7d1c2f0e-5b8a-4c3d-9e21-0a6b4f8c9d10';
+  const branch = (id: string, code: string, nameEn: string, companyId: string, companyName?: string) => ({
+    id, companyId, code, nameEn, nameAr: '', countryCode: 'SA', city: 'Riyadh', addressLine1: '', addressLine2: '',
+    timeZoneId: 'Asia/Riyadh', laborOfficeCode: '', isHeadOffice: false, isActive: true, ...(companyName ? { companyName } : {}),
+  });
+  const state = await boot(page, { route: '/setup?tab=branches', groupMode: true });
+  await page.route(/\/api\/branches(?:\?.*)?$/, route => route.fulfill({ json: {
+    items: [
+      branch('b-1', 'GS1', 'Group Services HQ', groupCompany.id, 'Group Services LLC'),
+      branch('b-2', 'NM1', 'Named Only By Server', unknownCompanyId, 'Server Named Co'),
+      branch('b-3', 'UN1', 'Orphan Branch', unknownCompanyId),
+    ], total: 3, page: 1, pageSize: 100,
+  } }));
+  await page.reload();
+  await expect(page.getByRole('row').filter({ hasText: 'Group Services HQ' })).toContainText('Group Services LLC');
+  await expect(page.getByRole('row').filter({ hasText: 'Named Only By Server' })).toContainText('Server Named Co');
+  await expect(page.getByRole('row').filter({ hasText: 'Orphan Branch' })).toContainText('Unknown company');
+  await expect(page.getByText(unknownCompanyId)).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('branch-company-names.png') });
   expect(state.errors).toEqual([]);
 });
 

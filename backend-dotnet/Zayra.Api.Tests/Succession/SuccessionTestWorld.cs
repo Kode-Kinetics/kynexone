@@ -269,6 +269,9 @@ public sealed class SuccessionTestWorld : IAsyncDisposable
         Ulf = await Add(Emp(TenantA, "Ulf Report", "أولف", CompanyA1, DeptFinance, Uma));
         Remy = await Add(Emp(TenantA, "Remy Remote", "رامي", CompanyA2, DeptFinance));
         Bilal = await Add(Emp(TenantB, "Bilal Beta", "بلال", CompanyB, deptB.Id));
+        // The slate's approval step goes to the HR Director role; routing refuses a request nobody could decide,
+        // so the tenant has an active HR Director login besides the employees above.
+        await TestApprovalConfig.EnsureDeciderAsync(db, TenantA, "HR Director");
 
         var cfo = new Position { TenantId = TenantA, CompanyId = CompanyA1, DepartmentId = DeptFinance, Code = "CFO", Title = "Chief Financial Officer",
             Status = PositionStatuses.Filled, IncumbentEmployeeId = Incumbent };

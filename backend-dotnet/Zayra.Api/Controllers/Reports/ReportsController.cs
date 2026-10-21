@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Reports;
@@ -550,7 +551,7 @@ public class ReportsController : ControllerBase
         if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         if (!string.IsNullOrEmpty(req.Filters?.Department)) q = q.Where(x => x.Department == req.Filters.Department);
 
-        return await q
+        var rows = await q
             .GroupBy(x => new { x.EmployeeId, x.EmployeeName, x.Department })
             .Select(g => new
             {
@@ -560,20 +561,41 @@ public class ReportsController : ControllerBase
                 WorkDays     = g.Count(),
                 PresentDays  = g.Count(x => x.Status == "Present"),
                 AbsentDays   = g.Count(x => x.Status == "Absent"),
-                LateDays     = g.Count(x => x.LateMinutes > 0),
-                TotalLateMinutes     = g.Sum(x => x.LateMinutes),
                 TotalOvertimeMinutes = g.Sum(x => x.OvertimeMinutes),
             })
-            .OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
             .ToListAsync(ct);
+        // Lateness counts only where it is deductible: a half-pair day's minutes are held (the shared rule), so these
+        // totals reconcile with what payroll deducts and with the payroll summary.
+        var lateness = (await q.Where(AttendanceDerivedArtifacts.LatenessCountsExpression)
+                .GroupBy(x => x.EmployeeId)
+                .Select(g => new { EmployeeId = g.Key, LateDays = g.Count(x => x.LateMinutes > 0), TotalLateMinutes = g.Sum(x => x.LateMinutes) })
+                .ToListAsync(ct))
+            .ToDictionary(x => x.EmployeeId);
+        return rows
+            .Select(r => new
+            {
+                r.EmployeeId,
+                r.EmployeeName,
+                r.Department,
+                r.WorkDays,
+                r.PresentDays,
+                r.AbsentDays,
+                LateDays = lateness.TryGetValue(r.EmployeeId, out var l) ? l.LateDays : 0,
+                TotalLateMinutes = lateness.TryGetValue(r.EmployeeId, out var m) ? m.TotalLateMinutes : 0,
+                r.TotalOvertimeMinutes,
+            })
+            .OrderBy(x => x.Department).ThenBy(x => x.EmployeeName)
+            .ToList();
     }
 
     private async Task<object> RunLateArrivals(Guid tid, RunReportRequest req, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
         var from = DateOnly.FromDateTime(req.Filters?.DateFrom ?? DateTime.UtcNow.AddDays(-30));
         var to = DateOnly.FromDateTime(req.Filters?.DateTo ?? DateTime.UtcNow);
+        // Only deductible lateness: a half-pair day's late minutes are held (the shared rule behind every lateness total).
         var q = _db.AttendanceDailyRecords
-            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to && x.LateMinutes > 0);
+            .Where(x => x.TenantId == tid && x.WorkDate >= from && x.WorkDate <= to && x.LateMinutes > 0)
+            .Where(AttendanceDerivedArtifacts.LatenessCountsExpression);
         if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, x.WorkDate, CheckIn = x.FirstInUtc, x.LateMinutes })

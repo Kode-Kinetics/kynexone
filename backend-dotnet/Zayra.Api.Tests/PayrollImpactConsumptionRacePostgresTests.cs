@@ -206,7 +206,7 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
             var daily = await db.AttendanceDailyRecords
                 .SingleAsync(x => x.TenantId == w.TenantId && x.EmployeeId == w.EmployeeId && x.WorkDate == day);
             daily.LateMinutes = lateMinutes;
-            AttendanceDerivedArtifacts.UpsertImpacts(db, w.TenantId, daily, AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes);
+            await AttendanceDerivedArtifacts.UpsertImpactsAsync(db, w.TenantId, daily, AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes, CancellationToken.None);
             await db.SaveChangesAsync();
         }, CancellationToken.None);
     }
@@ -321,7 +321,7 @@ public sealed class PayrollImpactConsumptionRacePostgresTests
                 Status = "Present", LateMinutes = 30, TotalWorkedMinutes = 450,
             };
             db.AttendanceDailyRecords.Add(daily);
-            AttendanceDerivedArtifacts.UpsertImpacts(db, tenantId, daily, AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes);
+            await AttendanceDerivedArtifacts.UpsertImpactsAsync(db, tenantId, daily, AttendanceDerivedArtifacts.OrdinaryAbsenceMinutes, CancellationToken.None);
         }
         if (withLeaveImpact)
             db.LeavePayrollImpacts.Add(new LeavePayrollImpact

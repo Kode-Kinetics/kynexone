@@ -21,6 +21,7 @@ public sealed class SaudiBankExportApprovedDetailsTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(db);
+        await TestApprovalConfig.EnsureDeciderAsync(db, tenant);
         var company = await SaudiBankExportTestData.SeedCompanyAsync(db, tenant);
         var batch = await SaudiBankExportTestData.SeedBatchAsync(db, tenant, company, 9);
         var service = new SaudiBankExportService(db);

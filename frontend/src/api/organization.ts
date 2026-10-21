@@ -144,6 +144,8 @@ export interface BranchDto {
   laborOfficeCode: string;
   isHeadOffice: boolean;
   isActive: boolean;
+  /** The owning company's legal name, resolved by the server. */
+  companyName?: string;
 }
 
 export interface BranchRequest {

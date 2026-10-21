@@ -21,6 +21,8 @@ export function EmployeeComplianceDocumentsSection({ employee, readiness, panel,
   const { t } = useLocale();
   const canSeeSensitive = hasPermission('employees.sensitive');
   const canManageDocuments = hasPermission('employees.documents');
+  // Identity numbers are edited in the Identity step of Edit Employee, which offers them only to a writer who may see them.
+  const canEditIdentity = hasPermission('employees.write') && canSeeSensitive;
   const [documents, setDocuments] = useState<EmployeeDocument[]>(employee.documents);
   const [documentType, setDocumentType] = useState('Passport');
   const [expiryDate, setExpiryDate] = useState('');
@@ -72,7 +74,7 @@ export function EmployeeComplianceDocumentsSection({ employee, readiness, panel,
     }
   };
   return <section className="surface overflow-hidden">
-    <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5 dark:border-white/10"><div><h2 className="text-2xl font-extrabold text-slate-950 dark:text-white">Compliance &amp; Documents</h2><p className="mt-1 text-sm text-slate-500">Jurisdiction-specific identity records, expiries, and required documents.</p></div>{canManageDocuments && panel !== 'documents' && <Link href={employeeWorkspaceHref(employee.id, { section: 'compliance-documents', panel: 'documents', returnTo })} className="btn-secondary">Upload document</Link>}</header>
+    <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5 dark:border-white/10"><div><h2 className="text-2xl font-extrabold text-slate-950 dark:text-white">Compliance &amp; Documents</h2><p className="mt-1 text-sm text-slate-500">Jurisdiction-specific identity records, expiries, and required documents.</p></div><div className="flex flex-wrap gap-2">{canEditIdentity && <Link href={employeeWorkspaceHref(employee.id, { section: 'compliance-documents', edit: true, returnTo })} className="btn-secondary">{t('Edit identity')}</Link>}{canManageDocuments && panel !== 'documents' && <Link href={employeeWorkspaceHref(employee.id, { section: 'compliance-documents', panel: 'documents', returnTo })} className="btn-secondary">Upload document</Link>}</div></header>
     {!canSeeSensitive ? <div className="m-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-500/30 dark:bg-amber-500/10"><ShieldAlert className="h-5 w-5 text-amber-600" /><div><p className="font-bold text-amber-900 dark:text-amber-100">Sensitive identity details are restricted.</p><p className="mt-1 text-sm text-amber-800 dark:text-amber-200">Document status can remain visible without exposing protected identity values.</p></div></div> : <dl className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-3">{identityFields.map((field) => {
       const expiry = field.expiryEntityKey ? String((employee as unknown as Record<string, unknown>)[field.expiryEntityKey] ?? '') : '';
       return <div key={field.fieldKey} className="rounded-xl border border-slate-200 p-4 dark:border-white/10"><dt className="text-xs font-bold uppercase tracking-wide text-slate-400">{field.fieldLabel}</dt><dd className="mt-1 font-semibold text-slate-900 dark:text-white">{complianceValue(field) || 'Not provided'}</dd>{expiry && <dd className="mt-1 text-xs text-slate-500">Expires {expiry}</dd>}</div>;
