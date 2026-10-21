@@ -93,7 +93,9 @@ let coAdminId: string;
 /** The single-use sign-in link the EN journey's "Send sign-in link" handed back (no SMTP on a disposable stack). */
 let invitedSignInLink: string | undefined;
 
-test.describe.configure({ mode: 'serial' });
+// Each case drives the real API through several sign-ins and full journeys; CI runners need more than the
+// default 30 s per test (the resume case measured ~37 s there).
+test.describe.configure({ mode: 'serial', timeout: 120_000 });
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1440, height: 1000 } });
 
 test.beforeAll(async () => {
