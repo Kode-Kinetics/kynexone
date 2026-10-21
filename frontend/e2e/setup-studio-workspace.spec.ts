@@ -2109,6 +2109,68 @@ test('authorization_revalidation_hands_focus_to_status_and_retry_then_restores_t
   await expect(annualDays).toHaveValue('31');
 });
 
+test('a_quick_authorization_check_freezes_the_page_without_flashing_the_banner', async ({ page }) => {
+  let delayMe = false;
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    if (new URL(route.request().url()).pathname !== '/api/auth/me' || !delayMe) return false;
+    // A typical answer: well under the banner delay.
+    await new Promise(resolve => setTimeout(resolve, 150));
+    return false;
+  } });
+  // Record every appearance of the banner and every freeze, however brief.
+  await page.evaluate(() => {
+    const w = window as unknown as { __bannerSeen: boolean; __inertSeen: boolean };
+    w.__bannerSeen = false; w.__inertSeen = false;
+    new MutationObserver(() => {
+      if (document.querySelector('[data-testid="authorization-revalidation-status"]')) w.__bannerSeen = true;
+      if (document.querySelector('[data-testid="setup-authorization-boundary"][inert]')) w.__inertSeen = true;
+    }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['inert'] });
+  });
+  delayMe = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __inertSeen: boolean }).__inertSeen)).toBe(true);
+  await expect(page.getByTestId('setup-authorization-boundary')).not.toHaveAttribute('inert', '');
+  await page.waitForTimeout(1000);
+  expect(await page.evaluate(() => (window as unknown as { __bannerSeen: boolean }).__bannerSeen)).toBe(false);
+});
+
+for (const arabic of [false, true]) {
+  test(`a_slow_authorization_check_shows_the_whole_banner_below_the_top_bar${arabic ? '_in_arabic' : ''}`, async ({ page }, info) => {
+    let pending = false;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await boot(page, { arabic, area: 'leave', setting: 'leavePolicies', intercept: async route => {
+      if (new URL(route.request().url()).pathname !== '/api/auth/me' || !pending) return false;
+      await held;
+      return false;
+    } });
+    pending = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    const status = page.getByTestId('authorization-revalidation-status');
+    // Frozen at once, explained only once the check is slow.
+    await expect(page.getByTestId('setup-authorization-boundary')).toHaveAttribute('inert', '');
+    expect(await status.count()).toBe(0);
+    await expect(status).toBeVisible();
+    const heading = status.getByText(arabic ? 'جارٍ إعادة التحقق من صلاحياتك…' : 'Revalidating your access…', { exact: true });
+    await expect(heading).toBeVisible();
+    // Nothing is drawn over the heading: the top bar ends above the banner.
+    const geometry = await page.evaluate(() => {
+      const banner = document.querySelector('[data-testid="authorization-revalidation-status"]')!;
+      const title = banner.querySelector('p')!.getBoundingClientRect();
+      const header = document.querySelector('header')!.getBoundingClientRect();
+      const hit = document.elementFromPoint(title.left + Math.min(20, title.width / 2), title.top + title.height / 2);
+      return { titleTop: title.top, headerBottom: header.bottom, onTop: !!hit && banner.contains(hit), overflow: document.documentElement.scrollWidth > window.innerWidth + 1 };
+    });
+    expect(geometry.titleTop).toBeGreaterThanOrEqual(geometry.headerBottom);
+    expect(geometry.onTop).toBe(true);
+    expect(geometry.overflow).toBe(false);
+    await page.screenshot({ path: info.outputPath(`authorization-banner-${arabic ? 'ar' : 'en'}.png`) });
+    release();
+    await expect(status).toHaveCount(0);
+    await expect(page.getByTestId('setup-authorization-boundary')).not.toHaveAttribute('inert', '');
+  });
+}
+
 test('background_401_clears_the_established_session', async ({ page }) => {
   let revoke = false;
   await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {

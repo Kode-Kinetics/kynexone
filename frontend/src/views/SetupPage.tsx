@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
@@ -2447,6 +2448,9 @@ const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
 
 // ─── SetupPage ───────────────────────────────────────────────────────────────
 
+/** A revalidation shorter than this freezes the page silently; a longer one explains the freeze. */
+export const AUTHORIZATION_BANNER_DELAY_MS = 800;
+
 export function SetupPage() {
   const router = useRouter();
   const t = useT();
@@ -2633,7 +2637,17 @@ export function SetupPage() {
     }
   };
   const renderExistingSettings = (id: SettingsTab) => <SetupEditorState.Provider value={setEditorDirty}>{renderExistingPanel(id)}</SetupEditorState.Provider>;
+  // The page is frozen (inert) for the whole check: a deliberate safety stop while access is re-read. The banner that
+  // explains it waits: /me usually answers well under a second on every focus change, and a banner flashing each
+  // time reads as an error. A slow check shows it after AUTHORIZATION_BANNER_DELAY_MS; a failure shows at once.
   const authorizationBlocked = authorizationRefreshStatus !== 'idle';
+  const [slowAuthorizationCheck, setSlowAuthorizationCheck] = useState(false);
+  useEffect(() => {
+    if (authorizationRefreshStatus !== 'checking') { setSlowAuthorizationCheck(false); return; }
+    const timer = window.setTimeout(() => setSlowAuthorizationCheck(true), AUTHORIZATION_BANNER_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [authorizationRefreshStatus]);
+  const authorizationBannerShown = authorizationRefreshStatus === 'unavailable' || (authorizationRefreshStatus === 'checking' && slowAuthorizationCheck);
   const authorizationStatusRef = useRef<HTMLElement | null>(null);
   const authorizationRetryRef = useRef<HTMLButtonElement | null>(null);
   const authorizationRestoreFocusRef = useRef<HTMLElement | null>(null);
@@ -2647,6 +2661,8 @@ export function SetupPage() {
         const active = document.activeElement;
         authorizationRestoreFocusRef.current = active instanceof HTMLElement ? active : null;
       }
+      // Focus moves to the banner only once it is shown (a quick check never shows it).
+      if (!authorizationBannerShown) return;
       const frame = window.requestAnimationFrame(() => {
         (authorizationRefreshStatus === 'unavailable' ? authorizationRetryRef.current : authorizationStatusRef.current)?.focus();
       });
@@ -2659,17 +2675,19 @@ export function SetupPage() {
       if (restore?.isConnected && !restore.closest('[inert]')) restore.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [authorizationRefreshStatus]);
+  }, [authorizationRefreshStatus, authorizationBannerShown]);
 
   return (
     <>
-      {authorizationBlocked && <section
+      {authorizationBannerShown && typeof document !== 'undefined' && createPortal(<section
         data-testid="authorization-revalidation-status"
         role="status"
         aria-live="polite"
         tabIndex={-1}
         ref={authorizationStatusRef}
-        className="fixed inset-x-4 top-4 z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
+        // Portalled to <body>: <main> animates in with a transform, which made it the containing block of this
+        // fixed banner and slid it under the sticky top bar (60px, TopBar.tsx). Placed just below that bar.
+        className="fixed inset-x-4 top-[72px] z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
       >
         <p className="font-semibold">
           {authorizationRefreshStatus === 'checking'
@@ -2682,7 +2700,7 @@ export function SetupPage() {
             : t('Your unsaved changes are preserved. Retry before continuing.')}
         </p>
         {authorizationRefreshStatus === 'unavailable' && <button ref={authorizationRetryRef} type="button" className="btn-secondary mt-3" onClick={() => void retryAuthorization()}>{t('Retry authorization')}</button>}
-      </section>}
+      </section>, document.body)}
       <div
         data-testid="setup-authorization-boundary"
         inert={authorizationBlocked ? true : undefined}
