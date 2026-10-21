@@ -7181,6 +7181,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("trade_name");
 
+                    b.Property<string>("UnifiedNationalNumber")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("unified_national_number");
+
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
@@ -7450,6 +7455,80 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "CompanyId", "RateKey", "Status", "EffectiveFrom");
 
                     b.ToTable("company_rate_policies", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompanySetupDraftRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("body");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<Guid?>("ResultCompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("result_company_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<short>("Step")
+                        .HasColumnType("smallint")
+                        .HasColumnName("step");
+
+                    b.Property<DateTime?>("SubmittedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("submitted_at_utc");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("ResultCompanyId");
+
+                    b.HasIndex("TenantId", "Status", "UpdatedAtUtc")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("ix_company_setup_drafts__tenant_status_updated");
+
+                    b.ToTable("company_setup_drafts", null, t =>
+                        {
+
+                            t.HasCheckConstraint("ck_company_setup_drafts__status", "status IN ('Open', 'Submitted', 'Discarded')");
+
+                            t.HasCheckConstraint("ck_company_setup_drafts__step", "step BETWEEN 1 AND 7");
+
+                            t.HasCheckConstraint("ck_company_setup_drafts__submitted_pair", "(status = 'Submitted') = (submitted_at_utc IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_company_setup_drafts__version", "version >= 1");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.CompanyStatutoryOverride", b =>
@@ -10936,10 +11015,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("accepted_offer_company_id");
 
-                    b.Property<Guid?>("OfferCompensationPlacementCompanyId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("offer_compensation_placement_company_id");
-
                     b.Property<string>("AcceptedOfferCompensationJson")
                         .HasColumnType("text")
                         .HasColumnName("accepted_offer_compensation_json");
@@ -11121,6 +11196,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("offer_compensation_dispositions_json");
 
+                    b.Property<Guid?>("OfferCompensationPlacementCompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("offer_compensation_placement_company_id");
+
                     b.Property<long>("OfferCompensationVersion")
                         .HasColumnType("bigint")
                         .HasColumnName("offer_compensation_version");
@@ -11255,9 +11334,9 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "AcceptedOfferCompanyId");
 
-                    b.HasIndex("TenantId", "OfferCompensationPlacementCompanyId");
-
                     b.HasIndex("TenantId", "AcceptedOfferId");
+
+                    b.HasIndex("TenantId", "OfferCompensationPlacementCompanyId");
 
                     b.HasIndex("TenantId", "Status");
 
@@ -32034,6 +32113,26 @@ namespace Zayra.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.CompanySetupDraftRecord", b =>
+                {
+                    b.HasOne("Zayra.Api.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("ResultCompanyId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Zayra.Api.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.ContractRenewalCase", b =>
                 {
                     b.HasOne("Zayra.Api.Models.Company", null)
@@ -32157,15 +32256,15 @@ namespace Zayra.Api.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("Zayra.Api.Models.Company", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "OfferCompensationPlacementCompanyId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("Zayra.Api.Models.OfferLetter", null)
                         .WithMany()
                         .HasForeignKey("TenantId", "AcceptedOfferId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "OfferCompensationPlacementCompanyId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
                 });

@@ -1,0 +1,235 @@
+namespace Zayra.Api.Application.CompanySetup;
+
+// The create-company wizard's wire contract — docs/design/company-setup-wizard.md, section "API".
+// The TypeScript mirror is frontend/src/api/companySetup.ts. JSON is camelCase (the API's default naming), so a
+// property here is the contract's field name with its first letter upper-cased. Do not rename a member without
+// changing the contract through the Integration Owner: the frontend is built against these exact names.
+
+/// <summary>Vocabularies used in the shapes below, so the server never spells one two ways.</summary>
+public static class CompanySetupVocabulary
+{
+    public const string StartFromDefaults = "defaults";
+    public const string StartFromCopy = "copy";
+
+    public const string AdminInvite = "invite";
+    public const string AdminExisting = "existing";
+    public const string AdminGroupOnly = "groupOnly";
+
+    public const string ActionCreate = "create";
+    public const string ActionReuse = "reuse";
+    public const string ActionConflict = "conflict";
+
+    public const string ReadinessDone = "done";
+    public const string ReadinessTodo = "todo";
+    public const string ReadinessRecommended = "recommended";
+    public const string ScopeCompany = "company";
+    public const string ScopeWorkspace = "workspace";
+
+    public static class Areas
+    {
+        public const string Company = "company";
+        public const string Branch = "branch";
+        public const string Location = "location";
+        public const string CostCentre = "costCentre";
+        public const string Department = "department";
+        public const string Designation = "designation";
+        public const string Grade = "grade";
+        public const string EmployeeIdRule = "employeeIdRule";
+        public const string Cutover = "cutover";
+        public const string HolidayCalendar = "holidayCalendar";
+        public const string LeavePolicy = "leavePolicy";
+        public const string GccSetting = "gccSetting";
+        public const string WorkWeek = "workWeek";
+        public const string CompanyAdmin = "companyAdmin";
+    }
+}
+
+public sealed record CompanySetupContext(
+    bool CanCreate,
+    string? RefusalCode,
+    string? RefusalMessage,
+    string CreationMode,
+    string AccountType,
+    int CompaniesUsed,
+    int? CompaniesAllowed,
+    bool IsGroupScope,
+    IReadOnlyList<CompanySetupSisterCompany> SisterCompanies,
+    CompanySetupSharedCatalog SharedCatalog,
+    string? GradesCurrency,
+    /// <summary>Whether this caller may make someone a company super admin — the same role ceiling User
+    /// Management applies (group scope + the Admin role + Admin assignable + security.manage).</summary>
+    bool CanGrantCompanyAdmin = false);
+
+public sealed record CompanySetupSisterCompany(Guid Id, string LegalNameEn, string CountryCode);
+
+public sealed record CompanySetupSharedCatalog(
+    IReadOnlyList<CodeName> Departments,
+    IReadOnlyList<CodeName> Designations,
+    IReadOnlyList<GradeRef> Grades);
+
+public sealed record CodeName(string Code, string NameEn, string? NameAr);
+
+public sealed record GradeRef(string Code, string NameEn, string? NameAr, string Currency);
+
+public sealed record CompanySetupDraftBody(
+    string StartFrom,
+    Guid? CopyFromCompanyId,
+    CompanySetupCompany Company,
+    List<CompanySetupBranch>? Branches,
+    List<CompanySetupCostCentre>? CostCentres,
+    List<CompanySetupDepartment>? Departments,
+    List<CompanySetupDesignation>? Designations,
+    List<CompanySetupGrade>? Grades,
+    CompanySetupRules Rules,
+    CompanySetupCompanyAdmin CompanyAdmin);
+
+public sealed record CompanySetupCompany(
+    string LegalNameEn,
+    string? LegalNameAr,
+    string? TradeName,
+    string CountryCode,
+    string Currency,
+    string RegistrationNumber,
+    string? MolEstablishmentNumber,
+    string? GosiEmployerId,
+    string? UnifiedNationalNumber,
+    string? TaxNumber,
+    string? QiwaEstablishmentId,
+    string? EmailDomain,
+    string? WorkEmailPattern,
+    string? ErpCompanyCode,
+    /// <summary>"YYYY-MM". Its first day becomes the company's Planned cutover.</summary>
+    string FirstPayrollMonth);
+
+public sealed record CompanySetupBranch(
+    string Code,
+    string NameEn,
+    string? NameAr,
+    string City,
+    string TimeZoneId,
+    bool IsHeadOffice,
+    List<CompanySetupLocation>? Locations);
+
+public sealed record CompanySetupLocation(
+    string Code,
+    string NameEn,
+    string? NameAr,
+    decimal? Latitude,
+    decimal? Longitude,
+    decimal? RadiusMeters);
+
+public sealed record CompanySetupCostCentre(string Code, string NameEn, string? NameAr);
+
+public sealed record CompanySetupDepartment(
+    string Code,
+    string NameEn,
+    string? NameAr,
+    string? ParentCode,
+    string? BranchCode,
+    string? CostCentreCode);
+
+public sealed record CompanySetupDesignation(
+    string Code,
+    string TitleEn,
+    string? TitleAr,
+    string? DepartmentCode,
+    string? GradeCode);
+
+public sealed record CompanySetupGrade(
+    string Code,
+    string NameEn,
+    string? NameAr,
+    int Level,
+    decimal MinSalary,
+    decimal MidSalary,
+    decimal MaxSalary);
+
+public sealed record CompanySetupRules(
+    CompanySetupWorkWeek WorkWeek,
+    CompanySetupPackChoice HolidayCalendar,
+    CompanySetupPackChoice LeavePolicies,
+    CompanySetupEmployeeNumbering EmployeeNumbering);
+
+/// <summary><see cref="WeekendDays"/> is the REST days ("Fri,Sat"). <see cref="Override"/> = write a company
+/// override; otherwise the resolved working week is confirmed and nothing is written.</summary>
+public sealed record CompanySetupWorkWeek(string WeekendDays, bool Override);
+
+public sealed record CompanySetupPackChoice(bool UsePack);
+
+public sealed record CompanySetupEmployeeNumbering(
+    string Prefix,
+    bool UseCountryPrefix,
+    bool UseBranchPrefix,
+    bool UseDepartmentPrefix,
+    bool UseYear,
+    int PaddingLength,
+    int NextSequence);
+
+public sealed record CompanySetupCompanyAdmin(
+    string Mode,
+    Guid? ExistingUserId,
+    string? FullNameEn,
+    string? FullNameAr,
+    string? Email);
+
+public sealed record CompanySetupDraft(
+    Guid Id,
+    int Version,
+    int Step,
+    string Status,
+    CompanySetupDraftBody Body,
+    Guid CreatedByUserId,
+    string CreatedByName,
+    DateTime CreatedAtUtc,
+    DateTime UpdatedAtUtc,
+    Guid? ResultCompanyId);
+
+public sealed record CompanySetupDraftSummary(
+    Guid Id,
+    string LegalNameEn,
+    int Step,
+    DateTime UpdatedAtUtc,
+    string CreatedByName);
+
+/// <summary>PUT /drafts/{id} body.</summary>
+public sealed record CompanySetupDraftUpdate(int Version, int Step, CompanySetupDraftBody Body);
+
+/// <summary>POST / body (the commit). The Idempotency-Key header must equal <see cref="DraftId"/>.</summary>
+public sealed record CompanySetupCommitRequest(Guid DraftId, int Version);
+
+public sealed record CompanySetupPlan(
+    bool Ok,
+    IReadOnlyList<PlanItem> Items,
+    IReadOnlyList<Problem> Problems,
+    IReadOnlyList<Problem> Warnings);
+
+public sealed record PlanItem(string Area, string Code, string Label, string Action, string? Reason, string? LabelAr = null);
+
+/// <summary><see cref="Field"/> is a dotted lower-camel path with numeric indexes, e.g. <c>company.registrationNumber</c>,
+/// <c>branches.0.code</c>, <c>departments.2.costCentreCode</c>.</summary>
+public sealed record Problem(int Step, string Field, string Code, string Message, string? MessageAr);
+
+/// <summary>The body of every 4xx answer from /api/company-setup: <c>{ code, message, messageAr?, field?, step? }</c>.
+/// A refused commit or draft may add <c>plan</c> (the refused plan) or <c>currentVersion</c> (a stale save).</summary>
+public sealed record CompanySetupError(string Code, string Message, string? MessageAr = null, string? Field = null, int? Step = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CompanySetupPlan? Plan { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? CurrentVersion { get; init; }
+}
+
+public sealed record CompanySetupResult(
+    Guid CompanyId,
+    IReadOnlyDictionary<string, int> Created,
+    IReadOnlyDictionary<string, int> Reused,
+    IReadOnlyList<ReadinessItem> Readiness,
+    bool Replayed);
+
+public sealed record ReadinessItem(
+    string Key,
+    string Label,
+    string? LabelAr,
+    string Status,
+    string Scope,
+    string Href);

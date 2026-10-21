@@ -1457,6 +1457,24 @@ public sealed class SetupAssistantService : ISetupAssistantService
     // This is what ships whenever no model answers, so it has to stand on its own: keyed to the
     // inputs the form actually collects, and silent about nothing. Anything it cannot derive is
     // flagged and left empty rather than guessed.
+    /// <summary>
+    /// The deterministic company defaults the create-company wizard starts from (design contract Decision 1):
+    /// the built-in template (organisation, grades, branch, employee-ID rule) plus the country's working week
+    /// and fixed-date holiday calendar. <b>Static and model-free by construction</b> — it is reachable without an
+    /// instance of this service, so no <c>ILlmClient</c> can sit behind it. Nothing here is written anywhere.
+    /// </summary>
+    public static SetupDraft DeterministicCompanyDefaults(string countryCode, string currencyCode, string? legalEntityName)
+    {
+        var iso3 = NormalizeCountry(countryCode);
+        var notes = new List<string>();
+        var profile = new CompanyProfile(countryCode, Industry: "General", CompanySize: "1-50", CurrencyCode: currencyCode,
+            Notes: null, LegalEntityName: legalEntityName, BranchCity: null, OperatingModel: null, PayrollModel: null,
+            ApprovalModel: null, StrictEntityScope: false, RequireCostCenterForPayroll: false, RequireGradeForApprovalPolicy: false,
+            Sections: new SetupSections(Org: true, Leave: false, Shifts: true, Payroll: false, Entity: true, Governance: true));
+        var draft = DeterministicTemplate(profile, iso3, notes);
+        return draft with { WorkingWeek = WorkingWeekFor(iso3), HolidayCalendar = HolidayCalendarFor(iso3, notes) };
+    }
+
     private static SetupDraft DeterministicTemplate(CompanyProfile p, string iso3, List<string> notes)
     {
         var pack = PackFor(p.Industry);

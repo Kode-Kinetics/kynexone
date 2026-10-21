@@ -40,7 +40,7 @@ public sealed class OfferLifecycleMigrationPostgresTests
             VALUES ({legacyOffer},{legacyTenant},{legacyApplication},'Legacy Candidate','Legacy role','People',
               DATE '2026-10-01',1000,200,30,4.56,1234.56,3,'<p>Legacy</p>','Sent',{legacySent},{legacySent},'');
             """);
-        await migrator.MigrateAsync(migration); await migrator.MigrateAsync(migration);
+        await migrator.MigrateAsync(migration); await migrator.MigrateAsync(migration); await migrator.MigrateAsync(); /* later additive migrations: rows below use the CURRENT model */
         var legacy = await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == legacyOffer);
         legacy.CompanyId.Should().BeNull(); legacy.SeriesId.Should().BeNull(); legacy.ArtifactId.Should().BeNull();
         legacy.FrozenAtUtc.Should().BeNull(); legacy.CompensationSnapshotJson.Should().BeNull();
@@ -92,7 +92,7 @@ public sealed class OfferLifecycleMigrationPostgresTests
         rollback.Which.SqlState.Should().Be(PostgresErrorCodes.RaiseException);
         // EF commits each migration independently. The empty additive dispatch migration can
         // downgrade before the lifecycle-history guard refuses; restore the current graph.
-        await migrator.MigrateAsync(migration);
+        await migrator.MigrateAsync(migration); await migrator.MigrateAsync(); /* later additive migrations: rows below use the CURRENT model */
 
         var tenantRow = await db.Tenants.SingleAsync(t => t.Id == tenant); tenantRow.IsActive = false; tenantRow.Slug += "__deleted_offer_migration";
         await db.SaveChangesAsync();
@@ -115,7 +115,7 @@ public sealed class OfferLifecycleMigrationPostgresTests
         (await db.OfferLetters.CountAsync(o => o.Id == legacyOffer)).Should().Be(1);
         (await db.JobApplications.SingleAsync(o => o.Id == app.Id)).CurrentIssuedOfferId.Should().BeNull();
         await migrator.MigrateAsync("20261019134047_OfferCompensationPolicy");
-        await migrator.MigrateAsync(migration);
+        await migrator.MigrateAsync(migration); await migrator.MigrateAsync(); /* later additive migrations: rows below use the CURRENT model */
         (await db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == legacyOffer)).GrossSalary.Should().Be(1234.56m);
     }
 }
