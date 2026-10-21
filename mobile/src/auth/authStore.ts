@@ -6,7 +6,13 @@ import { create } from 'zustand';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import { tokenStorage, userStorage, clearAllAuthData, appStorage } from '@/storage';
+import {
+  appStorage,
+  clearAllAuthData,
+  loadCredentialEnvelope,
+  saveCredentialEnvelope,
+  userStorage,
+} from '@/storage';
 import { STORAGE_KEYS } from '@/config';
 import { authApi, deviceApi, type LoginOutcome } from '@/api/services';
 import { initApiClient, setSessionExpiredHandler } from '@/api/client';
@@ -18,6 +24,7 @@ import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAu
 import { isWelcomeCode } from './welcomeCode';
 import type { MfaPrompt } from './mfaFlow';
 import { beginSession, invalidateSession } from './sessionGeneration';
+import { establishSession, terminateSession } from './sessionLifecycle';
 
 interface AuthState {
   user: AuthUser | null;
@@ -65,31 +72,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   initialize: async () => {
     set({ isLoading: true });
     try {
-      const [storedUser, tenantId] = await Promise.all([
-        userStorage.getUser(),
-        appStorage.get<string>('zayra_tenant_id'),
-      ]);
-
-      const normalizedTenant = normalizeWorkspace(tenantId);
-      if (!storedUser || !normalizedTenant) {
-        invalidateSession();
-        await clearAllAuthData();
+      const envelope = await loadCredentialEnvelope();
+      const normalizedTenant = normalizeWorkspace(envelope?.tenantId);
+      if (!envelope || !normalizedTenant) {
+        await terminateSession(clearAllAuthData);
         set({ isInitialized: true, isLoading: false });
         return;
       }
 
-      const refreshToken = await tokenStorage.getRefreshToken();
-      if (await tokenStorage.isTokenExpired()) {
-        if (!refreshToken) {
-          invalidateSession();
-          await clearAllAuthData();
-          set({ isInitialized: true, isLoading: false });
-          return;
-        }
-      }
-
-      if (refreshToken) beginSession(refreshToken);
-      if (normalizedTenant !== tenantId) await appStorage.set('zayra_tenant_id', normalizedTenant);
+      // A valid envelope always has refresh capability. Establish ownership
+      // before /auth/me can receive a 401 and enter the refresh path.
+      beginSession(envelope.refreshToken);
+      await appStorage.set('zayra_tenant_id', normalizedTenant);
       initApiClient(normalizedTenant);
       setSessionExpiredHandler(() => get().handleSessionExpired());
 
@@ -128,9 +122,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   finishLogin: async (user, tokens, tenantId) => {
-    beginSession(tokens.refreshToken);
+    await establishSession(tokens.refreshToken, async () => {
+      await saveCredentialEnvelope({
+        version: 1,
+        ...tokens,
+        tenantId,
+        persistedAt: Date.now(),
+      });
+    });
     await Promise.all([
-      tokenStorage.saveTokens(tokens),
       userStorage.saveUser(user),
       appStorage.set('zayra_tenant_id', tenantId),
     ]);
@@ -241,17 +241,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   consumeMfaEnrolledNotice: () => set({ mfaEnrolledNotice: null }),
 
   logout: async () => {
-    invalidateSession();
+    const terminate = terminateSession(async () => {
+      try {
+        const refreshToken = (await loadCredentialEnvelope())?.refreshToken ?? null;
+        const deviceId = await appStorage.get<string>(STORAGE_KEYS.DEVICE_ID);
+        await Promise.allSettled([
+          refreshToken ? authApi.logout(refreshToken) : Promise.resolve(),
+          deviceId ? deviceApi.unregister(deviceId) : Promise.resolve(),
+        ]);
+      } finally {
+        await clearAllAuthData();
+      }
+    });
     set({ isLoading: true });
     try {
-      const refreshToken = await tokenStorage.getRefreshToken();
-      const deviceId = await appStorage.get<string>(STORAGE_KEYS.DEVICE_ID);
-      await Promise.allSettled([
-        refreshToken ? authApi.logout(refreshToken) : Promise.resolve(),
-        deviceId ? deviceApi.unregister(deviceId) : Promise.resolve(),
-      ]);
+      await terminate;
     } finally {
-      await clearAllAuthData();
       set({
         user: null,
         tenantId: null,

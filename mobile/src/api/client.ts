@@ -9,13 +9,17 @@ import axios, {
   InternalAxiosRequestConfig,
 } from 'axios';
 import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
-import { tokenStorage, clearAllAuthData } from '@/storage';
 import {
-  beginSession,
-  captureSession,
-  invalidateSession,
-  mayCommit,
-} from '@/auth/sessionGeneration';
+  clearAllAuthData,
+  loadCredentialEnvelope,
+  saveCredentialEnvelope,
+} from '@/storage';
+import {
+  executeSessionRefresh,
+  expireRefreshFailureIfOwned,
+} from '@/auth/sessionRefresh';
+import { captureSession } from '@/auth/sessionGeneration';
+import { terminateSessionIfCurrent } from '@/auth/sessionLifecycle';
 import { createIsolatedPublicAuthClient } from './publicAuthClient';
 
 // We lazily import authStore to avoid circular deps
@@ -37,20 +41,26 @@ export function setSessionExpiredHandler(handler: () => void) {
 }
 
 let refreshPromise: Promise<string> | null = null;
-let expirationPromise: Promise<void> | null = null;
-
-class StaleRefreshError extends Error {}
-
-function expireSession(): Promise<void> {
-  if (!expirationPromise) {
-    invalidateSession();
-    expirationPromise = clearAllAuthData()
-      .then(() => _onSessionExpired?.())
-      .finally(() => {
-        expirationPromise = null;
-      });
+async function clearExpiredSession(): Promise<void> {
+  try {
+    await clearAllAuthData();
+  } finally {
+    _onSessionExpired?.();
   }
-  return expirationPromise;
+}
+
+async function loadProtectedCredentialEnvelope() {
+  const session = captureSession();
+  try {
+    const envelope = await loadCredentialEnvelope();
+    if (envelope) return envelope;
+  } catch {
+    await terminateSessionIfCurrent(session, clearExpiredSession);
+    throw new SessionExpiredError();
+  }
+
+  await terminateSessionIfCurrent(session, clearExpiredSession);
+  throw new SessionExpiredError();
 }
 
 /**
@@ -100,27 +110,34 @@ function getOrStartRefresh(): Promise<string> {
 }
 
 async function refreshAccessToken(): Promise<string> {
-  const session = captureSession();
-  const refreshToken = await tokenStorage.getRefreshToken();
-  if (!refreshToken) throw new Error('No refresh token');
-
-  const response = await createPublicAuthClient().post<{
-    accessToken: string;
-    refreshToken: string;
-    expiresAtUtc: string;
-  }>(
-    '/auth/refresh',
-    { refreshToken },
-    { timeout: 10_000 },
-  );
-
-  const { accessToken, refreshToken: newRefreshToken, expiresAtUtc } = response.data;
-  const expiresAt = new Date(expiresAtUtc).getTime();
-  const currentRefreshToken = await tokenStorage.getRefreshToken();
-  if (!mayCommit(session, currentRefreshToken)) throw new StaleRefreshError();
-  await tokenStorage.saveTokens({ accessToken, refreshToken: newRefreshToken, expiresAt });
-  beginSession(newRefreshToken);
-  return accessToken;
+  return executeSessionRefresh({
+    getRefreshToken: async () => (await loadCredentialEnvelope())?.refreshToken ?? null,
+    requestRefresh: async (refreshToken) => {
+      const response = await createPublicAuthClient().post<{
+        accessToken: string;
+        refreshToken: string;
+        expiresAtUtc: string;
+      }>(
+        '/auth/refresh',
+        { refreshToken },
+        { timeout: 10_000 },
+      );
+      return {
+        accessToken: response.data.accessToken,
+        refreshToken: response.data.refreshToken,
+        expiresAt: new Date(response.data.expiresAtUtc).getTime(),
+      };
+    },
+    saveTokens: async (tokens) => {
+      const current = await loadCredentialEnvelope();
+      if (!current) throw new Error('No credential envelope to update.');
+      await saveCredentialEnvelope({
+        ...current,
+        ...tokens,
+        persistedAt: Date.now(),
+      });
+    },
+  });
 }
 
 export function createApiClient(tenantId: string): AxiosInstance {
@@ -136,10 +153,8 @@ export function createApiClient(tenantId: string): AxiosInstance {
   // Request interceptor: attach Bearer token
   client.interceptors.request.use(
     async (config: InternalAxiosRequestConfig) => {
-      const token = await tokenStorage.getAccessToken();
-      if (token) {
-        config.headers['Authorization'] = `Bearer ${token}`;
-      }
+      const envelope = await loadProtectedCredentialEnvelope();
+      config.headers['Authorization'] = `Bearer ${envelope.accessToken}`;
       if (__DEV__) {
         const method = config.method?.toUpperCase() ?? 'GET';
         console.log(`[API] ${method} ${APP_CONFIG.API_BASE_URL}${config.url ?? ''}`);
@@ -182,10 +197,9 @@ export function createApiClient(tenantId: string): AxiosInstance {
           originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
           return client(originalRequest);
         } catch (refreshError) {
-          if (refreshError instanceof StaleRefreshError) {
-            return Promise.reject(new SessionExpiredError());
-          }
-          await expireSession();
+          await expireRefreshFailureIfOwned(refreshError, {
+            expireSession: clearExpiredSession,
+          });
           return Promise.reject(new SessionExpiredError());
         }
       }

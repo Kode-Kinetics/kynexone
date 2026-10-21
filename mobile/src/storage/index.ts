@@ -7,34 +7,49 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '@/config';
 import type { AuthTokens, AuthUser } from '@/types';
 
+export const CREDENTIAL_ENVELOPE_KEY = 'zayra_credential_envelope';
+export const USER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export interface CredentialEnvelope extends AuthTokens {
+  version: 1;
+  tenantId: string;
+  persistedAt: number;
+}
+
+export interface CachedAuthUser {
+  id: string;
+  employeeId: string;
+  email: string;
+  fullName: string;
+  profilePhotoUrl?: string;
+}
+
+interface CachedAuthUserEnvelope {
+  version: 1;
+  cachedAt: number;
+  user: CachedAuthUser;
+}
+
+const LEGACY_TOKEN_KEYS = [
+  STORAGE_KEYS.ACCESS_TOKEN,
+  STORAGE_KEYS.REFRESH_TOKEN,
+  STORAGE_KEYS.TOKEN_EXPIRY,
+] as const;
+
 // SecureStore for sensitive data (tokens)
 export const secureStorage = {
   async set(key: string, value: string): Promise<void> {
-    try {
-      await SecureStore.setItemAsync(key, value, {
-        keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-      });
-    } catch (error) {
-      console.error('[SecureStorage] set error:', key, error);
-      throw error;
-    }
+    await SecureStore.setItemAsync(key, value, {
+      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    });
   },
 
   async get(key: string): Promise<string | null> {
-    try {
-      return await SecureStore.getItemAsync(key);
-    } catch (error) {
-      console.error('[SecureStorage] get error:', key, error);
-      return null;
-    }
+    return SecureStore.getItemAsync(key);
   },
 
   async delete(key: string): Promise<void> {
-    try {
-      await SecureStore.deleteItemAsync(key);
-    } catch (error) {
-      console.error('[SecureStorage] delete error:', key, error);
-    }
+    await SecureStore.deleteItemAsync(key);
   },
 };
 
@@ -68,35 +83,89 @@ export const appStorage = {
   },
 };
 
-// Token helpers
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isCredentialEnvelope(value: unknown): value is CredentialEnvelope {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<CredentialEnvelope>;
+  return candidate.version === 1
+    && isNonEmptyString(candidate.accessToken)
+    && isNonEmptyString(candidate.refreshToken)
+    && isNonEmptyString(candidate.tenantId)
+    && typeof candidate.expiresAt === 'number'
+    && Number.isFinite(candidate.expiresAt)
+    && candidate.expiresAt > 0
+    && typeof candidate.persistedAt === 'number'
+    && Number.isFinite(candidate.persistedAt)
+    && candidate.persistedAt > 0;
+}
+
+async function clearLegacyTokenKeys(): Promise<void> {
+  await Promise.all(LEGACY_TOKEN_KEYS.map((key) => secureStorage.delete(key)));
+}
+
+export async function saveCredentialEnvelope(envelope: CredentialEnvelope): Promise<void> {
+  if (!isCredentialEnvelope(envelope)) {
+    throw new Error('Invalid credential envelope.');
+  }
+  await clearLegacyTokenKeys();
+  await secureStorage.set(CREDENTIAL_ENVELOPE_KEY, JSON.stringify(envelope));
+}
+
+export async function loadCredentialEnvelope(): Promise<CredentialEnvelope | null> {
+  const raw = await secureStorage.get(CREDENTIAL_ENVELOPE_KEY);
+  if (raw === null) {
+    await clearLegacyTokenKeys();
+    return null;
+  }
+
+  try {
+    const envelope: unknown = JSON.parse(raw);
+    if (isCredentialEnvelope(envelope)) return envelope;
+  } catch {
+    // Invalid secure data is cleared below and must never create a session.
+  }
+
+  await clearCredentialEnvelope();
+  return null;
+}
+
+export async function clearCredentialEnvelope(): Promise<void> {
+  await Promise.all([
+    secureStorage.delete(CREDENTIAL_ENVELOPE_KEY),
+    clearLegacyTokenKeys(),
+  ]);
+}
+
+// Compatibility helpers for call sites that consume individual token fields.
+// Every read and refresh update is backed by the one transactional envelope.
 export const tokenStorage = {
   async saveTokens(tokens: AuthTokens): Promise<void> {
-    await Promise.all([
-      secureStorage.set(STORAGE_KEYS.ACCESS_TOKEN, tokens.accessToken),
-      secureStorage.set(STORAGE_KEYS.REFRESH_TOKEN, tokens.refreshToken),
-      secureStorage.set(STORAGE_KEYS.TOKEN_EXPIRY, String(tokens.expiresAt)),
-    ]);
+    const current = await loadCredentialEnvelope();
+    if (!current) throw new Error('No credential envelope to update.');
+    await saveCredentialEnvelope({
+      ...current,
+      ...tokens,
+      persistedAt: Date.now(),
+    });
   },
 
   async getAccessToken(): Promise<string | null> {
-    return secureStorage.get(STORAGE_KEYS.ACCESS_TOKEN);
+    return (await loadCredentialEnvelope())?.accessToken ?? null;
   },
 
   async getRefreshToken(): Promise<string | null> {
-    return secureStorage.get(STORAGE_KEYS.REFRESH_TOKEN);
+    return (await loadCredentialEnvelope())?.refreshToken ?? null;
   },
 
   async getTokenExpiry(): Promise<number | null> {
-    const val = await secureStorage.get(STORAGE_KEYS.TOKEN_EXPIRY);
-    return val ? parseInt(val, 10) : null;
+    return (await loadCredentialEnvelope())?.expiresAt ?? null;
   },
 
   async clearTokens(): Promise<void> {
-    await Promise.all([
-      secureStorage.delete(STORAGE_KEYS.ACCESS_TOKEN),
-      secureStorage.delete(STORAGE_KEYS.REFRESH_TOKEN),
-      secureStorage.delete(STORAGE_KEYS.TOKEN_EXPIRY),
-    ]);
+    await clearCredentialEnvelope();
   },
 
   async isTokenExpired(): Promise<boolean> {
@@ -106,14 +175,61 @@ export const tokenStorage = {
   },
 };
 
-// User session
+function isCachedAuthUserEnvelope(value: unknown): value is CachedAuthUserEnvelope {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<CachedAuthUserEnvelope>;
+  const user = candidate.user as Partial<CachedAuthUser> | undefined;
+  return candidate.version === 1
+    && typeof candidate.cachedAt === 'number'
+    && Number.isFinite(candidate.cachedAt)
+    && candidate.cachedAt > 0
+    && !!user
+    && isNonEmptyString(user.id)
+    && isNonEmptyString(user.employeeId)
+    && isNonEmptyString(user.email)
+    && isNonEmptyString(user.fullName)
+    && (user.profilePhotoUrl === undefined || typeof user.profilePhotoUrl === 'string');
+}
+
+// Display-only user cache. Authorization fields are intentionally omitted;
+// authenticated startup always restores the server-owned user graph.
 export const userStorage = {
   async saveUser(user: AuthUser): Promise<void> {
-    await appStorage.set(STORAGE_KEYS.USER, user);
+    const cachedUser: CachedAuthUser = {
+      id: user.id,
+      employeeId: user.employeeId,
+      email: user.email,
+      fullName: user.fullName,
+      ...(user.profilePhotoUrl ? { profilePhotoUrl: user.profilePhotoUrl } : {}),
+    };
+    const envelope: CachedAuthUserEnvelope = {
+      version: 1,
+      cachedAt: Date.now(),
+      user: cachedUser,
+    };
+    await appStorage.set(STORAGE_KEYS.USER, envelope);
   },
 
-  async getUser(): Promise<AuthUser | null> {
-    return appStorage.get<AuthUser>(STORAGE_KEYS.USER);
+  async getUser(): Promise<CachedAuthUser | null> {
+    const envelope = await appStorage.get<unknown>(STORAGE_KEYS.USER);
+    const now = Date.now();
+    if (
+      !isCachedAuthUserEnvelope(envelope)
+      || envelope.cachedAt > now
+      || now - envelope.cachedAt > USER_CACHE_TTL_MS
+    ) {
+      if (envelope !== null) await appStorage.delete(STORAGE_KEYS.USER);
+      return null;
+    }
+    return {
+      id: envelope.user.id,
+      employeeId: envelope.user.employeeId,
+      email: envelope.user.email,
+      fullName: envelope.user.fullName,
+      ...(envelope.user.profilePhotoUrl
+        ? { profilePhotoUrl: envelope.user.profilePhotoUrl }
+        : {}),
+    };
   },
 
   async clearUser(): Promise<void> {
@@ -123,7 +239,7 @@ export const userStorage = {
 
 // Clear all auth data
 export async function clearAllAuthData(): Promise<void> {
-  await Promise.all([tokenStorage.clearTokens(), userStorage.clearUser()]);
+  await Promise.all([clearCredentialEnvelope(), userStorage.clearUser()]);
 }
 
 // Offline punch queue
