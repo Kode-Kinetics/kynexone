@@ -26,7 +26,7 @@ export function StructureTree({ tree }: { tree: TreeNode }) {
       <li key={node.id} className="min-w-0">
         <div className={`flex min-w-0 items-center gap-2 py-1 ${isGroup ? 'text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400' : 'text-sm text-slate-800 dark:text-slate-100'}`}>
           {Icon && <Icon className="h-3.5 w-3.5 shrink-0 text-slate-500 dark:text-slate-400" aria-hidden="true" />}
-          <span className="min-w-0 truncate"><bdi>{nameOf(node)}</bdi>{node.code && !isGroup && <span className="ms-1 text-xs text-slate-500 dark:text-slate-400"><bdi>{node.code}</bdi></span>}</span>
+          <span className="min-w-0 truncate" dir="auto"><bdi>{nameOf(node)}</bdi>{node.code && !isGroup && <span className="ms-1 text-xs text-slate-500 dark:text-slate-400"><bdi>{node.code}</bdi></span>}</span>
           {isGroup && <span className="text-[11px] font-medium normal-case tracking-normal text-slate-500">({node.children.length})</span>}
           {node.tag && node.kind !== 'company' && <TagPill tag={node.tag} />}
         </div>

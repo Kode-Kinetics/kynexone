@@ -351,7 +351,7 @@ export function CreateCompanyWizard() {
       <div className="flex items-start gap-3">
         <CheckCircle2 className="mt-1 h-7 w-7 shrink-0 text-emerald-600" aria-hidden="true" />
         <div className="min-w-0">
-          <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold text-slate-950 outline-none dark:text-white">{t('{name} is created', { name: body.company.legalNameEn })}</h2>
+          <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold text-slate-950 outline-none dark:text-white">{t('{name} is created', { name: (locale === 'ar' && body.company.legalNameAr?.trim()) || body.company.legalNameEn })}</h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{result.replayed ? t('This company was already created from this draft; here is the same result.') : t('The company and its setup were created together. Finish the items below before the first payroll.')}</p>
         </div>
       </div>

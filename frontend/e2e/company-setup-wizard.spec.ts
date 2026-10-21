@@ -367,7 +367,7 @@ for (const locale of ['en', 'ar'] as const) {
     await create.click();
 
     await expect(page.getByTestId('create-company-success')).toBeVisible();
-    await expect(page.getByRole('heading', { name: t('{name} is created', { name: 'Riyadh Trading Company' }) })).toBeVisible();
+    await expect(page.getByRole('heading', { name: t('{name} is created', { name: locale === 'ar' ? 'شركة الرياض للتجارة' : 'Riyadh Trading Company' }) })).toBeVisible();
     const gl = page.getByTestId('readiness-glMapping');
     await expect(gl).toContainText(locale === 'ar' ? 'ربط دفتر الأستاذ' : 'GL mapping');
     await expect(gl.getByRole('link')).toHaveAttribute('href', '/setup?tab=glMapping&companyId=new-company');
