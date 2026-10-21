@@ -33,6 +33,13 @@ publicAuthClient.interceptors.request.use((config) => {
 // X-Company-Id header: the backend intersects it with the token scope, so it can only
 // NARROW access — an inaccessible value yields empty data server-side (fail closed).
 let activeCompanyId: string | null = null;
+
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** Workspace-level call (e.g. creating a company): never narrowed to the switcher's company. */
+    workspaceScope?: boolean;
+  }
+}
 export function setActiveCompanyId(companyId: string | null) {
   activeCompanyId = companyId;
 }
@@ -40,7 +47,7 @@ export function setActiveCompanyId(companyId: string | null) {
 client.interceptors.request.use((config) => {
   const token = localStorage.getItem('zayra_access_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
-  if (activeCompanyId) config.headers['X-Company-Id'] = activeCompanyId;
+  if (activeCompanyId && !config.workspaceScope) config.headers['X-Company-Id'] = activeCompanyId;
   return config;
 });
 

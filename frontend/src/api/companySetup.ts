@@ -144,28 +144,31 @@ export interface CompanySetupResult {
 }
 
 const BASE = '/api/company-setup';
+// The wizard works on a company the switcher cannot name yet, and the server refuses a switcher
+// header here (company_switcher_selected), so none of these calls carry it.
+const WS = { workspaceScope: true } as const;
 
 export const companySetupApi = {
   // A reply that is not the contract's shape (an older server, a proxy page) is "unavailable", never a crash.
-  context: () => client.get<CompanySetupContext>(`${BASE}/context`).then(r => {
+  context: () => client.get<CompanySetupContext>(`${BASE}/context`, WS).then(r => {
     const d = r.data as Partial<CompanySetupContext> | null;
     if (!d || typeof d.canCreate !== 'boolean' || !Array.isArray(d.sisterCompanies) || !d.sharedCatalog) throw new Error('company setup context unavailable');
     return d as CompanySetupContext;
   }),
   defaults: (country: string, copyFrom?: string) =>
-    client.get<CompanySetupDraftBody>(`${BASE}/defaults`, { params: { country, ...(copyFrom ? { copyFrom } : {}) } }).then(r => r.data),
-  drafts: () => client.get<CompanySetupDraftSummary[]>(`${BASE}/drafts`).then(r => (Array.isArray(r.data) ? r.data : [])),
-  draft: (id: string) => client.get<CompanySetupDraft>(`${BASE}/drafts/${id}`).then(r => r.data),
-  createDraft: (body: CompanySetupDraftBody) => client.post<CompanySetupDraft>(`${BASE}/drafts`, body).then(r => r.data),
+    client.get<CompanySetupDraftBody>(`${BASE}/defaults`, { ...WS, params: { country, ...(copyFrom ? { copyFrom } : {}) } }).then(r => r.data),
+  drafts: () => client.get<CompanySetupDraftSummary[]>(`${BASE}/drafts`, WS).then(r => (Array.isArray(r.data) ? r.data : [])),
+  draft: (id: string) => client.get<CompanySetupDraft>(`${BASE}/drafts/${id}`, WS).then(r => r.data),
+  createDraft: (body: CompanySetupDraftBody) => client.post<CompanySetupDraft>(`${BASE}/drafts`, body, WS).then(r => r.data),
   /** 409 when `version` is stale: the draft was saved elsewhere. */
   saveDraft: (id: string, request: { version: number; step: number; body: CompanySetupDraftBody }) =>
-    client.put<CompanySetupDraft>(`${BASE}/drafts/${id}`, request).then(r => r.data),
-  discardDraft: (id: string) => client.delete(`${BASE}/drafts/${id}`).then(() => undefined),
-  dryRun: (body: CompanySetupDraftBody) => client.post<CompanySetupPlan>(`${BASE}/dry-run`, body).then(r => r.data),
+    client.put<CompanySetupDraft>(`${BASE}/drafts/${id}`, request, WS).then(r => r.data),
+  discardDraft: (id: string) => client.delete(`${BASE}/drafts/${id}`, WS).then(() => undefined),
+  dryRun: (body: CompanySetupDraftBody) => client.post<CompanySetupPlan>(`${BASE}/dry-run`, body, WS).then(r => r.data),
   /** The draft id is the idempotency key: a retried commit returns the first result (`replayed: true`). */
   commit: (draftId: string, version: number) =>
-    client.post<CompanySetupResult>(`${BASE}`, { draftId, version }, { headers: { 'Idempotency-Key': draftId } }).then(r => r.data),
-  readiness: (companyId: string) => client.get<ReadinessItem[]>(`${BASE}/readiness/${companyId}`).then(r => r.data),
+    client.post<CompanySetupResult>(`${BASE}`, { draftId, version }, { ...WS, headers: { 'Idempotency-Key': draftId } }).then(r => r.data),
+  readiness: (companyId: string) => client.get<ReadinessItem[]>(`${BASE}/readiness/${companyId}`, WS).then(r => r.data),
 };
 
 /** HTTP status of an axios failure, or undefined. */
