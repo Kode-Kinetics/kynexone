@@ -9237,7 +9237,9 @@ public partial class PayrollController : ControllerBase
 
     // M1: audit log now captures caller IP and structured metadata
     /// <summary>
-    /// The establishment id a wage file carries. KSA: the MOL establishment id saved in the Saudi bank-file
+    /// The establishment id a wage file carries (rules in <see cref="Infrastructure.Payroll.SaudiBankExports.WpsEstablishmentAuthority"/>).
+    /// The company's own MOL establishment number (<c>Company.WpsEmployerId</c>), when recorded, is the authority and any
+    /// other recorded id that differs refuses the file. Without it, today's rule: KSA: the MOL establishment id saved in the Saudi bank-file
     /// settings (the id the bank instruction itself carries) is preferred over the GCC WpsAgentId; when
     /// both are set and differ the export is refused, because two files for one month would name two
     /// establishments. Other countries, and KSA without bank-file settings: the legal entity's own GCC
@@ -9252,17 +9254,14 @@ public partial class PayrollController : ControllerBase
             .ToListAsync(ct);
         var agentId = rows.FirstOrDefault(x => companyId != null && x.CompanyId == companyId && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId
                    ?? rows.FirstOrDefault(x => x.CompanyId == null && !string.IsNullOrWhiteSpace(x.WpsAgentId))?.WpsAgentId;
-        agentId = string.IsNullOrWhiteSpace(agentId) ? null : agentId.Trim();
-        if (!isKsa || companyId is not Guid c) return (agentId, null);
-
-        var mol = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;
-        mol = string.IsNullOrWhiteSpace(mol) ? null : mol.Trim();
-        if (mol is not null && agentId is not null && !string.Equals(mol, agentId, StringComparison.Ordinal))
-            return (null, new("mol_establishment_id_conflict",
-                $"Two different establishment IDs are recorded for this company: {mol} in the Saudi bank-file settings and {agentId} "
-                + "as the WPS employer ID in Setup \u2192 Compliance. Make them the same (the MOL establishment ID shown in Qiwa), then try again.",
-                null, "molEstablishmentId"));
-        return (mol ?? agentId, null);
+        // Decision 10: the company's own MOL establishment number is the authority when it is recorded.
+        var companyValue = companyId is Guid id
+            ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id).Select(c => c.WpsEmployerId).FirstOrDefaultAsync(ct)
+            : null;
+        string? mol = null;
+        if (isKsa && companyId is Guid c)
+            mol = (await new Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService(_db).GetSettingsAsync(tenantId, c, ct)).MolEstablishmentId;
+        return Infrastructure.Payroll.SaudiBankExports.WpsEstablishmentAuthority.Resolve(companyValue, mol, agentId, isKsa && companyId is not null);
     }
 
     /// <summary>Null when the id is usable. KSA applies the [MOL-ESTBID] rule; every country refuses a
