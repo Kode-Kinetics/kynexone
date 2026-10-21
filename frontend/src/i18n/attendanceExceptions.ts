@@ -28,6 +28,8 @@ const en: Record<string, string> = {
   'This day has no attendance record.': 'This day has no attendance record.',
   'Why is this resolved? Say what you checked and what was done.': 'Why is this resolved? Say what you checked and what was done.',
   'Mark as resolved': 'Mark as resolved',
+  'Showing {shown} of {total} exceptions': 'Showing {shown} of {total} exceptions',
+  'Load more': 'Load more',
 };
 
 const ar: Record<string, string> = {
@@ -57,6 +59,8 @@ const ar: Record<string, string> = {
   'This day has no attendance record.': 'لا يوجد سجل حضور لهذا اليوم.',
   'Why is this resolved? Say what you checked and what was done.': 'لماذا سُوّي هذا الاستثناء؟ اذكر ما الذي تحققت منه وما الذي تم.',
   'Mark as resolved': 'تأكيد التسوية',
+  'Showing {shown} of {total} exceptions': 'عرض {shown} من أصل {total} استثناء',
+  'Load more': 'تحميل المزيد',
 };
 
 export const attendanceExceptions = { en, ar };

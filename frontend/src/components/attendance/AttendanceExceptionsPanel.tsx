@@ -7,6 +7,8 @@ import { useFormat } from '../../hooks/useFormat';
 import { useAuth } from '../../contexts/AuthContext';
 import { requestFailureReason } from '../../lib/requestFailure';
 import { msg } from '../../i18n/translations';
+import { usePagedList } from '../../hooks/usePagedList';
+import { ListWindowFooter } from '../ListWindowFooter';
 import { EnumLabel } from '../EnumLabel';
 
 /** What each exception means, in plain words (AttendanceService.ReviewedExceptionTypes). */
@@ -36,25 +38,23 @@ export function AttendanceExceptionsPanel() {
   const canResolve = hasPermission('attendance.write');
   const [state, setState] = useState<'open' | 'resolved'>('open');
   const [type, setType] = useState('');
-  const [items, setItems] = useState<AttendanceExceptionItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState('');
+  // One page at a time (the API caps a page at 100); "Load more" reaches every exception the total counts.
+  const list = usePagedList<AttendanceExceptionItem>((page, pageSize) =>
+    attendanceApi.exceptions({ state, type: type || undefined, page, pageSize }));
+  const items = list.items;
+  const total = list.total ?? 0;
+  const loading = list.loading;
+  const loadError = list.error ? requestFailureReason(list.error) : '';
   const [openId, setOpenId] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState('');
 
-  const load = useCallback(() => {
-    setLoading(true); setLoadError('');
-    attendanceApi.exceptions({ state, type: type || undefined, pageSize: 100 })
-      .then(page => { setItems(page.items); setTotal(page.total); })
-      .catch(e => { setItems([]); setTotal(0); setLoadError(requestFailureReason(e)); })
-      .finally(() => setLoading(false));
-  }, [state, type]);
+  const { reload } = list;
+  const load = useCallback(() => { void reload(); }, [reload]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, state, type]);
 
   const resolve = async (id: string) => {
     setSaving(true); setActionError('');
@@ -165,6 +165,13 @@ export function AttendanceExceptionsPanel() {
           </li>
         ))}
       </ul>
+      <ListWindowFooter shown={items.length} total={list.total} noun="exceptions" loadingMore={list.loadingMore}
+        onLoadMore={() => void list.loadMore()}
+        labels={{
+          window: t('Showing {shown} of {total} exceptions', { shown: f.number(items.length), total: f.number(total) }),
+          loadMore: t('Load more'),
+          loading: t('Loading…'),
+        }} />
     </div>
   );
 }
