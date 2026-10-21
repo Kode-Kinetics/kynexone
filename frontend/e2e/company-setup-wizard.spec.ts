@@ -34,8 +34,10 @@ interface BootOptions {
   canIssueLinks?: boolean;
   /** How POST /api/access/users/{id}/password-reset-link answers. */
   resetLink?: 'emailed' | 'disclosed' | 'refused';
-  /** Existing mode: Evostel's cutover status (A4). Default Planned. */
+  /** Existing mode: Evostel's cutover status (A4). Default Planned; anything else refuses a month change. */
   cutoverStatus?: string;
+  /** Existing mode: Evostel was saved with no MOL number, before today's checks. */
+  legacyMol?: boolean;
 }
 
 const sister = { id: 'sister-1', legalNameEn: 'Sister Trading KSA', countryCode: 'SA' };
@@ -90,9 +92,9 @@ class ContractServer {
   existingDefaults(companyId: string): CompanySetupDraftBody {
     return {
       existingCompanyId: companyId, startFrom: 'defaults',
+      // As the backend sends it: no cutover status (the planner refuses a locked month as a problem instead).
       company: { legalNameEn: EVOSTEL.legalNameEn, legalNameAr: EVOSTEL.legalNameAr, tradeName: 'Evostel', countryCode: 'SA', currency: 'SAR', registrationNumber: '1010999888',
-        molEstablishmentNumber: '7-7654321', qiwaEstablishmentId: '7-7654321', emailDomain: 'evostel.com', workEmailPattern: 'first.last', firstPayrollMonth: '2026-11',
-        cutoverStatus: this.options.cutoverStatus ?? 'Planned' },
+        molEstablishmentNumber: this.options.legacyMol ? '' : '7-7654321', qiwaEstablishmentId: '7-7654321', emailDomain: 'evostel.com', workEmailPattern: 'first.last', firstPayrollMonth: '2026-11' },
       branches: [{ existingId: 'br-hq', code: 'HQ', nameEn: 'Head Office', nameAr: 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: true,
         locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: 150 }] }],
       costCentres: [{ existingId: 'cc-adm', code: 'ADM', nameEn: 'Administration', nameAr: 'الإدارة' }],
@@ -110,20 +112,36 @@ class ContractServer {
   /** A3: the same planner for existing mode — update / unchanged by existingId, create for new rows, never a delete. */
   existingPlan(body: CompanySetupDraftBody): CompanySetupPlan {
     const before = this.existingDefaults(body.existingCompanyId!);
+    // The backend's change words (CompanySetupPlanner "Changes: …."), English only.
+    const WORD: Record<string, string> = { nameEn: 'name (English)', nameAr: 'name (Arabic)', titleEn: 'name (English)', city: 'city', timeZoneId: 'time zone', isHeadOffice: 'head office',
+      latitude: 'coordinates', longitude: 'coordinates', radiusMeters: 'geofence radius', legalNameEn: 'legal name (English)', legalNameAr: 'legal name (Arabic)', tradeName: 'trade name',
+      registrationNumber: 'CR number', molEstablishmentNumber: 'MOL establishment number', gosiEmployerId: 'GOSI number', taxNumber: 'VAT number', qiwaEstablishmentId: 'Qiwa establishment id',
+      emailDomain: 'email domain', workEmailPattern: 'work-email pattern', erpCompanyCode: 'ERP company code', prefix: 'prefix', paddingLength: 'padding', nextSequence: 'next number' };
+    const reason = (keys: string[]) => `Changes: ${[...new Set(keys.map(k => WORD[k] ?? k))].join(', ')}.`;
     const diff = <T extends object>(a: T, b: T | undefined, keys: (keyof T)[]) => keys.filter(k => String(a[k] ?? '') !== String(b?.[k] ?? '')).map(String);
     const own = <T extends { existingId?: string | null; code: string }>(area: PlanItem['area'], rows: T[], was: T[], keys: (keyof T)[], label: (r: T) => string): PlanItem[] =>
       rows.map(r => {
         if (!r.existingId) return { area, code: r.code, label: label(r), action: 'create' as const };
         const changed = diff(r, was.find(w => w.existingId === r.existingId), keys);
-        return changed.length ? { area, code: r.code, label: label(r), action: 'update' as const, changedFields: changed, reason: `Changes: ${changed.join(', ')}` } : { area, code: r.code, label: label(r), action: 'unchanged' as const };
+        return changed.length ? { area, code: r.code, label: label(r), action: 'update' as const, reason: reason(changed) } : { area, code: r.code, label: label(r), action: 'unchanged' as const };
       });
+    const problems: CompanySetupPlan['problems'] = [];
+    const warnings: CompanySetupPlan['warnings'] = [];
+    if ((this.options.cutoverStatus ?? 'Planned') !== 'Planned' && body.company.firstPayrollMonth !== before.company.firstPayrollMonth)
+      problems.push({ step: 2, field: 'company.firstPayrollMonth', code: 'first_payroll_month_locked', message: 'Payroll for this company started on 2026-11-01 (cutover live), so the first payroll month can no longer change.', messageAr: 'بدأت رواتب هذه الشركة، لذا لا يمكن تغيير أول شهر للرواتب.' });
+    if (body.rules.employeeNumbering.nextSequence < before.rules.employeeNumbering.nextSequence)
+      problems.push({ step: 5, field: 'rules.employeeNumbering.nextSequence', code: 'sequence_cannot_go_back', message: `The next employee number is already ${before.rules.employeeNumbering.nextSequence}.` });
+    if (!body.company.molEstablishmentNumber && !before.company.molEstablishmentNumber)
+      warnings.push({ step: 2, field: 'company.molEstablishmentNumber', code: 'mol_required', message: 'Enter the MOL establishment number shown in Qiwa. (saved before; not changed here)' });
+    if (!this.scopeGroup)
+      warnings.push({ step: 5, field: 'rules.leavePolicies', code: 'workspace_defaults_need_group_scope', message: 'The workspace has no statutory default leave policies for SA (MATERNITY). They apply to every SA company, so a group administrator must add them.' });
     const catalog = this.context().sharedCatalog;
     const has = (list: { code: string }[], code: string) => list.some(c => c.code.toUpperCase() === code.toUpperCase());
     const companyChanged = diff(body.company, before.company, ['legalNameEn', 'legalNameAr', 'tradeName', 'registrationNumber', 'molEstablishmentNumber', 'gosiEmployerId', 'taxNumber', 'qiwaEstablishmentId', 'emailDomain', 'workEmailPattern', 'erpCompanyCode', 'firstPayrollMonth']);
     const numberingChanged = diff(body.rules.employeeNumbering, before.rules.employeeNumbering, ['prefix', 'paddingLength', 'nextSequence', 'useCountryPrefix', 'useBranchPrefix', 'useDepartmentPrefix', 'useYear']);
     const items: PlanItem[] = [
       companyChanged.length
-        ? { area: 'company', code: body.company.registrationNumber, label: body.company.legalNameEn, action: 'update', changedFields: companyChanged }
+        ? { area: 'company', code: body.company.registrationNumber, label: body.company.legalNameEn, action: 'update', reason: reason(companyChanged) }
         : { area: 'company', code: body.company.registrationNumber, label: body.company.legalNameEn, action: 'unchanged' },
       ...own('branch', body.branches, before.branches, ['nameEn', 'nameAr', 'city', 'timeZoneId', 'isHeadOffice'], b => b.nameEn),
       ...body.branches.flatMap(b => own('location', b.locations, before.branches.find(w => w.existingId && w.existingId === b.existingId)?.locations ?? [], ['nameEn', 'nameAr', 'latitude', 'longitude', 'radiusMeters'], l => l.nameEn)),
@@ -135,11 +153,11 @@ class ContractServer {
       { area: 'gccSetting', code: 'SA', label: 'End-of-service (Saudi Labour Law)', labelAr: 'مكافأة نهاية الخدمة (نظام العمل السعودي)', action: 'unchanged' },
       { area: 'holidayCalendar', code: 'SA-2026', label: 'Saudi public holidays 2026', action: 'reuse' },
       numberingChanged.length
-        ? { area: 'employeeIdRule', code: body.rules.employeeNumbering.prefix, label: 'Employee numbering', action: 'update', changedFields: numberingChanged }
+        ? { area: 'employeeIdRule', code: body.rules.employeeNumbering.prefix, label: 'Employee numbering', action: 'update', reason: reason(numberingChanged) }
         : { area: 'employeeIdRule', code: body.rules.employeeNumbering.prefix, label: 'Employee numbering', action: 'unchanged' },
       ...(body.companyAdmin.mode !== 'groupOnly' ? [{ area: 'companyAdmin' as const, code: body.companyAdmin.email ?? body.companyAdmin.existingUserId ?? '', label: body.companyAdmin.fullNameEn ?? 'Existing user', action: 'create' as const }] : []),
     ];
-    return { ok: true, items, problems: [], warnings: [] };
+    return { ok: problems.length === 0, items, problems, warnings };
   }
 
   defaults(country: string): CompanySetupDraftBody {
@@ -216,7 +234,8 @@ class ContractServer {
       const body = req.postDataJSON() as CompanySetupDraftBody;
       if (body.existingCompanyId ? !this.ownCompany(body.existingCompanyId) : !this.scopeGroup) return refuse();
       // A1: one open draft per existing company.
-      if (body.existingCompanyId && this.openDraftFor(body.existingCompanyId)) return reply({ code: 'existing_company_draft_open', message: 'This company already has an open draft.' }, 409);
+      const open = body.existingCompanyId ? this.openDraftFor(body.existingCompanyId) : null;
+      if (open) return reply({ code: 'existing_company_draft_open', message: 'This company already has an open draft.', draftId: open }, 409);
       const draft: CompanySetupDraft = { id: `draft-${++this.sequence}`, version: 1, step: 1, status: 'Open', body, createdByUserId: 'u-admin', createdByName: 'Group Owner', createdAtUtc: now, updatedAtUtc: now };
       this.drafts.set(draft.id, draft);
       return reply(draft, 201);
@@ -253,6 +272,7 @@ class ContractServer {
       if (draft.body.existingCompanyId) {
         // A6: the company row is updated, never recreated; counts by action.
         const plan = this.existingPlan(draft.body);
+        if (!plan.ok) return reply({ code: plan.problems[0].code, message: plan.problems[0].message, step: plan.problems[0].step, field: plan.problems[0].field }, 422);
         const count = (action: string) => plan.items.filter(i => i.action === action).reduce<Record<string, number>>((m, i) => ({ ...m, [i.area]: (m[i.area] ?? 0) + 1 }), {});
         this.drafts.set(draftId, { ...draft, status: 'Submitted', resultCompanyId: draft.body.existingCompanyId });
         const result: CompanySetupResult = {
@@ -865,7 +885,7 @@ test('the old studio stays reachable only as Configuration Center → Policy sta
 for (const locale of ['en', 'ar'] as const) {
   test(`complete an existing company: edit a branch, add one, review the update, save (${locale})`, async ({ page }, info) => {
     const t = T(locale);
-    const { server, pageErrors } = await boot(page, { locale, cutoverStatus: 'Live' });
+    const { server, pageErrors } = await boot(page, { locale });
     await openEvostel(page, t);
     // Step 1 is the company summary, not "Start from".
     await expect(page.getByRole('heading', { level: 2, name: t('Complete setup for {company}', { company: locale === 'ar' ? 'شركة إيفوستل' : 'Evostel LLC' }) })).toBeVisible();
@@ -882,9 +902,6 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(page.getByLabel(t('Country'))).toBeDisabled();
     await expect(page.getByLabel(t('Salary currency'))).toBeDisabled();
     await expect(page.getByText(t('Fixed for an existing company: payroll, GOSI and bank files depend on it.')).first()).toBeVisible();
-    // Payroll has started (cutover Live): the first payroll month is fixed.
-    await expect(page.getByLabel(t('First payroll month'))).toHaveAttribute('readonly', '');
-    await expect(page.getByText(t('Payroll has already started for this company, so its first payroll month stays as it is.'))).toBeVisible();
     await expect(page.getByLabel(t('Legal name (English)'))).toHaveValue('Evostel LLC');
     await expect(page.getByTestId('structure-tree')).toContainText(t('Existing'));
     await contained(page);
@@ -975,8 +992,6 @@ for (const locale of ['en', 'ar'] as const) {
     await openEvostel(page, t);
     await page.getByRole('button', { name: t('Start'), exact: true }).click();
     await expectStep(page, t, 'Company details');
-    // Planned cutover: the first payroll month may still change.
-    await expect(page.getByLabel(t('First payroll month'))).not.toHaveAttribute('readonly', '');
     for (let i = 0; i < 5; i++) await next(page, t);
     await expectStep(page, t, 'Review & update');
     await expect(page.getByTestId('review-no-change')).toBeVisible();
@@ -1050,4 +1065,71 @@ test('an open draft for a company resumes from the chooser instead of starting a
   await evostelRow(page).getByRole('link', { name: new RegExp(t('Resume setup')) }).click();
   await expectStep(page, t, 'Branches & locations');
   expect([...server.drafts.values()].filter(d => d.body.existingCompanyId === 'co-evostel')).toHaveLength(1);
+});
+
+test('a locked first payroll month is refused by the plan with what to do, and Update waits', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page, { cutoverStatus: 'Live' });
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await page.getByLabel(t('First payroll month')).fill('2027-02');
+  for (let i = 0; i < 5; i++) await next(page, t);
+  await expectStep(page, t, 'Review & update');
+  const copy = t('Payroll has already started for this company, so the first payroll month cannot change. Put back the month that was saved.');
+  await expect(page.getByTestId('review-plan')).toContainText(copy);
+  await expect(page.getByRole('button', { name: t('Update company'), exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: t('Go to {step}', { step: t('Company details') }) }).first().click();
+  await expect(page.locator('#ccw-company-firstPayrollMonth-error')).toHaveText(copy);
+  expect(server.commits).toEqual([]);
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`a value saved before today's checks warns instead of blocking; the counter cannot go back (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    await boot(page, { locale, legacyMol: true });
+    await openEvostel(page, t);
+    await page.getByRole('button', { name: t('Start'), exact: true }).click();
+    await expectStep(page, t, 'Company details');
+    const legacy = page.getByTestId('legacy-warnings');
+    await expect(legacy).toContainText(t('Enter the MOL establishment number shown in Qiwa.'));
+    await contained(page);
+    await vshot(page, info, `existing-${locale}-2-company-legacy-warning`);
+    await next(page, t);
+    await expectStep(page, t, 'Branches & locations'); // not blocked
+    await next(page, t);
+    await next(page, t);
+    await expectStep(page, t, 'Work & pay rules');
+    await expect(page.getByText(t('Already at {number}; it can only go up.', { number: 42 }))).toBeVisible();
+    await page.getByLabel(t('Next number')).fill('7');
+    await next(page, t);
+    await expect(page.locator('#ccw-rules-employeeNumbering-nextSequence-error')).toHaveText(t('The next number is already {number}. A lower one could repeat a number already given; enter {number} or higher.', { number: 42 }));
+    await expectStep(page, t, 'Work & pay rules');
+  });
+}
+
+test('starting while someone else opened a draft for the company resumes theirs (409 carries its id)', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page);
+  await openEvostel(page, t);
+  // Another admin starts the company's draft after this page loaded.
+  const now = new Date().toISOString();
+  const theirs = { ...server.existingDefaults('co-evostel'), company: { ...server.existingDefaults('co-evostel').company, tradeName: 'Started elsewhere' } };
+  server.drafts.set('draft-elsewhere', { id: 'draft-elsewhere', version: 3, step: 2, status: 'Open', body: theirs, createdByUserId: 'u-2', createdByName: 'Second Admin', createdAtUtc: now, updatedAtUtc: now });
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expect(page).toHaveURL(/draft=draft-elsewhere/);
+  await expectStep(page, t, 'Company details');
+  await expect(page.getByLabel(t('Trade name (optional)'))).toHaveValue('Started elsewhere');
+  expect([...server.drafts.values()].filter(d => d.body.existingCompanyId === 'co-evostel')).toHaveLength(1);
+});
+
+test('a company super admin is told, in plain words, that shared country defaults wait for a group administrator', async ({ page }) => {
+  const t = T('en');
+  await boot(page, { persona: 'companyAdmin' });
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  for (let i = 0; i < 5; i++) await next(page, t);
+  await expectStep(page, t, 'Review & update');
+  await expect(page.getByTestId('review-plan')).toContainText(t('Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.'));
+  await expect(page.getByRole('button', { name: t('Finish without changes'), exact: true })).toBeEnabled();
 });

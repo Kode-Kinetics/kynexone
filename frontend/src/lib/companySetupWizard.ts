@@ -110,6 +110,57 @@ export const CHANGED_FIELD_LABEL: Record<string, string> = {
 };
 
 /**
+ * What to do next for each server code of existing mode (and the shared ones it raises), in the reader's language.
+ * The server's own text stays the fallback for any code not listed here.
+ */
+export const SETUP_CODE_COPY: Record<string, string> = {
+  country_locked: msg('The country of an existing company cannot change: payroll, GOSI and bank files depend on it. To register in another country, create a new company.'),
+  currency_locked: msg('The salary currency of an existing company cannot change: payroll and bank files depend on it. To pay in another currency, create a new company.'),
+  draft_target_locked: msg('This draft belongs to one company and cannot be moved to another. Discard it and start again from Guided Setup.'),
+  existing_code_locked: msg('The code of a row the company already has cannot change, because other records refer to it. Put the code back, or add a new row with the new code.'),
+  first_payroll_month_locked: msg('Payroll has already started for this company, so the first payroll month cannot change. Put back the month that was saved.'),
+  company_not_manageable: msg('You cannot change the setup of this company. Choose one of your companies in Guided Setup, or ask your group super admin.'),
+  company_admin_required: msg('Only an administrator of this company can complete its setup. Ask your company or group super admin.'),
+  company_not_active: msg('This company is not active yet, so its setup cannot be completed here. Activate it in Setup → Companies first.'),
+  existing_company_draft_open: msg('Setup for this company was already started, so that draft is opened instead of a second one.'),
+  existing_row_unknown: msg('A row in this draft is no longer one of the company’s records; it may have been removed in Setup. Discard this draft and start again from Guided Setup.'),
+  branch_code_taken: msg('This branch code is already used by this company, perhaps by a removed branch. Choose a different code.'),
+  sequence_cannot_go_back: msg('The next employee number cannot go back, because a lower one could repeat a number already given. Enter the saved number or a higher one.'),
+  work_week_override_kept: msg('This company keeps its own weekend. If it should follow the country weekend, remove it in Setup → GCC settings.'),
+  workspace_defaults_need_group_scope: msg('Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.'),
+  shared_row_not_edited: msg('This is a shared row: its name is not changed here. A group administrator renames it in its Setup tab.'),
+};
+
+/** The copy for a server code, or undefined when the server's own text should be shown. */
+export function setupCodeCopy(code: string | null | undefined): string | undefined {
+  return code ? SETUP_CODE_COPY[code] : undefined;
+}
+
+/** The planner's change words (CompanySetupPlanner "Changes: …"), so an update reads in the reader's language. */
+const REASON_FIELD: Record<string, string> = {
+  'legal name (English)': msg('Legal name (English)'), 'legal name (Arabic)': msg('Legal name (Arabic)'), 'trade name': msg('Trade name (optional)'),
+  'CR number': msg('Commercial registration (CR) number'), 'MOL establishment number': msg('MOL establishment number'),
+  'GOSI number': msg('GOSI employer number (optional)'), 'Unified National Number': msg('Unified National Number (optional)'),
+  'VAT number': msg('VAT number (optional)'), 'Qiwa establishment id': msg('Qiwa establishment ID (optional)'),
+  'email domain': msg('Work email domain (optional)'), 'work-email pattern': msg('Work email pattern (optional)'), 'ERP company code': msg('ERP company code (optional)'),
+  'name (English)': msg('Name (English)'), 'name (Arabic)': msg('Name (Arabic)'), name: msg('Name'), city: msg('City'), 'time zone': msg('Time zone'),
+  'head office': msg('Head office'), coordinates: msg('Coordinates'), 'geofence radius': msg('Radius (m)'),
+  prefix: msg('Prefix'), padding: msg('Digits in the number'), 'next number': msg('Next number'), format: msg('Number format'),
+};
+
+/**
+ * "Changes: name (English), city." → the dictionary keys of those fields; null when the reason is not that shape or
+ * names a word not listed (the reason is then shown as the server wrote it).
+ */
+export function reasonFields(reason: string | null | undefined): string[] | null {
+  const m = /^Changes:\s*(.+?)\.?$/.exec((reason ?? '').trim());
+  if (!m) return null;
+  const words = m[1].split(',').map(w => w.trim()).filter(Boolean);
+  const keys = words.map(w => REASON_FIELD[w]);
+  return words.length > 0 && keys.every(Boolean) ? keys : null;
+}
+
+/**
  * What the review shows open: what will change. In create mode every item is shown (reused catalog rows are part of
  * what Create does). In existing mode, rows that stay as they are — unchanged, and shared rows reused as they are —
  * are collapsed so the reader sees only the changes.
@@ -239,10 +290,37 @@ export interface ValidationInput {
   context?: CompanySetupContext | null;
   /** Step 6 only applies when the viewer can grant the company super admin. */
   adminStepVisible?: boolean;
+  /** Existing mode: what the company has today (the prefill). Values kept from it are judged as saved, not as typed. */
+  baseline?: CompanySetupDraftBody | null;
+}
+
+/**
+ * Existing mode: registration values saved before today's rules and left as they are do not block (the server warns
+ * instead of refusing); a value the reader changes is checked as on create.
+ */
+const LEGACY_FIELDS = ['company.legalNameAr', 'company.registrationNumber', 'company.molEstablishmentNumber', 'company.unifiedNationalNumber', 'company.emailDomain'] as const;
+function keptFromBaseline(field: string, { body, baseline }: ValidationInput): boolean {
+  if (!body.existingCompanyId || !baseline || !(LEGACY_FIELDS as readonly string[]).includes(field)) return false;
+  const key = field.slice('company.'.length) as keyof CompanySetupCompany;
+  return (String(body.company[key] ?? '').trim()) === (String(baseline.company[key] ?? '').trim());
 }
 
 /** Field-level blockers for one step. Empty means Next is allowed. */
-export function validateStep(step: StepId, { body, context, adminStepVisible = true }: ValidationInput): FieldError[] {
+export function validateStep(step: StepId, input: ValidationInput): FieldError[] {
+  const errors = validateStepRaw(step, input).filter(e => !keptFromBaseline(e.field, input));
+  // Existing mode: the employee-number counter never goes back (server: sequence_cannot_go_back).
+  const floor = input.body.existingCompanyId ? input.baseline?.rules.employeeNumbering.nextSequence : undefined;
+  if (step === 5 && floor && input.body.rules.employeeNumbering.nextSequence < floor && !errors.some(e => e.field === 'rules.employeeNumbering.nextSequence'))
+    errors.push({ field: 'rules.employeeNumbering.nextSequence', message: msg('The next number is already {number}. A lower one could repeat a number already given; enter {number} or higher.'), params: { number: floor } });
+  return errors;
+}
+
+/** Existing mode: legacy registration values kept as they are, shown as advice on step 2 instead of blocking. */
+export function legacyWarnings(input: ValidationInput): FieldError[] {
+  return validateStepRaw(2, input).filter(e => keptFromBaseline(e.field, input));
+}
+
+function validateStepRaw(step: StepId, { body, context, adminStepVisible = true }: ValidationInput): FieldError[] {
   const errors: FieldError[] = [];
   const c = body.company;
   const saudi = isSaudi(c.countryCode);
@@ -341,8 +419,9 @@ export function validateStep(step: StepId, { body, context, adminStepVisible = t
 }
 
 /** Non-blocking advice per step: shown in amber, never stops Next. */
-export function stepWarnings(step: StepId, { body, context }: ValidationInput): FieldError[] {
-  const warnings: FieldError[] = [];
+export function stepWarnings(step: StepId, input: ValidationInput): FieldError[] {
+  const { body, context } = input;
+  const warnings: FieldError[] = step === 2 ? legacyWarnings(input) : [];
   if (step === 3 && body.branches.length > 0 && body.branches.every(b => b.locations.length === 0))
     warnings.push({ field: 'locations', message: msg('No locations yet. Until you add one, employees can punch in at any geofenced site in the workspace. Add a location to each branch, or add them later in Setup → Locations.') });
   if (step === 4 && context?.gradesCurrency && body.company.currency && context.gradesCurrency !== body.company.currency && body.grades.length > 0)

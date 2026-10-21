@@ -468,6 +468,28 @@ const ar: Record<string, string> = {
   "{count} to update": "{count} للتحديث",
   "{done} of {total} done": "اكتمل {done} من {total}",
   "{name} is updated": "تم تحديث {name}",
+  // Addendum A: server codes of existing mode, as what to do next.
+  "A draft is saved as soon as you start, and kept until you save the changes or discard it.": "تُحفظ مسودة بمجرد أن تبدأ، وتبقى حتى تحفظ التغييرات أو تتجاهلها.",
+  "A row in this draft is no longer one of the company’s records; it may have been removed in Setup. Discard this draft and start again from Guided Setup.": "أحد الصفوف في هذه المسودة لم يعد من سجلات الشركة؛ ربما حُذف من الإعداد. تجاهل هذه المسودة وابدأ من جديد من الإعداد الموجّه.",
+  "Already at {number}; it can only go up.": "وصل إلى {number}؛ ولا يمكن إلا أن يزيد.",
+  "Coordinates": "الإحداثيات",
+  "Number format": "صيغة الرقم",
+  "Only an administrator of this company can complete its setup. Ask your company or group super admin.": "لا يكمل إعداد هذه الشركة إلا مسؤول فيها. راجع المسؤول الأعلى للشركة أو للمجموعة.",
+  "Payroll has already started for this company, so the first payroll month cannot change. Put back the month that was saved.": "بدأت الرواتب لهذه الشركة بالفعل، لذا لا يمكن تغيير أول شهر للرواتب. أعد الشهر الذي كان محفوظًا.",
+  "These were saved before today’s checks. You can continue, and correct them when you can.": "حُفظت هذه القيم قبل عمليات التحقق الحالية. يمكنك المتابعة، وصحّحها متى أمكن.",
+  "Setup for this company was already started, so that draft is opened instead of a second one.": "بدأ إعداد هذه الشركة مسبقًا، لذا تُفتح تلك المسودة بدلًا من إنشاء مسودة ثانية.",
+  "Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.": "تنقص بعض الإعدادات الافتراضية للدولة التي تشترك فيها كل الشركات، ولا يضيفها إلا مسؤول المجموعة. راجع المسؤول الأعلى للمجموعة؛ ولا يتوقف عليها شيء آخر هنا.",
+  "The code of a row the company already has cannot change, because other records refer to it. Put the code back, or add a new row with the new code.": "لا يمكن تغيير رمز صف موجود لدى الشركة لأن سجلات أخرى تشير إليه. أعد الرمز كما كان، أو أضف صفًا جديدًا بالرمز الجديد.",
+  "The country of an existing company cannot change: payroll, GOSI and bank files depend on it. To register in another country, create a new company.": "لا يمكن تغيير دولة شركة قائمة: تعتمد عليها الرواتب والتأمينات الاجتماعية وملفات البنك. للتسجيل في دولة أخرى، أنشئ شركة جديدة.",
+  "The next employee number cannot go back, because a lower one could repeat a number already given. Enter the saved number or a higher one.": "لا يمكن إنقاص رقم الموظف التالي، لأن رقمًا أقل قد يكرر رقمًا أُعطي مسبقًا. أدخل الرقم المحفوظ أو رقمًا أعلى.",
+  "The next number is already {number}. A lower one could repeat a number already given; enter {number} or higher.": "الرقم التالي هو {number} بالفعل. قد يكرر رقم أقل رقمًا أُعطي مسبقًا؛ أدخل {number} أو أعلى.",
+  "The salary currency of an existing company cannot change: payroll and bank files depend on it. To pay in another currency, create a new company.": "لا يمكن تغيير عملة رواتب شركة قائمة: تعتمد عليها الرواتب وملفات البنك. للدفع بعملة أخرى، أنشئ شركة جديدة.",
+  "This branch code is already used by this company, perhaps by a removed branch. Choose a different code.": "رمز الفرع هذا مستخدم لدى هذه الشركة، ربما لفرع محذوف. اختر رمزًا آخر.",
+  "This company is not active yet, so its setup cannot be completed here. Activate it in Setup → Companies first.": "هذه الشركة غير نشطة بعد، لذا لا يمكن إكمال إعدادها هنا. فعّلها أولًا من الإعداد ← الشركات.",
+  "This company keeps its own weekend. If it should follow the country weekend, remove it in Setup → GCC settings.": "تحتفظ هذه الشركة بعطلتها الأسبوعية الخاصة. إن كان ينبغي أن تتبع عطلة الدولة، أزلها من الإعداد ← إعدادات دول الخليج.",
+  "This draft belongs to one company and cannot be moved to another. Discard it and start again from Guided Setup.": "هذه المسودة تخص شركة واحدة ولا يمكن نقلها إلى أخرى. تجاهلها وابدأ من جديد من الإعداد الموجّه.",
+  "This is a shared row: its name is not changed here. A group administrator renames it in its Setup tab.": "هذا صف مشترك: لا يُغيَّر اسمه هنا. يعيد مسؤول المجموعة تسميته من تبويبه في الإعداد.",
+  "You cannot change the setup of this company. Choose one of your companies in Guided Setup, or ask your group super admin.": "لا يمكنك تغيير إعداد هذه الشركة. اختر إحدى شركاتك من الإعداد الموجّه، أو راجع المسؤول الأعلى للمجموعة.",
 };
 
 export const companyWizard = {

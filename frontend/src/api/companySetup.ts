@@ -66,8 +66,9 @@ export interface CompanySetupCompany {
   /** "YYYY-MM" */
   firstPayrollMonth: string;
   /**
-   * Existing mode only, read-only, filled by GET /defaults?existingCompanyId: the company's cutover status. The first
-   * payroll month is editable only while it is "Planned" (A4); the server refuses a change otherwise.
+   * Proposed, NOT in the backend contract yet: the company's cutover status, so the first payroll month can be shown
+   * read-only up front once it is not "Planned" (A4). Today the server sends nothing here and answers a change with the
+   * `first_payroll_month_locked` problem instead, which the screen shows on the field.
    */
   cutoverStatus?: string | null;
 }
@@ -158,8 +159,8 @@ export type PlanAction = 'create' | 'update' | 'unchanged' | 'reuse' | 'conflict
 
 export interface PlanItem {
   area: PlanArea; code: string; label: string; labelAr?: string | null; action: PlanAction; reason?: string | null;
-  /** On `update`: the changed body fields as row-relative lower-camel keys (`nameEn`, `city`), so they can be named in
-   *  the reader's language. Absent: the screen shows `reason`, which lists them in English. */
+  /** Proposed, NOT in the backend contract yet: on `update`, the changed fields as lower-camel keys. Today the server
+   *  lists them in `reason` ("Changes: name (English), city."), which the screen translates token by token. */
   changedFields?: string[] | null;
 }
 export interface Problem { step: number; field: string; code: string; message: string; messageAr?: string | null }
@@ -178,7 +179,11 @@ export interface ReadinessItem {
 }
 
 /** Every refusal from /api/company-setup. `field` is dotted lower-camel with numeric indexes (`branches.0.code`). */
-export interface CompanySetupErrorBody { code: string; message: string; messageAr?: string | null; field?: string | null; step?: number | null }
+export interface CompanySetupErrorBody {
+  code: string; message: string; messageAr?: string | null; field?: string | null; step?: number | null;
+  /** On `existing_company_draft_open`: the company's open draft, to resume instead of starting a second one. */
+  draftId?: string | null;
+}
 
 export interface CompanySetupResult {
   companyId: string;

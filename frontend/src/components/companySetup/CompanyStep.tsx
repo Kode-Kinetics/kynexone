@@ -4,9 +4,9 @@ import { useT } from '../../hooks/useT';
 import { DEFAULT_WORK_EMAIL_PATTERN, WORK_EMAIL_PATTERNS, WORK_EMAIL_PATTERN_LABELS, isValidEmailDomain } from '../../api/organization';
 import { assembleWorkEmail, deriveWorkEmailLocalPart } from '../../api/employees';
 import type { CompanySetupCompany } from '../../api/companySetup';
-import { COUNTRY_CURRENCY, CURRENCIES, firstPayrollMonthLocked, isSaudi } from '../../lib/companySetupWizard';
+import { COUNTRY_CURRENCY, CURRENCIES, firstPayrollMonthLocked, isSaudi, legacyWarnings } from '../../lib/companySetupWizard';
 import { CountryOptions } from './CountryOptions';
-import { SectionHeader, WizardField, useWizardForm } from './wizardForm';
+import { Notice, SectionHeader, WizardField, useWizardForm } from './wizardForm';
 
 function assembleWorkEmailPreview(pattern: string | undefined, domain: string | undefined): string {
   const local = deriveWorkEmailLocalPart('John Smith', pattern || DEFAULT_WORK_EMAIL_PATTERN);
@@ -16,7 +16,7 @@ function assembleWorkEmailPreview(pattern: string | undefined, domain: string | 
 /** Step 2: the legal entity. Saudi rules (Arabic name, 10-digit CR, MOL number, SAR) apply when the country is SA. */
 export function CompanyStep() {
   const t = useT();
-  const { body, update, readOnly } = useWizardForm();
+  const { body, update, readOnly, context, baseline } = useWizardForm();
   const c = body.company;
   const saudi = isSaudi(c.countryCode);
   // Addendum A4: an existing company keeps its country and currency (payroll, GOSI and bank files depend on them),
@@ -30,8 +30,16 @@ export function CompanyStep() {
       inputMode={opts.inputMode} autoComplete={opts.autoComplete ?? 'off'} placeholder={opts.placeholder}
       value={String(c[key] ?? '')} onChange={e => set({ [key]: e.target.value } as Partial<CompanySetupCompany>)} />;
 
+  // Existing mode: values saved before today's rules and not changed here do not block; they are flagged instead.
+  const legacy = existing ? legacyWarnings({ body, context, baseline }) : [];
   return (
     <div className="space-y-8">
+      {legacy.length > 0 && (
+        <div data-testid="legacy-warnings"><Notice tone="warning" role="status">
+          <p className="font-semibold">{t('These were saved before today’s checks. You can continue, and correct them when you can.')}</p>
+          <ul className="mt-1 list-disc space-y-0.5 ps-5">{legacy.map(w => <li key={w.field}>{t(w.message, w.params)}</li>)}</ul>
+        </Notice></div>
+      )}
       <section>
         <SectionHeader title={t('Legal entity')} description={t('Enter the details exactly as they appear on the commercial registration.')} />
         <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">

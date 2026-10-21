@@ -15,7 +15,7 @@ import {
 } from '../../api/companySetup';
 import {
   GUIDED_SETUP_HREF, STEP_IDS, buildTree, canCommit, completeCompanyHref, emptyBody, firstBlockingStep, planIsNoChange, problemsByField,
-  stepCopy, stepState, validateStep, type FieldError, type StepId, type StepState, type WizardMode,
+  setupCodeCopy, stepCopy, stepState, validateStep, type FieldError, type StepId, type StepState, type WizardMode,
 } from '../../lib/companySetupWizard';
 import { ConfirmDialog, type ConfirmState } from '../ui/ConfirmDialog';
 import { WizardRail } from './WizardRail';
@@ -103,9 +103,11 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
 
   const autosave = useDraftAutosave({ draftId, body, step });
   const errorBody = (err: unknown) => (err as { response?: { data?: Partial<CompanySetupErrorBody> } } | null)?.response?.data;
-  /** The server's refusal in the reader's language, or ''. */
+  /** The server's refusal in the reader's language, or ''. A known code reads as what to do next. */
   const serverText = (err: unknown) => {
     const data = errorBody(err);
+    const copy = setupCodeCopy(data?.code);
+    if (copy) return t(copy);
     return (locale === 'ar' ? data?.messageAr || data?.message : data?.message) ?? '';
   };
 
@@ -217,18 +219,21 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   }, []);
 
   // ── Validation and messages ────────────────────────────────────────────────
-  const input = { body, context, adminStepVisible };
+  const input = { body, context, adminStepVisible, baseline: existing ? defaults : null };
   const serverProblems = useMemo(() => problemsByField(plan?.problems ?? []), [plan]);
   const clientErrors = useMemo(() => {
     const map = new Map<string, FieldError>();
-    for (const s of steps) for (const e of validateStep(s, { body, context, adminStepVisible })) if (!map.has(e.field)) map.set(e.field, e);
+    for (const s of steps) for (const e of validateStep(s, { body, context, adminStepVisible, baseline: existing ? defaults : null })) if (!map.has(e.field)) map.set(e.field, e);
     return map;
-  }, [steps, body, context, adminStepVisible]);
+  }, [steps, body, context, adminStepVisible, existing, defaults]);
   const errorFor = useCallback((field: string) => {
     const client = clientErrors.get(field);
     if (client && (touched.has(field) || attempted.has(fieldStep(field)))) return t(client.message, client.params);
     const server = serverProblems.get(field);
-    if (server) return locale === 'ar' ? server.messageAr || server.message : server.message;
+    if (server) {
+      const copy = setupCodeCopy(server.code);
+      return copy ? t(copy) : locale === 'ar' ? server.messageAr || server.message : server.message;
+    }
     return undefined;
   }, [clientErrors, touched, attempted, serverProblems, locale, t]);
   const states = useMemo(() => {
@@ -236,7 +241,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     for (const s of STEP_IDS) out[s] = s === 7 ? (plan ? (canCommit(plan) ? 'done' : 'warning') : visited.has(7) ? 'warning' : 'notStarted') : stepState(s, { ...input, visited, serverProblems: plan?.problems });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, context, adminStepVisible, visited, plan]);
+  }, [body, context, adminStepVisible, visited, plan, defaults]);
   const blocking = firstBlockingStep(steps.filter(s => s !== 1 || !draftId), input);
   const reachable = (s: StepId) => !!draftId && (blocking === null || steps.indexOf(s) <= steps.indexOf(blocking));
 
@@ -299,10 +304,14 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     } catch (err) {
       const status = httpStatus(err);
       if (status === 409) {
-        // Someone opened a draft for this company meanwhile: continue that one rather than start a second.
-        const ctx = await companySetupApi.context().catch(() => null);
-        const open = ctx?.manageableCompanies?.find(c => c.id === existingCompanyId)?.openDraftId;
-        if (ctx) setContext(ctx);
+        // Someone opened a draft for this company meanwhile (existing_company_draft_open carries its id): continue
+        // that one rather than start a second.
+        let open = errorBody(err)?.draftId ?? null;
+        if (!open) {
+          const ctx = await companySetupApi.context().catch(() => null);
+          open = ctx?.manageableCompanies?.find(c => c.id === existingCompanyId)?.openDraftId ?? null;
+          if (ctx) setContext(ctx);
+        }
         if (open) { setBusy(''); await openDraft(open); return; }
       }
       setError(status === 403 || status === 409
@@ -506,7 +515,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
           <div className="min-w-0 text-xs text-slate-600 dark:text-slate-300">
             {draftId
               ? <p role="status" data-testid="autosave-status" data-state={autosave.state}>{saveLabel || t('Draft saved')}{draftMeta && <span className="hidden sm:inline">{' · '}{t('Started by {name}', { name: draftMeta.createdByName })}</span>}</p>
-              : <p>{t('A draft is saved as soon as you start, and kept until you create the company or discard it.')}</p>}
+              : <p>{existing ? t('A draft is saved as soon as you start, and kept until you save the changes or discard it.') : t('A draft is saved as soon as you start, and kept until you create the company or discard it.')}</p>}
           </div>
           {draftId && <button type="button" className="btn-secondary" disabled={!!busy} onClick={() => void saveAndExit()}>{busy === 'exiting' ? t('Saving…') : t('Save draft & exit')}</button>}
         </div>

@@ -4,6 +4,7 @@ import {
   buildTree, canCommit, defaultFirstPayrollMonth, eligibleCompanySuperAdmins, emptyBody, firstBlockingStep, groupPlan, molEstablishmentError,
   normalizeFieldPath, numberingPreview, planUsage, stepState, stepWarnings, validateStep,
   completeCompanyHref, draftHref, firstPayrollMonthLocked, isPlanChange, planCounts, planIsNoChange, readinessProgress, rowChanged, stepCopy, wizardMode,
+  legacyWarnings, reasonFields, setupCodeCopy,
 } from '../src/lib/companySetupWizard';
 
 const context: CompanySetupContext = {
@@ -267,4 +268,43 @@ test('the structure tree marks existing rows apart from new ones and the company
   const branches = company.children.find(n => n.id === 'branches')!.children;
   expect(branches.map(b => [b.code, b.tag])).toEqual([['HQ', 'existing'], ['JED', 'new']]);
   expect(buildTree(saudiBody(), context).children[0].tag).toBe('new');
+});
+
+test('existing mode: registration values saved before today are advice, a changed one is checked as on create', () => {
+  const baseline = existingBody();
+  baseline.company = { ...baseline.company, molEstablishmentNumber: '', registrationNumber: '12345' };
+  const body = structuredClone(baseline);
+  expect(validateStep(2, { body, context, baseline })).toEqual([]);
+  expect(legacyWarnings({ body, context, baseline }).map(w => w.field)).toEqual(['company.registrationNumber', 'company.molEstablishmentNumber']);
+  expect(stepWarnings(2, { body, context, baseline }).map(w => w.field)).toContain('company.molEstablishmentNumber');
+  body.company.registrationNumber = '99';
+  expect(fields(validateStep(2, { body, context, baseline }))).toEqual(['company.registrationNumber']);
+  // Create mode is unchanged: the same values block.
+  const created = structuredClone(baseline); created.existingCompanyId = undefined;
+  expect(fields(validateStep(2, { body: created, context }))).toEqual(['company.registrationNumber', 'company.molEstablishmentNumber']);
+});
+
+test('existing mode: the employee-number counter never goes below what the company has issued', () => {
+  const baseline = existingBody();
+  baseline.rules.employeeNumbering.nextSequence = 42;
+  const body = structuredClone(baseline);
+  body.rules.employeeNumbering.nextSequence = 7;
+  expect(validateStep(5, { body, context, baseline })).toEqual([expect.objectContaining({ field: 'rules.employeeNumbering.nextSequence', params: { number: 42 } })]);
+  body.rules.employeeNumbering.nextSequence = 42;
+  expect(validateStep(5, { body, context, baseline })).toEqual([]);
+});
+
+test('the planner\'s English change words map to dictionary labels; anything unknown keeps the server text', () => {
+  expect(reasonFields('Changes: name (English), city.')).toEqual(['Name (English)', 'City']);
+  expect(reasonFields('Changes: CR number, email domain.')).toEqual(['Commercial registration (CR) number', 'Work email domain (optional)']);
+  expect(reasonFields('Changes: from 2026-11-01.')).toBeNull();
+  expect(reasonFields('Already exists')).toBeNull();
+  expect(reasonFields(null)).toBeNull();
+});
+
+test('every existing-mode server code has what-to-do-next copy', () => {
+  for (const code of ['country_locked', 'currency_locked', 'draft_target_locked', 'existing_code_locked', 'first_payroll_month_locked', 'company_not_manageable',
+    'company_admin_required', 'company_not_active', 'existing_company_draft_open', 'existing_row_unknown', 'branch_code_taken', 'sequence_cannot_go_back',
+    'work_week_override_kept', 'workspace_defaults_need_group_scope', 'shared_row_not_edited']) expect(setupCodeCopy(code), code).toBeTruthy();
+  expect(setupCodeCopy('mol_required')).toBeUndefined();
 });

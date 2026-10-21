@@ -3,7 +3,7 @@
 import { useLocale } from '../../contexts/LocaleContext';
 import type { CompanySetupPlan, PlanAction, PlanItem, Problem } from '../../api/companySetup';
 import {
-  AREA_LABEL, CHANGED_FIELD_LABEL, buildTree, canCommit, groupPlan, isPlanChange, planCounts, planIsNoChange, stepCopy, wizardMode, type StepId,
+  AREA_LABEL, CHANGED_FIELD_LABEL, buildTree, canCommit, groupPlan, isPlanChange, planCounts, planIsNoChange, reasonFields, setupCodeCopy, stepCopy, wizardMode, type StepId,
 } from '../../lib/companySetupWizard';
 import { StructureTree } from './StructureTree';
 import { Notice, useWizardForm } from './wizardForm';
@@ -32,14 +32,21 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps }: {
   const mode = wizardMode(body);
   const existing = mode === 'existing';
   const title = (step: StepId) => t(stepCopy(step, mode).title);
-  const problemText = (p: Problem) => (locale === 'ar' ? p.messageAr || p.message : p.message);
+  // A known code reads as what to do next, in either language; anything else is the server's own words.
+  const problemText = (p: Problem) => {
+    const copy = setupCodeCopy(p.code);
+    return copy ? t(copy) : (locale === 'ar' ? p.messageAr || p.message : p.message);
+  };
   const actionLabel = (a: PlanAction) => ({
     create: existing ? t('Add') : t('Create'), update: t('Update'), unchanged: t('No change'), reuse: t('Reuse'), conflict: t('Conflict'),
   }[a]);
   /** An update names its fields in the reader's language when the server lists them; otherwise its reason. */
   const detail = (item: PlanItem) => {
+    const sep = locale === 'ar' ? '، ' : ', ';
     if (item.action === 'update' && item.changedFields?.length)
-      return t('Changes: {fields}', { fields: item.changedFields.map(f => (CHANGED_FIELD_LABEL[f] ? t(CHANGED_FIELD_LABEL[f]) : f)).join(locale === 'ar' ? '، ' : ', ') });
+      return t('Changes: {fields}', { fields: item.changedFields.map(f => (CHANGED_FIELD_LABEL[f] ? t(CHANGED_FIELD_LABEL[f]) : f)).join(sep) });
+    const fromReason = item.action === 'update' ? reasonFields(item.reason) : null;
+    if (fromReason) return t('Changes: {fields}', { fields: fromReason.map(k => t(k)).join(sep) });
     return item.reason || '';
   };
   const stepOf = (p: Problem): StepId => (visibleSteps.includes(p.step as StepId) ? p.step as StepId : 7);

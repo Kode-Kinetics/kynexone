@@ -19,7 +19,9 @@ export function RulesStep({ defaults, preview, previewState }: {
 }) {
   const { t, locale } = useLocale();
   const country = useCountryName();
-  const { body, update, readOnly } = useWizardForm();
+  const { body, update, readOnly, baseline } = useWizardForm();
+  // Existing mode: the counter only goes up (server: sequence_cannot_go_back).
+  const sequenceFloor = body.existingCompanyId ? baseline?.rules.employeeNumbering.nextSequence : undefined;
   const rules = body.rules;
   const packWeekend = defaults?.rules.workWeek.weekendDays ?? rules.workWeek.weekendDays;
   const setRules = (patch: Partial<CompanySetupDraftBody['rules']>) => update(b => ({ ...b, rules: { ...b.rules, ...patch } }));
@@ -89,8 +91,8 @@ export function RulesStep({ defaults, preview, previewState }: {
           <WizardField field="rules.employeeNumbering.paddingLength" label={t('Digits in the number')}>
             {control => <input {...control} type="number" min={1} max={10} inputMode="numeric" className="input w-full" readOnly={readOnly} value={rules.employeeNumbering.paddingLength} onChange={e => setNumbering({ paddingLength: Number(e.target.value) })} />}
           </WizardField>
-          <WizardField field="rules.employeeNumbering.nextSequence" label={t('Next number')}>
-            {control => <input {...control} type="number" min={1} inputMode="numeric" className="input w-full" readOnly={readOnly} value={rules.employeeNumbering.nextSequence} onChange={e => setNumbering({ nextSequence: Number(e.target.value) })} />}
+          <WizardField field="rules.employeeNumbering.nextSequence" label={t('Next number')} help={sequenceFloor ? t('Already at {number}; it can only go up.', { number: sequenceFloor }) : undefined}>
+            {control => <input {...control} type="number" min={sequenceFloor ?? 1} inputMode="numeric" className="input w-full" readOnly={readOnly} value={rules.employeeNumbering.nextSequence} onChange={e => setNumbering({ nextSequence: Number(e.target.value) })} />}
           </WizardField>
         </div>
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">

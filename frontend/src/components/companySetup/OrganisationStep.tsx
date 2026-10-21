@@ -24,6 +24,10 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
   // New shared codes need group scope (A5): a company super admin picks from the catalog only.
   const canAddShared = !!context?.isGroupScope;
   const existing = !!body.existingCompanyId;
+  // Existing mode: a shared row the company already uses always plans as reuse (the server only warns
+  // shared_row_not_edited on a rename), so it is shown read-only even if the catalog list missed it.
+  const sharedExisting = (row: { existingId?: string | null }, nameEn: string, nameAr?: string) =>
+    existing && row.existingId ? { nameEn, nameAr: nameAr ?? null } : undefined;
   const manage = (key: keyof typeof MANAGE_TAB) => existing ? { href: `/setup?tab=${MANAGE_TAB[key].tab}&companyId=${encodeURIComponent(body.existingCompanyId!)}`, label: MANAGE_TAB[key].label } : undefined;
   const set = <K extends ListKey>(key: K, rows: CompanySetupDraftBody[K]) => update(b => ({ ...b, [key]: rows }));
   const name = (c: CodeName) => (locale === 'ar' ? c.nameAr || c.nameEn : c.nameEn);
@@ -116,7 +120,7 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
         {reuseChips('departments', catalog?.departments, c => ({ code: c.code, nameEn: c.nameEn, nameAr: c.nameAr ?? '' }) as never)}
         <RowsEditor<CompanySetupDepartment> path="departments" rows={body.departments} columns={departmentCols} onChange={rows => set('departments', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '' })} addLabel={t('Add department')} emptyText={t('No departments yet.')}
-          rowLabel={i => t('Department {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.departments, row.code) ?? undefined}
+          rowLabel={i => t('Department {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.departments, row.code) ?? sharedExisting(row, row.nameEn, row.nameAr)}
           manage={manage('departments')} baselineRows={baseline?.departments} canAdd={canAddShared}
           footer={!canAddShared ? <span className="text-xs text-slate-600 dark:text-slate-400">{t('New codes need a group administrator.')}</span> : undefined} />
       </section>
@@ -126,7 +130,7 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
         {reuseChips('designations', catalog?.designations, c => ({ code: c.code, titleEn: c.nameEn, titleAr: c.nameAr ?? '' }) as never)}
         <RowsEditor<CompanySetupDesignation> path="designations" rows={body.designations} columns={designationCols} onChange={rows => set('designations', rows)}
           newRow={() => ({ code: '', titleEn: '', titleAr: '' })} addLabel={t('Add designation')} emptyText={t('No designations yet.')}
-          rowLabel={i => t('Designation {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.designations, row.code) ?? undefined}
+          rowLabel={i => t('Designation {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.designations, row.code) ?? sharedExisting(row, row.titleEn, row.titleAr)}
           manage={manage('designations')} baselineRows={baseline?.designations} canAdd={canAddShared} />
       </section>
 
@@ -135,7 +139,7 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
         {reuseChips('grades', catalog?.grades, c => ({ code: c.code, nameEn: c.nameEn, nameAr: c.nameAr ?? '', level: 1, minSalary: 0, midSalary: 0, maxSalary: 0 }) as never)}
         <RowsEditor<CompanySetupGrade> path="grades" rows={body.grades} columns={gradeCols} onChange={rows => set('grades', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '', level: body.grades.length + 1, minSalary: 0, midSalary: 0, maxSalary: 0 })} addLabel={t('Add grade')} emptyText={t('No grades yet.')}
-          rowLabel={i => t('Grade {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.grades, row.code) ?? undefined}
+          rowLabel={i => t('Grade {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.grades, row.code) ?? sharedExisting(row, row.nameEn, row.nameAr)}
           manage={manage('grades')} baselineRows={baseline?.grades} canAdd={canAddShared} />
         {warnings.map(w => <div key={w.field} className="mt-3"><Notice tone="warning" role="status">{t(w.message, w.params)}</Notice></div>)}
       </section>
