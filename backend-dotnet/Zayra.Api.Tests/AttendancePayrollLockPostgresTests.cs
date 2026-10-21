@@ -78,6 +78,65 @@ public sealed class AttendancePayrollLockPostgresTests
         (await DayAsync(k)).FirstInUtc.Should().Be(Utc(Day, 9, 50));
     }
 
+    [Fact]
+    public async Task ADayWithNoRecordYet_InALockedRunsMonth_IsNotCreated_ByAPunchARangeRunOrAnImport()
+    {
+        var k = await CreateAsync(_fx.CreateDb);
+        await k.PunchAsync(Utc(Day, 9, 0), "In", processed: false);
+        await k.PunchAsync(Utc(Day, 18, 0), "Out", processed: false);
+        await RangeAsync(k);
+        await LockRunAsync(k);
+        var lateDay = Day.AddDays(1); // covered by the locked run, and no record exists for it
+
+        // A late first punch for the locked month: kept as a raw event, but no day is opened or processed.
+        await using (var db = k.NewContext())
+            await new AttendanceService(db, new NoNotifications(), new NoHttp(), new FixedClock(Utc(lateDay, 9, 5)))
+                .PunchAsync(k.TenantId, new WebPunchRequest(k.Employee.Id, "In", null, null, null), "Web",
+                    new RequestContext(null, null, Guid.NewGuid(), k.TenantId), default);
+        // A range run over the locked month does not open it either.
+        await using (var db = k.NewContext())
+            await AttendanceService.ForRecompute(db).ProcessAsync(k.TenantId, new ProcessAttendanceRequest(lateDay, lateDay.AddDays(1), k.Employee.Id),
+                new RequestContext(null, null, Guid.NewGuid(), k.TenantId), default);
+
+        // An import row for the locked day is refused, not written.
+        await using (var db = k.NewContext())
+        {
+            var controller = new Zayra.Api.Controllers.MigrationImportController(db, new Zayra.Api.Infrastructure.Auth.Pbkdf2PasswordHasher(),
+                new Zayra.Api.Infrastructure.Audit.AuditService(db))
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+                    {
+                        User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(new[]
+                        {
+                            new System.Security.Claims.Claim("tenant_id", k.TenantId.ToString()),
+                            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, "Admin"),
+                        }, "test")),
+                    },
+                },
+            };
+            var result = await controller.Commit(new Zayra.Api.Models.MigrationPackageRequest($"locked-import-{Guid.NewGuid():N}", new Dictionary<string, string>
+            {
+                ["attendanceDaily"] = "EmployeeCode,WorkDate,FirstInUtc,LastOutUtc,TotalWorkedMinutes,BreakMinutes,LateMinutes,"
+                    + "EarlyExitMinutes,OvertimeMinutes,UndertimeMinutes,MissingPunch,Status,WorkMode\n"
+                    + $"{k.Employee.EmployeeCode},{lateDay:yyyy-MM-dd},{lateDay:yyyy-MM-dd}T09:00:00Z,{lateDay:yyyy-MM-dd}T18:00:00Z,480,60,0,0,0,0,false,Present,Work from site\n",
+            }, false), default);
+            System.Text.Json.JsonSerializer.Serialize((result.Result as ObjectResult)?.Value).Should().Contain("payroll-locked");
+        }
+
+        await using var check = k.NewContext();
+        (await check.AttendanceRawEvents.IgnoreQueryFilters().CountAsync(r => r.TenantId == k.TenantId && r.PunchTimestampUtc == Utc(lateDay, 9, 5)))
+            .Should().Be(1, "the punch itself is recorded");
+        (await check.AttendanceDailyRecords.IgnoreQueryFilters().AnyAsync(x => x.TenantId == k.TenantId && x.WorkDate >= lateDay))
+            .Should().BeFalse("a payroll-locked month is not written to, even on a day it has no record for");
+        (await check.AttendancePayrollImpacts.IgnoreQueryFilters().AnyAsync(x => x.TenantId == k.TenantId && x.WorkDate >= lateDay)).Should().BeFalse();
+        (await AttendancePayrollLock.IsLockedAsync(check, k.TenantId, k.Employee.Id, lateDay, default)).Should().BeTrue();
+        (await AttendancePayrollLock.IsLockedAsync(check, k.TenantId, k.Employee.Id, lateDay.AddMonths(1), default))
+            .Should().BeFalse("the lock covers the run's month only");
+    }
+
     private async Task LockRunAsync(AttendancePayrollPostgresKit k)
     {
         await using (var db = k.NewContext())

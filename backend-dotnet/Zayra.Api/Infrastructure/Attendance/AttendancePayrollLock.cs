@@ -69,12 +69,28 @@ public static class AttendancePayrollLock
     }
 
     /// <summary>
-    /// Whether the employee's day may not be rewritten: a tenant-wide lock period covers it (anything but a run's own
-    /// row), or the day itself is locked by a payroll run.
+    /// Whether the employee's day may not be written: a tenant-wide lock period covers it (anything but a run's own
+    /// row); or the day itself is locked by a payroll run; or — for a day with no record yet, such as a late first punch
+    /// after the run locked — a locked (or paid) run with a lock period covering the date holds a live slip for the
+    /// employee. Only the existing rows were checked before, so such a day was opened and processed inside a locked month.
     /// </summary>
-    public static async Task<bool> IsLockedAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly date, CancellationToken ct) =>
-        await IsTenantLockedAsync(db, tenantId, date, date, ct)
-        || await db.AttendanceDailyRecords.AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employeeId && d.WorkDate == date && d.IsPayrollLocked, ct);
+    public static async Task<bool> IsLockedAsync(ZayraDbContext db, Guid tenantId, int employeeId, DateOnly date, CancellationToken ct)
+    {
+        if (await IsTenantLockedAsync(db, tenantId, date, date, ct)) return true;
+        if (await db.AttendanceDailyRecords.AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employeeId && d.WorkDate == date && d.IsPayrollLocked, ct))
+            return true;
+        var runLocks = await db.AttendanceLockPeriods.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == "Locked" && x.PeriodStart <= date && x.PeriodEnd >= date
+                     && x.LockType.StartsWith(RunLockPrefix))
+            .Select(x => x.LockType).ToListAsync(ct);
+        var runIds = runLocks.Select(t => Guid.TryParse(t[RunLockPrefix.Length..], out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty).ToList();
+        if (runIds.Count == 0) return false;
+        var lockedRuns = ScopedBypass.TenantWide(db.PayrollRuns, tenantId, Justification)
+            .Where(r => runIds.Contains(r.Id) && (r.Status == "Locked" || r.Status == "Paid"));
+        return await ScopedBypass.TenantWide(db.PayrollSlips, tenantId, Justification)
+            .AnyAsync(s => s.EmployeeId == employeeId && s.Status != "Voided" && lockedRuns.Any(r => r.Id == s.RunId), ct);
+    }
 
     /// <summary>A tenant-wide lock period overlapping [from, to] (a run's own row does not lock the tenant).</summary>
     public static Task<bool> IsTenantLockedAsync(ZayraDbContext db, Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct) =>

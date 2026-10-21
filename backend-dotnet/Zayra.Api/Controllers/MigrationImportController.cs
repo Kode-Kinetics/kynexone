@@ -712,9 +712,12 @@ public sealed partial class MigrationImportController : ControllerBase
     /// </summary>
     private async Task<string> UpsertAttendanceIsolatedAsync(Dictionary<string, string> row, Guid tenantId, CancellationToken ct)
     {
-        if (!_db.Database.IsRelational()) return await UpsertAttendanceAsync(row, tenantId, ct);
         var employee = await Employee(row, tenantId, ct);
         var date = DateReq(row, "WorkDate");
+        // A payroll-locked day (a locked run covers it, with or without a record yet) is not written: the row is refused.
+        if (await AttendancePayrollLock.IsLockedAsync(_db, tenantId, employee.Id, date, ct))
+            throw new InvalidOperationException($"{date:yyyy-MM-dd} is in a payroll-locked period for this employee; correct it with a payroll adjustment.");
+        if (!_db.Database.IsRelational()) return await UpsertAttendanceAsync(row, tenantId, ct);
         var known = _db.ChangeTracker.Entries().Select(e => e.Entity).ToHashSet(ReferenceEqualityComparer.Instance);
         var attempt = 0;
         var strategy = _db.Database.CreateExecutionStrategy();
