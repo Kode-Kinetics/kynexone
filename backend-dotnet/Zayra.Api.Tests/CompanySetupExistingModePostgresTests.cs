@@ -668,6 +668,33 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     }
 
     [Fact]
+    public async Task A_company_super_admin_never_writes_workspace_wide_defaults_and_is_told_so()
+    {
+        var w = await SeedAsync();
+        await using (var db = fixture.CreateDb())
+        {
+            db.LeavePolicies.RemoveRange(await db.LeavePolicies.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId).ToListAsync());
+            db.GCCComplianceSettings.RemoveRange(await db.GCCComplianceSettings.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId && x.CompanyId == null).ToListAsync());
+            await db.SaveChangesAsync();
+        }
+        var caller = Caller(w, w.CompanyAdminId, w.SisterId);
+        var body = await PrefillAsync(w, w.SisterId, caller);
+        var plan = await DryRunAsync(w, body, caller);
+        plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
+        plan.Items.Should().NotContain(i => (i.Area == V.Areas.LeavePolicy || i.Area == V.Areas.GccSetting) && i.Action == V.ActionCreate);
+        plan.Warnings.Count(x => x.Code == "workspace_defaults_need_group_scope").Should().Be(2);
+        var (_, result) = await DraftAndCommitAsync(w, body, caller);
+        result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+        await using var verify = fixture.CreateDb();
+        (await verify.LeavePolicies.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.TenantId)).Should().Be(0);
+        (await verify.GCCComplianceSettings.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.TenantId && x.CompanyId == null)).Should().Be(0);
+        // The group admin's plan for the same company does add them.
+        var groupPlan = await DryRunAsync(w, await PrefillAsync(w, w.SisterId));
+        groupPlan.Items.Should().Contain(i => i.Area == V.Areas.GccSetting && i.Action == V.ActionCreate);
+        groupPlan.Items.Should().Contain(i => i.Area == V.Areas.LeavePolicy && i.Action == V.ActionCreate);
+    }
+
+    [Fact]
     public async Task A_draft_or_inactive_company_is_refused()
     {
         var w = await SeedAsync();

@@ -906,7 +906,20 @@ public sealed class CompanySetupPlanner
         if (rules?.LeavePolicies?.UsePack == true && country.Length > 0)
         {
             missingLeave = await TenantProvisioningBundle.MissingDefaultLeavePoliciesAsync(_db, tenantId, country, ct);
-            foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes)
+            if (missingLeave.Count > 0 && !caller.IsGroupScope)
+            {
+                // Workspace-wide rows: like the shared catalog, only group scope adds them (a company super admin's
+                // request may not write a row that is not their company's). Said, not silently skipped.
+                c.Warn(5, "rules.leavePolicies", "workspace_defaults_need_group_scope",
+                    $"The workspace has no statutory default leave policies for {country} ({string.Join(", ", missingLeave.Order(StringComparer.Ordinal))}). They apply to every {country} company, so a group administrator must add them.",
+                    "سياسات الإجازة الافتراضية للدولة تنطبق على جميع الشركات، ويضيفها مسؤول المجموعة.");
+                var missingTypes = missingLeave;
+                missingLeave = new HashSet<string>();
+                foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes.Where(t => !missingTypes.Contains(t.TypeCode)))
+                    c.Item(Areas.LeavePolicy, typeCode, $"Default {typeLabel} — {country}", V.ActionReuse,
+                        $"The workspace's {country} default already applies to this company.", $"سياسة الإجازة النظامية الافتراضية ({typeCode}) — {country}");
+            }
+            else foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes)
                 c.Item(Areas.LeavePolicy, typeCode, $"Default {typeLabel} — {country}",
                     missingLeave.Contains(typeCode) ? V.ActionCreate : V.ActionReuse,
                     missingLeave.Contains(typeCode)
@@ -922,7 +935,11 @@ public sealed class CompanySetupPlanner
         {
             tenantDefaultGcc = await ScopedBypass.TenantWide(_db.GCCComplianceSettings, tenantId, Why).AsNoTracking()
                 .Where(x => x.CompanyId == null && x.CountryCode == country).OrderBy(x => x.Id).FirstOrDefaultAsync(ct);
-            if (tenantDefaultGcc is null)
+            if (tenantDefaultGcc is null && !caller.IsGroupScope)
+                c.Warn(5, "rules.workWeek", "workspace_defaults_need_group_scope",
+                    $"The workspace has no country settings for {country} (end of service, weekend). They apply to every {country} company, so a group administrator must add them in Setup → Country settings.",
+                    "إعدادات الدولة تنطبق على جميع الشركات، ويضيفها مسؤول المجموعة.");
+            else if (tenantDefaultGcc is null)
             {
                 newGccDefault = CompanySetupPack.TenantDefaultGccRow(tenantId, country);
                 c.Item(Areas.GccSetting, country, $"Country settings for {country} (end of service, weekend)", V.ActionCreate,
