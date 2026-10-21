@@ -350,6 +350,12 @@ const ar: Record<string, string> = {
   "Choose the user who will be the company super admin.": "اختر المستخدم الذي سيكون المسؤول الأعلى للشركة.",
   "No locations yet. Until you add one, employees can punch in at any geofenced site in the workspace. Add a location to each branch, or add them later in Setup → Locations.": "لا توجد مواقع بعد. إلى أن تضيف موقعًا، يمكن للموظفين تسجيل الحضور من أي موقع محدد جغرافيًا في مساحة العمل. أضف موقعًا لكل فرع، أو أضفها لاحقًا من الإعداد ← المواقع.",
   "Grade salary bands are kept in {gradeCurrency} for the whole group, but this company pays in {currency}. Enter the bands in {gradeCurrency}, or check them with finance before paying salaries.": "تُحفظ نطاقات رواتب الدرجات بعملة {gradeCurrency} للمجموعة كلها، لكن هذه الشركة تدفع بعملة {currency}. أدخل النطاقات بعملة {gradeCurrency}، أو راجعها مع المالية قبل صرف الرواتب.",
+  // Use defaults confirm and reused catalog rows
+  "Replace the {count} rows in {section} with the defaults? What you entered in this section will be removed.": "هل تريد استبدال الصفوف ({count}) في {section} بالإعدادات الافتراضية؟ ستُزال البيانات التي أدخلتها في هذا القسم.",
+  "Replace with defaults": "الاستبدال بالإعدادات الافتراضية",
+  "Keep my rows": "الإبقاء على صفوفي",
+  "Remove from this company": "إزالة من هذه الشركة",
+  "From the shared group catalog. Used as it is; it can only be changed in Setup by a group administrator.": "من الدليل المشترك للمجموعة. يُستخدم كما هو، ولا يمكن تغييره إلا من الإعداد بواسطة مسؤول المجموعة.",
 };
 
 export const companyWizard = {

@@ -8,6 +8,7 @@ import type {
 import { inCatalog, stepWarnings } from '../../lib/companySetupWizard';
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
+import { UseDefaultsButton } from './UseDefaultsButton';
 
 type ListKey = 'costCentres' | 'departments' | 'designations' | 'grades';
 
@@ -23,8 +24,9 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
   const canAddShared = !!context?.isGroupScope;
   const set = <K extends ListKey>(key: K, rows: CompanySetupDraftBody[K]) => update(b => ({ ...b, [key]: rows }));
   const name = (c: CodeName) => (locale === 'ar' ? c.nameAr || c.nameEn : c.nameEn);
+  const SECTION: Record<ListKey, string> = { costCentres: t('Cost centres'), departments: t('Departments'), designations: t('Designations'), grades: t('Grades') };
   const defaultsButton = (key: ListKey) => defaults && defaults[key].length > 0 && !readOnly
-    ? <button type="button" className="btn-secondary" onClick={() => set(key, defaults[key] as never)}>{t('Use defaults')}</button>
+    ? <UseDefaultsButton current={body[key] as unknown[]} defaults={defaults[key] as unknown[]} section={SECTION[key]} onApply={() => set(key, defaults[key] as never)} />
     : undefined;
 
   const codeOptions = (rows: { code: string; nameEn?: string; titleEn?: string }[], shared: readonly CodeName[] = []) => {

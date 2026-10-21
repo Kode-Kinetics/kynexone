@@ -6,6 +6,7 @@ import type { CompanySetupBranch, CompanySetupDraftBody, CompanySetupLocation } 
 import { TIME_ZONES, stepWarnings } from '../../lib/companySetupWizard';
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
+import { UseDefaultsButton } from './UseDefaultsButton';
 
 const PACK_TIME_ZONE: Record<string, string> = { SA: 'Asia/Riyadh', AE: 'Asia/Dubai', QA: 'Asia/Qatar', KW: 'Asia/Kuwait', BH: 'Asia/Bahrain', OM: 'Asia/Muscat', EG: 'Africa/Cairo', IN: 'Asia/Kolkata', PK: 'Asia/Karachi', GB: 'Europe/London', US: 'America/New_York' };
 
@@ -47,7 +48,10 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
       <SectionHeader
         title={t('Branches')}
         description={t('Every company needs one head office. Add the other branches people are assigned to.')}
-        actions={!readOnly && defaults && defaults.branches.length > 0 ? <button type="button" className="btn-secondary" onClick={() => setBranches(defaults.branches.map(row => ({ ...row, locations: row.locations ?? [] })))}>{t('Use defaults')}</button> : undefined}
+        actions={!readOnly && defaults && defaults.branches.length > 0
+          ? <UseDefaultsButton current={body.branches} defaults={defaults.branches} section={t('Branches')}
+              onApply={() => update(b => ({ ...b, branches: defaults.branches.map(row => ({ ...row, locations: row.locations ?? [] })) }))} />
+          : undefined}
       />
       {branchError && <p id="ccw-branches-error" role="alert" className="text-sm font-medium text-rose-700 dark:text-rose-300">{branchError}</p>}
       <RowsEditor<CompanySetupBranch>

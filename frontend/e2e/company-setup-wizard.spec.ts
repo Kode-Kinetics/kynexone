@@ -96,7 +96,7 @@ class ContractServer {
       ...body.designations.map(d => ({ area: 'designation' as const, code: d.code, label: d.titleEn, action: has(catalog.designations, d.code) ? 'reuse' as const : 'create' as const })),
       ...body.grades.map(g => ({ area: 'grade' as const, code: g.code, label: g.nameEn, action: has(catalog.grades, g.code) ? 'reuse' as const : 'create' as const })),
       { area: 'workWeek', code: body.rules.workWeek.weekendDays, label: 'Working week', action: body.rules.workWeek.override ? 'create' : 'reuse' },
-      { area: 'gccSetting', code: body.company.countryCode, label: 'End-of-service (Saudi Labour Law)', action: 'create' },
+      { area: 'gccSetting', code: body.company.countryCode, label: 'End-of-service (Saudi Labour Law)', labelAr: 'مكافأة نهاية الخدمة (نظام العمل السعودي)', action: 'create' },
       ...(body.rules.holidayCalendar.usePack ? [{ area: 'holidayCalendar' as const, code: 'SA-2026', label: 'Saudi public holidays 2026', action: 'reuse' as const }] : []),
       ...(body.rules.leavePolicies.usePack ? [
         { area: 'leavePolicy' as const, code: 'ANNUAL', label: 'Annual leave (21 days)', action: 'create' as const },
@@ -313,11 +313,16 @@ for (const locale of ['en', 'ar'] as const) {
     await cc.getByLabel(t('Code')).fill('ADM');
     await cc.getByLabel(t('Name (English)')).fill('Administration');
     await cc.getByLabel(t('Name (Arabic)')).fill('الإدارة');
-    // HR came from the defaults and is in the shared catalog: reused, read-only.
+    // HR came from the defaults and is in the shared catalog: a read-only summary, never an editor.
     const hr = page.getByTestId('departments-row').first();
+    await expect(hr).toHaveAttribute('data-reused', 'true');
     await expect(hr).toContainText(t('Reused'));
-    await expect(hr.getByLabel(t('Name (English)'))).toHaveAttribute('readonly', '');
+    await expect(hr).toContainText('Human Resources');
+    await expect(hr).toContainText('الموارد البشرية');
+    await expect(hr.locator('input, select')).toHaveCount(0);
+    await expect(hr.getByRole('button', { name: new RegExp(t('Remove from this company')) })).toBeVisible();
     await page.getByRole('button', { name: t('Use {code} · {name}', { code: 'FIN', name: locale === 'ar' ? 'المالية' : 'Finance' }) }).click();
+    await expect(page.getByTestId('departments-row').nth(1).locator('input, select')).toHaveCount(0);
     await page.getByRole('button', { name: t('Add department'), exact: true }).click();
     const ops = page.getByTestId('departments-row').nth(2);
     await ops.getByLabel(t('Code')).fill('OPS');
@@ -332,7 +337,8 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(page.getByTestId('work-week-mode')).toHaveText(t('This company follows the country working week.'));
     await page.getByLabel(t('Prefix')).fill('RTC');
     await expect(page.getByTestId('numbering-preview')).toContainText('RTC-0001');
-    await expect(page.getByText('End-of-service (Saudi Labour Law)')).toBeVisible();
+    // Plan labels come in the reader's language when the server sends labelAr.
+    await expect(page.getByText(locale === 'ar' ? 'مكافأة نهاية الخدمة (نظام العمل السعودي)' : 'End-of-service (Saudi Labour Law)')).toBeVisible();
     await contained(page);
     await shot(page, info, `${locale}-5-rules`);
     await next(page, t);
@@ -481,10 +487,12 @@ test('a company-scoped admin is refused at step 1 and never sees the super admin
   expect([...server.drafts.values()]).toEqual([]);
 });
 
-for (const variant of ['group HR manager', 'admin whose role ceiling refuses Admin'] as const) {
+for (const variant of ['group HR manager', 'admin whose role ceiling refuses Admin', 'admin the server says cannot grant it'] as const) {
   test(`the super admin step is hidden for a ${variant}, and the draft keeps group-only administration`, async ({ page }) => {
     const t = T('en');
-    const { server } = await boot(page, variant === 'group HR manager' ? { persona: 'groupHrManager' } : { adminRefused: true });
+    const { server } = await boot(page, variant === 'group HR manager' ? { persona: 'groupHrManager' }
+      : variant === 'admin whose role ceiling refuses Admin' ? { adminRefused: true }
+      : { context: { canGrantCompanyAdmin: false } });
     await openWizardFromCompanies(page, t);
     await expect(page.getByTestId('wizard-rail').getByRole('listitem')).toHaveCount(6);
     await expect(page.getByTestId('wizard-rail')).not.toContainText(t('Company super admin'));
@@ -504,4 +512,84 @@ test('the wizard is axe-clean on the company step and the review in Arabic', asy
   await startAndFillCompany(page, t);
   const company = await new AxeBuilder({ page }).include('[data-testid="create-company-wizard"]').analyze();
   expect(company.violations.filter(v => v.impact === 'critical' || v.impact === 'serious')).toEqual([]);
+});
+
+test('the server answer on granting a company super admin wins over the role ceiling', async ({ page }) => {
+  const t = T('en');
+  await boot(page, { adminRefused: true, context: { canGrantCompanyAdmin: true } });
+  await openWizardFromCompanies(page, t);
+  await expect(page.getByTestId('wizard-rail').getByRole('listitem')).toHaveCount(7);
+  await expect(page.getByTestId('wizard-rail')).toContainText(t('Company super admin'));
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`use defaults asks inline before replacing entered rows, and a row typed past a shared code stays editable (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    await boot(page, { locale });
+    await openWizardFromCompanies(page, t);
+    await startAndFillCompany(page, t);
+    await next(page, t);
+    // Untouched defaults apply without a question.
+    await page.getByRole('button', { name: t('Use defaults'), exact: true }).click();
+    await expect(page.getByTestId('use-defaults-confirm')).toHaveCount(0);
+    await page.getByRole('button', { name: t('Add branch'), exact: true }).click();
+    const jeddah = page.getByTestId('branches-row').nth(1);
+    await jeddah.getByLabel(t('Code')).fill('JED');
+    await page.getByRole('button', { name: t('Use defaults'), exact: true }).click();
+    const confirm = page.getByTestId('use-defaults-confirm');
+    await expect(confirm).toContainText(t('Replace the {count} rows in {section} with the defaults? What you entered in this section will be removed.', { count: 2, section: t('Branches') }));
+    await shot(page, info, `${locale}-3-use-defaults-confirm`);
+    await confirm.getByRole('button', { name: t('Keep my rows'), exact: true }).click();
+    await expect(page.getByTestId('branches-row')).toHaveCount(2);
+    await page.getByRole('button', { name: t('Use defaults'), exact: true }).click();
+    await page.getByTestId('use-defaults-confirm').getByRole('button', { name: t('Replace with defaults'), exact: true }).click();
+    await expect(page.getByTestId('branches-row')).toHaveCount(1);
+    await next(page, t);
+
+    await expectStep(page, t, 'Organisation');
+    await page.getByRole('button', { name: t('Add department'), exact: true }).click();
+    const typed = page.getByTestId('departments-row').nth(1);
+    const code = typed.getByLabel(t('Code'));
+    await code.pressSequentially('FINANCE');
+    await expect(code).toHaveValue('FINANCE');
+    await expect(code).toBeFocused();
+    await expect(page.getByTestId('departments-row').nth(1)).not.toHaveAttribute('data-reused', 'true');
+    // A section with entered rows asks too.
+    await typed.getByLabel(t('Name (English)')).fill('Finance and accounts');
+    await page.getByRole('heading', { level: 3, name: t('Departments'), exact: true }).locator('xpath=../..').getByRole('button', { name: t('Use defaults'), exact: true }).click();
+    await expect(page.getByTestId('use-defaults-confirm')).toBeVisible();
+    await shot(page, info, `${locale}-4-use-defaults-confirm`);
+  });
+}
+
+for (const locale of ['en', 'ar'] as const) test(`the app shell stays in its place while the wizard scrolls, viewport captures (${locale})`, async ({ page }, info) => {
+  test.skip(info.project.name === 'mobile', 'Desktop shell: sidebar and top bar.');
+  {
+    const t = T(locale);
+    await boot(page, { locale });
+    await openWizardFromCompanies(page, t);
+    await startAndFillCompany(page, t);
+    const check = async (name: string) => {
+      for (const where of ['top', 'bottom'] as const) {
+        await page.evaluate(w => window.scrollTo(0, w === 'top' ? 0 : document.documentElement.scrollHeight), where);
+        await page.waitForTimeout(150);
+        // The point in the middle of the form belongs to the wizard, not to the shell drawn over it.
+        const owner = await page.evaluate(() => {
+          const card = document.querySelector('[data-testid="create-company-wizard"]')!.getBoundingClientRect();
+          const x = card.left + card.width / 2;
+          const y = Math.min(Math.max(card.top + 40, 120), window.innerHeight - 40);
+          const el = document.elementFromPoint(x, y);
+          return el?.closest('[data-testid="create-company-wizard"]') ? 'wizard' : el?.closest('header, aside, nav')?.tagName ?? el?.tagName;
+        });
+        expect(owner, `${name} ${where}`).toBe('wizard');
+        const dir = process.env.WIZARD_SHOTS_DIR;
+        await page.screenshot({ path: dir ? path.join(dir, `${locale}-${name}-viewport-${where}-desktop.png`) : info.outputPath(`${locale}-${name}-${where}.png`), animations: 'disabled', style: 'nextjs-portal { display: none !important; }' });
+      }
+    };
+    await check('2-company');
+    await next(page, t);
+    await next(page, t);
+    await expectStep(page, t, 'Organisation');
+    await check('4-organisation');
+  }
 });
