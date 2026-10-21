@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react';
 import { ExternalLink, Plus } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import type { ExistingRow } from '../../api/companySetup';
-import { rowChanged } from '../../lib/companySetupWizard';
+import { editRow, rowChanged } from '../../lib/companySetupWizard';
 import { TagPill, WizardField, useWizardForm } from './wizardForm';
 
 export interface RowColumn<T> {
@@ -64,7 +64,7 @@ export function RowsEditor<T extends { code: string } & ExistingRow>({
   // The row being typed in stays editable even when its code matches the catalog, so typing "FINANCE"
   // does not collapse into the read-only FIN summary at the third letter.
   const [activeRow, setActiveRow] = useState<number | null>(null);
-  const set = (index: number, key: keyof T, value: unknown) => onChange(rows.map((row, i) => (i === index ? { ...row, [key]: value } : row)));
+  const set = (index: number, key: keyof T, value: unknown) => onChange(editRow(rows, index, key, value));
   return (
     <div className="space-y-2">
       {rows.length === 0 && <p className="rounded-lg border border-dashed border-slate-300 px-4 py-3 text-sm text-slate-600 dark:border-white/15 dark:text-slate-400">{emptyText}</p>}

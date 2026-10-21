@@ -14,7 +14,7 @@ import {
   type CompanySetupErrorBody, type CompanySetupPlan, type CompanySetupResult,
 } from '../../api/companySetup';
 import {
-  GUIDED_SETUP_HREF, STEP_IDS, buildTree, canCommit, completeCompanyHref, emptyBody, firstBlockingStep, planIsNoChange, problemsByField,
+  GUIDED_SETUP_HREF, STEP_IDS, buildTree, canCommit, completeCompanyHref, emptyBody, firstBlockingStep, normalizeFieldPath, planIsNoChange, problemsByField,
   setupCodeCopy, stepCopy, stepState, validateStep, type FieldError, type StepId, type StepState, type WizardMode,
 } from '../../lib/companySetupWizard';
 import { ConfirmDialog, type ConfirmState } from '../ui/ConfirmDialog';
@@ -263,6 +263,12 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     setCommitError(null);
   };
 
+  /** From the review: open the step and focus the field a problem names. */
+  const goToField = (target: StepId, field?: string) => {
+    if (field) focusField.current = normalizeFieldPath(field);
+    goTo(target);
+  };
+
   const refreshPlan = useCallback(async (forBody: CompanySetupDraftBody) => {
     setPlanState('loading');
     try { const next = await companySetupApi.dryRun(forBody); planBody.current = forBody; setPlan(next); setPlanState('idle'); }
@@ -375,6 +381,36 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
       setPlan(null);
     } catch { setError(t('The draft could not be reloaded. Check your connection and try again.')); }
     finally { setBusy(''); }
+  };
+
+  /** A9: take the current value / keep mine — change the draft (autosaved) and check the plan again. */
+  const changeAndCheck = (change: (b: CompanySetupDraftBody) => CompanySetupDraftBody) => {
+    const nextBody = change(body);
+    setBody(nextBody);
+    void refreshPlan(nextBody);
+  };
+
+  /** A9: a draft saved before baselines existed starts again from what the company has today (same draft, autosaved). */
+  const reloadFromCompany = () => {
+    if (!existingCompanyId) return;
+    setConfirmation({
+      title: t('Reload the company’s current setup?'),
+      message: t('This draft was saved before KynexOne recorded what {company} had when it started, so it cannot tell your edits from changes made elsewhere. The draft is replaced with what the company has today; then make your changes again. Nothing has been changed yet.', { company: body.company.legalNameEn }),
+      confirmLabel: t('Reload'),
+      onConfirm: async () => {
+        try {
+          const prefill = await companySetupApi.existingDefaults(existingCompanyId);
+          const shown = { ...prefill, existingCompanyId };
+          setDefaults(shown);
+          setBody(shown);
+          setConfirmation(null);
+          void refreshPlan(shown);
+        } catch {
+          setConfirmation(null);
+          setError(t('The company could not be reloaded. Check your connection and try again.'));
+        }
+      },
+    });
   };
 
   const discard = (summary: CompanySetupDraftSummary) => setConfirmation({
@@ -561,7 +597,8 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                 {step === 4 && <OrganisationStep defaults={defaults} />}
                 {step === 5 && <RulesStep defaults={defaults} preview={plan} previewState={planState} />}
                 {step === 6 && adminStepVisible && <AdminStep />}
-                {step === 7 && <ReviewStep plan={plan} state={planState} onRetry={() => void refreshPlan(body)} onGoTo={goTo} visibleSteps={steps} />}
+                {step === 7 && <ReviewStep plan={plan} state={planState} onRetry={() => void refreshPlan(body)} onGoTo={goToField} visibleSteps={steps}
+                  onChangeAndCheck={changeAndCheck} onReloadPrefill={existing ? reloadFromCompany : undefined} />}
               </div>
             </WizardFormProvider>
             {commitError && (

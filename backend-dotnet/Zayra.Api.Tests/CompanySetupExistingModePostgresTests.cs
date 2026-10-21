@@ -337,7 +337,7 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         {
             Branches = body.Branches!.Select(b => b with { Locations = b.Locations!.Select(l => l with { RadiusMeters = 300m }).ToList() }).ToList(),
             CostCentres = body.CostCentres!.Select(c => c with { NameEn = "Operations (Jeddah)" }).ToList(),
-            Rules = body.Rules with { WorkWeek = new CompanySetupWorkWeek("Sat", true) },
+            Rules = body.Rules with { WorkWeek = body.Rules.WorkWeek with { WeekendDays = "Sat", Override = true } },
         };
         var plan = await DryRunAsync(w, body);
         plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
@@ -356,9 +356,10 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
 
         // The company now has its own weekend: the prefill says so, and changing it edits that row (no second row).
         var again = await PrefillAsync(w, w.CompanyId);
-        again.Rules.WorkWeek.Should().Be(new CompanySetupWorkWeek("Sat", true));
+        again.Rules.WorkWeek.WeekendDays.Should().Be("Sat");
+        again.Rules.WorkWeek.Override.Should().BeTrue();
         (await DryRunAsync(w, again)).Items.Should().OnlyContain(i => i.Action == V.ActionUnchanged || i.Action == V.ActionReuse);
-        var changed = again with { Rules = again.Rules with { WorkWeek = new CompanySetupWorkWeek("Fri", true) } };
+        var changed = again with { Rules = again.Rules with { WorkWeek = again.Rules.WorkWeek with { WeekendDays = "Fri" } } };
         var (_, second) = await DraftAndCommitAsync(w, changed);
         second.Status.Should().Be(201, JsonSerializer.Serialize(second.Error));
         second.Value!.Updated.Should().ContainKey(V.Areas.WorkWeek);
@@ -366,7 +367,7 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         var rows = await verify.GCCComplianceSettings.IgnoreQueryFilters().Where(g => g.TenantId == w.TenantId && g.CompanyId == w.CompanyId).ToListAsync();
         rows.Should().ContainSingle().Which.WeekendDays.Should().Be("Fri");
         // Unticking the override never deletes the company's row: it is kept, with a warning.
-        var untick = await DryRunAsync(w, again with { Rules = again.Rules with { WorkWeek = new CompanySetupWorkWeek("Fri,Sat", false) } });
+        var untick = await DryRunAsync(w, again with { Rules = again.Rules with { WorkWeek = again.Rules.WorkWeek with { WeekendDays = "Fri,Sat", Override = false } } });
         untick.Warnings.Should().Contain(x => x.Code == "work_week_override_kept");
     }
 
@@ -809,6 +810,214 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         await using var verify = fixture.CreateDb();
         (await verify.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.SetupCompletedAction)).Should().Be(1);
         (await verify.Branches.IgnoreQueryFilters().CountAsync(b => b.CompanyId == w.CompanyId && b.Code == "TIF")).Should().Be(1);
+    }
+
+    // ── A9: three-way comparison (draft vs baseline vs database) ─────────────────────────────────────────
+
+    private async Task<CompanySetupDraft> StartDraftAsync(World w, CompanySetupDraftBody body)
+    {
+        await using var db = fixture.CreateDb();
+        var created = await Service(db).CreateDraftAsync(Caller(w), body, default);
+        created.Status.Should().Be(201, JsonSerializer.Serialize(created.Error));
+        return created.Value!;
+    }
+
+    private async Task<CompanySetupOutcome<CompanySetupResult>> CommitDraftAsync(World w, CompanySetupDraft draft)
+    {
+        await using var db = fixture.CreateDb();
+        return await Service(db).CommitAsync(Caller(w), new CompanySetupCommitRequest(draft.Id, draft.Version), draft.Id, default);
+    }
+
+    private async Task<CompanySetupDraft> SaveDraftAsync(World w, CompanySetupDraft draft, CompanySetupDraftBody body)
+    {
+        await using var db = fixture.CreateDb();
+        var saved = await Service(db).UpdateDraftAsync(Caller(w), draft.Id, new CompanySetupDraftUpdate(draft.Version, 7, body), default);
+        saved.Status.Should().Be(200, JsonSerializer.Serialize(saved.Error));
+        return saved.Value!;
+    }
+
+    /// <summary>"Configuration Center" edits a row directly while a draft is open.</summary>
+    private async Task ElsewhereAsync(Func<ZayraDbContext, Task> edit)
+    {
+        await using var db = fixture.CreateDb();
+        await edit(db);
+        await db.SaveChangesAsync();
+    }
+
+    private static CompanySetupDraftBody EditBranch(CompanySetupDraftBody body, string code, Func<CompanySetupBranch, CompanySetupBranch> edit) =>
+        body with { Branches = body.Branches!.Select(b => b.Code == code ? edit(b) : b).ToList() };
+
+    [Fact]
+    public async Task A_branch_renamed_elsewhere_after_the_draft_started_stands_when_untouched_and_is_a_conflict_when_also_edited()
+    {
+        var w = await SeedAsync();
+
+        // 1. The user edits DMM's city only; meanwhile Configuration Center renames DMM. The commit applies the city
+        //    and keeps the newer name — the draft's stale name is not an edit.
+        var untouched = await StartDraftAsync(w, EditBranch(await PrefillAsync(w, w.CompanyId), "DMM", b => b with { City = "Dammam City" }));
+        await ElsewhereAsync(async db => (await db.Branches.IgnoreQueryFilters().SingleAsync(b => b.TenantId == w.TenantId && b.CompanyId == w.CompanyId && b.Code == "DMM")).NameEn = "Dammam (renamed in Setup)");
+        var first = await CommitDraftAsync(w, untouched);
+        first.Status.Should().Be(201, JsonSerializer.Serialize(first.Error));
+        await using (var db = fixture.CreateDb())
+        {
+            var dmm = await db.Branches.IgnoreQueryFilters().SingleAsync(b => b.TenantId == w.TenantId && b.CompanyId == w.CompanyId && b.Code == "DMM");
+            dmm.NameEn.Should().Be("Dammam (renamed in Setup)", "the user never touched the name, so the newer value stands");
+            dmm.City.Should().Be("Dammam City");
+        }
+
+        // 2. The user renames DMM; meanwhile Configuration Center renames it differently. Conflict, nothing overwritten.
+        var mine = EditBranch(await PrefillAsync(w, w.CompanyId), "DMM", b => b with { NameEn = "Dammam (wizard)" });
+        var draft = await StartDraftAsync(w, mine);
+        await ElsewhereAsync(async db => (await db.Branches.IgnoreQueryFilters().SingleAsync(b => b.TenantId == w.TenantId && b.CompanyId == w.CompanyId && b.Code == "DMM")).NameEn = "Dammam (Setup again)");
+        var before = await FingerprintAsync(w.TenantId);
+        var refused = await CommitDraftAsync(w, draft);
+        refused.Status.Should().Be(422);
+        ErrorCode(refused.Error).Should().Be(CompanySetupBaseline.ChangedCode);
+        (await FingerprintAsync(w.TenantId)).Should().Be(before, "a conflict writes nothing");
+        var plan = await DryRunAsync(w, mine);
+        var problem = plan.Problems.Should().ContainSingle(p => p.Code == CompanySetupBaseline.ChangedCode).Subject;
+        problem.Field.Should().Be("branches.1.nameEn");
+        problem.Step.Should().Be(3);
+        problem.Current.Should().Be("Dammam (Setup again)");
+        problem.Message.Should().Contain("changed elsewhere since this draft started").And.Contain("Dammam (Setup again)");
+        problem.MessageAr.Should().Contain("Dammam (Setup again)");
+
+        // 3. "Keep mine": the baseline of that field is refreshed to the current value; the commit then applies the edit.
+        var keep = EditBranch(mine, "DMM", b => b with { Baseline = new Dictionary<string, string?>(b.Baseline!) { ["nameEn"] = problem.Current } });
+        var saved = await SaveDraftAsync(w, draft, keep);
+        var second = await CommitDraftAsync(w, saved);
+        second.Status.Should().Be(201, JsonSerializer.Serialize(second.Error));
+        await using var verify = fixture.CreateDb();
+        (await verify.Branches.IgnoreQueryFilters().SingleAsync(b => b.TenantId == w.TenantId && b.CompanyId == w.CompanyId && b.Code == "DMM"))
+            .NameEn.Should().Be("Dammam (wizard)");
+    }
+
+    [Fact]
+    public async Task A_company_field_changed_elsewhere_stands_when_untouched_and_is_a_conflict_when_also_edited()
+    {
+        var w = await SeedAsync();
+        var untouched = await PrefillAsync(w, w.CompanyId);
+        var draft = await StartDraftAsync(w, untouched with { Company = untouched.Company with { TaxNumber = "300000000000003" } });
+        await ElsewhereAsync(async db => (await db.Companies.IgnoreQueryFilters().SingleAsync(c => c.Id == w.CompanyId)).TradeName = "Gulf (Setup)");
+        var first = await CommitDraftAsync(w, draft);
+        first.Status.Should().Be(201, JsonSerializer.Serialize(first.Error));
+        await using (var db = fixture.CreateDb())
+        {
+            var company = await db.Companies.IgnoreQueryFilters().SingleAsync(c => c.Id == w.CompanyId);
+            company.TradeName.Should().Be("Gulf (Setup)", "the draft's old trade name is not an edit");
+            company.TaxNumber.Should().Be("300000000000003");
+        }
+
+        var body = await PrefillAsync(w, w.CompanyId);
+        var mine = body with { Company = body.Company with { TradeName = "Gulf (wizard)" } };
+        var second = await StartDraftAsync(w, mine);
+        await ElsewhereAsync(async db => (await db.Companies.IgnoreQueryFilters().SingleAsync(c => c.Id == w.CompanyId)).TradeName = "Gulf (Setup again)");
+        var refused = await CommitDraftAsync(w, second);
+        refused.Status.Should().Be(422);
+        ErrorCode(refused.Error).Should().Be(CompanySetupBaseline.ChangedCode);
+        var problem = (await DryRunAsync(w, mine)).Problems.Should().ContainSingle(p => p.Code == CompanySetupBaseline.ChangedCode).Subject;
+        problem.Field.Should().Be("company.tradeName");
+        problem.Current.Should().Be("Gulf (Setup again)");
+        await using var verify = fixture.CreateDb();
+        (await verify.Companies.IgnoreQueryFilters().SingleAsync(c => c.Id == w.CompanyId)).TradeName.Should().Be("Gulf (Setup again)");
+        // Both sides making the same change is no conflict and no write.
+        var same = body with { Company = body.Company with { TradeName = "Gulf (Setup again)" } };
+        var agreed = await DryRunAsync(w, same);
+        agreed.Ok.Should().BeTrue(JsonSerializer.Serialize(agreed.Problems));
+        agreed.Items.Single(i => i.Area == V.Areas.Company).Action.Should().Be(V.ActionUnchanged);
+    }
+
+    [Fact]
+    public async Task A_cost_centre_renamed_elsewhere_stands_when_untouched_and_is_a_conflict_when_also_edited()
+    {
+        var w = await SeedAsync();
+        var untouched = await PrefillAsync(w, w.CompanyId);
+        var draft = await StartDraftAsync(w, EditBranch(untouched, "DMM", b => b with { City = "Dammam City" }));
+        await ElsewhereAsync(async db => (await db.CostCenters.IgnoreQueryFilters().SingleAsync(c => c.TenantId == w.TenantId && c.Code == "CC_OPS_EX")).Name = "Ops (Setup)");
+        var first = await CommitDraftAsync(w, draft);
+        first.Status.Should().Be(201, JsonSerializer.Serialize(first.Error));
+        await using (var db = fixture.CreateDb())
+            (await db.CostCenters.IgnoreQueryFilters().SingleAsync(c => c.TenantId == w.TenantId && c.Code == "CC_OPS_EX")).Name.Should().Be("Ops (Setup)");
+
+        var body = await PrefillAsync(w, w.CompanyId);
+        var mine = body with { CostCentres = body.CostCentres!.Select(c => c with { NameEn = "Ops (wizard)" }).ToList() };
+        var second = await StartDraftAsync(w, mine);
+        await ElsewhereAsync(async db => (await db.CostCenters.IgnoreQueryFilters().SingleAsync(c => c.TenantId == w.TenantId && c.Code == "CC_OPS_EX")).Name = "Ops (Setup again)");
+        var refused = await CommitDraftAsync(w, second);
+        refused.Status.Should().Be(422);
+        ErrorCode(refused.Error).Should().Be(CompanySetupBaseline.ChangedCode);
+        var problem = (await DryRunAsync(w, mine)).Problems.Should().ContainSingle(p => p.Code == CompanySetupBaseline.ChangedCode).Subject;
+        problem.Field.Should().Be("costCentres.0.nameEn");
+        problem.Step.Should().Be(4);
+        problem.Current.Should().Be("Ops (Setup again)");
+        await using var verify = fixture.CreateDb();
+        (await verify.CostCenters.IgnoreQueryFilters().SingleAsync(c => c.TenantId == w.TenantId && c.Code == "CC_OPS_EX")).Name.Should().Be("Ops (Setup again)");
+    }
+
+    [Fact]
+    public async Task The_counter_moved_by_hiring_since_the_draft_started_is_kept_when_the_user_did_not_touch_it()
+    {
+        var w = await SeedAsync();
+        var draft = await StartDraftAsync(w, await PrefillAsync(w, w.CompanyId));
+        await ElsewhereAsync(async db => (await db.EmployeeIdRules.IgnoreQueryFilters().SingleAsync(r => r.TenantId == w.TenantId && r.CompanyId == w.CompanyId)).NextSequence = 7);
+        var result = await CommitDraftAsync(w, draft);
+        result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+        await using var db = fixture.CreateDb();
+        (await db.EmployeeIdRules.IgnoreQueryFilters().SingleAsync(r => r.TenantId == w.TenantId && r.CompanyId == w.CompanyId)).NextSequence
+            .Should().Be(7, "the draft's old counter is not an edit, and is never written back");
+    }
+
+    [Fact]
+    public async Task A_draft_without_a_baseline_is_refused_with_draft_needs_refresh_and_nothing_is_written()
+    {
+        var w = await SeedAsync();
+        var body = await PrefillAsync(w, w.CompanyId);
+        // A draft saved before A9: the same rows, no baselines.
+        var legacy = body with
+        {
+            Company = body.Company with { Baseline = null },
+            Branches = body.Branches!.Select(b => b with { Baseline = null, Locations = b.Locations!.Select(l => l with { Baseline = null }).ToList() }).ToList(),
+            CostCentres = body.CostCentres!.Select(c => c with { Baseline = null }).ToList(),
+            Rules = body.Rules with
+            {
+                WorkWeek = body.Rules.WorkWeek with { Baseline = null },
+                EmployeeNumbering = body.Rules.EmployeeNumbering with { Baseline = null },
+            },
+        };
+        var plan = await DryRunAsync(w, EditBranch(legacy, "DMM", b => b with { NameEn = "Dammam (old draft)" }));
+        plan.Ok.Should().BeFalse();
+        plan.Problems.Should().ContainSingle().Which.Code.Should().Be(CompanySetupBaseline.RefreshCode);
+        plan.Items.Should().BeEmpty("nothing is planned from a draft that cannot tell edits from changes made elsewhere");
+        // One missing row baseline is enough.
+        (await DryRunAsync(w, EditBranch(body, "DMM", b => b with { Baseline = null }))).Problems.Should().Contain(p => p.Code == CompanySetupBaseline.RefreshCode);
+
+        var before = await FingerprintAsync(w.TenantId);
+        var (_, result) = await DraftAndCommitAsync(w, legacy);
+        result.Status.Should().Be(422);
+        ErrorCode(result.Error).Should().Be(CompanySetupBaseline.RefreshCode);
+        (await FingerprintAsync(w.TenantId)).Should().Be(before);
+    }
+
+    [Fact]
+    public async Task The_prefill_and_every_draft_read_carry_the_cutover_status_and_the_baselines_survive_a_save()
+    {
+        var w = await SeedAsync();
+        var body = await PrefillAsync(w, w.CompanyId);
+        body.Company.CutoverStatus.Should().Be(CutoverStatuses.Planned);
+        body.Company.Baseline.Should().NotBeNull().And.ContainKey("firstPayrollMonth").WhoseValue.Should().Be("2026-11");
+        body.Branches!.Should().OnlyContain(b => b.Baseline != null && b.Locations!.All(l => l.Baseline != null));
+        body.CostCentres!.Should().OnlyContain(c => c.Baseline != null);
+        body.Rules.WorkWeek.Baseline.Should().NotBeNull();
+        body.Rules.EmployeeNumbering.Baseline.Should().ContainKey("nextSequence");
+
+        var draft = await StartDraftAsync(w, body);
+        await ElsewhereAsync(async db => (await db.CompanyCutovers.IgnoreQueryFilters().SingleAsync(c => c.TenantId == w.TenantId && c.CompanyId == w.CompanyId)).Status = CutoverStatuses.Active);
+        (await PrefillAsync(w, w.CompanyId)).Company.CutoverStatus.Should().Be(CutoverStatuses.Active);
+        await using var db = fixture.CreateDb();
+        var read = await Service(db).GetDraftAsync(Caller(w), draft.Id, default);
+        read!.Body.Company.CutoverStatus.Should().Be(CutoverStatuses.Active, "a draft read reports the status now, not when it was saved");
+        read.Body.Company.Baseline.Should().BeEquivalentTo(body.Company.Baseline);
+        read.Body.Branches!.Select(b => b.Baseline).Should().BeEquivalentTo(body.Branches!.Select(b => b.Baseline));
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────────────────

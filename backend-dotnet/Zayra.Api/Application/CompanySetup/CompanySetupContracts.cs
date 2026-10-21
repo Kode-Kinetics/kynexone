@@ -123,7 +123,16 @@ public sealed record CompanySetupCompany(
     string? WorkEmailPattern,
     string? ErpCompanyCode,
     /// <summary>"YYYY-MM". Its first day becomes the company's Planned cutover.</summary>
-    string FirstPayrollMonth);
+    string FirstPayrollMonth,
+    /// <summary>Existing mode, read-only (Addendum A4): the company's cutover status today — "Planned", "Active",
+    /// "Closed", or null when it has none. Server-written on prefill and on every draft read; ignored on input (the
+    /// planner reads the database). Not Planned = the first payroll month is shown read-only.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? CutoverStatus = null,
+    /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
+    /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupBranch(
     string Code,
@@ -135,7 +144,11 @@ public sealed record CompanySetupBranch(
     List<CompanySetupLocation>? Locations,
     /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Guid? ExistingId = null);
+    Guid? ExistingId = null,
+    /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
+    /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupLocation(
     string Code,
@@ -146,11 +159,19 @@ public sealed record CompanySetupLocation(
     decimal? RadiusMeters,
     /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Guid? ExistingId = null);
+    Guid? ExistingId = null,
+    /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
+    /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupCostCentre(string Code, string NameEn, string? NameAr,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Guid? ExistingId = null);
+    Guid? ExistingId = null,
+    /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
+    /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupDepartment(
     string Code,
@@ -193,7 +214,11 @@ public sealed record CompanySetupRules(
 
 /// <summary><see cref="WeekendDays"/> is the REST days ("Fri,Sat"). <see cref="Override"/> = write a company
 /// override; otherwise the resolved working week is confirmed and nothing is written.</summary>
-public sealed record CompanySetupWorkWeek(string WeekendDays, bool Override);
+public sealed record CompanySetupWorkWeek(string WeekendDays, bool Override,
+    /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
+    /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupPackChoice(bool UsePack);
 
@@ -204,7 +229,11 @@ public sealed record CompanySetupEmployeeNumbering(
     bool UseDepartmentPrefix,
     bool UseYear,
     int PaddingLength,
-    int NextSequence);
+    int NextSequence,
+    /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
+    /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupCompanyAdmin(
     string Mode,
@@ -251,7 +280,13 @@ public sealed record PlanItem(string Area, string Code, string Label, string Act
 
 /// <summary><see cref="Field"/> is a dotted lower-camel path with numeric indexes, e.g. <c>company.registrationNumber</c>,
 /// <c>branches.0.code</c>, <c>departments.2.costCentreCode</c>.</summary>
-public sealed record Problem(int Step, string Field, string Code, string Message, string? MessageAr);
+public sealed record Problem(int Step, string Field, string Code, string Message, string? MessageAr)
+{
+    /// <summary>On <c>changed_since_draft_started</c> only (Addendum A9): the field's value in the database now, in the
+    /// baseline's string form, so the screen can offer "take the current value" or "keep mine". Omitted otherwise.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Current { get; init; }
+}
 
 /// <summary>The body of every 4xx answer from /api/company-setup: <c>{ code, message, messageAr?, field?, step? }</c>.
 /// A refused commit or draft may add <c>plan</c> (the refused plan) or <c>currentVersion</c> (a stale save).</summary>

@@ -48,7 +48,16 @@ export interface ManageableCompany {
 export type StartFrom = 'defaults' | 'copy';
 export type CompanyAdminMode = 'invite' | 'existing' | 'groupOnly';
 
-export interface CompanySetupCompany {
+/**
+ * Existing mode (A9): what the prefill read a row or block from, field by field. Opaque: the screen never reads or
+ * edits it, and every edit, autosave and resume must carry it back unchanged (spread the row, never rebuild it). The
+ * planner compares draft, baseline and database, so an edit made elsewhere since the draft started is never
+ * overwritten. Only "Keep mine" on a `changed_since_draft_started` problem refreshes one field of it.
+ */
+export type Baseline = Record<string, string | null>;
+export interface WithBaseline { baseline?: Baseline | null }
+
+export interface CompanySetupCompany extends WithBaseline {
   legalNameEn: string;
   legalNameAr?: string;
   tradeName?: string;
@@ -66,11 +75,10 @@ export interface CompanySetupCompany {
   /** "YYYY-MM" */
   firstPayrollMonth: string;
   /**
-   * Proposed, NOT in the backend contract yet: the company's cutover status, so the first payroll month can be shown
-   * read-only up front once it is not "Planned" (A4). Today the server sends nothing here and answers a change with the
-   * `first_payroll_month_locked` problem instead, which the screen shows on the field.
+   * Existing mode (A4), server-written on the prefill and on every draft read: the company's cutover status now.
+   * Anything but "Planned" shows the first payroll month read-only up front; null = no cutover yet. Ignored on input.
    */
-  cutoverStatus?: string | null;
+  cutoverStatus?: 'Planned' | 'Active' | 'Closed' | null;
 }
 
 /**
@@ -79,28 +87,28 @@ export interface CompanySetupCompany {
  */
 export interface ExistingRow { existingId?: string | null }
 
-export interface CompanySetupLocation extends ExistingRow {
+export interface CompanySetupLocation extends ExistingRow, WithBaseline {
   code: string; nameEn: string; nameAr?: string;
   latitude?: number | null; longitude?: number | null; radiusMeters?: number | null;
 }
 
-export interface CompanySetupBranch extends ExistingRow {
+export interface CompanySetupBranch extends ExistingRow, WithBaseline {
   code: string; nameEn: string; nameAr?: string; city: string; timeZoneId: string; isHeadOffice: boolean;
   locations: CompanySetupLocation[];
 }
 
-export interface CompanySetupCostCentre extends ExistingRow { code: string; nameEn: string; nameAr?: string }
+export interface CompanySetupCostCentre extends ExistingRow, WithBaseline { code: string; nameEn: string; nameAr?: string }
 export interface CompanySetupDepartment extends ExistingRow { code: string; nameEn: string; nameAr?: string; parentCode?: string; branchCode?: string; costCentreCode?: string }
 export interface CompanySetupDesignation extends ExistingRow { code: string; titleEn: string; titleAr?: string; departmentCode?: string; gradeCode?: string }
 export interface CompanySetupGrade extends ExistingRow { code: string; nameEn: string; nameAr?: string; level: number; minSalary: number; midSalary: number; maxSalary: number }
 
-export interface EmployeeNumbering {
+export interface EmployeeNumbering extends WithBaseline {
   prefix: string; useCountryPrefix: boolean; useBranchPrefix: boolean; useDepartmentPrefix: boolean;
   useYear: boolean; paddingLength: number; nextSequence: number;
 }
 
 export interface CompanySetupRules {
-  workWeek: { weekendDays: string; override: boolean };
+  workWeek: { weekendDays: string; override: boolean } & WithBaseline;
   holidayCalendar: { usePack: boolean };
   leavePolicies: { usePack: boolean };
   employeeNumbering: EmployeeNumbering;
@@ -163,7 +171,11 @@ export interface PlanItem {
    *  lists them in `reason` ("Changes: name (English), city."), which the screen translates token by token. */
   changedFields?: string[] | null;
 }
-export interface Problem { step: number; field: string; code: string; message: string; messageAr?: string | null }
+export interface Problem {
+  step: number; field: string; code: string; message: string; messageAr?: string | null;
+  /** On `changed_since_draft_started` only (A9): the field's value in the database now, as the baseline holds values. */
+  current?: string | null;
+}
 export interface CompanySetupPlan { ok: boolean; items: PlanItem[]; problems: Problem[]; warnings: Problem[] }
 
 export interface ReadinessItem {

@@ -5,6 +5,7 @@ import {
   normalizeFieldPath, numberingPreview, planUsage, stepState, stepWarnings, validateStep,
   completeCompanyHref, draftHref, firstPayrollMonthLocked, isPlanChange, planCounts, planIsNoChange, readinessProgress, rowChanged, stepCopy, wizardMode,
   legacyWarnings, reasonFields, setupCodeCopy,
+  CHANGED_ELSEWHERE, chooseWeekend, currentValueLabel, editRow, resolveChangedElsewhere, withOneHeadOffice,
 } from '../src/lib/companySetupWizard';
 
 const context: CompanySetupContext = {
@@ -216,12 +217,96 @@ test('drafts resume at their own address, with ids encoded', () => {
   expect(completeCompanyHref('a/b')).toBe('/setup/company/a%2Fb/complete');
 });
 
-test('the first payroll month locks only once the cutover has left Planned; unknown leaves it to the server', () => {
+test('the first payroll month locks up front once the cutover the server reports has left Planned', () => {
   expect(firstPayrollMonthLocked({ cutoverStatus: 'Planned' })).toBe(false);
-  expect(firstPayrollMonthLocked({ cutoverStatus: 'planned' })).toBe(false);
-  expect(firstPayrollMonthLocked({ cutoverStatus: 'Live' })).toBe(true);
+  expect(firstPayrollMonthLocked({ cutoverStatus: 'Active' })).toBe(true);
+  expect(firstPayrollMonthLocked({ cutoverStatus: 'Closed' })).toBe(true);
+  // No cutover yet, or an older server that sends nothing: the month stays editable and the planner decides.
   expect(firstPayrollMonthLocked({ cutoverStatus: null })).toBe(false);
   expect(firstPayrollMonthLocked({})).toBe(false);
+  // As the prefill sends it (JSON): the status survives a draft round trip and still locks.
+  const company = JSON.parse(JSON.stringify({ ...emptyBody('SA').company, cutoverStatus: 'Active' })) as CompanySetupDraftBody['company'];
+  expect(firstPayrollMonthLocked(company)).toBe(true);
+});
+
+/** An existing-mode prefill as the server sends it (A9): every existing row and block carries its baseline. */
+function prefilled(): CompanySetupDraftBody {
+  const b = saudiBody();
+  b.existingCompanyId = 'co-1';
+  b.company = { ...b.company, tradeName: 'Riyadh', baseline: { legalNameEn: 'Riyadh Trading', tradeName: 'Riyadh', firstPayrollMonth: '2026-11' } };
+  b.branches = [
+    { existingId: 'br-hq', code: 'HQ', nameEn: 'Head Office', nameAr: '', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: true,
+      baseline: { nameEn: 'Head Office', nameAr: null, city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'true' },
+      locations: [{ existingId: 'loc-1', code: 'GATE', nameEn: 'Gate', latitude: 24.7, longitude: 46.7, radiusMeters: 150,
+        baseline: { nameEn: 'Gate', nameAr: null, latitude: '24.7', longitude: '46.7', radiusMeters: '150' } }] },
+    { existingId: 'br-jed', code: 'JED', nameEn: 'Jeddah', nameAr: '', city: 'Jeddah', timeZoneId: 'Asia/Riyadh', isHeadOffice: false,
+      baseline: { nameEn: 'Jeddah', nameAr: null, city: 'Jeddah', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'false' }, locations: [] },
+  ];
+  b.costCentres = [{ existingId: 'cc-1', code: 'ADM', nameEn: 'Admin', baseline: { nameEn: 'Admin' } }];
+  b.rules = {
+    ...b.rules,
+    workWeek: { weekendDays: 'Fri,Sat', override: false, baseline: { weekendDays: 'Fri,Sat', override: 'false' } },
+    employeeNumbering: { ...b.rules.employeeNumbering, nextSequence: 42, baseline: { prefix: 'EMP', nextSequence: '42' } },
+  };
+  return b;
+}
+const baselines = (b: CompanySetupDraftBody) => ({
+  company: b.company.baseline,
+  branches: b.branches.map(r => [r.baseline, r.locations.map(l => l.baseline)]),
+  costCentres: b.costCentres.map(r => r.baseline),
+  workWeek: b.rules.workWeek.baseline,
+  numbering: b.rules.employeeNumbering.baseline,
+});
+
+test('A9: every edit, autosave and resume carries each baseline back unchanged', () => {
+  const start = prefilled();
+  const expected = structuredClone(baselines(start));
+  let b = start;
+  // The form's own edits, as the steps make them.
+  b = { ...b, company: { ...b.company, tradeName: 'Riyadh Trading Co', firstPayrollMonth: '2026-12' } };
+  b = { ...b, branches: withOneHeadOffice(b.branches, editRow(b.branches, 1, 'isHeadOffice', true)) };
+  b = { ...b, branches: editRow(b.branches, 0, 'nameEn', 'Main office') };
+  b = { ...b, branches: b.branches.map((r, i) => (i === 0 ? { ...r, locations: editRow(r.locations, 0, 'radiusMeters', 300) } : r)) };
+  b = { ...b, costCentres: editRow(b.costCentres, 0, 'nameEn', 'Administration') };
+  b = { ...b, rules: { ...b.rules, workWeek: chooseWeekend(b.rules.workWeek, 'Sat', 'Fri,Sat'), employeeNumbering: { ...b.rules.employeeNumbering, nextSequence: 50 } } };
+  // A new row has no baseline, and needs none.
+  b = { ...b, branches: [...b.branches, { code: 'DMM', nameEn: 'Dammam', city: 'Dammam', timeZoneId: 'Asia/Riyadh', isHeadOffice: false, locations: [] }] };
+  // Autosave PUT and resume GET: JSON both ways.
+  const resumed = JSON.parse(JSON.stringify(b)) as CompanySetupDraftBody;
+  expect(resumed.branches[1].isHeadOffice).toBe(true);
+  expect(resumed.branches[0].isHeadOffice).toBe(false);
+  expect(resumed.rules.workWeek).toMatchObject({ weekendDays: 'Sat', override: true });
+  expect(resumed.branches[2].baseline).toBeUndefined();
+  const kept = baselines(resumed);
+  kept.branches = kept.branches.slice(0, 2);
+  expect(kept).toEqual(expected);
+});
+
+test('A9: take the current value or keep mine, on exactly the field the problem names', () => {
+  const body = { ...prefilled(), branches: editRow(prefilled().branches, 1, 'nameEn', 'Jeddah (mine)') };
+  const problem = { step: 3, field: 'branches.1.nameEn', code: CHANGED_ELSEWHERE, message: '', current: 'Jeddah (Setup)' };
+  const theirs = resolveChangedElsewhere(body, problem, 'theirs');
+  expect(theirs.branches[1].nameEn).toBe('Jeddah (Setup)');
+  expect(theirs.branches[1].baseline).toEqual({ ...body.branches[1].baseline, nameEn: 'Jeddah (Setup)' });
+  const mine = resolveChangedElsewhere(body, problem, 'mine');
+  expect(mine.branches[1].nameEn).toBe('Jeddah (mine)');
+  expect(mine.branches[1].baseline).toEqual({ ...body.branches[1].baseline, nameEn: 'Jeddah (Setup)' });
+  expect(body.branches[1].baseline?.nameEn).toBe('Jeddah'); // the input body is not mutated
+  expect(mine.branches[0]).toEqual(body.branches[0]);
+  // Typed fields come back typed; the server's dotted and bracketed paths both resolve.
+  const radius = resolveChangedElsewhere(body, { field: 'branches[0].locations[0].radiusMeters', current: '200' }, 'theirs');
+  expect(radius.branches[0].locations[0].radiusMeters).toBe(200);
+  const head = resolveChangedElsewhere(body, { field: 'branches.1.isHeadOffice', current: 'true' }, 'theirs');
+  expect(head.branches[1].isHeadOffice).toBe(true);
+  const week = resolveChangedElsewhere(body, { field: 'rules.workWeek.override', current: 'true' }, 'theirs');
+  expect(week.rules.workWeek.override).toBe(true);
+  const trade = resolveChangedElsewhere(body, { field: 'company.tradeName', current: null }, 'theirs');
+  expect(trade.company.tradeName).toBe('');
+  expect(currentValueLabel({ field: 'company.tradeName', current: null })).toBe('(empty)');
+  expect(currentValueLabel({ field: 'branches.1.isHeadOffice', current: 'false' })).toBe('No');
+  expect(currentValueLabel({ field: 'branches.1.nameEn', current: 'Jeddah (Setup)' })).toBe('Jeddah (Setup)');
+  // A path that names nothing leaves the body as it is.
+  expect(resolveChangedElsewhere(body, { field: 'branches.9.nameEn', current: 'x' }, 'theirs')).toBe(body);
 });
 
 test('readiness progress is clamped and complete only when every item is done', () => {
@@ -305,6 +390,6 @@ test('the planner\'s English change words map to dictionary labels; anything unk
 test('every existing-mode server code has what-to-do-next copy', () => {
   for (const code of ['country_locked', 'currency_locked', 'draft_target_locked', 'existing_code_locked', 'first_payroll_month_locked', 'company_not_manageable',
     'company_admin_required', 'company_not_active', 'existing_company_draft_open', 'existing_row_unknown', 'branch_code_taken', 'sequence_cannot_go_back',
-    'work_week_override_kept', 'workspace_defaults_need_group_scope', 'shared_row_not_edited']) expect(setupCodeCopy(code), code).toBeTruthy();
+    'work_week_override_kept', 'workspace_defaults_need_group_scope', 'shared_row_not_edited', 'draft_needs_refresh']) expect(setupCodeCopy(code), code).toBeTruthy();
   expect(setupCodeCopy('mol_required')).toBeUndefined();
 });

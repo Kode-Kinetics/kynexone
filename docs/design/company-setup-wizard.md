@@ -238,7 +238,10 @@ Country and currency are read-only in existing mode, always (payroll, GOSI and b
 depend on them). Legal name EN/AR, trade name, CR, MOL, GOSI, 700, VAT, Qiwa, email domain/pattern
 and ERP code are editable and go through `UpdateCompanyAsync` with the same validations as create
 (SA MOL format, CR uniqueness excluding itself, email-domain claimability). The first payroll month
-is editable only while the cutover is still `Planned`; otherwise it is shown read-only.
+is editable only while the cutover is still `Planned`; otherwise it is shown read-only. The prefill and every
+draft read send `company.cutoverStatus` (`"Planned" | "Active" | "Closed" | null`, the status *now*; ignored on
+input), so the screen locks the month up front with its reason; the planner's `first_payroll_month_locked` stays
+the backstop.
 
 ### A5. Who may run it
 - New company: group-scope Admin/HR Manager only (unchanged).
@@ -262,6 +265,30 @@ section. The builder lists each capability with where it now lives. `/setup?tab=
 `returnTo` that pointed at the old studio open the chooser (with `companyId` → that company's
 existing-mode wizard).
 
+### A9. Changes made elsewhere since the draft started (three-way comparison)
+The prefill stamps the company block, every existing branch, location and cost centre, and the
+`rules.employeeNumbering` and `rules.workWeek` blocks with `baseline`: an opaque `{ field: string|null }`
+map of the values it read (normalized: trimmed text, scale-free numbers, `"true"`/`"false"`; the company's
+`firstPayrollMonth` is the cutover month, null with no cutover; the numbering fields are null with no rule).
+The client carries it back unchanged through every edit, autosave and resume (rows are spread, never rebuilt);
+new rows have none. Country and currency are locked (A4) and not compared. Per field, at plan time
+(`CompanySetupBaseline`, one projection for the database row and the draft):
+
+| user changed (draft ≠ baseline) | changed elsewhere (db ≠ baseline) | result |
+|---|---|---|
+| no | either | the database value stands; nothing is written for it |
+| yes | no | update |
+| yes | yes, draft = db | unchanged |
+| yes | yes, draft ≠ db | problem `changed_since_draft_started` (blocks) |
+
+The problem names the field (`branches.1.nameEn`, `company.tradeName`, `rules.workWeek.weekendDays`…), says in EN
+and AR that it changed elsewhere and what it is now, and carries `current` (the value now, baseline form). The
+review offers **Use the current value** (field := current) and **Keep mine** (that one field's baseline :=
+current, saved by the normal autosave PUT; the next plan reads it as an edit on top of the newer value), and "Go
+to" focuses the field. A draft with an existing row or block that has **no** baseline (saved before A9) is
+refused as a whole with `draft_needs_refresh` (step 1, field `draft`, no items): nothing is guessed. The review's
+**Reload the company's current setup** replaces the draft body with a fresh prefill (same draft, autosaved).
+
 ### A8. Tests (in addition to the list above)
 existing-mode prefill round-trips with no changes → plan all `unchanged`/`reuse`, commit writes
 nothing but the audit row; editing a branch name → `update`, one row changed, no duplicate;
@@ -269,3 +296,8 @@ adding a branch → `create`; country/currency change refused; company admin can
 company and is 403 for a sister company; company admin cannot add shared-catalog codes; one open
 draft per existing company; retry of an existing-mode commit replays; old `tab=aiSetup` links land
 on the chooser; Browser Pilot real spec: complete an existing company in EN and AR.
+A9 (Postgres): for a branch, a company field and a cost centre — draft opened, row changed directly, commit →
+`changed_since_draft_started`, nothing written; untouched field → the newer database value stands; "keep mine"
+then commits the edit; a counter moved by hiring is not written back; a draft without baselines →
+`draft_needs_refresh`, nothing written; prefill and draft reads carry `cutoverStatus`. Unit: the decision table,
+scale-free projection, baseline JSON round trip; client: baselines survive every form edit + JSON round trip.

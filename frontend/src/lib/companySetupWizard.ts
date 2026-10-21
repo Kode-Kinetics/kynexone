@@ -2,7 +2,7 @@ import { msg, type MessageParams } from '../i18n/translations';
 import { isValidEmailDomain } from '../api/organization';
 import type {
   CodeName, CompanySetupCompany, CompanySetupContext, CompanySetupDraftBody, CompanySetupDraftSummary, CompanySetupPlan,
-  ExistingRow, ManageableCompany, PlanAction, PlanArea, PlanItem, Problem,
+  ExistingRow, ManageableCompany, PlanAction, PlanArea, PlanItem, Problem, WithBaseline,
 } from '../api/companySetup';
 
 /**
@@ -72,6 +72,77 @@ export function readinessProgress(company: Pick<ManageableCompany, 'readinessDon
 
 export const isExistingRow = (row: ExistingRow | null | undefined) => !!row?.existingId;
 
+// ── A9: changes made elsewhere since the draft started ─────────────────────────
+
+/** A field of an existing row was changed both in this draft and elsewhere since it started (Problem.current = now). */
+export const CHANGED_ELSEWHERE = 'changed_since_draft_started';
+/** A draft saved before A9 carries no baselines: it is reloaded from the company, never guessed. */
+export const DRAFT_NEEDS_REFRESH = 'draft_needs_refresh';
+
+const NUMBER_FIELDS = new Set(['latitude', 'longitude', 'radiusMeters', 'paddingLength', 'nextSequence']);
+const FLAG_FIELDS = new Set(['isHeadOffice', 'useCountryPrefix', 'useBranchPrefix', 'useDepartmentPrefix', 'useYear', 'override']);
+
+/** The row or block a problem's field path names, and the field in it: `branches.1.nameEn` → branches[1], `nameEn`. */
+function locateField(root: unknown, field: string): { holder: Record<string, unknown> & WithBaseline; key: string } | null {
+  const parts = normalizeFieldPath(field).split('.');
+  const key = parts.pop();
+  let holder: unknown = root;
+  for (const part of parts) holder = holder && typeof holder === 'object' ? (holder as Record<string, unknown>)[part] : undefined;
+  return key && holder && typeof holder === 'object' ? { holder: holder as Record<string, unknown> & WithBaseline, key } : null;
+}
+
+/** The field's value as the form holds it, from the baseline's string form. */
+export function fieldValueFromCurrent(key: string, current: string | null | undefined): unknown {
+  if (NUMBER_FIELDS.has(key)) return current == null || current === '' ? null : Number(current);
+  if (FLAG_FIELDS.has(key)) return current === 'true';
+  return current ?? '';
+}
+
+/**
+ * A9, the reader's answer to `changed_since_draft_started`. `theirs` puts the current value in the field (it then
+ * matches what is there, so nothing is written for it). `mine` keeps the draft's value and moves that one field's
+ * baseline to the current value, so the planner reads it as this user's edit made on top of the newer value.
+ * Everything else, the rest of the baseline included, is kept exactly. Returns a new body.
+ */
+export function resolveChangedElsewhere(body: CompanySetupDraftBody, problem: Pick<Problem, 'field' | 'current'>, choice: 'theirs' | 'mine'): CompanySetupDraftBody {
+  const next = structuredClone(body);
+  const found = locateField(next, problem.field);
+  if (!found) return body;
+  const { holder, key } = found;
+  const current = problem.current ?? null;
+  if (choice === 'theirs') holder[key] = fieldValueFromCurrent(key, current);
+  holder.baseline = { ...(holder.baseline ?? {}), [key]: current };
+  return next;
+}
+
+// The form's own edits, as pure functions, so the baseline's survival is unit-tested: each one spreads the row or block
+// it changes, never rebuilds it (A9).
+
+/** One field of one row (RowsEditor). */
+export function editRow<T extends object>(rows: readonly T[], index: number, key: keyof T, value: unknown): T[] {
+  return rows.map((row, i) => (i === index ? { ...row, [key]: value } : row));
+}
+
+/** Branches after an edit, with exactly one head office: ticking one unticks the others; a lone branch is the head office. */
+export function withOneHeadOffice<T extends { isHeadOffice: boolean }>(before: readonly T[], branches: readonly T[]): T[] {
+  const ticked = branches.findIndex((row, i) => row.isHeadOffice && !before[i]?.isHeadOffice);
+  const next = ticked >= 0 ? branches.map((row, i) => ({ ...row, isHeadOffice: i === ticked })) : [...branches];
+  if (next.length === 1 && !next[0].isHeadOffice) next[0] = { ...next[0], isHeadOffice: true };
+  return next;
+}
+
+/** The weekend picked on step 5: an override exactly when it differs from the country's. */
+export function chooseWeekend(workWeek: CompanySetupDraftBody['rules']['workWeek'], weekendDays: string, packWeekend: string): CompanySetupDraftBody['rules']['workWeek'] {
+  return { ...workWeek, weekendDays, override: weekendDays !== packWeekend };
+}
+
+/** The current value of a `changed_since_draft_started` problem, as the reader sees it. */
+export function currentValueLabel(problem: Pick<Problem, 'field' | 'current'>): string {
+  const key = normalizeFieldPath(problem.field).split('.').pop() ?? '';
+  if (FLAG_FIELDS.has(key)) return problem.current === 'true' ? msg('Yes') : msg('No');
+  return problem.current ?? msg('(empty)');
+}
+
 /**
  * True when an existing row differs from what the company had when the wizard opened (the prefill), compared on the
  * given fields. New rows and rows the prefill does not know are never "changed" — they are new.
@@ -129,6 +200,8 @@ export const SETUP_CODE_COPY: Record<string, string> = {
   work_week_override_kept: msg('This company keeps its own weekend. If it should follow the country weekend, remove it in Setup → GCC settings.'),
   workspace_defaults_need_group_scope: msg('Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.'),
   shared_row_not_edited: msg('This is a shared row: its name is not changed here. A group administrator renames it in its Setup tab.'),
+  // A9. changed_since_draft_started has none on purpose: the server's own words carry the value that is there now.
+  draft_needs_refresh: msg('This draft was started before KynexOne kept a record of what the company had at the time, so it cannot tell your edits from changes made elsewhere. Reload the company’s current setup, then make your changes again.'),
 };
 
 /** The copy for a server code, or undefined when the server's own text should be shown. */

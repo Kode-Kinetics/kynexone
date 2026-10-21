@@ -336,14 +336,15 @@ public sealed class CompanySetupService
         List<CompanySetupBranch> branches = branchRows.Select(b => new CompanySetupBranch(OrgCodes.Normalize(b.Code), b.NameEn, B(b.NameAr), b.City,
             string.IsNullOrWhiteSpace(b.TimeZoneId) ? packTz : b.TimeZoneId.Trim(), b.IsHeadOffice,
             locationRows.Where(l => l.BranchId == b.Id).Select(l => new CompanySetupLocation(OrgCodes.Normalize(l.Code), l.NameEn, B(l.NameAr),
-                l.Latitude, l.Longitude, l.GeofenceRadiusMeters, l.Id)).ToList(), b.Id)).ToList();
+                l.Latitude, l.Longitude, l.GeofenceRadiusMeters, l.Id, CompanySetupBaseline.Location(l))).ToList(), b.Id,
+            CompanySetupBaseline.Branch(b, packTz))).ToList();
         if (branches.Count == 0)
             branches = template.Branches.Select(b => new CompanySetupBranch(OrgCodes.Normalize(b.Code), b.NameEn, null, b.City, packTz, b.IsHeadOffice, [])).ToList();
 
         // Cost centres: the company's own; the pack's (renamed past any code in use) when it has none.
         var ccRows = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking()
             .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.IsActive).OrderBy(x => x.Code).ToListAsync(ct);
-        var costCentres = ccRows.Select(x => new CompanySetupCostCentre(OrgCodes.Normalize(x.Code), x.Name, null, x.Id)).ToList();
+        var costCentres = ccRows.Select(x => new CompanySetupCostCentre(OrgCodes.Normalize(x.Code), x.Name, null, x.Id, CompanySetupBaseline.CostCentre(x))).ToList();
         var ccByTemplateDept = new Dictionary<string, string>(StringComparer.Ordinal);
         if (costCentres.Count == 0)
         {
@@ -432,12 +433,12 @@ public sealed class CompanySetupService
         var numbering = rule is null
             ? new CompanySetupEmployeeNumbering(idRule.CompanyPrefix, idRule.UseCountryPrefix, idRule.UseBranchPrefix, idRule.UseDepartmentPrefix, idRule.UseYear, idRule.PaddingLength, 1)
             : new CompanySetupEmployeeNumbering(rule.CompanyPrefix, rule.UseCountryPrefix, rule.UseBranchPrefix, rule.UseDepartmentPrefix, rule.UseYear, rule.PaddingLength, rule.NextSequence);
+        // A9: every block of existing mode carries what it was read from (the numbering's fields are null when it has no rule yet).
+        numbering = numbering with { Baseline = CompanySetupBaseline.Numbering(rule) };
         var cutover = await ScopedBypass.TenantWide(_db.CompanyCutovers, tenantId, Why).AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == companyId, ct);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var firstPayrollMonth = (cutover?.CutoverDate ?? new DateOnly(today.Year, today.Month, 1).AddMonths(1)).ToString("yyyy-MM", CultureInfo.InvariantCulture);
-        var week = await _workWeek.ResolveAsync(tenantId, companyId, country, ct);
-        var hasOwnWeek = await ScopedBypass.TenantWide(_db.GCCComplianceSettings, tenantId, Why).AsNoTracking()
-            .AnyAsync(x => x.CompanyId == companyId && x.CountryCode == country, ct);
+        var (weekendNow, hasOwnWeek) = await Planner.CurrentWorkWeekAsync(tenantId, companyId, country, ct);
         var hasCalendar = template.HolidayCalendar is { } cal && await ScopedBypass.TenantWide(_db.PublicHolidayCalendars, tenantId, Why).AsNoTracking()
             .AnyAsync(x => x.CompanyId == companyId && x.CountryCode == country && x.CalendarYear == cal.CalendarYear, ct);
 
@@ -446,13 +447,14 @@ public sealed class CompanySetupService
             CopyFromCompanyId: null,
             Company: new CompanySetupCompany(company.LegalNameEn, B(company.LegalNameAr), B(company.TradeName), country, currency,
                 company.RegistrationNumber, B(company.WpsEmployerId), B(company.GosiEmployerId), B(company.UnifiedNationalNumber), B(company.TaxNumber),
-                B(company.QiwaEstablishmentId), B(company.EmailDomain), company.WorkEmailPattern, B(company.ErpCompanyCode), firstPayrollMonth),
+                B(company.QiwaEstablishmentId), B(company.EmailDomain), company.WorkEmailPattern, B(company.ErpCompanyCode), firstPayrollMonth,
+                CutoverStatus: cutover?.Status, Baseline: CompanySetupBaseline.Company(company, cutover)),
             Branches: branches,
             CostCentres: costCentres,
             Departments: departments,
             Designations: designations,
             Grades: grades,
-            Rules: new CompanySetupRules(new CompanySetupWorkWeek(CompanySetupPack.FormatWeekend(week.WeekendDays), Override: hasOwnWeek),
+            Rules: new CompanySetupRules(new CompanySetupWorkWeek(weekendNow, Override: hasOwnWeek, CompanySetupBaseline.WorkWeek(weekendNow, hasOwnWeek)),
                 new CompanySetupPackChoice(hasCalendar || template.HolidayCalendar is not null), new CompanySetupPackChoice(true), numbering),
             CompanyAdmin: new CompanySetupCompanyAdmin(V.AdminGroupOnly, null, null, null, null),
             ExistingCompanyId: companyId);
@@ -629,6 +631,14 @@ public sealed class CompanySetupService
     {
         var names = await NamesAsync(row.TenantId, [row.CreatedByUserId], ct);
         var body = ReadBody(row) ?? EmptyBody();
+        // Addendum A4: an existing-mode draft always reads the company's cutover status as it is NOW, so a draft saved
+        // while payroll was Planned shows the first payroll month read-only once payroll has started.
+        if (body.ExistingCompanyId is Guid target && body.Company is not null)
+        {
+            var status = await ScopedBypass.TenantWide(_db.CompanyCutovers, row.TenantId, Why).AsNoTracking()
+                .Where(x => x.CompanyId == target).Select(x => x.Status).FirstOrDefaultAsync(ct);
+            body = body with { Company = body.Company with { CutoverStatus = status } };
+        }
         return new CompanySetupDraft(row.Id, row.Version, row.Step, row.Status, body, row.CreatedByUserId,
             names.GetValueOrDefault(row.CreatedByUserId, string.Empty), row.CreatedAtUtc, row.UpdatedAtUtc, row.ResultCompanyId);
     }

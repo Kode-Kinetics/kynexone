@@ -3,7 +3,7 @@
 import { useLocale } from '../../contexts/LocaleContext';
 import { msg } from '../../i18n/translations';
 import type { CompanySetupDraftBody, CompanySetupPlan, EmployeeNumbering, PlanArea } from '../../api/companySetup';
-import { WEEKEND_OPTIONS, numberingPreview } from '../../lib/companySetupWizard';
+import { WEEKEND_OPTIONS, chooseWeekend, numberingPreview } from '../../lib/companySetupWizard';
 import { useCountryName } from './CountryOptions';
 import { SectionHeader, WizardField, useWizardForm } from './wizardForm';
 import { MoreSettingsLinks } from './MoreSettingsLinks';
@@ -56,7 +56,7 @@ export function RulesStep({ defaults, preview, previewState }: {
         <SectionHeader title={t('Working week')} description={t('The weekend decides how leave days and overtime hours are counted.')} />
         <WizardField field="rules.workWeek.weekendDays" label={t('Weekend (days off)')} help={t('Country default: {days}.', { days: weekendLabel(packWeekend) })} className="max-w-sm">
           {control => <select {...control} className="select w-full" disabled={readOnly} value={rules.workWeek.weekendDays}
-            onChange={e => setRules({ workWeek: { weekendDays: e.target.value, override: e.target.value !== packWeekend } })}>
+            onChange={e => setRules({ workWeek: chooseWeekend(rules.workWeek, e.target.value, packWeekend) })}>
             {WEEKEND_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
           </select>}
         </WizardField>

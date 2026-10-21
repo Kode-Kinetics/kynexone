@@ -1,9 +1,9 @@
 'use client';
 
 import { useLocale } from '../../contexts/LocaleContext';
-import type { CompanySetupPlan, PlanAction, PlanItem, Problem } from '../../api/companySetup';
+import type { CompanySetupDraftBody, CompanySetupPlan, PlanAction, PlanItem, Problem } from '../../api/companySetup';
 import {
-  AREA_LABEL, CHANGED_FIELD_LABEL, buildTree, canCommit, groupPlan, isPlanChange, planCounts, planIsNoChange, reasonFields, setupCodeCopy, stepCopy, wizardMode, type StepId,
+  AREA_LABEL, CHANGED_ELSEWHERE, CHANGED_FIELD_LABEL, DRAFT_NEEDS_REFRESH, buildTree, currentValueLabel, resolveChangedElsewhere, canCommit, groupPlan, isPlanChange, planCounts, planIsNoChange, reasonFields, setupCodeCopy, stepCopy, wizardMode, type StepId,
 } from '../../lib/companySetupWizard';
 import { StructureTree } from './StructureTree';
 import { Notice, useWizardForm } from './wizardForm';
@@ -20,12 +20,17 @@ const ACTION_STYLE: Record<PlanAction, string> = {
  * Step 7: exactly what Create will do — the dry-run from the same planner the commit runs — grouped by
  * the step that produced it. A conflict or a problem blocks Create and links to the step that fixes it.
  */
-export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps }: {
+export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChangeAndCheck, onReloadPrefill }: {
   plan: CompanySetupPlan | null;
   state: 'idle' | 'loading' | 'error';
   onRetry: () => void;
-  onGoTo: (step: StepId) => void;
+  /** `field` (a problem's path) is focused on that step. */
+  onGoTo: (step: StepId, field?: string) => void;
   visibleSteps: StepId[];
+  /** A9: apply a change to the draft and check the plan again (take the current value / keep mine). */
+  onChangeAndCheck?: (change: (body: CompanySetupDraftBody) => CompanySetupDraftBody) => void;
+  /** A9: a draft saved before baselines existed is reloaded from what the company has today. */
+  onReloadPrefill?: () => void;
 }) {
   const { t, locale } = useLocale();
   const { body, context } = useWizardForm();
@@ -103,9 +108,17 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps }: {
           <p className="font-semibold">{existing ? t('Resolve these before saving. Nothing has been changed yet.') : t('Resolve these before creating the company. Nothing has been created yet.')}</p>
           <ul className="mt-2 space-y-1.5">
             {plan.problems.map((p, i) => (
-              <li key={`p-${i}`} className="flex flex-wrap items-center gap-2">
+              <li key={`p-${i}`} className="flex flex-wrap items-center gap-2" data-code={p.code} data-field={p.field}>
                 <span>{problemText(p)}</span>
-                <button type="button" className="text-sm font-semibold underline" onClick={() => onGoTo(stepOf(p))}>{t('Go to {step}', { step: title(stepOf(p)) })}</button>
+                {p.code === CHANGED_ELSEWHERE && onChangeAndCheck && <>
+                  <button type="button" className="btn-secondary px-2 py-1 text-xs" onClick={() => onChangeAndCheck(b => resolveChangedElsewhere(b, p, 'theirs'))}>
+                    {t('Use the current value ({value})', { value: currentValueLabel(p) === p.current ? currentValueLabel(p) : t(currentValueLabel(p)) })}
+                  </button>
+                  <button type="button" className="btn-secondary px-2 py-1 text-xs" onClick={() => onChangeAndCheck(b => resolveChangedElsewhere(b, p, 'mine'))}>{t('Keep mine')}</button>
+                </>}
+                {p.code === DRAFT_NEEDS_REFRESH && onReloadPrefill
+                  ? <button type="button" className="btn-secondary px-2 py-1 text-xs" onClick={onReloadPrefill}>{t('Reload the company’s current setup')}</button>
+                  : <button type="button" className="text-sm font-semibold underline" onClick={() => onGoTo(stepOf(p), p.field)}>{t('Go to {step}', { step: title(stepOf(p)) })}</button>}
               </li>
             ))}
             {plan.items.filter(i => i.action === 'conflict').map(i => {

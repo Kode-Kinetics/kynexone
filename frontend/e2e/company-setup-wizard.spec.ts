@@ -34,8 +34,10 @@ interface BootOptions {
   canIssueLinks?: boolean;
   /** How POST /api/access/users/{id}/password-reset-link answers. */
   resetLink?: 'emailed' | 'disclosed' | 'refused';
-  /** Existing mode: Evostel's cutover status (A4). Default Planned; anything else refuses a month change. */
-  cutoverStatus?: string;
+  /** Existing mode: Evostel's cutover status (A4), sent on the prefill. Default Planned; anything else refuses a month change. */
+  cutoverStatus?: 'Planned' | 'Active' | 'Closed';
+  /** Existing mode (A9): the head office was renamed to this in Setup after the prefill was read. */
+  hqRenamedElsewhere?: string;
   /** Existing mode: Evostel was saved with no MOL number, before today's checks. */
   legacyMol?: boolean;
 }
@@ -92,18 +94,22 @@ class ContractServer {
   existingDefaults(companyId: string): CompanySetupDraftBody {
     return {
       existingCompanyId: companyId, startFrom: 'defaults',
-      // As the backend sends it: no cutover status (the planner refuses a locked month as a problem instead).
+      // As the backend sends it: the cutover status (A4) and, on each existing row and block, its baseline (A9).
       company: { legalNameEn: EVOSTEL.legalNameEn, legalNameAr: EVOSTEL.legalNameAr, tradeName: 'Evostel', countryCode: 'SA', currency: 'SAR', registrationNumber: '1010999888',
-        molEstablishmentNumber: this.options.legacyMol ? '' : '7-7654321', qiwaEstablishmentId: '7-7654321', emailDomain: 'evostel.com', workEmailPattern: 'first.last', firstPayrollMonth: '2026-11' },
+        molEstablishmentNumber: this.options.legacyMol ? '' : '7-7654321', qiwaEstablishmentId: '7-7654321', emailDomain: 'evostel.com', workEmailPattern: 'first.last', firstPayrollMonth: '2026-11',
+        cutoverStatus: this.options.cutoverStatus ?? 'Planned', baseline: { legalNameEn: EVOSTEL.legalNameEn, tradeName: 'Evostel', firstPayrollMonth: '2026-11' } },
       branches: [{ existingId: 'br-hq', code: 'HQ', nameEn: 'Head Office', nameAr: 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: true,
-        locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: 150 }] }],
-      costCentres: [{ existingId: 'cc-adm', code: 'ADM', nameEn: 'Administration', nameAr: 'الإدارة' }],
+        baseline: { nameEn: 'Head Office', nameAr: 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'true' },
+        locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: 150,
+          baseline: { nameEn: 'Main gate', nameAr: null, latitude: '24.7', longitude: '46.7', radiusMeters: '150' } }] }],
+      costCentres: [{ existingId: 'cc-adm', code: 'ADM', nameEn: 'Administration', nameAr: 'الإدارة', baseline: { nameEn: 'Administration' } }],
       departments: [{ existingId: 'dep-hr', code: 'HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية' }],
       designations: [{ existingId: 'des-acc', code: 'ACC', titleEn: 'Accountant', titleAr: 'محاسب' }],
       grades: [{ existingId: 'gr-g1', code: 'G1', nameEn: 'Grade 1', nameAr: 'الدرجة 1', level: 1, minSalary: 3000, midSalary: 5000, maxSalary: 7000 }],
       rules: {
-        workWeek: { weekendDays: 'Fri,Sat', override: false }, holidayCalendar: { usePack: true }, leavePolicies: { usePack: true },
-        employeeNumbering: { prefix: 'EVO', useCountryPrefix: false, useBranchPrefix: false, useDepartmentPrefix: false, useYear: false, paddingLength: 4, nextSequence: 42 },
+        workWeek: { weekendDays: 'Fri,Sat', override: false, baseline: { weekendDays: 'Fri,Sat', override: 'false' } }, holidayCalendar: { usePack: true }, leavePolicies: { usePack: true },
+        employeeNumbering: { prefix: 'EVO', useCountryPrefix: false, useBranchPrefix: false, useDepartmentPrefix: false, useYear: false, paddingLength: 4, nextSequence: 42,
+          baseline: { prefix: 'EVO', nextSequence: '42' } },
       },
       companyAdmin: { mode: 'groupOnly' },
     };
@@ -127,6 +133,21 @@ class ContractServer {
       });
     const problems: CompanySetupPlan['problems'] = [];
     const warnings: CompanySetupPlan['warnings'] = [];
+    // A9: a row or block without its baseline is a draft saved before baselines existed; nothing else is planned.
+    const rows = [body.company, ...body.branches.filter(b => b.existingId), ...body.branches.flatMap(b => b.locations.filter(l => l.existingId)),
+      ...body.costCentres.filter(c => c.existingId), body.rules.workWeek, body.rules.employeeNumbering];
+    if (rows.some(r => !r.baseline))
+      return { ok: false, items: [], warnings: [], problems: [{ step: 1, field: 'draft', code: 'draft_needs_refresh', message: 'This draft was saved before KynexOne recorded what the company had when the draft started.' }] };
+    // A9: draft vs baseline vs "database" for the head office's English name.
+    const hq = body.branches.findIndex(b => b.existingId === 'br-hq');
+    const renamed = this.options.hqRenamedElsewhere;
+    if (renamed && hq >= 0) {
+      const mine = body.branches[hq].nameEn, was = body.branches[hq].baseline?.nameEn;
+      if (mine !== was && was !== renamed && mine !== renamed)
+        problems.push({ step: 3, field: `branches.${hq}.nameEn`, code: 'changed_since_draft_started', current: renamed,
+          message: `Branch HQ: the name (English) was changed elsewhere since this draft started. It is now “${renamed}”. Take the current value, or keep yours.`,
+          messageAr: `الفرع HQ: تم تغيير الاسم (بالإنجليزية) في مكان آخر منذ بدء هذه المسودة. القيمة الحالية «${renamed}». اعتمد القيمة الحالية أو احتفظ بقيمتك.` });
+    }
     if ((this.options.cutoverStatus ?? 'Planned') !== 'Planned' && body.company.firstPayrollMonth !== before.company.firstPayrollMonth)
       problems.push({ step: 2, field: 'company.firstPayrollMonth', code: 'first_payroll_month_locked', message: 'Payroll for this company started on 2026-11-01 (cutover live), so the first payroll month can no longer change.', messageAr: 'بدأت رواتب هذه الشركة، لذا لا يمكن تغيير أول شهر للرواتب.' });
     if (body.rules.employeeNumbering.nextSequence < before.rules.employeeNumbering.nextSequence)
@@ -1067,20 +1088,73 @@ test('an open draft for a company resumes from the chooser instead of starting a
   expect([...server.drafts.values()].filter(d => d.body.existingCompanyId === 'co-evostel')).toHaveLength(1);
 });
 
-test('a locked first payroll month is refused by the plan with what to do, and Update waits', async ({ page }) => {
+test('a first payroll month is read-only up front once payroll has started, with its reason', async ({ page }) => {
   const t = T('en');
-  const { server } = await boot(page, { cutoverStatus: 'Live' });
+  const { server } = await boot(page, { cutoverStatus: 'Active' });
   await openEvostel(page, t);
   await page.getByRole('button', { name: t('Start'), exact: true }).click();
   await expectStep(page, t, 'Company details');
-  await page.getByLabel(t('First payroll month')).fill('2027-02');
+  const month = page.getByLabel(t('First payroll month'));
+  await expect(month).toHaveAttribute('readonly', '');
+  await expect(month).toHaveAttribute('aria-readonly', 'true');
+  await expect(month).toHaveValue('2026-11');
+  await expect(page.getByText(t('Payroll has already started for this company, so its first payroll month stays as it is.'))).toBeVisible();
   for (let i = 0; i < 5; i++) await next(page, t);
   await expectStep(page, t, 'Review & update');
-  const copy = t('Payroll has already started for this company, so the first payroll month cannot change. Put back the month that was saved.');
-  await expect(page.getByTestId('review-plan')).toContainText(copy);
+  await expect(page.getByRole('button', { name: t('Finish without changes'), exact: true })).toBeEnabled();
+  expect(server.dryRuns.at(-1)?.company.firstPayrollMonth).toBe('2026-11');
+});
+
+test('a branch renamed elsewhere since the draft started is a conflict on review; taking the current value clears it', async ({ page }) => {
+  const t = T('en');
+  const { server, pageErrors } = await boot(page, { hqRenamedElsewhere: 'Head Office (Setup)' });
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await next(page, t);
+  await expectStep(page, t, 'Branches & locations');
+  await page.getByTestId('branches-row').first().getByLabel(t('Name (English)')).first().fill('Head Office Riyadh');
+  for (let i = 0; i < 4; i++) await next(page, t);
+  await expectStep(page, t, 'Review & update');
+  const conflict = page.locator('[data-testid="review-plan"] li[data-code="changed_since_draft_started"]');
+  await expect(conflict).toContainText('Head Office (Setup)');
+  await expect(conflict).toHaveAttribute('data-field', 'branches.0.nameEn');
   await expect(page.getByRole('button', { name: t('Update company'), exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: t('Go to {step}', { step: t('Company details') }) }).first().click();
-  await expect(page.locator('#ccw-company-firstPayrollMonth-error')).toHaveText(copy);
+  // Linked to the field: Go to opens the step with that field focused and the same words on it.
+  await conflict.getByRole('button', { name: t('Go to {step}', { step: t('Branches & locations') }) }).click();
+  await expect(page.locator('#ccw-branches-0-nameEn')).toBeFocused();
+  await expect(page.locator('#ccw-branches-0-nameEn-error')).toContainText('Head Office (Setup)');
+  for (let i = 0; i < 4; i++) await next(page, t);
+  await expectStep(page, t, 'Review & update');
+  await conflict.getByRole('button', { name: t('Use the current value ({value})', { value: 'Head Office (Setup)' }) }).click();
+  await expect(conflict).toHaveCount(0);
+  await expect(page.getByRole('button', { name: t('Update company'), exact: true })).toBeEnabled();
+  const sent = server.dryRuns.at(-1)!;
+  expect(sent.branches[0].nameEn).toBe('Head Office (Setup)');
+  // Every other field of the baseline is carried back exactly as the prefill sent it.
+  expect(sent.branches[0].baseline).toEqual({ ...server.existingDefaults('co-evostel').branches[0].baseline, nameEn: 'Head Office (Setup)' });
+  expect(sent.branches[0].locations[0].baseline).toEqual(server.existingDefaults('co-evostel').branches[0].locations[0].baseline);
+  expect(pageErrors).toEqual([]);
+});
+
+test('a draft saved before baselines existed asks to reload the company, and the reload plans cleanly', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page);
+  const now = new Date().toISOString();
+  const prefill = server.existingDefaults('co-evostel');
+  const legacy = { ...prefill, company: { ...prefill.company, baseline: undefined }, branches: prefill.branches.map(b => ({ ...b, baseline: undefined })) };
+  server.drafts.set('draft-old', { id: 'draft-old', version: 1, step: 7, status: 'Open', body: legacy, createdByUserId: 'u-1', createdByName: 'Group Admin', createdAtUtc: now, updatedAtUtc: now });
+  await openChooser(page);
+  await evostelRow(page).getByRole('link', { name: new RegExp(t('Resume setup')) }).click();
+  await expectStep(page, t, 'Review & update');
+  const refresh = page.locator('[data-testid="review-plan"] li[data-code="draft_needs_refresh"]');
+  await expect(refresh).toContainText(t('This draft was started before KynexOne kept a record of what the company had at the time, so it cannot tell your edits from changes made elsewhere. Reload the company’s current setup, then make your changes again.'));
+  await refresh.getByRole('button', { name: t('Reload the company’s current setup'), exact: true }).click();
+  await page.getByRole('button', { name: t('Reload'), exact: true }).click();
+  await expect(refresh).toHaveCount(0);
+  await expect(page.getByTestId('review-no-change')).toBeVisible();
+  expect(server.dryRuns.at(-1)!.company.baseline).toEqual(prefill.company.baseline);
+  await expect.poll(() => server.drafts.get('draft-old')!.body.branches[0].baseline).toEqual(prefill.branches[0].baseline);
   expect(server.commits).toEqual([]);
 });
 

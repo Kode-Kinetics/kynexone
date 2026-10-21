@@ -3,7 +3,7 @@
 import { useT } from '../../hooks/useT';
 import { msg } from '../../i18n/translations';
 import type { CompanySetupBranch, CompanySetupDraftBody, CompanySetupLocation } from '../../api/companySetup';
-import { MANAGE_TAB, TIME_ZONES, stepWarnings } from '../../lib/companySetupWizard';
+import { MANAGE_TAB, TIME_ZONES, stepWarnings, withOneHeadOffice } from '../../lib/companySetupWizard';
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
 import { UseDefaultsButton } from './UseDefaultsButton';
@@ -19,14 +19,8 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
   const existing = !!body.existingCompanyId;
   const manage = (key: keyof typeof MANAGE_TAB) => existing ? { href: `/setup?tab=${MANAGE_TAB[key].tab}&companyId=${encodeURIComponent(body.existingCompanyId!)}`, label: MANAGE_TAB[key].label } : undefined;
   const timeZone = defaults?.branches[0]?.timeZoneId || PACK_TIME_ZONE[body.company.countryCode] || 'Asia/Riyadh';
-  const setBranches = (branches: CompanySetupBranch[]) => update(b => {
-    // Exactly one head office: ticking one unticks the others; a lone branch is the head office.
-    const before = b.branches;
-    const ticked = branches.findIndex((row, i) => row.isHeadOffice && !before[i]?.isHeadOffice);
-    const next = ticked >= 0 ? branches.map((row, i) => ({ ...row, isHeadOffice: i === ticked })) : branches;
-    if (next.length === 1 && !next[0].isHeadOffice) next[0] = { ...next[0], isHeadOffice: true };
-    return { ...b, branches: next };
-  });
+  // Exactly one head office: ticking one unticks the others; a lone branch is the head office.
+  const setBranches = (branches: CompanySetupBranch[]) => update(b => ({ ...b, branches: withOneHeadOffice(b.branches, branches) }));
   const setLocations = (index: number, locations: CompanySetupLocation[]) =>
     update(b => ({ ...b, branches: b.branches.map((row, i) => (i === index ? { ...row, locations } : row)) }));
   const branchColumns: RowColumn<CompanySetupBranch>[] = [

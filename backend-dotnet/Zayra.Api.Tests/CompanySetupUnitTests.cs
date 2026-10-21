@@ -246,4 +246,39 @@ public class CompanySetupUnitTests
             .Contain("\"manageableCompanies\":[{\"id\"").And.Contain("\"legalNameAr\":null").And.Contain("\"readinessDone\":3")
             .And.Contain("\"readinessTotal\":9").And.Contain("\"openDraftId\":null");
     }
+
+    // ── Addendum A9: the three-way comparison ────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("A", "A", "A", CompanySetupBaseline.Outcome.TakeDatabase)]   // nobody changed it
+    [InlineData("A", "A", "B", CompanySetupBaseline.Outcome.TakeDatabase)]   // changed elsewhere only: the newer value stands
+    [InlineData("B", "A", "A", CompanySetupBaseline.Outcome.TakeDraft)]      // changed by the user only: update
+    [InlineData("B", "A", "B", CompanySetupBaseline.Outcome.TakeDatabase)]   // both, the same way: nothing to write
+    [InlineData("B", "A", "C", CompanySetupBaseline.Outcome.Conflict)]       // both, differently: the user decides
+    [InlineData(null, "A", "C", CompanySetupBaseline.Outcome.Conflict)]
+    [InlineData("B", null, null, CompanySetupBaseline.Outcome.TakeDraft)]    // nothing existed at prefill (no cutover, no rule)
+    public void Each_field_is_judged_on_draft_baseline_and_database(string? draft, string? baseline, string? database, CompanySetupBaseline.Outcome expected) =>
+        CompanySetupBaseline.Decide(draft, baseline, database).Should().Be(expected);
+
+    [Fact]
+    public void The_projection_of_an_untouched_prefill_equals_its_baseline_and_ignores_numeric_scale()
+    {
+        var row = new Zayra.Api.Models.Location { Code = "L1", NameEn = " Site ", Latitude = 21.500000m, Longitude = 39.2m, GeofenceRadiusMeters = 150.00m };
+        var fromRow = CompanySetupBaseline.Location(row);
+        CompanySetupBaseline.Location(new Zayra.Api.Application.CompanySetup.CompanySetupLocation("L1", "Site", null, 21.5m, 39.20m, 150m))
+            .Should().BeEquivalentTo(fromRow);
+        fromRow["latitude"].Should().Be("21.5");
+        CompanySetupBaseline.WorkWeek("Sat,Fri", true).Should().BeEquivalentTo(CompanySetupBaseline.WorkWeek("Fri,Sat", true));
+    }
+
+    [Fact]
+    public void A_baseline_round_trips_through_the_draft_json_unchanged()
+    {
+        var baseline = new Dictionary<string, string?> { ["nameEn"] = "Dammam", ["nameAr"] = null, ["isHeadOffice"] = "false" };
+        var branch = new Zayra.Api.Application.CompanySetup.CompanySetupBranch("DMM", "Dammam", null, "Dammam", "Asia/Riyadh", false, [], Guid.NewGuid(), baseline);
+        var json = System.Text.Json.JsonSerializer.Serialize(branch, CompanySetupService.BodyJson);
+        json.Should().Contain("\"baseline\":{\"nameEn\":\"Dammam\",\"nameAr\":null,\"isHeadOffice\":\"false\"}");
+        System.Text.Json.JsonSerializer.Deserialize<Zayra.Api.Application.CompanySetup.CompanySetupBranch>(json, CompanySetupService.BodyJson)!
+            .Baseline.Should().BeEquivalentTo(baseline);
+    }
 }

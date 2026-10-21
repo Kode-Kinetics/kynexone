@@ -122,6 +122,9 @@ public sealed class CompanySetupPlanner
         public void Item(string area, string code, string label, string action, string? reason = null, string? labelAr = null) =>
             Items.Add(new(area, code, label, action, reason, Blank(labelAr)));
         public void Problem(int step, string field, string code, string message, string? ar = null) => Problems.Add(new(step, Path(step, field), code, message, ar));
+        /// <summary>A9: a field changed both here and elsewhere since the draft started; carries the value there now.</summary>
+        public void Changed(int step, string field, string message, string ar, string? current) =>
+            Problems.Add(new(step, Path(step, field), CompanySetupBaseline.ChangedCode, message, ar) { Current = current });
         public void Warn(int step, string field, string code, string message, string? ar = null) => Warnings.Add(new(step, Path(step, field), code, message, ar));
         /// <summary>A conflict is both a plan row and a field problem, so the review and the step both show it.</summary>
         public void Conflict(string area, string itemCode, string label, int step, string field, string code, string message, string? ar = null, string? labelAr = null)
@@ -200,6 +203,19 @@ public sealed class CompanySetupPlanner
         public required List<CostCenter> CostCentres { get; init; }
         public EmployeeIdRule? Rule { get; init; }
         public CompanyCutover? Cutover { get; init; }
+        /// <summary>The working week as the prefill shows it today (A9's database side of the work-week block).</summary>
+        public required (string WeekendDays, bool Own) WorkWeek { get; init; }
+        public required string PackTimeZone { get; init; }
+    }
+
+    /// <summary>The working week an existing company's prefill shows: the weekend that applies to it, and whether it has
+    /// its own row. One reading for the prefill and the planner (A9).</summary>
+    public async Task<(string WeekendDays, bool Own)> CurrentWorkWeekAsync(Guid tenantId, Guid companyId, string country, CancellationToken ct)
+    {
+        var week = await _workWeek.ResolveAsync(tenantId, companyId, country, ct);
+        var own = await ScopedBypass.TenantWide(_db.GCCComplianceSettings, tenantId, Why).AsNoTracking()
+            .AnyAsync(x => x.CompanyId == companyId && x.CountryCode == country, ct);
+        return (CompanySetupPack.FormatWeekend(week.WeekendDays), own);
     }
 
     private async Task<ExistingCompany> LoadExistingAsync(Guid tenantId, Guid companyId, CancellationToken ct)
@@ -208,9 +224,12 @@ public sealed class CompanySetupPlanner
         var allBranches = await ScopedBypass.TenantWide(_db.Branches, tenantId, Why).AsNoTracking()
             .Where(b => b.CompanyId == companyId).OrderByDescending(b => b.IsHeadOffice).ThenBy(b => b.Code).ToListAsync(ct);
         var branchIds = allBranches.Where(b => !b.IsDeleted).Select(b => (Guid?)b.Id).ToList();
+        var country = CountryCodeStandard.NormalizeToIso2(company.CountryCode) ?? Clean(company.CountryCode).ToUpperInvariant();
         return new ExistingCompany
         {
             Company = company,
+            WorkWeek = await CurrentWorkWeekAsync(tenantId, companyId, country, ct),
+            PackTimeZone = HomeJurisdiction.TimeZoneFor(country),
             Branches = allBranches.Where(b => !b.IsDeleted).ToList(),
             AllBranchCodes = allBranches.Select(b => OrgCodes.Normalize(b.Code)).ToHashSet(StringComparer.Ordinal),
             Locations = await ScopedBypass.TenantWide(_db.Locations, tenantId, Why).AsNoTracking()
@@ -252,6 +271,10 @@ public sealed class CompanySetupPlanner
                 return (Finish(c), null);
             }
             ex = await LoadExistingAsync(tenantId, existingId, ct);
+            // A9: draft vs baseline vs database, field by field, before anything else reads the body.
+            var reconciled = Reconcile(c, body, ex);
+            if (reconciled is null) return (Finish(c), null);
+            body = reconciled;
         }
         else
         {
@@ -1084,6 +1107,157 @@ public sealed class CompanySetupPlanner
             CompanyAdminAction = adminAction,
             Items = plan.Items,
         });
+    }
+
+    /// <summary>
+    /// Addendum A9: the three-way comparison of existing mode (<see cref="CompanySetupBaseline"/>). Returns the body the
+    /// rest of the planner reads: each field of each existing row is the draft's value where only the user changed it,
+    /// and the database's value now where the user did not (so an edit made elsewhere since the draft started stands).
+    /// A field changed on both sides to different values is a <c>changed_since_draft_started</c> problem. A row or
+    /// block with no baseline (a draft saved before A9) refuses the whole plan with <c>draft_needs_refresh</c>: null.
+    /// </summary>
+    private static CompanySetupDraftBody? Reconcile(Collector c, CompanySetupDraftBody body, ExistingCompany ex)
+    {
+        var refresh = false;
+        HashSet<string> Merge(int step, string path, string what, string whatAr, Dictionary<string, string?>? baseline,
+            Dictionary<string, string?> draft, Dictionary<string, string?> database)
+        {
+            var takeDatabase = new HashSet<string>(StringComparer.Ordinal);
+            if (baseline is null) { refresh = true; return takeDatabase; }
+            foreach (var (key, now) in database)
+            {
+                if (!baseline.TryGetValue(key, out var before)) { refresh = true; continue; }
+                var mine = draft.GetValueOrDefault(key);
+                switch (CompanySetupBaseline.Decide(mine, before, now))
+                {
+                    case CompanySetupBaseline.Outcome.TakeDatabase: takeDatabase.Add(key); break;
+                    case CompanySetupBaseline.Outcome.Conflict:
+                        var (en, ar) = CompanySetupBaseline.FieldWords(key);
+                        var shown = now ?? "(empty)";
+                        c.Changed(step, $"{path}.{key}",
+                            $"{what}: the {en} was changed elsewhere since this draft started. It is now “{shown}”. Take the current value, or keep yours.",
+                            $"{whatAr}: تم تغيير {ar} في مكان آخر منذ بدء هذه المسودة. القيمة الحالية «{now ?? "(فارغ)"}». اعتمد القيمة الحالية أو احتفظ بقيمتك.",
+                            now);
+                        break;
+                }
+            }
+            return takeDatabase;
+        }
+
+        // Company (step 2). Country and currency are locked (A4), so they are not part of the comparison.
+        var co = body.Company;
+        var stored = ex.Company;
+        var take = Merge(2, "company", "Company", "الشركة", co.Baseline, CompanySetupBaseline.Company(co), CompanySetupBaseline.Company(stored, ex.Cutover));
+        string? Pick(string key, string? mine, string? theirs) => take.Contains(key) ? theirs : mine;
+        co = co with
+        {
+            LegalNameEn = Pick("legalNameEn", co.LegalNameEn, stored.LegalNameEn) ?? string.Empty,
+            LegalNameAr = Pick("legalNameAr", co.LegalNameAr, stored.LegalNameAr),
+            TradeName = Pick("tradeName", co.TradeName, stored.TradeName),
+            RegistrationNumber = Pick("registrationNumber", co.RegistrationNumber, stored.RegistrationNumber) ?? string.Empty,
+            MolEstablishmentNumber = Pick("molEstablishmentNumber", co.MolEstablishmentNumber, stored.WpsEmployerId),
+            GosiEmployerId = Pick("gosiEmployerId", co.GosiEmployerId, stored.GosiEmployerId),
+            UnifiedNationalNumber = Pick("unifiedNationalNumber", co.UnifiedNationalNumber, stored.UnifiedNationalNumber),
+            TaxNumber = Pick("taxNumber", co.TaxNumber, stored.TaxNumber),
+            QiwaEstablishmentId = Pick("qiwaEstablishmentId", co.QiwaEstablishmentId, stored.QiwaEstablishmentId),
+            EmailDomain = Pick("emailDomain", co.EmailDomain, stored.EmailDomain),
+            WorkEmailPattern = Pick("workEmailPattern", co.WorkEmailPattern, stored.WorkEmailPattern),
+            ErpCompanyCode = Pick("erpCompanyCode", co.ErpCompanyCode, stored.ErpCompanyCode),
+            FirstPayrollMonth = take.Contains("firstPayrollMonth") && ex.Cutover is { } cut
+                ? cut.CutoverDate.ToString("yyyy-MM", CultureInfo.InvariantCulture) : co.FirstPayrollMonth,
+        };
+
+        // Branches and their locations (step 3): existing rows only; a new row has nothing to compare with.
+        var branchById = ex.Branches.ToDictionary(b => b.Id);
+        var locationById = ex.Locations.ToDictionary(l => l.Id);
+        var branches = (body.Branches ?? []).Select((b, i) =>
+        {
+            var merged = b;
+            if (b.ExistingId is Guid id && branchById.TryGetValue(id, out var row))
+            {
+                var t = Merge(3, $"branches[{i}]", $"Branch {OrgCodes.Normalize(row.Code)}", $"الفرع {OrgCodes.Normalize(row.Code)}", b.Baseline,
+                    CompanySetupBaseline.Branch(b, ex.PackTimeZone), CompanySetupBaseline.Branch(row, ex.PackTimeZone));
+                merged = b with
+                {
+                    NameEn = t.Contains("nameEn") ? row.NameEn : b.NameEn,
+                    NameAr = t.Contains("nameAr") ? row.NameAr : b.NameAr,
+                    City = t.Contains("city") ? row.City : b.City,
+                    TimeZoneId = t.Contains("timeZoneId") ? (string.IsNullOrWhiteSpace(row.TimeZoneId) ? ex.PackTimeZone : row.TimeZoneId.Trim()) : b.TimeZoneId,
+                    IsHeadOffice = t.Contains("isHeadOffice") ? row.IsHeadOffice : b.IsHeadOffice,
+                };
+            }
+            var locations = (b.Locations ?? []).Select((l, j) =>
+            {
+                if (l.ExistingId is not Guid lid || !locationById.TryGetValue(lid, out var lrow)) return l;
+                var t = Merge(3, $"branches[{i}].locations[{j}]", $"Location {OrgCodes.Normalize(lrow.Code)}", $"الموقع {OrgCodes.Normalize(lrow.Code)}", l.Baseline,
+                    CompanySetupBaseline.Location(l), CompanySetupBaseline.Location(lrow));
+                return l with
+                {
+                    NameEn = t.Contains("nameEn") ? lrow.NameEn : l.NameEn,
+                    NameAr = t.Contains("nameAr") ? lrow.NameAr : l.NameAr,
+                    Latitude = t.Contains("latitude") ? lrow.Latitude : l.Latitude,
+                    Longitude = t.Contains("longitude") ? lrow.Longitude : l.Longitude,
+                    RadiusMeters = t.Contains("radiusMeters") ? lrow.GeofenceRadiusMeters : l.RadiusMeters,
+                };
+            }).ToList();
+            return merged with { Locations = locations };
+        }).ToList();
+
+        // Cost centres (step 4).
+        var costCentreById = ex.CostCentres.ToDictionary(x => x.Id);
+        var costCentres = (body.CostCentres ?? []).Select((cc, i) =>
+        {
+            if (cc.ExistingId is not Guid id || !costCentreById.TryGetValue(id, out var row)) return cc;
+            var t = Merge(4, $"costCentres[{i}]", $"Cost centre {OrgCodes.Normalize(row.Code)}", $"مركز التكلفة {OrgCodes.Normalize(row.Code)}", cc.Baseline,
+                CompanySetupBaseline.CostCentre(cc), CompanySetupBaseline.CostCentre(row));
+            return cc with { NameEn = t.Contains("nameEn") ? row.Name : cc.NameEn };
+        }).ToList();
+
+        // Employee numbering and the working week (step 5).
+        var rules = body.Rules;
+        if (rules is not null)
+        {
+            if (rules.EmployeeNumbering is { } n)
+            {
+                var t = Merge(5, "rules.employeeNumbering", "Employee numbering", "ترقيم الموظفين", n.Baseline,
+                    CompanySetupBaseline.Numbering(n), CompanySetupBaseline.Numbering(ex.Rule));
+                if (ex.Rule is { } r)
+                    n = n with
+                    {
+                        Prefix = t.Contains("prefix") ? r.CompanyPrefix : n.Prefix,
+                        UseCountryPrefix = t.Contains("useCountryPrefix") ? r.UseCountryPrefix : n.UseCountryPrefix,
+                        UseBranchPrefix = t.Contains("useBranchPrefix") ? r.UseBranchPrefix : n.UseBranchPrefix,
+                        UseDepartmentPrefix = t.Contains("useDepartmentPrefix") ? r.UseDepartmentPrefix : n.UseDepartmentPrefix,
+                        UseYear = t.Contains("useYear") ? r.UseYear : n.UseYear,
+                        PaddingLength = t.Contains("paddingLength") ? r.PaddingLength : n.PaddingLength,
+                        NextSequence = t.Contains("nextSequence") ? r.NextSequence : n.NextSequence,
+                    };
+                rules = rules with { EmployeeNumbering = n };
+            }
+            if (rules.WorkWeek is { } w)
+            {
+                var t = Merge(5, "rules.workWeek", "Working week", "أسبوع العمل", w.Baseline,
+                    CompanySetupBaseline.WorkWeek(w), CompanySetupBaseline.WorkWeek(ex.WorkWeek.WeekendDays, ex.WorkWeek.Own));
+                rules = rules with
+                {
+                    WorkWeek = w with
+                    {
+                        WeekendDays = t.Contains("weekendDays") ? ex.WorkWeek.WeekendDays : w.WeekendDays,
+                        Override = t.Contains("override") ? ex.WorkWeek.Own : w.Override,
+                    },
+                };
+            }
+        }
+
+        if (refresh)
+        {
+            c.Problems.Clear();
+            c.Problem(1, "draft", CompanySetupBaseline.RefreshCode,
+                "This draft was saved before KynexOne recorded what the company had when the draft started, so it cannot tell your edits from changes made elsewhere since. Reload the company's current setup, then make your changes again. Nothing has been changed.",
+                "حُفظت هذه المسودة قبل أن يسجّل النظام بيانات الشركة عند بدئها، لذا لا يمكن التمييز بين تعديلاتك والتغييرات التي تمت في مكان آخر. أعد تحميل إعداد الشركة الحالي ثم أجرِ تعديلاتك مرة أخرى. لم يتم تغيير أي شيء.");
+            return null;
+        }
+        return body with { Company = co, Branches = branches, CostCentres = costCentres, Rules = rules! };
     }
 
     private const string KeptReason = "Kept as it is: the wizard adds and edits, it never removes.";

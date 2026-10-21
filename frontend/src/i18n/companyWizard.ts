@@ -4,6 +4,17 @@
  * shared group catalog = الدليل المشترك للمجموعة; draft = مسودة.
  */
 const ar: Record<string, string> = {
+  // Addendum A9: changes made elsewhere since the draft started.
+  "Yes": "نعم",
+  "No": "لا",
+  "(empty)": "(فارغ)",
+  "Use the current value ({value})": "اعتمد القيمة الحالية ({value})",
+  "Keep mine": "احتفظ بقيمتي",
+  "This draft was started before KynexOne kept a record of what the company had at the time, so it cannot tell your edits from changes made elsewhere. Reload the company’s current setup, then make your changes again.": "بدأت هذه المسودة قبل أن يحتفظ KynexOne بسجل لما كان لدى الشركة في حينه، لذا لا يمكن التمييز بين تعديلاتك والتغييرات التي تمت في مكان آخر. أعد تحميل إعداد الشركة الحالي، ثم أجرِ تعديلاتك مرة أخرى.",
+  "Reload": "إعادة التحميل",
+  "Reload the company’s current setup": "أعد تحميل إعداد الشركة الحالي",
+  "Reload the company’s current setup?": "إعادة تحميل إعداد الشركة الحالي؟",
+  "This draft was saved before KynexOne recorded what {company} had when it started, so it cannot tell your edits from changes made elsewhere. The draft is replaced with what the company has today; then make your changes again. Nothing has been changed yet.": "حُفظت هذه المسودة قبل أن يسجّل KynexOne ما كان لدى {company} عند بدئها، لذا لا يمكن التمييز بين تعديلاتك والتغييرات التي تمت في مكان آخر. تُستبدل المسودة بما لدى الشركة اليوم، ثم أجرِ تعديلاتك مرة أخرى. لم يتم تغيير أي شيء بعد.",
   // Steps
   "Start": "البداية",
   "Company details": "بيانات الشركة",
