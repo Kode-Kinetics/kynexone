@@ -166,7 +166,9 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         return await Service(db).CommitAsync(Caller(w), new CompanySetupCommitRequest(draft.Id, draft.Version), key ?? draft.Id, default);
     }
 
-    private static string ErrorCode(object? error) => JsonDocument.Parse(JsonSerializer.Serialize(error)).RootElement.GetProperty("code").GetString()!;
+    private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
+    private static JsonElement ErrorBody(object? error) => JsonDocument.Parse(JsonSerializer.Serialize(error, Web)).RootElement;
+    private static string ErrorCode(object? error) => ErrorBody(error).GetProperty("code").GetString()!;
 
     // ── the commit ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -179,6 +181,11 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         outcome.Status.Should().Be(201, JsonSerializer.Serialize(outcome.Error));
         var result = outcome.Value!;
         result.Replayed.Should().BeFalse();
+        await using (var planDb = fixture.CreateDb())
+        {
+            var plan = await Service(planDb).DryRunAsync(Caller(w), Body(name: "Label Check Co", cr: "1010000098"), default);
+            plan.Items.Single(i => i.Area == "company").LabelAr.Should().Be("شركة الخليج الجديدة");
+        }
 
         await using var db = fixture.CreateDb();
         var company = await db.Companies.AsNoTracking().SingleAsync(c => c.Id == result.CompanyId);
@@ -280,6 +287,12 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         var outcome = await CommitAsync(w, draft);
         outcome.Status.Should().Be(409);
         ErrorCode(outcome.Error).Should().Be(CompanySetupGates.CrTakenCode);
+        // The contract's error shape: { code, message, messageAr?, field?, step? } with a dotted field path.
+        var body = ErrorBody(outcome.Error);
+        body.GetProperty("field").GetString().Should().Be("company.registrationNumber");
+        body.GetProperty("step").GetInt32().Should().Be(2);
+        body.GetProperty("message").GetString().Should().NotBeNullOrWhiteSpace();
+        body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
         await AssertNothingCreatedAsync(w);
     }
 
@@ -293,6 +306,7 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
             var plan = await Service(db).DryRunAsync(Caller(w), body, default);
             plan.Ok.Should().BeFalse();
             plan.Items.Should().Contain(i => i.Area == "costCentre" && i.Code == "CC_HR" && i.Action == V.ActionConflict);
+            plan.Problems.Should().Contain(p => p.Code == "cost_centre_code_taken" && p.Field == "costCentres.0.code");
         }
         var draft = await NewDraftAsync(w, body with { Designations = [] });
         (await CommitAsync(w, draft)).Status.Should().Be(409);
@@ -339,7 +353,7 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         var service = Service(db);
         var context = await service.GetContextAsync(Caller(w), default);
         context.CanCreate.Should().BeFalse();
-        context.RefusalCode.Should().Be(CompanySetupGates.PlatformActivationDisabledCode);
+        context.RefusalCode.Should().Be("company_creation_platform_approval");
         context.CreationMode.Should().Be(CompanyCreationModes.GroupDraftPlatformApproval);
         var draft = await service.CreateDraftAsync(Caller(w), Body(), default);
         draft.Status.Should().Be(409, "no stranded drafts");
@@ -352,7 +366,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         var w = await SeedAsync(maxCompanies: 2);
         var draft = await NewDraftAsync(w, Body());
         await using (var db = fixture.CreateDb())
-            (await Service(db).GetContextAsync(Caller(w), default)).Should().Match<CompanySetupContext>(c => c.CanCreate && c.CompaniesUsed == 1 && c.CompaniesAllowed == 2);
+            (await Service(db).GetContextAsync(Caller(w), default)).Should().Match<CompanySetupContext>(c =>
+                c.CanCreate && c.CompaniesUsed == 1 && c.CompaniesAllowed == 2 && c.CanGrantCompanyAdmin && c.GradesCurrency == "SAR");
         // The last seat is taken by another door after the draft was started.
         await using (var db = fixture.CreateDb())
         {
@@ -452,6 +467,25 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         (await CommitAsync(w, draft)).Status.Should().Be(409);
     }
 
+    [Fact]
+    public async Task The_database_bounds_a_draft_body_at_128_KiB_and_holds_the_status_vocabulary()
+    {
+        var w = await SeedAsync();
+        async Task<Exception?> Insert(Action<CompanySetupDraftRecord> shape)
+        {
+            await using var db = fixture.CreateDb();
+            var row = new CompanySetupDraftRecord { TenantId = w.TenantId, CreatedByUserId = w.AdminId, Body = "{}" };
+            shape(row);
+            db.CompanySetupDrafts.Add(row);
+            try { await db.SaveChangesAsync(); return null; } catch (DbUpdateException ex) { return ex; }
+        }
+        (await Insert(_ => { })).Should().BeNull();
+        (await Insert(r => r.Body = JsonSerializer.Serialize(new { pad = new string('x', 140_000) }))).Should().NotBeNull("the 128 KiB CHECK");
+        (await Insert(r => r.Status = "Approved")).Should().NotBeNull("the status CHECK");
+        (await Insert(r => r.Step = 8)).Should().NotBeNull("the step CHECK");
+        (await Insert(r => r.Status = CompanySetupDraftStatuses.Submitted)).Should().NotBeNull("Submitted needs submitted_at_utc");
+    }
+
     // ── Company Super Admin ─────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -533,7 +567,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         var controller = Controller(db, w.TenantId, w.CompanyAdminId, scopedCompany: w.SisterId);
         var context = (await controller.Context(default)).Result.Should().BeOfType<OkObjectResult>().Subject.Value.Should().BeOfType<CompanySetupContext>().Subject;
         context.CanCreate.Should().BeFalse();
-        context.RefusalCode.Should().Be(CompanySetupGates.GroupScopeRequiredCode);
+        context.RefusalCode.Should().Be("not_group_scope");
+        context.CanGrantCompanyAdmin.Should().BeFalse();
         context.SisterCompanies.Should().BeEmpty();
         ((ObjectResult)(await controller.DryRun(Body(), default)).Result!).StatusCode.Should().Be(403);
         ((ObjectResult)(await controller.CreateDraft(Body(), default)).Result!).StatusCode.Should().Be(403);

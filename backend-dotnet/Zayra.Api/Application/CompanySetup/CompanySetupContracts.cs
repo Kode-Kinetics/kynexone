@@ -55,7 +55,10 @@ public sealed record CompanySetupContext(
     bool IsGroupScope,
     IReadOnlyList<CompanySetupSisterCompany> SisterCompanies,
     CompanySetupSharedCatalog SharedCatalog,
-    string? GradesCurrency);
+    string? GradesCurrency,
+    /// <summary>Whether this caller may make someone a company super admin — the same role ceiling User
+    /// Management applies (group scope + the Admin role + Admin assignable + security.manage).</summary>
+    bool CanGrantCompanyAdmin = false);
 
 public sealed record CompanySetupSisterCompany(Guid Id, string LegalNameEn, string CountryCode);
 
@@ -200,9 +203,21 @@ public sealed record CompanySetupPlan(
     IReadOnlyList<Problem> Problems,
     IReadOnlyList<Problem> Warnings);
 
-public sealed record PlanItem(string Area, string Code, string Label, string Action, string? Reason);
+public sealed record PlanItem(string Area, string Code, string Label, string Action, string? Reason, string? LabelAr = null);
 
+/// <summary><see cref="Field"/> is a dotted lower-camel path with numeric indexes, e.g. <c>company.registrationNumber</c>,
+/// <c>branches.0.code</c>, <c>departments.2.costCentreCode</c>.</summary>
 public sealed record Problem(int Step, string Field, string Code, string Message, string? MessageAr);
+
+/// <summary>The body of every 4xx answer from /api/company-setup: <c>{ code, message, messageAr?, field?, step? }</c>.
+/// A refused commit or draft may add <c>plan</c> (the refused plan) or <c>currentVersion</c> (a stale save).</summary>
+public sealed record CompanySetupError(string Code, string Message, string? MessageAr = null, string? Field = null, int? Step = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CompanySetupPlan? Plan { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? CurrentVersion { get; init; }
+}
 
 public sealed record CompanySetupResult(
     Guid CompanyId,

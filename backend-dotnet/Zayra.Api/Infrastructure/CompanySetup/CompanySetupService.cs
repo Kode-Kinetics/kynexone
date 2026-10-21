@@ -27,8 +27,10 @@ namespace Zayra.Api.Infrastructure.CompanySetup;
 public sealed record CompanySetupOutcome<T>(int Status, T? Value, object? Error = null)
 {
     public static CompanySetupOutcome<T> Ok(T value, int status = 200) => new(status, value);
-    public static CompanySetupOutcome<T> Fail(int status, string code, string message, object? extra = null) =>
-        new(status, default, new { error = code, code, message, plan = extra });
+    /// <summary>Every refusal has the contract's error shape: <c>{ code, message, messageAr?, field?, step? }</c>.</summary>
+    public static CompanySetupOutcome<T> Fail(int status, string code, string message, string? messageAr = null,
+        string? field = null, int? step = null, CompanySetupPlan? plan = null) =>
+        new(status, default, new CompanySetupError(code, message, messageAr, field, step) { Plan = plan });
 }
 
 /// <summary>
@@ -74,7 +76,18 @@ public sealed class CompanySetupService
         var sub = await _db.TenantSubscriptions.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
         var used = await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).CountAsync(c => !c.IsDeleted, ct);
         var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
-        var (canCreate, code, message) = Refusal(caller, gate);
+        var (canCreate, code, message, _) = Refusal(caller, gate);
+        var canGrantCompanyAdmin = false;
+        if (caller.IsGroupScope)
+        {
+            // The same role ceiling User Management applies (and the planner's step 6 uses).
+            try
+            {
+                var ceiling = await _access.GetAccessCeilingAsync(tenantId, caller.Context with { TenantId = tenantId }, ct);
+                canGrantCompanyAdmin = CompanySetupPlanner.MayGrantCompanyAdmin(caller, ceiling);
+            }
+            catch (PrivilegeCeilingException) { canGrantCompanyAdmin = false; }
+        }
 
         var sisters = caller.IsGroupScope
             ? await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).AsNoTracking()
@@ -102,16 +115,18 @@ public sealed class CompanySetupService
             caller.IsGroupScope,
             sisters,
             new CompanySetupSharedCatalog(departments, designations, grades),
-            gradesCurrency);
+            gradesCurrency,
+            canGrantCompanyAdmin);
     }
 
     /// <summary>Decision 12 as one answer: may this caller start the wizard now, and if not, why (at step 1).</summary>
-    private static (bool CanCreate, string? Code, string? Message) Refusal(CompanySetupCaller caller, CompanyCreationGateDecision gate)
+    private static (bool CanCreate, string? Code, string? Message, string? MessageAr) Refusal(CompanySetupCaller caller, CompanyCreationGateDecision gate)
     {
-        if (!caller.IsGroupScope) return (false, CompanySetupGates.GroupScopeRequiredCode, "Only a group administrator can create another company.");
-        if (!gate.Allowed) return (false, gate.ErrorCode, gate.Message);
-        if (gate.AsDraft) return (false, CompanySetupGates.PlatformActivationDisabledCode, CompanySetupGates.PlatformActivationDisabledMessage);
-        return (true, null, null);
+        if (!caller.IsGroupScope) return (false, CompanySetupGates.GroupScopeRequiredCode, CompanySetupGates.GroupScopeRequiredMessage, CompanySetupGates.GroupScopeRequiredMessageAr);
+        if (!gate.Allowed) return (false, gate.ErrorCode, gate.Message, null);
+        if (gate.AsDraft) return (false, CompanySetupGates.PlatformActivationDisabledCode, CompanySetupGates.PlatformActivationDisabledMessage,
+            CompanySetupGates.PlatformActivationDisabledMessageAr);
+        return (true, null, null, null);
     }
 
     // ── GET /defaults ────────────────────────────────────────────────────────────────────────────────
@@ -133,7 +148,8 @@ public sealed class CompanySetupService
         }
         var country = CountryCodeStandard.NormalizeToIso2(string.IsNullOrWhiteSpace(countryCode) ? sister?.CountryCode : countryCode);
         if (country is null)
-            return CompanySetupOutcome<CompanySetupDraftBody>.Fail(400, "country_invalid", "Choose the company's country (ISO code, for example SA).");
+            return CompanySetupOutcome<CompanySetupDraftBody>.Fail(400, "country_invalid", "Choose the company's country (ISO code, for example SA).",
+                "اختر دولة الشركة.", "company.countryCode", 2);
         var currency = HomeJurisdiction.CurrencyFor(country);
 
         var gradeCurrency = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking()
@@ -269,8 +285,8 @@ public sealed class CompanySetupService
     {
         // No stranded drafts (Decision 12): a tenant that cannot create a company now cannot start one.
         var gate = await CompanyCreationGate.EvaluateAsync(_db, caller.TenantId, ct);
-        var (canCreate, code, message) = Refusal(caller, gate);
-        if (!canCreate) return CompanySetupOutcome<CompanySetupDraft>.Fail(409, code!, message!);
+        var (canCreate, code, message, messageAr) = Refusal(caller, gate);
+        if (!canCreate) return CompanySetupOutcome<CompanySetupDraft>.Fail(409, code!, message!, messageAr, step: 1);
         if (body is null) return CompanySetupOutcome<CompanySetupDraft>.Fail(400, "body_required", "The draft body is required.");
         var json = JsonSerializer.Serialize(body, BodyJson);
         if (Encoding.UTF8.GetByteCount(json) > CompanySetupPlanner.MaxBodyBytes)
@@ -291,7 +307,7 @@ public sealed class CompanySetupService
     public async Task<CompanySetupOutcome<CompanySetupDraft>> UpdateDraftAsync(CompanySetupCaller caller, Guid id, CompanySetupDraftUpdate? update, CancellationToken ct)
     {
         if (update?.Body is null) return CompanySetupOutcome<CompanySetupDraft>.Fail(400, "body_required", "The draft body is required.");
-        if (update.Step is < 1 or > 7) return CompanySetupOutcome<CompanySetupDraft>.Fail(400, "step_invalid", "The step is 1 to 7.");
+        if (update.Step is < 1 or > 7) return CompanySetupOutcome<CompanySetupDraft>.Fail(400, "step_invalid", "The step is 1 to 7.", field: "step");
         var row = await _db.CompanySetupDrafts.SingleOrDefaultAsync(d => d.TenantId == caller.TenantId && d.Id == id, ct);
         if (row is null) return CompanySetupOutcome<CompanySetupDraft>.Fail(404, "draft_not_found", "Draft not found.");
         if (row.Status != CompanySetupDraftStatuses.Open)
@@ -318,11 +334,9 @@ public sealed class CompanySetupService
     }
 
     private static CompanySetupOutcome<CompanySetupDraft> Stale(int current) =>
-        new(409, default, new
-        {
-            error = "draft_version_stale", code = "draft_version_stale", currentVersion = current,
-            message = "This draft was saved somewhere else (another tab or device). Reload it to continue from the latest version.",
-        });
+        new(409, default, new CompanySetupError("draft_version_stale",
+            "This draft was saved somewhere else (another tab or device). Reload it to continue from the latest version.",
+            "تم حفظ هذه المسودة في مكان آخر. أعد تحميلها للمتابعة من أحدث نسخة.", "version") { CurrentVersion = current });
 
     public async Task<CompanySetupOutcome<bool>> DiscardDraftAsync(CompanySetupCaller caller, Guid id, CancellationToken ct)
     {
@@ -389,7 +403,7 @@ public sealed class CompanySetupService
     {
         if (request is null) return CompanySetupOutcome<CompanySetupResult>.Fail(400, "body_required", "The draft id and version are required.");
         if (idempotencyKey is null || idempotencyKey != request.DraftId)
-            return CompanySetupOutcome<CompanySetupResult>.Fail(400, "idempotency_key_mismatch", "Send the draft id as the Idempotency-Key header.");
+            return CompanySetupOutcome<CompanySetupResult>.Fail(400, "idempotency_key_mismatch", "Send the draft id as the Idempotency-Key header.", field: "draftId");
 
         var tenantId = caller.TenantId;
         CompanySetupOutcome<CompanySetupResult>? refusal = null;
@@ -415,8 +429,9 @@ public sealed class CompanySetupService
             { refusal = CompanySetupOutcome<CompanySetupResult>.Fail(409, "draft_discarded", "This draft was discarded."); return; }
             if (draft.Version != request.Version)
             {
-                refusal = new(409, default, new { error = "draft_version_stale", code = "draft_version_stale", currentVersion = draft.Version,
-                    message = "This draft was changed after you reviewed it. Review it again before creating the company." });
+                refusal = new(409, default, new CompanySetupError("draft_version_stale",
+                    "This draft was changed after you reviewed it. Review it again before creating the company.",
+                    "تم تغيير هذه المسودة بعد مراجعتها. راجعها مرة أخرى قبل إنشاء الشركة.", "version", 7) { CurrentVersion = draft.Version });
                 return;
             }
             var body = ReadBody(draft);
@@ -512,7 +527,7 @@ public sealed class CompanySetupService
             : plan.Problems.FirstOrDefault(p => p.Code is CompanySetupGates.NameTakenCode or CompanySetupGates.CrTakenCode) ?? first;
         var code = headline?.Code ?? "plan_conflict";
         var message = headline?.Message ?? conflict?.Reason ?? "Nothing was created. Fix the highlighted items and try again.";
-        return CompanySetupOutcome<CompanySetupResult>.Fail(status, code, message, plan);
+        return CompanySetupOutcome<CompanySetupResult>.Fail(status, code, message, headline?.MessageAr, headline?.Field, headline?.Step, plan);
     }
 
     /// <summary>Executes a plan the planner accepted. Tracks and saves inside the caller's transaction.</summary>

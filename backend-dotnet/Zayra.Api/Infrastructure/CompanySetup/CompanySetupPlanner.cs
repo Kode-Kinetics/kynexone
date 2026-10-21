@@ -89,14 +89,23 @@ public sealed class CompanySetupPlanner
         public readonly List<PlanItem> Items = [];
         public readonly List<Problem> Problems = [];
         public readonly List<Problem> Warnings = [];
-        public void Item(string area, string code, string label, string action, string? reason = null) => Items.Add(new(area, code, label, action, reason));
-        public void Problem(int step, string field, string code, string message, string? ar = null) => Problems.Add(new(step, field, code, message, ar));
-        public void Warn(int step, string field, string code, string message, string? ar = null) => Warnings.Add(new(step, field, code, message, ar));
+        public void Item(string area, string code, string label, string action, string? reason = null, string? labelAr = null) =>
+            Items.Add(new(area, code, label, action, reason, Blank(labelAr)));
+        public void Problem(int step, string field, string code, string message, string? ar = null) => Problems.Add(new(step, Path(step, field), code, message, ar));
+        public void Warn(int step, string field, string code, string message, string? ar = null) => Warnings.Add(new(step, Path(step, field), code, message, ar));
         /// <summary>A conflict is both a plan row and a field problem, so the review and the step both show it.</summary>
-        public void Conflict(string area, string itemCode, string label, int step, string field, string code, string message, string? ar = null)
+        public void Conflict(string area, string itemCode, string label, int step, string field, string code, string message, string? ar = null, string? labelAr = null)
         {
-            Items.Add(new(area, itemCode, label, V.ActionConflict, message));
-            Problems.Add(new(step, field, code, message, ar));
+            Items.Add(new(area, itemCode, label, V.ActionConflict, message, Blank(labelAr)));
+            Problems.Add(new(step, Path(step, field), code, message, ar));
+        }
+        private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        /// <summary>The contract's field path: dotted lower camel with numeric indexes ("branches.0.code"); a
+        /// step-2 field names the company ("company.registrationNumber").</summary>
+        private static string Path(int step, string field)
+        {
+            var dotted = System.Text.RegularExpressions.Regex.Replace(field, @"\[(\d+)\]", ".$1");
+            return step == 2 && !dotted.StartsWith("company.", StringComparison.Ordinal) && dotted != "company" ? $"company.{dotted}" : dotted;
         }
     }
 
@@ -113,8 +122,8 @@ public sealed class CompanySetupPlanner
 
         // ── Step 1: who may create, and whether this tenant may create one now (Decision 12) ──────────────
         if (!caller.IsGroupScope)
-            c.Problem(1, "scope", "group_scope_required", "Only a group administrator can create another company.",
-                "يمكن لمسؤول المجموعة فقط إنشاء شركة جديدة.");
+            c.Problem(1, "scope", CompanySetupGates.GroupScopeRequiredCode, CompanySetupGates.GroupScopeRequiredMessage,
+                CompanySetupGates.GroupScopeRequiredMessageAr);
         if (caller.IsNarrowedBySwitcher)
             c.Problem(1, "companySwitcher", "company_switcher_selected",
                 "A company is selected in the company switcher. Switch it to all companies before creating a new company.",
@@ -195,14 +204,14 @@ public sealed class CompanySetupPlanner
             companyConflict = true;
             c.Conflict(Areas.Company, legalNameEn, label, 2, "legalNameEn", CompanySetupGates.NameTakenCode,
                 $"A company named '{legalNameEn}' already exists in this workspace. Each legal entity needs its own name.",
-                $"توجد شركة باسم '{legalNameEn}' في مساحة العمل.");
+                $"توجد شركة باسم '{legalNameEn}' في مساحة العمل.", co.LegalNameAr);
         }
         if (registration.Length > 0 && companies.Any(x => string.Equals(x.RegistrationNumber.Trim(), registration, StringComparison.OrdinalIgnoreCase)))
         {
             companyConflict = true;
             c.Conflict(Areas.Company, registration, label, 2, "registrationNumber", CompanySetupGates.CrTakenCode,
                 $"CR number {registration} already belongs to a company in this workspace.",
-                $"رقم السجل التجاري {registration} مستخدم لشركة أخرى.");
+                $"رقم السجل التجاري {registration} مستخدم لشركة أخرى.", co.LegalNameAr);
         }
         if (erp is not null && companies.Any(x => (x.ErpCompanyCode != null && string.Equals(x.ErpCompanyCode, erp, StringComparison.OrdinalIgnoreCase))
                                                  || (string.IsNullOrEmpty(x.ErpCompanyCode) && string.Equals(x.RegistrationNumber, erp, StringComparison.OrdinalIgnoreCase))))
@@ -211,7 +220,7 @@ public sealed class CompanySetupPlanner
             c.Conflict(Areas.Company, erp, label, 2, "erpCompanyCode", "erp_company_code_taken",
                 $"ERP company code {erp} is already used by another company. Each company needs its own code.");
         }
-        if (!companyConflict) c.Item(Areas.Company, registration, label, V.ActionCreate);
+        if (!companyConflict) c.Item(Areas.Company, registration, label, V.ActionCreate, labelAr: co.LegalNameAr);
 
         // ── Step 3: branches and locations (per company: all new) ─────────────────────────────────────────
         var branches = (body.Branches ?? []).ToList();
@@ -239,7 +248,7 @@ public sealed class CompanySetupPlanner
                 c.Problem(3, $"{f}.timeZoneId", "time_zone_invalid", $"'{tz}' is not a recognised time zone (for example Asia/Riyadh).");
             var locations = (b.Locations ?? []).ToList();
             var normalisedLocations = new List<CompanySetupLocation>();
-            c.Item(Areas.Branch, code, (b.NameEn ?? string.Empty).Trim(), V.ActionCreate);
+            c.Item(Areas.Branch, code, (b.NameEn ?? string.Empty).Trim(), V.ActionCreate, labelAr: b.NameAr);
             if (locations.Count == 0)
                 c.Warn(3, $"{f}.locations", "branch_without_location",
                     $"Branch {code} has no location, so its employees can punch at any geofenced site in the workspace.",
@@ -258,8 +267,8 @@ public sealed class CompanySetupPlanner
                 if ((l.Latitude is null) != (l.Longitude is null)) c.Problem(3, $"{lf}.latitude", "coordinates_incomplete", "Enter both latitude and longitude, or neither.");
                 if (existingLocationCodes.Contains(lcode))
                     c.Conflict(Areas.Location, lcode, (l.NameEn ?? string.Empty).Trim(), 3, $"{lf}.code", "location_code_taken",
-                        $"Location code {lcode} is already used in this workspace. Location codes are unique across all companies.");
-                else c.Item(Areas.Location, lcode, (l.NameEn ?? string.Empty).Trim(), V.ActionCreate);
+                        $"Location code {lcode} is already used in this workspace. Location codes are unique across all companies.", labelAr: l.NameAr);
+                else c.Item(Areas.Location, lcode, (l.NameEn ?? string.Empty).Trim(), V.ActionCreate, labelAr: l.NameAr);
                 normalisedLocations.Add(l with { Code = lcode });
             }
             normalisedBranches.Add(b with { Code = code, TimeZoneId = tz, Locations = normalisedLocations });
@@ -282,29 +291,29 @@ public sealed class CompanySetupPlanner
             if (existingCostCentres.Contains(code))
                 c.Conflict(Areas.CostCentre, code, (cc.NameEn ?? string.Empty).Trim(), 4, $"{f}.code", "cost_centre_code_taken",
                     $"Cost centre code {code} is already used by another company in this workspace. Choose a different code.",
-                    $"رمز مركز التكلفة {code} مستخدم لدى شركة أخرى. اختر رمزاً مختلفاً.");
-            else c.Item(Areas.CostCentre, code, (cc.NameEn ?? string.Empty).Trim(), V.ActionCreate);
+                    $"رمز مركز التكلفة {code} مستخدم لدى شركة أخرى. اختر رمزاً مختلفاً.", cc.NameAr);
+            else c.Item(Areas.CostCentre, code, (cc.NameEn ?? string.Empty).Trim(), V.ActionCreate, labelAr: cc.NameAr);
             costCentres.Add(cc with { Code = code });
         }
 
         var departments = await ScopedBypass.TenantWide(_db.Departments, tenantId, Why).AsNoTracking()
-            .Select(x => new { x.Id, x.Code, x.IsDeleted }).ToListAsync(ct);
+            .Select(x => new { x.Id, x.Code, x.IsDeleted, x.NameAr }).ToListAsync(ct);
         var deptByCode = departments.GroupBy(x => OrgCodes.Normalize(x.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
         var grades = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking()
-            .Select(x => new { x.Id, x.Code, x.IsDeleted, x.IsActive, x.Currency }).ToListAsync(ct);
+            .Select(x => new { x.Id, x.Code, x.IsDeleted, x.IsActive, x.Currency, x.NameAr }).ToListAsync(ct);
         var gradeByCode = grades.GroupBy(x => OrgCodes.Normalize(x.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
         var designations = await ScopedBypass.TenantWide(_db.Designations, tenantId, Why).AsNoTracking()
-            .Select(x => new { x.Code, x.IsDeleted }).ToListAsync(ct);
+            .Select(x => new { x.Code, x.IsDeleted, x.TitleAr }).ToListAsync(ct);
         var designationByCode = designations.GroupBy(x => OrgCodes.Normalize(x.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
-        void SharedAdd(string area, string code, string itemLabel, int index, string listName)
+        void SharedAdd(string area, string code, string itemLabel, int index, string listName, string? itemLabelAr)
         {
             // Decision 6: a new shared-catalog code changes every company of the group, so only group scope adds one.
             if (!caller.IsGroupScope)
                 c.Conflict(area, code, itemLabel, 4, $"{listName}[{index}].code", "shared_catalog_needs_group_scope",
                     $"{code} would be added to the shared group catalog, which only a group administrator can change.",
-                    $"إضافة {code} إلى الدليل المشترك للمجموعة تتطلب مسؤول المجموعة.");
-            else c.Item(area, code, itemLabel, V.ActionCreate);
+                    $"إضافة {code} إلى الدليل المشترك للمجموعة تتطلب مسؤول المجموعة.", itemLabelAr);
+            else c.Item(area, code, itemLabel, V.ActionCreate, labelAr: itemLabelAr);
         }
 
         // Grades: one currency per tenant (Decision 13).
@@ -334,7 +343,7 @@ public sealed class CompanySetupPlanner
                 else
                 {
                     existingGradeIds[code] = existing.Id;
-                    c.Item(Areas.Grade, code, name, V.ActionReuse, "Existing shared grade; it is used as it is (read-only here).");
+                    c.Item(Areas.Grade, code, name, V.ActionReuse, "Existing shared grade; it is used as it is (read-only here).", existing.NameAr ?? g.NameAr);
                 }
                 continue;
             }
@@ -343,7 +352,7 @@ public sealed class CompanySetupPlanner
             if (g.MinSalary < 0 || g.MidSalary < 0 || g.MaxSalary < 0 || g.MinSalary > g.MidSalary || g.MidSalary > g.MaxSalary)
                 c.Problem(4, $"{f}.minSalary", "salary_band_invalid", "A salary band must be ordered minimum ≤ midpoint ≤ maximum.",
                     "يجب أن يكون نطاق الراتب: الحد الأدنى ≤ المنتصف ≤ الحد الأقصى.");
-            SharedAdd(Areas.Grade, code, name, i, "grades");
+            SharedAdd(Areas.Grade, code, name, i, "grades", g.NameAr);
             newGrades.Add(g with { Code = code });
         }
 
@@ -369,7 +378,7 @@ public sealed class CompanySetupPlanner
                     existingDepartmentIds[code] = existing.Id;
                     var relinks = !string.IsNullOrWhiteSpace(d.BranchCode) || !string.IsNullOrWhiteSpace(d.CostCentreCode) || !string.IsNullOrWhiteSpace(d.ParentCode);
                     c.Item(Areas.Department, code, name, V.ActionReuse,
-                        "Existing shared department; it keeps its current branch, cost centre and parent.");
+                        "Existing shared department; it keeps its current branch, cost centre and parent.", string.IsNullOrEmpty(existing.NameAr) ? d.NameAr : existing.NameAr);
                     if (relinks)
                         c.Warn(4, $"{f}.code", "existing_department_not_relinked",
                             $"{code} already exists in the shared catalog, so the branch, cost centre and parent entered here are not applied to it.",
@@ -384,7 +393,7 @@ public sealed class CompanySetupPlanner
             var ccCode = OrgCodes.Normalize(d.CostCentreCode);
             if (ccCode.Length > 0 && !bodyCostCentreCodes.Contains(ccCode))
                 c.Problem(4, $"{f}.costCentreCode", "cost_centre_unknown", $"Cost centre {ccCode} is not one of this company's cost centres.");
-            SharedAdd(Areas.Department, code, name, i, "departments");
+            SharedAdd(Areas.Department, code, name, i, "departments", d.NameAr);
             newDepartments.Add(d with { Code = code, BranchCode = branchCode.Length == 0 ? null : branchCode, CostCentreCode = ccCode.Length == 0 ? null : ccCode,
                 ParentCode = string.IsNullOrWhiteSpace(d.ParentCode) ? null : OrgCodes.Normalize(d.ParentCode) });
         }
@@ -427,7 +436,8 @@ public sealed class CompanySetupPlanner
                 if (existing.IsDeleted)
                     c.Conflict(Areas.Designation, code, title, 4, $"{f}.code", "designation_code_deleted",
                         $"Designation code {code} belongs to a deleted designation. Restore it in Setup, or choose a different code.");
-                else c.Item(Areas.Designation, code, title, V.ActionReuse, "Existing shared designation; it is used as it is (read-only here).");
+                else c.Item(Areas.Designation, code, title, V.ActionReuse, "Existing shared designation; it is used as it is (read-only here).",
+                    string.IsNullOrEmpty(existing.TitleAr) ? ds.TitleAr : existing.TitleAr);
                 continue;
             }
             if (title.Length == 0) c.Problem(4, $"{f}.titleEn", "required", "Enter the designation title in English.");
@@ -437,7 +447,7 @@ public sealed class CompanySetupPlanner
             var gradeCode = OrgCodes.Normalize(ds.GradeCode);
             if (gradeCode.Length > 0 && !bodyGradeCodes.Contains(gradeCode) && !(gradeByCode.TryGetValue(gradeCode, out var gx) && !gx.IsDeleted))
                 c.Problem(4, $"{f}.gradeCode", "grade_unknown", $"Grade {gradeCode} does not exist.");
-            SharedAdd(Areas.Designation, code, title, i, "designations");
+            SharedAdd(Areas.Designation, code, title, i, "designations", ds.TitleAr);
             newDesignations.Add(ds with { Code = code, DepartmentCode = deptCode.Length == 0 ? null : deptCode, GradeCode = gradeCode.Length == 0 ? null : gradeCode });
         }
         // An existing department reused by name only still resolves for designations below.
@@ -477,7 +487,8 @@ public sealed class CompanySetupPlanner
             }
             else
             {
-                c.Item(Areas.HolidayCalendar, holidayCalendar.CalendarYear.ToString(CultureInfo.InvariantCulture), holidayCalendar.Name, V.ActionCreate);
+                c.Item(Areas.HolidayCalendar, holidayCalendar.CalendarYear.ToString(CultureInfo.InvariantCulture), holidayCalendar.Name, V.ActionCreate,
+                    labelAr: $"العطل الرسمية {holidayCalendar.CalendarYear}");
                 c.Warn(5, "rules.holidayCalendar", "lunar_holidays_not_drafted",
                     "Only fixed-date holidays are added. Eid al-Fitr, Eid al-Adha and other lunar holidays are announced locally — add them once announced.",
                     "تتم إضافة العطل ذات التاريخ الثابت فقط. أضف عيد الفطر وعيد الأضحى عند الإعلان عنهما.");
@@ -601,7 +612,7 @@ public sealed class CompanySetupPlanner
         var mode = (admin.Mode ?? string.Empty).Trim();
         if (mode == V.AdminGroupOnly)
         {
-            c.Item(Areas.CompanyAdmin, V.AdminGroupOnly, "Group super admins will manage this company", V.ActionReuse);
+            c.Item(Areas.CompanyAdmin, V.AdminGroupOnly, "Group super admins will manage this company", V.ActionReuse, labelAr: "سيدير مسؤولو المجموعة هذه الشركة");
             return V.ActionReuse;
         }
         if (mode is not (V.AdminInvite or V.AdminExisting))
@@ -612,8 +623,7 @@ public sealed class CompanySetupPlanner
 
         // Only a group-scope Admin who may assign the Admin role grants it — the ceiling User Management enforces.
         var adminRole = ceiling?.Roles.FirstOrDefault(r => string.Equals(r.Name, "Admin", StringComparison.OrdinalIgnoreCase));
-        var mayGrant = caller.IsGroupScope && ceiling is { IsAdmin: true } && adminRole is { CanAssign: true }
-            && ceiling.HeldPermissions.Contains("security.manage", StringComparer.Ordinal);
+        var mayGrant = MayGrantCompanyAdmin(caller, ceiling);
         var key = mode == V.AdminInvite ? (admin.Email ?? string.Empty).Trim().ToLowerInvariant() : admin.ExistingUserId?.ToString() ?? string.Empty;
         if (!mayGrant)
         {
@@ -653,7 +663,7 @@ public sealed class CompanySetupPlanner
                     "لهذا البريد حساب في مساحة العمل. اختر مستخدماً حالياً بدلاً من ذلك.");
                 return V.ActionConflict;
             }
-            c.Item(Areas.CompanyAdmin, email, admin.FullNameEn?.Trim() ?? email, V.ActionCreate, "Invited as this company's super admin (Admin, this company only).");
+            c.Item(Areas.CompanyAdmin, email, admin.FullNameEn?.Trim() ?? email, V.ActionCreate, "Invited as this company's super admin (Admin, this company only).", admin.FullNameAr);
             return V.ActionCreate;
         }
 
@@ -706,6 +716,13 @@ public sealed class CompanySetupPlanner
         return V.ActionCreate;
     }
 
+    /// <summary>Whether <paramref name="caller"/> may make someone a company super admin: group scope, the Admin role,
+    /// the Admin role assignable under the privilege ceiling, and security.manage (User Management's own gate).</summary>
+    public static bool MayGrantCompanyAdmin(CompanySetupCaller caller, AccessCeilingDto? ceiling) =>
+        caller.IsGroupScope && ceiling is { IsAdmin: true }
+        && ceiling.Roles.Any(r => string.Equals(r.Name, "Admin", StringComparison.OrdinalIgnoreCase) && r.CanAssign)
+        && ceiling.HeldPermissions.Contains("security.manage", StringComparer.Ordinal);
+
     private static CompanySetupPlan Finish(Collector c) =>
         new(c.Problems.Count == 0 && c.Items.All(i => i.Action != V.ActionConflict), c.Items, c.Problems, c.Warnings);
 
@@ -732,8 +749,12 @@ public static class CompanySetupGates
 {
     public const string NameTakenCode = "company_name_taken";
     public const string CrTakenCode = "company_registration_taken";
-    public const string GroupScopeRequiredCode = "group_scope_required";
-    public const string PlatformActivationDisabledCode = "platform_activation_disabled";
+    // Refusal codes the UI maps (Integration Owner clarification 1). The gate's own three codes pass through as-is:
+    // company_limit_reached, account_type_single_company, company_creation_platform_controlled.
+    public const string GroupScopeRequiredCode = "not_group_scope";
+    public const string PlatformActivationDisabledCode = "company_creation_platform_approval";
+    public const string GroupScopeRequiredMessage = "Only a group administrator can create another company.";
+    public const string GroupScopeRequiredMessageAr = "يمكن لمسؤول المجموعة فقط إنشاء شركة جديدة.";
     public const string PlatformActivationDisabledMessage =
         "New companies in this workspace wait for platform activation, and platform activation is currently disabled. Contact your account manager to create a company.";
     public const string PlatformActivationDisabledMessageAr =

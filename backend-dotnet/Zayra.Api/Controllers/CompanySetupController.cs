@@ -63,7 +63,7 @@ public class CompanySetupController : ControllerBase
     {
         if (Gate(write: false) is { } refused) return refused;
         var draft = await _setup.GetDraftAsync(Caller()!, id, ct);
-        return draft is null ? NotFound(new { error = "draft_not_found", message = "Draft not found." }) : Ok(draft);
+        return draft is null ? NotFound(new CompanySetupError("draft_not_found", "Draft not found.", "المسودة غير موجودة.")) : Ok(draft);
     }
 
     [HttpPost("drafts")]
@@ -109,7 +109,7 @@ public class CompanySetupController : ControllerBase
     {
         if (Gate(write: false) is { } refused) return refused;
         var items = await _setup.ReadinessAsync(Caller()!.TenantId, companyId, ct);
-        return items is null ? NotFound(new { error = "company_not_found", message = "Company not found." }) : Ok(items);
+        return items is null ? NotFound(new CompanySetupError("company_not_found", "Company not found.", "الشركة غير موجودة.")) : Ok(items);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
@@ -131,17 +131,11 @@ public class CompanySetupController : ControllerBase
     {
         if (Caller() is not { } caller) return Unauthorized();
         if (!caller.IsGroupScope)
-            return StatusCode(StatusCodes.Status403Forbidden, new
-            {
-                error = CompanySetupGates.GroupScopeRequiredCode,
-                message = "Only a group administrator can create another company.",
-            });
+            return StatusCode(StatusCodes.Status403Forbidden, new CompanySetupError(CompanySetupGates.GroupScopeRequiredCode,
+                CompanySetupGates.GroupScopeRequiredMessage, CompanySetupGates.GroupScopeRequiredMessageAr, Step: 1));
         if (write && !User.HasPermission(ApplyPermission))
-            return StatusCode(StatusCodes.Status403Forbidden, new
-            {
-                error = "permission_required",
-                message = "Creating a company needs the organization setup permission.",
-            });
+            return StatusCode(StatusCodes.Status403Forbidden, new CompanySetupError("permission_required",
+                "Creating a company needs the organization setup permission.", "إنشاء شركة يتطلب صلاحية إعداد المنظمة."));
         return null;
     }
 
