@@ -240,23 +240,15 @@ public class AccessController : ControllerBase
                 if (!targetExists) return BadRequest(new { message = "Choose an active company in this workspace." });
             }
 
-            // Enforce user limit
-            var sub = await _db.TenantSubscriptions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.TenantId == tenantId, cancellationToken);
-
-            if (sub is not null && sub.MaxUsers > 0)
-            {
-                var count = await _db.Users.CountAsync(u => u.TenantId == tenantId && u.IsActive && !u.IsDeleted, cancellationToken);
-                if (count >= sub.MaxUsers)
-                    return UnprocessableEntity(new
-                    {
-                        error = "user_limit_reached",
-                        message = $"You have reached your user limit ({count}/{sub.MaxUsers}). Please upgrade your subscription.",
-                        current = count,
-                        limit = sub.MaxUsers
-                    });
-            }
+            // Enforce user limit (shared with the create-company wizard's company super admin).
+            if (await UserSeatLimit.CheckAsync(_db, tenantId.Value, cancellationToken) is { } seats)
+                return UnprocessableEntity(new
+                {
+                    error = UserSeatLimit.Refusal.Code,
+                    message = seats.Message,
+                    current = seats.Current,
+                    limit = seats.Limit
+                });
 
             var user = await _accessManagement.CreateUserAsync(tenantId.Value, request, GetContext(), cancellationToken);
             return CreatedAtAction(nameof(GetUser), new { userId = user.Id }, user);
@@ -1079,25 +1071,12 @@ public class AccessController : ControllerBase
         if (request.CompanyId.HasValue && !await _db.Companies.AnyAsync(c => c.Id == request.CompanyId.Value && c.TenantId == tenantId && !c.IsDeleted, cancellationToken))
             return BadRequest(new { message = "Company not found in this tenant." });
 
-        // Prevent duplicates
-        var existing = await _db.UserEntityAccesses.FirstOrDefaultAsync(
-            e => e.TenantId == tenantId && e.UserId == request.UserId && e.CompanyId == request.CompanyId && e.Role == request.Role && e.IsActive,
-            cancellationToken);
-        if (existing is not null)
+        // The one grant writer (also used by the create-company wizard): duplicates, token revocation, audit.
+        UserEntityAccess? grant;
+        try { grant = await _accessManagement.CreateEntityGrantAsync(tenantId.Value, request.UserId, request.CompanyId, request.Role, grantMode, GetContext(), cancellationToken); }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.entity_grant_created", "User", request.UserId.ToString()); }
+        if (grant is null)
             return Conflict(new { message = "This entity grant already exists." });
-
-        var grant = new UserEntityAccess
-        {
-            TenantId = tenantId.Value,
-            UserId = request.UserId,
-            CompanyId = request.CompanyId,
-            GrantMode = grantMode,
-            Role = request.Role,
-            CreatedBy = actorId,
-        };
-        _db.UserEntityAccesses.Add(grant);
-        await RevokeActiveRefreshTokensAsync(request.UserId, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
         return CreatedAtAction(nameof(ListEntityGrants), new EntityGrantDto(grant.Id, grant.UserId, grant.CompanyId, grant.Role, grant.CreatedAtUtc, grant.GrantMode));
     }
 
