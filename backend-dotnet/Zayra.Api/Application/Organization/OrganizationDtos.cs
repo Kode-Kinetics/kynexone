@@ -23,7 +23,9 @@ public record CompanyDto(
     string WorkEmailPattern = WorkEmailPatterns.FirstLast,
     // The legal entity's company code in the client's ERP (SAP company code, Oracle balancing segment,
     // D365 legal entity). Journal exports stamp it on every line; empty ⇒ the CR-number fallback.
-    string ErpCompanyCode = "");
+    string ErpCompanyCode = "",
+    // The establishment's Unified National Number (SA "700 number", 10 digits). Empty = not recorded.
+    string UnifiedNationalNumber = "");
 
 public record CompanyRequest(
     [Required, MaxLength(180)] string LegalNameEn,
@@ -45,7 +47,9 @@ public record CompanyRequest(
     bool IsActive = true,
     // null ⇒ leave the stored ERP company code unchanged (callers that predate the field — the CSV
     // importer, the setup assistant — must not wipe it); "" ⇒ clear it.
-    [MaxLength(30), RegularExpression(@"^[A-Za-z0-9._\-]*$", ErrorMessage = "ERP company code may contain only letters, digits, '.', '_' and '-'.")] string? ErpCompanyCode = null);
+    [MaxLength(30), RegularExpression(@"^[A-Za-z0-9._\-]*$", ErrorMessage = "ERP company code may contain only letters, digits, '.', '_' and '-'.")] string? ErpCompanyCode = null,
+    // null ⇒ leave the stored number unchanged (callers that predate the field); "" ⇒ clear it. SA: 10 digits.
+    [MaxLength(20)] string? UnifiedNationalNumber = null);
 
 public record BranchDto(
     Guid Id,
@@ -186,7 +190,8 @@ public static class OrganizationMappings
         company.ApprovalStatus,
         company.EmailDomain,
         company.WorkEmailPattern,
-        company.ErpCompanyCode ?? string.Empty);
+        company.ErpCompanyCode ?? string.Empty,
+        company.UnifiedNationalNumber ?? string.Empty);
 
     public static BranchDto ToDto(this Branch branch) => new(
         branch.Id,

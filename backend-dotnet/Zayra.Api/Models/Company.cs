@@ -26,6 +26,9 @@ public class Company : ITenantOwned
     public string WpsEmployerId { get; set; } = string.Empty;
     public string GosiEmployerId { get; set; } = string.Empty;
     public string QiwaEstablishmentId { get; set; } = string.Empty;
+    /// <summary>The establishment's Unified National Number ("700 number", SA: 10 digits, shown in Qiwa).
+    /// Optional; null = not recorded. Captured by the create-company wizard.</summary>
+    public string? UnifiedNationalNumber { get; set; }
     public string DefaultCurrency { get; set; } = "USD";
     // Company email domain (e.g. "acme.sa") used to auto-derive employee work emails. Empty = not set;
     // employees then fall back to manual work-email entry (never blocks create/import). Format-validated

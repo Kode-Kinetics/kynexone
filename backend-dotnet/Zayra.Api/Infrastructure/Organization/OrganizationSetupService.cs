@@ -50,6 +50,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
+        if (SaudiIdentifierProblem(request, creating: true) is { } saudiProblem) throw new InvalidOperationException(saudiProblem);
         await CompanyEmailDomainRules.EnsureCallerMaySetAsync(_db, tenantId, context.UserId, null, request.EmailDomain, cancellationToken);
         await CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, request.EmailDomain, cancellationToken);
         await EnsureCompanyUnique(tenantId, request.RegistrationNumber, null, cancellationToken);
@@ -79,6 +80,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
+        if (SaudiIdentifierProblem(request, creating: false) is { } saudiProblem) throw new InvalidOperationException(saudiProblem);
         var changedAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
         CompanyDto? result = null;
@@ -161,6 +163,25 @@ public class OrganizationSetupService : IOrganizationSetupService
     private static void ValidateCountryCode(string? countryCode)
     {
         if (CountryCodeProblem(countryCode) is { } problem) throw new InvalidOperationException(problem);
+    }
+
+    /// <summary>
+    /// Saudi establishment identifiers, as a message (null when valid). The MOL establishment number on the
+    /// company (<see cref="Company.WpsEmployerId"/>) is the authority the wage file prefers (design contract
+    /// Decision 10), so a Saudi company created with one must carry a value the wage file would accept —
+    /// <see cref="Payroll.SaudiBankExports.KsaWageFileRules.ValidateEstablishmentId"/>, the same rule the file
+    /// applies. Empty stays allowed here (today's behaviour; the wizard requires it separately). The Unified
+    /// National Number, when given, is 10 digits (<c>ValidateNationalUnifiedNo</c>).
+    /// </summary>
+    public static string? SaudiIdentifierProblem(CompanyRequest request, bool creating)
+    {
+        if (CountryCodeStandard.NormalizeToIso2(request.CountryCode) != "SA") return null;
+        var errors = new List<Payroll.SaudiBankExports.SaudiBankExportIssueDto>();
+        if (creating && !string.IsNullOrWhiteSpace(request.WpsEmployerId))
+            Payroll.SaudiBankExports.KsaWageFileRules.ValidateEstablishmentId(request.WpsEmployerId.Trim(), errors);
+        if (!string.IsNullOrWhiteSpace(request.UnifiedNationalNumber))
+            Payroll.SaudiBankExports.KsaWageFileRules.ValidateNationalUnifiedNo(request.UnifiedNationalNumber.Trim(), required: false, errors);
+        return errors.FirstOrDefault()?.Message;
     }
 
     /// <summary>The form's country-code rule as a message (null when valid), shared with the bulk
@@ -536,6 +557,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         company.WorkEmailPattern = WorkEmailPatterns.Normalize(request.WorkEmailPattern);
         if (request.ErpCompanyCode is not null)
             company.ErpCompanyCode = CleanErpCode(request.ErpCompanyCode);
+        if (request.UnifiedNationalNumber is not null)
+            company.UnifiedNationalNumber = string.IsNullOrWhiteSpace(request.UnifiedNationalNumber) ? null : request.UnifiedNationalNumber.Trim();
         if (applyLifecycle) company.IsActive = request.IsActive;
     }
 
