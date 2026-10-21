@@ -34,6 +34,7 @@ export function GuidedSetupChooser() {
   const [context, setContext] = useState<CompanySetupContext | null>(null);
   const [drafts, setDrafts] = useState<CompanySetupDraftSummary[]>([]);
   const [linkRefused, setLinkRefused] = useState(false);
+  const [redirectTo, setRedirectTo] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -46,7 +47,7 @@ export function GuidedSetupChooser() {
         linkedCompany.current = null;
         if (linked) {
           const target = ctx.manageableCompanies?.find(c => c.id === linked);
-          if (target) { router.replace(completeCompanyHref(target.id, target.openDraftId)); return; }
+          if (target) { setRedirectTo(completeCompanyHref(target.id, target.openDraftId)); return; }
           // Fail closed: a link to a company this caller cannot manage opens nothing in its place.
           setLinkRefused(true);
         }
@@ -58,7 +59,14 @@ export function GuidedSetupChooser() {
     return () => { active = false; };
   }, [attempt, router]);
 
-  if (load === 'loading') return <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Opening Guided Setup…')}</p>;
+  // Setup rewrites a legacy address (mode=starter) to its canonical one first; a redirect issued before that
+  // rewrite lands would be overwritten by it. Leave once the address is canonical.
+  const legacyAddress = !!searchParams?.get('mode');
+  useEffect(() => {
+    if (redirectTo && !legacyAddress) router.replace(redirectTo);
+  }, [redirectTo, legacyAddress, router]);
+
+  if (load === 'loading' || redirectTo) return <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Opening Guided Setup…')}</p>;
   if (load === 'forbidden') return (
     <Notice tone="warning" role="alert">
       <p className="font-semibold">{t('Guided Setup is for administrators and HR managers.')}</p>

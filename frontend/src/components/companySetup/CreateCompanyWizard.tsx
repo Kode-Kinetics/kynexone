@@ -124,7 +124,9 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   const adminRole = ceiling && ceiling !== 'loading' ? ceiling.roles.find(r => r.name.toLowerCase() === 'admin') : undefined;
   // The server's own answer wins when it gives one; otherwise the role ceiling decides.
   const serverGrant = context?.canGrantCompanyAdmin;
-  const adminStepVisible = typeof serverGrant === 'boolean'
+  // Creating a company is group scope only, so a company-scoped caller never appoints there, whatever the
+  // context-wide grant says (it describes their own company, i.e. existing mode).
+  const adminStepVisible = !existing && !context?.isGroupScope ? false : typeof serverGrant === 'boolean'
     ? serverGrant
     : groupAdmin && ceiling !== 'loading' && (adminRole ? adminRole.canAssign : true);
   const adminDecided = !context || typeof serverGrant === 'boolean' || !groupAdmin || ceiling !== 'loading';
