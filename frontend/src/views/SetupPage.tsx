@@ -10,6 +10,7 @@ import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
 import { SetupPathSwitch } from '../components/setup/SetupPathSwitch';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
+import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
 import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
@@ -146,7 +147,7 @@ function CompaniesTab() {
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
-  const { accountType, isGroupScope, setSelectedCompany } = useCompany();
+  const { accountType, isGroupScope } = useCompany();
   const router = useRouter();
   // Company mutations require organization write access. organization.read-only viewers
   // (e.g. HR Officer, Compliance Officer, Recruiter, HR Assistant, Auditor) reach this
@@ -190,12 +191,9 @@ function CompaniesTab() {
     finally { setSummaryLoading(false); }
   };
 
-  const openNew = () => {
-    setEditing(null);
-    setForm({ ...emptyCompany(), defaultCurrency: currencyCode });
-    setError('');
-    setModalOpen(true);
-  };
+  // New companies are created by the guided wizard (company + its setup in one commit, server-side
+  // drafts); this modal edits existing companies only.
+  const openCreate = () => router.push('/setup/new-company');
   const openEdit = (c: CompanyDto) => {
     setEditing(c);
     setForm({ legalNameEn: c.legalNameEn, legalNameAr: c.legalNameAr, tradeName: c.tradeName, countryCode: c.countryCode, jurisdiction: c.jurisdiction, registrationNumber: c.registrationNumber, taxNumber: c.taxNumber, wpsEmployerId: c.wpsEmployerId, gosiEmployerId: c.gosiEmployerId, qiwaEstablishmentId: c.qiwaEstablishmentId, defaultCurrency: c.defaultCurrency, emailDomain: c.emailDomain ?? '', workEmailPattern: c.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN, isActive: c.isActive, erpCompanyCode: c.erpCompanyCode ?? '' });
@@ -258,24 +256,13 @@ function CompaniesTab() {
       setError('Email domain looks invalid. Use a bare domain like "acme.sa" (no "@", scheme, or path), or leave it blank.');
       return;
     }
+    if (!editing) return;
     setSaving(true); setError('');
     try {
-      if (editing) await companiesApi.update(editing.id, form);
-      else {
-        const created = await companiesApi.create(form);
-        window.dispatchEvent(new Event('kynexone:companies-changed'));
-        if (created.isActive && created.approvalStatus === 'Active') {
-          setSelectedCompany(created.id);
-          const setupReturn = encodeURIComponent(`/setup?tab=aiSetup&companyId=${created.id}`);
-          router.push(`/user-management?companyId=${created.id}&openCreate=1&purpose=companyAdmin&returnTo=${setupReturn}`, { scroll: false });
-        }
-      }
+      await companiesApi.update(editing.id, form);
       setModalOpen(false);
       load();
     } catch (err: unknown) {
-      // Preserve the actionable create-guardrail messaging previously owned by the
-      // standalone /companies CreateCompanyModal (account-type / plan-limit / platform-
-      // controlled). Only meaningful on create; edit paths never emit these codes.
       const resp = (err as { response?: { data?: { error?: string; message?: string; field?: string; errors?: Record<string, unknown> } } })?.response?.data;
       if (resp?.error === 'registration_number_taken' || resp?.field === 'registrationNumber')
         setFieldErrors({ registrationNumber: resp.message ?? 'Another company in this workspace already uses this registration number.' });
@@ -284,12 +271,6 @@ function CompaniesTab() {
         setFieldErrors(mapped.fields);
         setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : 'Failed to save. Please try again.'));
       }
-      else if (resp?.error === 'account_type_single_company')
-        setError(resp.message ?? 'This account is a single-company account. Ask your platform administrator to enable the Group account type.');
-      else if (resp?.error === 'company_limit_reached')
-        setError(resp.message ?? 'Your plan’s company limit is reached. Contact your account manager to upgrade.');
-      else if (resp?.error === 'company_creation_platform_controlled')
-        setError(resp.message ?? 'Company creation for this account is managed by the platform. Contact your account manager.');
       else setError(resp?.message ?? 'Failed to save. Please try again.');
     }
     finally { setSaving(false); }
@@ -329,6 +310,7 @@ function CompaniesTab() {
 
   return (
     <>
+      {canWrite && isGroupScope && <CompanyDraftsCard />}
       {missingCountry.length > 0 && (
         <div role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
           <p className="font-semibold">
@@ -350,8 +332,8 @@ function CompaniesTab() {
       )}
       <TableShell
         columns={[msg('Legal Name'), msg('Trade Name'), msg('Country'), msg('Currency'), msg('Status')]}
-        onAdd={canWrite && isGroupScope && (accountType === 'Group' || items.length === 0) ? openNew : undefined}
-        addLabel={msg('Add Company')}
+        onAdd={canWrite && isGroupScope && (accountType === 'Group' || items.length === 0) ? openCreate : undefined}
+        addLabel={msg('Create company')}
         loading={loading}
         empty={items.length === 0}
         emptyLabel={msg('No companies yet')}
