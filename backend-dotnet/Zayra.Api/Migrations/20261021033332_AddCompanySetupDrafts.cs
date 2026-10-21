@@ -8,6 +8,11 @@ namespace Zayra.Api.Migrations
     /// <inheritdoc />
     public partial class AddCompanySetupDrafts : Migration
     {
+        /// <summary>The 128 KiB bound on a draft body. Postgres-only (a jsonb cast), so it is not in the EF model,
+        /// whose SQLite/in-memory test databases cannot parse it; the Postgres test fixture applies this same text.</summary>
+        public const string AddBodySizeCheck =
+            "ALTER TABLE company_setup_drafts ADD CONSTRAINT ck_company_setup_drafts__body_size CHECK (octet_length(body::text) <= 131072);";
+
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -37,7 +42,6 @@ namespace Zayra.Api.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_company_setup_drafts", x => x.id);
-                    table.CheckConstraint("ck_company_setup_drafts__body_size", "octet_length(body::text) <= 131072");
                     table.CheckConstraint("ck_company_setup_drafts__status", "status IN ('Open', 'Submitted', 'Discarded')");
                     table.CheckConstraint("ck_company_setup_drafts__step", "step BETWEEN 1 AND 7");
                     table.CheckConstraint("ck_company_setup_drafts__submitted_pair", "(status = 'Submitted') = (submitted_at_utc IS NOT NULL)");
@@ -67,6 +71,8 @@ namespace Zayra.Api.Migrations
                 table: "company_setup_drafts",
                 columns: new[] { "tenant_id", "status", "updated_at_utc" },
                 descending: new[] { false, false, true });
+
+            migrationBuilder.Sql(AddBodySizeCheck);
 
             migrationBuilder.CreateIndex(
                 name: "IX_company_setup_drafts_created_by_user_id",

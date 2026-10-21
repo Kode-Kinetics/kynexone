@@ -3028,14 +3028,15 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // Create-company wizard drafts. Tenant-owned (RLS shape a; live bridge: the ITenantOwned query filter).
         // body is jsonb because nobody queries it (the wizard's own shape); the CHECKs hold the state machine's
-        // vocabulary, the step range, the 128 KiB bound and the Submitted ⇔ submitted_at pair.
+        // vocabulary, the step range and the Submitted ⇔ submitted_at pair. The 128 KiB bound on body is
+        // Postgres-only DDL (octet_length over a jsonb cast), so it lives in the migration
+        // (AddCompanySetupDrafts.AddBodySizeCheck) and the Postgres test fixture, not in the model.
         modelBuilder.Entity<CompanySetupDraftRecord>(entity =>
         {
             entity.ToTable("company_setup_drafts", t =>
             {
                 t.HasCheckConstraint("ck_company_setup_drafts__status", "status IN ('Open', 'Submitted', 'Discarded')");
                 t.HasCheckConstraint("ck_company_setup_drafts__step", "step BETWEEN 1 AND 7");
-                t.HasCheckConstraint("ck_company_setup_drafts__body_size", "octet_length(body::text) <= 131072");
                 t.HasCheckConstraint("ck_company_setup_drafts__version", "version >= 1");
                 t.HasCheckConstraint("ck_company_setup_drafts__submitted_pair",
                     "(status = 'Submitted') = (submitted_at_utc IS NOT NULL)");

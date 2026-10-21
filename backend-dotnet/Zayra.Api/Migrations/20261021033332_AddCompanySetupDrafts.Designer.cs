@@ -7523,7 +7523,6 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("company_setup_drafts", null, t =>
                         {
-                            t.HasCheckConstraint("ck_company_setup_drafts__body_size", "octet_length(body::text) <= 131072");
 
                             t.HasCheckConstraint("ck_company_setup_drafts__status", "status IN ('Open', 'Submitted', 'Discarded')");
 
