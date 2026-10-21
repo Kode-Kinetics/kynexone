@@ -166,7 +166,11 @@ CompanySetupContext may carry canGrantCompanyAdmin?: bool (same role ceiling as 
 CompanySetupResult { companyId, created: Record<area, int>, reused: Record<area, int>,
   readiness: ReadinessItem[], replayed: bool }
 ReadinessItem { key, label, labelAr?, status: "done"|"todo"|"recommended",
-  scope: "company"|"workspace", href }
+  scope: "company"|"workspace", href, userId?: Guid }
+  userId: only on the companyAdmin item while that admin has not signed in. The success screen's
+  "Send sign-in link" posts it to /api/access/users/{userId}/password-reset-link (security.manage):
+  emailed, or handed back once to copy and pass on through the company's own channel. A caller
+  without security.manage gets the User Management link (href) instead.
 ```
 
 ## Schema (one migration, owned by the backend builder)

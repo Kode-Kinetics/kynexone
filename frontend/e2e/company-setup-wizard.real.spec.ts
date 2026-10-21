@@ -90,6 +90,8 @@ async function companiesUsed(token: string): Promise<number> {
 
 let starterCompany: { id: string; legalNameEn: string };
 let coAdminId: string;
+/** The single-use sign-in link the EN journey's "Send sign-in link" handed back (no SMTP on a disposable stack). */
+let invitedSignInLink: string | undefined;
 
 test.describe.configure({ mode: 'serial' });
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1440, height: 1000 } });
@@ -261,8 +263,23 @@ test('EN: the seven steps create the company, its setup and an invited super adm
   await shot(page, info, 'en-7-review');
   await create.click();
   await expectCreated(page, t, EN_CO);
-  await expect(page.getByTestId('readiness-companyAdmin')).toBeVisible();
+  const adminRow = page.getByTestId('readiness-companyAdmin');
+  await expect(adminRow).toContainText(`Send ${INVITED.fullName} their sign-in link`);
   await shot(page, info, 'en-8-created');
+  // One click sends the invited super admin their sign-in link. This stack has no SMTP, so the server hands the link
+  // back once, here, to be passed on through the company's own channel.
+  await adminRow.getByRole('button', { name: t('Send sign-in link'), exact: true }).click();
+  const linkOutcome = adminRow.getByTestId('sign-in-link-result');
+  await expect(linkOutcome).toBeVisible({ timeout: 20_000 });
+  const emailed = (await linkOutcome.getAttribute('data-emailed')) === 'true';
+  if (emailed) {
+    await expect(linkOutcome).toContainText(t('Emailed to {email}. The link works once and expires in 1 hour.', { email: INVITED.email }));
+  } else {
+    await expect(linkOutcome).toContainText(t('Nothing was emailed. Copy this sign-in link and send it to {email} through the company’s own channel. It works once and expires in 1 hour.', { email: INVITED.email }));
+    invitedSignInLink = await adminRow.getByTestId('sign-in-link-url').inputValue();
+    expect(invitedSignInLink).toMatch(/#token=/);
+  }
+  await shot(page, info, 'en-8-sign-in-link');
 
   // The database agrees with the screen: one company with this CR, the plan usage moved by one.
   const rows = await companiesWithCr(owner, EN_CO.cr);
@@ -443,9 +460,11 @@ test('the invited company super admin signs in and sees only their company', asy
   const users = items(ok(await call('GET', `/api/access/users?search=${encodeURIComponent(INVITED.email)}`, { token: owner }), 'find invited admin'));
   const invited = users.find(u => String(u.email).toLowerCase() === INVITED.email);
   expect(invited?.roles).toContain('Admin');
-  // The product's own hand-over: a single-use sign-in link the group admin passes on (no password typed by them).
-  const link = ok(await call('POST', `/api/access/users/${invited.id}/password-reset-link`, { token: owner }), 'reset link') as any;
-  const token = decodeURIComponent(new URL(link.resetUrl).hash.replace(/^#token=/, ''));
+  // The product's own hand-over: the single-use sign-in link the group admin sent from the success screen (no
+  // password typed by them). Only when that one was emailed is a fresh one issued here.
+  const resetUrl = invitedSignInLink
+    ?? (ok(await call('POST', `/api/access/users/${invited.id}/password-reset-link`, { token: owner }), 'reset link') as any).resetUrl;
+  const token = decodeURIComponent(new URL(resetUrl).hash.replace(/^#token=/, ''));
   const newPassword = `Sa${randomBytes(8).toString('hex')}!aA9`;
   ok(await call('POST', '/api/auth/reset-password', { body: { resetToken: token, newPassword, tenantSlug: SLUG } }), 'set password');
 

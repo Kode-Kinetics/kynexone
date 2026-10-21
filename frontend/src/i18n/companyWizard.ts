@@ -314,6 +314,15 @@ const ar: Record<string, string> = {
   "These drafts are saved. Resume one to carry on from the step where it stopped.": "هذه المسودات محفوظة. استأنف إحداها لتكمل من الخطوة التي توقفت عندها.",
   "Unnamed": "بلا اسم",
   "None yet": "لا يوجد بعد",
+  "Send sign-in link": "إرسال رابط تسجيل الدخول",
+  "Sending sign-in link…": "جارٍ إرسال رابط تسجيل الدخول…",
+  "Emailed to {email}. The link works once and expires in 1 hour.": "أُرسل الرابط بالبريد إلى {email}. يعمل الرابط مرة واحدة وتنتهي صلاحيته خلال ساعة.",
+  "Nothing was emailed. Copy this sign-in link and send it to {email} through the company’s own channel. It works once and expires in 1 hour.": "لم يُرسَل أي بريد. انسخ رابط تسجيل الدخول هذا وأرسله إلى {email} عبر قنوات الشركة الخاصة. يعمل الرابط مرة واحدة وتنتهي صلاحيته خلال ساعة.",
+  "Single-use sign-in link": "رابط تسجيل دخول لمرة واحدة",
+  "Copy link": "نسخ الرابط",
+  "Copied": "تم النسخ",
+  "The sign-in link could not be created. Try again, or open User Management.": "تعذر إنشاء رابط تسجيل الدخول. حاول مرة أخرى، أو افتح إدارة المستخدمين.",
+  "Open User Management": "فتح إدارة المستخدمين",
 
   // Field messages
   "Choose the company to copy from.": "اختر الشركة التي يُنسخ منها.",

@@ -130,6 +130,9 @@ export interface ReadinessItem {
   status: 'done' | 'todo' | 'recommended';
   scope: 'company' | 'workspace';
   href: string;
+  /** Only on the `companyAdmin` item while that admin has not signed in: the login to send a single-use sign-in link to
+   *  (`usersApi.issuePasswordResetLink`). Absent everywhere else. */
+  userId?: string | null;
 }
 
 /** Every refusal from /api/company-setup. `field` is dotted lower-camel with numeric indexes (`branches.0.code`). */

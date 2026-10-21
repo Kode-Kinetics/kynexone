@@ -30,9 +30,15 @@ interface BootOptions {
   context?: Partial<CompanySetupContext>;
   /** Admin role ceiling says the viewer cannot assign Admin. */
   adminRefused?: boolean;
+  /** The viewer holds security.manage, the permission that issues sign-in links. */
+  canIssueLinks?: boolean;
+  /** How POST /api/access/users/{id}/password-reset-link answers. */
+  resetLink?: 'emailed' | 'disclosed' | 'refused';
 }
 
 const sister = { id: 'sister-1', legalNameEn: 'Sister Trading KSA', countryCode: 'SA' };
+const INVITED_USER_ID = 'u-invited-admin';
+const RESET_URL = 'http://127.0.0.1:5174/reset-password?workspace=wizard-fixture#token=single-use-fixture-token';
 
 /** Persists across page loads and sign-out, like the server would. */
 class ContractServer {
@@ -41,6 +47,7 @@ class ContractServer {
   commits: { key: string | undefined; draftId: string; version: number }[] = [];
   dryRuns: CompanySetupDraftBody[] = [];
   results = new Map<string, CompanySetupResult>();
+  resetLinks: string[] = [];
   errors: string[] = [];
   sequence = 0;
   constructor(public options: BootOptions) {}
@@ -171,7 +178,10 @@ class ContractServer {
         readiness: [
           { key: 'glMapping', label: 'GL mapping', labelAr: 'ربط دفتر الأستاذ', status: 'todo', scope: 'company', href: '/setup?tab=glMapping&companyId=new-company' },
           { key: 'bankWps', label: 'Bank and WPS settings (before first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/setup?tab=gccSettings&companyId=new-company' },
-          { key: 'companyAdmin', label: 'Company super admin', labelAr: 'المسؤول الأعلى للشركة', status: draft.body.companyAdmin.mode === 'groupOnly' ? 'recommended' : 'done', scope: 'company', href: '/user-management?companyId=new-company' },
+          draft.body.companyAdmin.mode === 'invite'
+            // An invited admin has not signed in yet: the server names the login to send the sign-in link to.
+            ? { key: 'companyAdmin', label: `Send ${draft.body.companyAdmin.fullNameEn} their sign-in link`, labelAr: `أرسل رابط تسجيل الدخول إلى ${draft.body.companyAdmin.fullNameEn}`, status: 'todo', scope: 'company', href: '/user-management?companyId=new-company', userId: INVITED_USER_ID }
+            : { key: 'companyAdmin', label: 'Company super admin', labelAr: 'المسؤول الأعلى للشركة', status: draft.body.companyAdmin.mode === 'groupOnly' ? 'recommended' : 'done', scope: 'company', href: '/user-management?companyId=new-company' },
           { key: 'smtp', label: 'Outgoing email (SMTP)', labelAr: 'البريد الصادر (SMTP)', status: 'todo', scope: 'workspace', href: '/setup?tab=emailConfig' },
         ],
       };
@@ -189,7 +199,8 @@ function me(server: ContractServer) {
   return {
     id: 'u-admin', tenantId: 'wizard-tenant', tenantSlug: 'wizard-fixture', fullName: 'Group Owner', email: 'owner@wizard.test',
     roles,
-    permissions: ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'users.read', 'users.write'],
+    permissions: ['organization.read', 'organization.write', 'organization.setup.apply', 'dashboard.read', 'users.read', 'users.write',
+      ...(server.options.canIssueLinks ? ['security.manage'] : [])],
     accountType: 'Group', isGroupScope: persona !== 'companyAdmin',
     companies: [{ id: sister.id, name: sister.legalNameEn, code: 'SIS', countryCode: 'SA', isActive: true }],
   };
@@ -219,6 +230,17 @@ async function boot(page: Page, options: BootOptions = {}, server = new Contract
       userId: 'u-admin', isAdmin: true, heldPermissions: me(server).permissions,
       roles: [{ roleId: 'r-admin', name: 'Admin', canAssign: !server.options.adminRefused, assignRefusalEn: server.options.adminRefused ? 'Only an administrator can give the Admin role.' : null }],
     });
+    const resetLink = p.match(/^\/api\/access\/users\/([^/]+)\/password-reset-link$/);
+    if (resetLink && request.method() === 'POST') {
+      server.resetLinks.push(resetLink[1]);
+      const mode = server.options.resetLink ?? 'disclosed';
+      if (mode === 'refused') return reply({ message: 'You cannot issue a sign-in link for this user.' }, 403);
+      return reply({
+        userId: resetLink[1], email: 'sara@riyadhtrading.sa', expiresAtUtc: '2099-01-01T01:00:00Z',
+        emailDeliveryConfigured: mode === 'emailed', emailSent: mode === 'emailed', resetUrl: mode === 'emailed' ? null : RESET_URL,
+        handOverInPerson: false, message: mode === 'emailed' ? 'Reset link accepted by the mail server.' : 'No email delivery is configured for this workspace.',
+      });
+    }
     if (p === '/api/access/users') return reply(paged([
       { id: 'u-sara', email: 'sara@riyadhtrading.sa', fullName: 'Sara Al-Qahtani', status: 'Active', isActive: true, isLocked: false, mustChangePassword: false, roles: ['HR Manager'], accessMode: 'Standard', createdAtUtc: '2026-01-01T00:00:00Z', phoneNumber: '' },
     ]));
@@ -592,4 +614,74 @@ for (const locale of ['en', 'ar'] as const) test(`the app shell stays in its pla
     await expectStep(page, t, 'Organisation');
     await check('4-organisation');
   }
+});
+
+/** Steps 1-7 with an invited company super admin, through Create, to the success screen. */
+async function createWithInvitedAdmin(page: Page, loc: Locale = 'en') {
+  const t = T(loc);
+  await openWizardFromCompanies(page, t);
+  await startAndFillCompany(page, t);
+  for (let i = 0; i < 4; i++) await next(page, t);
+  await expectStep(page, t, 'Company super admin');
+  await page.getByLabel(t('Invite a new company super admin')).check();
+  await page.getByLabel(t('Full name (English)')).fill('Sara Al-Qahtani');
+  await page.getByLabel(t('Official work email')).fill('sara@riyadhtrading.sa');
+  await next(page, t);
+  await expectStep(page, t, 'Review & create');
+  await page.getByRole('button', { name: t('Create company'), exact: true }).click();
+  await expect(page.getByTestId('create-company-success')).toBeVisible();
+  const row = page.getByTestId('readiness-companyAdmin');
+  await expect(row).toContainText(loc === 'ar' ? 'أرسل رابط تسجيل الدخول إلى Sara Al-Qahtani' : 'Send Sara Al-Qahtani their sign-in link');
+  return row;
+}
+
+for (const [loc, delivery] of [['en', 'disclosed'], ['ar', 'disclosed'], ['en', 'emailed'], ['ar', 'emailed']] as const) {
+  test(`the success screen sends the invited super admin their sign-in link in one click: ${delivery} (${loc})`, async ({ page, context }, info) => {
+    const t = T(loc);
+    if (delivery === 'disclosed') await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    const { server, pageErrors } = await boot(page, { locale: loc, canIssueLinks: true, resetLink: delivery });
+    const row = await createWithInvitedAdmin(page, loc);
+    // One clear next action, not a trip to User Management.
+    await expect(row.getByRole('link', { name: new RegExp(t('Open')) })).toHaveCount(0);
+    await row.getByRole('button', { name: t('Send sign-in link'), exact: true }).click();
+    const outcome = row.getByTestId('sign-in-link-result');
+    await expect(outcome).toBeVisible();
+    expect(server.resetLinks).toEqual([INVITED_USER_ID]);
+    if (delivery === 'emailed') {
+      await expect(outcome).toHaveAttribute('data-emailed', 'true');
+      await expect(outcome).toContainText(t('Emailed to {email}. The link works once and expires in 1 hour.', { email: 'sara@riyadhtrading.sa' }));
+      await expect(row.getByTestId('sign-in-link-url')).toHaveCount(0);
+    } else {
+      await expect(outcome).toHaveAttribute('data-emailed', 'false');
+      await expect(outcome).toContainText(t('Nothing was emailed. Copy this sign-in link and send it to {email} through the company’s own channel. It works once and expires in 1 hour.', { email: 'sara@riyadhtrading.sa' }));
+      await expect(row.getByTestId('sign-in-link-url')).toHaveValue(RESET_URL);
+      await expect(row.getByTestId('sign-in-link-url')).toHaveAttribute('dir', 'ltr');
+      await row.getByRole('button', { name: t('Copy link'), exact: true }).click();
+      await expect(row.getByRole('button', { name: t('Copied'), exact: true })).toBeVisible();
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(RESET_URL);
+    }
+    await contained(page);
+    await shot(page, info, `${loc}-8-sign-in-link-${delivery}`);
+    expect(server.errors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('a viewer who cannot issue sign-in links gets the User Management link instead', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page, { canIssueLinks: false });
+  const row = await createWithInvitedAdmin(page);
+  await expect(row.getByRole('button', { name: t('Send sign-in link'), exact: true })).toHaveCount(0);
+  await expect(row.getByRole('link', { name: new RegExp(t('Open')) })).toHaveAttribute('href', '/user-management?companyId=new-company');
+  expect(server.resetLinks).toEqual([]);
+});
+
+test('a refused sign-in link says so and keeps the way to User Management', async ({ page }) => {
+  const t = T('en');
+  await boot(page, { canIssueLinks: true, resetLink: 'refused' });
+  const row = await createWithInvitedAdmin(page);
+  await row.getByRole('button', { name: t('Send sign-in link'), exact: true }).click();
+  await expect(row.getByRole('alert')).toContainText(t('The sign-in link could not be created. Try again, or open User Management.'));
+  await expect(row.getByRole('link', { name: t('Open User Management'), exact: true })).toHaveAttribute('href', '/user-management?companyId=new-company');
+  await expect(row.getByRole('button', { name: t('Send sign-in link'), exact: true })).toBeEnabled();
 });
