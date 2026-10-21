@@ -111,6 +111,40 @@ public class CompanySetupUnitTests
         if (conflict) issue!.Code.Should().Be(WpsEstablishmentAuthority.ConflictCode);
     }
 
+    [Theory]
+    [InlineData("7-1234567", "71234567", null, true, "7-1234567")]     // hyphen only differs: the company's spelling is filed
+    [InlineData("71234567", "7-1234567", null, true, "71234567")]
+    [InlineData("7-1234567", null, "7 1234567", true, "7-1234567")]    // a space is not a different establishment
+    [InlineData("7-1234567", "7 - 1234567", "71234567", true, "7-1234567")]
+    [InlineData("7-1234567", null, "71234567", false, "7-1234567")]    // outside KSA too
+    [InlineData(null, "7-1234567", "71234567", true, "7-1234567")]     // no company value: today's rule, the bank value is filed
+    public void Establishment_ids_that_differ_only_by_spaces_or_hyphens_agree(string? company, string? bank, string? agent, bool ksa, string expected)
+    {
+        var (id, issue) = WpsEstablishmentAuthority.Resolve(company, bank, agent, ksa);
+        issue.Should().BeNull();
+        id.Should().Be(expected, "the file carries the recorded value unchanged, not the comparison key");
+    }
+
+    [Theory]
+    [InlineData("7-1234567", "7-1234568", null)]   // a different digit
+    [InlineData("7-1234567", "07-1234567", null)]  // a leading zero is a character, not formatting
+    [InlineData("7-1234567", "7_1234567", null)]   // only spaces and hyphens are ignored
+    [InlineData("7-1234567", "7.1234567", null)]
+    [InlineData("7-1234567", null, "7/1234567")]
+    public void Any_other_difference_still_refuses_the_wage_file(string company, string? bank, string? agent)
+    {
+        var (id, issue) = WpsEstablishmentAuthority.Resolve(company, bank, agent, isKsa: true);
+        id.Should().BeNull();
+        issue!.Code.Should().Be(WpsEstablishmentAuthority.ConflictCode);
+    }
+
+    [Fact]
+    public void The_comparison_key_strips_spaces_and_hyphens_and_nothing_else()
+    {
+        WpsEstablishmentAuthority.ComparisonKey(" 7 - 12-34 567 ").Should().Be("71234567");
+        WpsEstablishmentAuthority.ComparisonKey("7_1.2/3").Should().Be("7_1.2/3");
+    }
+
     [Fact]
     public void A_saudi_company_must_carry_a_valid_mol_number_at_create()
     {

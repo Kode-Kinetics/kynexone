@@ -13,6 +13,10 @@ namespace Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 ///     refuses when they differ; other countries take the GCC row.</item>
 /// </list>
 /// Pure: the caller loads the three values. Null id with null conflict = nothing recorded (the caller refuses).
+///
+/// <para>Two ids are the same establishment when they match after removing spaces and hyphens, and nothing else:
+/// Qiwa prints "7-1234567" and people type "71234567". The comparison never rewrites the id — the file carries the
+/// winning value exactly as it was recorded. Letters, zeros and every other character still count.</para>
 /// </summary>
 public static class WpsEstablishmentAuthority
 {
@@ -27,21 +31,27 @@ public static class WpsEstablishmentAuthority
 
         if (company is not null)
         {
-            if (mol is not null && !string.Equals(mol, company, StringComparison.Ordinal))
+            if (mol is not null && !SameEstablishment(mol, company))
                 return (null, Mismatch(company, mol, "the Saudi bank-file settings"));
-            if (agent is not null && !string.Equals(agent, company, StringComparison.Ordinal))
+            if (agent is not null && !SameEstablishment(agent, company))
                 return (null, Mismatch(company, agent, "the WPS employer ID in Setup → Compliance"));
             return (company, null);
         }
 
         if (!isKsa) return (agent, null);
-        if (mol is not null && agent is not null && !string.Equals(mol, agent, StringComparison.Ordinal))
+        if (mol is not null && agent is not null && !SameEstablishment(mol, agent))
             return (null, new(ConflictCode,
                 $"Two different establishment IDs are recorded for this company: {mol} in the Saudi bank-file settings and {agent} "
                 + "as the WPS employer ID in Setup → Compliance. Make them the same (the MOL establishment ID shown in Qiwa), then try again.",
                 null, "molEstablishmentId"));
         return (mol ?? agent, null);
     }
+
+    /// <summary>The comparison key: the id with spaces and hyphens removed. Used only to compare, never written.</summary>
+    public static string ComparisonKey(string value) => value.Replace(" ", string.Empty).Replace("-", string.Empty);
+
+    /// <summary>Whether two recorded ids name the same establishment (see <see cref="ComparisonKey"/>).</summary>
+    public static bool SameEstablishment(string a, string b) => string.Equals(ComparisonKey(a), ComparisonKey(b), StringComparison.Ordinal);
 
     private static SaudiBankExportIssueDto Mismatch(string company, string other, string where) =>
         new(ConflictCode,
