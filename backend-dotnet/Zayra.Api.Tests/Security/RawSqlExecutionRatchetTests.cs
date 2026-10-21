@@ -64,11 +64,14 @@ public class RawSqlExecutionRatchetTests
         ["Controllers/EmployeesController.cs"] = 3,
         // Parameterized pg_advisory_xact_lock only: SHA-256("SETUP:" + authenticated tenant ID),
         // held until the setup transaction commits or rolls back. It writes no rows and cannot
-        // widen tenant/company scope; all record access remains in ApplyCore's scoped queries.
+        // widen tenant/company scope. Moved out of SetupAssistantController (1 -> 0) into the one
+        // shared helper, so Setup Studio's Apply, the company form (CompanyEndpoints.CreateAsync) and
+        // the create-company wizard's commit take the SAME lock. Net raw-SQL sites unchanged (1 -> 1).
         // SetupConfigurationApplyTests.ConcurrentIdenticalApplySerializesPoliciesAndEligibility
         // proves serialization; ConcurrentTenantsWithIdenticalCodesKeepPoliciesAndEligibilityIsolated
-        // proves the guarded setup writes remain separate for tenants sharing the same codes.
-        ["Controllers/SetupAssistantController.cs"] = 1,
+        // proves the guarded setup writes remain separate for tenants sharing the same codes;
+        // CompanySetupPostgresTests.ConcurrentCommits_* proves the wizard's commit serializes on it.
+        ["Infrastructure/Setup/SetupTenantLock.cs"] = 1,
         // Parameterized transaction-scoped advisory lock only: the key is derived from the
         // authenticated tenant ID and serializes overlapping statutory-rule mutations. It writes
         // no table row; StatutoryRuleSafeguardPostgresTests.ConcurrentOverlappingCreatesProduceOneVersionAndOneConflict
