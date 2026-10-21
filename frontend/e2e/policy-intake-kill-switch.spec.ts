@@ -74,8 +74,9 @@ test('flag off: Setup Studio shows no policy library, guide or upload', async ({
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('heading', { level: 2, name: 'Policy library', exact: true })).toHaveCount(0);
 
-  // Guided Setup: manual company setup works; the policy guide, upload and library entry are gone.
-  await page.getByRole('button', { name: 'Guided Setup', exact: true }).click();
+  // Policy starter (the old Setup Studio, under Configuration Center since Guided Setup became the company
+  // chooser): manual setup works; the policy guide, upload and library entry are gone.
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company');
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save for later', exact: true })).toBeVisible();
@@ -97,7 +98,7 @@ test('flag on: the policy entry points come back', async ({ page }) => {
   await page.goto(studioUrl);
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: 'Policy library', exact: true }).first()).toBeVisible();
-  await page.getByRole('button', { name: 'Guided Setup', exact: true }).click();
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company');
   await expect(page.getByRole('button', { name: 'Add your HR policy', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Policy library / updates', exact: true })).toBeVisible();
 });

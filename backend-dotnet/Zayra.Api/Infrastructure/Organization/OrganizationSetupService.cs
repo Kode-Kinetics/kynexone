@@ -88,7 +88,9 @@ public class OrganizationSetupService : IOrganizationSetupService
 
         async Task<bool> UpdateOnceAsync(CancellationToken ct)
         {
-            _db.ChangeTracker.Clear();
+            // Cleared for this command's own retries only. Inside a caller's transaction (the setup wizard's commit,
+            // see ExecuteCompanyMutationAsync) the caller's tracked rows are part of the same unit of work.
+            if (_db.Database.CurrentTransaction is null) _db.ChangeTracker.Clear();
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
             if (tenant is null) return true;
@@ -101,6 +103,10 @@ public class OrganizationSetupService : IOrganizationSetupService
             if (request.IsActive != company.IsActive)
                 throw new InvalidOperationException(
                     "Company activation cannot be changed through the general editor. Use the controlled company-status workflow.");
+            // The MOL establishment number is the wage file's authority (design Decision 10): a CHANGED value must be one
+            // the file accepts, as on create. An unchanged value saved before the rule is left alone.
+            if (SaudiEstablishmentChangeProblem(request, company.WpsEmployerId) is { } molProblem)
+                throw new InvalidOperationException(molProblem);
 
             await EnsureCompanyUnique(tenantId, request.RegistrationNumber, id, ct);
             var priorEmailDomain = company.EmailDomain ?? string.Empty;
@@ -181,6 +187,20 @@ public class OrganizationSetupService : IOrganizationSetupService
             Payroll.SaudiBankExports.KsaWageFileRules.ValidateEstablishmentId(request.WpsEmployerId.Trim(), errors);
         if (!string.IsNullOrWhiteSpace(request.UnifiedNationalNumber))
             Payroll.SaudiBankExports.KsaWageFileRules.ValidateNationalUnifiedNo(request.UnifiedNationalNumber.Trim(), required: false, errors);
+        return errors.FirstOrDefault()?.Message;
+    }
+
+    /// <summary>
+    /// The update half of <see cref="SaudiIdentifierProblem"/>: a Saudi company's MOL establishment number, validated
+    /// with the wage file's own rule when it changes to a non-empty value (spaces ignored). Null when valid or unchanged.
+    /// </summary>
+    public static string? SaudiEstablishmentChangeProblem(CompanyRequest request, string? storedWpsEmployerId)
+    {
+        if (CountryCodeStandard.NormalizeToIso2(request.CountryCode) != "SA") return null;
+        var next = (request.WpsEmployerId ?? string.Empty).Trim();
+        if (next.Length == 0 || string.Equals(next, (storedWpsEmployerId ?? string.Empty).Trim(), StringComparison.Ordinal)) return null;
+        var errors = new List<Payroll.SaudiBankExports.SaudiBankExportIssueDto>();
+        Payroll.SaudiBankExports.KsaWageFileRules.ValidateEstablishmentId(next, errors);
         return errors.FirstOrDefault()?.Message;
     }
 
@@ -642,7 +662,9 @@ public class OrganizationSetupService : IOrganizationSetupService
         Func<CancellationToken, Task<bool>> operation,
         CancellationToken cancellationToken)
     {
-        if (!_db.Database.IsRelational())
+        // A caller that already holds a transaction (the setup wizard's commit, under the tenant setup lock) owns
+        // atomicity and retries: this mutation joins it instead of opening a nested one, which Npgsql refuses.
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
         {
             await operation(cancellationToken);
             return;

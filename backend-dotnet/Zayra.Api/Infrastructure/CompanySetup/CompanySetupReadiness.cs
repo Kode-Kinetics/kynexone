@@ -119,11 +119,13 @@ public static class CompanySetupReadiness
         return items;
     }
 
-    /// <summary>The company-admin mode the wizard draft that created this company asked for, if it was created by one.</summary>
+    /// <summary>The company-admin mode the latest wizard draft submitted for this company asked for (the one that created
+    /// it, or a later existing-company completion), if any.</summary>
     private static async Task<string?> RequestedAdminModeAsync(ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct)
     {
         var body = await db.CompanySetupDrafts.AsNoTracking()
             .Where(d => d.TenantId == tenantId && d.ResultCompanyId == companyId && d.Status == CompanySetupDraftStatuses.Submitted)
+            .OrderByDescending(d => d.SubmittedAtUtc).ThenByDescending(d => d.Id)
             .Select(d => d.Body).FirstOrDefaultAsync(ct);
         if (body is null) return null;
         var row = new CompanySetupDraftRecord { Body = body };

@@ -24,12 +24,40 @@ export interface CompanySetupContext {
   gradesCurrency?: string | null;
   /** Whether this caller may appoint a company super admin. Absent on older servers: fall back to the role ceiling. */
   canGrantCompanyAdmin?: boolean | null;
+  /**
+   * Addendum A5: the active companies this caller may complete setup for — every active company for a group-scope
+   * admin, only their own for a company super admin. Absent on a server without existing mode: the chooser then
+   * offers create only.
+   */
+  manageableCompanies?: ManageableCompany[] | null;
+}
+
+/** One row of the Guided Setup chooser (Addendum A5). */
+export interface ManageableCompany {
+  id: string;
+  legalNameEn: string;
+  legalNameAr?: string | null;
+  countryCode: string;
+  /** Server-computed readiness, e.g. 5 of 9 done. */
+  readinessDone: number;
+  readinessTotal: number;
+  /** The one open existing-mode draft for this company (A1), when someone has started one. */
+  openDraftId?: string | null;
 }
 
 export type StartFrom = 'defaults' | 'copy';
 export type CompanyAdminMode = 'invite' | 'existing' | 'groupOnly';
 
-export interface CompanySetupCompany {
+/**
+ * Existing mode (A9): what the prefill read a row or block from, field by field. Opaque: the screen never reads or
+ * edits it, and every edit, autosave and resume must carry it back unchanged (spread the row, never rebuild it). The
+ * planner compares draft, baseline and database, so an edit made elsewhere since the draft started is never
+ * overwritten. Only "Keep mine" on a `changed_since_draft_started` problem refreshes one field of it.
+ */
+export type Baseline = Record<string, string | null>;
+export interface WithBaseline { baseline?: Baseline | null }
+
+export interface CompanySetupCompany extends WithBaseline {
   legalNameEn: string;
   legalNameAr?: string;
   tradeName?: string;
@@ -46,30 +74,41 @@ export interface CompanySetupCompany {
   erpCompanyCode?: string;
   /** "YYYY-MM" */
   firstPayrollMonth: string;
+  /**
+   * Existing mode (A4), server-written on the prefill and on every draft read: the company's cutover status now.
+   * Anything but "Planned" shows the first payroll month read-only up front; null = no cutover yet. Ignored on input.
+   */
+  cutoverStatus?: 'Planned' | 'Active' | 'Closed' | null;
 }
 
-export interface CompanySetupLocation {
+/**
+ * Existing mode (A2): a prefilled row that is already in the database carries its id, so the planner can tell
+ * "edit this row" from "a new row with the same code". New rows have none.
+ */
+export interface ExistingRow { existingId?: string | null }
+
+export interface CompanySetupLocation extends ExistingRow, WithBaseline {
   code: string; nameEn: string; nameAr?: string;
   latitude?: number | null; longitude?: number | null; radiusMeters?: number | null;
 }
 
-export interface CompanySetupBranch {
+export interface CompanySetupBranch extends ExistingRow, WithBaseline {
   code: string; nameEn: string; nameAr?: string; city: string; timeZoneId: string; isHeadOffice: boolean;
   locations: CompanySetupLocation[];
 }
 
-export interface CompanySetupCostCentre { code: string; nameEn: string; nameAr?: string }
-export interface CompanySetupDepartment { code: string; nameEn: string; nameAr?: string; parentCode?: string; branchCode?: string; costCentreCode?: string }
-export interface CompanySetupDesignation { code: string; titleEn: string; titleAr?: string; departmentCode?: string; gradeCode?: string }
-export interface CompanySetupGrade { code: string; nameEn: string; nameAr?: string; level: number; minSalary: number; midSalary: number; maxSalary: number }
+export interface CompanySetupCostCentre extends ExistingRow, WithBaseline { code: string; nameEn: string; nameAr?: string }
+export interface CompanySetupDepartment extends ExistingRow { code: string; nameEn: string; nameAr?: string; parentCode?: string; branchCode?: string; costCentreCode?: string }
+export interface CompanySetupDesignation extends ExistingRow { code: string; titleEn: string; titleAr?: string; departmentCode?: string; gradeCode?: string }
+export interface CompanySetupGrade extends ExistingRow { code: string; nameEn: string; nameAr?: string; level: number; minSalary: number; midSalary: number; maxSalary: number }
 
-export interface EmployeeNumbering {
+export interface EmployeeNumbering extends WithBaseline {
   prefix: string; useCountryPrefix: boolean; useBranchPrefix: boolean; useDepartmentPrefix: boolean;
   useYear: boolean; paddingLength: number; nextSequence: number;
 }
 
 export interface CompanySetupRules {
-  workWeek: { weekendDays: string; override: boolean };
+  workWeek: { weekendDays: string; override: boolean } & WithBaseline;
   holidayCalendar: { usePack: boolean };
   leavePolicies: { usePack: boolean };
   employeeNumbering: EmployeeNumbering;
@@ -84,6 +123,8 @@ export interface CompanySetupAdmin {
 }
 
 export interface CompanySetupDraftBody {
+  /** Addendum A1: null/absent = create a company; set = complete setup for that existing, active company. */
+  existingCompanyId?: string | null;
   startFrom: StartFrom;
   copyFromCompanyId?: string;
   company: CompanySetupCompany;
@@ -112,15 +153,29 @@ export interface CompanySetupDraft {
   resultCompanyId?: string | null;
 }
 
-export interface CompanySetupDraftSummary { id: string; legalNameEn: string; step: number; updatedAtUtc: string; createdByName: string }
+export interface CompanySetupDraftSummary {
+  id: string; legalNameEn: string; step: number; updatedAtUtc: string; createdByName: string;
+  /** Set on an existing-mode draft (A1), so the drafts list can resume either kind at the right address. */
+  existingCompanyId?: string | null;
+}
 
 export type PlanArea =
   | 'company' | 'branch' | 'location' | 'costCentre' | 'department' | 'designation' | 'grade'
   | 'employeeIdRule' | 'cutover' | 'holidayCalendar' | 'leavePolicy' | 'gccSetting' | 'workWeek' | 'companyAdmin';
-export type PlanAction = 'create' | 'reuse' | 'conflict';
+/** A3: `update` = an existing row with changed fields; `unchanged` = an existing row left as it is. There are no deletes. */
+export type PlanAction = 'create' | 'update' | 'unchanged' | 'reuse' | 'conflict';
 
-export interface PlanItem { area: PlanArea; code: string; label: string; labelAr?: string | null; action: PlanAction; reason?: string | null }
-export interface Problem { step: number; field: string; code: string; message: string; messageAr?: string | null }
+export interface PlanItem {
+  area: PlanArea; code: string; label: string; labelAr?: string | null; action: PlanAction; reason?: string | null;
+  /** Proposed, NOT in the backend contract yet: on `update`, the changed fields as lower-camel keys. Today the server
+   *  lists them in `reason` ("Changes: name (English), city."), which the screen translates token by token. */
+  changedFields?: string[] | null;
+}
+export interface Problem {
+  step: number; field: string; code: string; message: string; messageAr?: string | null;
+  /** On `changed_since_draft_started` only (A9): the field's value in the database now, as the baseline holds values. */
+  current?: string | null;
+}
 export interface CompanySetupPlan { ok: boolean; items: PlanItem[]; problems: Problem[]; warnings: Problem[] }
 
 export interface ReadinessItem {
@@ -136,7 +191,11 @@ export interface ReadinessItem {
 }
 
 /** Every refusal from /api/company-setup. `field` is dotted lower-camel with numeric indexes (`branches.0.code`). */
-export interface CompanySetupErrorBody { code: string; message: string; messageAr?: string | null; field?: string | null; step?: number | null }
+export interface CompanySetupErrorBody {
+  code: string; message: string; messageAr?: string | null; field?: string | null; step?: number | null;
+  /** On `existing_company_draft_open`: the company's open draft, to resume instead of starting a second one. */
+  draftId?: string | null;
+}
 
 export interface CompanySetupResult {
   companyId: string;
@@ -144,6 +203,8 @@ export interface CompanySetupResult {
   reused: Partial<Record<PlanArea, number>>;
   readiness: ReadinessItem[];
   replayed: boolean;
+  /** Existing mode: rows changed in place (A6 counts by action). */
+  updated?: Partial<Record<PlanArea, number>> | null;
 }
 
 const BASE = '/api/company-setup';
@@ -160,6 +221,9 @@ export const companySetupApi = {
   }),
   defaults: (country: string, copyFrom?: string) =>
     client.get<CompanySetupDraftBody>(`${BASE}/defaults`, { ...WS, params: { country, ...(copyFrom ? { copyFrom } : {}) } }).then(r => r.data),
+  /** A2: what an existing company has today, with anything missing filled from its country pack (rows with no existingId). */
+  existingDefaults: (existingCompanyId: string) =>
+    client.get<CompanySetupDraftBody>(`${BASE}/defaults`, { ...WS, params: { existingCompanyId } }).then(r => r.data),
   drafts: () => client.get<CompanySetupDraftSummary[]>(`${BASE}/drafts`, WS).then(r => (Array.isArray(r.data) ? r.data : [])),
   draft: (id: string) => client.get<CompanySetupDraft>(`${BASE}/drafts/${id}`, WS).then(r => r.data),
   createDraft: (body: CompanySetupDraftBody) => client.post<CompanySetupDraft>(`${BASE}/drafts`, body, WS).then(r => r.data),

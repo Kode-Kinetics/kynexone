@@ -3,9 +3,10 @@
 import { useLocale } from '../../contexts/LocaleContext';
 import { msg } from '../../i18n/translations';
 import type { CompanySetupDraftBody, CompanySetupPlan, EmployeeNumbering, PlanArea } from '../../api/companySetup';
-import { WEEKEND_OPTIONS, numberingPreview } from '../../lib/companySetupWizard';
+import { WEEKEND_OPTIONS, chooseWeekend, numberingPreview } from '../../lib/companySetupWizard';
 import { useCountryName } from './CountryOptions';
 import { SectionHeader, WizardField, useWizardForm } from './wizardForm';
+import { MoreSettingsLinks } from './MoreSettingsLinks';
 
 /**
  * Step 5. Rules come from the country pack; the screen shows what the pack resolves to and what the
@@ -18,7 +19,9 @@ export function RulesStep({ defaults, preview, previewState }: {
 }) {
   const { t, locale } = useLocale();
   const country = useCountryName();
-  const { body, update, readOnly } = useWizardForm();
+  const { body, update, readOnly, baseline } = useWizardForm();
+  // Existing mode: the counter only goes up (server: sequence_cannot_go_back).
+  const sequenceFloor = body.existingCompanyId ? baseline?.rules.employeeNumbering.nextSequence : undefined;
   const rules = body.rules;
   const packWeekend = defaults?.rules.workWeek.weekendDays ?? rules.workWeek.weekendDays;
   const setRules = (patch: Partial<CompanySetupDraftBody['rules']>) => update(b => ({ ...b, rules: { ...b.rules, ...patch } }));
@@ -32,7 +35,11 @@ export function RulesStep({ defaults, preview, previewState }: {
     if (previewState === 'error' || rows.length === 0) return <p className="text-xs text-slate-500">{t('Checked again on the review step.')}</p>;
     return (
       <ul className="mt-1 space-y-0.5">
-        {rows.map(i => <li key={`${i.area}-${i.code}`} className="text-xs text-slate-600 dark:text-slate-400"><bdi>{locale === 'ar' ? i.labelAr || i.label : i.label}</bdi>: {i.action === 'reuse' ? t(reused) : i.action === 'create' ? t(created) : t('Conflict — see the review step')}</li>)}
+        {rows.map(i => <li key={`${i.area}-${i.code}`} className="text-xs text-slate-600 dark:text-slate-400"><bdi>{locale === 'ar' ? i.labelAr || i.label : i.label}</bdi>: {
+          i.action === 'reuse' || i.action === 'unchanged' ? t(reused)
+            : i.action === 'create' ? t(created)
+            : i.action === 'update' ? t('Will be updated')
+            : t('Conflict — see the review step')}</li>)}
       </ul>
     );
   };
@@ -49,7 +56,7 @@ export function RulesStep({ defaults, preview, previewState }: {
         <SectionHeader title={t('Working week')} description={t('The weekend decides how leave days and overtime hours are counted.')} />
         <WizardField field="rules.workWeek.weekendDays" label={t('Weekend (days off)')} help={t('Country default: {days}.', { days: weekendLabel(packWeekend) })} className="max-w-sm">
           {control => <select {...control} className="select w-full" disabled={readOnly} value={rules.workWeek.weekendDays}
-            onChange={e => setRules({ workWeek: { weekendDays: e.target.value, override: e.target.value !== packWeekend } })}>
+            onChange={e => setRules({ workWeek: chooseWeekend(rules.workWeek, e.target.value, packWeekend) })}>
             {WEEKEND_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
           </select>}
         </WizardField>
@@ -84,8 +91,8 @@ export function RulesStep({ defaults, preview, previewState }: {
           <WizardField field="rules.employeeNumbering.paddingLength" label={t('Digits in the number')}>
             {control => <input {...control} type="number" min={1} max={10} inputMode="numeric" className="input w-full" readOnly={readOnly} value={rules.employeeNumbering.paddingLength} onChange={e => setNumbering({ paddingLength: Number(e.target.value) })} />}
           </WizardField>
-          <WizardField field="rules.employeeNumbering.nextSequence" label={t('Next number')}>
-            {control => <input {...control} type="number" min={1} inputMode="numeric" className="input w-full" readOnly={readOnly} value={rules.employeeNumbering.nextSequence} onChange={e => setNumbering({ nextSequence: Number(e.target.value) })} />}
+          <WizardField field="rules.employeeNumbering.nextSequence" label={t('Next number')} help={sequenceFloor ? t('Already at {number}; it can only go up.', { number: sequenceFloor }) : undefined}>
+            {control => <input {...control} type="number" min={sequenceFloor ?? 1} inputMode="numeric" className="input w-full" readOnly={readOnly} value={rules.employeeNumbering.nextSequence} onChange={e => setNumbering({ nextSequence: Number(e.target.value) })} />}
           </WizardField>
         </div>
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
@@ -95,7 +102,15 @@ export function RulesStep({ defaults, preview, previewState }: {
           {toggle(rules.employeeNumbering.useYear, v => setNumbering({ useYear: v }), t('Add the joining year'), 'rules.employeeNumbering.useYear')}
         </div>
         <p className="mt-3 text-sm text-slate-800 dark:text-slate-200" data-testid="numbering-preview">{t('The next employee number will look like {example}.', { example: numberingPreview(body) })}</p>
+        {body.existingCompanyId && <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{t('Existing employee numbers stay as they are; the rule applies to people added from now on.')}</p>}
       </section>
+
+      <details className="rounded-xl border border-slate-200 dark:border-white/10" data-testid="more-settings-section">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-900 dark:text-white">{t('More settings for this company')}
+          <span className="mt-0.5 block text-xs font-normal text-slate-600 dark:text-slate-400">{t('Shifts, overtime, benefits, salary structures and more each have their own screen. Your draft is saved, so you can come back.')}</span>
+        </summary>
+        <div className="px-4 pb-4"><MoreSettingsLinks companyId={body.existingCompanyId} /></div>
+      </details>
     </div>
   );
 }

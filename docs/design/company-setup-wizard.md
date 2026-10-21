@@ -204,3 +204,100 @@ refuses the wage file; draft version conflict 409; another tenant's draft is 404
 admin is scoped to the new company only and cannot read a sister company; a company-scoped admin
 cannot open the wizard or grant group scope; invite with an off-domain email is refused; existing
 user keeps their other access; Browser Pilot e2e of the seven steps in EN and AR including save-draft → sign out → resume.
+
+## Addendum A — one wizard for new AND existing companies (decided 2026-10-21)
+
+The owner chose one guided journey for both cases. Guided Setup opens a chooser:
+**Create a new company** or **Complete setup for an existing company** (one card per active company
+the caller may manage, showing its readiness, e.g. "5 of 9 done"). The old 5-step Setup Studio
+leaves Guided Setup.
+
+### A1. Draft target
+`CompanySetupDraftBody.existingCompanyId?: Guid`. Null = create (everything above, unchanged).
+Set = complete that company. One open draft per (tenant, existingCompanyId): opening the
+wizard for a company that already has an open draft resumes it (the drafts list shows both kinds).
+
+### A2. Prefill
+`GET /defaults?existingCompanyId={id}` returns a body built from what the company HAS today:
+company fields, its branches + locations, its cost centres, the shared-catalog rows it uses
+(departments/designations/grades referenced by its branches, cost centres or employees), its
+EmployeeIdRule, its cutover month, its working-week/EOSB resolution, holiday calendar and leave
+selection. Missing items are filled from the country pack and marked as new.
+Every prefilled existing row carries `existingId` (Guid) in the body so the planner can tell
+"edit this row" from "new row with the same code".
+
+### A3. Planner actions
+`PlanItem.action` gains `"update"` and `"unchanged"`:
+create (new row) · update (existing row, changed fields; `reason` lists them) · unchanged (existing
+row, no change) · reuse (shared catalog row used as-is) · conflict (blocks).
+**No deletes.** Removing an existing branch, cost centre, location or admin is not offered in the
+wizard (the row is shown read-only with "Manage in Setup → <tab>"); the wizard only adds and edits.
+
+### A4. Locked identity on an existing company
+Country and currency are read-only in existing mode, always (payroll, GOSI and bank files
+depend on them). Legal name EN/AR, trade name, CR, MOL, GOSI, 700, VAT, Qiwa, email domain/pattern
+and ERP code are editable and go through `UpdateCompanyAsync` with the same validations as create
+(SA MOL format, CR uniqueness excluding itself, email-domain claimability). The first payroll month
+is editable only while the cutover is still `Planned`; otherwise it is shown read-only. The prefill and every
+draft read send `company.cutoverStatus` (`"Planned" | "Active" | "Closed" | null`, the status *now*; ignored on
+input), so the screen locks the month up front with its reason; the planner's `first_payroll_month_locked` stays
+the backstop.
+
+### A5. Who may run it
+- New company: group-scope Admin/HR Manager only (unchanged).
+- Existing company: group-scope admins for any active company; a **Company Super Admin**
+  (company-scoped Admin) for their own company only. Shared-catalog additions still require group
+  scope (company admins pick from the catalog only), and step 6 lets a company admin add another
+  company-scoped admin for their own company but never group scope.
+- The context endpoint returns `manageableCompanies: { id, legalNameEn, legalNameAr?,
+  countryCode, readinessDone, readinessTotal, openDraftId? }[]` for the chooser.
+
+### A6. Commit
+Same transaction, tenant lock, draft-id idempotency, audit (`company.setup_completed` for existing
+mode, counts by action). The company row is updated, never recreated. A Draft/inactive company is
+refused (the existing activation gap still applies).
+
+### A7. The old Setup Studio's other capabilities
+Anything only the old studio could configure (e.g. attendance/overtime policy starters, benefit
+plans, salary structure, HR governance config) must stay reachable: either it is already a page
+of its own (then the readiness checklist links to it), or it is moved into step 5 as a collapsed
+section. The builder lists each capability with where it now lives. `/setup?tab=aiSetup` and any
+`returnTo` that pointed at the old studio open the chooser (with `companyId` → that company's
+existing-mode wizard).
+
+### A9. Changes made elsewhere since the draft started (three-way comparison)
+The prefill stamps the company block, every existing branch, location and cost centre, and the
+`rules.employeeNumbering` and `rules.workWeek` blocks with `baseline`: an opaque `{ field: string|null }`
+map of the values it read (normalized: trimmed text, scale-free numbers, `"true"`/`"false"`; the company's
+`firstPayrollMonth` is the cutover month, null with no cutover; the numbering fields are null with no rule).
+The client carries it back unchanged through every edit, autosave and resume (rows are spread, never rebuilt);
+new rows have none. Country and currency are locked (A4) and not compared. Per field, at plan time
+(`CompanySetupBaseline`, one projection for the database row and the draft):
+
+| user changed (draft ≠ baseline) | changed elsewhere (db ≠ baseline) | result |
+|---|---|---|
+| no | either | the database value stands; nothing is written for it |
+| yes | no | update |
+| yes | yes, draft = db | unchanged |
+| yes | yes, draft ≠ db | problem `changed_since_draft_started` (blocks) |
+
+The problem names the field (`branches.1.nameEn`, `company.tradeName`, `rules.workWeek.weekendDays`…), says in EN
+and AR that it changed elsewhere and what it is now, and carries `current` (the value now, baseline form). The
+review offers **Use the current value** (field := current) and **Keep mine** (that one field's baseline :=
+current, saved by the normal autosave PUT; the next plan reads it as an edit on top of the newer value), and "Go
+to" focuses the field. A draft with an existing row or block that has **no** baseline (saved before A9) is
+refused as a whole with `draft_needs_refresh` (step 1, field `draft`, no items): nothing is guessed. The review's
+**Reload the company's current setup** replaces the draft body with a fresh prefill (same draft, autosaved).
+
+### A8. Tests (in addition to the list above)
+existing-mode prefill round-trips with no changes → plan all `unchanged`/`reuse`, commit writes
+nothing but the audit row; editing a branch name → `update`, one row changed, no duplicate;
+adding a branch → `create`; country/currency change refused; company admin can run it for own
+company and is 403 for a sister company; company admin cannot add shared-catalog codes; one open
+draft per existing company; retry of an existing-mode commit replays; old `tab=aiSetup` links land
+on the chooser; Browser Pilot real spec: complete an existing company in EN and AR.
+A9 (Postgres): for a branch, a company field and a cost centre — draft opened, row changed directly, commit →
+`changed_since_draft_started`, nothing written; untouched field → the newer database value stands; "keep mine"
+then commits the edit; a counter moved by hiring is not written back; a draft without baselines →
+`draft_needs_refresh`, nothing written; prefill and draft reads carry `cutoverStatus`. Unit: the decision table,
+scale-free projection, baseline JSON round trip; client: baselines survive every form edit + JSON round trip.

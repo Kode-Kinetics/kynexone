@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
@@ -11,6 +12,7 @@ import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
 import { SetupPathSwitch } from '../components/setup/SetupPathSwitch';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
+import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChooser';
 import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
@@ -2446,6 +2448,9 @@ const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
 
 // ─── SetupPage ───────────────────────────────────────────────────────────────
 
+/** A revalidation shorter than this freezes the page silently; a longer one explains the freeze. */
+export const AUTHORIZATION_BANNER_DELAY_MS = 800;
+
 export function SetupPage() {
   const router = useRouter();
   const t = useT();
@@ -2554,7 +2559,10 @@ export function SetupPage() {
     : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration' && !configurationScopeUnavailable;
-  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
+  // Guided Setup is the company setup chooser (create, or complete an existing company — Addendum A). The old
+  // studio stays reachable only as Configuration Center's "Policy starter" for what has no screen of its own (A7).
+  const isGuided = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
+  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'policyStarter';
   const starterScope = authorizedCompany ?? 'group';
   const setupPathHref = (path: SetupStudioPath) => {
     const next = serializeSetupPath({ ...setupPath, path, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
@@ -2629,7 +2637,17 @@ export function SetupPage() {
     }
   };
   const renderExistingSettings = (id: SettingsTab) => <SetupEditorState.Provider value={setEditorDirty}>{renderExistingPanel(id)}</SetupEditorState.Provider>;
+  // The page is frozen (inert) for the whole check: a deliberate safety stop while access is re-read. The banner that
+  // explains it waits: /me usually answers well under a second on every focus change, and a banner flashing each
+  // time reads as an error. A slow check shows it after AUTHORIZATION_BANNER_DELAY_MS; a failure shows at once.
   const authorizationBlocked = authorizationRefreshStatus !== 'idle';
+  const [slowAuthorizationCheck, setSlowAuthorizationCheck] = useState(false);
+  useEffect(() => {
+    if (authorizationRefreshStatus !== 'checking') { setSlowAuthorizationCheck(false); return; }
+    const timer = window.setTimeout(() => setSlowAuthorizationCheck(true), AUTHORIZATION_BANNER_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [authorizationRefreshStatus]);
+  const authorizationBannerShown = authorizationRefreshStatus === 'unavailable' || (authorizationRefreshStatus === 'checking' && slowAuthorizationCheck);
   const authorizationStatusRef = useRef<HTMLElement | null>(null);
   const authorizationRetryRef = useRef<HTMLButtonElement | null>(null);
   const authorizationRestoreFocusRef = useRef<HTMLElement | null>(null);
@@ -2643,6 +2661,8 @@ export function SetupPage() {
         const active = document.activeElement;
         authorizationRestoreFocusRef.current = active instanceof HTMLElement ? active : null;
       }
+      // Focus moves to the banner only once it is shown (a quick check never shows it).
+      if (!authorizationBannerShown) return;
       const frame = window.requestAnimationFrame(() => {
         (authorizationRefreshStatus === 'unavailable' ? authorizationRetryRef.current : authorizationStatusRef.current)?.focus();
       });
@@ -2655,17 +2675,19 @@ export function SetupPage() {
       if (restore?.isConnected && !restore.closest('[inert]')) restore.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [authorizationRefreshStatus]);
+  }, [authorizationRefreshStatus, authorizationBannerShown]);
 
   return (
     <>
-      {authorizationBlocked && <section
+      {authorizationBannerShown && typeof document !== 'undefined' && createPortal(<section
         data-testid="authorization-revalidation-status"
         role="status"
         aria-live="polite"
         tabIndex={-1}
         ref={authorizationStatusRef}
-        className="fixed inset-x-4 top-4 z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
+        // Portalled to <body>: <main> animates in with a transform, which made it the containing block of this
+        // fixed banner and slid it under the sticky top bar (60px, TopBar.tsx). Placed just below that bar.
+        className="fixed inset-x-4 top-[72px] z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
       >
         <p className="font-semibold">
           {authorizationRefreshStatus === 'checking'
@@ -2678,7 +2700,7 @@ export function SetupPage() {
             : t('Your unsaved changes are preserved. Retry before continuing.')}
         </p>
         {authorizationRefreshStatus === 'unavailable' && <button ref={authorizationRetryRef} type="button" className="btn-secondary mt-3" onClick={() => void retryAuthorization()}>{t('Retry authorization')}</button>}
-      </section>}
+      </section>, document.body)}
       <div
         data-testid="setup-authorization-boundary"
         inert={authorizationBlocked ? true : undefined}
@@ -2700,12 +2722,12 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Configure every setup area directly, or use Setup Studio to prepare a reviewed starter configuration.')
+            ? t('Create or complete a company in Guided Setup, or configure any area in Configuration Center.')
             : t('Review the setup areas available to your role.')}
         </p>
       </header>
 
-      {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path} onSelect={selectSetupPath} />}
+      {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path === 'policyStarter' ? 'configuration' : setupPath.path} onSelect={selectSetupPath} />}
 
       {!configurationScopeUnavailable && <nav aria-label={t('Setup sections')} className="setup-page-nav flex flex-nowrap gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10">
           {navigationTabs.map(({ id, label, icon: Icon }) => {
@@ -2743,11 +2765,21 @@ export function SetupPage() {
               </div>
             </section>}
             {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
-            {isStarter && <div onChangeCapture={event => {
+            {isGuided && <GuidedSetupChooser />}
+            {isStarter && <div className="flex flex-col">
+              {/* One compact line. On a phone it follows the starter, so the starter's first screen keeps its
+                  own controls (setup-experience: policy entry in the first viewport). */}
+              <p className="order-last mt-3 flex flex-wrap sm:order-first sm:mb-2 sm:mt-0 items-center gap-x-2 gap-y-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400" data-testid="policy-starter-banner">
+                <span className="font-semibold text-slate-900 dark:text-white">{t('Policy starter (attendance, overtime, benefits…)')}</span>
+                <span>{t('For a company’s structure, use Guided Setup.')}</span>
+                <button type="button" className="font-semibold text-sapphire underline-offset-2 hover:underline dark:text-cyanAccent" onClick={() => selectSetupPath('configuration')}>{t('Back to Configuration Center')}</button>
+              </p>
+              <div className="min-w-0" onChangeCapture={event => {
               setEditorDirty(true);
               const target = event.target;
               if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
-            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>}
+            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>
+            </div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
               confirmLeave={confirmLeave}
@@ -2769,7 +2801,7 @@ export function SetupPage() {
               onOpenLegacyDraft={() => {
                 if (!confirmLeave()) return;
                 const params = new URLSearchParams(searchParams?.toString());
-                params.set('tab', 'aiSetup'); params.set('mode', 'starter'); params.delete('path');
+                params.set('tab', 'aiSetup'); params.set('path', 'policyStarter'); params.delete('mode');
                 params.set('area', resolveSetupArea(params.get('area')));
                 if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
                 router.push(`/setup?${params.toString()}`, { scroll: false });

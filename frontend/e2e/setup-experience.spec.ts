@@ -304,7 +304,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path.startsWith('/api/admin/') || path.includes('country-packs')) return reply([]);
     return reply(paged([]));
   });
-  await page.goto(options.route ?? '/setup?tab=aiSetup&mode=starter');
+  await page.goto(options.route ?? '/setup?tab=aiSetup&path=policyStarter');
   await expect(page.getByRole('heading', { level: 1, name: options.locale === 'ar' ? 'الإعداد والإدارة' : 'Setup & Administration', exact: true })).toBeVisible({ timeout: 60_000 });
   return { previews, applies, errors, unexpectedWrites, policyWrites };
 }
@@ -517,7 +517,7 @@ test('a group administrator selects one company before opening its protected set
 });
 
 test('a resumed company setup URL restores its immutable company target', async ({ page }) => {
-  await boot(page, { groupMode: true, route: `/setup?tab=aiSetup&mode=starter&companyId=${groupCompany.id}` });
+  await boot(page, { groupMode: true, route: `/setup?tab=aiSetup&path=policyStarter&companyId=${groupCompany.id}` });
 
   await expect(page.getByText(/Protected company scope/)).toBeVisible();
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue(groupCompany.legalNameEn);
@@ -527,7 +527,7 @@ test('a resumed company setup URL restores its immutable company target', async 
 });
 
 test('an invalid company setup URL fails closed instead of selecting another company', async ({ page }) => {
-  const state = await boot(page, { groupMode: true, route: '/setup?tab=aiSetup&mode=starter&companyId=missing-company' });
+  const state = await boot(page, { groupMode: true, route: '/setup?tab=aiSetup&path=policyStarter&companyId=missing-company' });
 
   await expect(page.getByRole('alert').filter({ hasText: 'This company is not available for setup' })).toBeVisible();
   await expect(page.getByText(/No other company has been selected in its place/)).toBeVisible();
@@ -550,7 +550,7 @@ test('renders the setup shell and organization import path in Arabic RTL', async
 });
 
 test('a read-only organization viewer cannot enter Setup Studio through a write-tab deep link', async ({ page }) => {
-  const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup&mode=starter' });
+  const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup&path=policyStarter' });
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useFormat } from '../../hooks/useFormat';
 import { useLocale } from '../../contexts/LocaleContext';
 import type { CompanySetupContext, CompanySetupDraftSummary, StartFrom } from '../../api/companySetup';
-import { WIZARD_STEPS, planUsage, type StepId } from '../../lib/companySetupWizard';
+import { planUsage, stepCopy, type StepId } from '../../lib/companySetupWizard';
 import { Notice, WizardField } from './wizardForm';
 import { CountryOptions } from './CountryOptions';
 
@@ -65,7 +65,7 @@ export function StartStep({ context, drafts, currentDraftId, choice, onChoice, o
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-slate-900 dark:text-white"><bdi>{d.legalNameEn || t('Untitled company')}</bdi></p>
                   <p className="text-xs text-slate-600 dark:text-slate-400">
-                    {t('Stopped at step {step}: {title}', { step: d.step, title: t(WIZARD_STEPS[(Math.min(Math.max(d.step, 1), 7)) as StepId].title) })}
+                    {t('Stopped at step {step}: {title}', { step: d.step, title: t(stepCopy((Math.min(Math.max(d.step, 1), 7)) as StepId, d.existingCompanyId ? 'existing' : 'create').title) })}
                     {' · '}{t('Saved {when} by {name}', { when: fmt.dateTime(d.updatedAtUtc), name: d.createdByName })}
                   </p>
                 </div>
