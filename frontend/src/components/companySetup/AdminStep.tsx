@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { usersApi, type UserListItem } from '../../api/identity';
 import type { CompanyAdminMode, CompanySetupAdmin } from '../../api/companySetup';
+import { eligibleCompanySuperAdmins } from '../../lib/companySetupWizard';
 import { Notice, WizardField, useWizardForm } from './wizardForm';
 
 /**
@@ -26,7 +27,7 @@ export function AdminStep() {
     let active = true;
     setUsersError(false);
     usersApi.listAll({ status: 'Active' })
-      .then(rows => { if (active) setUsers(rows.filter(u => u.isActive)); })
+      .then(rows => { if (active) setUsers(eligibleCompanySuperAdmins(rows)); })
       .catch(() => { if (active) setUsersError(true); });
     return () => { active = false; };
   }, [admin.mode, users, attempt]);
@@ -73,12 +74,14 @@ export function AdminStep() {
 
       {admin.mode === 'existing' && (
         <div className="max-w-xl">
-          <WizardField field="companyAdmin.existingUserId" label={t('User')} required help={t('Active users in this workspace.')}>
+          <WizardField field="companyAdmin.existingUserId" label={t('User')} required
+            help={t('Only users who already hold the Admin role are listed, because a role applies to every company a person can access.')}>
             {control => <select {...control} className="select w-full" disabled={readOnly || !users} value={admin.existingUserId ?? ''} onChange={e => set({ existingUserId: e.target.value || undefined })}>
               <option value="">{users ? t('Choose a user…') : t('Loading users…')}</option>
               {(users ?? []).map(u => <option key={u.id} value={u.id}>{`${u.fullName} · ${u.email}`}</option>)}
             </select>}
           </WizardField>
+          {users && users.length === 0 && <div className="mt-2" data-testid="no-eligible-admins"><Notice tone="info">{t('No user in this workspace holds the Admin role yet. Invite a new company super admin instead.')}</Notice></div>}
           {usersError && <div className="mt-2"><Notice tone="error" role="alert">{t('The user list could not be loaded. Check your connection and try again, or invite a new administrator instead.')}<button type="button" className="btn-secondary ms-2" onClick={() => setAttempt(a => a + 1)}>{t('Try again')}</button></Notice></div>}
         </div>
       )}

@@ -97,6 +97,17 @@ export function molEstablishmentError(value?: string | null): string | null {
   return null;
 }
 
+/**
+ * The users step 6 may offer as "an existing user" company super admin: active, and already holding the Admin
+ * role (a company admin elsewhere, or a group admin who manages every company already). Roles apply across every
+ * company a user can reach, so giving Admin to anyone else would also make them Admin of their other companies;
+ * the planner refuses that as `existing_user_not_admin`, and stays the backstop for anything this list misses.
+ */
+export function eligibleCompanySuperAdmins<U extends { isActive: boolean; status?: string | null; roles?: readonly string[] | null }>(users: readonly U[]): U[] {
+  return users.filter(u => u.isActive && (u.status ?? 'Active') === 'Active'
+    && (u.roles ?? []).some(r => r.trim().toLowerCase() === 'admin'));
+}
+
 /** True when a code is already in the tenant's shared catalog: it is reused, never created or edited. */
 export function inCatalog(catalog: readonly CodeName[] | undefined, code?: string | null): CodeName | undefined {
   const c = norm(code);

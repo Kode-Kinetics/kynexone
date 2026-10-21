@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { CompanySetupContext, CompanySetupDraftBody, CompanySetupPlan } from '../src/api/companySetup';
 import {
-  buildTree, canCommit, defaultFirstPayrollMonth, emptyBody, firstBlockingStep, groupPlan, molEstablishmentError,
+  buildTree, canCommit, defaultFirstPayrollMonth, eligibleCompanySuperAdmins, emptyBody, firstBlockingStep, groupPlan, molEstablishmentError,
   normalizeFieldPath, numberingPreview, planUsage, stepState, stepWarnings, validateStep,
 } from '../src/lib/companySetupWizard';
 
@@ -166,4 +166,20 @@ test('plan usage and numbering preview', () => {
   const b = saudiBody();
   b.rules.employeeNumbering = { prefix: 'RT', useCountryPrefix: true, useBranchPrefix: true, useDepartmentPrefix: false, useYear: true, paddingLength: 4, nextSequence: 7 };
   expect(numberingPreview(b, 2026)).toBe('RT-SA-HQ-2026-0007');
+});
+
+test('step 6 offers only active users who already hold Admin as an existing company super admin', () => {
+  const user = (id: string, roles: string[], over: Partial<{ isActive: boolean; status: string }> = {}) =>
+    ({ id, roles, isActive: true, status: 'Active', ...over });
+  const users = [
+    user('company-admin', ['Admin']),
+    user('group-admin', ['admin', 'HR Director']),
+    user('hr-manager', ['HR Manager']),
+    user('no-roles', []),
+    user('locked-admin', ['Admin'], { status: 'Locked' }),
+    user('inactive-admin', ['Admin'], { isActive: false }),
+    { id: 'roles-missing', roles: null, isActive: true, status: 'Active' },
+  ];
+  expect(eligibleCompanySuperAdmins(users).map(u => u.id)).toEqual(['company-admin', 'group-admin']);
+  expect(eligibleCompanySuperAdmins([])).toEqual([]);
 });
