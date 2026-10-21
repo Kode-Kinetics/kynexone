@@ -403,6 +403,18 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task Every_plan_row_carries_an_arabic_label_for_the_arabic_review()
+    {
+        // The review renders labelAr in Arabic; a row without one showed English sentences in an Arabic screen.
+        var w = await SeedAsync();
+        await using var db = fixture.CreateDb();
+        var plan = await Service(db).DryRunAsync(Caller(w), Body(), default);
+        plan.Items.Where(i => i.Area is not ("branch" or "location" or "costCentre" or "department" or "designation" or "grade" or "companyAdmin"))
+            .Where(i => string.IsNullOrWhiteSpace(i.LabelAr))
+            .Select(i => $"{i.Area}:{i.Label}").Should().BeEmpty("fixed-text plan rows are written by the planner and must name themselves in Arabic too");
+    }
+
+    [Fact]
     public async Task The_country_settings_row_is_created_only_when_missing_and_never_overwritten()
     {
         var w = await SeedAsync(withSaGcc: true);

@@ -466,10 +466,11 @@ public sealed class CompanySetupPlanner
             c.Problem(5, "rules.employeeNumbering.paddingLength", "padding_invalid", "Padding is 1 to 10 digits.");
         if (numbering is not null && numbering.NextSequence < 1)
             c.Problem(5, "rules.employeeNumbering.nextSequence", "sequence_invalid", "The next number is 1 or more.");
-        c.Item(Areas.EmployeeIdRule, prefix, "Employee numbering for this company", V.ActionCreate);
+        c.Item(Areas.EmployeeIdRule, prefix, "Employee numbering for this company", V.ActionCreate, labelAr: "ترقيم الموظفين لهذه الشركة");
         if (cutoverDate != default)
         {
-            c.Item(Areas.Cutover, cutoverDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "Planned payroll start (first day of the first payroll month)", V.ActionCreate);
+            c.Item(Areas.Cutover, cutoverDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "Planned payroll start (first day of the first payroll month)", V.ActionCreate,
+                labelAr: "بداية الرواتب المخططة (أول يوم من أول شهر رواتب)");
             var today = DateOnly.FromDateTime(DateTime.UtcNow);
             if (cutoverDate < new DateOnly(today.Year, today.Month, 1))
                 c.Warn(5, "company.firstPayrollMonth", "first_payroll_month_past", "The first payroll month is in the past. Opening balances will be needed for the months before it.");
@@ -504,7 +505,8 @@ public sealed class CompanySetupPlanner
                     missingLeave.Contains(typeCode) ? V.ActionCreate : V.ActionReuse,
                     missingLeave.Contains(typeCode)
                         ? $"Workspace-wide statutory default for {country}; applies to every {country} company."
-                        : $"The workspace's {country} default already applies to this company.");
+                        : $"The workspace's {country} default already applies to this company.",
+                    labelAr: $"سياسة الإجازة النظامية الافتراضية ({typeCode}) — {country}");
         }
 
         // Decision 11: the tenant-default GCC row for the country, created only when missing, never overwritten.
@@ -518,9 +520,11 @@ public sealed class CompanySetupPlanner
             {
                 newGccDefault = CompanySetupPack.TenantDefaultGccRow(tenantId, country);
                 c.Item(Areas.GccSetting, country, $"Country settings for {country} (end of service, weekend)", V.ActionCreate,
-                    "No settings exist for this country yet; the country pack defaults are written once and never overwritten.");
+                    "No settings exist for this country yet; the country pack defaults are written once and never overwritten.",
+                    labelAr: $"إعدادات الدولة {country} (مكافأة نهاية الخدمة، العطلة الأسبوعية)");
             }
-            else c.Item(Areas.GccSetting, country, $"Country settings for {country}", V.ActionReuse, "Already configured for this workspace.");
+            else c.Item(Areas.GccSetting, country, $"Country settings for {country}", V.ActionReuse, "Already configured for this workspace.",
+                $"إعدادات الدولة {country}");
         }
 
         GCCComplianceSetting? workWeekOverride = null;
@@ -538,15 +542,18 @@ public sealed class CompanySetupPlanner
                 if (parsed is null || parsed.Count == 0 || parsed.Count > 3)
                     c.Problem(5, "rules.workWeek.weekendDays", "weekend_invalid", "Choose the weekend (rest) days, for example Fri,Sat.");
                 else if (parsed.SetEquals(resolvedWeekend))
-                    c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "Same as the workspace setting; no override is written.");
+                    c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "Same as the workspace setting; no override is written.",
+                        $"العطلة الأسبوعية {resolvedText}");
                 else
                 {
                     var text = CompanySetupPack.FormatWeekend(parsed);
                     workWeekOverride = CompanySetupPack.CompanyOverrideRow(tenantId, country, tenantDefaultGcc ?? newGccDefault, parsed);
-                    c.Item(Areas.WorkWeek, text, $"Weekend {text} for this company", V.ActionCreate, $"Overrides the workspace weekend ({resolvedText}) for this company only.");
+                    c.Item(Areas.WorkWeek, text, $"Weekend {text} for this company", V.ActionCreate, $"Overrides the workspace weekend ({resolvedText}) for this company only.",
+                        $"العطلة الأسبوعية {text} لهذه الشركة");
                 }
             }
-            else c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "The workspace working week applies.");
+            else c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "The workspace working week applies.",
+                $"العطلة الأسبوعية {resolvedText}");
         }
 
         // ── Step 6: company super admin ──────────────────────────────────────────────────────────────────
