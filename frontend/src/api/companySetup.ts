@@ -141,10 +141,15 @@ export interface CompanySetupResult {
 const BASE = '/api/company-setup';
 
 export const companySetupApi = {
-  context: () => client.get<CompanySetupContext>(`${BASE}/context`).then(r => r.data),
+  // A reply that is not the contract's shape (an older server, a proxy page) is "unavailable", never a crash.
+  context: () => client.get<CompanySetupContext>(`${BASE}/context`).then(r => {
+    const d = r.data as Partial<CompanySetupContext> | null;
+    if (!d || typeof d.canCreate !== 'boolean' || !Array.isArray(d.sisterCompanies) || !d.sharedCatalog) throw new Error('company setup context unavailable');
+    return d as CompanySetupContext;
+  }),
   defaults: (country: string, copyFrom?: string) =>
     client.get<CompanySetupDraftBody>(`${BASE}/defaults`, { params: { country, ...(copyFrom ? { copyFrom } : {}) } }).then(r => r.data),
-  drafts: () => client.get<CompanySetupDraftSummary[]>(`${BASE}/drafts`).then(r => r.data),
+  drafts: () => client.get<CompanySetupDraftSummary[]>(`${BASE}/drafts`).then(r => (Array.isArray(r.data) ? r.data : [])),
   draft: (id: string) => client.get<CompanySetupDraft>(`${BASE}/drafts/${id}`).then(r => r.data),
   createDraft: (body: CompanySetupDraftBody) => client.post<CompanySetupDraft>(`${BASE}/drafts`, body).then(r => r.data),
   /** 409 when `version` is stale: the draft was saved elsewhere. */
