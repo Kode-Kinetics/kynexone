@@ -23,14 +23,16 @@ public sealed class OfferDispatchMigrationPostgresTests
         await using var db=new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(container.GetConnectionString()).AddInterceptors(RowLockingInterceptor.Instance).Options);
         var migrator=db.Database.GetInfrastructure().GetRequiredService<IMigrator>();await migrator.MigrateAsync("20261019144258_OfferLifecycle");
         var tenant=await PostgresFixture.SeedMinimalTenant(db);var company=new Company{TenantId=tenant};var other=new Company{TenantId=tenant};
-        db.Companies.AddRange(company,other);await db.SaveChangesAsync();
+        // Written as of the OLD schema: a later migration may add a companies column the current model would insert.
+        await LegacyRows.InsertAsync(db,"companies",company);await LegacyRows.InsertAsync(db,"companies",other);
         var app=new JobApplication{TenantId=tenant,CompanyId=company.Id,CandidateId=Guid.NewGuid(),JobOpeningId=Guid.NewGuid()};db.JobApplications.Add(app);await db.SaveChangesAsync();
         var offer=new OfferLetter{TenantId=tenant,CompanyId=company.Id,ApplicationId=app.Id,StartDate=new(2027,1,1),CommunicationOutcome="ExternalRecorded"};
         db.OfferLetters.Add(offer);await db.SaveChangesAsync();
         var artifact=new OfferArtifact{TenantId=tenant,CompanyId=company.Id,ApplicationId=app.Id,OfferId=offer.Id,StorageKey=$"{tenant:N}/dispatch-test.pdf",State="Finalized"};
         db.OfferArtifacts.Add(artifact);db.OfferLifecycleEvents.Add(new(){TenantId=tenant,CompanyId=company.Id,ApplicationId=app.Id,OfferId=offer.Id,EventType="ExternalSent",DataJson="{\"evidence\":\"ExternalRecorded\"}"});await db.SaveChangesAsync();
         var migration=db.Database.GetMigrations().SingleOrDefault(m=>m.EndsWith("_OfferDispatch"));migration.Should().NotBeNull("an additive dispatch migration must exist");
-        await migrator.MigrateAsync(migration!);await migrator.MigrateAsync(migration!);db.ChangeTracker.Clear();
+        // Later additive migrations: the rows below are written with the CURRENT model.
+        await migrator.MigrateAsync(migration!);await migrator.MigrateAsync(migration!); await migrator.MigrateAsync();db.ChangeTracker.Clear();
         (await db.OfferLetters.SingleAsync(o=>o.Id==offer.Id)).CommunicationOutcome.Should().Be("External");
         (await db.OfferLifecycleEvents.SingleAsync(e=>e.OfferId==offer.Id)).DataJson.Should().Contain("ExternalRecorded");
         var dispatch=new OfferDispatch{TenantId=tenant,CompanyId=company.Id,ApplicationId=app.Id,OfferId=offer.Id,ArtifactId=artifact.Id,IdempotencyKey="upgrade",RequestFingerprint=new string('a',64),ReservationVersion=1};
