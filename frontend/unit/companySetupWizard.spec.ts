@@ -3,6 +3,7 @@ import type { CompanySetupContext, CompanySetupDraftBody, CompanySetupPlan } fro
 import {
   buildTree, canCommit, defaultFirstPayrollMonth, eligibleCompanySuperAdmins, emptyBody, firstBlockingStep, groupPlan, molEstablishmentError,
   normalizeFieldPath, numberingPreview, planUsage, stepState, stepWarnings, validateStep,
+  completeCompanyHref, draftHref, firstPayrollMonthLocked, isPlanChange, planCounts, planIsNoChange, readinessProgress, rowChanged, stepCopy, wizardMode,
 } from '../src/lib/companySetupWizard';
 
 const context: CompanySetupContext = {
@@ -182,4 +183,88 @@ test('step 6 offers only active users who already hold Admin as an existing comp
   ];
   expect(eligibleCompanySuperAdmins(users).map(u => u.id)).toEqual(['company-admin', 'group-admin']);
   expect(eligibleCompanySuperAdmins([])).toEqual([]);
+});
+
+// ── Addendum A: existing mode ────────────────────────────────────────────────
+
+function existingBody(): CompanySetupDraftBody {
+  const b = saudiBody();
+  b.existingCompanyId = 'co-evostel';
+  b.branches = [{ ...b.branches[0], existingId: 'br-1' }, { code: 'JED', nameEn: 'Jeddah', nameAr: '', city: 'Jeddah', timeZoneId: 'Asia/Riyadh', isHeadOffice: false, locations: [] }];
+  return b;
+}
+
+test('the mode follows existingCompanyId, and only step 1 and the review read differently', () => {
+  expect(wizardMode(saudiBody())).toBe('create');
+  expect(wizardMode(existingBody())).toBe('existing');
+  expect(stepCopy(1, 'existing').title).toBe('Summary');
+  expect(stepCopy(7, 'existing').title).toBe('Review & update');
+  expect(stepCopy(3, 'existing')).toEqual(stepCopy(3, 'create'));
+  expect(stepCopy(1, 'create').title).toBe('Start');
+});
+
+test('existing mode never asks for a copy source on step 1', () => {
+  const b = existingBody();
+  b.startFrom = 'copy';
+  expect(validateStep(1, { body: b, context })).toEqual([]);
+});
+
+test('drafts resume at their own address, with ids encoded', () => {
+  expect(draftHref({ id: 'd1' })).toBe('/setup/new-company?draft=d1');
+  expect(draftHref({ id: 'd2', existingCompanyId: 'co-1' })).toBe('/setup/company/co-1/complete?draft=d2');
+  expect(completeCompanyHref('a/b')).toBe('/setup/company/a%2Fb/complete');
+});
+
+test('the first payroll month locks only once the cutover has left Planned; unknown leaves it to the server', () => {
+  expect(firstPayrollMonthLocked({ cutoverStatus: 'Planned' })).toBe(false);
+  expect(firstPayrollMonthLocked({ cutoverStatus: 'planned' })).toBe(false);
+  expect(firstPayrollMonthLocked({ cutoverStatus: 'Live' })).toBe(true);
+  expect(firstPayrollMonthLocked({ cutoverStatus: null })).toBe(false);
+  expect(firstPayrollMonthLocked({})).toBe(false);
+});
+
+test('readiness progress is clamped and complete only when every item is done', () => {
+  expect(readinessProgress({ readinessDone: 5, readinessTotal: 9 })).toEqual({ done: 5, total: 9, percent: 56, complete: false });
+  expect(readinessProgress({ readinessDone: 9, readinessTotal: 9 }).complete).toBe(true);
+  expect(readinessProgress({ readinessDone: 12, readinessTotal: 9 }).done).toBe(9);
+  expect(readinessProgress({ readinessDone: 0, readinessTotal: 0 })).toEqual({ done: 0, total: 0, percent: 0, complete: false });
+});
+
+test('an existing row is changed only against its own prefilled copy; new rows are never "changed"', () => {
+  const baseline = existingBody().branches;
+  const edited = { ...baseline[0], nameEn: 'Head Office Riyadh' };
+  expect(rowChanged(edited, baseline, ['nameEn', 'city'])).toBe(true);
+  expect(rowChanged({ ...baseline[0], nameEn: ' Head Office ' }, baseline, ['nameEn'])).toBe(false);
+  expect(rowChanged(baseline[1], baseline, ['nameEn'])).toBe(false);
+  expect(rowChanged({ ...baseline[0], existingId: 'unknown' }, baseline, ['nameEn'])).toBe(false);
+});
+
+test('the review opens only what changes in existing mode; unchanged and reused rows are folded away', () => {
+  expect(['create', 'update', 'conflict'].every(a => isPlanChange(a as never, 'existing'))).toBe(true);
+  expect(isPlanChange('unchanged', 'existing')).toBe(false);
+  expect(isPlanChange('reuse', 'existing')).toBe(false);
+  // Create mode keeps showing reused catalog rows as part of what Create does.
+  expect(isPlanChange('reuse', 'create')).toBe(true);
+  const plan: CompanySetupPlan = { ok: true, problems: [], warnings: [], items: [
+    { area: 'company', code: '1010123456', label: 'Evostel', action: 'unchanged' },
+    { area: 'branch', code: 'HQ', label: 'Head Office', action: 'update', changedFields: ['nameEn'] },
+    { area: 'branch', code: 'JED', label: 'Jeddah', action: 'create' },
+    { area: 'department', code: 'HR', label: 'Human Resources', action: 'reuse' },
+  ] };
+  expect(planCounts(plan)).toEqual({ create: 1, update: 1, unchanged: 1, reuse: 1, conflict: 0 });
+  expect(planIsNoChange(plan)).toBe(false);
+  expect(canCommit(plan)).toBe(true);
+  const untouched = { ...plan, items: plan.items.map(i => ({ ...i, action: i.action === 'reuse' ? 'reuse' as const : 'unchanged' as const })) };
+  expect(planIsNoChange(untouched)).toBe(true);
+  expect(canCommit(untouched)).toBe(true);
+  expect(planIsNoChange(null)).toBe(false);
+});
+
+test('the structure tree marks existing rows apart from new ones and the company as existing', () => {
+  const tree = buildTree(existingBody(), context);
+  const company = tree.children[0];
+  expect(company.tag).toBe('existing');
+  const branches = company.children.find(n => n.id === 'branches')!.children;
+  expect(branches.map(b => [b.code, b.tag])).toEqual([['HQ', 'existing'], ['JED', 'new']]);
+  expect(buildTree(saudiBody(), context).children[0].tag).toBe('new');
 });

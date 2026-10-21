@@ -1,7 +1,8 @@
 import { msg, type MessageParams } from '../i18n/translations';
 import { isValidEmailDomain } from '../api/organization';
 import type {
-  CodeName, CompanySetupContext, CompanySetupDraftBody, CompanySetupPlan, PlanArea, PlanItem, Problem,
+  CodeName, CompanySetupCompany, CompanySetupContext, CompanySetupDraftBody, CompanySetupDraftSummary, CompanySetupPlan,
+  ExistingRow, ManageableCompany, PlanAction, PlanArea, PlanItem, Problem,
 } from '../api/companySetup';
 
 /**
@@ -22,6 +23,115 @@ export const WIZARD_STEPS: Record<StepId, { title: string; description: string }
   6: { title: msg('Company super admin'), description: msg('Who runs this company') },
   7: { title: msg('Review & create'), description: msg('Check the plan, then create') },
 };
+
+/**
+ * One wizard, two modes (Addendum A): `create` makes a new company; `existing` completes setup for an active
+ * company whose rows are prefilled. Only step 1 and the review read differently.
+ */
+export type WizardMode = 'create' | 'existing';
+export const wizardMode = (body: Pick<CompanySetupDraftBody, 'existingCompanyId'> | null | undefined): WizardMode =>
+  body?.existingCompanyId ? 'existing' : 'create';
+
+const EXISTING_STEPS: Partial<Record<StepId, { title: string; description: string }>> = {
+  1: { title: msg('Summary'), description: msg('What this company has today') },
+  7: { title: msg('Review & update'), description: msg('Check the changes, then save') },
+};
+
+/** Rail/heading copy for a step in this mode (dictionary keys; the view translates them). */
+export function stepCopy(step: StepId, mode: WizardMode): { title: string; description: string } {
+  return (mode === 'existing' ? EXISTING_STEPS[step] : undefined) ?? WIZARD_STEPS[step];
+}
+
+/** The chooser on Setup → Guided Setup (Addendum A). */
+export const GUIDED_SETUP_HREF = '/setup?tab=aiSetup&path=guided';
+/** The Configuration Center entry for the old studio (A7): attendance, overtime, benefits and HR rules starters. */
+export const POLICY_STARTER_HREF = '/setup?tab=aiSetup&path=policyStarter';
+
+/** Where the wizard for an existing company lives; `draft` resumes that draft. */
+export function completeCompanyHref(companyId: string, draftId?: string | null): string {
+  return `/setup/company/${encodeURIComponent(companyId)}/complete${draftId ? `?draft=${encodeURIComponent(draftId)}` : ''}`;
+}
+
+/** Resume address for either kind of draft. */
+export function draftHref(summary: Pick<CompanySetupDraftSummary, 'id' | 'existingCompanyId'>): string {
+  return summary.existingCompanyId ? completeCompanyHref(summary.existingCompanyId, summary.id) : `/setup/new-company?draft=${encodeURIComponent(summary.id)}`;
+}
+
+/** A4: the first payroll month is fixed once the company's cutover has left Planned. Unknown status: the server decides. */
+export function firstPayrollMonthLocked(company: Pick<CompanySetupCompany, 'cutoverStatus'>): boolean {
+  const status = (company.cutoverStatus ?? '').trim().toLowerCase();
+  return status !== '' && status !== 'planned';
+}
+
+/** "5 of 9 done" inputs for one chooser row; complete when every item is done. */
+export function readinessProgress(company: Pick<ManageableCompany, 'readinessDone' | 'readinessTotal'>): { done: number; total: number; percent: number; complete: boolean } {
+  const total = Math.max(0, Math.trunc(company.readinessTotal || 0));
+  const done = Math.min(Math.max(0, Math.trunc(company.readinessDone || 0)), total);
+  return { done, total, percent: total === 0 ? 0 : Math.round((done / total) * 100), complete: total > 0 && done === total };
+}
+
+export const isExistingRow = (row: ExistingRow | null | undefined) => !!row?.existingId;
+
+/**
+ * True when an existing row differs from what the company had when the wizard opened (the prefill), compared on the
+ * given fields. New rows and rows the prefill does not know are never "changed" — they are new.
+ */
+export function rowChanged<T extends ExistingRow>(row: T, baseline: readonly T[] | undefined, fields: readonly (keyof T)[]): boolean {
+  if (!row.existingId || !baseline) return false;
+  const before = baseline.find(b => b.existingId === row.existingId);
+  if (!before) return false;
+  const v = (x: unknown) => (x === undefined || x === null ? '' : typeof x === 'string' ? x.trim() : x);
+  return fields.some(f => v(row[f]) !== v(before[f]));
+}
+
+/** Where an existing row is removed instead (A3: the wizard never deletes). Setup tab ids. */
+export const MANAGE_TAB: Record<'branches' | 'locations' | 'costCentres' | 'departments' | 'designations' | 'grades', { tab: string; label: string }> = {
+  branches: { tab: 'branches', label: msg('Branches') },
+  locations: { tab: 'locations', label: msg('Locations') },
+  costCentres: { tab: 'costCenters', label: msg('Cost centres') },
+  departments: { tab: 'departments', label: msg('Departments') },
+  designations: { tab: 'designations', label: msg('Designations') },
+  grades: { tab: 'grades', label: msg('Grades') },
+};
+
+/** Labels for `PlanItem.changedFields`, so an update names its fields in the reader's language. */
+export const CHANGED_FIELD_LABEL: Record<string, string> = {
+  legalNameEn: msg('Legal name (English)'), legalNameAr: msg('Legal name (Arabic)'), tradeName: msg('Trade name (optional)'),
+  registrationNumber: msg('Commercial registration (CR) number'), molEstablishmentNumber: msg('MOL establishment number'),
+  gosiEmployerId: msg('GOSI employer number (optional)'), unifiedNationalNumber: msg('Unified National Number (optional)'),
+  taxNumber: msg('VAT number (optional)'), qiwaEstablishmentId: msg('Qiwa establishment ID (optional)'),
+  emailDomain: msg('Work email domain (optional)'), workEmailPattern: msg('Work email pattern (optional)'),
+  erpCompanyCode: msg('ERP company code (optional)'), firstPayrollMonth: msg('First payroll month'),
+  nameEn: msg('Name (English)'), nameAr: msg('Name (Arabic)'), titleEn: msg('Title (English)'), titleAr: msg('Title (Arabic)'),
+  city: msg('City'), timeZoneId: msg('Time zone'), isHeadOffice: msg('Head office'),
+  latitude: msg('Latitude'), longitude: msg('Longitude'), radiusMeters: msg('Radius (m)'),
+  weekendDays: msg('Weekend (days off)'), prefix: msg('Prefix'), paddingLength: msg('Digits in the number'), nextSequence: msg('Next number'),
+  useCountryPrefix: msg('Add the country code'), useBranchPrefix: msg('Add the branch code'), useDepartmentPrefix: msg('Add the department code'), useYear: msg('Add the joining year'),
+};
+
+/**
+ * What the review shows open: what will change. In create mode every item is shown (reused catalog rows are part of
+ * what Create does). In existing mode, rows that stay as they are — unchanged, and shared rows reused as they are —
+ * are collapsed so the reader sees only the changes.
+ */
+export function isPlanChange(action: PlanAction, mode: WizardMode): boolean {
+  if (mode === 'create') return action !== 'unchanged';
+  return action === 'create' || action === 'update' || action === 'conflict';
+}
+
+export interface PlanCounts { create: number; update: number; unchanged: number; reuse: number; conflict: number }
+export function planCounts(plan: CompanySetupPlan | null): PlanCounts {
+  const out: PlanCounts = { create: 0, update: 0, unchanged: 0, reuse: 0, conflict: 0 };
+  for (const item of plan?.items ?? []) if (item.action in out) out[item.action] += 1;
+  return out;
+}
+
+/** Existing mode with nothing to add or change: the commit writes only its audit row. */
+export function planIsNoChange(plan: CompanySetupPlan | null): boolean {
+  if (!plan) return false;
+  const c = planCounts(plan);
+  return c.create === 0 && c.update === 0 && c.conflict === 0;
+}
 
 /** Which wizard step each planned area belongs to, so the review groups the plan the way it was entered. */
 export const AREA_STEP: Record<PlanArea, StepId> = {
@@ -138,7 +248,7 @@ export function validateStep(step: StepId, { body, context, adminStepVisible = t
   const saudi = isSaudi(c.countryCode);
   switch (step) {
     case 1:
-      if (body.startFrom === 'copy' && blank(body.copyFromCompanyId)) errors.push({ field: 'copyFromCompanyId', message: msg('Choose the company to copy from.') });
+      if (!body.existingCompanyId && body.startFrom === 'copy' && blank(body.copyFromCompanyId)) errors.push({ field: 'copyFromCompanyId', message: msg('Choose the company to copy from.') });
       break;
     case 2: {
       if (blank(c.legalNameEn)) errors.push({ field: 'company.legalNameEn', message: msg('Enter the legal name in English, as it appears on the commercial registration.') });
@@ -296,7 +406,7 @@ export function canCommit(plan: CompanySetupPlan | null): boolean {
 
 // ── Structure tree ───────────────────────────────────────────────────────────
 
-export type TreeTag = 'new' | 'reused';
+export type TreeTag = 'new' | 'reused' | 'existing';
 export interface TreeNode { id: string; label: string; labelAr?: string; code?: string; tag?: TreeTag; children: TreeNode[]; kind: 'company' | 'group' | 'branch' | 'location' | 'costCentre' | 'catalog' | 'department' | 'designation' | 'grade' }
 
 const named = (code: string, en: string | undefined, ar: string | undefined) => ({ label: (en ?? '').trim() || code, labelAr: (ar ?? '').trim() || undefined });
@@ -308,21 +418,23 @@ const named = (code: string, en: string | undefined, ar: string | undefined) => 
 export function buildTree(body: CompanySetupDraftBody, context?: CompanySetupContext | null): TreeNode {
   const catalog = context?.sharedCatalog;
   const tagFor = (list: readonly CodeName[] | undefined, code: string): TreeTag => (inCatalog(list, code) ? 'reused' : 'new');
+  // Existing mode: a row the company already has is "existing"; a shared catalog row stays "reused".
+  const ownTag = (r: unknown): TreeTag => (isExistingRow(r as ExistingRow) ? 'existing' : 'new');
   const rows = <T,>(items: readonly T[], kind: TreeNode['kind'], code: (r: T) => string, en: (r: T) => string | undefined, ar: (r: T) => string | undefined, list?: readonly CodeName[]): TreeNode[] =>
     items.filter(r => code(r).trim() || (en(r) ?? '').trim()).map((r, i) => {
       const reused = list ? inCatalog(list, code(r)) : undefined;
       return {
         id: `${kind}-${i}-${code(r)}`, kind, code: code(r).trim(),
         ...(reused ? named(reused.code, reused.nameEn, reused.nameAr ?? undefined) : named(code(r), en(r), ar(r))),
-        tag: list ? tagFor(list, code(r)) : 'new',
+        tag: list ? tagFor(list, code(r)) : ownTag(r),
         children: [],
       };
     });
   const company: TreeNode = {
-    id: 'company', kind: 'company', ...named('', body.company.legalNameEn || '', body.company.legalNameAr), tag: 'new',
+    id: 'company', kind: 'company', ...named('', body.company.legalNameEn || '', body.company.legalNameAr), tag: body.existingCompanyId ? 'existing' : 'new',
     children: [
       { id: 'branches', kind: 'group', label: msg('Branches'), children: body.branches.filter(b => b.code.trim() || b.nameEn.trim()).map((b, i) => ({
-        id: `branch-${i}-${b.code}`, kind: 'branch' as const, code: b.code.trim(), ...named(b.code, b.nameEn, b.nameAr), tag: 'new' as const,
+        id: `branch-${i}-${b.code}`, kind: 'branch' as const, code: b.code.trim(), ...named(b.code, b.nameEn, b.nameAr), tag: ownTag(b),
         children: rows(b.locations, 'location', l => l.code, l => l.nameEn, l => l.nameAr),
       })) },
       { id: 'costCentres', kind: 'group', label: msg('Cost centres'), children: rows(body.costCentres, 'costCentre', r => r.code, r => r.nameEn, r => r.nameAr) },
