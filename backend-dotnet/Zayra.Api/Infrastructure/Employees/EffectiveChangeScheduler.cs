@@ -101,11 +101,8 @@ public sealed class EffectiveChangeScheduler : BackgroundService
         foreach (var tenant in candidates.GroupBy(x => x.TenantId))
         {
             ct.ThrowIfCancellationRequested();
-            var timeZoneId = await db.TenantLocalizationSettings.AsNoTracking()
-                .Where(l => l.TenantId == tenant.Key)
-                .Select(l => l.DefaultTimezone)
-                .FirstOrDefaultAsync(ct);
-            var localToday = TenantTimeZone.LocalDate(TenantTimeZone.FromId(timeZoneId), nowUtc);
+            // TenantClock's rule, so a Saudi tenant's change applies on the Riyadh day whatever zone is stored.
+            var localToday = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(db, tenant.Key, ct, nowUtc);
             if (tenant.Min(x => x.EffectiveDate) > localToday) continue;
 
             var result = await store.EnqueueAsync(

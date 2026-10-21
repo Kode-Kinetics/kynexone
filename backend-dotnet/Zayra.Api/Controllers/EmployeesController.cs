@@ -34,6 +34,7 @@ using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Setup;
 
 namespace Zayra.Api.Controllers;
 
@@ -891,6 +892,9 @@ public class EmployeesController : ControllerBase
             // pure Evaluate primitive (never aborts the file). Blank status ⇒ Draft; explicit Active with
             // activate-blockers ⇒ downgraded to Draft + warning (row still created).
             var readinessPolicyCache = new Dictionary<string, ResolvedReadinessPolicy>();
+            // Reference-list columns (Gender, MaritalStatus, EmploymentType, ContractType) accept a code or a label in
+            // either language; a recognised value is stored as its code, an unknown one as typed (never blocked).
+            var importReferenceLists = await ImportReferenceLists.LoadAsync(_db, tenantId, ct);
 
             async Task<(string Landing, EmployeeReadiness Readiness, bool HasPolicy, string PolicyCountry)> ResolveRowLandingAsync(
                 Dictionary<string, string> row, Guid? companyId, Guid? deptId, Guid? desigId, DateTime jd, string csvStatus)
@@ -1276,7 +1280,7 @@ public class EmployeesController : ControllerBase
                     RowWarn(rowNum, $"Work email '{workEmail}' already belongs to an existing login — check it is the same person before linking that login to this record.");
 
                 // SHARED with ImportPreview: the same builder records the same data:unparsed* gaps in both.
-                var employee = BuildImportedEmployee(tenantId, row, resolved, name, finalCode, workEmail, rowStatus, jd, resolved.Gaps);
+                var employee = BuildImportedEmployee(tenantId, row, resolved, name, finalCode, workEmail, rowStatus, jd, resolved.Gaps, importReferenceLists);
                 employee.ReadinessState = rowReadiness.State;
                 employee.ActivationBlockersCount = rowReadiness.Blocking.Count;
                 employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
@@ -2256,7 +2260,8 @@ public class EmployeesController : ControllerBase
     /// (EmployeeImportStorageGuard) as the commit. Readiness columns are stamped by the caller.
     /// </summary>
     private static Employee BuildImportedEmployee(Guid tenantId, Dictionary<string, string> row, ResolvedImportRow resolved,
-        string name, string finalCode, string workEmail, string status, DateTime joiningDate, List<ImportGap> gaps)
+        string name, string finalCode, string workEmail, string status, DateTime joiningDate, List<ImportGap> gaps,
+        ImportReferenceLists referenceLists)
     {
         var deptNameRaw = row.GetValueOrDefault("Department", string.Empty).Trim();
         var desigTitleRaw = row.GetValueOrDefault("Designation", string.Empty).Trim();
@@ -2274,10 +2279,10 @@ public class EmployeesController : ControllerBase
             PersonalEmail = row.GetValueOrDefault("PersonalEmail", string.Empty),
             WorkEmail = workEmail,
             Phone = row.GetValueOrDefault("Phone", string.Empty),
-            Gender = row.GetValueOrDefault("Gender", string.Empty),
+            Gender = referenceLists.Gender.Normalize(row.GetValueOrDefault("Gender", string.Empty)),
             DateOfBirth = ReadCsvDate(row, "DateOfBirth", gaps),
             Nationality = row.GetValueOrDefault("Nationality", string.Empty),
-            MaritalStatus = row.GetValueOrDefault("MaritalStatus", string.Empty),
+            MaritalStatus = referenceLists.MaritalStatus.Normalize(row.GetValueOrDefault("MaritalStatus", string.Empty)),
             // Explicit CountryCode column wins, else the EMPLOYING company's country — the one rule, the
             // one helper. A blank country resolves an EMPTY statutory floor, so a file without the column
             // used to import a whole workforce with no jurisdiction gate applied to any of it.
@@ -2291,8 +2296,8 @@ public class EmployeesController : ControllerBase
             PositionId = resolved.PositionId,
             Grade = resolved.FinalGradeCode,
             JobTitle = row.GetValueOrDefault("JobTitle", desigTitleRaw),
-            EmploymentType = row.GetValueOrDefault("EmploymentType", "Full-time"),
-            ContractType = row.GetValueOrDefault("ContractType", string.Empty),
+            EmploymentType = referenceLists.EmploymentType.Normalize(row.GetValueOrDefault("EmploymentType", "Full-time")),
+            ContractType = referenceLists.ContractType.Normalize(row.GetValueOrDefault("ContractType", string.Empty)),
             Status = status,
             // Kept EXACTLY as parsed: `default` means "the file gave no readable joining date"; the readiness
             // evaluator blocks activation on it. Re-defaulting it here would reinstate the guess.
@@ -3661,6 +3666,11 @@ public class EmployeesController : ControllerBase
                         tenantId, employee, requestContext with { TenantId = tenantId }, ct);
                     await _db.LinkOnboardingTasksForActivatedDraftAsync(
                         tenantId, draftId, employee, ct);
+                    var checklist = await _db.AttachForActivatedDraftAsync(tenantId, draftId, employee, requestContext.UserId, ct);
+                    if (checklist.Outcome is DefaultChecklistOutcome.NoDefaultChecklist or DefaultChecklistOutcome.AmbiguousDefaultChecklist)
+                        _logger?.LogInformation(
+                            "Hire activation: no onboarding checklist attached for draft {DraftId} in tenant {TenantId} ({Outcome}).",
+                            draftId, tenantId, checklist.Outcome);
 
                     draft.Status = EmployeeDraftStatuses.Activated;
                     draft.CurrentStep = EmployeeDraftStatuses.Activated;

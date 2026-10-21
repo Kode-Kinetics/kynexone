@@ -225,6 +225,7 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
         AssessmentScore score = default!;
         LearningCredential? credential = null;
         AttemptResultDto? stored = null;
+        LearningAssignment? completedAssignment = null;
         try
         {
             // One submit of an attempt at a time. The attempt is read FOR UPDATE inside the transaction, so a second
@@ -274,6 +275,18 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
                 }
                 enrollment.Version++;
                 await db.SaveChangesAsync(ct);
+
+                // The audit rows commit WITH the score (same context, same transaction). Written after the commit, a
+                // commit-then-disconnect retry would take the stored-result branch above and the pass, the lock and the
+                // credential would never be audited.
+                await audit.WriteAsync(score.Passed ? "learning.attempt.passed" : "learning.attempt.failed", nameof(LearningAttempt), attempt.Id.ToString(),
+                    actor.Request, JsonSerializer.Serialize(new { attempt.EnrollmentId, attempt.AttemptNo, attempt.ScorePercent, attempt.PassMarkPercent }), ct);
+                if (enrollment.Status == LearningEnrollmentStatuses.Locked)
+                    await audit.WriteAsync("learning.enrollment.locked", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
+                        JsonSerializer.Serialize(new { enrollment.AttemptsUsed, enrollment.AttemptAllowance }), ct);
+                if (score.Passed) await WriteCompletionAuditAsync(actor.Request, enrollment, assignment, credential, ct);
+                // Not reset on a retry: if this execution's commit landed, the assignment it completed is announced below.
+                if (score.Passed && assignment.Status == LearningAssignmentStatuses.Completed) completedAssignment = assignment;
             }, ct);
         }
         catch (DbUpdateConcurrencyException)
@@ -286,14 +299,9 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
             if (latest.Status == LearningAttemptStatuses.InProgress) throw;
             return await StoredResultAsync(latest, current, bank, ct);
         }
+        if (completedAssignment is not null) await NotifyAssignmentCompletedAsync(completedAssignment, ct);
         if (stored is not null) return stored;
 
-        await audit.WriteAsync(score.Passed ? "learning.attempt.passed" : "learning.attempt.failed", nameof(LearningAttempt), attempt.Id.ToString(),
-            actor.Request, JsonSerializer.Serialize(new { attempt.EnrollmentId, attempt.AttemptNo, attempt.ScorePercent, attempt.PassMarkPercent }), ct);
-        if (enrollment.Status == LearningEnrollmentStatuses.Locked)
-            await audit.WriteAsync("learning.enrollment.locked", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
-                JsonSerializer.Serialize(new { enrollment.AttemptsUsed, enrollment.AttemptAllowance }), ct);
-        if (score.Passed) await AuditCompletionAsync(actor.Request, enrollment, assignment, credential, ct);
         return new AttemptResultDto(attempt.Id, attempt.AttemptNo, attempt.Status, score.ScorePercent, attempt.PassMarkPercent, score.Correct, score.Total,
             Math.Max(0, enrollment.AttemptAllowance - enrollment.AttemptsUsed), enrollment.Status, credential?.Id, credential?.CertificateNumber);
     }
@@ -492,6 +500,15 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
     internal async Task AuditCompletionAsync(RequestContext request, LearningEnrollment enrollment, LearningAssignment assignment,
         LearningCredential? credential, CancellationToken ct)
     {
+        await WriteCompletionAuditAsync(request, enrollment, assignment, credential, ct);
+        if (enrollment.Status != LearningEnrollmentStatuses.PendingVerification && assignment.Status == LearningAssignmentStatuses.Completed)
+            await NotifyAssignmentCompletedAsync(assignment, ct);
+    }
+
+    /// <summary>The completion's audit rows only. Safe inside the caller's transaction (the audit shares this context).</summary>
+    private async Task WriteCompletionAuditAsync(RequestContext request, LearningEnrollment enrollment, LearningAssignment assignment,
+        LearningCredential? credential, CancellationToken ct)
+    {
         if (enrollment.Status == LearningEnrollmentStatuses.PendingVerification)
         {
             // Content-reported, not yet a completion: "completed" is audited once, when HR verifies it.
@@ -505,19 +522,22 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
             await audit.WriteAsync("learning.credential.issued", nameof(LearningCredential), credential.Id.ToString(), request,
                 JsonSerializer.Serialize(new { credential.EmployeeId, credential.CertificateNumber, credential.CourseCode, credential.ExpiresOn, credential.SupersedesCredentialId }), ct);
         if (assignment.Status == LearningAssignmentStatuses.Completed)
-        {
             await audit.WriteAsync("learning.assignment.completed", nameof(LearningAssignment), assignment.Id.ToString(), request,
                 JsonSerializer.Serialize(new { assignment.EmployeeId, assignment.PathId, assignment.Cycle }), ct);
-            // After the completion committed: modules that follow an assignment (SUC development-plan actions) hear about it.
-            // A listener failure never undoes the learner's completion; listeners also reconcile on read and in their sweep.
-            foreach (var listener in services.GetServices<ILearningAssignmentCompletedListener>())
+    }
+
+    /// <summary>Call only after the completion committed.</summary>
+    private async Task NotifyAssignmentCompletedAsync(LearningAssignment assignment, CancellationToken ct)
+    {
+        // Modules that follow an assignment (SUC development-plan actions) hear about it. A listener failure never undoes
+        // the learner's completion; listeners also reconcile on read and in their sweep.
+        foreach (var listener in services.GetServices<ILearningAssignmentCompletedListener>())
+        {
+            try { await listener.OnAssignmentCompletedAsync(assignment.TenantId, assignment.Id, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                try { await listener.OnAssignmentCompletedAsync(assignment.TenantId, assignment.Id, ct); }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    services.GetService<ILogger<LearningProgressService>>()?.LogWarning(
-                        "Learning: a completion listener failed for assignment {AssignmentId} ({Error}).", assignment.Id, ex.GetType().Name);
-                }
+                services.GetService<ILogger<LearningProgressService>>()?.LogWarning(
+                    "Learning: a completion listener failed for assignment {AssignmentId} ({Error}).", assignment.Id, ex.GetType().Name);
             }
         }
     }

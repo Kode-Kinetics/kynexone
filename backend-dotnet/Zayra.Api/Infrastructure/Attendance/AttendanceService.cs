@@ -670,12 +670,12 @@ public class AttendanceService : IAttendanceService
                 var employeeDays = new List<DateOnly>();
                 foreach (var date in employeeDates[emp.Id])
                 {
-                    if (await IsLocked(tenantId, date, ct)) continue;
+                    if (await IsLocked(tenantId, emp.Id, date, ct)) continue;
                     var done = false;
                     await AttendanceDailyRecordLock.RunAsync(_db, tenantId, emp.Id, date, async () =>
                     {
                         done = false;
-                        if (await IsLocked(tenantId, date, ct)) return; // re-checked inside the day's lock
+                        if (await IsLocked(tenantId, emp.Id, date, ct)) return; // re-checked inside the day's lock
                         await ProcessEmployeeDay(tenantId, emp, date, policy, ctx, ct);
                         await _db.SaveChangesAsync(ct);
                         done = true;
@@ -787,7 +787,7 @@ public class AttendanceService : IAttendanceService
                 {
                     done = false;
                     // Re-checked inside the day's lock: a payroll period locked while the run was going is not rewritten.
-                    if (await IsLocked(tenantId, day, ct)) return;
+                    if (await IsLocked(tenantId, employee.Id, day, ct)) return;
                     await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                     await _db.SaveChangesAsync(ct);
                     done = true;
@@ -813,8 +813,9 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("From date must be on or before To date.");
         if (toDate.DayNumber - fromDate.DayNumber > 366)
             throw new InvalidOperationException("Attendance processing is limited to 367 days per request.");
-        if (await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId
-                && x.Status == "Locked" && x.PeriodStart <= toDate && x.PeriodEnd >= fromDate, ct))
+        // A tenant-wide lock refuses the whole range; a payroll run's lock covers only its employees' days, which the
+        // run skips one by one (IsLocked), so another company's attendance for the same month still processes.
+        if (await AttendancePayrollLock.IsTenantLockedAsync(_db, tenantId, fromDate, toDate, ct))
             throw new InvalidOperationException("Attendance cannot be processed for a payroll-locked period.");
     }
 
@@ -868,7 +869,7 @@ public class AttendanceService : IAttendanceService
             {
                 done = false;
                 // Re-checked inside the day's lock: a payroll period locked while the job was going is not rewritten.
-                if (await IsLocked(tenantId, day, ct)) return;
+                if (await IsLocked(tenantId, employee.Id, day, ct)) return;
                 await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                 await _db.SaveChangesAsync(ct);
                 done = true;
@@ -924,7 +925,7 @@ public class AttendanceService : IAttendanceService
                 await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, day, async () =>
                 {
                     done = false;
-                    if (await IsLocked(tenantId, day, ct)) return;
+                    if (await IsLocked(tenantId, employee.Id, day, ct)) return;
                     if (impactsOnly?.Contains((employee.Id, day)) == true)
                         await ResyncImpactsFromRecordAsync(tenantId, employee, day, policy, ct);
                     else
@@ -959,6 +960,87 @@ public class AttendanceService : IAttendanceService
     {
         public static readonly RecomputeOnlyHttpClients Instance = new();
         public HttpClient CreateClient(string name) => throw new InvalidOperationException("A recompute-only attendance service polls no device.");
+    }
+
+    /// <summary>The exception types HR works through on Attendance → Exceptions.</summary>
+    public static readonly string[] ReviewedExceptionTypes =
+        ["MissingPunch", AttendanceDerivedArtifacts.PaidAttendanceChanged, AttendanceDerivedArtifacts.ImportedDayHasPunches];
+
+    /// <summary>The shortest reason HR may give for resolving an exception: "ok" is not a reason.</summary>
+    public const int MinimumResolutionReasonLength = 10;
+
+    /// <summary>
+    /// HR's list of attendance exceptions: open by default, High first, newest day first. Only employees the caller can
+    /// see (the Employee query filter applies the company scope; <paramref name="scopeIds"/> a narrower data scope).
+    /// </summary>
+    public async Task<PagedResult<AttendanceExceptionDto>> GetExceptionsAsync(Guid tenantId, string? state, string? type, DateOnly? from, DateOnly? to,
+        int? employeeId, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
+    {
+        var types = string.IsNullOrWhiteSpace(type) ? ReviewedExceptionTypes : [type.Trim()];
+        var visible = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        var q = _db.AttendanceExceptions.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && types.Contains(x.ExceptionType) && visible.Any(e => e.Id == x.EmployeeId));
+        q = (state ?? "open").ToLowerInvariant() switch
+        {
+            "resolved" => q.Where(x => x.IsResolved),
+            "all" => q,
+            _ => q.Where(x => !x.IsResolved),
+        };
+        if (from is not null) q = q.Where(x => x.WorkDate >= from);
+        if (to is not null) q = q.Where(x => x.WorkDate <= to);
+        if (scopeIds is not null) q = q.Where(x => scopeIds.Contains(x.EmployeeId));
+        else if (employeeId is not null) q = q.Where(x => x.EmployeeId == employeeId);
+        var total = await q.CountAsync(ct);
+        var rows = await q.OrderBy(x => x.Severity == "High" ? 0 : 1).ThenByDescending(x => x.WorkDate).ThenBy(x => x.EmployeeId)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        return new PagedResult<AttendanceExceptionDto>(await ToExceptionDtosAsync(tenantId, rows, ct), total, page, pageSize);
+    }
+
+    /// <summary>
+    /// HR resolves one exception with a reason, recorded on it and in the attendance audit log. The resolution survives a
+    /// recompute: the same exception is not raised again for the same punches (or the same paid difference); a change
+    /// opens a new one. Null when the exception does not exist or is not the caller's to see.
+    /// </summary>
+    public async Task<AttendanceExceptionDto?> ResolveExceptionAsync(Guid tenantId, Guid id, string reason, string resolvedBy, RequestContext context,
+        CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
+    {
+        var trimmed = (reason ?? string.Empty).Trim();
+        if (trimmed.Length < MinimumResolutionReasonLength)
+            throw new InvalidOperationException($"Say why this is resolved (at least {MinimumResolutionReasonLength} characters): what was checked, and what was done.");
+        var visible = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted);
+        var exception = await _db.AttendanceExceptions.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id
+            && ReviewedExceptionTypes.Contains(x.ExceptionType) && visible.Any(e => e.Id == x.EmployeeId), ct);
+        if (exception is null || (scopeIds is not null && !scopeIds.Contains(exception.EmployeeId))) return null;
+        if (!exception.IsResolved)
+        {
+            AttendanceDerivedArtifacts.ResolveByHr(exception, resolvedBy, trimmed, _clock.GetUtcNow().UtcDateTime);
+            await Audit(tenantId, context, "attendance.exception.resolved", nameof(AttendanceException), exception.Id.ToString(),
+                JsonSerializer.Serialize(new { exception.EmployeeId, exception.WorkDate, exception.ExceptionType, reason = trimmed }), ct);
+            await _db.SaveChangesAsync(ct);
+        }
+        return (await ToExceptionDtosAsync(tenantId, [exception], ct)).Single();
+    }
+
+    private async Task<List<AttendanceExceptionDto>> ToExceptionDtosAsync(Guid tenantId, IReadOnlyCollection<AttendanceException> rows, CancellationToken ct)
+    {
+        var employeeIds = rows.Select(r => r.EmployeeId).Distinct().ToList();
+        var dates = rows.Select(r => r.WorkDate).Distinct().ToList();
+        var people = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && employeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.FullName, e.EmployeeCode }).ToDictionaryAsync(e => e.Id, ct);
+        var days = (await _db.AttendanceDailyRecords.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && employeeIds.Contains(d.EmployeeId) && dates.Contains(d.WorkDate))
+                .Select(d => new { d.EmployeeId, d.WorkDate, d.Status, d.FirstInUtc, d.LastOutUtc, d.LateMinutes, d.EarlyExitMinutes, d.MissingPunch })
+                .ToListAsync(ct))
+            .GroupBy(d => (d.EmployeeId, d.WorkDate)).ToDictionary(g => g.Key, g => g.First());
+        return rows.Select(r =>
+        {
+            people.TryGetValue(r.EmployeeId, out var p);
+            days.TryGetValue((r.EmployeeId, r.WorkDate), out var d);
+            return new AttendanceExceptionDto(r.Id, r.EmployeeId, p?.FullName ?? string.Empty, p?.EmployeeCode ?? string.Empty, r.WorkDate,
+                r.ExceptionType, r.Severity, AttendanceDerivedArtifacts.DescribePaidAttendanceChange(r.Details), r.IsResolved,
+                AttendanceDerivedArtifacts.HrResolutionOf(r.Details), r.CreatedAtUtc,
+                d is null ? null : new AttendanceExceptionDayDto(d.Status, d.FirstInUtc, d.LastOutUtc, d.LateMinutes, d.EarlyExitMinutes, d.MissingPunch));
+        }).ToList();
     }
 
     public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
@@ -1019,13 +1101,13 @@ public class AttendanceService : IAttendanceService
         // Race-safe: two first-of-day punches of the same employee used to both create the daily record, and the loser
         // got an unhandled 23505 (a 500 after its raw event had committed). The daily record and what is derived from it
         // are written under a per-(tenant, employee, work date) advisory lock, so the second punch updates the first's row.
-        if (await IsLocked(tenantId, workDate, ct)) return raw;
+        if (await IsLocked(tenantId, employee.Id, workDate, ct)) return raw;
         // The tenant's first DEFAULT policy is created race-safely in its own short transaction, BEFORE the daily-record
         // lock is taken (the policy lock is never held together with a daily-record lock).
         var policies = await EnsureActivePoliciesAsync(tenantId, ct);
         await AttendanceDailyRecordLock.RunAsync(_db, tenantId, employee.Id, workDate, async () =>
         {
-            if (await IsLocked(tenantId, workDate, ct)) return;
+            if (await IsLocked(tenantId, employee.Id, workDate, ct)) return;
             await ProcessEmployeeDay(tenantId, employee, workDate,
                 ResolveAttendancePolicy(employee, policies), context, ct);
             await _db.SaveChangesAsync(ct);
@@ -1061,7 +1143,7 @@ public class AttendanceService : IAttendanceService
             Reason = Clean(request.Reason),
             Status = "Submitted",
             RequestedByUserId = context.UserId,
-            PayrollLockChecked = await IsLocked(tenantId, request.WorkDate, ct)
+            PayrollLockChecked = await IsLocked(tenantId, request.EmployeeId, request.WorkDate, ct)
         };
         _db.AttendanceRegularizationRequests.Add(reg);
         _db.AttendanceCorrectionApprovals.Add(new AttendanceCorrectionApproval { TenantId = tenantId, RegularizationRequestId = reg.Id, ApprovalLevel = "Manager" });
@@ -1094,7 +1176,7 @@ public class AttendanceService : IAttendanceService
             throw new InvalidOperationException("Cannot approve your own correction request.");
         if (reg.Status != "Submitted" && reg.Status != "PendingHRApproval")
             throw new InvalidOperationException($"Request is in '{reg.Status}' status and cannot be approved.");
-        if (await IsLocked(tenantId, reg.WorkDate, ct))
+        if (await IsLocked(tenantId, reg.EmployeeId, reg.WorkDate, ct))
             throw new InvalidOperationException("Attendance period is payroll locked.");
         var beforeStatus = reg.Status;
         var activeLevel = reg.Status == "Submitted" ? "Manager" : "HR";
@@ -1105,7 +1187,7 @@ public class AttendanceService : IAttendanceService
             reg = await RunRegularizationTransitionAsync(tenantId, id, async () =>
             {
                 var r = await ReloadForTransitionAsync(tenantId, id, beforeStatus, ct);
-                if (await IsLocked(tenantId, r.WorkDate, ct))
+                if (await IsLocked(tenantId, r.EmployeeId, r.WorkDate, ct))
                     throw new InvalidOperationException("Attendance period is payroll locked.");
                 var approval = await _db.AttendanceCorrectionApprovals.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.RegularizationRequestId == id && x.ApprovalLevel == "Manager", ct);
                 if (approval is not null)
@@ -1295,6 +1377,17 @@ public class AttendanceService : IAttendanceService
             && x.EmployeeId == employee.Id && x.PunchTimestampUtc >= start && x.PunchTimestampUtc < end)
             .OrderBy(x => x.PunchTimestampUtc).ToListAsync(ct);
         var daily = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.WorkDate == date, ct);
+        if (daily is not null && await KeepsRecordedTimesAsync(tenantId, employee.Id, daily, events.Count, start, end, ct))
+        {
+            // An imported day, or a day with times and no raw punch anywhere near it: its times came from somewhere other
+            // than the punches here, and rebuilding it from punches turned it into an Absent day with a 480-minute
+            // deduction. It keeps its times and status; only its deductions are re-derived, through the same writer and
+            // paid-day protection. Real punches on an imported day are a conflict for HR, never a silent overwrite.
+            if (events.Count > 0) RaiseImportConflict(tenantId, daily, events);
+            var (_, keptAbsenceMinutes) = await DayBaselineAsync(tenantId, employee, date, policy, ct);
+            await UpsertImpacts(tenantId, daily, keptAbsenceMinutes, ct);
+            return;
+        }
         if (daily is null)
         {
             daily = new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, Department = employee.Department, Branch = employee.Branch, WorkDate = date };
@@ -1323,7 +1416,7 @@ public class AttendanceService : IAttendanceService
         // leave and an approved leave day was recomputed as "Absent" with an absence deduction. The employee was
         // authorised by the calling path; only the leave type name is read, never returned.
         var approvedLeave = await ScopedBypass.TenantWide(_db.LeaveRequests, tenantId, ApprovedLeaveReadJustification).AsNoTracking()
-            .Where(x => x.EmployeeId == employee.Id && x.Status == "Approved"
+            .Where(x => x.EmployeeId == employee.Id && Zayra.Api.Application.Leave.LeaveTakenStatuses.All.Contains(x.Status)
                 && x.StartDate <= date && x.EndDate >= date)
             .Select(x => x.LeaveTypeName)
             .FirstOrDefaultAsync(ct);
@@ -1378,6 +1471,51 @@ public class AttendanceService : IAttendanceService
         await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
         await UpsertImpacts(tenantId, daily, absenceMinutes, ct);
         await UpsertExceptions(tenantId, daily, ct);
+    }
+
+    /// <summary>
+    /// Whether the day processor keeps a record's times instead of rebuilding it from punches: an imported day (until a
+    /// correction replaces it), or a record with times and no raw punch of the employee in or around the day's window —
+    /// written before punches were recorded as raw events. A day whose punch merely moved to the next or previous day
+    /// still has raw punches nearby, so it is rebuilt (and emptied) as before.
+    /// </summary>
+    private async Task<bool> KeepsRecordedTimesAsync(Guid tenantId, int employeeId, AttendanceDailyRecord daily, int dayEvents,
+        DateTime windowStart, DateTime windowEnd, CancellationToken ct)
+    {
+        if (daily.FirstInUtc is null && daily.LastOutUtc is null) return false;
+        if (daily.ManualCorrectionStatus == AttendanceDerivedArtifacts.ImportedRecord) return true;
+        if (dayEvents > 0) return false;
+        var from = windowStart.AddDays(-1);
+        var to = windowEnd.AddDays(1);
+        return !await _db.AttendanceRawEvents.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId
+            && x.PunchTimestampUtc >= from && x.PunchTimestampUtc < to, ct);
+    }
+
+    /// <summary>One open conflict per imported day that real punches landed on, re-worded as the punches change.</summary>
+    private void RaiseImportConflict(Guid tenantId, AttendanceDailyRecord daily, IReadOnlyList<AttendanceRawEvent> events)
+    {
+        var punches = string.Join(", ", events.Select(e => $"{e.PunchDirection} {e.PunchTimestampUtc:yyyy-MM-dd HH:mm} UTC"));
+        var signature = string.Join(",", events.Select(e => $"{e.PunchDirection}@{e.PunchTimestampUtc:O}"));
+        var details = AttendanceDerivedArtifacts.WithSignature(
+            $"This day was imported ({daily.FirstInUtc:HH:mm}–{daily.LastOutUtc:HH:mm} UTC, {daily.Status}) and real punches "
+            + $"were then recorded for it: {punches}. The imported values were kept. If the punches are right, approve a correction "
+            + "for the day; it then follows the punches.", signature);
+        var open = _db.AttendanceExceptions.Local.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                       && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved)
+                   ?? _db.AttendanceExceptions.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                       && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved);
+        if (open is not null) { open.Details = details; return; }
+        // HR already decided to keep the import for exactly these punches: a recompute does not ask again.
+        if (_db.AttendanceExceptions.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                && x.WorkDate == daily.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && x.IsResolved)
+            .Select(x => x.Details).AsEnumerable()
+            .Any(d => AttendanceDerivedArtifacts.HrResolutionOf(d) is not null && AttendanceDerivedArtifacts.SignatureIn(d) == signature))
+            return;
+        _db.AttendanceExceptions.Add(new AttendanceException
+        {
+            TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate,
+            ExceptionType = AttendanceDerivedArtifacts.ImportedDayHasPunches, Severity = "High", Details = details,
+        });
     }
 
     /// <summary>The day's working-hours baseline (overtime / undertime threshold) and what one absent day costs.</summary>
@@ -1545,7 +1683,7 @@ public class AttendanceService : IAttendanceService
                 if (reg.Status == "Approved" && approval?.DecidedByUserId is Guid decider && decider == context.UserId)
                     return reg;
                 if (reg.Status != beforeStatus) throw new RegularizationConflictException();
-                if (await IsLocked(tenantId, reg.WorkDate, ct))
+                if (await IsLocked(tenantId, reg.EmployeeId, reg.WorkDate, ct))
                     throw new InvalidOperationException("Attendance period is payroll locked.");
                 // One correction is one work day (the shift may have changed since it was filed).
                 await EnsureCorrectionWithinWorkDayAsync(tenantId, reg.EmployeeId, reg.WorkDate, reg.RequestedInUtc, reg.RequestedOutUtc, ct);
@@ -1571,6 +1709,17 @@ public class AttendanceService : IAttendanceService
                 var employee = await _db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == reg.EmployeeId && !e.IsDeleted, ct);
                 if (employee is not null)
                 {
+                    // An approved correction is HR's decision about the day: from now on it follows its punches (and this
+                    // correction), even if it was imported. The import conflict, if one was open, is settled by it.
+                    var existingDay = await _db.AttendanceDailyRecords.FirstOrDefaultAsync(x => x.TenantId == tenantId
+                        && x.EmployeeId == reg.EmployeeId && x.WorkDate == reg.WorkDate, ct);
+                    if (existingDay is not null && existingDay.ManualCorrectionStatus == AttendanceDerivedArtifacts.ImportedRecord)
+                    {
+                        existingDay.ManualCorrectionStatus = "Approved";
+                        foreach (var conflict in await _db.AttendanceExceptions.Where(x => x.TenantId == tenantId && x.EmployeeId == reg.EmployeeId
+                                     && x.WorkDate == reg.WorkDate && x.ExceptionType == AttendanceDerivedArtifacts.ImportedDayHasPunches && !x.IsResolved).ToListAsync(ct))
+                            AttendanceDerivedArtifacts.AutoResolve(conflict, $"an approved correction ({reg.Id}) replaced the imported values");
+                    }
                     var policies = await EnsureActivePoliciesAsync(tenantId, ct);
                     await ProcessEmployeeDay(tenantId, employee, reg.WorkDate, ResolveAttendancePolicy(employee, policies), context, ct);
                     var daily = _db.AttendanceDailyRecords.Local.FirstOrDefault(x => x.TenantId == tenantId && x.EmployeeId == reg.EmployeeId && x.WorkDate == reg.WorkDate)
@@ -1650,13 +1799,26 @@ public class AttendanceService : IAttendanceService
         }
         else if (openMissing is not null)
         {
-            openMissing.Details = AttendanceDerivedArtifacts.DescribeMissingPunch(daily);
+            openMissing.Details = AttendanceDerivedArtifacts.WithSignature(AttendanceDerivedArtifacts.DescribeMissingPunch(daily),
+                AttendanceDerivedArtifacts.MissingPunchSignature(daily));
             return;
         }
         if (!daily.MissingPunch && daily.LateMinutes == 0) return;
         var type = daily.MissingPunch ? "MissingPunch" : "LateArrival";
         var exists = await _db.AttendanceExceptions.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate && x.ExceptionType == type && !x.IsResolved, ct);
-        if (!exists) _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = daily.MissingPunch ? "High" : "Medium", Details = daily.MissingPunch ? AttendanceDerivedArtifacts.DescribeMissingPunch(daily) : $"{daily.LateMinutes} late minutes." });
+        if (exists) return;
+        if (daily.MissingPunch)
+        {
+            // HR resolved this missing punch for exactly these punches: a recompute does not reopen it. New punches do.
+            var signature = AttendanceDerivedArtifacts.MissingPunchSignature(daily);
+            var resolved = await _db.AttendanceExceptions.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+                && x.WorkDate == daily.WorkDate && x.ExceptionType == type && x.IsResolved).Select(x => x.Details).ToListAsync(ct);
+            if (resolved.Any(d => AttendanceDerivedArtifacts.HrResolutionOf(d) is not null && AttendanceDerivedArtifacts.SignatureIn(d) == signature)) return;
+            _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = "High",
+                Details = AttendanceDerivedArtifacts.WithSignature(AttendanceDerivedArtifacts.DescribeMissingPunch(daily), signature) });
+            return;
+        }
+        _db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenantId, EmployeeId = daily.EmployeeId, DailyRecordId = daily.Id, WorkDate = daily.WorkDate, ExceptionType = type, Severity = "Medium", Details = $"{daily.LateMinutes} late minutes." });
     }
 
     /// <summary>
@@ -1716,8 +1878,9 @@ public class AttendanceService : IAttendanceService
     private async Task<DateOnly> ResolvePunchWorkDateAsync(Guid tenantId, int employeeId, DateTime punchUtc, CancellationToken ct) =>
         await AttendanceWorkDate.ResolveAsync(_db, tenantId, employeeId, punchUtc, await ResolveTenantTimeZoneAsync(tenantId, ct), ct);
 
-    private async Task<bool> IsLocked(Guid tenantId, DateOnly date, CancellationToken ct) =>
-        await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId && x.PeriodStart <= date && x.PeriodEnd >= date && x.Status == "Locked", ct);
+    /// <summary>Whether the employee's day may not be rewritten (AttendancePayrollLock: a tenant-wide lock, or a payroll run's lock on the day).</summary>
+    private Task<bool> IsLocked(Guid tenantId, int employeeId, DateOnly date, CancellationToken ct) =>
+        AttendancePayrollLock.IsLockedAsync(_db, tenantId, employeeId, date, ct);
 
     private const string DefaultPolicyCode = "DEFAULT";
     internal static AttendancePolicy DefaultPolicy(Guid tenantId) => new() { TenantId = tenantId, Code = DefaultPolicyCode, Name = "Default attendance policy" };

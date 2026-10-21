@@ -128,7 +128,7 @@ public sealed class SelfieReview3Tests
 
         var legacy = await w.Mobile(user).Punch(new Zayra.Api.Controllers.MobilePunchRequest(0, "In", null), default);
 
-        Assert.Equal("selfie_required", SelfieWorld.CodeOf(legacy));
+        Assert.Equal("legacy_punch_retired", SelfieWorld.CodeOf(legacy)); // retired (410): it cannot consume a waiver
         Assert.Null((await w.Db.AttendanceEvidence.SingleAsync()).WaiverConsumedAtUtc);
     }
 

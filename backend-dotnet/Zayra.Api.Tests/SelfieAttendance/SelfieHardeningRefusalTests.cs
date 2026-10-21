@@ -192,8 +192,7 @@ public sealed class SelfieHardeningRefusalTests
 
         var legacy = await w.Mobile(user).Punch(new MobilePunchRequest(0, "In", null), default);
 
-        Assert.Equal(400, (legacy as ObjectResult)?.StatusCode);
-        Assert.Equal("selfie_required", SelfieWorld.CodeOf(legacy));
+        Assert.Equal(410, (legacy as ObjectResult)?.StatusCode); // the legacy route is retired: it cannot consume a waiver
         var after = await w.Db.AttendanceEvidence.AsNoTracking().SingleAsync(e => e.Id == waiver.Id);
         Assert.Null(after.WaiverConsumedAtUtc);
         Assert.Null(after.WaiverRawEventId);

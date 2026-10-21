@@ -122,8 +122,10 @@ public class AttendancePaidImpactPreservationTests
         (await db.AttendancePayrollImpacts.AnyAsync()).Should().BeFalse("premise: a clean day, paid in full, has no impacts");
         await AddPayrollRunCoveringAsync(db, tenantId, employee.Id, "Processed");
 
-        // Both punches turn out to be another employee's and are removed: the day now reads Absent.
-        db.AttendanceRawEvents.RemoveRange(await db.AttendanceRawEvents.Where(r => r.Id == punchIn.Id || r.Id == punchOut.Id).ToListAsync());
+        // Both punches turn out to belong to the next day (re-dated, as a roster or time-zone change does): this day now
+        // reads Absent. (A day whose punches simply vanish is kept as it is: see KeepsRecordedTimesAsync.)
+        foreach (var raw in await db.AttendanceRawEvents.Where(r => r.Id == punchIn.Id || r.Id == punchOut.Id).ToListAsync())
+            raw.PunchTimestampUtc = raw.PunchTimestampUtc.AddDays(1);
         await db.SaveChangesAsync();
         await ProcessAsync(db, tenantId, employee.Id);
 
@@ -365,9 +367,10 @@ public sealed class AttendancePaidImpactVoidRestorePostgresTests
         await using (var db = k.NewContext())
             (await k.Payroll(db).Process(k.Run.Id, default)).Should().BeOfType<OkObjectResult>();
 
-        // Both punches were another employee's: the paid day is now Absent. Flagged, not deducted.
+        // Both punches turn out to belong to the next day: the paid day is now Absent. Flagged, not deducted.
         await using (var db = k.NewContext())
-            await db.AttendanceRawEvents.IgnoreQueryFilters().Where(r => r.TenantId == k.TenantId).ExecuteDeleteAsync();
+            await db.AttendanceRawEvents.IgnoreQueryFilters().Where(r => r.TenantId == k.TenantId)
+                .ExecuteUpdateAsync(x => x.SetProperty(r => r.PunchTimestampUtc, r => r.PunchTimestampUtc.AddDays(1)));
         await ProcessAttendanceAsync(k);
         (await k.ImpactsAsync()).Should().BeEmpty("premise: paid");
         (await OpenFlagCountAsync(k)).Should().Be(1);

@@ -4,7 +4,10 @@ import Link from 'next/link';
 import { Info } from 'lucide-react';
 import type { EmployeeDetail } from '../../api/employees';
 import { useCompany } from '../../contexts/CompanyContext';
+import { useLocale } from '../../contexts/LocaleContext';
+import { useEmployeeReferenceLists } from '../../hooks/useReferenceLists';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
+import { referenceLabel } from '../../lib/referenceLists';
 
 function ReadField({ label, value, help }: { label: string; value?: string; help: string }) {
   return <div><dt className="mb-1.5 text-sm font-bold text-slate-800 dark:text-slate-100">{label}</dt><dd><span className="block min-h-11 rounded-lg border border-slate-200 bg-white px-3 py-2.5 font-medium text-slate-900 dark:border-white/10 dark:bg-white/[0.03] dark:text-white">{value || 'Not provided'}</span><span className="mt-1 block text-xs font-normal text-slate-500">{help}</span></dd></div>;
@@ -12,6 +15,9 @@ function ReadField({ label, value, help }: { label: string; value?: string; help
 
 export function EmployeeEmploymentSection({ employee, panel, canWrite, returnTo }: { employee: EmployeeDetail; panel?: string; canWrite: boolean; returnTo: string }) {
   const { companies } = useCompany();
+  const { locale } = useLocale();
+  // Stored as the reference-list code (or, on older rows, the English label): shown in the reader's language.
+  const { lists } = useEmployeeReferenceLists();
   const companyName = companies.find(company => company.id === employee.companyId)?.name ?? employee.companyId;
   if (panel === 'transfers') return <section className="surface p-5"><h2 className="text-2xl font-extrabold text-slate-950 dark:text-white">Employment transfers</h2>{employee.transfers.length ? <ul className="mt-4 space-y-3">{employee.transfers.map(item => <li key={item.id} className="rounded-xl border border-slate-200 p-4 dark:border-white/10"><p className="font-bold">{item.newDepartment || item.newBranch || 'Transfer request'}</p><p className="text-sm text-slate-500">{item.status} · {item.effectiveDate}</p></li>)}</ul> : <p className="mt-4 text-sm text-slate-500">No transfer requests are recorded.</p>}</section>;
   return <section className="surface overflow-hidden">
@@ -26,8 +32,8 @@ export function EmployeeEmploymentSection({ employee, panel, canWrite, returnTo 
         <ReadField label="Line manager" value={employee.managerEmployeeId ? `Employee #${employee.managerEmployeeId}` : undefined} help="Employee’s direct reporting manager." />
         <ReadField label="Joining date" value={employee.joiningDate} help="The date the employee joined the company." />
         <ReadField label="Work location" value={employee.workLocation} help="Primary place of work for this employee." />
-        <ReadField label="Employment type" value={employee.employmentType} help="Nature of employment as per company policy." />
-        <ReadField label="Contract type" value={employee.contractType} help="Type of employment contract." />
+        <ReadField label="Employment type" value={referenceLabel(lists.employmentType, employee.employmentType, locale)} help="Nature of employment as per company policy." />
+        <ReadField label="Contract type" value={referenceLabel(lists.contractType, employee.contractType, locale)} help="Type of employment contract." />
         <ReadField label="Cost center" value={employee.costCenter} help="Financial cost center assigned through the department." />
       </dl>
       <aside className="space-y-4">

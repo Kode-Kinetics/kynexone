@@ -503,7 +503,9 @@ public class EmployeeModuleTests
         Assert.Equal("Fati", employee.PreferredName);
         Assert.Equal("fatima.personal@test.com", employee.PersonalEmail);
         Assert.Equal(new DateOnly(1992, 3, 5), employee.DateOfBirth);
-        Assert.Equal("Married", employee.MaritalStatus);
+        // The import stores the reference-list code; the "Married" label in the file is recognised as MARRIED.
+        Assert.Equal("MARRIED", employee.MaritalStatus);
+        Assert.Equal("FEMALE", employee.Gender);
         Assert.Equal("AE", employee.CountryCode);
         Assert.Equal(new DateOnly(2024, 7, 15), employee.ConfirmationDate);
         Assert.Equal(new DateOnly(2024, 1, 15), employee.ProbationStartDate);

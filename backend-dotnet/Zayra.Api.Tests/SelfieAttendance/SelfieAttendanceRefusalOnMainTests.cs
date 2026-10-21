@@ -124,14 +124,11 @@ public class SelfieAttendanceRefusalOnMainTests : PlatformTestBase
         await w.AddSiteAsync();
         var c = w.Mobile(await w.EmployeeAsync(w.Caller, w.CallerUserId));
 
-        // Positive control: with the geofence off the legacy route records the punch as before.
-        Assert.IsType<OkObjectResult>(await c.Punch(new MobilePunchRequest(0, "In", null), default));
-
+        // The legacy route is retired (410) with or without the geofence, so it cannot be a way round it.
+        Assert.Equal(410, Assert.IsType<ObjectResult>(await c.Punch(new MobilePunchRequest(0, "In", null), default)).StatusCode);
         await w.EnforceGeofenceAsync();
-        var refused = await c.Punch(new MobilePunchRequest(0, "Out", null), default);
-
-        Assert.Equal("location_required", SelfieWorld.CodeOf(Assert.IsType<BadRequestObjectResult>(refused)));
-        Assert.Null((await w.Db.AttendanceDailyRecords.SingleAsync()).LastOutUtc);
+        Assert.Equal(410, Assert.IsType<ObjectResult>(await c.Punch(new MobilePunchRequest(0, "Out", null), default)).StatusCode);
+        Assert.Empty(w.Db.AttendanceDailyRecords);
     }
 
     [Fact]

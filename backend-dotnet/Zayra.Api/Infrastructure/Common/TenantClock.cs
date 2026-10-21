@@ -40,6 +40,11 @@ public sealed class TenantClock : ITenantClock
         return Zone(setting?.CountryCode, setting?.DefaultTimezone);
     }
 
+    /// <summary>The tenant's calendar day now (or at <paramref name="utcNow"/>), by <see cref="ZoneAsync"/>'s rule. For code
+    /// that has a <see cref="ZayraDbContext"/> but no <see cref="ITenantClock"/> injected.</summary>
+    public static async Task<DateOnly> TodayForAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct, DateTime? utcNow = null) =>
+        TenantTimeZone.LocalDate(await ZoneAsync(db, tenantId, ct), utcNow ?? DateTime.UtcNow);
+
     /// <summary>The pure rule: Saudi tenants on Riyadh time, everyone else on their stored zone (UTC when unset or unknown).</summary>
     public static TimeZoneInfo Zone(string? countryCode, string? timeZoneId) =>
         IsSaudi(countryCode) ? TenantTimeZone.FromId(RiyadhTimeZoneId) : TenantTimeZone.FromId(timeZoneId);

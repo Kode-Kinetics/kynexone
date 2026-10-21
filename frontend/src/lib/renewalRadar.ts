@@ -193,6 +193,14 @@ export function toggleSelection(selected: ReadonlySet<string>, item: Pick<Renewa
   return next;
 }
 
+/**
+ * Rows are selectable only when the person may manage renewals AND the screen offers something to do with a selection.
+ * Checkboxes and a selection bar whose only button is "Clear selection" promise an action that does not exist.
+ */
+export function selectionEnabled(canManage: boolean, hasBatchActions: boolean): boolean {
+  return canManage && hasBatchActions;
+}
+
 /** Selects every eligible row in view, or clears them when they are all selected already. */
 export function toggleAll(selected: ReadonlySet<string>, rows: Pick<RenewalCaseItem, 'caseId' | 'fastLaneEligible'>[]): Set<string> {
   const eligible = rows.filter((r) => r.fastLaneEligible).map((r) => r.caseId);

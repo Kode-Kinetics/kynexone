@@ -1041,6 +1041,10 @@ public sealed class PayrollVoidService
             }
         }
 
+        // The run's attendance lock (written when it locked) is released, so its days can be corrected again for the
+        // replacement run; employees another locked run of the month covers stay locked.
+        await AttendancePayrollLock.ReleaseAsync(_db, tenantId, runId, run.Year, run.Month, ct);
+
         // Attendance / leave impacts carry NO run stamp of their own, which is exactly why the witness
         // exists: without it "which run marked this Processed?" has no answer and a re-run of the month
         // silently drops the period's LOP and absence.

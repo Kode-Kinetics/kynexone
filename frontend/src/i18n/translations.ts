@@ -9,6 +9,7 @@ import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { glApiKeys } from './glApiKeys';
+import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
 import { learning } from './learning';
@@ -21,6 +22,7 @@ import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
+import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
@@ -1415,11 +1417,14 @@ const en: Dict = {
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
   ...payrollAttendance.en,
+  // Attendance → Exceptions — see ./attendanceExceptions.
+  ...attendanceExceptions.en,
   ...employeeCompletion.en,
   ...setupExperience.en,
   ...glSetup.en,
   ...glErp.en,
   ...glApiKeys.en,
+  ...reportsAnalytics.en,
   ...approvalChanges.en,
   ...compensation.en,
   // Engagement surveys — see ./engagement.
@@ -2817,11 +2822,14 @@ const ar: Dict = {
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.
   ...payrollAttendance.ar,
+  // Attendance → Exceptions — see ./attendanceExceptions.
+  ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
   ...glErp.ar,
   ...glApiKeys.ar,
+  ...reportsAnalytics.ar,
   ...approvalChanges.ar,
   ...compensation.ar,
   ...engagement.ar,
