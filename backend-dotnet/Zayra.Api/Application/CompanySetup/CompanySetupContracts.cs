@@ -18,6 +18,10 @@ public static class CompanySetupVocabulary
     public const string ActionCreate = "create";
     public const string ActionReuse = "reuse";
     public const string ActionConflict = "conflict";
+    /// <summary>Existing-company mode (Addendum A3): an existing row whose fields change; <c>reason</c> names them.</summary>
+    public const string ActionUpdate = "update";
+    /// <summary>Existing-company mode (Addendum A3): an existing row the commit leaves exactly as it is.</summary>
+    public const string ActionUnchanged = "unchanged";
 
     public const string ReadinessDone = "done";
     public const string ReadinessTodo = "todo";
@@ -58,7 +62,24 @@ public sealed record CompanySetupContext(
     string? GradesCurrency,
     /// <summary>Whether this caller may make someone a company super admin — the same role ceiling User
     /// Management applies (group scope + the Admin role + Admin assignable + security.manage).</summary>
-    bool CanGrantCompanyAdmin = false);
+    bool CanGrantCompanyAdmin = false)
+{
+    /// <summary>Addendum A5: the active companies this caller may run existing-company mode for (the chooser's cards).
+    /// A group-scope caller: every active company (the switcher's selection, when one narrows the request). A company
+    /// super admin (company-scoped Admin): their own companies only. Anyone else: none.</summary>
+    public IReadOnlyList<CompanySetupManageableCompany> ManageableCompanies { get; init; } = [];
+}
+
+/// <summary>One chooser card: the company, its readiness ("5 of 9 done" counts every item <c>GET /readiness</c> lists),
+/// and the open existing-mode draft to resume, if there is one (one per company, Addendum A1).</summary>
+public sealed record CompanySetupManageableCompany(
+    Guid Id,
+    string LegalNameEn,
+    string? LegalNameAr,
+    string CountryCode,
+    int ReadinessDone,
+    int ReadinessTotal,
+    Guid? OpenDraftId);
 
 public sealed record CompanySetupSisterCompany(Guid Id, string LegalNameEn, string CountryCode);
 
@@ -81,7 +102,10 @@ public sealed record CompanySetupDraftBody(
     List<CompanySetupDesignation>? Designations,
     List<CompanySetupGrade>? Grades,
     CompanySetupRules Rules,
-    CompanySetupCompanyAdmin CompanyAdmin);
+    CompanySetupCompanyAdmin CompanyAdmin,
+    /// <summary>Addendum A1: null = create a new company; set = complete this existing company. Fixed for the draft's life.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingCompanyId = null);
 
 public sealed record CompanySetupCompany(
     string LegalNameEn,
@@ -108,7 +132,10 @@ public sealed record CompanySetupBranch(
     string City,
     string TimeZoneId,
     bool IsHeadOffice,
-    List<CompanySetupLocation>? Locations);
+    List<CompanySetupLocation>? Locations,
+    /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingId = null);
 
 public sealed record CompanySetupLocation(
     string Code,
@@ -116,9 +143,14 @@ public sealed record CompanySetupLocation(
     string? NameAr,
     decimal? Latitude,
     decimal? Longitude,
-    decimal? RadiusMeters);
+    decimal? RadiusMeters,
+    /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingId = null);
 
-public sealed record CompanySetupCostCentre(string Code, string NameEn, string? NameAr);
+public sealed record CompanySetupCostCentre(string Code, string NameEn, string? NameAr,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingId = null);
 
 public sealed record CompanySetupDepartment(
     string Code,
@@ -126,14 +158,20 @@ public sealed record CompanySetupDepartment(
     string? NameAr,
     string? ParentCode,
     string? BranchCode,
-    string? CostCentreCode);
+    string? CostCentreCode,
+    /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingId = null);
 
 public sealed record CompanySetupDesignation(
     string Code,
     string TitleEn,
     string? TitleAr,
     string? DepartmentCode,
-    string? GradeCode);
+    string? GradeCode,
+    /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingId = null);
 
 public sealed record CompanySetupGrade(
     string Code,
@@ -142,7 +180,10 @@ public sealed record CompanySetupGrade(
     int Level,
     decimal MinSalary,
     decimal MidSalary,
-    decimal MaxSalary);
+    decimal MaxSalary,
+    /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingId = null);
 
 public sealed record CompanySetupRules(
     CompanySetupWorkWeek WorkWeek,
@@ -189,7 +230,10 @@ public sealed record CompanySetupDraftSummary(
     string LegalNameEn,
     int Step,
     DateTime UpdatedAtUtc,
-    string CreatedByName);
+    string CreatedByName,
+    /// <summary>Set on an existing-company draft (Addendum A1), so the resume list can tell the two kinds apart.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Guid? ExistingCompanyId = null);
 
 /// <summary>PUT /drafts/{id} body.</summary>
 public sealed record CompanySetupDraftUpdate(int Version, int Step, CompanySetupDraftBody Body);
@@ -217,6 +261,9 @@ public sealed record CompanySetupError(string Code, string Message, string? Mess
     public CompanySetupPlan? Plan { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public int? CurrentVersion { get; init; }
+    /// <summary>The open draft that already completes this company (<c>existing_company_draft_open</c>): resume it.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? DraftId { get; init; }
 }
 
 public sealed record CompanySetupResult(
@@ -224,7 +271,10 @@ public sealed record CompanySetupResult(
     IReadOnlyDictionary<string, int> Created,
     IReadOnlyDictionary<string, int> Reused,
     IReadOnlyList<ReadinessItem> Readiness,
-    bool Replayed);
+    bool Replayed,
+    /// <summary>Existing-company mode only: existing rows the commit changed, by area (omitted on create).</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<string, int>? Updated = null);
 
 /// <summary><see cref="UserId"/> is set only on the <c>companyAdmin</c> item while that admin has not signed in yet: the
 /// login the screen can send a single-use sign-in link to (<c>POST /api/access/users/{userId}/password-reset-link</c>).</summary>
