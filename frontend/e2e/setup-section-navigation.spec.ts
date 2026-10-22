@@ -206,6 +206,14 @@ test('narrow screens use a section picker that opens the same grouped list and c
   await expect(page.getByRole('heading', { level: 2, name: 'Grades', exact: true })).toBeVisible();
   await expect(picker).toHaveAttribute('aria-expanded', 'false');
   await expect(picker).toContainText('Grades');
+  // A keyboard choice must not drop focus to the document when the list collapses.
+  await picker.press('Enter');
+  await expect(picker).toHaveAttribute('aria-expanded', 'true');
+  await nav.getByRole('button', { name: 'Branches', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { level: 2, name: 'Branches', exact: true })).toBeVisible();
+  await expect(picker).toHaveAttribute('aria-expanded', 'false');
+  await expect(picker).toBeFocused();
 });
 
 test('Arabic mirrors the section navigation and keeps every label readable', async ({ page }) => {

@@ -49,8 +49,13 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
   const SelectedIcon = selected?.item.icon;
 
   // The picker closes once the chosen section is actually shown. A guarded switch that the user cancels leaves
-  // both the section and the open picker as they were.
-  useEffect(() => { setOpen(false); }, [selectedId]);
+  // both the section and the open picker as they were. Closing hides the list, so a keyboard user whose focus is on
+  // the chosen entry is first moved to the picker toggle (only when the picker is shown, not the wide column).
+  useEffect(() => {
+    const button = toggle.current;
+    if (button && button.getClientRects().length > 0 && scroller.current?.contains(document.activeElement)) button.focus();
+    setOpen(false);
+  }, [selectedId]);
 
   // A deep link to a section low in the column keeps its entry in view inside the column's own scroll area,
   // without moving the page itself.
