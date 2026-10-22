@@ -52,28 +52,49 @@ public class MfaService : IMfaService
     }
 
     public async Task<bool> VerifySetupAsync(Guid userId, Guid tenantId, MfaVerifySetupRequest request, CancellationToken ct)
+        => await VerifySetupWithOutcomeAsync(userId, tenantId, request, ct) == MfaSetupOutcome.Enabled;
+
+    /// <summary>
+    /// Turns two-step on from a signed-in session. Outcomes (Amendment 1): AlreadyEnabled (409) when a factor is on,
+    /// SetupInvalid (400) when the temp secret is not one we could have issued or the account cannot enrol now,
+    /// CodeInvalid (400) for a wrong code. Success rotates the security stamp (ends sessions, as before) and revokes
+    /// every trusted browser (mfa_resetup) in the same transaction.
+    /// </summary>
+    public async Task<MfaSetupOutcome> VerifySetupWithOutcomeAsync(Guid userId, Guid tenantId, MfaVerifySetupRequest request, CancellationToken ct)
     {
+        var current = await _db.Users.AsNoTracking()
+            .Where(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted)
+            .Select(x => new { x.MFAEnabled, x.MfaSecretEncrypted })
+            .SingleOrDefaultAsync(ct);
+        if (current is null) return MfaSetupOutcome.SetupInvalid;
+        if (current.MFAEnabled || !string.IsNullOrWhiteSpace(current.MfaSecretEncrypted)) return MfaSetupOutcome.AlreadyEnabled;
+        if (!TotpService.IsWellFormedSecret(request.TempSecret)) return MfaSetupOutcome.SetupInvalid;
         var setupStep = _totp.MatchStep(request.TempSecret, request.TotpCode);
-        if (setupStep is null) return false;
+        if (setupStep is null) return MfaSetupOutcome.CodeInvalid;
 
         var encryptedSecret = _totp.EncryptSecret(request.TempSecret);
         var configuredAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
+        var refusal = MfaSetupOutcome.SetupInvalid;
 
         async Task<bool> EnableOnceAsync(CancellationToken cancellationToken)
         {
             _db.ChangeTracker.Clear();
+            refusal = MfaSetupOutcome.SetupInvalid;
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
             var user = await _db.Users.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, cancellationToken);
+            if (user is not null && (user.MFAEnabled || !string.IsNullOrWhiteSpace(user.MfaSecretEncrypted)))
+            {
+                refusal = MfaSetupOutcome.AlreadyEnabled;
+                return false;
+            }
             if (tenant?.IsActive != true
                 || user is null
                 || user.IsDeleted
                 || !user.IsActive
-                || !string.Equals(user.Status, "Active", StringComparison.Ordinal)
-                || user.MFAEnabled
-                || !string.IsNullOrWhiteSpace(user.MfaSecretEncrypted))
+                || !string.Equals(user.Status, "Active", StringComparison.Ordinal))
                 return false;
 
             var graph = await LoadCompleteTenantGraphAsync(user.Id, user.TenantId, cancellationToken);
@@ -88,6 +109,9 @@ public class MfaService : IMfaService
                     configuredAtUtc).Allowed)
                 return false;
 
+            // A new secret: no browser trusted under an earlier factor stays trusted.
+            await MfaTrustedDevices.StageRevokeAllAsync(_db, tenantId, [userId], MfaTrustRevokeReasons.MfaResetup,
+                configuredAtUtc, new RequestContext(null, null, userId, tenantId), cancellationToken);
             graph!.MFAEnabled = true;
             graph.MfaSecretEncrypted = encryptedSecret;
             graph.MfaConfiguredAtUtc = configuredAtUtc;
@@ -106,7 +130,7 @@ public class MfaService : IMfaService
             return true;
         }
 
-        if (!_db.Database.IsRelational()) return await EnableOnceAsync(ct);
+        if (!_db.Database.IsRelational()) return await EnableOnceAsync(ct) ? MfaSetupOutcome.Enabled : refusal;
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             EnableOnceAsync,
@@ -115,10 +139,13 @@ public class MfaService : IMfaService
                 .AnyAsync(x => x.Id == auditId && x.Action == "auth.mfa.enabled", cancellationToken),
             IsolationLevel.ReadCommitted,
             ct);
-        if (succeeded) return true;
+        if (succeeded) return MfaSetupOutcome.Enabled;
         _db.ChangeTracker.Clear();
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         return await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
-            .AnyAsync(x => x.Id == auditId && x.Action == "auth.mfa.enabled", ct);
+            .AnyAsync(x => x.Id == auditId && x.Action == "auth.mfa.enabled", ct)
+            ? MfaSetupOutcome.Enabled
+            : refusal;
     }
 
     public Task<string> CreateEnrollmentChallengeAsync(Guid userId, Guid tenantId, string ip, CancellationToken ct) =>
@@ -248,6 +275,8 @@ public class MfaService : IMfaService
                     sibling.UsedAtUtc = verifiedAtUtc;
             }
 
+            await MfaTrustedDevices.StageRevokeAllAsync(_db, graph!.TenantId, [graph.Id], MfaTrustRevokeReasons.MfaResetup,
+                verifiedAtUtc, new RequestContext(null, null, graph.Id, graph.TenantId), cancellationToken);
             graph!.MFAEnabled = true;
             graph.MfaSecretEncrypted = encryptedSecret;
             graph.MfaConfiguredAtUtc = verifiedAtUtc;
@@ -360,29 +389,38 @@ public class MfaService : IMfaService
                 : null;
     }
 
-    public Task<bool> DisableAsync(Guid userId, Guid tenantId, string totpCode, CancellationToken ct) =>
+    public async Task<bool> DisableAsync(Guid userId, Guid tenantId, string totpCode, CancellationToken ct) =>
+        await DisableWithOutcomeAsync(userId, tenantId, totpCode, new RequestContext(null, null, userId, tenantId), ct)
+            == MfaDisableOutcome.Disabled;
+
+    /// <summary>
+    /// The user turns their own two-step off (Amendment 1). Refused while their role is privileged
+    /// (PrivilegedMfaPolicy status != NotRequired) or the company requires two-step for everyone; otherwise needs a fresh
+    /// code. Success rotates the stamp (ends sessions) and revokes every trusted browser, as before plus trust.
+    /// </summary>
+    public Task<MfaDisableOutcome> DisableWithOutcomeAsync(Guid userId, Guid tenantId, string totpCode, RequestContext context, CancellationToken ct) =>
         DisableTenantFactorAsync(
             userId,
             tenantId,
             totpCode,
             privilegedRecovery: false,
-            new RequestContext(null, null, userId, tenantId),
+            context with { UserId = userId, TenantId = tenantId },
             ct);
 
-    public Task<bool> AdminDisableAsync(
+    public async Task<bool> AdminDisableAsync(
         Guid userId,
         Guid tenantId,
         RequestContext context,
         CancellationToken ct) =>
-        DisableTenantFactorAsync(
+        await DisableTenantFactorAsync(
             userId,
             tenantId,
             totpCode: null,
             privilegedRecovery: true,
             context with { UserId = null, TenantId = tenantId },
-            ct);
+            ct) == MfaDisableOutcome.Disabled;
 
-    private async Task<bool> DisableTenantFactorAsync(
+    private async Task<MfaDisableOutcome> DisableTenantFactorAsync(
         Guid userId,
         Guid tenantId,
         string? totpCode,
@@ -396,9 +434,12 @@ public class MfaService : IMfaService
             ? "platform.auth.tenant_mfa_disabled"
             : "auth.mfa.disabled";
 
+        var outcome = MfaDisableOutcome.Refused;
+
         async Task<bool> DisableOnceAsync(CancellationToken cancellationToken)
         {
             _db.ChangeTracker.Clear();
+            outcome = MfaDisableOutcome.Refused;
             var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
                 .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
             var user = await _db.Users.TagWith(RowLockingInterceptor.ForUpdateTag)
@@ -406,20 +447,47 @@ public class MfaService : IMfaService
             if (tenant?.IsActive != true
                 || user is null
                 || !user.IsActive
-                || user.IsDeleted
-                || !user.MFAEnabled
-                || string.IsNullOrEmpty(user.MfaSecretEncrypted))
+                || user.IsDeleted)
                 return false;
+            if (!user.MFAEnabled || string.IsNullOrEmpty(user.MfaSecretEncrypted))
+            {
+                outcome = MfaDisableOutcome.NotEnabled;
+                return false;
+            }
 
             if (!privilegedRecovery)
             {
+                // The mandatory rules stay: a privileged role, or a company that requires two-step for everyone,
+                // cannot switch it off (platform recovery, the lost-device path, is not this method's caller).
+                var graph = await LoadCompleteTenantGraphAsync(user.Id, user.TenantId, cancellationToken);
+                if (graph is null) return false;
+                if (await PrivilegedMfaPolicy.IsPrivilegedTenantUserAsync(_db, graph, cancellationToken))
+                {
+                    outcome = MfaDisableOutcome.RequiredForRole;
+                    return false;
+                }
+                var policy = await _db.SecuritySettings.AsNoTracking()
+                    .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
+                if (policy?.MfaRequired == true)
+                {
+                    outcome = MfaDisableOutcome.RequiredByWorkspace;
+                    return false;
+                }
+
                 string plainSecret;
                 try { plainSecret = _totp.DecryptSecret(user.MfaSecretEncrypted); }
                 catch { return false; }
                 if (string.IsNullOrWhiteSpace(totpCode)
                     || !TotpService.IsFreshStep(_totp.MatchStep(plainSecret, totpCode), user.MfaLastTotpStep))
+                {
+                    outcome = MfaDisableOutcome.CodeInvalid;
                     return false;
+                }
             }
+
+            await MfaTrustedDevices.StageRevokeAllAsync(_db, tenantId, [user.Id],
+                privilegedRecovery ? MfaTrustRevokeReasons.MfaRecoveryDisabled : MfaTrustRevokeReasons.MfaDisabled,
+                disabledAtUtc, context with { TenantId = tenantId }, cancellationToken);
 
             await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.UserId == user.Id && x.UsedAtUtc == null)
@@ -470,7 +538,7 @@ public class MfaService : IMfaService
             return true;
         }
 
-        if (!_db.Database.IsRelational()) return await DisableOnceAsync(ct);
+        if (!_db.Database.IsRelational()) return await DisableOnceAsync(ct) ? MfaDisableOutcome.Disabled : outcome;
         var strategy = _db.Database.CreateExecutionStrategy();
         var succeeded = await strategy.ExecuteInTransactionAsync(
             DisableOnceAsync,
@@ -479,10 +547,13 @@ public class MfaService : IMfaService
                 .AnyAsync(x => x.Id == auditId && x.Action == auditAction, cancellationToken),
             IsolationLevel.ReadCommitted,
             ct);
-        if (succeeded) return true;
+        if (succeeded) return MfaDisableOutcome.Disabled;
         _db.ChangeTracker.Clear();
+        // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
         return await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
-            .AnyAsync(x => x.Id == auditId && x.Action == auditAction, ct);
+            .AnyAsync(x => x.Id == auditId && x.Action == auditAction, ct)
+            ? MfaDisableOutcome.Disabled
+            : outcome;
     }
 
     // ── Platform user ─────────────────────────────────────────────────────────

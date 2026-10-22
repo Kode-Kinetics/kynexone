@@ -42,6 +42,12 @@ public class SecuritySetting : ITenantOwned
     // this tenant. Null = use the platform-wide date (platform_config_entries
     // 'auth.privileged_mfa_enforce_from_utc'). Set by platform Owner/Admin only.
     public DateTime? PrivilegedMfaEnforceFromUtc { get; set; }
+    /// <summary>The default and the bounds of <see cref="MfaTrustedDeviceDays"/> (CHECK 0..90).</summary>
+    public const int DefaultMfaTrustedDeviceDays = 30;
+    public const int MaxMfaTrustedDeviceDays = 90;
+    // How many days a browser stays trusted after a two-step code (mfa_trusted_devices). 0 = the tenant does not
+    // offer "Trust this browser" at all. Changing it never extends a browser already trusted.
+    public int MfaTrustedDeviceDays { get; set; } = DefaultMfaTrustedDeviceDays;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UpdatedBy { get; set; }
 }

@@ -23,9 +23,12 @@ public static class RetentionRuleKeys
     /// <summary>A create-company wizard draft left Open and untouched for 90 days: the draft is deleted.</summary>
     public const string CompanySetupDraftIdle = "company-setup.draft-idle-90d";
 
+    /// <summary>A trusted browser (two-step sign-in) expired or revoked more than 30 days ago: the row is deleted.</summary>
+    public const string MfaTrustedDeviceExpired = "auth.mfa-trusted-device-expired";
+
     public static readonly IReadOnlyList<string> All =
         [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired, SuccessionPostEmployment,
-         CompanySetupDraftIdle];
+         CompanySetupDraftIdle, MfaTrustedDeviceExpired];
 }
 
 /// <summary>

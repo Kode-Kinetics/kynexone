@@ -62,10 +62,18 @@ public class AuthController : ControllerBase
             var context = GetContext() with
             {
                 KnownDeviceToken = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.KnownDeviceCookie(Request, "tenant"),
+                // Consulted only after the password is verified, where a code would otherwise be asked for.
+                MfaTrustToken = Zayra.Api.Infrastructure.Auth.MfaTrustedDevices.ReadCookie(Request),
             };
             var result = await _authService.LoginAsync(request, context, cancellationToken);
             if (result.RequiresMfa)
-                return Ok(new { mfaRequired = true, challengeToken = result.Challenge!.ChallengeToken, expiresInSeconds = result.Challenge.ExpiresInSeconds });
+                return Ok(new
+                {
+                    mfaRequired = true,
+                    challengeToken = result.Challenge!.ChallengeToken,
+                    expiresInSeconds = result.Challenge.ExpiresInSeconds,
+                    rememberDeviceDays = result.Challenge.RememberDeviceDays,
+                });
             if (result.RequiresMfaEnrollment)
                 return Ok(new
                 {

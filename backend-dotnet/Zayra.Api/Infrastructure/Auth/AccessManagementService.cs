@@ -2286,6 +2286,9 @@ public class AccessManagementService : IAccessManagementService
             if (request.RefreshTokenExpiryDays.HasValue) setting.RefreshTokenExpiryDays = Math.Clamp(request.RefreshTokenExpiryDays.Value, 1, 90);
             if (request.AllowMultipleSessions.HasValue) setting.AllowMultipleSessions = request.AllowMultipleSessions.Value;
             if (request.MfaRequired.HasValue) setting.MfaRequired = request.MfaRequired.Value;
+            // The endpoint refuses values outside 0..90 (ERR_MFA_TRUST_DAYS_RANGE); the clamp only backs it up.
+            if (request.MfaTrustedDeviceDays.HasValue)
+                setting.MfaTrustedDeviceDays = Math.Clamp(request.MfaTrustedDeviceDays.Value, 0, Models.SecuritySetting.MaxMfaTrustedDeviceDays);
             setting.UpdatedAtUtc = changedAtUtc;
             setting.UpdatedBy = context.UserId;
 
@@ -3272,7 +3275,7 @@ public class AccessManagementService : IAccessManagementService
     }
 
     private static SecuritySettingDto ToSecuritySettingDto(Models.SecuritySetting s) =>
-        new(s.Id, s.TenantId, s.PasswordMinLength, s.PasswordRequireUppercase, s.PasswordRequireLowercase, s.PasswordRequireDigit, s.PasswordRequireSpecial, s.PasswordExpiryDays, s.PasswordHistoryCount, s.MaxFailedLoginAttempts, s.LockoutDurationMinutes, s.SessionTimeoutMinutes, s.RefreshTokenExpiryDays, s.AllowMultipleSessions, s.MfaRequired, s.UpdatedAtUtc);
+        new(s.Id, s.TenantId, s.PasswordMinLength, s.PasswordRequireUppercase, s.PasswordRequireLowercase, s.PasswordRequireDigit, s.PasswordRequireSpecial, s.PasswordExpiryDays, s.PasswordHistoryCount, s.MaxFailedLoginAttempts, s.LockoutDurationMinutes, s.SessionTimeoutMinutes, s.RefreshTokenExpiryDays, s.AllowMultipleSessions, s.MfaRequired, s.UpdatedAtUtc, s.MfaTrustedDeviceDays);
 
     private static RoleDto ToRoleDto(Role role) =>
         new(role.Id, role.Name, role.Description, role.IsSystem, role.IsActive, role.IsEditable, role.AuthorityLevel,

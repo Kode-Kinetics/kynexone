@@ -880,6 +880,28 @@ the `ITenantOwned` query filter.
 ### `companies.unified_national_number` (column)
 - `varchar(20) NULL` — the establishment's Unified National Number (Saudi "700 number", 10 digits, validated for SA on write). Optional; captured by the wizard and editable on the company form. **Note:** the Saudi bank-file settings (`system_settings`, category `PayrollSaudiBankExport`) also hold a `NationalUnifiedNo` for automatic WPS upload; the two are not yet reconciled (one fact, two places — tracked as a follow-up).
 
+## V. Trusted browsers for two-step sign-in (live bridge)
+
+Not part of the 76. One table and one column shipped on the **live** EF schema (migration
+`20261022183516_AddMfaTrustedDevices`). Capability: a user who completed a two-step code can choose "Trust this
+browser for N days", so the next sign-ins from that browser skip the code (never the password, the lockout or
+enrolment), and every such trust can be listed and revoked. No existing table can hold it: `refresh_tokens` are sessions
+that rotate and end at sign-out, `mfa_challenge_tokens` are single-use five-minute credentials, and the known-device
+cookie is stateless and cannot be revoked. RLS is a target rule — the live bridge uses the `ITenantOwned` query filter.
+
+### `mfa_trusted_devices`
+- **Purpose** — one browser a tenant user trusted after a two-step code. The browser holds a 32-byte random token in the HttpOnly `kx_mfa_trust` cookie (Path `/api/auth`); the row holds only its SHA-256. Platform operators never get one.
+- **Tier** T · **Domain** Identity · **RLS** shape (a)
+- **Keys** — `user_id`, `token_hash varchar(64)` (uppercase hex SHA-256; never the token), `created_at_utc`, `expires_at_utc` (created + the tenant's days at trust time), `last_used_at_utc`, `user_agent varchar(256)` and `ip_address varchar(64)` (shown to the user as "Firefox on macOS" in the trusted-browser list), `revoked_at_utc`, `revoked_reason varchar(64)`
+- **Rel** — `tenant_id → tenants` (N:1, RESTRICT; tenant erasure sweeps it with every `ITenantOwned` table), `user_id → users` (N:1, CASCADE: a deleted login has nothing to trust)
+- **Constraint** — `ux_mfa_trusted_devices__token_hash` (UNIQUE); `ck_mfa_trusted_devices__revoked_reason` (`user_revoked`, `user_revoked_all`, `password_changed`, `password_reset`, `mfa_disabled`, `mfa_recovery_disabled`, `mfa_resetup`, `user_deactivated`, `user_deleted`); `__revoked_pair` (revoked_at ⇔ reason); `__lifetime` (`expires_at_utc > created_at_utc`).
+- **Indexes** — `ux_mfa_trusted_devices__token_hash` (the sign-in lookup by cookie hash), `ix_mfa_trusted_devices__tenant_user_active` (`tenant_id, user_id WHERE revoked_at_utc IS NULL`: the trusted-browser list, the status count and every revoke-all), `IX_mfa_trusted_devices_user_id` (EF FK index: the CASCADE on user delete).
+- **Lifecycle** — created by `POST /api/auth/mfa/challenge/verify` with `rememberDevice: true` when the tenant's days > 0 (`auth.mfa.device_trusted`); `last_used_at_utc` stamped by each sign-in it lets skip the code (`auth.mfa.trusted_device_used`). A row counts only for the same tenant and user as the password step, unrevoked, unexpired, inside the tenant's CURRENT days (lowering the setting shortens trust already given; 0 switches it off), created after the user's current factor and password, and while the user still has the factor. Revoked (never deleted by the product, `auth.mfa.trusted_device_revoked` with the reason) by the user (one or all), by a password change or reset, by turning two-step off, by platform recovery disable, by a new factor, and by the login being deactivated, suspended, locked, set to NoLogin or deleted — explicitly on the password and factor paths, and by the `ZayraDbContext` save hook for every other change of those fields.
+- **Retention** `T` — a row expired or revoked more than 30 days ago is deleted (`MfaTrustedDeviceRetentionRule`, rule key `auth.mfa-trusted-device-expired`, HardDelete). Its audit rows stay.
+
+### `security_settings.mfa_trusted_device_days` (column)
+- `integer NOT NULL DEFAULT 30`, `ck_security_settings__mfa_trusted_device_days` (`BETWEEN 0 AND 90`). How long a browser stays trusted after a two-step code; 0 = the tenant does not offer it. Read by sign-in (`rememberDeviceDays` on the challenge), `GET /api/auth/mfa/status`, and written by `PUT /api/access/security-settings` (`mfaTrustedDeviceDays`, out of range → 400 `ERR_MFA_TRUST_DAYS_RANGE`).
+
 ---
 
 ## Views (not tables)
