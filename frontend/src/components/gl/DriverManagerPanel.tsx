@@ -254,7 +254,7 @@ export function DriverManagerPanel({ scope, scopeName, canManage, canAuthorPredi
     <div className="surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Posting Drivers')}</h3>
+          <h3 id="gl-drivers-heading" className="text-sm font-semibold text-slate-900 dark:text-white">{t('Posting Drivers')}</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {t('How payroll lines route to GL accounts for {scope}.', { scope: scopeName })}{' '}
             {t("System drivers' routing rules are locked; you can rename them and change their fallback account.")}
@@ -274,7 +274,7 @@ export function DriverManagerPanel({ scope, scopeName, canManage, canAuthorPredi
         empty={drivers.length === 0}
         emptyLabel={t('No posting drivers are set up yet. Load the standard payroll chart from the Accounts & Mapping tab.')}
       >
-        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-drivers-heading">
           <table className="w-full min-w-[900px] text-sm">
             <thead className={theadClass}>
               <tr>

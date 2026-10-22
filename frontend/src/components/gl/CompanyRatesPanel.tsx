@@ -302,7 +302,7 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
     <div className="surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Company Rates')}</h3>
+          <h3 id="gl-company-rates-heading" className="text-sm font-semibold text-slate-900 dark:text-white">{t('Company Rates')}</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {t('Client-set, non-statutory rates for {scope}: custom allowances, deductions, pay parameters and end-of-service above the legal minimum. A change starts a new dated row; the old value stays in its history.', { scope: scopeName })}
           </p>
@@ -321,7 +321,7 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
         empty={groups.length === 0}
         emptyLabel={t('No company rates are set yet.')}
       >
-        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-company-rates-heading">
           <table className="w-full min-w-[760px] text-sm">
             <thead className={theadClass}>
               <tr>

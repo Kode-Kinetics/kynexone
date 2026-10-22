@@ -437,7 +437,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           empty={routeRows.length === 0}
           emptyLabel={t('No posting drivers are set up yet.')}
         >
-          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-where-heading">
             <table className="w-full min-w-[760px] text-sm">
               <thead className={theadClass}>
                 <tr>
@@ -587,7 +587,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                 : t('No accounts yet.')
           }
         >
-          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-coa-heading">
             <table className="w-full min-w-[820px] text-sm">
               <thead className={theadClass}>
                 <tr>
@@ -735,7 +735,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           empty={rows.length === 0}
           emptyLabel={inCompanyView ? t('No posting drivers are set up yet. Ask a group administrator to load the standard payroll chart.') : t('No posting drivers are set up yet. Load the standard payroll chart above to get started.')}
         >
-          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+          <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-map-heading">
             <table className="w-full min-w-[720px] text-sm">
               <thead className={theadClass}>
                 <tr>

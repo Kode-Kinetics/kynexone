@@ -256,7 +256,7 @@ export function ErpApiKeysPanel({ companies }: { companies: CompanyDto[] }) {
               </span>
             }
           >
-            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="erp-api-heading">
               <table className="w-full min-w-[860px] text-sm" aria-labelledby="erp-api-heading">
                 <thead className={theadClass}>
                   <tr>
