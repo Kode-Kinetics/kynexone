@@ -24,7 +24,11 @@ test('effective config carries the OTA channel for production and staging builds
     assert.deepEqual(config.runtimeVersion, { policy: 'fingerprint' });
     assert.equal(config.updates.checkAutomatically, 'ON_LOAD');
     assert.equal(config.updates.fallbackToCacheTimeout, 0);
-    assert.equal(config.updates.codeSigningCertificate, undefined, 'unsigned unless the cert env is set');
+    assert.equal(
+      config.updates.codeSigningCertificate,
+      profile === 'production' ? './certs/certificate.pem' : undefined,
+      'only the production profile is signed',
+    );
   }
 });
 
@@ -41,6 +45,7 @@ test('update:production publishes with exactly build.production.env, whatever th
     EXPO_PUBLIC_APP_ENV: 'development',
     EXPO_PUBLIC_EAS_PROJECT_ID: '11111111-2222-3333-4444-555555555555',
     EXPO_UPDATES_CODE_SIGNING_CERT: './stray.pem',
+    EXPO_UPDATES_CODE_SIGNING_KEY: '/secure/private-key.pem',
   };
   const { command, args, env } = updateCommand({ eas, profile: 'production', baseEnv: shell, message: 'Fix sign-in copy' });
   assert.equal(command, 'npx');
@@ -91,6 +96,8 @@ function tempProject(files: Record<string, string>): string {
   for (const name of ['app.config.js', 'app.json', 'package.json', 'eas.json']) {
     fs.copyFileSync(path.join(root, name), path.join(dir, name));
   }
+  fs.mkdirSync(path.join(dir, 'certs'));
+  fs.copyFileSync(path.join(root, 'certs', 'certificate.pem'), path.join(dir, 'certs', 'certificate.pem'));
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
   return dir;
 }
@@ -151,4 +158,3 @@ test('dashboard variables that would reach the bundle block the publish', () => 
   const profileKey = Object.keys(PROD_ENV)[0];
   if (profileKey) assert.deepEqual(dashboardOverrides([profileKey], [profileKey]), [profileKey], 'a key the profile sets is an override');
 });
-
