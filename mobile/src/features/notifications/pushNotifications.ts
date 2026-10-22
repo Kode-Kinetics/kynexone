@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { deviceApi } from '@/api/services';
 import type { AppRoute } from '@/navigation/routes';
+import { parseNotificationIntent } from './notificationIntentQueue';
 
 type NotificationsModule = typeof import('expo-notifications');
 let notificationsModulePromise: Promise<NotificationsModule> | null = null;
@@ -153,27 +154,5 @@ export async function getLastNotificationResponseAsync(): Promise<NotificationRe
 export function getNotificationRoute(
   data: Record<string, unknown> | null | undefined
 ): { route: AppRoute; params?: Record<string, unknown> } {
-  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-  const type = str(data?.type) ?? str(data?.eventCode) ?? '';
-  const entityName = (str(data?.entityName) ?? '').toLowerCase();
-  const entityId = str(data?.entityId);
-  const key = `${type} ${entityName}`.toLowerCase();
-
-  if (/payslip|payroll\.run/.test(key)) {
-    const id = str(data?.payslipId) ?? (entityName.includes('payslip') ? entityId : undefined);
-    return id ? { route: 'PayslipDetail', params: { id } } : { route: 'Payslips' };
-  }
-  if (/hr_?request/.test(key)) {
-    const id = str(data?.requestId) ?? (entityName.includes('hrrequest') ? entityId : undefined);
-    return id ? { route: 'HRRequestDetail', params: { id } } : { route: 'HRRequests' };
-  }
-  if (/approvalpending|approval_?request|approvalrequest/.test(key)) return { route: 'Approvals' };
-  if (/overtime/.test(key)) return { route: 'Overtime' };
-  if (/leave/.test(key)) return { route: 'ApplyLeave' };
-  if (/document|compliance_document_expiry/.test(key)) return { route: 'Documents' };
-  if (/missingpunch|attendancealert|regularization|attendance/.test(key)) {
-    const date = str(data?.date);
-    return { route: 'AttendanceCorrection', params: date ? { date } : undefined };
-  }
-  return { route: 'Notifications' };
+  return parseNotificationIntent(data);
 }

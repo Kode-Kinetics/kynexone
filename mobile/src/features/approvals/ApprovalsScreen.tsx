@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTranslation } from 'react-i18next';
 import { approvalsApi, type EmployeeChangeField } from '@/api/services';
+import { createLatestRequestGate } from '@/api/latestRequest';
 import { useAuthStore } from '@/auth/authStore';
 import { hasEffectivePermission } from '@/auth/accessPolicy';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -74,6 +75,8 @@ export default function ApprovalsScreen({ route }: Props) {
   const [selected, setSelected] = useState<InboxItem | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const loadedOnce = useRef(false);
+  const inboxRequestGate = useRef(createLatestRequestGate()).current;
+  const historyRequestGate = useRef(createLatestRequestGate()).current;
 
   const [history, setHistory] = useState<MyDecision[] | null>(null);
   const [historyFailed, setHistoryFailed] = useState(false);
@@ -87,9 +90,11 @@ export default function ApprovalsScreen({ route }: Props) {
   }, [route?.params?.filterType]);
 
   const loadInbox = useCallback(async (silent = false) => {
+    const requestId = inboxRequestGate.begin();
     if (!silent) setLoading(true);
     try {
       const inbox = await approvalsApi.getInbox();
+      if (!inboxRequestGate.isLatest(requestId)) return;
       setItems(inbox.items);
       setUnavailable(inbox.unavailable);
       setLoadFailed(false);
@@ -100,6 +105,7 @@ export default function ApprovalsScreen({ route }: Props) {
         .map((i) => i.entityId as string)
         .slice(0, 25);
       const settled = await Promise.allSettled(leaveIds.map((id) => approvalsApi.getLeaveFacts(id)));
+      if (!inboxRequestGate.isLatest(requestId)) return;
       setLeaveFacts((current) => {
         const next = { ...current };
         settled.forEach((r, i) => {
@@ -108,34 +114,45 @@ export default function ApprovalsScreen({ route }: Props) {
         return next;
       });
     } catch {
-      setLoadFailed(true);
+      if (inboxRequestGate.isLatest(requestId)) setLoadFailed(true);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (inboxRequestGate.isLatest(requestId)) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, []);
+  }, [inboxRequestGate]);
 
   const userId = user?.id;
   const loadHistory = useCallback(async () => {
     if (!userId) return;
+    const requestId = historyRequestGate.begin();
     setHistoryLoading(true);
     try {
-      setHistory(await approvalsApi.getMyDecisions(userId));
-      setHistoryFailed(false);
+      const decisions = await approvalsApi.getMyDecisions(userId);
+      if (historyRequestGate.isLatest(requestId)) {
+        setHistory(decisions);
+        setHistoryFailed(false);
+      }
     } catch {
-      setHistoryFailed(true);
+      if (historyRequestGate.isLatest(requestId)) setHistoryFailed(true);
     } finally {
-      setHistoryLoading(false);
-      setRefreshing(false);
+      if (historyRequestGate.isLatest(requestId)) {
+        setHistoryLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [userId]);
+  }, [historyRequestGate, userId]);
 
   // Fresh on every visit: a decision made elsewhere (web, another approver) must not linger here.
   useFocusEffect(
     useCallback(() => {
       void loadInbox(loadedOnce.current);
-    }, [loadInbox]),
+      return () => inboxRequestGate.invalidate();
+    }, [inboxRequestGate, loadInbox]),
   );
+
+  useEffect(() => () => historyRequestGate.invalidate(), [historyRequestGate]);
 
   useEffect(() => {
     if (tab === 'decided' && history === null && !historyLoading && !historyFailed) void loadHistory();

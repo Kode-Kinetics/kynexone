@@ -2,38 +2,58 @@
 // KynexOne Mobile — App root
 // ============================================================
 
-import { promptRestartIfNeeded } from '@/config/i18n'; // Initialize i18n before anything renders
+import i18n, { promptRestartIfNeeded } from '@/config/i18n'; // Initialize i18n before anything renders
 import React, { useEffect } from 'react';
-import { InteractionManager } from 'react-native';
+import { Alert, InteractionManager } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { RootNavigator } from '@/navigation/RootNavigator';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ScreenTour, TOUR_MODE, registerBoundaryReset } from '@/dev/ScreenTour';
 import { useAuthStore } from '@/auth/authStore';
-import { navigateFromRoot } from '@/navigation/routes';
+import { navigationRef } from '@/navigation/routes';
+import { useSnapshotProtection } from '@/security/useSnapshotProtection';
 import { ThemeProvider, useTheme } from '@/theme/ThemeProvider';
 import {
   setupNotificationListeners,
   getLastNotificationResponseAsync,
-  getNotificationRoute,
 } from '@/features/notifications/pushNotifications';
+import {
+  consumeReadyIntent,
+  handleNotificationResponse,
+  type IntentContext,
+  type IntentResult,
+} from '@/features/notifications/notificationIntentQueue';
 import { sweepSelfieCache } from '@/features/attendance/selfieFiles';
 
-function openFromNotification(data: Record<string, unknown> | undefined) {
-  const { route, params } = getNotificationRoute(data);
-  const user = useAuthStore.getState().user;
-  if (!user) return;
-  let attempts = 0;
-  const tryNavigate = () => {
-    if (navigateFromRoot(route, user, params)) return;
-    if (++attempts < 20) setTimeout(tryNavigate, 250);
+function notificationContext(): IntentContext {
+  const { isAuthenticated, user } = useAuthStore.getState();
+  return {
+    user: isAuthenticated ? user : null,
+    navigationReady: navigationRef.isReady(),
+    navigate: (name, params) => navigationRef.navigate(name, params),
   };
-  tryNavigate();
+}
+
+function showNotificationResult(result: IntentResult | { status: 'duplicate' }) {
+  if (result.status === 'unavailable') {
+    Alert.alert(i18n.t('notifications.unavailable'), i18n.t(result.messageKey));
+  }
+}
+
+function consumeNotificationIntent() {
+  showNotificationResult(consumeReadyIntent(notificationContext()));
+}
+
+function openFromNotification(response: Parameters<typeof handleNotificationResponse>[0]) {
+  showNotificationResult(handleNotificationResponse(response, notificationContext));
 }
 
 function AppContent() {
   const { theme } = useTheme();
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const user = useAuthStore((state) => state.user);
+  useSnapshotProtection(isAuthenticated);
 
   // After the first screen is up: offer the restart if the saved language and the layout direction
   // disagree. Raised any earlier, Android can drop the alert (config/i18n.ts).
@@ -57,7 +77,7 @@ function AppContent() {
         console.log('[Notification] Received:', notification.request.content.title);
       },
       (response) => {
-        openFromNotification(response.notification.request.content.data as Record<string, unknown>);
+        openFromNotification(response);
       },
     )
       .then((listenerCleanup) => {
@@ -69,7 +89,7 @@ function AppContent() {
     getLastNotificationResponseAsync()
       .then((response) => {
         if (response) {
-          openFromNotification(response.notification.request.content.data as Record<string, unknown>);
+          openFromNotification(response);
         }
       })
       .catch(() => undefined);
@@ -79,6 +99,12 @@ function AppContent() {
       cleanup();
     };
   }, []);
+
+  useEffect(() => {
+    consumeNotificationIntent();
+  }, [isAuthenticated, user]);
+
+  useEffect(() => navigationRef.addListener('state', consumeNotificationIntent), []);
 
   return (
     <>

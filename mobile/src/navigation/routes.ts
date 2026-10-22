@@ -1,6 +1,6 @@
 import { createNavigationContainerRef } from '@react-navigation/native';
 import { deriveMobileAccess } from '@/auth/accessPolicy';
-import { resolveRouteFor, type AppRoute, type Target } from './routeResolver';
+import { isRouteAllowed, resolveRouteFor, type AppRoute, type Target } from './routeResolver';
 import type { AuthUser } from '@/types';
 
 export const navigationRef = createNavigationContainerRef<any>();
@@ -18,6 +18,13 @@ export function resolveRoute(
   user: AuthUser | null | undefined
 ): Target {
   return resolveRouteFor(route, params, user, deriveMobileAccess(user));
+}
+
+export function canNavigateTo(
+  route: AppRoute,
+  user: AuthUser | null | undefined,
+): boolean {
+  return isRouteAllowed(route, deriveMobileAccess(user));
 }
 
 export function navigateTo(

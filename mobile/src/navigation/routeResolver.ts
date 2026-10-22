@@ -55,6 +55,16 @@ const ROUTE_SURFACE: Record<AppRoute, MobileSurface> = {
 
 export type Target = { name: string; params?: object };
 
+export function isRouteAllowed(
+  route: AppRoute,
+  policy: MobileAccessPolicy,
+): boolean {
+  const required = route === 'Home' && policy.surfaces.has('managerHome')
+    ? 'managerHome'
+    : ROUTE_SURFACE[route];
+  return policy.surfaces.has(required);
+}
+
 function more(screen: string, params?: Record<string, unknown>): Target {
   return { name: 'More', params: { screen, params, initial: false } };
 }
@@ -79,10 +89,7 @@ export function resolveRouteFor(
   user: AuthUser | null | undefined,
   policy: MobileAccessPolicy,
 ): Target {
-  const required = route === 'Home' && policy.surfaces.has('managerHome')
-    ? 'managerHome'
-    : ROUTE_SURFACE[route];
-  if (!policy.surfaces.has(required)) return accountTarget(user, policy);
+  if (!isRouteAllowed(route, policy)) return accountTarget(user, policy);
 
   const manager = policy.surfaces.has('managerHome');
   const specialist = policy.mode === 'PayrollPortal' || policy.mode === 'FinancePortal'
@@ -104,4 +111,3 @@ export function resolveRouteFor(
     default: return more(route, params);
   }
 }
-

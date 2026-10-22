@@ -269,6 +269,10 @@ export const en = {
   },
   notifications: {
     title: 'Notifications',
+    unavailable: 'Notification destination unavailable',
+    destinationUnavailable: 'This notification no longer has a specific destination.',
+    destinationAccessDenied: 'You no longer have access to that destination.',
+    destinationWorkspaceDenied: 'That destination is unavailable for this workspace.',
     markAllRead: 'Mark all as read',
     noNotifications: 'No notifications',
     preferences: 'Notification Preferences',
@@ -538,6 +542,10 @@ const ar: TranslationResources = {
   },
   notifications: {
     title: 'الإشعارات',
+    unavailable: 'وجهة الإشعار غير متاحة',
+    destinationUnavailable: 'لم يعد لهذا الإشعار وجهة محددة.',
+    destinationAccessDenied: 'لم يعد لديك صلاحية الوصول إلى هذه الوجهة.',
+    destinationWorkspaceDenied: 'هذه الوجهة غير متاحة لمساحة العمل الحالية.',
     markAllRead: 'تحديد الكل كمقروء',
     noNotifications: 'لا توجد إشعارات',
     preferences: 'إعدادات الإشعارات',
