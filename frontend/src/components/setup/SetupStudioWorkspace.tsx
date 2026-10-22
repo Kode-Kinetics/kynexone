@@ -13,7 +13,6 @@ import { POLICY_INTAKE_FLAG } from '../../lib/policyIntake';
 import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAreaId, type SetupDestination } from '../../lib/setupAreas';
 import { SetupAreaBlueprint, type SetupBlueprintDestination } from './SetupAreaBlueprint';
 import { SetupAreaNavigator } from './SetupAreaNavigator';
-import { SetupAreaRail } from './SetupAreaRail';
 import { SetupFocusedWorkspace } from './SetupFocusedWorkspace';
 import { SetupNextActionsRail } from './SetupNextActionsRail';
 
@@ -191,11 +190,9 @@ export function SetupStudioWorkspace({ companies, renderSettings, onOpenLibrary,
         </div>
       </div>
 
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[14rem_minmax(0,1fr)_16rem]">
-        <div className="hidden min-w-0 xl:block">
-          <SetupAreaRail activeArea={activeArea} onSelect={areaId => chooseArea(areaId, () => {})} />
-        </div>
-
+      {/* The page's Setup sections column is the left-hand navigation. Areas are chosen here, from the overview
+          list or "Browse all areas", so the Studio does not add a second column of navigation beside it. */}
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_16rem]">
         <div className="min-w-0">
           {selectedDestination && area ? (
             <div className="space-y-4">

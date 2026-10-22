@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import path from 'node:path';
+import { openSetupSection, setupSection } from './setupSections';
 
 const task5Evidence = (name: string) => path.resolve(__dirname, '../../docs/evidence/setup-studio-task5', name);
 
@@ -642,8 +643,7 @@ test('setup_studio_canonicalisation_never_rewrites_another_setup_section', async
     await expect(page).toHaveURL(new RegExp(`[?&]tab=${url.split('tab=')[1].split('&')[0]}(&|$)`));
     await expect(page.getByTestId('setup-studio-workspace')).toBeHidden();
   }
-  const sections = page.getByRole('navigation', { name: 'Setup sections' });
-  await sections.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await openSetupSection(page, 'Policy library');
   await expect(page).toHaveURL(/[?&]tab=policyLibrary(&|$)/);
   await page.waitForTimeout(500);
   await expect(page).toHaveURL(/[?&]tab=policyLibrary(&|$)/);
@@ -653,10 +653,10 @@ test('setup_studio_canonicalisation_never_rewrites_another_setup_section', async
 
 test('return_from_library_preserves_area_and_company', async ({ page }) => {
   const { writes } = await boot(page, { group: true, area: 'leave' });
-  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true }).click();
+  await openSetupSection(page, 'Policy library');
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await openSetupSection(page, 'Setup Studio');
   await expect(page).toHaveURL(/area=leave/);
   await expect(page).toHaveURL(/companyId=second-company/);
   await expect(page.getByTestId('setup-studio-workspace')).toContainText('Second Fixture LLC');
@@ -740,11 +740,11 @@ test('administration_access_and_filters_do_not_create_unsaved_edits', async ({ p
   await boot(page);
   await page.getByRole('button', { name: 'Administration settings', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Setup sections' })).toBeVisible();
-  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Branches', exact: true }).click();
+  await openSetupSection(page, 'Branches');
   const guard = trackLeaveGuard(page);
-  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Audit Logs', exact: true }).click();
+  await openSetupSection(page, 'Audit Logs');
   await page.getByPlaceholder('e.g. MasterDataType').fill('filtered');
-  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await openSetupSection(page, 'Setup Studio');
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible();
   await guard.expectShown(0);
 });
@@ -800,7 +800,7 @@ test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ 
   await boot(page);
   await page.route('**/api/admin/system-settings**', route => route.fulfill({ status: 500, json: { message: 'Fixture settings unavailable' } }));
   await page.getByRole('button', { name: 'Administration settings', exact: true }).click();
-  await page.getByRole('button', { name: 'Email / SMTP', exact: true }).click();
+  await openSetupSection(page, 'Email / SMTP');
   await expect(page).toHaveURL(/[?&]tab=emailConfig(&|$)/);
   await page.getByPlaceholder('smtp.example.com', { exact: true }).fill('smtp.retained.example');
   const before = page.url();
@@ -1330,7 +1330,7 @@ test('history_company_change_confirms_pending_files_once', async ({ page }) => {
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
   await expect(page).toHaveURL(/companyId=second-company/);
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await openSetupSection(page, 'Setup Studio');
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Second Fixture LLC');
   await page.getByRole('button', { name: 'Add your HR policy', exact: true }).click();
   await page.locator('input[type=file]').setInputFiles({ name: 'second.txt', mimeType: 'text/plain', buffer: Buffer.from('Second company policy') });
@@ -1434,12 +1434,11 @@ for (const direct of [true] as const) test(`${direct ? 'direct' : 'embedded'}_sa
   await field.fill('Retain same destination draft');
   const originalUrl = page.url();
   const guard = trackLeaveGuard(page);
-  const same = page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'GL & rates', exact: true });
-  await same.click();
+  await openSetupSection(page, 'GL & rates');
   await expect(page).toHaveURL(originalUrl);
   await expect(field).toHaveValue('Retain same destination draft');
   await guard.expectShown(0);
-  const depart = () => direct ? page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true }).click() : selectArea(page, 'Payroll');
+  const depart = () => direct ? openSetupSection(page, 'Policy library') : selectArea(page, 'Payroll');
   await depart();
   await guard.stay();
   await expect(field).toHaveValue('Retain same destination draft');
@@ -1521,17 +1520,17 @@ test('gl_authored_values_are_guarded_but_search_is_not', async ({ page }) => {
   await page.getByRole('searchbox', { name: 'Search accounts by code or name' }).fill('filter only');
   await page.getByRole('combobox', { name: 'Filter by account type' }).selectOption('Expense');
   const guard = trackLeaveGuard(page);
-  const library = page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true });
-  await library.click();
+  const library = () => openSetupSection(page, 'Policy library');
+  await library();
   await expect(page).toHaveURL(/tab=policyLibrary/);
   await guard.expectShown(0);
-  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await openSetupSection(page, 'Setup Studio');
   await page.getByPlaceholder('5006', { exact: true }).fill('5010');
   await page.getByPlaceholder('Account name', { exact: true }).fill('Retain authored GL account');
-  await library.click();
+  await library();
   await guard.stay();
   await expect(page.getByPlaceholder('Account name', { exact: true })).toHaveValue('Retain authored GL account');
-  await library.click();
+  await library();
   await guard.leave();
   await expect(page).toHaveURL(/tab=policyLibrary/);
   await guard.expectShown(2);
@@ -1554,7 +1553,7 @@ test('gl_group_statutory_country_browsing_is_not_authored_work', async ({ page }
   await page.getByRole('tab', { name: 'Statutory Rates', exact: true }).click();
   await page.getByLabel('Country', { exact: true }).selectOption('ARE');
   const guard = trackLeaveGuard(page);
-  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('button', { name: 'Policy library', exact: true }).click();
+  await openSetupSection(page, 'Policy library');
   await expect(page).toHaveURL(/tab=policyLibrary/);
   await guard.expectShown(0);
 });
@@ -1632,32 +1631,39 @@ test('overview_does_not_claim_configuration_complete', async ({ page }) => {
   expect(writes).toEqual([]);
 });
 
-test('desktop_configuration_keeps_approved_top_left_and_right_navigation', async ({ page }, testInfo) => {
+// The page has one left-hand navigation: the grouped Setup sections column. The Studio's areas are chosen inside the
+// Studio (overview list and "Browse all areas"), and its Next actions stay on the right. The Studio's former second
+// column of area buttons beside the sections column was retired with the section redesign.
+test('desktop_configuration_keeps_one_left_navigation_with_areas_and_next_actions', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop');
   await boot(page, { area: 'organization' });
 
-  await expect(page.getByRole('navigation', { name: 'Setup sections' })).toBeVisible();
-
-  const areaRail = page.getByRole('navigation', { name: 'Setup areas' });
-  await expect(areaRail).toBeVisible();
-  await expect(areaRail.getByRole('button')).toHaveCount(12);
-  for (const [, label] of areas) {
-    await expect(areaRail.getByRole('button', { name: label, exact: true })).toBeVisible();
-  }
+  const sections = page.getByRole('navigation', { name: 'Setup sections' });
+  await expect(sections).toBeVisible();
+  await expect(sections.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('navigation', { name: 'Setup areas' })).toHaveCount(0);
 
   const nextActions = page.getByRole('complementary', { name: 'Next actions' });
   await expect(nextActions).toBeVisible();
   await expect(nextActions.getByRole('button', { name: 'Continue next action', exact: true })).toBeVisible();
   await expect(nextActions).toContainText('Companies');
   await expect(page.getByText(/proposed changes|blockers|applied records/i)).toHaveCount(0);
+  const content = page.getByTestId('setup-area-content');
+  const [sectionsBox, contentBox, nextBox] = await Promise.all([sections.boundingBox(), content.boundingBox(), nextActions.boundingBox()]);
+  expect(sectionsBox!.x + sectionsBox!.width).toBeLessThanOrEqual(contentBox!.x);
+  expect(contentBox!.x + contentBox!.width).toBeLessThanOrEqual(nextBox!.x);
   await page.screenshot({ path: task5Evidence('approved-three-column-overview.png'), fullPage: false });
 
-  await areaRail.getByRole('button', { name: 'Leave and absence', exact: true }).click();
+  const browse = page.getByRole('button', { name: 'Browse all areas', exact: true });
+  await browse.click();
+  const areaList = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true }).getByRole('navigation', { name: 'Setup areas' });
+  for (const [, label] of areas) await expect(areaList.getByRole('button', { name: label, exact: true })).toBeVisible();
+  await areaList.getByRole('button', { name: 'Leave and absence', exact: true }).click();
   await expect(page.getByRole('heading', { level: 2, name: 'Leave and absence', exact: true })).toBeFocused();
   await expect(nextActions).toContainText('Leave types');
   await nextActions.getByRole('button', { name: 'Continue next action', exact: true }).click();
   await expect(page.getByRole('heading', { level: 2, name: 'Leave types', exact: true })).toBeFocused();
-  await expect(areaRail).toBeVisible();
+  await expect(sections).toBeVisible();
   await expect(nextActions).toBeVisible();
   await page.screenshot({ path: task5Evidence('approved-three-column-configuration.png'), fullPage: false });
 });
@@ -1735,10 +1741,9 @@ test('setup_section_history_records_every_tab_shown_even_when_the_server_is_slow
     await new Promise(resolve => setTimeout(resolve, 1_500));
     await route.fallback();
   });
-  const sections = page.getByRole('navigation', { name: 'Setup sections' });
   const steps = [['Companies', 'companies'], ['Grades', 'grades'], ['Employee Reference Lists', 'masterData'], ['Grades', 'grades']] as const;
   for (const [label] of steps) {
-    await sections.getByRole('button', { name: label, exact: true }).click();
+    await openSetupSection(page, label);
     await expect(page.getByRole('heading', { level: 2, name: label, exact: true })).toBeVisible();
   }
   await expect(page).toHaveURL(/[?&]tab=grades(&|$)/);
@@ -2346,7 +2351,7 @@ test('arabic_uses_employee_reference_lists_rename', async ({ page }) => {
 
   // The persistent Setup sections nav also lists this setting; the area row is the destination under test.
   await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'قوائم القيم المرجعية للموظفين', exact: true })).toBeVisible();
-  await expect(page.getByRole('navigation', { name: 'أقسام الإعداد' }).getByRole('button', { name: 'قوائم القيم المرجعية للموظفين', exact: true })).toBeVisible();
+  await expect(await setupSection(page, 'قوائم القيم المرجعية للموظفين', 'أقسام الإعداد')).toBeVisible();
   await expect(page.getByText('Employee Reference Lists', { exact: true })).toHaveCount(0);
 });
 

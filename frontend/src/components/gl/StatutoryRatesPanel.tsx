@@ -406,7 +406,7 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
         {t('Statutory overrides waiting for a second person. The person who requested an override cannot approve it.')}
       </p>
       <PanelState loading={pendingRes.loading && !pendingRes.data} error={pendingRes.error} onRetry={() => void pendingRes.reload()} empty={false} emptyLabel="">
-        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="stat-pending-heading">
           <table className="w-full min-w-[900px] text-sm">
             <thead className={theadClass}>
               <tr>
@@ -500,7 +500,7 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
             empty={rows.length === 0}
             emptyLabel={t('No statutory rules are published for this country yet.')}
           >
-            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+            <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="stat-rates-heading">
               {isGroupView ? (
                 <table className="w-full min-w-[640px] text-sm">
                   <thead className={theadClass}>

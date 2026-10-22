@@ -1,6 +1,7 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import type { CompanyProfile, MigrationImportBatchDto, OrgStructureImportRequest, SetupDraft } from '../src/api/setupAssistant';
+import { openSetupSection, setupSection } from './setupSections';
 
 /**
  * Real browser interactions against synthetic, intercepted API responses.
@@ -443,31 +444,30 @@ test('requires country and currency when the workspace has not supplied them', a
 test('offers import separately from Setup Studio and preserves its organization entry point', async ({ page }, info) => {
   const state = await boot(page);
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Import organization', exact: true }).click();
+  await openSetupSection(page, 'Import organization');
   await expect(page.locator('input[type="file"]:visible').first()).toBeVisible();
   await expect(page.getByLabel(/^Industry/)).not.toBeVisible();
   await accessible(page, '#setup-importOrganization');
   await contained(page);
   await evidence(page, info, 'import-entry');
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await openSetupSection(page, 'Setup Studio');
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
-  const setupSections = page.getByRole('navigation', { name: 'Setup sections', exact: true });
   for (const label of ['Cost Centres & Budget', 'Companies', 'Branches', 'Departments', 'Designations', 'Grades', 'Employee Reference Lists', 'Numbering', 'System Settings', 'GCC Settings', 'Statutory Rules', 'Fiscal Years', 'Locations', 'GL & rates', 'Notifications', 'Email / SMTP', 'Audit Logs']) {
-    await expect(setupSections.getByRole('button', { name: label, exact: true })).toBeVisible();
+    await expect(await setupSection(page, label)).toBeVisible();
   }
-  await setupSections.getByRole('button', { name: 'Companies', exact: true }).click();
+  await openSetupSection(page, 'Companies');
   await expect(page.getByRole('region', { name: 'Companies', exact: true })).toBeVisible();
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
   await expect(page).toHaveURL(/tab=companies/);
   await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
   await expect(page.getByText('Legal entities, registration details and operating currencies.', { exact: true })).toBeVisible();
-  await setupSections.getByRole('button', { name: 'Grades', exact: true }).click();
+  await openSetupSection(page, 'Grades');
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
-  await setupSections.getByRole('button', { name: 'Employee Reference Lists', exact: true }).click();
+  await openSetupSection(page, 'Employee Reference Lists');
   await expect(page.getByRole('heading', { name: 'Employee Reference Lists', exact: true })).toBeVisible();
-  await setupSections.getByRole('button', { name: 'Grades', exact: true }).click();
+  await openSetupSection(page, 'Grades');
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
   await page.goBack();
@@ -540,7 +540,7 @@ test('an invalid company setup URL fails closed instead of selecting another com
 test('renders the setup shell and organization import path in Arabic RTL', async ({ page }) => {
   const state = await boot(page, { locale: 'ar' });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-  await page.getByRole('button', { name: 'استيراد هيكل المنظمة', exact: true }).click();
+  await openSetupSection(page, 'استيراد هيكل المنظمة', 'أقسام الإعداد');
   await expect(page.getByRole('heading', { name: 'استيراد منظمتك', exact: true })).toBeVisible();
   await expect(page.getByLabel('رفع حزمة المنظمة', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'التحقق من الملفات', exact: true })).toBeDisabled();
@@ -552,6 +552,8 @@ test('renders the setup shell and organization import path in Arabic RTL', async
 test('a read-only organization viewer cannot enter Setup Studio through a write-tab deep link', async ({ page }) => {
   const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup&path=policyStarter' });
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
+  // Opens the section picker on a phone, so the absence below is checked against the full list.
+  await expect(await setupSection(page, 'Companies')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toHaveCount(0);
@@ -657,7 +659,7 @@ test('large import findings stay bounded and the full report can be downloaded',
     })),
   };
   await mockImport(page, { validationResult: batch });
-  await page.getByRole('button', { name: 'Import organization', exact: true }).click();
+  await openSetupSection(page, 'Import organization');
   await uploadPackage(page, 'organization.txt', packageA);
   await page.getByRole('button', { name: 'Validate files', exact: true }).click();
   await expect(page.getByText('Showing 50 of 10,000 findings.', { exact: true })).toBeVisible();
@@ -684,7 +686,7 @@ test('locks import operations during validation and commits only the replacement
     validationWait: new Promise<void>(resolve => { releaseValidation = resolve; }),
     commitWait: new Promise<void>(resolve => { releaseCommit = resolve; }),
   });
-  await page.getByRole('button', { name: 'Import organization', exact: true }).click();
+  await openSetupSection(page, 'Import organization');
   await uploadPackage(page, 'alpha.txt', packageA);
   await page.getByRole('button', { name: 'Validate files', exact: true }).click();
   await expect.poll(() => imports.validations.length).toBe(1);
@@ -723,7 +725,7 @@ for (const failure of ['blocked422', 'failed422', 'conflict409'] as const) {
   test(`import ${failure} preserves recovery details and requires validation before another apply`, async ({ page }) => {
     const state = await boot(page);
     const imports = await mockImport(page, { failure });
-    await page.getByRole('button', { name: 'Import organization', exact: true }).click();
+    await openSetupSection(page, 'Import organization');
     await uploadPackage(page, 'organization.txt', packageA);
     await page.getByRole('button', { name: 'Validate files', exact: true }).click();
     await page.getByRole('button', { name: 'Apply import', exact: true }).click();
@@ -984,7 +986,7 @@ test('keeps the default Setup Studio steps compact on desktop', async ({ page },
 
 test('checks import and every settings entry screen for contained navigation', async ({ page }, info) => {
   const state = await boot(page, { mfaReminder: info.project.name === 'desktop', settingsSweep: true, groupMode: true });
-  await page.getByRole('button', { name: 'Import organization', exact: true }).click();
+  await openSetupSection(page, 'Import organization');
   if (info.project.name === 'desktop') {
     await expect(page.getByRole('button', { name: 'Validate files', exact: true })).toBeInViewport({ ratio: 1 });
     await expect(page.getByRole('button', { name: 'Download template', exact: true })).toBeInViewport({ ratio: 1 });
@@ -1075,7 +1077,7 @@ test('extracts policy settings only after consent and copies only reviewed selec
 
 test('publishes a reviewed policy to an explicit company then withdraws it', async ({ page }, info) => {
   const state = await boot(page, { policyIntelligence: true, hrLibrary: true });
-  await page.getByRole('button', { name: 'Policy library', exact: true }).click();
+  await openSetupSection(page, 'Policy library');
   await page.getByRole('button', { name: 'Review document', exact: true }).click();
   const modal = page.getByRole('dialog', { name: 'Review document', exact: true });
   await expect(modal.getByRole('button', { name: 'Publish policy', exact: true })).toBeDisabled();

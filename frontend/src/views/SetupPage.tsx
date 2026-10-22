@@ -10,6 +10,7 @@ import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
 import { SetupPathSwitch } from '../components/setup/SetupPathSwitch';
+import { SetupSectionNav, type SetupSectionNavGroup, type SetupSectionNavItem } from '../components/setup/SetupSectionNav';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
 import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChooser';
@@ -125,10 +126,17 @@ const tabs: { id: SettingsTab; label: string; description: string; icon: React.E
   { id: 'adminAuditLogs', label: msg('Audit Logs'), description: msg('Review recorded administrative changes and actors.'), icon: ClipboardList, category: 'system' },
 ];
 
-const directSettingsOrder: SettingsTab[] = [
+// The settings a writer reaches from the section navigation, listed under their category in `tabs` order.
+// Cost centers stay reachable through ?tab=costCenters and the Studio, as before, without an entry of their own.
+const directSettingIds = new Set<SettingsTab>([
   'establishment', 'companies', 'branches', 'departments', 'designations', 'grades',
   'masterData', 'numberingRules', 'systemSettings', 'gccSettings', 'statutoryRules',
   'fiscalYears', 'locations', 'glMapping', 'notificationTemplates', 'emailConfig', 'adminAuditLogs',
+]);
+const settingsCategories: { id: SettingsCategory; label: string }[] = [
+  { id: 'organization', label: msg('Organization') },
+  { id: 'peoplePay', label: msg('People & pay') },
+  { id: 'system', label: msg('System') },
 ];
 
 // Small read-only field for the statutory pack profile panel.
@@ -2599,15 +2607,24 @@ export function SetupPage() {
   };
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
   const SelectedSettingIcon = selectedSetting.icon;
-  const navigationTabs = canWrite ? [
-    { id: 'aiSetup' as const, label: t('Setup Studio'), icon: Sparkles },
-    ...(!isCompanyScopedGroup ? [{ id: 'importOrganization' as const, label: t('Import organization'), icon: Upload }] : []),
-    ...directSettingsOrder.filter(id => !isCompanyScopedGroup || companyOwnedSettingIds.has(id)).map((id) => {
-      const tab = tabs.find((item) => item.id === id)!;
-      return { id: tab.id, label: t(tab.label), icon: tab.icon };
-    }),
-    ...(canManagePolicies ? [{ id: 'policyLibrary' as const, label: t('Policy library'), icon: ClipboardList }] : []),
-  ] : visibleTabs.map((tab) => ({ id: tab.id, label: t(tab.label), icon: tab.icon }));
+  const sectionControls = (id: Tab) => id === 'aiSetup' || id === 'importOrganization' || id === 'policyLibrary' ? `setup-${id}` : 'setup-setting-content';
+  const setupTools: SetupSectionNavItem<Tab>[] = canWrite ? [
+    { id: 'aiSetup', label: t('Setup Studio'), icon: Sparkles, controls: sectionControls('aiSetup') },
+    ...(!isCompanyScopedGroup ? [{ id: 'importOrganization' as const, label: t('Import organization'), icon: Upload, controls: sectionControls('importOrganization') }] : []),
+    ...(canManagePolicies ? [{ id: 'policyLibrary' as const, label: t('Policy library'), icon: ClipboardList, controls: sectionControls('policyLibrary') }] : []),
+  ] : [];
+  const navigationSettings = canWrite
+    ? tabs.filter(tab => directSettingIds.has(tab.id) && (!isCompanyScopedGroup || companyOwnedSettingIds.has(tab.id)))
+    : visibleTabs;
+  const navigationGroups: SetupSectionNavGroup<Tab>[] = [
+    { id: 'setupTools', label: t('Setup tools'), items: setupTools },
+    ...settingsCategories.map(category => ({
+      id: category.id,
+      label: t(category.label),
+      items: navigationSettings.filter(tab => tab.category === category.id).map(tab => ({ id: tab.id, label: t(tab.label), icon: tab.icon, controls: sectionControls(tab.id) })),
+    })),
+  ].filter(group => group.items.length > 0);
+  const currentSectionLabel = isSettings ? t(selectedSetting.label) : setupTools.find(item => item.id === selectedTab)?.label ?? t('Setup Studio');
 
   const renderExistingPanel = (id: SettingsTab): React.ReactNode => {
     if (!visibleTabs.some(tab => tab.id === id)) return null;
@@ -2727,30 +2744,14 @@ export function SetupPage() {
         </p>
       </header>
 
+      {/* One navigation for the page: the grouped section column (a section picker on narrower screens) beside the
+          selected section. Setup Studio is one of its sections; its own areas are chosen inside the Studio. */}
+      {/* The Policy starter brings its own step rail and is sized to fit one screen, so it keeps the full width and
+          the sections fold into the picker while it is open. */}
+      <div className={configurationScopeUnavailable || isStarter ? 'setup-page-layout grid min-w-0 gap-4' : 'setup-page-layout grid min-w-0 gap-4 xl:grid-cols-[16rem_minmax(0,1fr)] xl:items-start xl:gap-6'}>
+      {!configurationScopeUnavailable && <SetupSectionNav groups={navigationGroups} selectedId={selectedTab} currentLabel={currentSectionLabel} collapsed={isStarter} onSelect={selectTab} />}
+      <div className="setup-page-content min-w-0 space-y-4">
       {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path === 'policyStarter' ? 'configuration' : setupPath.path} onSelect={selectSetupPath} />}
-
-      {!configurationScopeUnavailable && <nav aria-label={t('Setup sections')} className="setup-page-nav flex flex-nowrap gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10">
-          {navigationTabs.map(({ id, label, icon: Icon }) => {
-            const selected = selectedTab === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={selected}
-                aria-controls={id === 'aiSetup' || id === 'importOrganization' || id === 'policyLibrary' ? `setup-${id}` : 'setup-setting-content'}
-                onClick={() => selectTab(id)}
-                className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                  selected
-                    ? 'bg-sapphire text-white shadow-sm dark:bg-cyanAccent dark:text-slate-950'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-950 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.10] dark:hover:text-white'
-                }`}
-              >
-                <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                {label}
-              </button>
-            );
-          })}
-      </nav>}
 
       {/* Each path owns its mounted subtree; browser drafts plus the guard preserve authored work. */}
       {canWrite && (
@@ -2831,6 +2832,8 @@ export function SetupPage() {
           </div>
         </section>
       )}
+      </div>
+      </div>
       </div>
       </div>
     </>
