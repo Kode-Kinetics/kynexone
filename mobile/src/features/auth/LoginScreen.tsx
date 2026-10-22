@@ -34,7 +34,6 @@ import {
   LiquidBackdrop,
   LiquidButton,
   MotionPressable,
-  Surface,
 } from '@/components/ui';
 import { normalizeEmail, normalizeWorkspace } from '@/auth/publicAuthInput';
 import { authFailure } from '@/auth/authStore';
@@ -250,7 +249,14 @@ export default function LoginScreen({ navigation, route }: Props) {
         </Animated.View>
 
         <Animated.View style={[styles.cardWrap, cardMotion]}>
-          <Surface level={2} radius={theme.radius.xl} contentStyle={[styles.card, compact && styles.cardCompact]}>
+          <GlassSurface
+            glass
+            elevated
+            translucentOpacity={0.5}
+            variant="clear"
+            radius={theme.radius.xl}
+            contentStyle={[styles.card, compact && styles.cardCompact]}
+          >
             <Text accessibilityRole="header" style={[theme.typography.title2, { color: theme.colors.text }]}>
               {t('account.login.title')}
             </Text>
@@ -429,7 +435,7 @@ export default function LoginScreen({ navigation, route }: Props) {
               onPress={openWelcome}
               testID="login-welcome-code"
             />
-          </Surface>
+          </GlassSurface>
         </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>

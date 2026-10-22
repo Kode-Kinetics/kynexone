@@ -28,6 +28,8 @@ export interface GlassSurfaceProps extends ViewProps {
   intensity?: number;
   variant?: 'regular' | 'clear';
   tintColor?: string;
+  /** Optional material tint opacity. Reduce Transparency still uses the opaque fallback. */
+  translucentOpacity?: number;
   /** Glass: soft shadow on the solid fallback only. Content: ignored (cards are flat). */
   elevated?: boolean;
   /** Content mode: render as an inset (level 0) surface. */
@@ -66,6 +68,7 @@ export function GlassSurface({
   intensity = 60,
   variant = 'regular',
   tintColor,
+  translucentOpacity,
   elevated,
   recessed = false,
   level,
@@ -74,13 +77,18 @@ export function GlassSurface({
   const { theme } = useTheme();
   const nativeGlass = useMemo(() => canUseNativeLiquidGlass(), []);
   const resolvedRadius = radius ?? theme.radius.lg;
+  const resolvedTint = tintColor ?? (translucentOpacity === undefined
+    ? undefined
+    : theme.isDark
+      ? `rgba(11,25,52,${translucentOpacity})`
+      : `rgba(255,255,255,${translucentOpacity})`);
 
   if (!glass && !interactive) {
     return (
       <Surface
         level={level ?? (recessed ? 0 : 1)}
         radius={resolvedRadius}
-        tintColor={tintColor}
+        tintColor={resolvedTint}
         style={style}
         contentStyle={contentStyle}
         {...viewProps}
@@ -98,7 +106,7 @@ export function GlassSurface({
         style={[style, { borderRadius: resolvedRadius }]}
         glassEffectStyle={variant}
         colorScheme={theme.mode}
-        tintColor={tintColor}
+        tintColor={resolvedTint}
         isInteractive={interactive}
         {...viewProps}
       >
@@ -131,8 +139,8 @@ export function GlassSurface({
             tint={theme.isDark ? 'systemChromeMaterialDark' : 'systemChromeMaterialLight'}
           />
         ) : null}
-        {tintColor && !solid ? (
-          <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tintColor }]} />
+        {resolvedTint && !solid ? (
+          <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: resolvedTint }]} />
         ) : null}
         <View style={[styles.content, contentStyle]}>{children}</View>
       </View>

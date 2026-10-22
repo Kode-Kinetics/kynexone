@@ -1,5 +1,5 @@
-import React, { useContext, useEffect, useState } from 'react';
-import { I18nManager, Keyboard, LayoutChangeEvent, Platform, StyleSheet, Text, View } from 'react-native';
+import React, { useContext, useEffect, useRef, useState } from 'react';
+import { I18nManager, Keyboard, LayoutChangeEvent, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { BottomTabBarHeightCallbackContext, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface, MotionPressable } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
 import { motion } from '@/theme/motion';
+import { useAccessibleLayout } from '@/theme/useAccessibleLayout';
 import { TAB_BAR_HEIGHT, tabBarBottomOffset, useTabBarInset } from './tabBarInset';
 
 export { TAB_BAR_HEIGHT, useTabBarInset } from './tabBarInset';
@@ -55,9 +56,12 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
   const inset = useTabBarInset();
   const reportHeight = useContext(BottomTabBarHeightCallbackContext);
   const keyboardShown = useKeyboardShown();
+  const { shouldStack, fontScale, rowDirection } = useAccessibleLayout();
+  const scrollRef = useRef<ScrollView>(null);
   const [rowWidth, setRowWidth] = useState(0);
   const count = state.routes.length;
-  const itemWidth = count ? (rowWidth - INNER_PAD * 2) / count : 0;
+  const fittedItemWidth = count ? (rowWidth - INNER_PAD * 2) / count : 0;
+  const itemWidth = shouldStack ? Math.max(96, 76 * fontScale) : fittedItemWidth;
   const lensX = useSharedValue(0);
   const direction = I18nManager.isRTL ? -1 : 1;
 
@@ -70,6 +74,12 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
     const target = direction * state.index * itemWidth;
     lensX.value = reduceMotion || !itemWidth ? target : withSpring(target, motion.springs.snappy);
   }, [direction, itemWidth, lensX, reduceMotion, state.index]);
+
+  useEffect(() => {
+    if (shouldStack) {
+      scrollRef.current?.scrollTo({ x: state.index * itemWidth, animated: false });
+    }
+  }, [itemWidth, shouldStack, state.index]);
 
   const lensStyle = useAnimatedStyle(() => ({ transform: [{ translateX: lensX.value }] }));
 
@@ -93,7 +103,7 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
           style={styles.items}
           onLayout={(e: LayoutChangeEvent) => setRowWidth(e.nativeEvent.layout.width)}
         >
-          {itemWidth > 0 ? (
+          {!shouldStack && itemWidth > 0 ? (
             <Animated.View
               pointerEvents="none"
               style={[
@@ -103,6 +113,19 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
               ]}
             />
           ) : null}
+          <ScrollView
+            ref={scrollRef}
+            horizontal
+            style={styles.scroll}
+            scrollEnabled={shouldStack}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={[styles.scrollRow, { flexDirection: rowDirection }, !shouldStack && styles.fillRow]}
+            onContentSizeChange={() => {
+              if (shouldStack) {
+                scrollRef.current?.scrollTo({ x: state.index * itemWidth, animated: false });
+              }
+            }}
+          >
           {state.routes.map((route, index) => {
             const focused = state.index === index;
             const options = descriptors[route.key].options;
@@ -122,14 +145,14 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
             return (
               <MotionPressable
                 key={route.key}
+                testID={`tab-${route.name}`}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: focused }}
                 accessibilityLabel={options.tabBarAccessibilityLabel ?? label}
-                testID={options.tabBarTestID}
                 onPress={onPress}
                 onLongPress={onLongPress}
                 haptic={focused ? 'none' : 'selection'}
-                style={styles.item}
+                style={shouldStack ? { width: itemWidth } : styles.item}
                 contentStyle={styles.itemBody}
               >
                 <Ionicons
@@ -139,10 +162,6 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
                   color={focused ? theme.colors.accent : theme.colors.textSecondary}
                 />
                 <Text
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.85}
-                  maxFontSizeMultiplier={1.3}
                   style={[
                     styles.label,
                     { color: focused ? theme.colors.accent : theme.colors.textSecondary },
@@ -153,6 +172,7 @@ export function LiquidTabBar({ state, descriptors, navigation }: BottomTabBarPro
               </MotionPressable>
             );
           })}
+          </ScrollView>
         </View>
       </GlassSurface>
     </View>
@@ -164,6 +184,9 @@ const styles = StyleSheet.create({
   bar: { height: TAB_BAR_HEIGHT },
   row: { justifyContent: 'center' },
   items: { flex: 1, flexDirection: 'row', alignItems: 'stretch', padding: INNER_PAD },
+  scrollRow: { alignItems: 'stretch' },
+  scroll: { flex: 1 },
+  fillRow: { flexGrow: 1 },
   lens: {
     position: 'absolute',
     top: INNER_PAD,
