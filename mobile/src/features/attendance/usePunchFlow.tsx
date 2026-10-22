@@ -76,7 +76,7 @@ export function usePunchFlow({ onPunched, onOpenConsent }: Options) {
     } catch (error) {
       // Discovery is advisory: without it the app punches with location and no selfie, and the
       // server's answer (a refusal with a reason) is still authoritative.
-      console.warn('[Attendance] Verification discovery unavailable:', error);
+      if (__DEV__) console.warn('[Attendance] Verification discovery unavailable:', error);
       return null;
     }
   }, [remember]);

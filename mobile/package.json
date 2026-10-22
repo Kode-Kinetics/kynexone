@@ -14,13 +14,15 @@
     "updates:check": "node scripts/check-updates-config.mjs",
     "update:production": "node scripts/eas-update.mjs production",
     "update:preview": "node scripts/eas-update.mjs preview",
-    "verify": "npm run test:unit && npm run typecheck && npm run lint && npm run doctor",
+    "verify": "npm run release:scan && npm run test:unit && npm run typecheck && npm run lint && npm run doctor",
+    "release:scan": "node scripts/release-gates.mjs --source-only",
+    "release:check": "node scripts/release-gates.mjs",
     "store:check": "node scripts/store-readiness.mjs",
     "prebuild:clean": "expo prebuild --clean",
     "ios:native": "expo run:ios",
     "android:native": "expo run:android",
     "build:preview": "eas build --profile preview --platform all",
-    "build:production": "eas build --profile production --platform all",
+    "build:production": "npm run release:check && eas build --profile production --platform all",
     "submit:production": "eas submit --profile production --platform all"
   },
   "dependencies": {

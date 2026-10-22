@@ -59,7 +59,7 @@ export const appStorage = {
     try {
       await AsyncStorage.setItem(key, JSON.stringify(value));
     } catch (error) {
-      console.error('[AppStorage] set error:', key, error);
+      if (__DEV__) console.error('[AppStorage] set error:', key, error);
     }
   },
 
@@ -69,7 +69,7 @@ export const appStorage = {
       if (raw === null) return null;
       return JSON.parse(raw) as T;
     } catch (error) {
-      console.error('[AppStorage] get error:', key, error);
+      if (__DEV__) console.error('[AppStorage] get error:', key, error);
       return null;
     }
   },
@@ -78,7 +78,7 @@ export const appStorage = {
     try {
       await AsyncStorage.removeItem(key);
     } catch (error) {
-      console.error('[AppStorage] delete error:', key, error);
+      if (__DEV__) console.error('[AppStorage] delete error:', key, error);
     }
   },
 };

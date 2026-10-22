@@ -26,8 +26,9 @@ export function SignInLanguageToggle() {
       {
         text: t('settings.restartNow'),
         onPress: () => {
-          reloadAppAsync('Language direction changed').catch((error) =>
-            console.warn('[SignIn] Reload failed; the direction applies on next launch:', error));
+          reloadAppAsync('Language direction changed').catch((error) => {
+            if (__DEV__) console.warn('[SignIn] Reload failed; the direction applies on next launch:', error);
+          });
         },
       },
     ]);

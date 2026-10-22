@@ -31,7 +31,7 @@ export default function SelfieConsentScreen() {
     try {
       setVerification(await selfieAttendanceApi.getVerification({ force }));
     } catch (error) {
-      console.warn('[SelfieConsent] Load failed:', error);
+      if (__DEV__) console.warn('[SelfieConsent] Load failed:', error);
       setLoadError(true);
     } finally {
       setLoading(false);

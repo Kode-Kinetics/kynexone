@@ -94,7 +94,7 @@ export const lettersApi = {
     try {
       await FileSystem.deleteAsync(uri, { idempotent: true });
     } catch (error) {
-      console.warn('[Letters] Could not delete the cached letter:', error);
+      if (__DEV__) console.warn('[Letters] Could not delete the cached letter:', error);
     }
   },
 };

@@ -75,7 +75,7 @@ export default function AttendanceHistoryScreen({ navigation }: Props) {
     try {
       setRecords(await attendanceApi.getMonthlyAttendance(year, month));
     } catch (error) {
-      console.warn('[AttendanceHistory] Load failed:', error);
+      if (__DEV__) console.warn('[AttendanceHistory] Load failed:', error);
       setFailed(true);
     } finally {
       setRefreshing(false);

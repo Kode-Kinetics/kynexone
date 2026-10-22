@@ -37,7 +37,7 @@ export async function registerPushToken(deviceId: string): Promise<string | null
   if (!Device.isDevice) {
     // Loading expo-notifications in an unsigned simulator build can emit a
     // keychain-registration error. Skip the native module entirely there.
-    console.log('[Push] Simulator detected – push registration is disabled');
+    if (__DEV__) console.log('[Push] Simulator detected – push registration is disabled');
     return null;
   }
 
@@ -52,7 +52,7 @@ export async function registerPushToken(deviceId: string): Promise<string | null
     finalStatus = status;
   }
   if (finalStatus !== 'granted') {
-    console.warn('[Push] Permission not granted');
+    if (__DEV__) console.warn('[Push] Permission not granted');
     return null;
   }
 
@@ -78,7 +78,7 @@ export async function registerPushToken(deviceId: string): Promise<string | null
   const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas
     ?.projectId;
   if (!projectId) {
-    console.warn('[Push] No EAS projectId configured (EXPO_PUBLIC_EAS_PROJECT_ID) – skipping push registration');
+    if (__DEV__) console.warn('[Push] No EAS projectId configured (EXPO_PUBLIC_EAS_PROJECT_ID) – skipping push registration');
     return null;
   }
 
@@ -97,10 +97,10 @@ export async function registerPushToken(deviceId: string): Promise<string | null
       appVersion: Constants.expoConfig?.version ?? '1.0.0',
     });
 
-    console.log('[Push] Registered push token:', token.slice(0, 20) + '...');
+    if (__DEV__) console.log('[Push] Registered push token:', token.slice(0, 20) + '...');
     return token;
   } catch (error) {
-    console.error('[Push] Failed to register push token:', error);
+    if (__DEV__) console.error('[Push] Failed to register push token:', error);
     return null;
   }
 }
@@ -112,7 +112,7 @@ export async function unregisterPushToken(deviceId: string): Promise<void> {
   try {
     await deviceApi.unregister(deviceId);
   } catch (error) {
-    console.warn('[Push] Failed to unregister push token:', error);
+    if (__DEV__) console.warn('[Push] Failed to unregister push token:', error);
   }
 }
 

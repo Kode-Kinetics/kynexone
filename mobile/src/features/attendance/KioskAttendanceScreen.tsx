@@ -31,7 +31,7 @@ export default function KioskAttendanceScreen() {
     try {
       setAttendance(await attendanceApi.getKioskTodayAttendance());
     } catch (error) {
-      console.warn('[Kiosk] Load failed:', error);
+      if (__DEV__) console.warn('[Kiosk] Load failed:', error);
       setFailed(true);
     } finally {
       setLoading(false);

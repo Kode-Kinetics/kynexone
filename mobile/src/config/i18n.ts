@@ -596,8 +596,9 @@ function promptRestart(): void {
     {
       text: i18n.t('settings.restartNow'),
       onPress: () => {
-        reloadAppAsync('Language direction changed').catch((error) =>
-          console.warn('[i18n] Reload failed; the direction applies on next launch:', error));
+        reloadAppAsync('Language direction changed').catch((error) => {
+          if (__DEV__) console.warn('[i18n] Reload failed; the direction applies on next launch:', error);
+        });
       },
     },
   ]);
@@ -615,7 +616,7 @@ async function restoreLanguage(): Promise<{ lang: AppLanguage; mismatch: boolean
 }
 
 const restored = restoreLanguage().catch((error) => {
-  console.warn('[i18n] Could not restore the saved language:', error);
+  if (__DEV__) console.warn('[i18n] Could not restore the saved language:', error);
   return null;
 });
 
@@ -641,7 +642,7 @@ export async function setLanguage(lang: AppLanguage): Promise<{ restartRequired:
   try {
     await AsyncStorage.setItem(STORAGE_KEYS.LANGUAGE, JSON.stringify(lang));
   } catch (error) {
-    console.warn('[i18n] Could not persist the language choice:', error);
+    if (__DEV__) console.warn('[i18n] Could not persist the language choice:', error);
   }
   const restartRequired = applyDirection(lang, I18nManager);
   if (restartRequired) await markRestartPrompted(lang, AsyncStorage, RESTART_PROMPTED_KEY);

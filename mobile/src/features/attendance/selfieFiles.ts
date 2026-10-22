@@ -21,7 +21,7 @@ export async function deleteTempPhoto(uri: string | null | undefined): Promise<v
   try {
     await FileSystem.deleteAsync(uri, { idempotent: true });
   } catch (error) {
-    console.warn('[Selfie] Could not delete the temporary photo:', error);
+    if (__DEV__) console.warn('[Selfie] Could not delete the temporary photo:', error);
   }
 }
 
@@ -40,7 +40,7 @@ export async function adoptCapturedPhoto(uri: string): Promise<string> {
     await FileSystem.moveAsync({ from: uri, to: target });
     return target;
   } catch (error) {
-    console.warn('[Selfie] Could not move the photo into the selfie folder; using it in place:', error);
+    if (__DEV__) console.warn('[Selfie] Could not move the photo into the selfie folder; using it in place:', error);
     return uri;
   }
 }
@@ -74,7 +74,7 @@ export async function sweepSelfieCache(): Promise<number> {
     ]);
     return counts[0] + counts[1];
   } catch (error) {
-    console.warn('[Selfie] Launch sweep failed:', error);
+    if (__DEV__) console.warn('[Selfie] Launch sweep failed:', error);
     return 0;
   }
 }

@@ -138,7 +138,7 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
       }
       setPhotoUri(kept);
     } catch (error) {
-      console.warn('[Selfie] Capture failed:', error);
+      if (__DEV__) console.warn('[Selfie] Capture failed:', error);
       if (guard.current.isCurrent(ticket)) setCameraProblem(true);
     } finally {
       setCapturing(false);
@@ -153,11 +153,13 @@ export function SelfieCaptureModal({ visible, punchType, mode, uploading, onUse,
         const chosen = choosePictureSize(sizes);
         if (chosen) setPictureSize(chosen);
       })
-      .catch((error) => console.warn('[Selfie] Picture sizes unavailable; using the camera default:', error));
+      .catch((error) => {
+        if (__DEV__) console.warn('[Selfie] Picture sizes unavailable; using the camera default:', error);
+      });
   }, [pictureSize]);
 
   const onMountError = useCallback((event: { message?: string }) => {
-    console.warn('[Selfie] Camera could not start:', event?.message);
+    if (__DEV__) console.warn('[Selfie] Camera could not start:', event?.message);
     setCameraReady(false);
     setCameraProblem(true);
   }, []);

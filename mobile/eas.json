@@ -28,7 +28,8 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_APP_ENV": "production",
-        "EXPO_PUBLIC_API_BASE_URL": "https://zayra-ai-workforce.onrender.com/api"
+        "EXPO_PUBLIC_API_BASE_URL": "https://zayra-ai-workforce.onrender.com/api",
+        "EXPO_UPDATES_CODE_SIGNING_CERT": "./certs/certificate.pem"
       }
     }
   },

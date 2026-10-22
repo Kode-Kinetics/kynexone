@@ -61,7 +61,9 @@ export default function SettingsScreen() {
     let active = true;
     selfieAttendanceApi.getVerification()
       .then((value) => { if (active) setVerification(value); })
-      .catch((error) => console.warn('[Settings] Selfie attendance settings unavailable:', error));
+      .catch((error) => {
+        if (__DEV__) console.warn('[Settings] Selfie attendance settings unavailable:', error);
+      });
     return () => { active = false; };
   }, []));
   const showSelfieRow = verification != null && (verification.selfie.enabled || verification.selfie.consent != null);
@@ -74,7 +76,9 @@ export default function SettingsScreen() {
       .then((settings) => {
         if (active) setPushEnabled(settings.pushEnabled);
       })
-      .catch((error) => console.warn('[Settings] Notification preferences unavailable:', error));
+      .catch((error) => {
+        if (__DEV__) console.warn('[Settings] Notification preferences unavailable:', error);
+      });
     return () => { active = false; };
   }, []);
 
@@ -108,8 +112,9 @@ export default function SettingsScreen() {
       {
         text: t('settings.restartNow'),
         onPress: () => {
-          reloadAppAsync('Language direction changed').catch((error) =>
-            console.warn('[Settings] Reload failed; the direction applies on next launch:', error));
+          reloadAppAsync('Language direction changed').catch((error) => {
+            if (__DEV__) console.warn('[Settings] Reload failed; the direction applies on next launch:', error);
+          });
         },
       },
     ]);

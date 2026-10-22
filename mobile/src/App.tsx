@@ -59,7 +59,9 @@ function AppContent() {
   // disagree. Raised any earlier, Android can drop the alert (config/i18n.ts).
   useEffect(() => {
     const task = InteractionManager.runAfterInteractions(() => {
-      promptRestartIfNeeded().catch((error) => console.warn('[i18n] Restart prompt failed:', error));
+      promptRestartIfNeeded().catch((error) => {
+        if (__DEV__) console.warn('[i18n] Restart prompt failed:', error);
+      });
     });
     return () => task.cancel();
   }, []);
@@ -74,7 +76,7 @@ function AppContent() {
     let cleanup: () => void = () => {};
     setupNotificationListeners(
       (notification) => {
-        console.log('[Notification] Received:', notification.request.content.title);
+        if (__DEV__) console.log('[Notification] Received:', notification.request.content.title);
       },
       (response) => {
         openFromNotification(response);
@@ -84,7 +86,9 @@ function AppContent() {
         if (active) cleanup = listenerCleanup;
         else listenerCleanup();
       })
-      .catch((error) => console.warn('[Notification] Listener setup failed:', error));
+      .catch((error) => {
+        if (__DEV__) console.warn('[Notification] Listener setup failed:', error);
+      });
 
     getLastNotificationResponseAsync()
       .then((response) => {

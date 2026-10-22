@@ -54,7 +54,7 @@ export default function NotificationsScreen({ navigation }: { navigation: any })
       const data = await notificationsApi.getAll({ page: 1, limit: 50 });
       setNotifications(data.items || []);
     } catch (error) {
-      console.warn('[Notifications] Load failed:', error);
+      if (__DEV__) console.warn('[Notifications] Load failed:', error);
       setFailed(true);
     } finally {
       setRefreshing(false);

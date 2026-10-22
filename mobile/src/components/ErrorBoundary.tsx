@@ -32,7 +32,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
     // warn, not error: on debug native builds (Expo Go, dev clients) console.error
     // raises React Native's red-box over the fallback this boundary just rendered.
     // The error is handled here; crash reporting goes through onError.
-    console.warn('[ErrorBoundary] Render failure caught:', error?.message, info.componentStack);
+    if (__DEV__) console.warn('[ErrorBoundary] Render failure caught:', error?.message, info.componentStack);
     this.props.onError?.(error, info.componentStack);
   }
 

@@ -54,7 +54,7 @@ const SEEN_PAYSLIP_KEY = 'kx_home_seen_payslip';
 
 function settle<T>(promise: Promise<T>): Promise<T | null> {
   return promise.catch((error) => {
-    console.warn('[Home] A supporting list could not load:', error?.message ?? error);
+    if (__DEV__) console.warn('[Home] A supporting list could not load:', error?.message ?? error);
     return null;
   });
 }

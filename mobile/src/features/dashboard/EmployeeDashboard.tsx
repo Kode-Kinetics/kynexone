@@ -99,7 +99,7 @@ export default function EmployeeDashboardScreen({ navigation }: Props) {
       setDashboard(dash.value);
       setLoadFailed(false);
     } else {
-      console.warn('[Home] Dashboard load failed:', dash.reason);
+      if (__DEV__) console.warn('[Home] Dashboard load failed:', dash.reason);
       // Keep what is on screen after a failed refresh; only an empty screen shows the error card.
       setLoadFailed(true);
     }
