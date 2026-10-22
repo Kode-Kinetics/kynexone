@@ -36,6 +36,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "./plugins/withIOSReleaseMetadata",
       [
         "expo-build-properties",
         {
