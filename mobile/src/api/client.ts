@@ -3,10 +3,10 @@
 // ============================================================
 
 import axios, {
-  AxiosInstance,
-  AxiosRequestConfig,
-  AxiosResponse,
-  InternalAxiosRequestConfig,
+  type AxiosInstance,
+  type AxiosRequestConfig,
+  type AxiosResponse,
+  type InternalAxiosRequestConfig,
 } from 'axios';
 import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
 import {
@@ -17,8 +17,15 @@ import {
 import {
   executeSessionRefresh,
   expireRefreshFailureIfOwned,
+  StaleSessionRefreshError,
 } from '@/auth/sessionRefresh';
-import { captureSession } from '@/auth/sessionGeneration';
+import {
+  captureSession,
+  belongsToCurrentLogin,
+  invalidateSessionIfCurrent,
+  mayCommit,
+  type SessionSnapshot,
+} from '@/auth/sessionGeneration';
 import { terminateSessionIfCurrent } from '@/auth/sessionLifecycle';
 import { createIsolatedPublicAuthClient } from './publicAuthClient';
 
@@ -40,7 +47,18 @@ export function setSessionExpiredHandler(handler: () => void) {
   _onSessionExpired = handler;
 }
 
-let refreshPromise: Promise<string> | null = null;
+interface RefreshedSession {
+  accessToken: string;
+  session: SessionSnapshot;
+}
+
+type SessionRequestConfig = InternalAxiosRequestConfig & {
+  _retry?: boolean;
+  _session?: SessionSnapshot;
+};
+
+const refreshPromises = new Map<number, Promise<RefreshedSession>>();
+
 async function clearExpiredSession(): Promise<void> {
   try {
     await clearAllAuthData();
@@ -49,18 +67,30 @@ async function clearExpiredSession(): Promise<void> {
   }
 }
 
-async function loadProtectedCredentialEnvelope() {
-  const session = captureSession();
-  try {
-    const envelope = await loadCredentialEnvelope();
-    if (envelope) return envelope;
-  } catch {
-    await terminateSessionIfCurrent(session, clearExpiredSession);
+async function expireUnavailableCredentials(
+  session: ReturnType<typeof captureSession>,
+): Promise<never> {
+  if (session.refreshToken === null) {
+    if (invalidateSessionIfCurrent(session)) _onSessionExpired?.();
     throw new SessionExpiredError();
   }
-
   await terminateSessionIfCurrent(session, clearExpiredSession);
   throw new SessionExpiredError();
+}
+
+async function loadProtectedCredentialEnvelope(session: SessionSnapshot) {
+  try {
+    const envelope = await loadCredentialEnvelope();
+    if (envelope) {
+      if (!belongsToCurrentLogin(session) || !mayCommit(captureSession(), envelope.refreshToken)) throw new SessionExpiredError();
+      return envelope;
+    }
+  } catch (error) {
+    if (error instanceof SessionExpiredError) throw error;
+    return expireUnavailableCredentials(session);
+  }
+
+  return expireUnavailableCredentials(session);
 }
 
 /**
@@ -100,17 +130,20 @@ function applyServerMessage(error: any): void {
  * refresh operation. A failed refresh rejects every waiter; no request is left
  * hanging in a subscriber queue.
  */
-function getOrStartRefresh(): Promise<string> {
-  if (!refreshPromise) {
-    refreshPromise = refreshAccessToken().finally(() => {
-      refreshPromise = null;
+function getOrStartRefresh(session: SessionSnapshot): Promise<RefreshedSession> {
+  if (!mayCommit(session, session.refreshToken)) return Promise.reject(new StaleSessionRefreshError());
+  let promise = refreshPromises.get(session.generation);
+  if (!promise) {
+    promise = refreshAccessToken(session).finally(() => {
+      refreshPromises.delete(session.generation);
     });
+    refreshPromises.set(session.generation, promise);
   }
-  return refreshPromise;
+  return promise;
 }
 
-async function refreshAccessToken(): Promise<string> {
-  return executeSessionRefresh({
+async function refreshAccessToken(session: SessionSnapshot): Promise<RefreshedSession> {
+  const accessToken = await executeSessionRefresh({
     getRefreshToken: async () => (await loadCredentialEnvelope())?.refreshToken ?? null,
     requestRefresh: async (refreshToken) => {
       const response = await createPublicAuthClient().post<{
@@ -137,7 +170,14 @@ async function refreshAccessToken(): Promise<string> {
         persistedAt: Date.now(),
       });
     },
-  });
+  }, session);
+  const refreshedSession = captureSession();
+  // Rotations retain the login epoch; logout or login must never authorize
+  // replay of the original request under another identity.
+  if (!belongsToCurrentLogin(session)) {
+    throw new StaleSessionRefreshError();
+  }
+  return { accessToken, session: refreshedSession };
 }
 
 export function createApiClient(tenantId: string): AxiosInstance {
@@ -152,8 +192,14 @@ export function createApiClient(tenantId: string): AxiosInstance {
 
   // Request interceptor: attach Bearer token
   client.interceptors.request.use(
-    async (config: InternalAxiosRequestConfig) => {
-      const envelope = await loadProtectedCredentialEnvelope();
+    async (config: SessionRequestConfig) => {
+      const session = config._session ?? captureSession();
+      config._session = session;
+      if (session.refreshToken !== null && !belongsToCurrentLogin(session)) throw new SessionExpiredError();
+      const envelope = await loadProtectedCredentialEnvelope(session);
+      const dispatchSession = captureSession();
+      if (!belongsToCurrentLogin(session) || !mayCommit(dispatchSession, envelope.refreshToken)) throw new SessionExpiredError();
+      config._session = dispatchSession;
       config.headers['Authorization'] = `Bearer ${envelope.accessToken}`;
       if (__DEV__) {
         const method = config.method?.toUpperCase() ?? 'GET';
@@ -174,9 +220,7 @@ export function createApiClient(tenantId: string): AxiosInstance {
       return response;
     },
     async (error) => {
-      const originalRequest = error.config as InternalAxiosRequestConfig & {
-        _retry?: boolean;
-      };
+      const originalRequest = error.config as SessionRequestConfig | undefined;
       if (__DEV__) {
         const method = originalRequest?.method?.toUpperCase() ?? 'GET';
         console.log(
@@ -190,11 +234,23 @@ export function createApiClient(tenantId: string): AxiosInstance {
       // for bad credentials and must surface the server's error instead of
       // being replaced by a misleading "No refresh token" failure.
       const hadAuthorization = Boolean(originalRequest?.headers?.Authorization);
-      if (error.response?.status === 401 && !originalRequest._retry && hadAuthorization) {
+      if (error.response?.status === 401 && originalRequest && !originalRequest._retry && hadAuthorization) {
+        if (!originalRequest._session || !belongsToCurrentLogin(originalRequest._session)) {
+          return Promise.reject(new SessionExpiredError());
+        }
         originalRequest._retry = true;
         try {
-          const newToken = await getOrStartRefresh();
-          originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
+          // Another request may already have rotated this login's token. Replay
+          // once with its successor rather than refreshing the retired token.
+          const current = captureSession();
+          if (current.generation !== originalRequest._session.generation) {
+            originalRequest._session = current;
+            return client(originalRequest);
+          }
+          const refreshed = await getOrStartRefresh(originalRequest._session);
+          if (!belongsToCurrentLogin(refreshed.session)) throw new StaleSessionRefreshError();
+          originalRequest._session = refreshed.session;
+          originalRequest.headers['Authorization'] = `Bearer ${refreshed.accessToken}`;
           return client(originalRequest);
         } catch (refreshError) {
           await expireRefreshFailureIfOwned(refreshError, {

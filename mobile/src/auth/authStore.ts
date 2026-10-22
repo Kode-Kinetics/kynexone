@@ -16,6 +16,7 @@ import {
 import { STORAGE_KEYS } from '@/config';
 import { authApi, deviceApi, type LoginOutcome } from '@/api/services';
 import { initApiClient, setSessionExpiredHandler } from '@/api/client';
+import { createSessionTeardownTransport } from '@/api/sessionTeardown';
 import type { AuthTokens, AuthUser } from '@/types';
 import { generateDeviceId } from '@/utils/device';
 import { registerPushToken } from '@/features/notifications/pushNotifications';
@@ -24,7 +25,7 @@ import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
 import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
 import { isWelcomeCode } from './welcomeCode';
 import type { MfaPrompt } from './mfaFlow';
-import { beginSession, invalidateSession } from './sessionGeneration';
+import { beginSession } from './sessionGeneration';
 import { establishSession, terminateSession } from './sessionLifecycle';
 
 interface AuthState {
@@ -158,11 +159,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         appVersion: Constants.expoConfig?.version ?? '1.0.0',
       });
       await appStorage.set(STORAGE_KEYS.DEVICE_ID, deviceId);
-      void registerPushToken(deviceId).catch((error) =>
-        console.warn('[Auth] Push registration failed:', error)
+      void registerPushToken(deviceId).catch(() =>
+        console.warn('[Auth] Push registration failed')
       );
-    } catch (deviceError) {
-      console.warn('[Auth] Device registration failed:', deviceError);
+    } catch {
+      console.warn('[Auth] Device registration failed');
     }
 
     set({
@@ -232,18 +233,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Turning the factor on rotates the server-side session stamp, so this
     // session's tokens are already dead; calling /auth/logout would only 401.
     const { user, tenantId } = get();
-    invalidateSession();
-    await clearAllAuthData();
-    set({
-      user: null,
-      tenantId: null,
-      isAuthenticated: false,
-      isLoading: false,
-      sessionExpired: false,
-      mfaPrompt: null,
-      mfaPromptDismissed: false,
-      mfaEnrolledNotice: user && tenantId ? { email: user.email, tenantId } : null,
-    });
+    try {
+      await terminateSession(clearAllAuthData);
+    } finally {
+      set({
+        user: null,
+        tenantId: null,
+        isAuthenticated: false,
+        isLoading: false,
+        sessionExpired: false,
+        mfaPrompt: null,
+        mfaPromptDismissed: false,
+        mfaEnrolledNotice: user && tenantId ? { email: user.email, tenantId } : null,
+      });
+    }
   },
 
   consumeMfaEnrolledNotice: () => set({ mfaEnrolledNotice: null }),
@@ -251,12 +254,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: async () => {
     const terminate = terminateSession(async () => {
       try {
-        const refreshToken = (await loadCredentialEnvelope())?.refreshToken ?? null;
+        const credentials = await loadCredentialEnvelope();
         const deviceId = await appStorage.get<string>(STORAGE_KEYS.DEVICE_ID);
-        await Promise.allSettled([
-          refreshToken ? authApi.logout(refreshToken) : Promise.resolve(),
-          deviceId ? deviceApi.unregister(deviceId) : Promise.resolve(),
-        ]);
+        if (credentials) {
+          const teardown = createSessionTeardownTransport(credentials);
+          await Promise.allSettled([
+            teardown.revoke(),
+            deviceId ? teardown.unregister(deviceId) : Promise.resolve(),
+          ]);
+        }
       } finally {
         try {
           await clearAllAuthData();
@@ -288,15 +294,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const freshUser = await authApi.getMe();
       await userStorage.saveUser(freshUser);
       set({ user: freshUser });
-    } catch (error) {
-      console.warn('[Auth] refreshUser failed:', error);
+    } catch {
+      console.warn('[Auth] refreshUser failed');
     }
   },
 
   clearError: () => set({ error: null }),
 
   handleSessionExpired: () => {
-    void clearAllAuthData();
     set({
       user: null,
       tenantId: null,

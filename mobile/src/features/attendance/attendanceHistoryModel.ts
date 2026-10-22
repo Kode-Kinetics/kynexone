@@ -15,6 +15,7 @@ export const STATUS_TONE: Record<AttendanceStatus, Tone> = {
   ON_LEAVE: 'info',
   HOLIDAY: 'info',
   WEEKEND: 'neutral',
+  UNKNOWN: 'neutral',
 };
 
 /**

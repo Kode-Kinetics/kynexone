@@ -10,7 +10,7 @@
 
 import { Platform } from 'react-native';
 import { apiDelete, apiGet, apiPost, apiPut, createPublicAuthClient, getApiClient, unwrapApiData } from './client';
-import { tokenStorage, userStorage, appStorage } from '@/storage';
+import { tokenStorage, userStorage, appStorage, loadCredentialEnvelope } from '@/storage';
 import { APP_CONFIG } from '@/config';
 import { FEATURES, FeatureUnavailableError } from '@/config/features';
 import { normalizeAccessMode } from '@/auth/accessPolicy';
@@ -101,7 +101,7 @@ import type {
 type BackendPaged<T> = { items?: T[]; data?: T[]; total?: number; page?: number; pageSize?: number };
 
 const fallbackTodayAttendance: TodayAttendance = {
-  status: 'ABSENT',
+  status: 'UNKNOWN',
   currentlyActive: false,
 };
 
@@ -207,11 +207,15 @@ async function requireEmployeeId(): Promise<number> {
 }
 
 /** Backend attendance statuses: Present, Late, Absent, Half day, On leave, Missing punch, Public holiday, Rest day, Weekend. */
-export function mapStatus(status?: string): AttendanceStatus {
-  const value = (status ?? '').toUpperCase().replace(/[\s-]+/g, '_');
+export function mapStatus(status?: unknown): AttendanceStatus {
+  const value = typeof status === 'string'
+    ? status.toUpperCase().replace(/[\s-]+/g, '_')
+    : '';
   switch (value) {
     case 'PRESENT':
       return 'PRESENT';
+    case 'ABSENT':
+      return 'ABSENT';
     case 'LATE':
       return 'LATE';
     case 'LEAVE':
@@ -232,7 +236,7 @@ export function mapStatus(status?: string): AttendanceStatus {
     case 'MISSINGPUNCH':
       return 'MISSING_PUNCH';
     default:
-      return 'ABSENT';
+      return 'UNKNOWN';
   }
 }
 
@@ -880,8 +884,8 @@ function punchDirection(punchType: MobilePunchPayload['punchType']): PunchDirect
 let verificationCache: VerificationCacheEntry | null = null;
 
 async function verificationCacheKey(): Promise<string> {
-  const user = await userStorage.getUser();
-  return `${user?.tenantId ?? ''}:${user?.employeeId ?? ''}:${user?.id ?? ''}`;
+  const [user, credentials] = await Promise.all([userStorage.getUser(), loadCredentialEnvelope()]);
+  return `${credentials?.tenantId ?? ''}:${user?.employeeId ?? ''}:${user?.id ?? ''}`;
 }
 
 async function storeVerification(raw: unknown): Promise<AttendanceVerification> {
@@ -1617,7 +1621,9 @@ export const approvalsApi = {
         .filter((x): x is InboxItem => x !== null);
       // The scope includes indirect reports the caller cannot approve (the server checks the
       // employee's resolved approvers), so ask the server who approves each employee's overtime.
-      const isAdmin = (await userStorage.getUser())?.role === 'SUPER_ADMIN';
+      // Conservatively resolve approvers for every caller. This avoids trusting
+      // display-only cached user data for an authorization decision.
+      const isAdmin = false;
       const approverOf = new Map<number, boolean | null>();
       if (!isAdmin && selfId !== null) {
         const employeeIds = [...new Set(scoped.map((i) => i.requesterEmployeeId).filter((id): id is number => id !== null))];

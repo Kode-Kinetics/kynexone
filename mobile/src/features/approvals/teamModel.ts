@@ -27,7 +27,7 @@ export interface TeamMemberToday {
   department?: string;
   profilePhotoUrl?: string;
   /** Legacy normalised status (kept for older callers); use rawStatus + teamBucket for counting. */
-  todayStatus: 'PRESENT' | 'ABSENT' | 'LATE' | 'HALF_DAY' | 'HOLIDAY' | 'WEEKEND' | 'ON_LEAVE' | 'MISSING_PUNCH';
+  todayStatus: 'PRESENT' | 'ABSENT' | 'LATE' | 'HALF_DAY' | 'HOLIDAY' | 'WEEKEND' | 'ON_LEAVE' | 'MISSING_PUNCH' | 'UNKNOWN';
   clockIn?: string;
   clockOut?: string;
   hasPendingRequests?: boolean;

@@ -22,7 +22,7 @@ import {
   type DayRecord,
   type PublicHolidayItem,
 } from './homeMappers';
-import { appStorage, userStorage } from '@/storage';
+import { appStorage, loadCredentialEnvelope, userStorage } from '@/storage';
 import { riyadhBusinessDate } from '@/utils/businessDate';
 
 export interface EmployeeHomeSignals {
@@ -39,10 +39,10 @@ export interface EmployeeHomeSignals {
 }
 
 async function employeeContext(): Promise<{ employeeId: number | null; key: string }> {
-  const user = await userStorage.getUser();
+  const [user, credentials] = await Promise.all([userStorage.getUser(), loadCredentialEnvelope()]);
   const id = Number(user?.employeeId);
   const employeeId = Number.isFinite(id) && id > 0 ? id : null;
-  return { employeeId, key: `${user?.tenantId ?? ''}:${employeeId ?? ''}` };
+  return { employeeId, key: `${credentials?.tenantId ?? ''}:${employeeId ?? ''}` };
 }
 
 function addDays(day: string, delta: number): string {
@@ -126,4 +126,3 @@ export const employeeHomeApi = {
     await appStorage.set(`${SEEN_PAYSLIP_KEY}:${key}`, payslipId);
   },
 };
-

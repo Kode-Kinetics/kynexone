@@ -36,7 +36,8 @@ interface Props {
 
 type StatusKey =
   | 'home.status.PRESENT' | 'home.status.LATE' | 'home.status.ABSENT' | 'home.status.HALF_DAY'
-  | 'home.status.ON_LEAVE' | 'home.status.HOLIDAY' | 'home.status.WEEKEND' | 'home.status.MISSING_PUNCH';
+  | 'home.status.ON_LEAVE' | 'home.status.HOLIDAY' | 'home.status.WEEKEND' | 'home.status.MISSING_PUNCH'
+  | 'home.status.NOT_RECORDED';
 
 const STATUS_KEY: Record<AttendanceStatus, StatusKey> = {
   PRESENT: 'home.status.PRESENT',
@@ -47,6 +48,7 @@ const STATUS_KEY: Record<AttendanceStatus, StatusKey> = {
   HOLIDAY: 'home.status.HOLIDAY',
   WEEKEND: 'home.status.WEEKEND',
   MISSING_PUNCH: 'home.status.MISSING_PUNCH',
+  UNKNOWN: 'home.status.NOT_RECORDED',
 };
 
 // A Sunday-to-Saturday week used only to print weekday names in the UI language.

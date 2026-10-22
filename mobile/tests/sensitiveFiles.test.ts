@@ -45,6 +45,15 @@ const mockModules = new Map<string, string>([
     export function initApiClient() {}
     export function setSessionExpiredHandler() {}
   `)],
+  ['@/api/sessionTeardown', moduleUrl(`
+    const harness = () => globalThis.__sensitiveFilesHarness;
+    export function createSessionTeardownTransport() {
+      return {
+        revoke: async () => { harness().logoutCalls += 1; },
+        unregister: async () => undefined,
+      };
+    }
+  `)],
   ['@/utils/device', moduleUrl(`export async function generateDeviceId() { return 'device-1'; }`)],
   ['@/features/notifications/pushNotifications', moduleUrl(`export async function registerPushToken() {}`)],
   ['expo-device', moduleUrl(`export const modelName = 'Test'; export const osVersion = '1';`)],

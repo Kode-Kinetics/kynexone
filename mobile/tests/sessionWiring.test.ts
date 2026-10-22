@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { AxiosError, type AxiosRequestConfig, type AxiosResponse } from 'axios';
+import axios, { AxiosError, type AxiosRequestConfig, type AxiosResponse } from 'axios';
 import {
   beginSession,
   captureSession,
+  invalidateSession,
   mayCommit,
 } from '../src/auth/sessionGeneration.ts';
 
@@ -54,7 +55,7 @@ const mockModules = new Map<string, string>([
     };
     export const deviceApi = {
       register: async () => undefined,
-      unregister: async () => undefined,
+      unregister: async (...args) => harness().unregister(...args),
     };
   `)],
   ['@/utils/device', moduleUrl(`export async function generateDeviceId() { return 'device-1'; }`)],
@@ -158,11 +159,18 @@ const harness = {
   getMe: async () => harness.storedUser,
   login: async (..._args: unknown[]) => { throw new Error('unexpected login'); },
   logout: async (..._args: unknown[]) => { harness.logoutCalls += 1; },
+  unregister: async (..._args: unknown[]) => undefined,
 };
 (globalThis as any).__sessionWiringHarness = harness;
 (globalThis as any).__DEV__ = false;
 
 function resetHarness(): void {
+  axios.defaults.adapter = async (config) => {
+    if (config.url === '/auth/logout') await harness.logout(config);
+    else if (config.url?.startsWith('/mobile/register-device/')) await harness.unregister(config);
+    else throw new Error('Unexpected teardown URL');
+    return { data: {}, status: 200, statusText: 'OK', headers: {}, config };
+  };
   harness.accessToken = null;
   harness.refreshToken = null;
   harness.storedUser = null;
@@ -203,6 +211,7 @@ function resetHarness(): void {
   harness.getMe = async () => harness.storedUser;
   harness.login = async () => { throw new Error('unexpected login'); };
   harness.logout = async () => { harness.logoutCalls += 1; };
+  harness.unregister = async () => undefined;
 }
 
 function clientReturning401() {
@@ -227,6 +236,177 @@ function testUser() {
     permissions: [], isFirstLogin: false, isActive: true, mustChangePassword: false,
   };
 }
+
+test('a delayed 401 from the previous login never refreshes or replays using the new login', async () => {
+  resetHarness();
+  harness.accessToken = 'access-a';
+  harness.refreshToken = 'refresh-a';
+  beginSession('refresh-a');
+  let refreshes = 0;
+  harness.requestRefresh = async () => {
+    refreshes += 1;
+    throw new Error('must not refresh the new session');
+  };
+  let expirations = 0;
+  setSessionExpiredHandler(() => { expirations += 1; });
+  const dispatched = deferred();
+  const releaseResponse = deferred();
+  const client = createApiClient('tenant-1');
+  let attempts = 0;
+  client.defaults.adapter = async (config) => {
+    attempts += 1;
+    dispatched.resolve();
+    await releaseResponse.promise;
+    throw new AxiosError('Expired', 'ERR_BAD_REQUEST', config, undefined, {
+      data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config,
+    });
+  };
+  const request = client.post('/approvals/decision', { action: 'APPROVE' });
+  await dispatched.promise;
+  beginSession('refresh-b');
+  harness.accessToken = 'access-b';
+  harness.refreshToken = 'refresh-b';
+  releaseResponse.resolve();
+  await assert.rejects(request, SessionExpiredError);
+  assert.equal(attempts, 1);
+  assert.equal(refreshes, 0);
+  assert.equal(expirations, 0);
+  assert.equal(harness.clearCalls, 0);
+  assert.equal(harness.refreshToken, 'refresh-b');
+});
+
+test('staggered 401 responses within one login reuse the successfully rotated token', async () => {
+  resetHarness();
+  beginSession('refresh-a');
+  harness.accessToken = 'access-a';
+  harness.refreshToken = 'refresh-a';
+  let refreshes = 0;
+  harness.requestRefresh = async () => {
+    refreshes += 1;
+    return { data: { accessToken: 'access-rotated', refreshToken: 'refresh-rotated', expiresAtUtc: '2027-01-15T08:00:00.000Z' } } as never;
+  };
+  const lateDispatched = deferred();
+  const releaseLate = deferred();
+  const client = createApiClient('tenant-1');
+  client.defaults.adapter = async (config) => {
+    if (config.headers.Authorization === 'Bearer access-rotated') {
+      return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+    }
+    if (config.url === '/late') { lateDispatched.resolve(); await releaseLate.promise; }
+    throw new AxiosError('Expired', 'ERR_BAD_REQUEST', config, undefined, {
+      data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config,
+    });
+  };
+  const late = client.get('/late');
+  await lateDispatched.promise;
+  assert.equal((await client.get('/early')).data.ok, true);
+  releaseLate.resolve();
+  assert.equal((await late).data.ok, true);
+  assert.equal(refreshes, 1);
+  assert.equal(harness.clearCalls, 0);
+});
+
+test('a login change between credential validation and dispatch cannot relabel the old request', async () => {
+  resetHarness();
+  beginSession('refresh-a');
+  harness.accessToken = 'access-a';
+  harness.refreshToken = 'refresh-a';
+  const read = harness.loadCredentialEnvelope;
+  harness.loadCredentialEnvelope = async () => {
+    const envelope = await read();
+    queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => {
+      beginSession('refresh-b');
+      harness.accessToken = 'access-b';
+      harness.refreshToken = 'refresh-b';
+    })));
+    return envelope;
+  };
+  let dispatches = 0;
+  const client = createApiClient('tenant-1');
+  client.defaults.adapter = async (config) => {
+    dispatches += 1;
+    return { data: {}, status: 200, statusText: 'OK', headers: {}, config };
+  };
+  await assert.rejects(client.post('/decision', {}), SessionExpiredError);
+  assert.equal(dispatches, 0);
+  assert.equal(harness.clearCalls, 0);
+});
+
+test('logout sends isolated revocation and unregister requests after immediate invalidation', async () => {
+  resetHarness();
+  beginSession('refresh-a');
+  const oldSession = captureSession();
+  harness.accessToken = 'access-a';
+  harness.refreshToken = 'refresh-a';
+  harness.appValues.set('device-id', 'device/a');
+  const started = deferred();
+  const release = deferred();
+  const requests: { url: string | undefined; token: unknown; tenant: unknown }[] = [];
+  axios.defaults.adapter = async (config) => {
+    requests.push({ url: config.url, token: config.headers.Authorization, tenant: config.headers['X-Tenant-Id'] });
+    if (requests.length === 2) started.resolve();
+    await release.promise;
+    throw new AxiosError('Already expired', 'ERR_BAD_REQUEST', config, undefined, {
+      data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config,
+    });
+  };
+  const logout = useAuthStore.getState().logout();
+  assert.equal(mayCommit(oldSession, 'refresh-a'), false);
+  await started.promise;
+  const newLogin = useAuthStore.getState().finishLogin(testUser(), {
+    accessToken: 'access-b', refreshToken: 'refresh-b', expiresAt: 1000,
+  }, 'tenant-2');
+  release.resolve();
+  await logout;
+  await newLogin;
+  assert.deepEqual(requests, [
+    { url: '/auth/logout', token: 'Bearer access-a', tenant: 'tenant-1' },
+    { url: '/mobile/register-device/device%2Fa', token: 'Bearer access-a', tenant: 'tenant-1' },
+  ]);
+  assert.equal(harness.refreshToken, 'refresh-b');
+  assert.equal(useAuthStore.getState().isAuthenticated, true);
+});
+
+test('a new login uses its own refresh while the previous login refresh is still pending', async () => {
+  resetHarness();
+  harness.accessToken = 'access-a';
+  harness.refreshToken = 'refresh-a';
+  beginSession('refresh-a');
+  const oldStarted = deferred();
+  const oldResult = deferred<never>();
+  const refreshed: unknown[] = [];
+  harness.requestRefresh = async (...args) => {
+    refreshed.push(args[1]);
+    if (refreshed.length === 1) {
+      oldStarted.resolve();
+      return oldResult.promise;
+    }
+    return { data: { accessToken: 'access-c', refreshToken: 'refresh-c', expiresAtUtc: '2027-01-15T08:00:00.000Z' } } as never;
+  };
+  const oldRequest = clientReturning401().get('/old');
+  const oldRejection = assert.rejects(oldRequest, SessionExpiredError);
+  await oldStarted.promise;
+  beginSession('refresh-b');
+  harness.accessToken = 'access-b';
+  harness.refreshToken = 'refresh-b';
+  const client = createApiClient('tenant-1');
+  client.defaults.adapter = async (config) => {
+    if (config.headers.Authorization !== 'Bearer access-c') {
+      // Settle the old refresh only once the new login's request has dispatched.
+      oldResult.reject(new Error('old refresh failed'));
+      throw new AxiosError('Expired', 'ERR_BAD_REQUEST', config, undefined, {
+        data: {}, status: 401, statusText: 'Unauthorized', headers: {}, config,
+      });
+    }
+    return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+  };
+  const response = await client.get('/new');
+  await oldRejection;
+  assert.deepEqual(response.data, { ok: true });
+  assert.deepEqual(refreshed, [{ refreshToken: 'refresh-a' }, { refreshToken: 'refresh-b' }]);
+  assert.equal(harness.refreshToken, 'refresh-c');
+  assert.equal(harness.clearCalls, 0);
+});
 
 test('API interceptor does not clear a newer login when an old refresh fails', async () => {
   resetHarness();
@@ -474,4 +654,146 @@ test('auth store login and logout use serialized session persistence', async () 
   assert.equal(harness.clearCalls, 1);
   assert.equal(harness.refreshToken, null);
   assert.equal(useAuthStore.getState().isAuthenticated, false);
+});
+
+test('initialize clears mandatory in-memory state when credential cleanup fails', async () => {
+  resetHarness();
+  useAuthStore.setState({
+    user: testUser(),
+    tenantId: 'tenant-1',
+    isAuthenticated: true,
+    isLoading: false,
+    isInitialized: false,
+    error: null,
+    sessionExpired: false,
+  });
+  harness.loadCredentialEnvelope = async () => null;
+  harness.clearAuthData = async () => {
+    harness.clearCalls += 1;
+    throw new Error('secure delete unavailable');
+  };
+
+  await assert.rejects(
+    useAuthStore.getState().initialize(),
+    /secure delete unavailable/,
+  );
+
+  assert.equal(useAuthStore.getState().user, null);
+  assert.equal(useAuthStore.getState().tenantId, null);
+  assert.equal(useAuthStore.getState().isAuthenticated, false);
+  assert.equal(useAuthStore.getState().isInitialized, true);
+  assert.equal(useAuthStore.getState().isLoading, false);
+});
+
+test('MFA enrollment clears mandatory in-memory state when credential cleanup fails', async () => {
+  resetHarness();
+  const user = testUser();
+  useAuthStore.setState({
+    user,
+    tenantId: 'tenant-1',
+    isAuthenticated: true,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    sessionExpired: false,
+    mfaEnrolledNotice: null,
+  });
+  harness.clearAuthData = async () => {
+    harness.clearCalls += 1;
+    throw new Error('secure delete unavailable');
+  };
+
+  await assert.rejects(
+    useAuthStore.getState().endSessionAfterMfaEnrollment(),
+    /secure delete unavailable/,
+  );
+
+  assert.equal(useAuthStore.getState().user, null);
+  assert.equal(useAuthStore.getState().tenantId, null);
+  assert.equal(useAuthStore.getState().isAuthenticated, false);
+  assert.equal(useAuthStore.getState().isLoading, false);
+  assert.deepEqual(useAuthStore.getState().mfaEnrolledNotice, {
+    email: user.email,
+    tenantId: 'tenant-1',
+  });
+});
+
+test('an invalidated request with no envelope cannot expire a newer login', async () => {
+  resetHarness();
+  invalidateSession();
+  useAuthStore.setState({
+    user: null,
+    tenantId: null,
+    isAuthenticated: false,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    sessionExpired: false,
+  });
+  setSessionExpiredHandler(() => useAuthStore.getState().handleSessionExpired());
+  const readStarted = deferred();
+  const releaseRead = deferred();
+  harness.loadCredentialEnvelope = async () => {
+    readStarted.resolve();
+    await releaseRead.promise;
+    return null;
+  };
+  const client = createApiClient('tenant-1');
+  const request = client.get('/protected');
+  await readStarted.promise;
+
+  const newerUser = testUser();
+  beginSession('refresh-new');
+  harness.accessToken = 'access-new';
+  harness.refreshToken = 'refresh-new';
+  useAuthStore.setState({
+    user: newerUser,
+    tenantId: 'tenant-1',
+    isAuthenticated: true,
+    sessionExpired: false,
+  });
+  releaseRead.resolve();
+
+  await assert.rejects(request, SessionExpiredError);
+  assert.equal(useAuthStore.getState().isAuthenticated, true);
+  assert.equal(useAuthStore.getState().user?.id, newerUser.id);
+  assert.equal(useAuthStore.getState().sessionExpired, false);
+});
+
+test('logout does not deadlock when a protected teardown request finds no envelope', async () => {
+  resetHarness();
+  useAuthStore.setState({
+    user: testUser(),
+    tenantId: 'tenant-1',
+    isAuthenticated: true,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    sessionExpired: false,
+  });
+  harness.accessToken = 'access-a';
+  harness.refreshToken = 'refresh-a';
+  beginSession('refresh-a');
+  harness.appValues.set('device-id', 'device-1');
+  harness.loadCredentialEnvelope = async () => null;
+  harness.unregister = async () => {
+    const client = createApiClient('tenant-1');
+    client.defaults.adapter = async (config: AxiosRequestConfig) => ({
+      data: null,
+      status: 204,
+      statusText: 'No Content',
+      headers: {},
+      config,
+    } as AxiosResponse);
+    await client.delete('/devices/device-1');
+  };
+
+  const outcome = await Promise.race([
+    useAuthStore.getState().logout().then(() => 'completed'),
+    new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+  ]);
+
+  assert.equal(outcome, 'completed');
+  assert.equal(useAuthStore.getState().isAuthenticated, false);
+  assert.equal(useAuthStore.getState().isLoading, false);
 });

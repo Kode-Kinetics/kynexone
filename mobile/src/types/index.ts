@@ -75,7 +75,8 @@ export type AttendanceStatus =
   | 'HOLIDAY'
   | 'WEEKEND'
   | 'ON_LEAVE'
-  | 'MISSING_PUNCH';
+  | 'MISSING_PUNCH'
+  | 'UNKNOWN';
 
 export interface GeoLocation {
   latitude: number;
