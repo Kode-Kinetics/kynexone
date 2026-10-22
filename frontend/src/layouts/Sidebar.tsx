@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, ChevronDown, LogOut, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, LogOut, ShieldCheck, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
 import { Logo } from '../components/Logo';
@@ -352,6 +352,16 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
             </div>
           ) : (
             <div className="p-2">
+              {/* The person's own sign-in settings, in words: the top bar's user menu is hidden on phones. */}
+              <button
+                type="button"
+                onClick={(event) => handleNav('/account/security', event.currentTarget)}
+                aria-current={pathname === '/account/security' ? 'page' : undefined}
+                className="mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-start text-[12px] font-medium text-slate-600 transition hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-100"
+                data-testid="sidebar-sign-in-security"
+              >
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden /> {t('Sign-in security')}
+              </button>
               <div className="flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-1.5 transition hover:border-slate-200/70 hover:bg-white/70 dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05]">
                 <Avatar name={user?.fullName ?? 'User'} size="sm" />
                 <div className="min-w-0 flex-1 text-start">

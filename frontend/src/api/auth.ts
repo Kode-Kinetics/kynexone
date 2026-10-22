@@ -56,7 +56,55 @@ export interface MfaChallengeResponse {
   mfaRequired: true;
   challengeToken: string;
   expiresInSeconds: number;
+  /**
+   * How long this browser may be trusted if the person ticks "Trust this browser" (tenant setting,
+   * 0..90). 0, or absent from an older API, means the choice is not offered.
+   */
+  rememberDeviceDays?: number;
 }
+
+/** GET /api/auth/mfa/status — the signed-in user's own two-step standing. */
+export interface MfaStatus {
+  enabled: boolean;
+  /** The user's role can see or change payroll, banking or access, so two-step is mandatory. */
+  required: boolean;
+  requiredBecause: string | null;
+  enforceFromUtc: string | null;
+  enforced: boolean;
+  promptToEnroll: boolean;
+  /** enabled && !required. Absent from an older API: derive it the same way. */
+  canDisable?: boolean;
+  /** The tenant's trust lifetime in days; 0 = trusted browsers are switched off. */
+  rememberDeviceDays?: number;
+  trustedDeviceCount?: number;
+}
+
+/** GET /api/auth/mfa/trusted-devices — one browser that skips the code until it expires. */
+export interface TrustedDevice {
+  id: string;
+  createdAtUtc: string;
+  lastUsedAtUtc: string | null;
+  expiresAtUtc: string;
+  /** A short summary from the user agent, e.g. "Firefox on macOS". */
+  browser: string | null;
+  ipAddress: string | null;
+  /** This is the browser making the request. */
+  current: boolean;
+}
+
+/**
+ * The `code` of a refused two-step change (contract Amendment 1). verify-setup: 400 codeInvalid,
+ * 400 setupInvalid (bad or expired setup secret), 409 alreadyEnabled. disable: 400 codeInvalid
+ * (wrong or reused code), 409 notEnabled, 409 requiredForRole, 409 requiredByWorkspace.
+ */
+export const MFA_ERRORS = {
+  codeInvalid: 'ERR_MFA_CODE_INVALID',
+  setupInvalid: 'ERR_MFA_SETUP_INVALID',
+  alreadyEnabled: 'ERR_MFA_ALREADY_ENABLED',
+  notEnabled: 'ERR_MFA_NOT_ENABLED',
+  requiredForRole: 'ERR_MFA_REQUIRED_FOR_ROLE',
+  requiredByWorkspace: 'ERR_MFA_REQUIRED_BY_WORKSPACE',
+} as const;
 
 export interface MfaEnrollmentResponse {
   mfaEnrollmentRequired: true;
@@ -87,8 +135,13 @@ export const authApi = {
       ...optionalWorkspace(tenantSlug),
     }).then((r) => r.data),
 
-  mfaVerifyChallenge: (challengeToken: string, totpCode: string) =>
-    publicAuthClient.post<AuthResponse>('/api/auth/mfa/challenge/verify', { challengeToken, totpCode }).then((r) => r.data),
+  /** `rememberDevice` is sent only when the choice was offered: true asks the server to trust this browser. */
+  mfaVerifyChallenge: (challengeToken: string, totpCode: string, rememberDevice?: boolean) =>
+    publicAuthClient.post<AuthResponse>('/api/auth/mfa/challenge/verify', {
+      challengeToken,
+      totpCode,
+      ...(rememberDevice === undefined ? {} : { rememberDevice }),
+    }).then((r) => r.data),
 
   mfaSetup: () =>
     client.post<{ provisioningUri: string }>('/api/auth/mfa/setup').then((r) => r.data),
@@ -102,12 +155,21 @@ export const authApi = {
   mfaEnrollmentVerifySetup: (enrollmentToken: string, tempSecret: string, totpCode: string) =>
     publicAuthClient.post('/api/auth/mfa/enrollment/verify-setup', { enrollmentToken, tempSecret, totpCode }),
 
-  /** Mandatory-MFA standing of the signed-in user (drives the enrolment prompt). */
+  /** Two-step standing of the signed-in user (the enrolment prompt and the Sign-in security page). */
   mfaStatus: () =>
-    client.get<{
-      enabled: boolean; required: boolean; requiredBecause: string | null;
-      enforceFromUtc: string | null; enforced: boolean; promptToEnroll: boolean;
-    }>('/api/auth/mfa/status').then((r) => r.data),
+    client.get<MfaStatus>('/api/auth/mfa/status').then((r) => r.data),
+
+  /** The browsers that skip the code for this user. */
+  mfaTrustedDevices: () =>
+    client.get<TrustedDevice[]>('/api/auth/mfa/trusted-devices').then((r) => r.data),
+
+  /** 204; 404 when it is not this user's row or is already gone. */
+  mfaForgetTrustedDevice: (id: string) =>
+    client.delete(`/api/auth/mfa/trusted-devices/${encodeURIComponent(id)}`).then(() => undefined),
+
+  /** 204: every trusted browser of this user is forgotten, this one included. */
+  mfaForgetAllTrustedDevices: () =>
+    client.delete('/api/auth/mfa/trusted-devices').then(() => undefined),
 
   /** Issues a setup-only enrolment token for the signed-in user; the sign-in page completes it. */
   mfaEnrollmentStart: () =>

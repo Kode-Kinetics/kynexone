@@ -968,6 +968,19 @@
 .lx-reveal svg { width: 18px; height: 18px; stroke-width: 1.6; }
 
 .lx-hint { margin: 6px 0 0; font-size: var(--lx-f1); color: var(--lx-muted); }
+
+/* "Trust this browser" on the code step. A real checkbox (keyboard, screen reader, the browser's own
+   checked state), tinted to the page, with a 24px target (WCAG 2.2 SC 2.5.8) and its hint under
+   the label. Logical spacing only, so it mirrors under dir=rtl. */
+.lx-check { display: flex; align-items: flex-start; gap: 10px; }
+.lx-check input[type='checkbox'] {
+  flex: 0 0 20px; width: 20px; height: 20px; margin: 1px 0 0; cursor: pointer;
+  accent-color: var(--lx-cyan); color-scheme: dark;
+}
+.lx-check input[type='checkbox']:focus-visible { outline: 2px solid var(--lx-cyan); outline-offset: 3px; border-radius: 4px; }
+.lx-check-text { min-width: 0; }
+.lx-check-text label { display: block; min-height: 24px; cursor: pointer; font-size: var(--lx-f2); line-height: 1.4; color: var(--lx-label); }
+.lx-check-text .lx-hint { margin-top: 2px; line-height: 1.45; }
 .lx-uri {
   margin: 0; font-family: var(--lx-mono), ui-monospace, SFMono-Regular, monospace;
   font-size: var(--lx-f1); line-height: 1.5; word-break: break-all; color: var(--lx-muted);
