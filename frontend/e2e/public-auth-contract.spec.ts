@@ -226,3 +226,17 @@ test('impersonate query is inert and unsafe return paths remain on the login sur
   expect(new URL(page.url()).searchParams.has('impersonate')).toBe(false);
   expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBe('existing-access');
 });
+
+test('pages carry the baseline security headers and the image optimizer fetches no other site', async ({ request }) => {
+  for (const path of ['/login', '/welcome', '/accept-invitation', '/platform/login']) {
+    const res = await request.get(path, { maxRedirects: 0 });
+    const headers = res.headers();
+    expect(headers['x-content-type-options'], path).toBe('nosniff');
+    expect(headers['x-frame-options'], path).toBe('SAMEORIGIN');
+    expect(headers['content-security-policy'], path).toBe("frame-ancestors 'self'");
+    expect(headers['permissions-policy'], path).toContain('camera=()');
+    expect(headers['referrer-policy'], path).toBe(path === '/welcome' ? 'no-referrer' : 'strict-origin-when-cross-origin');
+  }
+  const proxied = await request.get('/_next/image?url=https%3A%2F%2Fexample.com%2Fa.png&w=64&q=75');
+  expect(proxied.status()).toBe(400);
+});

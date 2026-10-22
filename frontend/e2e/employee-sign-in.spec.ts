@@ -376,6 +376,23 @@ test.describe('where sign-in lands', () => {
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await page.waitForURL(/\/ess\/leave/);
   });
+
+  // The URL parser drops tabs/newlines and reads a backslash as '/', so each of these resolves off-site.
+  for (const from of ['/\t/evil.example', '/\n/evil.example', '/\\evil.example', '/%09/evil.example', 'https://evil.example']) {
+    test(`an off-site ?from= (${JSON.stringify(from)}) is ignored and sign-in stays on this site`, async ({ page }) => {
+      const offSite: string[] = [];
+      await page.route((url) => url.hostname.endsWith('evil.example'), (route) => { offSite.push(route.request().url()); return route.abort(); });
+      await mockApi(page);
+      await page.goto(`/login?from=${encodeURIComponent(from)}`);
+      const origin = new URL(page.url()).origin;
+      await page.locator('#li-em').fill(EMAIL);
+      await page.locator('#li-pw').fill(NEW_PASSWORD);
+      await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+      await page.waitForURL((url) => url.pathname.startsWith('/ess'));
+      expect(new URL(page.url()).origin).toBe(origin);
+      expect(offSite).toEqual([]);
+    });
+  }
 });
 
 test.describe('device language on an Arabic phone', () => {
