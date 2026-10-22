@@ -36,6 +36,8 @@ export default defineConfig({
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
+    // Desktop Chrome's default size, which CI's Browser Pilot uses for every spec.
+    { name: 'laptop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } } },
     { name: 'tablet', use: { ...devices['Desktop Chrome'], viewport: { width: 834, height: 1112 }, hasTouch: true } },
     { name: 'phone', use: { ...devices['Pixel 7'] } },
   ],

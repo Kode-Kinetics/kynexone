@@ -853,6 +853,11 @@
    floor, and its inner highlight lines up with the shader bevel.
    ══════════════════════════════════════════════════════════════════════ */
 .lx-pane { will-change: transform; }
+/* The register's drum turns its rows in 3D, and a row facing away still
+   projects past the gutter and takes clicks meant for the card (measured at
+   1280x720: a back row covered the "Trust this browser" checkbox). The card
+   always sits above the decoration. */
+.lx-slot { position: relative; z-index: 1; }
 
 .lx-card {
   border-radius: 24px;
