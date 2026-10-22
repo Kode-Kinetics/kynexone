@@ -259,7 +259,7 @@ function LoginCard() {
         const parsed = new URL(res.provisioningUri);
         setEnrollmentSecret(parsed.searchParams.get('secret') ?? '');
       })
-      .catch(() => setError(t('Two-factor setup expired. Please sign in again.')));
+      .catch(() => setError(t('Two-step sign-in setup expired. Please sign in again.')));
   }, [mfaEnrollmentPending, t]);
 
   const handleMfaEnrollment = async (e: React.FormEvent) => {
@@ -267,7 +267,7 @@ function LoginCard() {
     try {
       if (!mfaEnrollmentPending || !enrollmentSecret) throw new Error('Missing enrollment challenge.');
       await authApi.mfaEnrollmentVerifySetup(mfaEnrollmentPending.enrollmentToken, enrollmentSecret, totpCode);
-      setInfo(t('Two-factor authentication is on. Sign in again to continue.'));
+      setInfo(t('Two-step sign-in is on. Sign in again to continue.'));
       setTotpCode('');
       setMode('login');
     }
@@ -501,7 +501,7 @@ function LoginCard() {
                 {mode === 'mfa' && (
                   <form onSubmit={handleMfa} noValidate className="lx-form">
                     <Back onClick={() => { setMode('login'); setTotpCode(''); setTrustBrowser(false); }} label={t('Back to sign in')} />
-                    <Head kicker={t('Security check')} title={t('Two-factor authentication')}
+                    <Head kicker={t('Security check')} title={t('Two-step sign-in')}
                       sub={t('Enter the 6-digit code from your authenticator app.')} icon={<Smartphone />} />
                     <Field legend={t('Authentication code')} htmlFor="mfa-code">
                       <input id="mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}

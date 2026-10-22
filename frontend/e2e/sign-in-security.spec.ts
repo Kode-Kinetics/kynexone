@@ -242,8 +242,16 @@ test.describe('Sign-in security: an everyday user turns it on and off', () => {
     const api = await mockApi(page, { status: status(), devices: [] });
     // Any signed-in page; the Self-Service overview needs richer fixtures than this spec's.
     await page.goto('/ess/documents');
-    await page.getByRole('button', { name: 'Open user menu' }).click();
-    await page.getByTestId('user-menu-sign-in-security').click();
+    // Phones hide the top-bar user menu; there the entry lives in the navigation drawer.
+    const userMenu = page.getByRole('button', { name: 'Open user menu' });
+    await page.getByRole('button', { name: /^Open (user menu|navigation)$/ }).first().waitFor();
+    if (await userMenu.isVisible()) {
+      await userMenu.click();
+      await page.getByTestId('user-menu-sign-in-security').click();
+    } else {
+      await page.getByRole('button', { name: 'Open navigation' }).click();
+      await page.getByTestId('sidebar-sign-in-security').click();
+    }
     await page.waitForURL(/\/account\/security$/);
     await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is off');
     await expect(trusted(page)).toHaveCount(0);

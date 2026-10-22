@@ -15,6 +15,10 @@ const ar: Record<string, string> = {
   "Two-step sign-in is off, and you were signed out everywhere for your security. Sign in again with your password.":
     "تم إيقاف التحقق بخطوتين، وسُجّل خروجك من كل الأجهزة حفاظًا على أمانك. سجّل الدخول مجددًا بكلمة المرور.",
 
+  "Two-step sign-in": "التحقق بخطوتين",
+  "Two-step sign-in setup expired. Please sign in again.": "انتهت صلاحية إعداد التحقق بخطوتين. يُرجى تسجيل الدخول مرة أخرى.",
+  "Two-step sign-in is on. Sign in again to continue.": "تم تفعيل التحقق بخطوتين. يُرجى تسجيل الدخول مرة أخرى للمتابعة.",
+
   // Menus and the page
   "Sign-in security": "أمان تسجيل الدخول",
   "My account": "حسابي",
