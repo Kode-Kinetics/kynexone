@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openSetupSection } from './setupSections';
 
 // Browser contract tests only: every API response is synthetic and no tenant is changed.
 const companies = [
@@ -44,7 +45,7 @@ test('save, reload, back and policy-library round trip preserve inputs without a
   await expect(page.getByLabel(/^Suggested head office city/)).toHaveValue('Dammam');
   await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Policy library', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await openSetupSection(page, 'Setup Studio');
   await expect(page.getByLabel(/^Industry/)).toHaveValue('Services');
   await expect(page.getByLabel(/^Suggested head office city/)).toHaveValue('Dammam');
   expect(writes).toEqual([]);

@@ -641,13 +641,15 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
   .setup-page-header { display: flex; align-items: baseline; gap: 1rem; }
   .setup-page-header h1 { flex: none; font-size: 1.25rem; line-height: 1.75rem; }
   .setup-page-header p { margin-top: 0; max-width: none; line-height: 1.25rem; }
-  .setup-page-nav {
-    flex-wrap: nowrap !important;
-    overflow-x: auto !important;
-    padding-bottom: 0.45rem;
-    scrollbar-width: thin;
+  /* The section column keeps every entry on screen at 768px high: tighter rows, never a sideways scroll. */
+  .setup-section-list li > button { min-height: 1.75rem; padding-block: 0.2rem; }
+  .setup-section-group > p { padding-top: 0.25rem; padding-bottom: 0.15rem; }
+  /* The picker shrinks to one line; its caption stays in the accessible name. */
+  .setup-section-picker { min-height: 2.5rem; padding-block: 0.3rem; }
+  .setup-section-picker-caption {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
-  .setup-page-nav button { padding-block: 0.4rem; }
   .setup-step-rail { padding: 0.75rem !important; }
   .setup-step-rail nav button { padding-block: 0.4rem; }
   .setup-control-note { display: none !important; }
