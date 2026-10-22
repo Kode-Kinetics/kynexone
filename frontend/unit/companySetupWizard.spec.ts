@@ -5,7 +5,7 @@ import {
   normalizeFieldPath, numberingPreview, planUsage, stepState, stepWarnings, validateStep,
   completeCompanyHref, draftHref, firstPayrollMonthLocked, isPlanChange, planCounts, planIsNoChange, readinessProgress, rowChanged, stepCopy, wizardMode,
   legacyWarnings, reasonFields, setupCodeCopy,
-  CHANGED_ELSEWHERE, chooseWeekend, currentValueLabel, editRow, resolveChangedElsewhere, withOneHeadOffice,
+  CHANGED_ELSEWHERE, chooseWeekend, countryDisplayName, currentValueLabel, editRow, resolveChangedElsewhere, withOneHeadOffice,
 } from '../src/lib/companySetupWizard';
 
 const context: CompanySetupContext = {
@@ -392,4 +392,16 @@ test('every existing-mode server code has what-to-do-next copy', () => {
     'company_admin_required', 'company_not_active', 'existing_company_draft_open', 'existing_row_unknown', 'branch_code_taken', 'sequence_cannot_go_back',
     'work_week_override_kept', 'workspace_defaults_need_group_scope', 'shared_row_not_edited', 'draft_needs_refresh']) expect(setupCodeCopy(code), code).toBeTruthy();
   expect(setupCodeCopy('mol_required')).toBeUndefined();
+});
+
+test('a stored country that is not a region code is shown as written, never thrown', () => {
+  const names = new Intl.DisplayNames(['en'], { type: 'region' });
+  expect(countryDisplayName(names, 'sa')).toBe('Saudi Arabia');
+  // Intl.DisplayNames.of throws a RangeError for each of these; Setup → Guided Setup rendered them and crashed.
+  expect(countryDisplayName(names, 'SAU')).toBe('SAU');
+  expect(countryDisplayName(names, 'KSA')).toBe('KSA');
+  expect(countryDisplayName(names, 'AE ')).toBe('United Arab Emirates');
+  expect(countryDisplayName(names, ' ')).toBe('');
+  expect(countryDisplayName(names, null)).toBe('');
+  expect(countryDisplayName(null, 'SA')).toBe('SA');
 });
