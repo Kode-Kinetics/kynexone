@@ -21368,7 +21368,7 @@ namespace Zayra.Api.Migrations
 
                             t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_pair", "(revoked_at_utc IS NULL) = (revoked_reason IS NULL)");
 
-                            t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason", "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted')");
+                            t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason", "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened')");
                         });
                 });
 

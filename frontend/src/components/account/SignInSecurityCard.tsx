@@ -14,7 +14,7 @@ import { toAsciiDigits } from '@/src/lib/welcomeCode';
 /**
  * Sign-in security: the signed-in person's own two-step sign-in and the browsers they trust.
  *
- * Contract: scratchpad mfa-contract.md (GET /api/auth/mfa/status, POST setup / verify-setup / disable,
+ * Endpoints (GET /api/auth/mfa/status, POST setup / verify-setup / disable,
  * GET and DELETE /api/auth/mfa/trusted-devices). Every endpoint needs only a session, so this card
  * is for every role, and nothing on it depends on a permission.
  *

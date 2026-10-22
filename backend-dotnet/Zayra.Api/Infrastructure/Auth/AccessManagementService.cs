@@ -2287,8 +2287,11 @@ public class AccessManagementService : IAccessManagementService
             if (request.AllowMultipleSessions.HasValue) setting.AllowMultipleSessions = request.AllowMultipleSessions.Value;
             if (request.MfaRequired.HasValue) setting.MfaRequired = request.MfaRequired.Value;
             // The endpoint refuses values outside 0..90 (ERR_MFA_TRUST_DAYS_RANGE); the clamp only backs it up.
+            var trustDaysBefore = setting.MfaTrustedDeviceDays;
             if (request.MfaTrustedDeviceDays.HasValue)
                 setting.MfaTrustedDeviceDays = Math.Clamp(request.MfaTrustedDeviceDays.Value, 0, Models.SecuritySetting.MaxMfaTrustedDeviceDays);
+            if (setting.MfaTrustedDeviceDays < trustDaysBefore)
+                await MfaTrustedDevices.StageShortenLifetimeAsync(_db, tenantId, setting.MfaTrustedDeviceDays, changedAtUtc, context with { TenantId = tenantId }, ct);
             setting.UpdatedAtUtc = changedAtUtc;
             setting.UpdatedBy = context.UserId;
 

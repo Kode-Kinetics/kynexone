@@ -368,6 +368,64 @@ public sealed class MfaTrustedDeviceTests
         ChallengeOf((await LoginAsync(kit, cookie)).Result);
     }
 
+    private static async Task UpdateDaysThroughSettingsAsync(AuthHardeningTestKit kit, int days)
+    {
+        await using var db = kit.NewDb();
+        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db), new JwtTokenService(AuthHardeningTestKit.Jwt));
+        await service.UpdateSecuritySettingsAsync(kit.TenantId,
+            new UpdateSecuritySettingRequest(null, null, null, null, null, null, null, null, null, null, null, null, MfaTrustedDeviceDays: days),
+            new RequestContext("198.51.100.7", "test", null, kit.TenantId), CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task LoweringDays_PersistsTheShorterTrust_SoRaisingThemAgainDoesNotRestoreIt()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var who = await SeedEnrolledAsync(kit);
+        var ended = await TrustThisBrowserAsync(kit, who);
+        await ForgetStepAsync(kit, who.UserId);
+        var kept = await TrustThisBrowserAsync(kit, who);
+        await using (var db = kit.NewDb())
+        {
+            // One browser trusted ten days ago, one two days ago, both under a factor set up before either.
+            var endedHash = Sha256Hex(ended);
+            var keptHash = Sha256Hex(kept);
+            (await db.MfaTrustedDevices.SingleAsync(x => x.TokenHash == endedHash)).CreatedAtUtc = DateTime.UtcNow.AddDays(-10);
+            (await db.MfaTrustedDevices.SingleAsync(x => x.TokenHash == keptHash)).CreatedAtUtc = DateTime.UtcNow.AddDays(-2);
+            await db.Users.Where(u => u.Id == who.UserId)
+                .ExecuteUpdateAsync(x => x.SetProperty(u => u.MfaConfiguredAtUtc, DateTime.UtcNow.AddDays(-20)));
+            await db.SaveChangesAsync();
+        }
+
+        await UpdateDaysThroughSettingsAsync(kit, 7);
+        (await RowAsync(kit, ended)).RevokedReason.Should().Be(MfaTrustRevokeReasons.PolicyShortened, "its 7-day period had already run out");
+        var keptAfter = await RowAsync(kit, kept);
+        keptAfter.RevokedAtUtc.Should().BeNull();
+        keptAfter.ExpiresAtUtc.Should().BeCloseTo(keptAfter.CreatedAtUtc.AddDays(7), TimeSpan.FromSeconds(1), "the shorter lifetime is stored");
+
+        await UpdateDaysThroughSettingsAsync(kit, 30);
+        await ForgetStepAsync(kit, who.UserId);
+        ChallengeOf((await LoginAsync(kit, ended)).Result);
+        (await RowAsync(kit, kept)).ExpiresAtUtc.Should().BeCloseTo(keptAfter.CreatedAtUtc.AddDays(7), TimeSpan.FromSeconds(1),
+            "raising the setting again does not lengthen trust that was already cut");
+        await using (var check = kit.NewDb())
+            (await check.AuditLogs.CountAsync(a => a.Action == MfaTrustedDevices.RevokedAuditAction && a.Metadata!.Contains(MfaTrustRevokeReasons.PolicyShortened)))
+                .Should().Be(1);
+    }
+
+    [Fact]
+    public async Task LoweringDaysToZero_RevokesEveryLiveTrustedBrowser()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        var who = await SeedEnrolledAsync(kit);
+        var cookie = await TrustThisBrowserAsync(kit, who);
+        await UpdateDaysThroughSettingsAsync(kit, 0);
+        (await RowAsync(kit, cookie)).RevokedReason.Should().Be(MfaTrustRevokeReasons.PolicyShortened);
+        await UpdateDaysThroughSettingsAsync(kit, 30);
+        await ForgetStepAsync(kit, who.UserId);
+        ChallengeOf((await LoginAsync(kit, cookie)).Result);
+    }
+
     // ── Enrolment is never skipped ───────────────────────────────────────────────────────────
 
     [Fact]

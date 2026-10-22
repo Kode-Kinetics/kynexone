@@ -5,12 +5,13 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Auth;
 
 /// <summary>
-/// Trusted browsers for tenant two-step sign-in (contract: scratchpad mfa-contract.md, Amendment 1).
+/// Trusted browsers for tenant two-step sign-in.
 ///
 /// <para><b>What trust skips.</b> Only the CODE step of a user who already has a factor enrolled, and only after the
 /// password was verified in the same sign-in. It never skips enrolment (mfaEnrollmentRequired), the password, the
@@ -141,6 +142,29 @@ public static class MfaTrustedDevices
         if (row is null) return (false, null);
         Revoke(db, [row], MfaTrustRevokeReasons.UserRevoked, atUtc, context);
         return (true, row);
+    }
+
+    /// <summary>
+    /// Stages the tenant lowering its trust lifetime to <paramref name="days"/>: every live row's expiry is cut to
+    /// CreatedAtUtc + days, and a row whose shorter period has already run out (all of them at 0 days) is revoked as
+    /// <see cref="MfaTrustRevokeReasons.PolicyShortened"/>. Persisting this, rather than only checking the current
+    /// setting at sign-in, keeps a later raise from bringing trust the administrator ended back to life.
+    /// </summary>
+    public static async Task<int> StageShortenLifetimeAsync(
+        ZayraDbContext db, Guid tenantId, int days, DateTime atUtc, RequestContext context, CancellationToken ct)
+    {
+        var rows = await db.MfaTrustedDevices.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.TenantId == tenantId && x.RevokedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+        var ended = new List<MfaTrustedDevice>();
+        foreach (var row in rows)
+        {
+            var capped = row.CreatedAtUtc.AddDays(days);
+            if (capped <= atUtc) ended.Add(row);
+            else if (capped < row.ExpiresAtUtc) row.ExpiresAtUtc = capped;
+        }
+        return Revoke(db, ended, MfaTrustRevokeReasons.PolicyShortened, atUtc, context);
     }
 
     private static int Revoke(ZayraDbContext db, IEnumerable<MfaTrustedDevice> rows, string reason, DateTime atUtc, RequestContext context)

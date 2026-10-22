@@ -45,7 +45,7 @@ namespace Zayra.Api.Migrations
                     table.PrimaryKey("PK_mfa_trusted_devices", x => x.id);
                     table.CheckConstraint("ck_mfa_trusted_devices__lifetime", "expires_at_utc > created_at_utc");
                     table.CheckConstraint("ck_mfa_trusted_devices__revoked_pair", "(revoked_at_utc IS NULL) = (revoked_reason IS NULL)");
-                    table.CheckConstraint("ck_mfa_trusted_devices__revoked_reason", "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted')");
+                    table.CheckConstraint("ck_mfa_trusted_devices__revoked_reason", "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened')");
                     table.ForeignKey(
                         name: "FK_mfa_trusted_devices_tenants_tenant_id",
                         column: x => x.tenant_id,

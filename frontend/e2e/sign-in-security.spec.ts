@@ -3,7 +3,7 @@ import path from 'node:path';
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 /**
- * Two-step sign-in choice and trusted browsers (scratchpad mfa-contract.md + Amendment 1).
+ * Two-step sign-in choice and trusted browsers.
  *
  * Over mocked API routes shaped exactly as that contract: the challenge's `rememberDeviceDays`,
  * `rememberDevice` on challenge/verify, GET /api/auth/mfa/status with `canDisable`,
