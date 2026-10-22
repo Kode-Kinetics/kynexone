@@ -75,8 +75,8 @@ export default function ApprovalsScreen({ route }: Props) {
   const [selected, setSelected] = useState<InboxItem | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const loadedOnce = useRef(false);
-  const inboxRequestGate = useRef(createLatestRequestGate()).current;
-  const historyRequestGate = useRef(createLatestRequestGate()).current;
+  const [inboxRequestGate] = useState(createLatestRequestGate);
+  const [historyRequestGate] = useState(createLatestRequestGate);
 
   const [history, setHistory] = useState<MyDecision[] | null>(null);
   const [historyFailed, setHistoryFailed] = useState(false);

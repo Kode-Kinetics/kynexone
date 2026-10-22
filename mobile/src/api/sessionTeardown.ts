@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { APP_CONFIG } from '../config';
+import { APP_CONFIG } from '../config/index.ts';
 
 interface TeardownCredentials {
   accessToken: string;
