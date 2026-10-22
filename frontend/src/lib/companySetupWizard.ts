@@ -64,6 +64,17 @@ export function firstPayrollMonthLocked(company: Pick<CompanySetupCompany, 'cuto
 }
 
 /** "5 of 9 done" inputs for one chooser row; complete when every item is done. */
+/**
+ * A company's country in the viewer's language, or the stored code as written. Intl.DisplayNames.of throws a
+ * RangeError for anything that is not a region code ("SAU", "KSA", "AE "), and a stored company can hold such a
+ * value: rendering it must never take the whole Setup page down.
+ */
+export function countryDisplayName(names: Pick<Intl.DisplayNames, 'of'> | null, code: string | null | undefined): string {
+  const trimmed = (code ?? '').trim();
+  if (!trimmed) return '';
+  try { return names?.of(trimmed.toUpperCase()) ?? trimmed; } catch { return trimmed; }
+}
+
 export function readinessProgress(company: Pick<ManageableCompany, 'readinessDone' | 'readinessTotal'>): { done: number; total: number; percent: number; complete: boolean } {
   const total = Math.max(0, Math.trunc(company.readinessTotal || 0));
   const done = Math.min(Math.max(0, Math.trunc(company.readinessDone || 0)), total);

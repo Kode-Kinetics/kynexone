@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useLocale } from '../../contexts/LocaleContext';
+import { countryDisplayName } from '../../lib/companySetupWizard';
 
 /** Countries a company can be registered in from this wizard; names come from the browser in the viewer's language. */
 export const WIZARD_COUNTRIES = ['SA', 'AE', 'QA', 'KW', 'BH', 'OM', 'EG', 'IN', 'PK', 'GB', 'US'] as const;
@@ -11,7 +12,7 @@ export function useCountryName() {
   return useMemo(() => {
     let names: Intl.DisplayNames | null = null;
     try { names = new Intl.DisplayNames([locale], { type: 'region' }); } catch { names = null; }
-    return (code: string) => (code ? names?.of(code.toUpperCase()) ?? code : '');
+    return (code: string | null | undefined) => countryDisplayName(names, code);
   }, [locale]);
 }
 
