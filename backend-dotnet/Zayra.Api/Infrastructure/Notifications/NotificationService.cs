@@ -182,6 +182,22 @@ public class NotificationService : INotificationService
             }
         }
 
+        // BROADCAST (no user, no employee, no external address): NotificationsController.Recent
+        // shows UserId-null rows to EVERY user in the tenant. Fanning that to short channels would
+        // resolve "all tenant contacts" and SMS the whole company. In-app only, enforced here.
+        var isBroadcast = request.UserId is null && request.EmployeeId is null
+                          && string.IsNullOrWhiteSpace(request.ExternalEmail);
+
+        // A notice ABOUT one person (their leave, a candidate, a document...) is never a broadcast: the whole
+        // workspace, self-service employees included, would read it. A caller that could not name anybody
+        // sends nothing (NotificationAudience).
+        if (isBroadcast && NotificationAudience.IsPersonSpecific(request.EntityName))
+        {
+            _log.LogWarning("Notification {EventCode} for tenant {TenantId} named no recipient; a person-specific "
+                + "notice is not broadcast, so it was not sent.", request.EventCode, request.TenantId);
+            return [];
+        }
+
         var recipient = await _recipients.ResolveAsync(db, request.TenantId, request.UserId, request.EmployeeId, ct);
         if (recipient is null && !string.IsNullOrWhiteSpace(request.ExternalEmail))
             recipient = new NotificationRecipient
@@ -191,10 +207,14 @@ public class NotificationService : INotificationService
                 Email = request.ExternalEmail,
             };
 
-        // BROADCAST (no user, no employee, no external address): NotificationsController.Recent
-        // shows UserId-null rows to EVERY user in the tenant. Fanning that to short channels would
-        // resolve "all tenant contacts" and SMS the whole company. In-app only, enforced here.
-        var isBroadcast = recipient is null;
+        // Addressed to somebody who does not resolve in this tenant (a deleted login, a stale id): nothing is
+        // sent. This used to write the bell row with no user, which made it a broadcast to everyone.
+        if (!isBroadcast && recipient is null)
+        {
+            _log.LogWarning("Notification {EventCode} for tenant {TenantId} was addressed to nobody who resolves "
+                + "in the tenant; it was not sent.", request.EventCode, request.TenantId);
+            return [];
+        }
 
         var templates = await LoadTemplatesAsync(db, request.TenantId, request.EventCode, ct);
         var inApp = RenderInApp(request, templates);
@@ -204,17 +224,25 @@ public class NotificationService : INotificationService
 
         // 1. IN-APP FIRST, ALWAYS. This is the terminal fallback and it is written unconditionally,
         //    so a message can never be lost because a provider is missing.
-        var notification = new Notification
+        //
+        //    The bell row is written for a broadcast or for a recipient WITH a login. An employee with no
+        //    login, or a bare external address, has no bell: a bell row with no user would be a broadcast,
+        //    so the employee gets the ESS row below and the external address its email only.
+        Notification? notification = null;
+        if (isBroadcast || recipient?.UserId is not null)
         {
-            TenantId = request.TenantId,
-            UserId = recipient?.UserId,
-            Channel = NotificationChannels.InApp,
-            Title = inApp.Subject,
-            Message = inApp.Body,
-            EntityName = request.EntityName,
-            EntityId = request.EntityId,
-        };
-        db.Notifications.Add(notification);
+            notification = new Notification
+            {
+                TenantId = request.TenantId,
+                UserId = recipient?.UserId,
+                Channel = NotificationChannels.InApp,
+                Title = inApp.Subject,
+                Message = inApp.Body,
+                EntityName = request.EntityName,
+                EntityId = request.EntityId,
+            };
+            db.Notifications.Add(notification);
+        }
 
         EmployeeNotification? employeeNotification = null;
         if (recipient?.EmployeeId is { } empId)
@@ -236,7 +264,13 @@ public class NotificationService : INotificationService
         inAppDelivery.CompletedAtUtc = now;
         inAppDelivery.NextAttemptAtUtc = null;
         inAppDelivery.ProviderName = "in-app";
-        inAppDelivery.DestinationMasked = employeeNotification is not null ? "ESS + bell" : "bell";
+        inAppDelivery.DestinationMasked = (employeeNotification, notification) switch
+        {
+            (not null, not null) => "ESS + bell",
+            (not null, null) => "ESS",
+            (null, not null) => "bell",
+            _ => "none",
+        };
         if (inApp.HadUnresolved)
         {
             inAppDelivery.ErrorCode = "unresolved_placeholder";
@@ -260,7 +294,7 @@ public class NotificationService : INotificationService
 
         foreach (var row in deliveries)
         {
-            row.NotificationId = notification.Id;
+            row.NotificationId = notification?.Id;
             row.EmployeeNotificationId = employeeNotification?.Id;
         }
 
@@ -283,7 +317,7 @@ public class NotificationService : INotificationService
             {
                 // Everything about this notification has already been enqueued — do not duplicate
                 // the in-app rows either.
-                db.Entry(notification).State = EntityState.Detached;
+                if (notification is not null) db.Entry(notification).State = EntityState.Detached;
                 if (employeeNotification is not null) db.Entry(employeeNotification).State = EntityState.Detached;
                 return [];
             }
