@@ -206,10 +206,17 @@ export async function platformSetupToken(): Promise<string> {
 }
 
 /** Reuse the setup project's platform session for authenticated API assertions. */
+/** A fresh platform token once the setup one has run out; one per worker, as platform login is rate-limited to 5. */
+let renewedPlatformToken: string | null = null;
+
 export async function apiPlatformLogin(
-  _request: import('@playwright/test').APIRequestContext
+  request: import('@playwright/test').APIRequestContext
 ): Promise<string> {
-  return platformSetupToken();
+  const setup = await platformSetupToken();
+  if (secondsUntilExpiry(setup) > TOKEN_MARGIN_SECONDS) return setup;
+  if (!renewedPlatformToken || secondsUntilExpiry(renewedPlatformToken) <= TOKEN_MARGIN_SECONDS)
+    renewedPlatformToken = await apiPlatformFreshLogin(request);
+  return renewedPlatformToken;
 }
 
 /** Create a new platform session only when the prior shared session is no longer needed. */
