@@ -7,6 +7,7 @@ import type { CompanySetupCompany } from '../../api/companySetup';
 import { COUNTRY_CURRENCY, CURRENCIES, firstPayrollMonthLocked, isSaudi, legacyWarnings } from '../../lib/companySetupWizard';
 import { CountryOptions } from './CountryOptions';
 import { Notice, SectionHeader, WizardField, useWizardForm } from './wizardForm';
+import { ArabicSuggest } from './ArabicSuggest';
 
 function assembleWorkEmailPreview(pattern: string | undefined, domain: string | undefined): string {
   const local = deriveWorkEmailLocalPart('John Smith', pattern || DEFAULT_WORK_EMAIL_PATTERN);
@@ -44,7 +45,12 @@ export function CompanyStep() {
         <SectionHeader title={t('Legal entity')} description={t('Enter the details exactly as they appear on the commercial registration.')} />
         <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
           <WizardField field="company.legalNameEn" label={t('Legal name (English)')} required>{text('legalNameEn', { placeholder: t('For example, Riyadh Trading Company LLC') })}</WizardField>
-          <WizardField field="company.legalNameAr" label={t('Legal name (Arabic)')} required={saudi} help={saudi ? undefined : t('Optional outside Saudi Arabia.')}>{text('legalNameAr', { arabic: true })}</WizardField>
+          <WizardField field="company.legalNameAr" label={t('Legal name (Arabic)')} required={saudi} help={saudi ? undefined : t('Optional outside Saudi Arabia.')}>
+            {control => <>
+              {text('legalNameAr', { arabic: true })(control)}
+              <ArabicSuggest source={c.legalNameEn} value={c.legalNameAr ?? ''} inputId={control.id} readOnly={readOnly} onAccept={legalNameAr => set({ legalNameAr })} />
+            </>}
+          </WizardField>
           <WizardField field="company.tradeName" label={t('Trade name (optional)')}>{text('tradeName')}</WizardField>
           <WizardField field="company.countryCode" label={t('Country')} required help={existing ? identityReason : undefined}>
             {control => <select {...control} className="select w-full" disabled={readOnly || existing} value={c.countryCode} onChange={e => {

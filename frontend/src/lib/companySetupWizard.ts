@@ -461,6 +461,14 @@ function validateStepRaw(step: StepId, { body, context, adminStepVisible = true 
         b.locations.forEach((l, j) => {
           if (blank(l.code)) errors.push({ field: `branches.${i}.locations.${j}.code`, message: msg('Enter a location code.') });
           if (blank(l.nameEn)) errors.push({ field: `branches.${i}.locations.${j}.nameEn`, message: msg('Enter the location name in English.') });
+          // The planner's own limits (CompanySetupPlanner), checked here so the message sits at the field.
+          const at = `branches.${i}.locations.${j}`;
+          const lat = l.latitude ?? null;
+          const lng = l.longitude ?? null;
+          if ((lat === null) !== (lng === null)) errors.push({ field: `${at}.${lat === null ? 'latitude' : 'longitude'}`, message: msg('Enter both latitude and longitude, or neither.') });
+          if (lat !== null && !(lat >= -90 && lat <= 90)) errors.push({ field: `${at}.latitude`, message: msg('Latitude must be between -90 and 90.') });
+          if (lng !== null && !(lng >= -180 && lng <= 180)) errors.push({ field: `${at}.longitude`, message: msg('Longitude must be between -180 and 180.') });
+          if (l.radiusMeters != null && !(l.radiusMeters >= 1 && l.radiusMeters <= 100_000)) errors.push({ field: `${at}.radiusMeters`, message: msg('The geofence radius must be between 1 and 100,000 metres.') });
         });
         duplicateCodes(b.locations, l => l.code, `branches.${i}.locations`, errors);
       });

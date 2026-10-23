@@ -103,5 +103,6 @@ export function useDraftAutosave({ draftId, body, step, delayMs = 1200 }: {
     return save();
   }, [save]);
 
-  return { state, savedAt, flush, adopt, version: () => version.current, hasUnsaved: () => dirty.current || !!inFlight.current };
+  // isConflict reads the ref, so a caller awaiting flush() sees a 409 at once, not after the next render.
+  return { state, savedAt, flush, adopt, version: () => version.current, hasUnsaved: () => dirty.current || !!inFlight.current, isConflict: () => conflict.current };
 }
