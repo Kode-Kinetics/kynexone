@@ -149,17 +149,49 @@ export async function apiLoginLive(
   });
   if (!resp.ok()) throw new Error(`Login failed: ${resp.status()} ${await resp.text()}`);
   const data = await resp.json();
-  return data.accessToken ?? data.token ?? data.access_token;
+  const token = data.accessToken ?? data.token ?? data.access_token;
+  // A two-step challenge or enrolment answers 200 without a token; say so here, not as a 401 three calls later.
+  if (!token) throw new Error(`Login for ${email} / ${slug} returned no access token: ${JSON.stringify(Object.keys(data))}`);
+  return token;
 }
 
-/** Reuse a setup-time persona token for API feature/workflow assertions. */
+/** Seconds until a JWT's `exp`, or -Infinity when it cannot be read. */
+function secondsUntilExpiry(token: string): number {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')) as { exp?: number };
+    return typeof payload.exp === 'number' ? payload.exp - Date.now() / 1000 : -Infinity;
+  } catch {
+    return -Infinity;
+  }
+}
+
+// A spec's beforeAll token must outlive the spec, so anything closer than this to expiry is replaced.
+const API_TOKEN_MIN_REMAINING_SECONDS = 10 * 60;
+// Per worker: a persona signed in again once keeps that token rather than signing in for every spec.
+const renewedApiTokens = new Map<string, string>();
+
+/**
+ * Reuse a setup-time persona token for API feature/workflow assertions.
+ *
+ * Access tokens last 30 minutes, and the Chromium suite now runs past that, so specs late in the run were handed an
+ * expired setup token and every API call answered 401. A token close to expiry is replaced by a fresh API sign-in for
+ * that persona. Only this worker's memory is updated: the setup state file (whose refresh token the UI specs seed) is
+ * left untouched, so no other spec sees a rotated or revoked session.
+ */
 export async function apiLogin(
-  _request: import('@playwright/test').APIRequestContext,
+  request: import('@playwright/test').APIRequestContext,
   email: string,
-  _password: string,
+  password: string,
   slug: string
 ): Promise<string> {
-  return (await tenantSetupSession(email, slug)).accessToken;
+  const key = tenantSessionKey(email, slug);
+  const renewed = renewedApiTokens.get(key);
+  if (renewed && secondsUntilExpiry(renewed) > API_TOKEN_MIN_REMAINING_SECONDS) return renewed;
+  const setup = (await tenantSetupSession(email, slug)).accessToken;
+  if (secondsUntilExpiry(setup) > API_TOKEN_MIN_REMAINING_SECONDS) return setup;
+  const fresh = await apiLoginLive(request, email, password, slug);
+  renewedApiTokens.set(key, fresh);
+  return fresh;
 }
 
 /** Read the one platform session created by the setup project. */
