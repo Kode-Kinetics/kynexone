@@ -197,6 +197,7 @@ public static class BenefitPayroll
         "Monthly" => date.Year == target.Year && date.Month == target.Month,
         "Annual" => date.Year == target.Year,
         "Lifetime" or "PerEnrollment" => true,
+        "ContractYear" => throw new BenefitPaymentException(BenefitPaymentPolicies.ContractYearSalaryMessage),
         _ => throw new BenefitPaymentException("The benefit limit period is invalid.")
     };
 
