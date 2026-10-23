@@ -501,7 +501,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 || !Range(component.Amount, 1000000000m) || !Precision(component.Amount)
                 || !Range(component.Percentage, 100) || !Precision(component.Percentage, 3))
                 errors.Add($"Salary component '{component.Code}' has invalid values. Use a supported earning/deduction calculation, nonnegative two-decimal amounts, and 0–100 percentages with at most three decimals.");
-        Unique(d.LeavePolicies.Select(p => $"{p.LeaveTypeCode}|{p.GradeCode}|{p.DepartmentCode}|{p.EmploymentType?.Trim()}"), "Leave policies");
+        Unique(d.LeavePolicies.Select(p => $"{p.LeaveTypeCode}|{p.GradeCode}|{p.DepartmentCode}|{Leave.LeavePolicyScope.EmploymentTypesKey(p.EmploymentType)}"), "Leave policies");
         for (var i = 0; i < d.LeavePolicies.Count; i++)
             for (var j = i + 1; j < d.LeavePolicies.Count; j++)
             {
@@ -564,9 +564,10 @@ public sealed class SetupAssistantService : ISetupAssistantService
         static bool Same(string? a, string? b) => string.Equals(a?.Trim(), b?.Trim(), StringComparison.OrdinalIgnoreCase);
         static bool Covers(string? a, string? b) => Blank(a) || Same(a, b);
         static bool Overlap(string? a, string? b) => Blank(a) || Blank(b) || Same(a, b);
-        return Overlap(gradeA, gradeB) && Overlap(departmentA, departmentB) && Overlap(employmentA, employmentB)
-            && !(Covers(gradeA, gradeB) && Covers(departmentA, departmentB) && Covers(employmentA, employmentB))
-            && !(Covers(gradeB, gradeA) && Covers(departmentB, departmentA) && Covers(employmentB, employmentA));
+        // Employment type is a list (Full-Time,Part-Time): overlap is a shared type, cover is a superset.
+        return Overlap(gradeA, gradeB) && Overlap(departmentA, departmentB) && Leave.LeavePolicyScope.EmploymentTypesOverlap(employmentA, employmentB)
+            && !(Covers(gradeA, gradeB) && Covers(departmentA, departmentB) && Leave.LeavePolicyScope.CoversEmploymentTypes(employmentA, employmentB))
+            && !(Covers(gradeB, gradeA) && Covers(departmentB, departmentA) && Leave.LeavePolicyScope.CoversEmploymentTypes(employmentB, employmentA));
     }
 
     private static readonly Regex TimeRx = new(@"^([01]\d|2[0-3]):[0-5]\d$", RegexOptions.Compiled);
@@ -1091,7 +1092,9 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 // Annual leave builds up over the year; a fixed-span leave is granted whole when
                 // the event happens, which is what "Yearly" means in this column.
                 AccrualMethod: isAnnual ? "Monthly" : "Yearly",
-                EncashmentAllowed: isAnnual,
+                // Off until the company says how many days: "allowed" with a 0-day cap encashed nothing, and the
+                // policy form now refuses that combination. The customer turns it on with their own cap.
+                EncashmentAllowed: false,
                 EncashmentMaxDays: 0m,
                 MinimumDaysPerRequest: 1m,
                 MaximumDaysPerRequest: t.MaxConsecutiveDays,

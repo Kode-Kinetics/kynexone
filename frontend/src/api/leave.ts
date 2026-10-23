@@ -35,7 +35,11 @@ export interface LeavePolicy {
   employmentType: string;
   contractType: string;
   gender: string;
+  /** 'Any' | 'National' (locals) | 'Expatriate' — judged against the employee's company country. */
+  nationalityScope?: string;
   appliesOnProbation: boolean;
+  /** Months of service before the leave can be taken; 0 = from joining. Accrual still starts at joining. */
+  minimumServiceMonths?: number;
   annualEntitlementDays: number;
   accrualMethod: string;
   proratePartialMonths?: boolean;

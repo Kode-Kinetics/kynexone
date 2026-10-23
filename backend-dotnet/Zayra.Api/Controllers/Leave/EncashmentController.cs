@@ -8,6 +8,7 @@ using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -93,8 +94,9 @@ public class EncashmentController : ControllerBase
         if (leaveType is null)
             return BadRequest(new { message = "Leave type not found." });
 
-        var policy = await _db.LeavePolicies
-            .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.LeaveTypeId == req.LeaveTypeId && p.Status == "Active", ct);
+        // The employee's own policy, resolved exactly as a leave request resolves it — not the first active row for the
+        // type, which with a locals/expats or employment-type split would pay one group under the other's rules.
+        var policy = await LeaveService.ResolveLeavePolicyAsync(_db, tenantId.Value, employee, req.LeaveTypeId, null, ct);
         if (policy is null || !policy.EncashmentAllowed)
             return BadRequest(new { message = "Encashment is not allowed for this leave type." });
 

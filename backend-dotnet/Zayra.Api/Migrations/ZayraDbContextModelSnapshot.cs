@@ -19495,10 +19495,24 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("minimum_days_per_request");
 
+                    b.Property<int>("MinimumServiceMonths")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("minimum_service_months");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("name");
+
+                    b.Property<string>("NationalityScope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("Any")
+                        .HasColumnName("nationality_scope");
 
                     b.Property<int>("NoticeRequiredDays")
                         .HasColumnType("integer")
@@ -19542,7 +19556,12 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "LeaveTypeId", "Status");
 
-                    b.ToTable("leave_policies", (string)null);
+                    b.ToTable("leave_policies", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_leave_policies__minimum_service_months", "minimum_service_months BETWEEN 0 AND 600");
+
+                            t.HasCheckConstraint("ck_leave_policies__nationality_scope", "nationality_scope IN ('Any', 'National', 'Expatriate')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LeavePolicyEligibility", b =>

@@ -443,7 +443,9 @@ public class SetupAssistantController : ControllerBase
                 // writing one here would be a way round that refusal, not a feature.
                 CarryForwardMax = 0m,
                 CarryForwardExpiry = 0,
-                EncashmentAllowed = lp.EncashmentAllowed,
+                // A 0-day cap encashes nothing (EncashmentController refuses every request above it), so it is stored as
+                // what it is — not allowed — instead of a switch that reads "on" and pays nothing.
+                EncashmentAllowed = lp.EncashmentAllowed && lp.EncashmentMaxDays > 0,
                 EncashmentMaxDays = Math.Clamp(lp.EncashmentMaxDays, 0m, 365m),
                 MinimumDaysPerRequest = lp.MinimumDaysPerRequest > 0 ? lp.MinimumDaysPerRequest : 1m,
                 MaximumDaysPerRequest = Math.Clamp(lp.MaximumDaysPerRequest, 0m, 365m),
@@ -831,14 +833,15 @@ public class SetupAssistantController : ControllerBase
         // a company-wide or canonical-ID rule even when its displayed name is identical.
         if (policy.BranchId.HasValue || !string.IsNullOrEmpty(policy.DepartmentName) || !string.IsNullOrEmpty(policy.Grade)
             || !string.IsNullOrEmpty(policy.ContractType) || !string.IsNullOrEmpty(policy.Gender)
+            || policy.NationalityScope is LeaveNationalityScopes.National or LeaveNationalityScopes.Expatriate
             || !string.IsNullOrEmpty(policy.CountryCode) && CountryCodeStandard.NormalizeToIso2(policy.CountryCode) != CountryCodeStandard.NormalizeToIso2(country)
-            || !string.Equals(policy.EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase)) return false;
+            || !LeavePolicyScope.SameEmploymentTypes(policy.EmploymentType, employmentType)) return false;
         var rows = eligibility.Where(e => e.LeavePolicyId == policy.Id && e.IsActive).ToArray();
         if (!gradeId.HasValue && !departmentId.HasValue) return rows.Length == 0;
         return rows.Length == 1 && rows[0].GradeId == gradeId && rows[0].DepartmentId == departmentId
             && (rows[0].CompanyId is null || rows[0].CompanyId == companyId) && rows[0].BranchId is null
             && (string.IsNullOrEmpty(rows[0].CountryCode) || CountryCodeStandard.NormalizeToIso2(rows[0].CountryCode) == CountryCodeStandard.NormalizeToIso2(country))
-            && (string.IsNullOrEmpty(rows[0].EmploymentType) || string.Equals(rows[0].EmploymentType, employmentType, StringComparison.OrdinalIgnoreCase))
+            && (string.IsNullOrEmpty(rows[0].EmploymentType) || LeavePolicyScope.SameEmploymentTypes(rows[0].EmploymentType, employmentType))
             && string.IsNullOrEmpty(rows[0].ContractType);
     }
 

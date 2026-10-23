@@ -2404,10 +2404,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.IsActive });
         });
         modelBuilder.Entity<LeavePolicy>(entity => {
-            entity.ToTable("leave_policies");
+            entity.ToTable("leave_policies", t =>
+            {
+                t.HasCheckConstraint("ck_leave_policies__minimum_service_months", "minimum_service_months BETWEEN 0 AND 600");
+                t.HasCheckConstraint("ck_leave_policies__nationality_scope", "nationality_scope IN ('Any', 'National', 'Expatriate')");
+            });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.AnnualEntitlementDays).HasPrecision(6,2);
             entity.Property(x => x.ProratePartialMonths).HasDefaultValue(false);
+            entity.Property(x => x.MinimumServiceMonths).HasDefaultValue(0);
+            entity.Property(x => x.NationalityScope).HasMaxLength(10).HasDefaultValue(LeaveNationalityScopes.Any);
             entity.Property(x => x.CarryForwardMax).HasPrecision(6,2);
             entity.Property(x => x.EncashmentMaxDays).HasPrecision(6,2);
             entity.Property(x => x.MinimumDaysPerRequest).HasPrecision(5,2);

@@ -252,6 +252,49 @@ async function maintenancePolicy(page: Page, options: { arabic?: boolean; failFi
   return page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true });
 }
 
+test('leave_policy_takes_several_employment_types_locals_or_expats_service_and_encashment_cap', async ({ page }) => {
+  let saved: Record<string, unknown> = { id: 'existing-policy', name: 'Annual leave', leaveTypeId: 'annual-type', countryCode: 'KSA', annualEntitlementDays: 22, accrualMethod: 'Monthly', status: 'Active', payrollImpact: 'Full', employmentType: '' };
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/admin/master-data/values') {
+      // The tenant's reference list: codes are stored, labels shown.
+      const values = url.searchParams.get('typeCode') === 'EmploymentType'
+        ? [['FULL_TIME', 'Full-Time'], ['PART_TIME', 'Part-Time'], ['CONTRACT', 'Contract']].map(([code, valueEn], sortOrder) => ({ code, valueEn, valueAr: '', isActive: true, sortOrder }))
+        : [];
+      await route.fulfill({ json: values }); return true;
+    }
+    if (url.pathname === '/api/leave/types') { await route.fulfill({ json: [{ id: 'annual-type', code: 'ANNUAL', nameEn: 'Annual Leave', category: 'Annual', isPaid: true, isActive: true }] }); return true; }
+    if (url.pathname === '/api/leave/policies') { await route.fulfill({ json: { items: [saved], total: 1 } }); return true; }
+    if (url.pathname === '/api/leave/policies/existing-policy' && route.request().method() === 'PUT') {
+      saved = { ...saved, ...route.request().postDataJSON() }; await route.fulfill({ json: saved }); return true;
+    }
+    return false;
+  } });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true });
+  const all = dialog.getByRole('checkbox', { name: 'All', exact: true });
+  await expect(all).toBeChecked();
+  await dialog.getByRole('checkbox', { name: 'Full-Time', exact: true }).check();
+  await dialog.getByRole('checkbox', { name: 'Part-Time', exact: true }).check();
+  await expect(all).not.toBeChecked();
+  await dialog.getByLabel('Nationality', { exact: true }).selectOption('Expatriate');
+  await dialog.getByLabel('Service required before use (months)', { exact: true }).fill('11');
+  await expect(dialog.getByText('Can be taken after probation ends and after 11 month(s) of service.')).toBeVisible();
+  await dialog.getByRole('checkbox', { name: 'Encashment Allowed', exact: true }).check();
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
+  await expect(dialog.getByText('Enter the maximum days per encashment, or untick Encashment Allowed.')).toBeVisible();
+  await dialog.getByLabel('Max days per encashment *', { exact: true }).fill('10');
+  await page.screenshot({ path: '/tmp/leave-policy-eligibility.png', fullPage: true });
+  const request = page.waitForRequest(r => r.method() === 'PUT' && new URL(r.url()).pathname === '/api/leave/policies/existing-policy');
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    employmentType: 'FULL_TIME,PART_TIME', nationalityScope: 'Expatriate', minimumServiceMonths: 11, appliesOnProbation: false,
+    encashmentAllowed: true, encashmentMaxDays: 10,
+  });
+  // The list reads the saved codes back as their labels.
+  await expect(page.getByText(/Full-Time, Part-Time/)).toBeVisible();
+});
+
 test('tenant_admin_can_revisit_and_edit_saved_settings', async ({ page }) => {
   const dialog = await maintenancePolicy(page);
   await expect(dialog.getByLabel('Annual Days', { exact: true })).toHaveValue('28');

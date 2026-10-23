@@ -81,6 +81,8 @@ public class LeavePoliciesController : ControllerBase
 
         if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
             return carryForwardRefusal;
+        if (RefuseEligibilityOrEncashment(req.MinimumServiceMonths, req.EncashmentAllowed, req.EncashmentMaxDays, req.NationalityScope ?? LeaveNationalityScopes.Any) is { } ruleRefusal)
+            return ruleRefusal;
 
         var policy = new LeavePolicy
         {
@@ -92,10 +94,12 @@ public class LeavePoliciesController : ControllerBase
             BranchId = req.BranchId,
             DepartmentName = req.DepartmentName ?? string.Empty,
             Grade = req.Grade ?? string.Empty,
-            EmploymentType = req.EmploymentType ?? string.Empty,
+            EmploymentType = LeavePolicyScope.NormalizeEmploymentTypes(req.EmploymentType),
             ContractType = req.ContractType ?? string.Empty,
             Gender = req.Gender ?? string.Empty,
+            NationalityScope = string.IsNullOrWhiteSpace(req.NationalityScope) ? LeaveNationalityScopes.Any : req.NationalityScope.Trim(),
             AppliesOnProbation = req.AppliesOnProbation,
+            MinimumServiceMonths = req.MinimumServiceMonths,
             AnnualEntitlementDays = req.AnnualEntitlementDays,
             AccrualMethod = req.AccrualMethod ?? "Yearly",
             ProratePartialMonths = req.ProratePartialMonths ?? false,
@@ -145,6 +149,24 @@ public class LeavePoliciesController : ControllerBase
     /// built (<c>LeaveAccrualRule</c> is its data model, which is why that entity must not be
     /// deleted), this guard comes out in the same change as the consumer goes in.</para>
     /// </summary>
+    /// <summary>
+    /// Judged on the policy as it will be saved. Encashment with a zero cap was the old form's only
+    /// outcome (it had no cap input), and EncashmentController refuses every request above the cap —
+    /// so "Encashment Allowed" encashed nothing. A policy that allows it must now say how much.
+    /// </summary>
+    private IActionResult? RefuseEligibilityOrEncashment(int minimumServiceMonths, bool encashmentAllowed, decimal encashmentMaxDays, string nationalityScope)
+    {
+        if (!string.IsNullOrWhiteSpace(nationalityScope) && !LeaveNationalityScopes.All.Contains(nationalityScope.Trim()))
+            return BadRequest(new { error = "leave_nationality_scope_invalid", message = "Nationality must be Any, National (locals) or Expatriate." });
+        if (minimumServiceMonths is < 0 or > 600)
+            return BadRequest(new { error = "leave_minimum_service_out_of_range", message = "Service required before use must be between 0 and 600 months." });
+        if (encashmentAllowed && encashmentMaxDays <= 0)
+            return BadRequest(new { error = "leave_encashment_cap_required", message = "Encashment is allowed but the maximum days per encashment is 0. Enter how many days can be encashed." });
+        if (encashmentMaxDays is < 0 or > 365)
+            return BadRequest(new { error = "leave_encashment_cap_out_of_range", message = "Maximum days per encashment must be between 0 and 365." });
+        return null;
+    }
+
     private IActionResult? RefuseCarryForward(decimal? max, int? expiry)
         => (max is > 0m) || (expiry is > 0)
             ? BadRequest(new
@@ -175,6 +197,13 @@ public class LeavePoliciesController : ControllerBase
     private async Task<IActionResult?> RefuseBelowStatutoryFloorAsync(
         Guid tenantId, LeaveType leaveType, LeavePolicy policy, CancellationToken ct)
     {
+        if (policy.MinimumServiceMonths > 0 && LeaveService.IsSickLeaveType(leaveType.Category, leaveType.NameEn)
+            && await KsaStatutoryLeavePolicyGuard.ReachAsync(_db, tenantId, policy.CountryCode, policy.CompanyId, ct) != KsaPolicyReach.None)
+            return BadRequest(new
+            {
+                error = "statutory_leave_service_requirement",
+                message = "Sick leave for employees in Saudi Arabia applies from the first day of service (Labour Law Art. 117). Set the service requirement to 0.",
+            });
         var violations = await KsaStatutoryLeavePolicyGuard.CheckAsync(
             _db, tenantId, policy.Id, leaveType.Id, leaveType.Code, leaveType.NameEn, leaveType.Category,
             policy.CountryCode, policy.CompanyId, policy.Status,
@@ -264,10 +293,12 @@ public class LeavePoliciesController : ControllerBase
         if (req.BranchId.HasValue) policy.BranchId = req.BranchId;
         if (req.DepartmentName is not null) policy.DepartmentName = req.DepartmentName;
         if (req.Grade is not null) policy.Grade = req.Grade;
-        if (req.EmploymentType is not null) policy.EmploymentType = req.EmploymentType;
+        if (req.EmploymentType is not null) policy.EmploymentType = LeavePolicyScope.NormalizeEmploymentTypes(req.EmploymentType);
         if (req.ContractType is not null) policy.ContractType = req.ContractType;
         if (req.Gender is not null) policy.Gender = req.Gender;
+        if (!string.IsNullOrWhiteSpace(req.NationalityScope)) policy.NationalityScope = req.NationalityScope.Trim();
         if (req.AppliesOnProbation.HasValue) policy.AppliesOnProbation = req.AppliesOnProbation.Value;
+        if (req.MinimumServiceMonths.HasValue) policy.MinimumServiceMonths = req.MinimumServiceMonths.Value;
         if (req.AnnualEntitlementDays.HasValue) policy.AnnualEntitlementDays = req.AnnualEntitlementDays.Value;
         if (!string.IsNullOrWhiteSpace(req.AccrualMethod)) policy.AccrualMethod = req.AccrualMethod;
         if (req.ProratePartialMonths.HasValue) policy.ProratePartialMonths = req.ProratePartialMonths.Value;
@@ -285,6 +316,8 @@ public class LeavePoliciesController : ControllerBase
         if (req.AllowsHajjBeyondStatutoryEligibility.HasValue) policy.AllowsHajjBeyondStatutoryEligibility = req.AllowsHajjBeyondStatutoryEligibility.Value;
         if (!string.IsNullOrWhiteSpace(req.Status)) policy.Status = req.Status;
         policy.UpdatedAtUtc = DateTime.UtcNow;
+        if (RefuseEligibilityOrEncashment(policy.MinimumServiceMonths, policy.EncashmentAllowed, policy.EncashmentMaxDays, policy.NationalityScope) is { } ruleRefusal)
+            return ruleRefusal;
 
         // Checked on the policy as it WILL be, so a change to any one field — the days, the cap, the
         // country, the company, the pay treatment or the status — is judged against the others.
@@ -352,7 +385,9 @@ public record CreateLeavePolicyRequest(
     Guid? ApprovalWorkflowId,
     string? Status,
     bool AllowsHajjBeyondStatutoryEligibility = false,
-    bool? ProratePartialMonths = null);
+    bool? ProratePartialMonths = null,
+    int MinimumServiceMonths = 0,
+    string? NationalityScope = null);
 
 public record UpdateLeavePolicyRequest(
     string? Name,
@@ -380,4 +415,6 @@ public record UpdateLeavePolicyRequest(
     Guid? ApprovalWorkflowId,
     string? Status,
     bool? AllowsHajjBeyondStatutoryEligibility = null,
-    bool? ProratePartialMonths = null);
+    bool? ProratePartialMonths = null,
+    int? MinimumServiceMonths = null,
+    string? NationalityScope = null);

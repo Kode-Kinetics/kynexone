@@ -109,6 +109,8 @@ public static class KsaStatutoryLeavePolicyGuard
             .ToListAsync(ct);
 
         return candidates
+            // A locals-only or expats-only sibling covers only that group, so it cannot make a neutral policy lawful.
+            .Where(p => p.NationalityScope == Zayra.Api.Models.LeaveNationalityScopes.Any)
             .Where(p => KsaStatutorySpecialLeave.IsKsa(p.CountryCode)
                         || (string.IsNullOrWhiteSpace(p.CountryCode) && p.CompanyId is { } cid && saudiCompanies.Contains(cid)))
             .Any(p => KsaStatutorySpecialLeave.PolicyViolations(kind, floor, p.AnnualEntitlementDays,
