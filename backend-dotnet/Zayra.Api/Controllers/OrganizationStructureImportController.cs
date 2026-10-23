@@ -309,7 +309,7 @@ public class OrganizationStructureImportController : ControllerBase
                         "Organization-structure import cannot change an existing company's activation state. Use the controlled company lifecycle workflow.");
                 company.LegalNameAr = Val(row, "LegalNameAr");
                 company.TradeName = Val(row, "TradeName");
-                company.CountryCode = Val(row, "CountryCode").ToUpperInvariant();
+                company.CountryCode = CountryCodeStandard.ToStored(Val(row, "CountryCode"));
                 company.Jurisdiction = Val(row, "Jurisdiction");
                 company.RegistrationNumber = Val(row, "RegistrationNumber");
                 company.TaxNumber = Val(row, "TaxNumber");
@@ -333,7 +333,7 @@ public class OrganizationStructureImportController : ControllerBase
                     LegalNameEn = name,
                     LegalNameAr = Val(row, "LegalNameAr"),
                     TradeName = Val(row, "TradeName"),
-                    CountryCode = Val(row, "CountryCode").ToUpperInvariant(),
+                    CountryCode = CountryCodeStandard.ToStored(Val(row, "CountryCode")),
                     Jurisdiction = Val(row, "Jurisdiction"),
                     RegistrationNumber = Val(row, "RegistrationNumber"),
                     TaxNumber = Val(row, "TaxNumber"),
@@ -369,7 +369,7 @@ public class OrganizationStructureImportController : ControllerBase
             {
                 branch.NameEn = Val(row, "NameEn");
                 branch.NameAr = Val(row, "NameAr");
-                branch.CountryCode = Val(row, "CountryCode", company.CountryCode);
+                branch.CountryCode = CountryCodeStandard.ToStored(Val(row, "CountryCode", company.CountryCode));
                 branch.City = Val(row, "City");
                 branch.AddressLine1 = Val(row, "AddressLine1");
                 branch.AddressLine2 = Val(row, "AddressLine2");
@@ -389,7 +389,7 @@ public class OrganizationStructureImportController : ControllerBase
                     Code = OrgCodes.Normalize(code),
                     NameEn = Val(row, "NameEn"),
                     NameAr = Val(row, "NameAr"),
-                    CountryCode = Val(row, "CountryCode", company.CountryCode),
+                    CountryCode = CountryCodeStandard.ToStored(Val(row, "CountryCode", company.CountryCode)),
                     City = Val(row, "City"),
                     AddressLine1 = Val(row, "AddressLine1"),
                     AddressLine2 = Val(row, "AddressLine2"),
