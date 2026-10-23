@@ -8,6 +8,7 @@ import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
+import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
 import { reportsAnalytics } from './reportsAnalytics';
@@ -26,6 +27,7 @@ import { payrollAttendance } from './payrollAttendance';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
+import { appChrome } from './appChrome';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -42,6 +44,7 @@ type Dict = Record<string, string>;
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
+  ...appChrome.en,
   ...companyWizard.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -1427,6 +1430,7 @@ const en: Dict = {
   ...setupExperience.en,
   ...glSetup.en,
   ...glErp.en,
+  ...statutoryRules.en,
   ...glApiKeys.en,
   // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
   ...signInSecurity.en,
@@ -1449,6 +1453,7 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...appChrome.ar,
   ...companyWizard.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
@@ -2835,6 +2840,7 @@ const ar: Dict = {
   ...setupExperience.ar,
   ...glSetup.ar,
   ...glErp.ar,
+  ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...signInSecurity.ar,
   ...reportsAnalytics.ar,

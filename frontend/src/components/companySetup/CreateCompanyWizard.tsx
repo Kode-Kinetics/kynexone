@@ -149,13 +149,13 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
       const draft = await companySetupApi.draft(id);
       if (draft.status !== 'Open') {
         setError(draft.status === 'Submitted'
-          ? (existingCompanyId ? t('This draft was already used to save changes. Start again from Guided Setup.') : t('This draft was already used to create a company.'))
-          : (existingCompanyId ? t('This draft was discarded. Start again from Guided Setup.') : t('This draft was discarded. Start a new company instead.')));
+          ? (existingCompanyId ? t('This draft was already used to save changes. Start again from Guided setup.') : t('This draft was already used to create a company.'))
+          : (existingCompanyId ? t('This draft was discarded. Start again from Guided setup.') : t('This draft was discarded. Start a new company instead.')));
         return false;
       }
       // A draft opens only in its own journey: a create draft is not a change to this company, and vice versa.
       if ((draft.body.existingCompanyId ?? null) !== (existingCompanyId ?? null)) {
-        setError(t('This draft belongs to a different setup. Open it from Guided Setup.'));
+        setError(t('This draft belongs to a different setup. Open it from Guided setup.'));
         return false;
       }
       autosave.adopt(draft);
@@ -482,7 +482,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     <Notice tone="warning" role="alert">
       <p className="font-semibold">{t('You cannot complete setup for this company.')}</p>
       <p className="mt-1">{t('It is not active, or it is not one of the companies you manage. Ask your group super admin.')}</p>
-      <Link href={GUIDED_SETUP_HREF} className="btn-secondary mt-3">{t('Back to Guided Setup')}</Link>
+      <Link href={GUIDED_SETUP_HREF} className="btn-secondary mt-3">{t('Back to Guided setup')}</Link>
     </Notice>
   );
   if (load === 'forbidden') return (
@@ -519,7 +519,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
         </details>
         <div className="flex flex-wrap gap-2">
           {existing
-            ? <Link href={GUIDED_SETUP_HREF} className="btn-primary">{t('Back to Guided Setup')}</Link>
+            ? <Link href={GUIDED_SETUP_HREF} className="btn-primary">{t('Back to Guided setup')}</Link>
             : <Link href={`/setup?tab=aiSetup&path=configuration&companyId=${result.companyId}`} className="btn-primary">{t('Open the new company’s setup')}</Link>}
           <Link href="/setup?tab=companies" className="btn-secondary">{t('Back to companies')}</Link>
         </div>

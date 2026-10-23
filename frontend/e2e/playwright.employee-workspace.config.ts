@@ -15,7 +15,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
-    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } },
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } }, { name: 'pilot', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } } },
     { name: 'mobile-reduced-motion', use: { ...devices['Pixel 7'], viewport: { width: 390, height: 844 } } },
     { name: 'reflow-320', use: { ...devices['Desktop Chrome'], viewport: { width: 320, height: 640 }, deviceScaleFactor: 2 } },
   ],

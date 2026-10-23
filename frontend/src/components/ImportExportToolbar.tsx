@@ -5,6 +5,8 @@ import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileUp, Upload, User
 import { Modal } from './Modal';
 import { useLocale } from '../contexts/LocaleContext';
 
+type Translate = ReturnType<typeof useLocale>['t'];
+
 /**
  * One typed org-skeleton / linkage gap on an imported (Draft) row. `type` is the deep-link key
  * (e.g. "link:manager", "org:department", "pay:salaryHeld"); each gap is a People-list filter.
@@ -296,27 +298,27 @@ type ServerErrorPayload = {
  * ValidationProblemDetails ({ errors: { field: string[] } }), and an import
  * result carrying a flat row-level errors[]. Falls back to the generic string.
  */
-function extractImportError(data: unknown, entityName: string): string {
+function extractImportError(data: unknown, t: Translate): string {
   if (typeof data === 'string' && data.trim()) return data.trim();
   const payload = (data ?? {}) as ServerErrorPayload;
 
   // Import result / 422 carrying a flat list of row errors.
   if (Array.isArray(payload.errors) && payload.errors.length > 0) {
     const shown = payload.errors.slice(0, 3).join('; ');
-    return `Import failed — ${shown}${payload.errors.length > 3 ? ' …' : ''}`;
+    return t('Import failed — {reason}', { reason: `${shown}${payload.errors.length > 3 ? ' …' : ''}` });
   }
 
   // ASP.NET model-validation problem details: { errors: { field: [msgs] } }.
   if (payload.errors && typeof payload.errors === 'object') {
     const flat = Object.entries(payload.errors as Record<string, string[]>)
       .map(([field, msgs]) => `${field}: ${(msgs ?? []).join(' ')}`);
-    if (flat.length > 0) return `Import failed — ${flat.slice(0, 3).join(' · ')}`;
+    if (flat.length > 0) return t('Import failed — {reason}', { reason: flat.slice(0, 3).join(' · ') });
   }
 
   const message = payload.message ?? payload.detail ?? payload.title;
-  if (message) return `Import failed — ${message}`;
+  if (message) return t('Import failed — {reason}', { reason: message });
 
-  return `Failed to import ${entityName}.`;
+  return t('The import failed. Check the file and try again.');
 }
 
 /** One key per selected file (see onImport). */
@@ -335,6 +337,7 @@ function noServerAnswer(err: unknown): boolean {
 }
 
 function LandingPill({ status }: { status?: string }) {
+  const { t } = useLocale();
   const active = status?.toLowerCase() === 'active';
   const draft = status?.toLowerCase() === 'draft';
   const cls = active
@@ -343,7 +346,7 @@ function LandingPill({ status }: { status?: string }) {
       ? 'bg-amber-400/15 text-amber-700 ring-amber-400/25 dark:text-amber-300'
       : 'bg-slate-100 text-slate-500 ring-slate-200 dark:bg-white/10 dark:text-slate-300';
   // Draft rows land as inactive-until-completed — say so in plain words rather than the raw status.
-  const label = active ? 'Active' : draft ? 'Inactive · needs info' : status || '—';
+  const label = active ? t('Active') : draft ? t('Inactive · needs info') : status || '—';
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${cls}`}>{label}</span>;
 }
 
@@ -369,8 +372,8 @@ export function ImportExportToolbar({
   const [result, setResult] = useState<ImportResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const showToast = (t: Toast) => {
-    setToast(t);
+  const showToast = (next: Toast) => {
+    setToast(next);
     setTimeout(() => setToast(null), 5000);
   };
 
@@ -380,7 +383,7 @@ export function ImportExportToolbar({
     try {
       await onExport();
     } catch {
-      showToast({ type: 'error', message: `Failed to export ${entityName}.` });
+      showToast({ type: 'error', message: t('The export failed. Try again.') });
     } finally {
       setExporting(false);
     }
@@ -391,7 +394,7 @@ export function ImportExportToolbar({
     try {
       await onDownloadTemplate();
     } catch {
-      showToast({ type: 'error', message: 'Failed to download template.' });
+      showToast({ type: 'error', message: t('The template could not be downloaded. Try again.') });
     } finally {
       setTemplating(false);
     }
@@ -407,7 +410,7 @@ export function ImportExportToolbar({
           ? ` ${warnings.length} warning${warnings.length > 1 ? 's' : ''}: ${warnings.slice(0, 2).join('; ')}${warnings.length > 2 ? ' …' : ''}`
           : '';
       if (res.replayed) {
-        showToast({ type: 'success', message: 'This file was already imported — nothing was imported again.' });
+        showToast({ type: 'success', message: t('This file was already imported — nothing was imported again.') });
       } else if (res.errors.length > 0) {
         showToast({
           type: 'error',
@@ -421,7 +424,7 @@ export function ImportExportToolbar({
       }
     } catch (err) {
       const data = (err as { response?: { data?: unknown } })?.response?.data;
-      showToast({ type: 'error', message: extractImportError(data, entityName) });
+      showToast({ type: 'error', message: extractImportError(data, t) });
     } finally {
       setImporting(false);
     }
@@ -450,7 +453,7 @@ export function ImportExportToolbar({
     } catch (err) {
       setPendingCsv(null);
       const data = (err as { response?: { data?: unknown } })?.response?.data;
-      showToast({ type: 'error', message: extractImportError(data, entityName) });
+      showToast({ type: 'error', message: extractImportError(data, t) });
     } finally {
       setPreviewing(false);
     }
@@ -469,10 +472,10 @@ export function ImportExportToolbar({
       if (noServerAnswer(err)) {
         // The import may have landed before the connection dropped. Keep this preview (and its key) open:
         // confirming again is safe — the server replays a completed import instead of repeating it.
-        showToast({ type: 'error', message: 'No answer from the server. Press Confirm import again — this file will not be imported twice.' });
+        showToast({ type: 'error', message: t('No answer from the server. Press Confirm import again — this file will not be imported twice.') });
       } else {
         const data = (err as { response?: { data?: unknown } })?.response?.data;
-        showToast({ type: 'error', message: extractImportError(data, entityName) });
+        showToast({ type: 'error', message: extractImportError(data, t) });
         setPreview(null);
         setPendingCsv(null);
         setPendingKey(null);
@@ -546,10 +549,10 @@ export function ImportExportToolbar({
           className={btnOutline}
           disabled={exporting}
           onClick={handleExport}
-          title={`Export ${entityName} as CSV`}
+          title={t('Export {entity} as CSV', { entity: t(entityName) })}
         >
           <Download className="h-3.5 w-3.5" />
-          {exporting ? 'Exporting…' : 'Export'}
+          {exporting ? t('Exporting…') : t('Export')}
         </button>
       )}
 
@@ -559,10 +562,10 @@ export function ImportExportToolbar({
         className={btnOutline}
         disabled={templating}
         onClick={handleTemplate}
-        title="Download blank CSV import template"
+        title={t('Download a blank CSV import template')}
       >
         <FileUp className="h-3.5 w-3.5" />
-        {templating ? 'Downloading…' : 'Template'}
+        {templating ? t('Downloading…') : t('CSV import template')}
       </button>
 
       <button
@@ -570,10 +573,10 @@ export function ImportExportToolbar({
         className={btnOutline}
         disabled={importing || previewing}
         onClick={() => fileInputRef.current?.click()}
-        title={`Import ${entityName} from CSV`}
+        title={t('Import {entity} from CSV', { entity: t(entityName) })}
       >
         <Upload className="h-3.5 w-3.5" />
-        {importing ? 'Importing…' : previewing ? 'Checking…' : 'Import CSV'}
+        {importing ? t('Importing…') : previewing ? t('Checking…') : t('Import CSV')}
       </button>
       </>}
 
@@ -594,24 +597,24 @@ export function ImportExportToolbar({
       {onPreview && (
         <Modal
           isOpen={previewOpen}
-          title={`Review import — ${entityName}`}
+          title={t('Review import — {entity}', { entity: t(entityName) })}
           size="xl"
           onClose={cancelPreview}
           footer={
             <>
-              <button type="button" className="btn-secondary" onClick={cancelPreview} disabled={importing}>Cancel</button>
+              <button type="button" className="btn-secondary" onClick={cancelPreview} disabled={importing}>{t('Cancel')}</button>
               <button type="button" className="btn-secondary" onClick={downloadPreviewReport} disabled={!preview}>
                 <Download className="h-3.5 w-3.5" />
-                Download preview
+                {t('Download preview')}
               </button>
               <button type="button" className="btn-primary disabled:opacity-60" onClick={confirmImport} disabled={importing || !preview || (preview?.wouldFail ?? 0) > 0 || commitRefused}>
-                {importing ? 'Importing…' : `Confirm import`}
+                {importing ? t('Importing…') : t('Confirm import')}
               </button>
             </>
           }
         >
           {previewing || !preview ? (
-            <p className="p-4 text-sm text-slate-500">Checking rows…</p>
+            <p className="p-4 text-sm text-slate-500">{t('Checking rows…')}</p>
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2 text-xs">
@@ -692,25 +695,25 @@ export function ImportExportToolbar({
                   <thead className="sticky top-0 bg-slate-50 dark:bg-white/[0.04]">
                     <tr className="text-start text-[11px] font-bold uppercase text-slate-400">
                       <th className="px-3 py-2">#</th>
-                      <th className="px-3 py-2">Name</th>
-                      <th className="px-3 py-2">Lands as</th>
-                      <th className="px-3 py-2">Why</th>
+                      <th className="px-3 py-2">{t('Name')}</th>
+                      <th className="px-3 py-2">{t('Lands as')}</th>
+                      <th className="px-3 py-2">{t('Why')}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {preview.rows.map((r) => (
                       <tr key={r.row}>
                         <td className="px-3 py-2 text-slate-400">{r.row}</td>
-                        <td className="px-3 py-2 text-slate-700 dark:text-slate-200">{r.fullName || <span className="text-slate-400">(no name)</span>}</td>
+                        <td className="px-3 py-2 text-slate-700 dark:text-slate-200">{r.fullName || <span className="text-slate-400">{t('(no name)')}</span>}</td>
                         <td className="px-3 py-2">
-                          {r.status === 'Error' ? <span className="text-xs font-semibold text-rose-600">Rejected</span>
-                            : r.status === 'WillFail' ? <span className="text-xs font-semibold text-rose-600">Refused</span>
-                            : r.status === 'WillRepair' ? <span className="inline-flex rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-semibold text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300">Existing · fill missing</span>
+                          {r.status === 'Error' ? <span className="text-xs font-semibold text-rose-600">{t('Rejected')}</span>
+                            : r.status === 'WillFail' ? <span className="text-xs font-semibold text-rose-600">{t('Refused')}</span>
+                            : r.status === 'WillRepair' ? <span className="inline-flex rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-semibold text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300">{t('Existing · fill missing')}</span>
                             : <LandingPill status={r.projectedStatus} />}
                         </td>
                         <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
                           {[...(r.errors ?? []), ...(r.blocking ?? [])].join(', ')
-                            || (r.status === 'Error' ? '' : r.status === 'WillRepair' ? 'Existing employee — only missing details are filled in' : 'Complete')}
+                            || (r.status === 'Error' ? '' : r.status === 'WillRepair' ? t('Existing employee — only missing details are filled in') : t('Complete'))}
                         </td>
                       </tr>
                     ))}
@@ -726,14 +729,14 @@ export function ImportExportToolbar({
       {onPreview && result && (
         <Modal
           isOpen
-          title={`Import results — ${entityName}`}
+          title={t('Import results — {entity}', { entity: t(entityName) })}
           size="lg"
           onClose={() => setResult(null)}
           footer={
             <>
               <button type="button" className="btn-secondary" onClick={downloadResultReport}>
                 <Download className="h-3.5 w-3.5" />
-                Download report
+                {t('Download report')}
               </button>
               {onViewIncomplete && incompleteCount > 0 && (
                 <button
@@ -741,11 +744,11 @@ export function ImportExportToolbar({
                   className="btn-primary"
                   onClick={() => { onViewIncomplete({ readiness: 'NotReady', importBatchId: result.importBatchId }); setResult(null); }}
                 >
-                  View the {incompleteCount} incomplete
+                  {t('View the {count} incomplete', { count: incompleteCount })}
                   <ArrowRight className="h-3.5 w-3.5" />
                 </button>
               )}
-              <button type="button" className="btn-secondary" onClick={() => setResult(null)}>Done</button>
+              <button type="button" className="btn-secondary" onClick={() => setResult(null)}>{t('Done')}</button>
             </>
           }
         >
