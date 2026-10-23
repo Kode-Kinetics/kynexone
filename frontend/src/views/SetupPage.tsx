@@ -96,6 +96,7 @@ import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
 import { useConfirm } from '../components/gl/glUi';
 import { useReleaseA } from '../lib/releaseA';
+import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
 
 // Load the existing module only when its settings are opened in the workspace.
@@ -2510,12 +2511,14 @@ export function SetupPage() {
   // mode also prevents its component from mounting or requesting restricted data.
   // The policy library exists only while the tenant has policy intake switched on (off by the owner's decision).
   const policyIntake = usePolicyIntake();
-  // One model decides who sees which section: the navigation, "Find a setting" and the ⌘K palette all read it.
+  // One model decides who sees which section: the navigation, "Find a setting" and the ⌘K palette all read it —
+  // including the readers' rules (Companies only when the server lists them for the role, GL & rates for any GL or
+  // rates permission), so Payroll Manager and Finance get their section everywhere, not only in the nav.
   const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake });
-  const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules } = navigationModel;
+  const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
   const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
   const tabParam = searchParams?.get('tab');
-  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : 'companies';
+  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : canReadGlAndRates ? 'glMapping' : 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
     : visibleTabs.some((tab) => tab.id === tabParam)
@@ -2772,7 +2775,7 @@ export function SetupPage() {
         // Incumbent GL subeditors have no save-state callback yet. Protect their
         // authored forms/rows conservatively, excluding the surrounding filters.
         if (!(event.target as Element).closest('[data-setup-filter]')) setEditorDirty(true);
-      }}><GlSetupPanel companies={companies} costCenters={costCenters} confirmLeave={confirmLeave} requestedTab={searchParams?.get('glTab')} /></div>;
+      }}><GlSetupPanel companies={glCompanies(companies, authorizedCompanies)} costCenters={costCenters} confirmLeave={confirmLeave} requestedTab={searchParams?.get('glTab')} /></div>;
       case 'notificationTemplates': return <NotificationTemplatesTab />;
       case 'emailConfig': return <EmailConfigTab />;
       case 'adminAuditLogs': return <AdminAuditLogsTab />;
@@ -2818,6 +2821,20 @@ export function SetupPage() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [authorizationRefreshStatus, authorizationBannerShown]);
+
+  // A reader whose role opens none of the sections is told so, not shown a section heading over an empty page.
+  if (!canWrite && visibleTabs.length === 0) {
+    return (
+      <div className="setup-page space-y-4">
+        <header className="setup-page-header min-w-0">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
+        </header>
+        <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-no-sections">
+          {t('Your role has no Setup sections to open. Ask an administrator if you need one.')}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <>

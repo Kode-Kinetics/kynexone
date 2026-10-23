@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
+import { GL_AND_RATES_PERMISSIONS } from '../lib/setupAccess';
 import { essNavItems } from './essSections';
 
 export const navigationGroups: NavGroup[] = [
@@ -108,7 +109,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
       { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       { label: 'Tenant Admin', icon: Settings2, path: '/tenant-admin', requiredPermissions: ['security.manage'] },
-      { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write', 'payroll.rates.read', 'payroll.rates.statutory_override'] },
+      { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write', ...GL_AND_RATES_PERMISSIONS] },
       // Implementation-time screen: the consultant-facing front end for the opening-balance engine,
       // which until now had no caller at all and was driven from Postman.
       { label: 'Opening Balances', icon: DatabaseBackup, path: '/opening-balances', requiredPermissions: ['employees.write', 'payroll.write'] },

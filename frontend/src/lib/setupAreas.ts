@@ -1,5 +1,6 @@
 import { msg } from '../i18n/translations';
 import { navigationItems } from '../routes/navigation';
+import { canListCompanies, canOpenGlAndRates } from './setupAccess';
 
 /**
  * Setup & Administration's own settings sections, in navigation order. The one source for each section's name and
@@ -296,6 +297,7 @@ export interface SetupNavigationModel {
   canWrite: boolean;
   canReadCompanies: boolean;
   canReadStatutoryRules: boolean;
+  canReadGlAndRates: boolean;
   canManagePolicies: boolean;
   /** "Get started" entries, in order. Empty for a reader. */
   tools: SetupToolId[];
@@ -311,12 +313,16 @@ export function setupNavigationModel(access: SetupNavigationAccess): SetupNaviga
   const { hasPermission, hasRole, isCompanyScopedGroup } = access;
   const canManagePolicies = access.policyIntake && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
-  const canReadCompanies = canWrite || hasPermission('organization.read');
+  // A reader sees Companies only when the server will list them for its role (setupAccess.ts), and GL & rates when it
+  // holds any GL or rates permission: Payroll Manager and Finance hold those, and used to get a page with no sections.
+  const canReadCompanies = canWrite || (hasPermission('organization.read') && canListCompanies({ hasPermission, hasRole }));
   const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
+  const canReadGlAndRates = canOpenGlAndRates({ hasPermission, hasRole });
   const writable = isCompanyScopedGroup ? SETUP_SETTING_SECTIONS.filter(section => COMPANY_OWNED_SETTING_IDS.has(section.id)) : SETUP_SETTING_SECTIONS;
   const settings = canWrite
     ? [...writable]
-    : SETUP_SETTING_SECTIONS.filter(section => (section.id === 'companies' && canReadCompanies) || (section.id === 'statutoryRules' && canReadStatutoryRules));
+    : SETUP_SETTING_SECTIONS.filter(section => (section.id === 'companies' && canReadCompanies)
+      || (section.id === 'statutoryRules' && canReadStatutoryRules) || (section.id === 'glMapping' && canReadGlAndRates));
   const tools: SetupToolId[] = canWrite ? [
     'guidedSetup',
     'allSetupAreas',
@@ -324,5 +330,5 @@ export function setupNavigationModel(access: SetupNavigationAccess): SetupNaviga
     'policyStarter',
     ...(canManagePolicies ? ['policyLibrary' as const] : []),
   ] : [];
-  return { canWrite, canReadCompanies, canReadStatutoryRules, canManagePolicies, tools, settings };
+  return { canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates, canManagePolicies, tools, settings };
 }
