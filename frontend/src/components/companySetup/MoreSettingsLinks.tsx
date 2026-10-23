@@ -9,10 +9,10 @@ import { msg } from '../../i18n/translations';
 import { SETUP_AREAS, type SetupDestination } from '../../lib/setupAreas';
 
 /**
- * A7: what the old Setup Studio could also configure, at the screen that owns it today. Each entry is an existing
- * Setup destination (same path, permission and scope as Configuration Center), so the list never offers a screen the
+ * A7: what the old setup studio could also configure, at the screen that owns it today. Each entry is an existing
+ * Setup destination (same path, permission and scope as All setup areas), so the list never offers a screen the
  * viewer cannot open. What has no screen of its own (attendance rules, HR approval rules, editing an overtime policy)
- * stays in Configuration Center → Policy starter, which is deliberately not linked from Guided Setup.
+ * stays in Setup → Policy starter, which is deliberately not linked from Guided setup.
  */
 const MORE_SETTINGS: { id: string; what: string }[] = [
   { id: 'shifts', what: msg('Shift definitions and roster rules') },
@@ -60,7 +60,7 @@ export function MoreSettingsLinks({ companyId }: { companyId?: string | null }) 
           </li>
         ))}
       </ul>
-      <p className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Attendance rules and HR approval rules have no screen of their own yet. A group administrator prepares them in Configuration Center → Policy starter.')}</p>
+      <p className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Attendance rules and HR approval rules have no screen of their own yet. A group administrator prepares them in Setup → Policy starter.')}</p>
     </div>
   );
 }

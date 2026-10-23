@@ -18,5 +18,11 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     viewport: { width: 1440, height: 1000 },
   },
-  projects: [{ name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } }],
+  projects: [
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } },
+    // Browser Pilot's window: the Setup nav and the rules table must both still work at 1280×720.
+    { name: 'pilot-1280', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } } },
+    // Phone width, screenshots and the no-sideways-scroll check only.
+    { name: 'phone-390', grep: /screenshots|sideways/, use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 }, isMobile: false } },
+  ],
 });

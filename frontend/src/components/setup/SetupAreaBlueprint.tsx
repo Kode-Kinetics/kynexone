@@ -50,10 +50,10 @@ export function SetupAreaBlueprint({ area, destinations, onOpenDestination }: {
     <div data-testid="setup-area-blueprint" className="mt-6 space-y-6">
       {groups.map(group => (
         <section key={group.id} aria-labelledby={`setup-group-${area.id}-${group.id}`}>
-          <h3 id={`setup-group-${area.id}-${group.id}`} className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          <h3 id={`setup-group-${area.id}-${group.id}`} className="text-xs font-semibold uppercase tracking-wide text-slate-500 rtl:normal-case rtl:tracking-normal rtl:text-[13px] dark:text-slate-400">
             {t(group.label)}
           </h3>
-          <ul className="mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-slate-900">
+          <ul className="surface mt-2 overflow-hidden">
             {destinations
               .filter(item => item.destination.businessGroup.id === group.id)
               .sort((a, b) => a.destination.destinationOrder - b.destination.destinationOrder)

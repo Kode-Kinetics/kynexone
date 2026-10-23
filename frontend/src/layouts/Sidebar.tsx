@@ -235,7 +235,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     }`}
                   >
                     <span
-                      className={`text-[10px] font-bold uppercase tracking-[0.14em] transition-colors duration-150 ${
+                      className={`text-[10px] font-bold uppercase tracking-[0.14em] transition-colors duration-150 rtl:text-[13px] rtl:normal-case rtl:tracking-normal ${
                         hasActiveItem
                           ? 'text-sapphire dark:text-[#7AABFF]'
                           : 'text-slate-400 group-hover/hdr:text-slate-600 dark:text-slate-600 dark:group-hover/hdr:text-slate-400'
@@ -259,7 +259,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     aria-expanded={isExpanded}
                     aria-controls={groupId}
                     onClick={() => toggleGroup(group.label)}
-                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-[9px] font-bold uppercase tracking-wider transition ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-[#7AABFF]' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
+                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-[9px] font-bold uppercase tracking-wider transition rtl:normal-case rtl:tracking-normal ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-[#7AABFF]' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
                   >
                     {group.label.split(/\s+/).map((word) => word[0]).join('').slice(0, 2)}
                   </button>

@@ -10,7 +10,11 @@ import { useFormat } from '../hooks/useFormat';
 import { Modal } from './Modal';
 import { PolicyAnswer } from './PolicyAnswer';
 
-export function PolicyDocumentManager({ onOpenSetup }: { onOpenSetup?: () => void }) {
+export function PolicyDocumentManager({ onOpenSetup, showHeading = true }: {
+  onOpenSetup?: () => void;
+  /** Setup's section header already names the library; the manager then shows only its explanation. */
+  showHeading?: boolean;
+}) {
   const id = useId();
   const t = useT(); const fmt = useFormat(); const { hasRole, hasPermission } = useAuth();
   const canAuthor = hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
@@ -110,7 +114,7 @@ export function PolicyDocumentManager({ onOpenSetup }: { onOpenSetup?: () => voi
   };
   const visible = documents.slice(page * 10, (page + 1) * 10);
   return <div className="space-y-4">
-    <div><h2 className="text-lg font-semibold">{t('Policy library')}</h2><p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{t('Review documents, publish the approved version, and let employees ask Kody about their company policies.')}</p>{canAuthor && onOpenSetup && <button type="button" className="btn-secondary mt-3" onClick={onOpenSetup}>{t('Return to policy setup')}</button>}</div>
+    <div>{showHeading && <h2 className="text-lg font-semibold">{t('Policy library')}</h2>}<p className={`${showHeading ? 'mt-1 ' : ''}text-sm text-slate-600 dark:text-slate-300`}>{t('Review documents, publish the approved version, and let employees ask Kody about their company policies.')}</p>{canAuthor && onOpenSetup && <button type="button" className="btn-secondary mt-3" onClick={onOpenSetup}>{t('Return to policy setup')}</button>}</div>
     {error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
     {canAuthor && <div className="flex flex-wrap items-end gap-3 rounded-xl border border-dashed border-slate-300 p-4 dark:border-white/20">

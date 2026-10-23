@@ -6,7 +6,7 @@ export default defineConfig({
   reporter: 'list', outputDir: '/tmp/kynex-policy-intake-kill-switch-results',
   use: { baseURL: process.env.SETUP_EXPERIENCE_BASE_URL || 'http://127.0.0.1:5197', actionTimeout: 10_000, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
   projects: [
-    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } },
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } }, { name: 'pilot', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } } },
     { name: 'mobile', use: { ...devices['Pixel 7'] } },
   ],
 });
