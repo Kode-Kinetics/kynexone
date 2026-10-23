@@ -397,7 +397,7 @@ test('every existing-mode server code has what-to-do-next copy', () => {
 test('a stored country that is not a region code is shown as written, never thrown', () => {
   const names = new Intl.DisplayNames(['en'], { type: 'region' });
   expect(countryDisplayName(names, 'sa')).toBe('Saudi Arabia');
-  // Intl.DisplayNames.of throws a RangeError for each of these; Setup → Guided Setup rendered them and crashed.
+  // Intl.DisplayNames.of throws a RangeError for each of these; Setup → Guided setup rendered them and crashed.
   expect(countryDisplayName(names, 'SAU')).toBe('SAU');
   expect(countryDisplayName(names, 'KSA')).toBe('KSA');
   expect(countryDisplayName(names, 'AE ')).toBe('United Arab Emirates');

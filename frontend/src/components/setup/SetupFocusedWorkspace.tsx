@@ -53,7 +53,7 @@ export function SetupFocusedWorkspace({ destination, areaLabel, scopeLabel, onBa
     <section data-testid="setup-focused-workspace" className="min-w-0 space-y-5" aria-labelledby="setup-focused-title">
       {navigation('top')}
       <header className="border-b border-slate-200 pb-4 dark:border-white/10">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{t(areaLabel)}</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 rtl:normal-case rtl:tracking-normal rtl:text-[13px] dark:text-slate-400">{t(areaLabel)}</p>
         <h2 ref={heading} tabIndex={-1} id="setup-focused-title" className="mt-1 scroll-mt-4 text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white">
           {t(destination.label)}
         </h2>

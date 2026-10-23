@@ -141,7 +141,7 @@ const ar: Record<string, string> = {
   'Return to Policy documents at any time to add or replace a chapter. Closing this guide keeps the draft sources and reviewed form values.': 'عد إلى مستندات السياسة في أي وقت لإضافة فصل أو استبداله. إغلاق هذا الدليل يحتفظ بمصادر المسودة وقيم النماذج المراجعة.',
   'Policy documents': 'مستندات السياسة', 'Extract and fill forms': 'استخراج وتعبئة النماذج', 'Review and apply': 'مراجعة وتطبيق',
   'Saved draft resumed. Review the saved preview or generate a new one before applying.': 'تم استئناف المسودة المحفوظة. راجع المعاينة المحفوظة أو أنشئ معاينة جديدة قبل التطبيق.',
-  'Draft and preview edits saved in this browser. Return to Setup Studio to review and continue.': 'تم حفظ المسودة وتعديلات المعاينة في هذا المتصفح. عد إلى استوديو الإعداد للمراجعة والمتابعة.',
+  'Draft and preview edits saved in this browser. Return to the Policy starter to review and continue.': 'تم حفظ المسودة وتعديلات المعاينة في هذا المتصفح. عد إلى بادئ السياسات للمراجعة والمتابعة.',
   'The saved preview no longer matches these inputs. Generate a new draft before applying.': 'لم تعد المعاينة المحفوظة مطابقة لهذه المدخلات. أنشئ مسودة جديدة قبل التطبيق.',
   'Saved preview opened for review. Current permissions, policy sources and company settings are checked again when you apply.': 'تم فتح المعاينة المحفوظة للمراجعة. تُفحص الصلاحيات الحالية ومصادر السياسة وإعدادات الشركة مجدداً عند التطبيق.',
   'Preview edits are saved with their original inputs. Open the saved preview explicitly to review it. Changes to inputs require a new preview; nothing is applied automatically.': 'تُحفظ تعديلات المعاينة مع مدخلاتها الأصلية. افتح المعاينة المحفوظة لمراجعتها. يتطلب تغيير المدخلات معاينة جديدة؛ لا يُطبّق أي شيء تلقائياً.',

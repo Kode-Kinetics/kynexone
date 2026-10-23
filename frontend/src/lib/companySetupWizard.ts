@@ -42,9 +42,9 @@ export function stepCopy(step: StepId, mode: WizardMode): { title: string; descr
   return (mode === 'existing' ? EXISTING_STEPS[step] : undefined) ?? WIZARD_STEPS[step];
 }
 
-/** The chooser on Setup → Guided Setup (Addendum A). */
+/** The chooser on Setup → Guided setup (Addendum A). */
 export const GUIDED_SETUP_HREF = '/setup?tab=aiSetup&path=guided';
-/** The Configuration Center entry for the old studio (A7): attendance, overtime, benefits and HR rules starters. */
+/** The Policy starter entry for the old studio (A7): attendance, overtime, benefits and HR rules starters. */
 export const POLICY_STARTER_HREF = '/setup?tab=aiSetup&path=policyStarter';
 
 /** Where the wizard for an existing company lives; `draft` resumes that draft. */
@@ -198,14 +198,14 @@ export const CHANGED_FIELD_LABEL: Record<string, string> = {
 export const SETUP_CODE_COPY: Record<string, string> = {
   country_locked: msg('The country of an existing company cannot change: payroll, GOSI and bank files depend on it. To register in another country, create a new company.'),
   currency_locked: msg('The salary currency of an existing company cannot change: payroll and bank files depend on it. To pay in another currency, create a new company.'),
-  draft_target_locked: msg('This draft belongs to one company and cannot be moved to another. Discard it and start again from Guided Setup.'),
+  draft_target_locked: msg('This draft belongs to one company and cannot be moved to another. Discard it and start again from Guided setup.'),
   existing_code_locked: msg('The code of a row the company already has cannot change, because other records refer to it. Put the code back, or add a new row with the new code.'),
   first_payroll_month_locked: msg('Payroll has already started for this company, so the first payroll month cannot change. Put back the month that was saved.'),
-  company_not_manageable: msg('You cannot change the setup of this company. Choose one of your companies in Guided Setup, or ask your group super admin.'),
+  company_not_manageable: msg('You cannot change the setup of this company. Choose one of your companies in Guided setup, or ask your group super admin.'),
   company_admin_required: msg('Only an administrator of this company can complete its setup. Ask your company or group super admin.'),
   company_not_active: msg('This company is not active yet, so its setup cannot be completed here. Activate it in Setup → Companies first.'),
   existing_company_draft_open: msg('Setup for this company was already started, so that draft is opened instead of a second one.'),
-  existing_row_unknown: msg('A row in this draft is no longer one of the company’s records; it may have been removed in Setup. Discard this draft and start again from Guided Setup.'),
+  existing_row_unknown: msg('A row in this draft is no longer one of the company’s records; it may have been removed in Setup. Discard this draft and start again from Guided setup.'),
   branch_code_taken: msg('This branch code is already used by this company, perhaps by a removed branch. Choose a different code.'),
   sequence_cannot_go_back: msg('The next employee number cannot go back, because a lower one could repeat a number already given. Enter the saved number or a higher one.'),
   work_week_override_kept: msg('This company keeps its own weekend. If it should follow the country weekend, remove it in Setup → GCC settings.'),

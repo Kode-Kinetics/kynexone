@@ -14,7 +14,7 @@ export function SetupWorkspaceReturn() {
   const t = useT();
   const area = SETUP_AREAS.find(item => item.id === params?.get('setupArea'));
   if (pathname === '/setup' || !area?.destinations.some(item => item.path.split('?')[0] === pathname)) return null;
-  const target = new URLSearchParams({ tab: 'aiSetup', area: area.id });
+  const target = new URLSearchParams({ tab: 'aiSetup', path: 'configuration', area: area.id });
   if (selectedCompanyId && companies.some(company => company.id === selectedCompanyId)) target.set('companyId', selectedCompanyId);
-  return <Link href={`/setup?${target.toString()}`} className="mb-4 inline-flex rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-sapphire dark:border-white/10 dark:text-cyanAccent">{t('Back to Setup Studio')}</Link>;
+  return <Link href={`/setup?${target.toString()}`} className="mb-4 inline-flex rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-sapphire dark:border-white/10 dark:text-cyanAccent">{t('Back to All setup areas')}</Link>;
 }

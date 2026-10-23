@@ -3,6 +3,7 @@ import AxeBuilder from '@axe-core/playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import { bootEmployeeWorkspaceFixture } from './employee-workspace.fixture';
+import { setupSection } from './setupSections';
 
 const RESPONSIVE_CERTIFICATION_TITLES = new Set([
   'known employee link producers use canonical workspace URLs',
@@ -182,6 +183,8 @@ test('navigation guard does not prompt for clean navigation', async ({ page }) =
   await expect(guardDialog(page)).toHaveCount(0);
 });
 
+// Setup's section entries are links since wave 1 (the "Administration settings" button they replace is gone); the
+// guarded keyboard activation of one must still resume exactly once.
 test('Setup activation adapter resumes keyboard navigation exactly once', async ({ page }) => {
   await bootNavigationFixture(page);
   await makeDirty(page, 'Adapter replay draft');
@@ -193,7 +196,7 @@ test('Setup activation adapter resumes keyboard navigation exactly once', async 
       return original(...args);
     };
   });
-  const administration = page.getByRole('button', { name: 'Administration settings', exact: true });
+  const administration = await setupSection(page, 'Workspace settings');
   await administration.focus();
   await page.keyboard.press('Enter');
   await expect(guardDialog(page)).toBeVisible();
@@ -203,7 +206,7 @@ test('Setup activation adapter resumes keyboard navigation exactly once', async 
   await page.keyboard.press('Enter');
   await expect(guardDialog(page)).toBeVisible();
   await guardDialog(page).getByRole('button', { name: 'Discard and leave', exact: true }).click();
-  await expect(page.getByRole('navigation', { name: 'Setup sections' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'Workspace settings', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=systemSettings/);
   await expect(guardDialog(page)).toHaveCount(0);
   expect(await page.evaluate(() => (window as Window & { __setupPushCount?: number }).__setupPushCount)).toBe(1);
@@ -313,7 +316,7 @@ test('Setup activation adapter resumes touch navigation exactly once', async ({ 
       return original(...args);
     };
   });
-  await page.getByRole('button', { name: 'Administration settings', exact: true }).tap();
+  await (await setupSection(page, 'Workspace settings')).tap();
   await expect(guardDialog(page)).toBeVisible();
   await guardDialog(page).getByRole('button', { name: 'Discard and leave', exact: true }).tap();
   await expect(page).toHaveURL(/tab=systemSettings/);
@@ -323,7 +326,7 @@ test('Setup activation adapter resumes touch navigation exactly once', async ({ 
 
 test('guard remains topmost over an existing setup dialog and cancel preserves it', async ({ page }) => {
   await bootNavigationFixture(page);
-  await page.getByRole('button', { name: 'Administration settings', exact: true }).click();
+  await (await setupSection(page, 'Workspace settings')).click();
   await page.getByRole('button', { name: 'New Setting', exact: true }).click();
   const settingDialog = page.getByRole('dialog', { name: 'New Setting', exact: true });
   await expect(settingDialog).toBeVisible();

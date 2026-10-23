@@ -45,7 +45,7 @@ test('save, reload, back and policy-library round trip preserve inputs without a
   await expect(page.getByLabel(/^Suggested head office city/)).toHaveValue('Dammam');
   await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Policy library', exact: true })).toBeVisible();
-  await openSetupSection(page, 'Setup Studio');
+  await openSetupSection(page, 'Policy starter');
   await expect(page.getByLabel(/^Industry/)).toHaveValue('Services');
   await expect(page.getByLabel(/^Suggested head office city/)).toHaveValue('Dammam');
   expect(writes).toEqual([]);
@@ -76,7 +76,7 @@ test('edited generated preview survives reload and requires explicit review befo
   expect(writes).toEqual(['/api/setup-assistant/preview']);
 });
 
-test('saved previews remain isolated when another company opens Setup Studio', async ({ page }) => {
+test('saved previews remain isolated when another company opens the Policy starter', async ({ page }) => {
   await boot(page);
   await page.getByLabel(/^Industry/).fill('Services');
   for (let index = 0; index < 4; index++) await page.getByRole('button', { name: 'Continue', exact: true }).click();

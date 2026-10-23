@@ -441,7 +441,7 @@ test('requires country and currency when the workspace has not supplied them', a
   expect(state.errors).toEqual([]);
 });
 
-test('offers import separately from Setup Studio and preserves its organization entry point', async ({ page }, info) => {
+test('offers import separately from the Policy starter and preserves its organization entry point', async ({ page }, info) => {
   const state = await boot(page);
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
   await openSetupSection(page, 'Import organization');
@@ -450,10 +450,10 @@ test('offers import separately from Setup Studio and preserves its organization 
   await accessible(page, '#setup-importOrganization');
   await contained(page);
   await evidence(page, info, 'import-entry');
-  await openSetupSection(page, 'Setup Studio');
+  await openSetupSection(page, 'Policy starter');
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
-  for (const label of ['Cost Centres & Budget', 'Companies', 'Branches', 'Departments', 'Designations', 'Grades', 'Employee Reference Lists', 'Numbering', 'System Settings', 'GCC Settings', 'Statutory Rules', 'Fiscal Years', 'Locations', 'GL & rates', 'Notifications', 'Email / SMTP', 'Audit Logs']) {
+  for (const label of ['Headcount & budget', 'Companies', 'Branches', 'Cost centres', 'Departments', 'Designations', 'Grades', 'Drop-down lists', 'Record numbering', 'Workspace settings', 'Country rules', 'Statutory rules', 'Fiscal years', 'Locations', 'Payroll accounting', 'Notifications', 'Email delivery', 'Audit log']) {
     await expect(await setupSection(page, label)).toBeVisible();
   }
   await openSetupSection(page, 'Companies');
@@ -465,13 +465,13 @@ test('offers import separately from Setup Studio and preserves its organization 
   await openSetupSection(page, 'Grades');
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
-  await openSetupSection(page, 'Employee Reference Lists');
-  await expect(page.getByRole('heading', { name: 'Employee Reference Lists', exact: true })).toBeVisible();
+  await openSetupSection(page, 'Drop-down lists');
+  await expect(page.getByRole('heading', { name: 'Drop-down lists', exact: true })).toBeVisible();
   await openSetupSection(page, 'Grades');
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=grades/);
   await page.goBack();
-  await expect(page.getByRole('heading', { name: 'Employee Reference Lists', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Drop-down lists', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=masterData/);
   await page.goForward();
   await expect(page.getByRole('heading', { name: 'Grades', exact: true })).toBeVisible();
@@ -549,13 +549,14 @@ test('renders the setup shell and organization import path in Arabic RTL', async
   expect(state.unexpectedWrites).toEqual([]);
 });
 
-test('a read-only organization viewer cannot enter Setup Studio through a write-tab deep link', async ({ page }) => {
+test('a read-only organization viewer cannot enter the Policy starter through a write-tab deep link', async ({ page }) => {
   const state = await boot(page, { readOnly: true, route: '/setup?tab=aiSetup&path=policyStarter' });
   await expect(page.getByText(company.legalNameEn, { exact: true }).first()).toBeVisible();
   // Opens the section picker on a phone, so the absence below is checked against the full list.
   await expect(await setupSection(page, 'Companies')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Setup Studio', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Import organization', exact: true })).toHaveCount(0);
+  for (const name of ['Guided setup', 'All setup areas', 'Policy starter', 'Import organization']) {
+    await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0);
+  }
   await expect(page.getByRole('button', { name: 'Generate draft', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Create company', exact: true })).toHaveCount(0);
   expect(state.previews).toHaveLength(0);
@@ -570,7 +571,7 @@ test('requires an explicit legal entity and uses an existing company’s country
   await page.getByLabel(/^Industry/).fill('Healthcare');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await expect(page.getByLabel(/^Legal entity name/)).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Setup Studio', exact: true }).getByRole('alert')).toContainText('legal entity name');
+  await expect(page.getByRole('region', { name: 'Policy starter', exact: true }).getByRole('alert')).toContainText('legal entity name');
   expect(state.previews).toHaveLength(0);
   await page.getByLabel(/^Country/).selectOption('AE');
   await page.getByLabel(/^Currency/).selectOption('AED');
@@ -965,7 +966,7 @@ test('keeps each policy guide screen and its actions together on desktop', async
   }
 });
 
-test('keeps the default Setup Studio steps compact on desktop', async ({ page }, info) => {
+test('keeps the default Policy starter steps compact on desktop', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'Desktop fit contract; mobile keeps natural scrolling.');
   for (const width of [1728, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -996,14 +997,18 @@ test('checks import and every settings entry screen for contained navigation', a
   for (const tab of ['companies', 'branches', 'departments', 'costCenters', 'establishment', 'locations', 'designations', 'grades', 'fiscalYears', 'glMapping', 'gccSettings', 'statutoryRules', 'masterData', 'numberingRules', 'systemSettings', 'notificationTemplates', 'emailConfig', 'adminAuditLogs']) {
     await page.goto(`/setup?tab=${tab}`);
     await expect(page.locator('#setup-setting-content')).toBeVisible();
-    await expect(page.getByRole('navigation', { name: 'Setup sections', exact: true })).toBeVisible();
+    // On a phone the list is folded under the section header's "All sections" button.
+    if (info.project.name === 'mobile') await expect(page.locator('[data-setup-sections-toggle]')).toBeVisible();
+    else await expect(page.getByRole('navigation', { name: 'Setup sections', exact: true })).toBeVisible();
     if (info.project.name === 'mobile' && tab === 'companies') {
       const add = page.getByRole('button', { name: 'Create company', exact: true });
       await add.scrollIntoViewIfNeeded();
       await expect(add).toBeInViewport({ ratio: 1 });
     }
     if (info.project.name === 'mobile' && tab === 'masterData') {
-      const values = page.getByText('Select a type to manage values', { exact: true }).locator('..');
+      // With no lists yet the section is one full-width card; with lists, the values panel keeps its width.
+      const empty = page.getByRole('region', { name: 'No drop-down lists yet' });
+      const values = await empty.count() ? empty : page.getByText('Select a type to manage values', { exact: true }).locator('..');
       const bounds = await values.boundingBox();
       expect(bounds?.width).toBeGreaterThan(250);
     }
