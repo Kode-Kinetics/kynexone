@@ -26,6 +26,7 @@ import { payrollAttendance } from './payrollAttendance';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
+import { appChrome } from './appChrome';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -42,6 +43,7 @@ type Dict = Record<string, string>;
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
+  ...appChrome.en,
   ...companyWizard.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -1448,6 +1450,7 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...appChrome.ar,
   ...companyWizard.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
