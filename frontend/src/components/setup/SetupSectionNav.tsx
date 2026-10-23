@@ -158,9 +158,11 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
       <div
         id={SETUP_SECTION_LIST_ID}
         ref={list}
-        role={sheet ? 'dialog' : undefined}
-        aria-modal={sheet ? true : undefined}
-        aria-label={sheet ? t('Setup sections') : undefined}
+        // A modal dialog only while it is open: a closed sheet must not count as an open modal (Modal restores focus
+        // to its opener only when no other modal dialog is open).
+        role={sheetOpen ? 'dialog' : undefined}
+        aria-modal={sheetOpen ? true : undefined}
+        aria-label={sheetOpen ? t('Setup sections') : undefined}
         className={listClass}
       >
         {sheet && (
@@ -232,7 +234,7 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
       >
         {t('Skip to {section}', { section: currentLabel })}
       </a>
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</p>
+      <p className="sr-only" aria-live="polite" aria-atomic="true" data-setup-section-announcement="">{announcement}</p>
 
       {sheet && typeof document !== 'undefined' ? createPortal(sheetLayer, document.body) : sheetLayer}
     </nav>

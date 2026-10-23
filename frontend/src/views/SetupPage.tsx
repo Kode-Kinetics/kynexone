@@ -1116,7 +1116,7 @@ function PayScaleEditor({ components, onChange }: { components: GradePayScaleCom
         <button type="button" onClick={add} className="btn-secondary h-6 px-2 text-xs">+ {t('Add component')}</button>
       </div>
       {components.length === 0 ? (
-        <p className="py-2 text-xs text-slate-400">{t('No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.')}</p>
+        <p className="py-2 text-xs text-slate-500 dark:text-slate-400">{t('No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.')}</p>
       ) : (
         <div className="space-y-1.5">
           {components.map((c, i) => (
@@ -2074,6 +2074,7 @@ function NotificationTemplatesTab() {
 // ─── Admin Audit Logs ─────────────────────────────────────────────────────────
 
 function AdminAuditLogsTab() {
+  const t = useT();
   const [items, setItems] = useState<AdminAuditLog[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -2124,7 +2125,7 @@ function AdminAuditLogsTab() {
             {loading ? (
               <tr><td colSpan={5} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={5} className="py-12 text-center text-slate-400">No audit logs</td></tr>
+              <tr><td colSpan={5} className="py-12 text-center text-sm text-slate-500 dark:text-slate-400">{t('No audit log entries yet')}</td></tr>
             ) : items.map((log) => (
               <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                 <td className="px-4 py-2.5 text-slate-500 text-xs whitespace-nowrap">{new Date(log.createdAtUtc).toLocaleString()}</td>
@@ -2613,10 +2614,12 @@ export function SetupPage() {
     router.push(setupPathHref('configuration'), { scroll: false });
   };
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
-  // Guided setup, All setup areas and the Policy starter share tab=aiSetup and differ by path. Each entry opens its
-  // path at the start (no area or setting), which is also where a plain click on the current entry returns to.
+  // Guided setup, All setup areas and the Policy starter share tab=aiSetup and differ by path. Guided setup and All
+  // setup areas open at their start (no area or setting), which is also where a plain click on the current entry
+  // returns to. The Policy starter keeps the area on screen, so its "Return to workspace" comes back to it.
   const studioHref = (entry: keyof typeof studioPaths) => {
-    const next = serializeSetupPath({ ...setupPath, path: studioPaths[entry], area: 'overview', setting: null, notice: undefined, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
+    const area = entry === 'policyStarter' ? setupPath.area : 'overview';
+    const next = serializeSetupPath({ ...setupPath, path: studioPaths[entry], area, setting: null, notice: undefined, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
     return `/setup?${next.toString()}`;
   };
   const selectedNavId: SetupNavId = selectedTab === 'aiSetup'
@@ -2627,7 +2630,7 @@ export function SetupPage() {
       selectTab(id);
       return;
     }
-    if (id === selectedNavId && setupPath.area === 'overview' && !setupPath.setting) return;
+    if (id === selectedNavId && (id === 'policyStarter' || (setupPath.area === 'overview' && !setupPath.setting))) return;
     const href = studioHref(id);
     // The tab follows the address (requestedTab), so no in-between section is shown or announced on the way.
     confirmLeave(href, () => { router.push(href, { scroll: false }); });
@@ -2803,18 +2806,16 @@ export function SetupPage() {
           />
         </div>
       )}
-      {showNavigation && (
-        <div className={`order-first min-w-0 ${isStarter ? '' : 'xl:order-none xl:col-start-2 xl:row-start-1'}`}>
-          <SetupSectionHeader
-            icon={currentSection.icon}
-            title={currentSectionLabel}
-            description={sectionDescription}
-            divider={isSettings}
-            action={<SetupSectionsToggle open={sectionListOpen} onToggle={() => setSectionListOpen(value => !value)} collapsed={isStarter} toggleRef={sectionToggle} />}
-          />
-        </div>
-      )}
-      <div className={`setup-page-content min-w-0 space-y-4 ${showNavigation ? 'mt-4' : ''} ${showNavigation && !isStarter ? 'xl:col-start-2 xl:row-start-2' : ''}`}>
+      <div className={`order-first min-w-0 ${showNavigation && !isStarter ? 'xl:order-none xl:col-start-2 xl:row-start-1' : ''}`}>
+        <SetupSectionHeader
+          icon={currentSection.icon}
+          title={currentSectionLabel}
+          description={sectionDescription}
+          divider={isSettings}
+          action={showNavigation ? <SetupSectionsToggle open={sectionListOpen} onToggle={() => setSectionListOpen(value => !value)} collapsed={isStarter} toggleRef={sectionToggle} /> : undefined}
+        />
+      </div>
+      <div className={`setup-page-content mt-4 min-w-0 space-y-4 ${showNavigation && !isStarter ? 'xl:col-start-2 xl:row-start-2' : ''}`}>
 
       {/* Each path owns its mounted subtree; browser drafts plus the guard preserve authored work. */}
       {canWrite && (
@@ -2868,7 +2869,7 @@ export function SetupPage() {
         </>
       )}
 
-      {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager onOpenSetup={canWrite ? () => selectTab('aiSetup') : undefined} /></section>}
+      {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager showHeading={false} onOpenSetup={canWrite ? () => selectTab('aiSetup') : undefined} /></section>}
 
       {isSettings && (
         <section id="setup-setting-content" aria-label={t(selectedSetting.label)} className="min-w-0 space-y-4">

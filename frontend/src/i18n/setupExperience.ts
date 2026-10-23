@@ -43,6 +43,7 @@ const ar: Record<string, string> = {
   'No cost centres yet': 'لا توجد مراكز تكلفة بعد',
   'No locations yet': 'لا توجد مواقع بعد',
   'No country rules yet': 'لا توجد قواعد دول بعد',
+  'No audit log entries yet': 'لا توجد إدخالات في سجل التدقيق بعد',
   'Setup sections': 'أقسام الإعداد',
   'Setup section': 'قسم الإعداد',
   'All sections': 'كل الأقسام',
