@@ -30,13 +30,15 @@ export function canOpenGlAndRates({ hasPermission }: SetupAccessCheck): boolean 
 }
 
 /**
- * The companies GL & rates offers in its scope selector. The full company list when the caller may read it;
- * otherwise the active companies the caller's own sign-in grants (always present), with the fields the list
- * would have added left blank: GL & rates reads only the id, names, country, jurisdiction and currency.
+ * The companies GL & rates offers in its scope selector. The full company list when the caller may read it (the
+ * server already narrows it to the switcher's company); otherwise the active companies the caller's own sign-in
+ * grants, narrowed to the company chosen in the company switcher when there is one: every request carries that
+ * company (X-Company-Id) and the server refuses any other. Fields the list would have added are left blank:
+ * GL & rates reads only the id, names, country, jurisdiction and currency.
  */
-export function glCompanies(listed: CompanyDto[], authorized: CompanyAccess[]): CompanyDto[] {
+export function glCompanies(listed: CompanyDto[], authorized: CompanyAccess[], selectedCompanyId: string | null = null): CompanyDto[] {
   if (listed.length > 0) return listed;
-  return authorized.filter(company => company.isActive).map(company => ({
+  return authorized.filter(company => company.isActive && (selectedCompanyId === null || company.id === selectedCompanyId)).map(company => ({
     id: company.id, legalNameEn: company.name, legalNameAr: '', tradeName: '', countryCode: company.countryCode, jurisdiction: '',
     registrationNumber: '', taxNumber: '', wpsEmployerId: '', gosiEmployerId: '', qiwaEstablishmentId: '', defaultCurrency: '',
     emailDomain: '', workEmailPattern: '', isActive: true, approvalStatus: 'Active',
