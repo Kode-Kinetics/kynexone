@@ -90,6 +90,7 @@ import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
 import { useConfirm } from '../components/gl/glUi';
 import { useReleaseA } from '../lib/releaseA';
+import { canListCompanies, canOpenGlAndRates, glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
 
 // Load the existing module only when its settings are opened in the workspace.
@@ -2476,12 +2477,16 @@ export function SetupPage() {
   const policyIntake = usePolicyIntake();
   const canManagePolicies = policyIntake && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
   const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
-  const canReadCompanies = canWrite || hasPermission('organization.read');
+  // A reader sees Companies only when the server will list them for its role (setupAccess.ts), and GL & rates when
+  // it holds any GL or rates permission: Payroll Manager and Finance hold those, and used to get a page with no sections.
+  const canReadCompanies = canWrite || (hasPermission('organization.read') && canListCompanies({ hasPermission, hasRole }));
   const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
+  const canReadGlAndRates = canOpenGlAndRates({ hasPermission, hasRole });
   const writableTabs = isCompanyScopedGroup ? tabs.filter(tab => COMPANY_OWNED_SETTING_IDS.has(tab.id)) : tabs;
-  const visibleTabs = canWrite ? writableTabs : tabs.filter((tab) => (tab.id === 'companies' && canReadCompanies) || (tab.id === 'statutoryRules' && canReadStatutoryRules));
+  const visibleTabs = canWrite ? writableTabs : tabs.filter((tab) => (tab.id === 'companies' && canReadCompanies)
+    || (tab.id === 'statutoryRules' && canReadStatutoryRules) || (tab.id === 'glMapping' && canReadGlAndRates));
   const tabParam = searchParams?.get('tab');
-  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : 'companies';
+  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : canReadGlAndRates ? 'glMapping' : 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
     : visibleTabs.some((tab) => tab.id === tabParam)
@@ -2689,7 +2694,7 @@ export function SetupPage() {
         // Incumbent GL subeditors have no save-state callback yet. Protect their
         // authored forms/rows conservatively, excluding the surrounding filters.
         if (!(event.target as Element).closest('[data-setup-filter]')) setEditorDirty(true);
-      }}><GlSetupPanel companies={companies} costCenters={costCenters} confirmLeave={confirmLeave} /></div>;
+      }}><GlSetupPanel companies={glCompanies(companies, authorizedCompanies)} costCenters={costCenters} confirmLeave={confirmLeave} /></div>;
       case 'notificationTemplates': return <NotificationTemplatesTab />;
       case 'emailConfig': return <EmailConfigTab />;
       case 'adminAuditLogs': return <AdminAuditLogsTab />;
@@ -2735,6 +2740,20 @@ export function SetupPage() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [authorizationRefreshStatus, authorizationBannerShown]);
+
+  // A reader whose role opens none of the sections is told so, not shown a section heading over an empty page.
+  if (!canWrite && visibleTabs.length === 0) {
+    return (
+      <div className="setup-page space-y-4">
+        <header className="setup-page-header min-w-0">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
+        </header>
+        <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-no-sections">
+          {t('Your role has no Setup sections to open. Ask an administrator if you need one.')}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <>
