@@ -280,6 +280,7 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<BranchDto> CreateBranchAsync(Guid tenantId, BranchRequest request, RequestContext context, CancellationToken cancellationToken)
     {
+        ValidateCountryCode(request.CountryCode);
         await EnsureCompanyExists(tenantId, request.CompanyId, cancellationToken);
         await EnsureBranchCodeUnique(tenantId, request.CompanyId, request.Code, null, cancellationToken);
         var branch = new Branch { TenantId = tenantId, CreatedBy = context.UserId };
@@ -294,6 +295,10 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var branch = await _db.Branches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (branch is null) return null;
+        // A changed country must be a real one. An unchanged legacy value is let through: the wizard re-sends a
+        // branch's stored country when it edits only the name or city, and that must not start failing.
+        if (!string.Equals(CountryCodeStandard.ToStored(request.CountryCode), branch.CountryCode, StringComparison.OrdinalIgnoreCase))
+            ValidateCountryCode(request.CountryCode);
         await EnsureCompanyExists(tenantId, request.CompanyId, cancellationToken);
         await EnsureBranchCodeUnique(tenantId, request.CompanyId, request.Code, id, cancellationToken);
         Apply(branch, request);
@@ -562,7 +567,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         company.LegalNameEn = Clean(request.LegalNameEn);
         company.LegalNameAr = Clean(request.LegalNameAr);
         company.TradeName = Clean(request.TradeName);
-        company.CountryCode  = Clean(request.CountryCode).ToUpperInvariant();
+        company.CountryCode  = CountryCodeStandard.ToStored(request.CountryCode);
         company.Jurisdiction = Clean(request.Jurisdiction);
         company.RegistrationNumber = Clean(request.RegistrationNumber);
         company.TaxNumber = Clean(request.TaxNumber);
@@ -588,7 +593,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         branch.Code = OrgCodes.Normalize(request.Code);
         branch.NameEn = Clean(request.NameEn);
         branch.NameAr = Clean(request.NameAr);
-        branch.CountryCode = Clean(request.CountryCode).ToUpperInvariant();
+        branch.CountryCode = CountryCodeStandard.ToStored(request.CountryCode);
         branch.City = Clean(request.City);
         branch.AddressLine1 = Clean(request.AddressLine1);
         branch.AddressLine2 = Clean(request.AddressLine2);
