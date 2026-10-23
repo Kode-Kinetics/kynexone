@@ -38,8 +38,12 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
     { key: 'nameAr', label: msg('Name (Arabic)'), arabic: true, width: 'w-full sm:w-48' },
   ];
   // Latitude, longitude and radius live in the location's "Pin this location" panel.
-  const editLocation = (branchIndex: number, locations: CompanySetupLocation[], locationIndex: number, patch: Partial<CompanySetupLocation>) =>
-    setLocations(branchIndex, locations.map((l, j) => (j === locationIndex ? { ...l, ...patch } : l)));
+  // Applied to the latest draft, never to the locations this render saw: a pin can land after an await (the device's
+  // location, a short-link lookup), and a stale copy would undo whatever was typed meanwhile.
+  const editLocation = (branchIndex: number, locationIndex: number, patch: Partial<CompanySetupLocation>) =>
+    update(b => ({ ...b, branches: b.branches.map((row, i) => (i === branchIndex
+      ? { ...row, locations: row.locations.map((l, j) => (j === locationIndex ? { ...l, ...patch } : l)) }
+      : row)) }));
   const branchError = errorFor('branches');
   const warnings = stepWarnings(3, { body, context });
   return (
@@ -83,7 +87,7 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
                 rowExtra={(location, j) => (
                   <LocationPinPanel path={`branches.${index}.locations.${j}`} location={location} countryCode={body.company.countryCode}
                     name={location.nameEn?.trim() || t('Location {number}', { number: j + 1 })}
-                    onChange={patch => editLocation(index, row.locations, j, patch)} />
+                    onChange={patch => editLocation(index, j, patch)} />
                 )}
               />
             </div>
