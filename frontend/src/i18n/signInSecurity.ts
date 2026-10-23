@@ -18,10 +18,11 @@ const ar: Record<string, string> = {
   "Two-step sign-in": "التحقق بخطوتين",
   "6-digit code": "الرمز المكوّن من 6 أرقام",
   "Lost your phone?": "فقدت هاتفك؟",
-  "Ask your company's administrator to reset two-step sign-in. You'll set it up again the next time you sign in.":
-    "اطلب من مسؤول النظام في شركتك إعادة تعيين التحقق بخطوتين، وستُعدّه من جديد عند تسجيل الدخول التالي.",
+  "Ask your company's administrator to reset two-step sign-in, or use one of your backup codes. After a reset, you'll set it up again the next time you sign in.":
+    "اطلب من مسؤول النظام في شركتك إعادة تعيين التحقق بخطوتين، أو استخدم أحد رموزك الاحتياطية. بعد إعادة التعيين ستُعدّه من جديد عند تسجيل الدخول التالي.",
   "Set up two-step sign-in": "إعداد التحقق بخطوتين",
-  "If you lose this phone, your administrator can reset it.": "إذا فقدت هذا الهاتف، يمكن لمسؤول النظام إعادة تعيينه.",
+  "If you lose this phone, your administrator can reset it, or you can use one of your backup codes.":
+    "إذا فقدت هذا الهاتف، يمكن لمسؤول النظام إعادة تعيينه، أو يمكنك استخدام أحد رموزك الاحتياطية.",
   "Two-step sign-in setup expired. Please sign in again.": "انتهت صلاحية إعداد التحقق بخطوتين. يُرجى تسجيل الدخول مرة أخرى.",
   "Two-step sign-in is on. Sign in again to continue.": "تم تفعيل التحقق بخطوتين. يُرجى تسجيل الدخول مرة أخرى للمتابعة.",
 
@@ -110,5 +111,76 @@ const ar: Record<string, string> = {
   "All browsers are forgotten. Each will ask for a code the next time you sign in.":
     "لم يعد أي متصفح موثوقًا. سيُطلب الرمز على كل متصفح عند تسجيل الدخول التالي.",
 };
+
+// Backup codes («الرموز الاحتياطية»): the code step, the "Save your backup codes" step, the card.
+Object.assign(ar, {
+  "Use a backup code instead": "استخدم رمزًا احتياطيًا بدلًا من ذلك",
+  "Use the app code instead": "استخدم رمز التطبيق بدلًا من ذلك",
+  "Backup code": "الرمز الاحتياطي",
+  "Enter one of the backup codes you saved when you turned on two-step sign-in.":
+    "أدخل أحد الرموز الاحتياطية التي حفظتها عند تفعيل التحقق بخطوتين.",
+  "That backup code didn't work. Check it, or use another one. Each code works once.":
+    "لم يعمل هذا الرمز الاحتياطي. تحقّق منه أو استخدم رمزًا آخر، فكل رمز يعمل مرة واحدة.",
+  "Enter one of your backup codes.": "أدخل أحد رموزك الاحتياطية.",
+  "Save your backup codes": "احفظ رموزك الاحتياطية",
+  "If you can't use your phone to sign in, enter one of these codes instead.":
+    "إذا تعذّر عليك استخدام هاتفك لتسجيل الدخول، فأدخل أحد هذه الرموز بدلًا منه.",
+  "These replace your old backup codes, which no longer work.": "تحلّ هذه الرموز محل رموزك الاحتياطية القديمة، والتي لم تعد تعمل.",
+  "Each code works once. Keep them somewhere safe, away from your phone.":
+    "يعمل كل رمز مرة واحدة فقط. احتفظ بها في مكان آمن بعيدًا عن هاتفك.",
+  "KynexOne backup codes": "الرموز الاحتياطية لحساب KynexOne",
+  "Copy all": "نسخ الكل",
+  "The codes are copied. Paste them somewhere safe.": "تم نسخ الرموز. الصقها في مكان آمن.",
+  "The codes could not be copied. Download them instead.": "تعذّر نسخ الرموز. نزّلها بدلًا من ذلك.",
+  "I've saved these codes": "حفظتُ هذه الرموز",
+  "Backup codes: {count} left": "الرموز الاحتياطية المتبقية: {count}",
+  "Only a few backup codes are left. Get new ones before they run out.":
+    "لم يتبقَّ إلا عدد قليل من الرموز الاحتياطية. احصل على رموز جديدة قبل أن تنفد.",
+  "You have no backup codes left. Get new ones so you can still sign in without your phone.":
+    "لم يتبقَّ لديك أي رمز احتياطي. احصل على رموز جديدة لتتمكن من تسجيل الدخول دون هاتفك.",
+  "Get new backup codes": "الحصول على رموز احتياطية جديدة",
+  "Your old codes stop working. Only the new ones will sign you in.":
+    "ستتوقف رموزك القديمة عن العمل، ولن يُقبل لتسجيل الدخول إلا الرموز الجديدة.",
+  "Get new codes": "الحصول على رموز جديدة",
+  "Getting new codes…": "جارٍ إنشاء رموز جديدة…",
+  "Your new backup codes are ready. The old ones no longer work.": "رموزك الاحتياطية الجديدة جاهزة، ولم تعد الرموز القديمة تعمل.",
+  "New backup codes could not be made. Try again in a moment.": "تعذّر إنشاء رموز احتياطية جديدة. حاول مرة أخرى بعد قليل.",
+  "Two-step sign-in is off for your account, so there are no backup codes.":
+    "التحقق بخطوتين غير مُفعّل لحسابك، لذلك لا توجد رموز احتياطية.",
+
+  // An administrator resets another user's two-step sign-in (User Management → Users).
+  "Reset two-step sign-in": "إعادة تعيين التحقق بخطوتين",
+  "Reset two-step sign-in?": "إعادة تعيين التحقق بخطوتين؟",
+  "{name} will be signed out everywhere and set up two-step sign-in again the next time they sign in. Their trusted browsers and backup codes stop working.":
+    "سيُسجَّل خروج {name} من كل الأجهزة، وسيُعدّ التحقق بخطوتين من جديد عند تسجيل الدخول التالي. وستتوقف متصفحاته الموثوقة ورموزه الاحتياطية عن العمل.",
+  "For example, a lost or replaced phone. It is kept in the audit log.": "مثل فقدان الهاتف أو استبداله. يُحفظ السبب في سجل التدقيق.",
+  "Enter a reason of 3 to 500 characters.": "أدخل سببًا يتراوح بين 3 و500 حرف.",
+  "Resetting…": "جارٍ إعادة التعيين…",
+  "Two-step sign-in reset for {name}": "تمت إعادة تعيين التحقق بخطوتين لـ {name}",
+  "You can't reset your own two-step sign-in. Ask another administrator to do it.":
+    "لا يمكنك إعادة تعيين التحقق بخطوتين لحسابك. اطلب ذلك من مسؤول آخر.",
+  "Two-step sign-in is already off for {name}. Nothing was changed.": "التحقق بخطوتين غير مُفعّل أصلًا لـ {name}. لم يتغيّر شيء.",
+  "{name} is no longer one of your company's users. The list has been refreshed.":
+    "لم يعد {name} من مستخدمي شركتك. تم تحديث القائمة.",
+  "You don't have permission to reset two-step sign-in for {name}.": "ليست لديك صلاحية إعادة تعيين التحقق بخطوتين لـ {name}.",
+  "Two-step sign-in could not be reset. Try again in a moment.": "تعذّرت إعادة تعيين التحقق بخطوتين. حاول مرة أخرى بعد قليل.",
+
+  // Tenant Admin → Security: the company's two-step sign-in policy.
+  "Who must use two-step sign-in": "من يجب عليه استخدام التحقق بخطوتين",
+  "People who can see or change payroll, banking or access":
+    "من يستطيعون الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها",
+  "Always required": "مطلوب دائمًا",
+  "Also require it for everyone else": "طلبه أيضًا من جميع الآخرين",
+  "When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.":
+    "عند تفعيل هذا الخيار والحفظ، يُسجَّل خروج كل من لم يُعدّه بعد، وسيُعدّه عند تسجيل الدخول التالي.",
+  "7 days": "7 أيام",
+  "14 days": "14 يومًا",
+  "30 days (default)": "30 يومًا (الافتراضي)",
+  "90 days": "90 يومًا",
+  "{days, plural, one {# day (current)} other {# days (current)}}":
+    "{days, plural, one {يوم واحد (الحالي)} two {يومان (الحالي)} few {# أيام (الحالي)} many {# يومًا (الحالي)} other {# يوم (الحالي)}}",
+  "Shorter is safer. Shortening it also shortens browsers already trusted.":
+    "المدة الأقصر أكثر أمانًا. وتقصيرها يُقصّر أيضًا مدة المتصفحات الموثوقة حاليًا.",
+});
 
 export const signInSecurity = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

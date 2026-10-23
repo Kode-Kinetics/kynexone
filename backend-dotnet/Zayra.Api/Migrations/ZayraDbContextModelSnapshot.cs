@@ -765,6 +765,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("mfa_last_verified_at_utc");
 
+                    b.Property<string>("MfaRecoveryCodeHashes")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("mfa_recovery_code_hashes");
+
                     b.Property<string>("MfaSecretEncrypted")
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)")
@@ -841,7 +846,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "Status");
 
-                    b.ToTable("users", (string)null);
+                    b.ToTable("users", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_users__mfa_recovery_code_hashes_need_factor", "mfa_recovery_code_hashes IS NULL OR mfa_secret_encrypted IS NOT NULL");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Domain.Entities.UserRole", b =>
@@ -21387,7 +21395,7 @@ namespace Zayra.Api.Migrations
 
                             t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_pair", "(revoked_at_utc IS NULL) = (revoked_reason IS NULL)");
 
-                            t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason", "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened')");
+                            t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason", "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened', 'mfa_admin_reset')");
                         });
                 });
 

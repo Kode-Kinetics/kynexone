@@ -1137,13 +1137,122 @@ public class AuthService : IAuthService
     /// creates the trusted-browser row (auth.mfa.device_trusted) and the response carries its raw token for the cookie.
     /// Two parallel verifies of DIFFERENT challenges each create their own row; the same challenge is consumed once.
     /// </summary>
-    public async Task<AuthResponse> CompleteMfaLoginAsync(
+    public Task<AuthResponse> CompleteMfaLoginAsync(
         string challengeToken,
         string totpCode,
         RequestContext context,
         bool rememberDevice,
         CancellationToken cancellationToken)
+        => CompleteMfaLoginCoreAsync(challengeToken, totpCode, backupCode: null, context, rememberDevice, cancellationToken);
+
+    /// <summary>
+    /// The code step with a one-time backup code (MfaBackupCodes). Consumed under the same user-row lock as the session
+    /// it issues, so two concurrent uses of one code give exactly one session. Never trusts the browser.
+    /// </summary>
+    public Task<AuthResponse> CompleteMfaLoginWithBackupCodeAsync(
+        string challengeToken,
+        string backupCode,
+        RequestContext context,
+        CancellationToken cancellationToken)
+        => CompleteMfaLoginCoreAsync(challengeToken, totpCode: null, backupCode ?? string.Empty, context, rememberDevice: false, cancellationToken);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The same issuance as a sign-in (a new refresh-token family, the access token built by BuildAuthResponse, the
+    /// known-device token), under the user-row lock, after the eligibility check a session needs. Bound to the factor
+    /// the caller just configured (MfaConfiguredAtUtc must equal <paramref name="configuredAtUtc"/>) and single-use (no
+    /// refresh token may exist from that moment on), so it cannot be replayed into a second session. Audited as
+    /// <c>auth.session_reissued</c> with <c>via: mfa_setup</c>.
+    /// </remarks>
+    public async Task<AuthResponse?> IssueSessionAfterMfaSetupAsync(
+        Guid userId, Guid tenantId, DateTime configuredAtUtc, RequestContext context, CancellationToken cancellationToken)
     {
+        var issuedAtUtc = DateTime.UtcNow;
+        var refreshRaw = _tokenService.CreateSecureToken();
+        var refreshHash = _tokenService.HashToken(refreshRaw);
+        var refreshId = Guid.NewGuid();
+        var refreshFamilyId = Guid.NewGuid();
+        AuthResponse? prepared = null;
+
+        async Task<bool> IssueOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            prepared = null;
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+            var anchor = await _db.Users.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
+            if (tenant?.IsActive != true || anchor is null) return false;
+            var user = await LoadUserGraph(userId, ct);
+            if (user?.Tenant is null || user.TenantId != tenantId || !await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct))
+                return false;
+            if (!PrivilegedMfaPolicy.IsTenantUserEnrolled(user) || user.MfaConfiguredAtUtc != configuredAtUtc)
+                return false;
+            var policy = await _db.SecuritySettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
+            var identity = await _db.TenantIdentityProviderSettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
+            if (!AuthCurrentEligibility.ForSession(user, AuthCurrentEligibility.IsSsoOnly(user, identity), policy, issuedAtUtc).Allowed)
+                return false;
+            // Once: setup revoked every refresh token, so any token created since is this method's own earlier result.
+            if (await _db.RefreshTokens.AnyAsync(x => x.UserId == userId && x.CreatedAtUtc >= configuredAtUtc, ct))
+                return false;
+
+            var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
+            _db.RefreshTokens.Add(new RefreshToken
+            {
+                Id = refreshId,
+                FamilyId = refreshFamilyId,
+                UserId = user.Id,
+                TokenHash = refreshHash,
+                ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
+                CreatedAtUtc = issuedAtUtc,
+                CreatedByIp = context.IpAddress
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                Guid.NewGuid(),
+                issuedAtUtc,
+                "auth.session_reissued",
+                "User",
+                user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId },
+                $"{{\"via\":\"mfa_setup\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{TenantSessionSecurity.StampValue(user)}\"}}"));
+            await _db.SaveChangesAsync(ct);
+            prepared = WithKnownDevice(BuildAuthResponse(user, refreshRaw), user, null);
+            return true;
+        }
+
+        Task<bool> CommittedAsync(CancellationToken ct) =>
+            _db.RefreshTokens.AsNoTracking().AnyAsync(x => x.Id == refreshId && x.TokenHash == refreshHash && x.RevokedAtUtc == null, ct);
+
+        bool ok;
+        if (_db.Database.IsRelational())
+        {
+            ok = await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+                IssueOnceAsync, CommittedAsync, IsolationLevel.ReadCommitted, cancellationToken);
+            if (!ok)
+            {
+                // ExecuteInTransactionAsync answers default(false) when COMMIT succeeded but its acknowledgement was
+                // lost: hand the tokens back only if that exact session is really there.
+                _db.ChangeTracker.Clear();
+                return prepared is not null && await CommittedAsync(cancellationToken) ? prepared : null;
+            }
+        }
+        else
+        {
+            ok = await IssueOnceAsync(cancellationToken);
+        }
+        return ok ? prepared : null;
+    }
+
+    private async Task<AuthResponse> CompleteMfaLoginCoreAsync(
+        string challengeToken,
+        string? totpCode,
+        string? backupCode,
+        RequestContext context,
+        bool rememberDevice,
+        CancellationToken cancellationToken)
+    {
+        // A backup code proves possession of a printout, not of the enrolled device: it never trusts a browser.
+        if (backupCode is not null) rememberDevice = false;
         var trustId = Guid.NewGuid();
         var trustToken = rememberDevice ? MfaTrustedDevices.NewToken() : default;
         var trustDays = 0;
@@ -1167,16 +1276,22 @@ public class AuthService : IAuthService
         // active failed-password lockout the password step already bypassed, without clearing it.
         Guid? mfaDevice = null;
         var mfaKnownDevice = false;
+        var factor = backupCode is null ? "totp" : "backup_code";
         var loginAuditMetadata =
-            $"{{\"via\":\"mfa\",\"challengeId\":\"{envelope.ChallengeId:D}\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{expectedSessionStamp}\"}}";
+            $"{{\"via\":\"mfa\",\"factor\":\"{factor}\",\"challengeId\":\"{envelope.ChallengeId:D}\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{expectedSessionStamp}\"}}";
         AuthResponse? preparedResponse = null;
         var succeeded = false;
+        // The challenge was valid and the presented code was wrong, used or malformed (400, not 401).
+        var codeRejected = false;
+        (User User, int Remaining)? backupUse = null;
 
         async Task<bool> CompleteOnceAsync(CancellationToken ct)
         {
             _db.ChangeTracker.Clear();
             preparedResponse = null;
             succeeded = false;
+            codeRejected = false;
+            backupUse = null;
 
             var tenant = await _db.Tenants
                 .TagWith(RowLockingInterceptor.ForShareTag)
@@ -1277,9 +1392,23 @@ public class AuthService : IAuthService
             }
 
             var auditContext = context with { UserId = user.Id, TenantId = user.TenantId };
-            // A replayed code (its time-step already accepted) is a failed attempt.
-            var matchedStep = _totp.MatchStep(plainSecret, totpCode);
-            if (!TotpService.IsFreshStep(matchedStep, user.MfaLastTotpStep))
+            long? matchedStep = null;
+            var backupRemaining = 0;
+            bool codeAccepted;
+            if (backupCode is not null)
+            {
+                // The user row is locked FOR UPDATE above, so this read-check-remove is serialised per user: a second
+                // use of the same code (any challenge) sees it gone.
+                codeAccepted = MfaBackupCodes.TryConsume(user.MfaRecoveryCodeHashes, backupCode, out var left, out backupRemaining);
+                if (codeAccepted) user.MfaRecoveryCodeHashes = left;
+            }
+            else
+            {
+                // A replayed code (its time-step already accepted) is a failed attempt.
+                matchedStep = _totp.MatchStep(plainSecret, totpCode ?? string.Empty);
+                codeAccepted = TotpService.IsFreshStep(matchedStep, user.MfaLastTotpStep);
+            }
+            if (!codeAccepted)
             {
                 challenge.FailedAttempts++;
                 user.MfaFailedCount++;
@@ -1292,7 +1421,7 @@ public class AuthService : IAuthService
                     UserId = user.Id,
                     EmailAttempted = user.Email,
                     EventType = LoginEventTypes.LoginFailed,
-                    FailureReason = "mfa_code_mismatch",
+                    FailureReason = backupCode is null ? "mfa_code_mismatch" : "mfa_backup_code_mismatch",
                     IpAddress = context.IpAddress,
                     UserAgent = context.UserAgent,
                     OccurredAtUtc = completedAtUtc
@@ -1300,13 +1429,26 @@ public class AuthService : IAuthService
                 _db.AuditLogs.Add(AuthAuditEntry.Create(
                     auditId,
                     completedAtUtc,
-                    "auth.mfa_failed",
+                    backupCode is null ? "auth.mfa_failed" : "auth.mfa.backup_code_failed",
                     "MfaChallengeToken",
                     challenge.Id.ToString(),
                     auditContext,
                     $"{{\"failedAttempts\":{challenge.FailedAttempts}}}"));
                 await _db.SaveChangesAsync(ct);
+                codeRejected = true;
                 return false;
+            }
+            if (backupCode is not null)
+            {
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    Guid.NewGuid(),
+                    completedAtUtc,
+                    "auth.mfa.backup_code_used",
+                    "User",
+                    user.Id.ToString(),
+                    auditContext,
+                    $"{{\"challengeId\":\"{challenge.Id:D}\",\"remaining\":{backupRemaining}}}"));
+                backupUse = (user, backupRemaining);
             }
 
             await _db.RefreshTokens
@@ -1336,7 +1478,7 @@ public class AuthService : IAuthService
 
             challenge.UsedAtUtc = completedAtUtc;
             user.MfaLastVerifiedAtUtc = completedAtUtc;
-            user.MfaLastTotpStep = matchedStep;
+            if (matchedStep is not null) user.MfaLastTotpStep = matchedStep;
             user.MfaFailedCount = 0;
             trustDays = 0;
             if (rememberDevice && MfaTrustedDevices.EffectiveDays(policy) is var days and > 0)
@@ -1439,8 +1581,15 @@ public class AuthService : IAuthService
                         && x.TokenHash == refreshHash, cancellationToken);
         }
 
+        if (!succeeded && codeRejected)
+            throw new MfaCodeInvalidException();
         if (!succeeded)
             throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+        if (backupUse is { } used)
+            await NotifyAccountOwnerAsync(used.User, "security.mfa_backup_code_used", envelope.ChallengeId.ToString("D"),
+                "A backup code was used to sign in to your KynexOne account",
+                $"A one-time backup code was used to sign in to your account ({used.Remaining} left). If this was not you, tell your administrator now and ask them to reset your two-step sign-in.",
+                cancellationToken);
         if (preparedResponse is not null)
             return preparedResponse;
 

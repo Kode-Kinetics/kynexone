@@ -41,6 +41,10 @@ public sealed class MfaTrustedDeviceMigrationPostgresTests
         all.Should().Contain(ThisMigration);
         all.IndexOf(ThisMigration).Should().Be(all.IndexOf(PreviousMigration) + 1);
 
+        // The login is seeded through the CURRENT model before stepping back, because a later migration
+        // (AddMfaBackupCodesAndAdminReset) adds a users column that an EF insert at this point would name.
+        await migrator.MigrateAsync(null);
+        var userId = await SeedTenantUserAsync(db, "upgrade");
         await migrator.MigrateAsync(PreviousMigration);
         var tenantId = Guid.NewGuid();
         await db.Database.ExecuteSqlRawAsync(
@@ -55,8 +59,7 @@ public sealed class MfaTrustedDeviceMigrationPostgresTests
         (await tooLong.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514");
         await Exec(container, "UPDATE security_settings SET mfa_trusted_device_days = 0");
 
-        // A real tenant and user so the FKs hold; then the table's own CHECKs and the unique hash.
-        var userId = await SeedTenantUserAsync(db, "upgrade");
+        // The real tenant and user seeded above so the FKs hold; then the table's own CHECKs and the unique hash.
         string Insert(string hash, string extra = "NULL, NULL") =>
             "INSERT INTO mfa_trusted_devices (id, tenant_id, user_id, token_hash, created_at_utc, expires_at_utc, revoked_at_utc, revoked_reason) " +
             $"SELECT gen_random_uuid(), tenant_id, id, '{hash}', now(), now() + interval '30 days', {extra} FROM users WHERE id = '{userId}'";
