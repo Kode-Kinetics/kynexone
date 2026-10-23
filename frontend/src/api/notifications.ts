@@ -6,6 +6,8 @@ export interface NotificationItem {
   message: string;
   entityName: string;
   entityId: string | null;
+  /** Null for a workspace-wide notice. Only a notice addressed to you can be marked read or dismissed. */
+  userId?: string | null;
   status: string;
   channel: string;
   createdAtUtc: string;

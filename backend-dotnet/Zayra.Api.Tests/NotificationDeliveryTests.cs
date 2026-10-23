@@ -575,14 +575,71 @@ public class NotificationDeliveryTests
         var db = h.NewDb();
         var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
 
-        // LeaveRequestsController raises these with userId == null — visible to EVERY user in the
-        // tenant. Fanning that to short channels would SMS the whole company.
-        await h.Notifications.NotifyAsync(tenantId, null, "New Leave Request",
-            "Aisha submitted a leave request.", "LeaveRequest", "lr-1", default);
+        // A genuine broadcast (here the report-schedule "nobody can repair this" notice) is visible to
+        // EVERY user in the tenant. Fanning that to short channels would SMS the whole company.
+        await h.Notifications.NotifyAsync(tenantId, null, "Scheduled report stopped",
+            "Nobody in this tenant can repair the monthly pack.", "ReportSchedule", "rs-1", default);
 
         var rows = h.NewDb().NotificationDeliveries.IgnoreQueryFilters().ToList();
         rows.Should().ContainSingle();
         rows[0].Channel.Should().Be(NotificationChannels.InApp);
+    }
+
+    [Fact]
+    public async Task A_person_specific_notice_with_no_recipient_is_not_broadcast()
+    {
+        using var h = new Harness();
+        var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
+
+        // Before routing, LeaveRequestsController raised these with userId == null, and every login in the
+        // tenant read a colleague's sick leave in the bell.
+        await h.Notifications.NotifyAsync(tenantId, null, "New Leave Request",
+            "Aisha submitted a Sick Leave request for 2 day(s).", "LeaveRequest", "lr-1", default);
+
+        var read = h.NewDb();
+        read.Notifications.IgnoreQueryFilters().Should().BeEmpty();
+        read.NotificationDeliveries.IgnoreQueryFilters().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_notice_addressed_to_a_login_that_does_not_resolve_is_dropped_not_broadcast()
+    {
+        using var h = new Harness();
+        var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
+
+        await h.Notifications.NotifyAsync(tenantId, Guid.NewGuid(), "Payslip ready",
+            "Your payslip is ready.", "PayrollRun", "run-1", default);
+
+        h.NewDb().Notifications.IgnoreQueryFilters().Should().BeEmpty(
+            "an unresolvable user used to produce a bell row with no user, which every login in the tenant reads");
+    }
+
+    [Fact]
+    public async Task An_employee_without_a_login_gets_the_ESS_row_and_no_workspace_wide_bell_row()
+    {
+        using var h = new Harness();
+        var db = h.NewDb();
+        var tenantId = SeedTenantUserAndEmployee(db, "aisha@acme.test", "+971501234567");
+        db.Employees.Add(new Employee
+        {
+            Id = 2, TenantId = tenantId, UserAccountId = null, FullName = "Omar NoLogin",
+            WorkEmail = "omar@acme.test", Status = "Active",
+        });
+        await db.SaveChangesAsync();
+
+        await h.Notifications.EnqueueAsync(new NotificationRequest
+        {
+            TenantId = tenantId, EmployeeId = 2, EventCode = "COMPLIANCE_DOCUMENT_EXPIRY",
+            EntityName = "EmployeeDocument", EntityId = "doc-2", Title = "Iqama expiring",
+            Message = "Your Iqama expires in 30 days.",
+        }, default);
+
+        var read = h.NewDb();
+        read.EmployeeNotifications.IgnoreQueryFilters().Should().ContainSingle().Which.EmployeeId.Should().Be(2);
+        read.Notifications.IgnoreQueryFilters().Should().BeEmpty(
+            "a bell row with no user is a broadcast; the employee's notice must not reach the whole workspace");
     }
 
     [Fact]

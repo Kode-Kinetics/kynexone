@@ -223,7 +223,10 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var submitted = await _leaveService.SubmitRequestAsync(tenantId.Value, request, this.GetUserId(), ct);
-            await _notifications.NotifyAsync(tenantId.Value, null,
+            // The employee and whoever decides the first step; never the whole workspace.
+            await _notifications.NotifyEachAsync(tenantId.Value,
+                [.. await EmployeeLoginsAsync(tenantId.Value, submitted.EmployeeId, ct),
+                 .. await PendingDecidersAsync(tenantId.Value, submitted.Id, submitted.EmployeeId, ct)],
                 "New Leave Request",
                 $"{submitted.EmployeeName} submitted a {submitted.LeaveTypeName} request for {submitted.TotalDays} day(s).",
                 "LeaveRequest", submitted.Id.ToString(), ct);
@@ -264,9 +267,16 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var result = await _leaveService.ApproveRequestAsync(tenantId.Value, id, approverId, approverName, req.Notes, ct);
-            await _notifications.NotifyAsync(tenantId.Value, null,
+            await _notifications.NotifyEachAsync(tenantId.Value,
+                [.. await EmployeeLoginsAsync(tenantId.Value, result.EmployeeId, ct)],
                 "Leave Approved",
                 $"{result.EmployeeName}'s {result.LeaveTypeName} request has been approved.",
+                "LeaveRequest", result.Id.ToString(), ct);
+            // A multi-step chain moved on: tell whoever decides the next step.
+            await _notifications.NotifyEachAsync(tenantId.Value,
+                [.. await PendingDecidersAsync(tenantId.Value, result.Id, result.EmployeeId, ct)],
+                "Leave Request Awaiting Approval",
+                $"{result.EmployeeName}'s {result.LeaveTypeName} request for {result.TotalDays} day(s) is waiting for your decision.",
                 "LeaveRequest", result.Id.ToString(), ct);
             return Ok(result);
         }
@@ -312,7 +322,8 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var result = await _leaveService.RejectRequestAsync(tenantId.Value, id, approverId, approverName, req.Reason, ct);
-            await _notifications.NotifyAsync(tenantId.Value, null,
+            await _notifications.NotifyEachAsync(tenantId.Value,
+                [.. await EmployeeLoginsAsync(tenantId.Value, result.EmployeeId, ct)],
                 "Leave Rejected",
                 $"{result.EmployeeName}'s {result.LeaveTypeName} request has been rejected.",
                 "LeaveRequest", result.Id.ToString(), ct);
@@ -375,10 +386,13 @@ public class LeaveRequestsController : ControllerBase
             return Accepted(new { request = leaveRequest, cancellation });
         }
 
+        // Whoever was deciding it is told it is gone; read before the cancellation closes the pending step.
+        var deciders = await PendingDecidersAsync(tenantId.Value, id, leaveRequest.EmployeeId, ct);
         try
         {
             var result = await _leaveService.CancelRequestAsync(tenantId.Value, id, cancelledByName, req.Reason ?? string.Empty, ct);
-            await _notifications.NotifyAsync(tenantId.Value, null,
+            await _notifications.NotifyEachAsync(tenantId.Value,
+                [.. await EmployeeLoginsAsync(tenantId.Value, result.EmployeeId, ct), .. deciders],
                 "Leave Cancelled",
                 $"{result.EmployeeName}'s {result.LeaveTypeName} request has been cancelled.",
                 "LeaveRequest", result.Id.ToString(), ct);
@@ -766,6 +780,29 @@ public class LeaveRequestsController : ControllerBase
         return await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.AnyOtherUserInRolesAsync(_db, tenantId, roles.Append("Admin").ToArray(), orOverride: false, excluded, ct)
             ? string.Empty
             : Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.NobodyElseSentence("decide", null, roles[0]);
+    }
+
+    private Task<IReadOnlyList<Guid>> EmployeeLoginsAsync(Guid tenantId, int employeeId, CancellationToken ct)
+        => NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employeeId, ct);
+
+    /// <summary>
+    /// Who decides the request's pending step: the named approver, else the holders of its role queue in the
+    /// employee's company (the roles <see cref="CanDecideResolvedLeaveStepAsync"/> accepts). Empty when nothing
+    /// is pending, or for a reporting-line queue with nobody named (see NotificationAudience.QueueHoldersAsync).
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> PendingDecidersAsync(Guid tenantId, Guid leaveRequestId, int employeeId, CancellationToken ct)
+    {
+        var pending = await _db.LeaveApprovals.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == leaveRequestId && a.Decision == "Pending")
+            .OrderBy(a => a.StepNumber)
+            .FirstOrDefaultAsync(ct);
+        if (pending is null) return [];
+        if (pending.ApproverId is Guid named && named != Guid.Empty) return [named];
+        var companyId = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == employeeId)
+            .Select(e => e.CompanyId)
+            .FirstOrDefaultAsync(ct);
+        return await NotificationAudience.QueueHoldersAsync(_db, tenantId, pending.ApproverRole, companyId, ct);
     }
 
     private async Task<bool> CanDecideResolvedLeaveStepAsync(Guid tenantId, Guid leaveRequestId, Guid approverId, CancellationToken ct)

@@ -187,17 +187,19 @@ function NotificationPanel({ onClose, onCountChange }: { onClose: () => void; on
               <p className="mt-0.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{n.message}</p>
               <p className="mt-1 text-[10px] text-slate-300 dark:text-slate-600">{fmt.relative(n.createdAtUtc)}</p>
             </div>
-            {/* Actions */}
-            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-              {n.status === 'Unread' && (
-                <button type="button" onClick={() => markRead(n.id)} title="Mark as read" aria-label="Mark as read" className="grid h-6 w-6 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-sapphire dark:hover:bg-white/10 dark:hover:text-cyanAccent">
-                  <CheckCheck className="h-3.5 w-3.5" />
+            {/* Actions — only on a notice addressed to you; a workspace-wide notice is shared, so no one user may clear it. */}
+            {n.userId && (
+              <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+                {n.status === 'Unread' && (
+                  <button type="button" onClick={() => markRead(n.id)} title="Mark as read" aria-label="Mark as read" className="grid h-6 w-6 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-sapphire dark:hover:bg-white/10 dark:hover:text-cyanAccent">
+                    <CheckCheck className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <button type="button" onClick={() => dismiss(n.id)} title="Dismiss" aria-label="Dismiss notification" className="grid h-6 w-6 place-items-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
+                  <Trash2 className="h-3.5 w-3.5" />
                 </button>
-              )}
-              <button type="button" onClick={() => dismiss(n.id)} title="Dismiss" aria-label="Dismiss notification" className="grid h-6 w-6 place-items-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400">
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         ))}
       </div>

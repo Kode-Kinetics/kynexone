@@ -729,8 +729,9 @@ function AdvancePolicyTab() {
           <FormField label="Cooldown (months)"><input type="number" value={form.cooldownMonths ?? 3} onChange={(e) => f('cooldownMonths', Number(e.target.value))} className="input w-full" title="Cooldown (months)" /></FormField>
           <div className="flex gap-6">
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.allowInstallments ?? false} onChange={(e) => f('allowInstallments', e.target.checked)} className="h-4 w-4 accent-sapphire" title="Allow Installments" /> Allow Installments</label>
-            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.requiresApproval ?? false} onChange={(e) => f('requiresApproval', e.target.checked)} className="h-4 w-4 accent-sapphire" title="Requires Approval" /> Requires Approval</label>
           </div>
+          {/* Not a setting: every advance waits for a second person, whatever the policy's stored flag says. */}
+          <p className="text-xs text-slate-600 dark:text-slate-300">Every advance is approved by someone other than the requester and the employee before it is paid.</p>
           {form.allowInstallments && (
             <FormField label="Max Installments"><input type="number" value={form.maxInstallments ?? 3} onChange={(e) => f('maxInstallments', Number(e.target.value))} className="input w-full" title="Max Installments" /></FormField>
           )}

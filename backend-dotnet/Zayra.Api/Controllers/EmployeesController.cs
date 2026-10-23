@@ -3251,7 +3251,7 @@ public class EmployeesController : ControllerBase
             EmployeeDraftAuditActions.Rejected, JsonSerializer.Serialize(new { reason }), cancellationToken);
         if (!moved) return await DraftClosedConflictAsync(tenantId, draftId, await CurrentDraftStatusAsync(tenantId, draftId, cancellationToken), cancellationToken);
 
-        await NotifyBestEffortAsync("Employee draft rejected", $"A new-hire draft was rejected: {reason}", draftId, cancellationToken);
+        await NotifyBestEffortAsync([draft.CreatedByUserId], "Employee draft rejected", $"A new-hire draft was rejected: {reason}", draftId, cancellationToken);
         return NoContent();
     }
 
@@ -3410,7 +3410,9 @@ public class EmployeesController : ControllerBase
             return Task.FromResult<IActionResult?>(null);
         }, cancellationToken);
         if (refusal is not null) return (ActionResult)refusal;
-        await NotifyBestEffortAsync("Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", draftId, cancellationToken);
+        var maker = await _db.EmployeeDrafts.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.Id == draftId).Select(d => d.CreatedByUserId).FirstOrDefaultAsync(cancellationToken);
+        await NotifyBestEffortAsync([maker], "Document uploaded", $"{request.DocumentType} was uploaded for draft {draftId}.", draftId, cancellationToken);
         return Created($"/api/employees/documents/{document.Id}", EmployeeDocumentDto.Project(document, CanViewSensitive()));
     }
 
@@ -3513,7 +3515,9 @@ public class EmployeesController : ControllerBase
                 : await DraftClosedConflictAsync(tenantId, draftId, now, cancellationToken);
         }
 
-        await NotifyBestEffortAsync("Employee draft submitted", "A draft is waiting for HR approval.", draftId, cancellationToken);
+        // The HR approval queue (a draft carries no company yet, so group-scope HR Managers).
+        await NotifyBestEffortAsync([.. await NotificationAudience.QueueHoldersAsync(_db, tenantId, null, null, cancellationToken)],
+            "Employee draft submitted", "A draft is waiting for HR approval.", draftId, cancellationToken);
         return NoContent();
     }
 
@@ -3813,7 +3817,7 @@ public class EmployeesController : ControllerBase
         // turn a durably completed approval into a 500 that tempts the caller to replay it.
         try
         {
-            await Notify("Employee activated",
+            await Notify([preflight.CreatedByUserId], "Employee activated",
                 $"{committedEmployee.FullName} was activated with ID {committedEmployee.EmployeeCode}.",
                 "Employee", committedEmployee.Id.ToString(), cancellationToken);
         }
@@ -4095,7 +4099,10 @@ public class EmployeesController : ControllerBase
                 }
                 change.ApprovalRequestId = approval.Id;
                 await _db.SaveChangesAsync(cancellationToken);
-                await Notify("Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}. Routed to {approval.CurrentQueue}. Due {approval.DueAtUtc:yyyy-MM-dd HH:mm} UTC.", "ApprovalRequest", approval.Id.ToString(), cancellationToken);
+                var routed = await _db.ApprovalRequests.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == approval.Id, cancellationToken);
+                await Notify(routed is null ? [] : [.. await NotificationAudience.ApprovalDecidersAsync(_db, routed, cancellationToken)],
+                    "Sensitive employee change requires approval", $"Fields requiring approval: {change.SensitiveFields}. Routed to {approval.CurrentQueue}. Due {approval.DueAtUtc:yyyy-MM-dd HH:mm} UTC.", "ApprovalRequest", approval.Id.ToString(), cancellationToken);
                 await Audit("employee.change_requested", "EmployeeChangeRequest", change.Id.ToString(), cancellationToken);
                 return Accepted(new
                 {
@@ -5185,7 +5192,8 @@ public class EmployeesController : ControllerBase
                 }, cancellationToken);
             if (employee.ManagerEmployeeId != transfer.NewManagerEmployeeId)
                 await hierarchy.SetManagerAsync(tenantId, employee.Id, transfer.NewManagerEmployeeId, Context(), cancellationToken);
-            await Notify("Employee transfer approved", $"Transfer for employee {employee.EmployeeCode} was applied.", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
+            await Notify([transfer.RequestedByUserId, .. await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employee.Id, cancellationToken)],
+                "Employee transfer approved", $"Transfer for employee {employee.EmployeeCode} was applied.", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
             await Audit("employee.transfer_approved", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
             return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()));
         }
@@ -5194,7 +5202,7 @@ public class EmployeesController : ControllerBase
             // Discard the half-applied tracked mutations BEFORE any further write on this context
             // (Notify saves): the transfer must remain PendingHrApproval untouched.
             _db.ChangeTracker.Clear();
-            await Notify("Employee transfer blocked by staffing budget",
+            await Notify([transfer.RequestedByUserId], "Employee transfer blocked by staffing budget",
                 $"Transfer for {employee.EmployeeCode} could not be applied: {ex.Block.DepartmentName} already has {ex.Block.Current} of {ex.Block.Budgeted} budgeted {ex.Block.LevelNameEn}(s). Raise the budget or choose a different department; the transfer remains pending.",
                 "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
             return this.EstablishmentConflict(ex);
@@ -5662,9 +5670,9 @@ public class EmployeesController : ControllerBase
 
     /// <summary>Notification is post-commit and best-effort: an outage must not turn a durable state
     /// change into an error that invites a retry.</summary>
-    private async Task NotifyBestEffortAsync(string title, string message, Guid draftId, CancellationToken ct)
+    private async Task NotifyBestEffortAsync(IEnumerable<Guid?> recipients, string title, string message, Guid draftId, CancellationToken ct)
     {
-        try { await Notify(title, message, "EmployeeDraft", draftId.ToString(), ct); }
+        try { await Notify(recipients, title, message, "EmployeeDraft", draftId.ToString(), ct); }
         catch (Exception ex) { _logger?.LogWarning(ex, "Draft {DraftId} changed state, but the notification failed.", draftId); }
     }
 
@@ -6400,7 +6408,10 @@ public class EmployeesController : ControllerBase
     // PrivilegedMfaPolicy counts, so a name-based grant would also have shown IBANs to a user MFA never covered.
     private bool CanEditSensitive() => User.HasPermission("employees.sensitive");
     private bool CanViewSensitive() => User.HasPermission("employees.sensitive");
-    private Task Notify(string title, string message, string entity, string? entityId, CancellationToken cancellationToken) => _notifications.NotifyAsync(RequireTenant(), null, title, message, entity, entityId, cancellationToken);
+    /// <summary>One addressed notice per recipient; nobody named means nothing is sent, never a workspace-wide
+    /// broadcast (these notices name employees, new hires and the fields being changed — NotificationAudience).</summary>
+    private Task Notify(IEnumerable<Guid?> recipients, string title, string message, string entity, string? entityId, CancellationToken cancellationToken) =>
+        _notifications.NotifyEachAsync(RequireTenant(), recipients, title, message, entity, entityId, cancellationToken);
 
     private EmployeeListItemDto ToListItem(Employee employee) => new(employee.Id, employee.EmployeeCode, employee.FullName, employee.ArabicName, employee.Department, employee.Designation, employee.Branch, employee.ManagerEmployeeId, employee.Status, employee.ProfileCompletenessScore, employee.VisaExpiryDate, employee.PassportExpiryDate, employee.ReadinessState, employee.ActivationBlockersCount, employee.PublicId);
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
