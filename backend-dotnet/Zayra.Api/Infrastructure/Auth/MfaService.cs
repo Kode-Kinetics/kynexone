@@ -315,6 +315,25 @@ public class MfaService : IMfaService
 
             await MfaTrustedDevices.StageRevokeAllAsync(_db, graph!.TenantId, [graph.Id], MfaTrustRevokeReasons.MfaResetup,
                 verifiedAtUtc, new RequestContext(null, null, graph.Id, graph.TenantId), cancellationToken);
+            // Every session of the user ends with the new factor, as on signed-in setup: the rotated stamp ends access
+            // tokens, and the refresh tokens are revoked here so none can mint another. Nothing is re-issued: this path
+            // is signed out, and the user signs in again with the new factor.
+            await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(cancellationToken);
+            if (_db.Database.IsRelational())
+                await _db.RefreshTokens
+                    .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(x => x.RevokedAtUtc, verifiedAtUtc)
+                        .SetProperty(x => x.RevokedByIp, "mfa-enabled"), cancellationToken);
+            else
+                foreach (var refresh in await _db.RefreshTokens
+                    .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null).ToListAsync(cancellationToken))
+                {
+                    refresh.RevokedAtUtc = verifiedAtUtc;
+                    refresh.RevokedByIp = "mfa-enabled";
+                }
             graph!.MFAEnabled = true;
             graph.MfaSecretEncrypted = encryptedSecret;
             graph.MfaConfiguredAtUtc = verifiedAtUtc;
