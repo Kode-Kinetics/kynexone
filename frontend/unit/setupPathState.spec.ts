@@ -13,7 +13,7 @@ test('ai_setup_defaults_to_guided', () => {
 });
 
 test('legacy_mode_starter_opens_the_guided_chooser_and_is_rewritten', () => {
-  // Addendum A7: the old studio's address now lands on Guided Setup (the company setup chooser), canonicalised.
+  // Addendum A7: the old studio's address now lands on Guided setup (the company setup chooser), canonicalised.
   expect(resolveSetupPath(new URLSearchParams('tab=aiSetup&mode=starter&area=leave&setting=leavePolicies&companyId=fixture-company'), context)).toEqual({
     path: 'guided', area: 'leave', setting: 'leavePolicies', companyId: 'fixture-company', needsReplace: true,
   });

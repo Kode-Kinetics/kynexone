@@ -32,7 +32,7 @@ export interface CompanySetupContext {
   manageableCompanies?: ManageableCompany[] | null;
 }
 
-/** One row of the Guided Setup chooser (Addendum A5). */
+/** One row of the Guided setup chooser (Addendum A5). */
 export interface ManageableCompany {
   id: string;
   legalNameEn: string;

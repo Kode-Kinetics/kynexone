@@ -79,9 +79,9 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     });
     await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name: 'Administration', exact: true }).evaluate((button: HTMLButtonElement) => button.click());
     await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('button', { name: 'Setup', exact: true }).evaluate((button: HTMLButtonElement) => button.click());
-    // A bare /setup entry opens Guided Setup (the company setup chooser) by default (see ai_setup_defaults_to_guided);
+    // A bare /setup entry opens Guided setup (the company setup chooser) by default (see ai_setup_defaults_to_guided);
     // the fixture then replaces that entry with the Configuration Center destination.
-    await expect(page.getByRole('button', { name: 'Guided Setup', exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Guided setup', exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
     await expect(page.locator('#setup-aiSetup')).toBeVisible();
     await page.evaluate(url => history.replaceState({ fixtureMarker: 'preserved' }, '', url), setupUrl);
     await expect(page.getByRole('button', { name: 'Checklist Templates', exact: true })).toBeVisible();
@@ -852,9 +852,9 @@ test('fallback_multiple_pre_setup_entries_restore_exact_url_and_history', async 
   await guard.expectShown(3);
 });
 
-// Owner-approved characterization of the old Setup Studio. Since Addendum A it is no longer Guided Setup:
+// Owner-approved characterization of the old Setup Studio. Since Addendum A it is no longer Guided setup:
 // it lives under Configuration Center as "Policy starter" (path=policyStarter), with the same draft schema,
-// exits and synthetic APIs. Guided Setup is now the company setup chooser.
+// exits and synthetic APIs. Guided setup is now the company setup chooser.
 const guidedPreview = {
   configurationVersion: 1,
   engine: 'Browser fixture',
@@ -897,8 +897,8 @@ async function seedCurrentGuidedDraft(page: Page, industry: string) {
 test('ai_setup_defaults_to_guided', async ({ page }) => {
   const { writes } = await boot(page);
   await page.goto('/setup?tab=aiSetup');
-  // Guided Setup is the company setup chooser (Addendum A); the old 5-step studio is not shown there.
-  await expect(page.getByRole('button', { name: 'Guided Setup', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  // Guided setup is the company setup chooser (Addendum A); the old 5-step studio is not shown there.
+  await expect(page.getByRole('button', { name: 'Guided setup', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#setup-aiSetup')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toHaveCount(0);
   await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);

@@ -1,8 +1,8 @@
 import { SETUP_AREAS, type SetupAreaId } from './setupAreas';
 
 /**
- * guided = the company setup chooser (create, or complete an existing company); configuration = Configuration Center;
- * policyStarter = the old Setup Studio, kept under Configuration Center for what has no screen of its own (A7).
+ * guided = the company setup chooser (create, or complete an existing company); configuration = All setup areas;
+ * policyStarter = the old studio ("Policy starter"), kept for what has no screen of its own (A7).
  */
 export type SetupStudioPath = 'guided' | 'configuration' | 'policyStarter';
 
@@ -46,7 +46,7 @@ export function resolveSetupPath(params: URLSearchParams, context: SetupPathCont
   }
 
   const hasLegacyConfigurationTarget = requestedArea !== null || requestedSetting !== null;
-  // The old studio's own address (`mode=starter`) is a legacy link: it opens Guided Setup, which is now the
+  // The old studio's own address (`mode=starter`) is a legacy link: it opens Guided setup, which is now the
   // company setup chooser (Addendum A7), and is rewritten to the canonical path.
   const legacyStarter = params.get('mode') === 'starter';
   const path: SetupStudioPath = requestedPath === 'configuration'

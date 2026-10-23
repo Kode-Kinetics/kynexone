@@ -827,7 +827,7 @@ test('a refused sign-in link says so and keeps the way to User Management', asyn
   await expect(row.getByRole('button', { name: t('Send sign-in link'), exact: true })).toBeEnabled();
 });
 
-// ── Addendum A: Guided Setup chooser and existing-company mode ────────────────
+// ── Addendum A: Guided setup chooser and existing-company mode ────────────────
 
 /** Viewport-only capture (what a person sees without scrolling), saved under WIZARD_SHOTS_DIR when set. */
 async function vshot(page: Page, info: TestInfo, name: string) {
@@ -852,12 +852,12 @@ async function openEvostel(page: Page, t: ReturnType<typeof T>) {
 }
 
 for (const locale of ['en', 'ar'] as const) {
-  test(`Guided Setup opens the chooser: create, or complete an existing company (${locale})`, async ({ page }, info) => {
+  test(`Guided setup opens the chooser: create, or complete an existing company (${locale})`, async ({ page }, info) => {
     const t = T(locale);
     const { server, pageErrors } = await boot(page, { locale });
     await openChooser(page);
-    await expect(page.getByRole('button', { name: t('Guided Setup'), exact: true })).toHaveAttribute('aria-pressed', 'true');
-    // The old 5-step studio is gone from Guided Setup.
+    await expect(page.getByRole('button', { name: t('Guided setup'), exact: true })).toHaveAttribute('aria-pressed', 'true');
+    // The old 5-step studio is gone from Guided setup.
     await expect(page.getByRole('button', { name: 'Generate draft' })).toHaveCount(0);
     const create = page.getByTestId('chooser-create');
     await expect(create.getByRole('link', { name: t('Create a new company'), exact: true })).toHaveAttribute('href', '/setup/new-company');
@@ -896,9 +896,9 @@ test('the old studio stays reachable only as Configuration Center → Policy sta
   await page.getByRole('button', { name: 'Policy starter (attendance, overtime, benefits…)', exact: true }).click();
   await expect(page).toHaveURL(/path=policyStarter/);
   await expect(page.getByTestId('policy-starter-banner')).toBeVisible();
-  // Under Configuration Center, never Guided Setup.
+  // Under Configuration Center, never Guided setup.
   await expect(page.getByRole('button', { name: 'Configuration Center', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('button', { name: 'Guided Setup', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('button', { name: 'Guided setup', exact: true })).toHaveAttribute('aria-pressed', 'false');
   await page.getByRole('button', { name: 'Back to Configuration Center', exact: true }).click();
   await expect(page).toHaveURL(/path=configuration/);
 });
@@ -989,7 +989,7 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(page.getByTestId('create-company-success')).toHaveAttribute('data-mode', 'existing');
     await expect(page.getByRole('heading', { name: t('{name} is updated', { name: locale === 'ar' ? 'شركة إيفوستل' : 'Evostel LLC' }) })).toBeVisible();
     await expect(page.getByTestId('readiness-glMapping')).toBeVisible();
-    await expect(page.getByRole('link', { name: t('Back to Guided Setup'), exact: true })).toHaveAttribute('href', '/setup?tab=aiSetup&path=guided');
+    await expect(page.getByRole('link', { name: t('Back to Guided setup'), exact: true })).toHaveAttribute('href', '/setup?tab=aiSetup&path=guided');
     await contained(page);
     await vshot(page, info, `existing-${locale}-8-updated`);
 

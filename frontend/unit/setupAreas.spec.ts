@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { SETUP_AREAS, destinationAvailability, resolveSetupArea, type SetupAccessContext, type SetupDestination } from '../src/lib/setupAreas';
+import { COMPANY_OWNED_SETTING_IDS, SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, destinationAvailability, resolveSetupArea, type SetupAccessContext, type SetupDestination } from '../src/lib/setupAreas';
 
 const context: SetupAccessContext = {
   hasPermission: () => true,
@@ -164,25 +164,52 @@ test('every_destination_has_stable_group_and_order', () => {
   ]);
 });
 
-test('employee_reference_lists_is_the_only_renamed_label', () => {
-  const unchangedLabels: Record<string, string> = {
+test('setup_owned_destinations_carry_the_section_label_and_route_labels_are_unchanged', () => {
+  // Wave 1 (2026-10-22): a Setup-owned destination is named exactly as its section is in the navigation and its
+  // section header, so the same screen never has two names. Route destinations keep their own labels.
+  const expectedLabels: Record<string, string> = {
     companies: 'Companies', branches: 'Branches', departments: 'Departments', designations: 'Designations', grades: 'Grades',
-    costCenters: 'Cost centers', establishment: 'Cost centres and budget', people: 'Employee records and contracts',
+    costCenters: 'Cost centres', establishment: 'Headcount & budget', masterData: 'Drop-down lists', people: 'Employee records and contracts',
     contractRenewals: 'Contract renewals', recruitment: 'Recruitment and workforce planning', onboarding: 'Onboarding checklists',
-    locations: 'Locations and geofences', attendance: 'Attendance operations', shifts: 'Shift definitions and policy',
+    locations: 'Locations', attendance: 'Attendance operations', shifts: 'Shift definitions and policy',
     overtime: 'Overtime requests', timesheets: 'Project timesheets', leaveTypes: 'Leave types', leavePolicies: 'Leave policies',
     holidayCalendars: 'Holiday calendars', leave: 'Leave policies and holidays', benefits: 'Benefit plans and enrollments',
     gradeBenefits: 'Benefits by grade', loans: 'Loan and advance policies', merit: 'Merit planning and benchmarks',
-    glMapping: 'GL and rates', fiscalYears: 'Fiscal years', payroll: 'Payroll and salary structures',
+    glMapping: 'Payroll accounting', fiscalYears: 'Fiscal years', payroll: 'Payroll and salary structures',
     payslipTemplates: 'Payslip templates', performance: 'Performance cycles and templates', succession: 'Succession and development',
     learning: 'Learning catalogue and rules', hrRequests: 'Request center', hrLetters: 'HR letters',
-    engagement: 'Engagement templates and privacy', notificationTemplates: 'Notification templates',
-    offboarding: 'Offboarding and settlement', gccSettings: 'GCC settings', statutoryRules: 'Statutory rules',
+    engagement: 'Engagement templates and privacy', notificationTemplates: 'Notifications',
+    offboarding: 'Offboarding and settlement', gccSettings: 'Country rules', statutoryRules: 'Statutory rules',
     complianceProfiles: 'Compliance profiles', taxPolicies: 'Tax policies', compliance: 'Documents and renewals',
-    saudiCompliance: 'Saudi compliance', gosiFiling: 'GOSI filing', adminAuditLogs: 'Administrative audit logs',
+    saudiCompliance: 'Saudi compliance', gosiFiling: 'GOSI filing', adminAuditLogs: 'Audit log',
   };
-  expect(destination('masterData').label).toBe('Employee Reference Lists');
-  expect(Object.fromEntries(destinations().filter(item => item.id !== 'masterData').map(item => [item.id, item.label]))).toEqual(unchangedLabels);
+  expect(Object.fromEntries(destinations().map(item => [item.id, item.label]))).toEqual(expectedLabels);
+});
+
+test('every_navigation_label_matches_its_studio_destination_label', () => {
+  // The navigation and the section header both render SETUP_SETTING_SECTIONS[i].label; the Studio must agree.
+  const embedded = destinations().filter(item => item.path.startsWith('/setup?tab='));
+  expect(embedded.length).toBeGreaterThan(0);
+  for (const item of embedded) {
+    const tab = new URLSearchParams(item.path.split('?')[1]).get('tab');
+    const section = SETUP_SETTING_SECTIONS.find(entry => entry.id === tab);
+    expect(section, `${item.id} has a Setup section`).toBeDefined();
+    expect(item.label, item.id).toBe(section!.label);
+  }
+  // Every section sits in one of the navigation's groups, sentence case, with a description.
+  const groups = new Set(SETUP_SECTION_GROUPS.map(group => group.id));
+  for (const section of SETUP_SETTING_SECTIONS) {
+    expect(groups.has(section.group), section.id).toBe(true);
+    expect(section.description.trim(), section.id).not.toBe('');
+    expect(section.label.slice(1), `${section.id} is sentence case`).toBe(section.label.slice(1).replace(/\b(?!GL|WPS|SIF)[A-Z]/g, c => c.toLowerCase()));
+  }
+  expect(SETUP_SETTING_SECTIONS.map(section => section.id)).toEqual([
+    'companies', 'branches', 'locations', 'costCenters', 'departments',
+    'grades', 'designations', 'establishment',
+    'gccSettings', 'statutoryRules', 'fiscalYears', 'glMapping',
+    'masterData', 'numberingRules', 'notificationTemplates', 'emailConfig', 'systemSettings', 'adminAuditLogs',
+  ]);
+  expect(COMPANY_OWNED_SETTING_IDS.has('costCenters')).toBe(true);
 });
 
 test('tenant_shared_destinations_have_tenant_effective_scope', () => {

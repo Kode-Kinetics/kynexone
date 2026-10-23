@@ -77,7 +77,7 @@ test('flag off: Setup Studio shows no policy library, guide or upload', async ({
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('heading', { level: 2, name: 'Policy library', exact: true })).toHaveCount(0);
 
-  // Policy starter (the old Setup Studio, under Configuration Center since Guided Setup became the company
+  // Policy starter (the old Setup Studio, under Configuration Center since Guided setup became the company
   // chooser): manual setup works; the policy guide, upload and library entry are gone.
   await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company');
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
