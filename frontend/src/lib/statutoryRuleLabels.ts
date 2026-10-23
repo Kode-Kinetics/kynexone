@@ -49,6 +49,13 @@ const RATE_SCALE = 6; // numeric(9,6), StatutoryValueUnits.RateScale
 
 // Release A toggles (Application/Contracts/RenewalRules.cs ValidateOverride: 'true' or 'false').
 const RENEWAL_TOGGLES = new Set(['contracts.as_is_requires_employee_acceptance', 'contracts.as_is_requires_qiwa_step']);
+// RenewalRules.cs PositiveWholeDays (the two Art. 55 counts are handled on their own, as a count and as years).
+const RENEWAL_POSITIVE_WHOLE_DAYS = new Set([
+  'qiwa.contract_response_days', 'contracts.renewal_lead_days', 'contracts.offer_lead_days',
+  'contracts.qiwa_submit_lead_days', 'contracts.qiwa_gate_lead_days', 'contracts.default_non_renewal_notice_days',
+  'contracts.open_margin_days',
+]);
+const RENEWAL_TOLERANCE_DAYS = new Set(['contracts.original_term_joining_tolerance_days', 'contracts.chain_gap_tolerance_days']);
 
 /** The unit of a rule key. `dataType` is the row's declared type ("decimal", "bool", "string", "int", "json"). */
 export function statutoryUnitFor(ruleKey: string | null | undefined, dataType?: string | null): StatutoryUnit {
@@ -65,6 +72,16 @@ export function statutoryUnitFor(ruleKey: string | null | undefined, dataType?: 
 
   // StatutoryValueUnits.EnumeratedValues: ot.hourly_base ∈ {basic, wage}.
   if (k === 'ot.hourly_base') return { kind: 'choice', choices: ['basic', 'wage'] };
+
+  // Release A renewal keys are validated on save by RenewalRules.cs ValidateOverride, which is stricter than their
+  // suffix family: these must be matched before the generic _days / _years rules below, or the form would accept a 0 or
+  // a fraction the server refuses, and refuse values above 366 that it accepts.
+  // PositiveWholeDays: a whole number from 1 to 3650.
+  if (k === 'ksa.art55.max_consecutive_renewals') return { kind: 'count', min: 1, max: 3650, maxScale: 0 };
+  if (k === 'ksa.art55.max_total_years') return { kind: 'years', min: 1, max: 3650, maxScale: 0 };
+  if (RENEWAL_POSITIVE_WHOLE_DAYS.has(k)) return { kind: 'days', min: 1, max: 3650, maxScale: 0 };
+  // OriginalTermJoiningToleranceDays / ChainGapToleranceDays: a whole number from 0 to 31.
+  if (RENEWAL_TOLERANCE_DAYS.has(k)) return { kind: 'days', min: 0, max: 31, maxScale: 0 };
 
   if (k.endsWith('_rate') || k.endsWith('_ratio')) {
     const contribution = CONTRIBUTION_FAMILIES.some((family) => k.startsWith(family));
@@ -91,8 +108,6 @@ export function statutoryUnitFor(ruleKey: string | null | undefined, dataType?: 
   // ── Keys SpecFor leaves Unconstrained, whose reader proves the unit ──
   // KsaStatutorySpecialLeave.cs: "Birth leave's own event-date limit", a day count (fallback 7m).
   if (k === 'leave.event_date_max_lead_days.paternity') return { kind: 'days', min: 0, max: 366, maxScale: 2 };
-  // RenewalRuleSet.cs: `int Art55MaxConsecutiveRenewals`; RenewalRules.cs: a whole number 1–3650.
-  if (k === 'ksa.art55.max_consecutive_renewals') return { kind: 'count', min: 1, max: 3650, maxScale: 0 };
   // RenewalRules.cs ValidateOverride: 'conservative' or 'lenient'.
   if (k === 'ksa.art55.reading') return { kind: 'choice', choices: ['conservative', 'lenient'] };
   // RenewalRules.cs ValidateOverride: "a date written yyyy-MM-dd".

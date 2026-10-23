@@ -202,3 +202,41 @@ test.describe('names and the approval sentence', () => {
       .toBe('تغيير س من 1.5× إلى 2×، اعتبارًا من D');
   });
 });
+
+test.describe('Release A renewal keys use the bounds the server enforces on save', () => {
+  // RenewalRules.cs ValidateOverride: PositiveWholeDays are whole numbers 1–3650; the two tolerances 0–31.
+  // The generic _days / _years families (0–366, two decimals) must not apply to them.
+  const accepts = (key: string, typed: string) => parseInputValue(en, statutoryUnitFor(key, 'int'), typed).ok;
+
+  for (const key of ['contracts.renewal_lead_days', 'contracts.offer_lead_days', 'qiwa.contract_response_days', 'contracts.open_margin_days']) {
+    test(`${key}: whole days from 1 to 3650`, () => {
+      expect(accepts(key, '0')).toBe(false);
+      expect(accepts(key, '1.5')).toBe(false);
+      expect(accepts(key, '1')).toBe(true);
+      expect(accepts(key, '400')).toBe(true);
+      expect(accepts(key, '3650')).toBe(true);
+      expect(accepts(key, '3651')).toBe(false);
+    });
+  }
+
+  test('ksa.art55.max_total_years: whole years from 1 to 3650, shown as years', () => {
+    expect(statutoryUnitFor('ksa.art55.max_total_years', 'int').kind).toBe('years');
+    expect(accepts('ksa.art55.max_total_years', '0')).toBe(false);
+    expect(accepts('ksa.art55.max_total_years', '4.5')).toBe(false);
+    expect(accepts('ksa.art55.max_total_years', '4')).toBe(true);
+  });
+
+  for (const key of ['contracts.original_term_joining_tolerance_days', 'contracts.chain_gap_tolerance_days']) {
+    test(`${key}: whole days from 0 to 31`, () => {
+      expect(accepts(key, '0')).toBe(true);
+      expect(accepts(key, '31')).toBe(true);
+      expect(accepts(key, '32')).toBe(false);
+      expect(accepts(key, '2.5')).toBe(false);
+    });
+  }
+
+  test('an ordinary _days rule keeps its generic bounds', () => {
+    expect(accepts('leave.annual_base_days', '0')).toBe(true);
+    expect(accepts('leave.annual_base_days', '21.5')).toBe(true);
+  });
+});
