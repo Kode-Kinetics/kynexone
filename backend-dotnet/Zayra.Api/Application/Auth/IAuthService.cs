@@ -15,6 +15,20 @@ public interface IAuthService
     /// <summary>As above; <paramref name="rememberDevice"/> also trusts this browser (MfaTrustedDevices) when the tenant allows it.</summary>
     Task<AuthResponse> CompleteMfaLoginAsync(string challengeToken, string totpCode, RequestContext context, bool rememberDevice, CancellationToken cancellationToken)
         => CompleteMfaLoginAsync(challengeToken, totpCode, context, cancellationToken);
+    /// <summary>
+    /// Completes the code step with a one-time backup code instead of the app code. The code is consumed in the same
+    /// transaction as the session; it never trusts the browser. A wrong, used or malformed code throws
+    /// <see cref="MfaCodeInvalidException"/>; an invalid challenge throws <see cref="UnauthorizedAccessException"/>.
+    /// </summary>
+    /// <summary>
+    /// Amendment 1: right after the signed-in caller turned two-step on (which ended every session, theirs included),
+    /// issues them one new session exactly as login does. Only for the factor configured at
+    /// <paramref name="configuredAtUtc"/>, only once, and only while the account may hold a session; null otherwise.
+    /// </summary>
+    Task<AuthResponse?> IssueSessionAfterMfaSetupAsync(Guid userId, Guid tenantId, DateTime configuredAtUtc, RequestContext context, CancellationToken cancellationToken)
+        => Task.FromResult<AuthResponse?>(null);
+    Task<AuthResponse> CompleteMfaLoginWithBackupCodeAsync(string challengeToken, string backupCode, RequestContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IAuthService does not support backup codes.");
 
     /// <summary>The workspace slug the email's domain routes to (unique active match only), or null.</summary>
     Task<string?> ResolveWorkspaceAsync(string? email, CancellationToken cancellationToken) => Task.FromResult<string?>(null);

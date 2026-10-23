@@ -16,6 +16,7 @@ import { HelpTextManager } from '../components/HelpTextManager';
 import { StatutoryRulesPanel } from '../components/StatutoryRulesPanel';
 import { useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useLocale } from '../contexts/LocaleContext';
 
 type Tab = 'subscription' | 'modules' | 'invoices' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
 
@@ -63,11 +64,19 @@ interface SecuritySettings {
   passwordMinLength: number;
   passwordRequireUppercase: boolean;
   passwordRequireDigit: boolean;
-  passwordRequireSpecialChar: boolean;
+  passwordRequireSpecial: boolean;
   sessionTimeoutMinutes: number;
   maxFailedLoginAttempts: number;
   lockoutDurationMinutes: number;
+  /** Two-step sign-in for everyone, on top of the people who can see or change payroll, banking or access. */
+  mfaRequired?: boolean;
+  /** How long a trusted browser skips the code: 0 (off) to 90 days; 30 by default. */
+  mfaTrustedDeviceDays?: number;
 }
+
+/** The trusted-browser lifetimes offered (decision 3); 0 = off. A stored value outside these is shown as well. */
+const TRUST_DAY_CHOICES = [0, 7, 14, 30, 90] as const;
+const DEFAULT_TRUST_DAYS = 30;
 
 interface CountryRule {
   id: string;
@@ -144,6 +153,64 @@ function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onCha
         checked ? 'translate-x-6 rtl:-translate-x-6' : 'translate-x-1 rtl:-translate-x-1'
       }`} />
     </button>
+  );
+}
+
+/**
+ * Two-step sign-in in the Security Settings form: who must use it, and how long a trusted browser
+ * skips the code. Writes `mfaRequired` and `mfaTrustedDeviceDays` of PUT /api/access/security-settings
+ * with the rest of the form. People who can see or change payroll, banking or access always need it
+ * (the server's privileged-role rule), so that line is a fact, not a switch.
+ */
+function TwoStepPolicyGroup({ security, onChange }: {
+  security: SecuritySettings;
+  onChange: (patch: Partial<SecuritySettings>) => void;
+}) {
+  const { t } = useLocale();
+  const days = Number.isInteger(security.mfaTrustedDeviceDays) ? (security.mfaTrustedDeviceDays as number) : DEFAULT_TRUST_DAYS;
+  const choices: number[] = (TRUST_DAY_CHOICES as readonly number[]).includes(days) ? [...TRUST_DAY_CHOICES] : [...TRUST_DAY_CHOICES, days].sort((a, b) => a - b);
+  const label = (d: number) => {
+    if (d === 0) return t('Off');
+    if (d === 7) return t('7 days');
+    if (d === 14) return t('14 days');
+    if (d === DEFAULT_TRUST_DAYS) return t('30 days (default)');
+    if (d === 90) return t('90 days');
+    return t('{days, plural, one {# day (current)} other {# days (current)}}', { days: d });
+  };
+  return (
+    <section className="space-y-4" aria-labelledby="sec-two-step-heading" data-testid="two-step-policy">
+      <h3 id="sec-two-step-heading" className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-2">{t('Two-step sign-in')}</h3>
+
+      <fieldset className="space-y-3">
+        <legend className="text-xs font-medium text-gray-700 mb-1 rtl:text-[13px]">{t('Who must use two-step sign-in')}</legend>
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5" data-testid="two-step-always">
+          <p className="text-sm text-gray-700">{t('People who can see or change payroll, banking or access')}</p>
+          <span className="shrink-0 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700 rtl:text-[13px]">{t('Always required')}</span>
+        </div>
+        <div className="flex items-start gap-3 px-1">
+          <Toggle id="sec-mfa-everyone" checked={security.mfaRequired === true}
+            onChange={(v) => onChange({ mfaRequired: v })} />
+          <div className="min-w-0">
+            <label htmlFor="sec-mfa-everyone" className="text-sm text-gray-700 cursor-pointer">{t('Also require it for everyone else')}</label>
+            <p id="sec-mfa-everyone-hint" className="mt-0.5 text-xs leading-5 text-gray-500 rtl:text-[13px]">
+              {t("When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.")}
+            </p>
+          </div>
+        </div>
+      </fieldset>
+
+      <div className="max-w-xs">
+        <label htmlFor="sec-trust-days" className="block text-xs font-medium text-gray-700 mb-1 rtl:text-[13px]">{t('Trusted browsers')}</label>
+        <select id="sec-trust-days" value={days} aria-describedby="sec-trust-days-hint"
+          onChange={(e) => onChange({ mfaTrustedDeviceDays: Number(e.target.value) })}
+          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          {choices.map((d) => <option key={d} value={d}>{label(d)}</option>)}
+        </select>
+        <p id="sec-trust-days-hint" className="mt-1 text-xs leading-5 text-gray-500 rtl:text-[13px]">
+          {t('Shorter is safer. Shortening it also shortens browsers already trusted.')}
+        </p>
+      </div>
+    </section>
   );
 }
 
@@ -981,7 +1048,9 @@ export default function TenantAdminPage() {
                   {[
                     { key: 'passwordRequireUppercase', label: 'Require Uppercase Letter', id: 'sec-upper' },
                     { key: 'passwordRequireDigit', label: 'Require Digit', id: 'sec-digit' },
-                    { key: 'passwordRequireSpecialChar', label: 'Require Special Character', id: 'sec-special' },
+                    // The API field is passwordRequireSpecial; this form used to send passwordRequireSpecialChar, which the
+                    // server ignored, so the setting never saved from here.
+                    { key: 'passwordRequireSpecial', label: 'Require Special Character', id: 'sec-special' },
                   ].map(opt => (
                     <div key={opt.key} className="flex items-center gap-2">
                       <Toggle
@@ -1036,6 +1105,8 @@ export default function TenantAdminPage() {
                   </div>
                 </div>
               </div>
+
+              <TwoStepPolicyGroup security={security} onChange={(patch) => setSecurity(p => p ? { ...p, ...patch } : p)} />
 
               {securityError && (
                 <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{securityError}</p>

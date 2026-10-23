@@ -54,6 +54,18 @@ public interface IMfaService
             ? Zayra.Api.Application.Auth.MfaSetupOutcome.Enabled
             : Zayra.Api.Application.Auth.MfaSetupOutcome.CodeInvalid;
     /// <summary>The user turns two-step off: refused for a privileged role or a company-wide mandate (Amendment 1).</summary>
+    /// <summary>VerifySetupWithOutcomeAsync that also returns the new backup codes (shown once) and the factor's
+    /// configured-at stamp when it enabled the factor (the controller re-issues the caller's session against it).</summary>
+    async Task<Zayra.Api.Application.Auth.MfaSetupResult> VerifySetupWithBackupCodesAsync(
+        Guid userId, Guid tenantId, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken)
+        => new(await VerifySetupWithOutcomeAsync(userId, tenantId, request, cancellationToken), null, null);
+    /// <summary>VerifyEnrollmentSetupAsync that returns the new backup codes on success (null on failure).</summary>
+    async Task<IReadOnlyList<string>?> VerifyEnrollmentSetupWithBackupCodesAsync(string enrollmentToken, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken)
+        => await VerifyEnrollmentSetupAsync(enrollmentToken, request, cancellationToken) ? Array.Empty<string>() : null;
+    /// <summary>Replaces the tenant user's backup codes; needs a current app code. The old set stops working.</summary>
+    Task<(Zayra.Api.Application.Auth.MfaBackupCodesOutcome Outcome, IReadOnlyList<string>? BackupCodes)> RegenerateBackupCodesAsync(
+        Guid userId, Guid tenantId, string totpCode, RequestContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IMfaService does not support backup codes.");
     async Task<Zayra.Api.Application.Auth.MfaDisableOutcome> DisableWithOutcomeAsync(Guid userId, Guid tenantId, string totpCode, RequestContext context, CancellationToken cancellationToken)
         => await DisableAsync(userId, tenantId, totpCode, cancellationToken)
             ? Zayra.Api.Application.Auth.MfaDisableOutcome.Disabled

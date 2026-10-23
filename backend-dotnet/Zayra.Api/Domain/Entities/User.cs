@@ -40,6 +40,12 @@ public class User : ITenantOwned
     /// <summary>Last accepted TOTP time-step; any code at or below it is refused (replay protection).</summary>
     public long? MfaLastTotpStep { get; set; }
     public int MfaFailedCount { get; set; }
+    /// <summary>
+    /// The unused one-time backup codes of the current factor, as one salted PBKDF2 set (<see cref="Zayra.Api.Infrastructure.Auth.MfaBackupCodes"/>);
+    /// never the codes. NULL when none is left or two-step is off (CHECK: never without a factor). Cleared with the factor
+    /// by every path (the ZayraDbContext save hook catches the ones that do not do it themselves).
+    /// </summary>
+    public string? MfaRecoveryCodeHashes { get; set; }
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }
     public Guid? DeletedBy { get; set; }
