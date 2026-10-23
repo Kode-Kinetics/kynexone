@@ -14,7 +14,7 @@ import { SetupSectionHeader } from '../components/setup/SetupSectionHeader';
 import { buildSetupSearchIndex, type SetupSearchEntry } from '../components/setup/setupSearch';
 import { progressCompany } from '../components/setup/setupProgress';
 import { useGuidedSetupCompanies } from '../components/setup/useSetupProgress';
-import { readinessProgress } from '../lib/companySetupWizard';
+import { readinessProgress, setupLandingCompanyLink } from '../lib/companySetupWizard';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
@@ -2468,6 +2468,24 @@ const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
 /** A revalidation shorter than this freezes the page silently; a longer one explains the freeze. */
 export const AUTHORIZATION_BANNER_DELAY_MS = 800;
 
+/** Set once Setup has mounted in this document: later visits arrive by in-app navigation, not by a document load. */
+let setupDocumentLandingSeen = false;
+
+/**
+ * How the browser loaded this document, when this Setup visit is that load (the document landed on /setup and Setup
+ * has not mounted before). Otherwise, and on the server, an ordinary navigation.
+ */
+function documentLandingNavigation(): string {
+  if (typeof window === 'undefined' || setupDocumentLandingSeen) return 'navigate';
+  try {
+    const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (!entry || new URL(entry.name).pathname !== '/setup') return 'navigate';
+    return entry.type;
+  } catch {
+    return 'navigate';
+  }
+}
+
 export function SetupPage() {
   const router = useRouter();
   const t = useT();
@@ -2509,6 +2527,12 @@ export function SetupPage() {
     setEditorDirty(false);
     setPendingStarterFiles(false);
   }, []);
+  // A Guided setup deep link is the address this Setup visit arrived with, read once here, before the company scope is
+  // reconciled into the URL. Every later return to Guided setup (navigation, search, Back) keeps `companyId` only as
+  // the scope and opens the chooser.
+  const landingCompanyLink = useRef<string | null | undefined>(undefined);
+  if (landingCompanyLink.current === undefined) landingCompanyLink.current = setupLandingCompanyLink(new URLSearchParams(searchParams?.toString()), documentLandingNavigation());
+  useEffect(() => { setupDocumentLandingSeen = true; }, []);
   const authorizedCompany = useSetupCompanyQuery();
   const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, pendingStarterFiles, authorizedCompany);
   const setupPath = resolveSetupPath(new URLSearchParams(searchParams?.toString()), {
@@ -2563,6 +2587,7 @@ export function SetupPage() {
     return `/setup?${params.toString()}`;
   };
   const selectTab = (tab: Tab) => {
+    landingCompanyLink.current = null;
     if (tab === activeTab) return;
     if (!confirmLeave()) return;
     setActiveTab(tab);
@@ -2632,6 +2657,8 @@ export function SetupPage() {
     ? (setupPath.path === 'guided' ? 'guidedSetup' : setupPath.path === 'policyStarter' ? 'policyStarter' : 'allSetupAreas')
     : selectedTab;
   const selectNavigation = (id: SetupNavId) => {
+    // An in-page move: whatever the arrival named is no longer a deep link.
+    landingCompanyLink.current = null;
     if (id !== 'guidedSetup' && id !== 'allSetupAreas' && id !== 'policyStarter') {
       selectTab(id);
       return;
@@ -2877,7 +2904,7 @@ export function SetupPage() {
               </div>
             </section>}
             {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
-            {isGuided && <GuidedSetupChooser showHeading={false} />}
+            {isGuided && <GuidedSetupChooser showHeading={false} linkedCompanyId={landingCompanyLink.current} onLinkedCompanyUsed={() => { landingCompanyLink.current = null; }} />}
             {isStarter && <div className="flex flex-col">
               {/* One compact line. On a phone it follows the starter, so the starter's first screen keeps its
                   own controls (setup-experience: policy entry in the first viewport). */}

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { setupSection, setupSectionEntries, setupSectionsToggle } from './setupSections';
+import { openSetupSection, setupSection, setupSectionEntries, setupSectionsToggle } from './setupSections';
 
 // Wave 2 of the Setup design review (owner-approved 2026-10-22): setup progress from persisted data, and "Find a
 // setting" in Setup's section column and the ⌘K palette. Every API call is intercepted; nothing is written.
@@ -33,7 +33,7 @@ test.afterEach(async ({ page }) => {
   expect(errorsByPage.get(page), 'No application runtime errors').toEqual([]);
 });
 
-interface BootOptions { url?: string; arabic?: boolean; dark?: boolean; readOnly?: boolean; complete?: boolean; readinessFails?: boolean; dirtyGuard?: boolean }
+interface BootOptions { url?: string; arabic?: boolean; dark?: boolean; readOnly?: boolean; complete?: boolean; readinessFails?: boolean; dirtyGuard?: boolean; expectWizard?: boolean }
 
 async function boot(page: Page, options: BootOptions = {}) {
   const writes: string[] = [];
@@ -97,6 +97,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
   await page.goto(options.url ?? '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=overview');
+  if (options.expectWizard) return { writes };
   await expect(page.locator('nav.setup-page-nav')).toBeAttached({ timeout: 30_000 });
   await expect(page.locator('#setup-section-heading')).toBeVisible({ timeout: 30_000 });
   return { writes };
@@ -155,14 +156,51 @@ test('the numbers reconcile with Guided setup and the navigation for the same fi
   // The navigation's quiet count is the same number, and its accessible description says what it counts.
   await expect(guided.locator('[data-setup-entry-status]')).toHaveText(`${DONE} of ${TOTAL}`);
   await expect(guided).toHaveAccessibleDescription(`Workspace Fixture LLC: ${DONE} of ${TOTAL} setup items done`);
-  // Opened by its plain address: a Guided setup address that names a company jumps straight into that company's
-  // wizard (GuidedSetupChooser's deep link), which is not the chooser this compares with.
-  await page.goto('/setup?tab=aiSetup&path=guided');
+  await guided.click();
   await expect(sectionHeading(page)).toHaveText('Guided setup');
   await expect((await setupSection(page, 'Guided setup')).locator('[data-setup-entry-status]')).toHaveText(`${DONE} of ${TOTAL}`);
   const row = page.getByTestId('chooser-company').filter({ hasText: 'Workspace Fixture LLC' });
   await expect(row.getByTestId('chooser-readiness')).toHaveText(`${DONE} of ${TOTAL} done`);
   if (isWide(page)) await shot(page, `${viewportName(page)}-en-guided-count`);
+});
+
+test('with a company selected, the navigation’s Guided setup shows the chooser and the scope survives the round trip', async ({ page }) => {
+  // The second company is the selected scope (a deep link to All setup areas selects it).
+  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=second-company&area=overview' });
+  await expect(page.getByTestId('setup-progress-summary')).toHaveText(`Second Fixture LLC · ${TOTAL} of ${TOTAL} setup items done`);
+  await (await setupSection(page, 'Guided setup')).click();
+  await expect(sectionHeading(page)).toHaveText('Guided setup');
+  await expect(page.getByTestId('guided-setup-chooser')).toBeVisible();
+  await expect(page.getByTestId('chooser-company')).toHaveCount(2);
+  // The address still carries the scope, and Setup did not jump into that company's wizard.
+  await expect(page).toHaveURL(/[?&]path=guided(&|$)/);
+  await expect(page).toHaveURL(/[?&]companyId=second-company(&|$)/);
+  await expect(page).not.toHaveURL(/\/complete/);
+  // A reload of that address is not a deep link either.
+  await page.reload();
+  await expect(page.getByTestId('guided-setup-chooser')).toBeVisible();
+  await expect(page).not.toHaveURL(/\/complete/);
+  // Nor is coming Back to it from another section.
+  await openSetupSection(page, 'Grades');
+  await expect(sectionHeading(page)).toHaveText('Grades');
+  await page.goBack();
+  await expect(sectionHeading(page)).toHaveText('Guided setup');
+  await expect(page.getByTestId('guided-setup-chooser')).toBeVisible();
+  await expect(page).not.toHaveURL(/\/complete/);
+  // Back to All setup areas: the same company scope.
+  await openSetupSection(page, 'All setup areas');
+  await expect(sectionHeading(page)).toHaveText('All setup areas');
+  await expect(page).toHaveURL(/[?&]companyId=second-company(&|$)/);
+  await expect(page.getByTestId('setup-progress-summary')).toHaveText(`Second Fixture LLC · ${TOTAL} of ${TOTAL} setup items done`);
+  if (isWide(page)) await shot(page, `${viewportName(page)}-en-guided-from-nav-scope-kept`);
+});
+
+test('a link from outside Setup that names a company still opens its wizard', async ({ page }) => {
+  await boot(page, { url: '/setup?tab=aiSetup&path=guided&companyId=fixture-company', expectWizard: true });
+  await expect(page).toHaveURL(/\/setup\/company\/fixture-company\/complete/);
+  // The old studio's bookmark form too.
+  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=fixture-company');
+  await expect(page).toHaveURL(/\/setup\/company\/fixture-company\/complete/);
 });
 
 test('the navigation count is hidden once the checklist is done', async ({ page }) => {
