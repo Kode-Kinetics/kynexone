@@ -23,6 +23,8 @@ export interface UserListItem {
   employeeCode?: string | null;
   lastLoginAtUtc?: string;
   createdAtUtc: string;
+  /** Two-step sign-in is set up for this login. Absent from an older API: treated as not set up. */
+  mfaEnabled?: boolean;
 }
 
 /** A login as the employee-link dialog shows it. */
@@ -326,6 +328,15 @@ export const usersApi = {
     client
       .post<PasswordResetLinkResult>(`/api/access/users/${userId}/password-reset-link`)
       .then(r => r.data),
+
+  /**
+   * Resets another user's two-step sign-in at once: their factor, backup codes and trusted browsers
+   * are cleared and every session ends. 204. Refusals: 400 ERR_MFA_RESET_REASON (reason not 3–500
+   * characters), 403 ERR_MFA_RESET_SELF or a privilege-ceiling code (`access_*`, with message /
+   * messageAr), 404 (no such user in this company), 409 ERR_MFA_NOT_ENABLED.
+   */
+  resetMfa: (userId: string, reason: string) =>
+    client.post(`/api/access/users/${encodeURIComponent(userId)}/mfa/reset`, { reason }).then(() => undefined),
 
   delete: (userId: string) =>
     client.delete(`/api/access/users/${userId}`),

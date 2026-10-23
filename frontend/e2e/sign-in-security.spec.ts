@@ -8,7 +8,10 @@ import { expect, test, type Page, type Route } from '@playwright/test';
  * Over mocked API routes shaped exactly as that contract: the challenge's `rememberDeviceDays`,
  * `rememberDevice` on challenge/verify, GET /api/auth/mfa/status with `canDisable`,
  * `rememberDeviceDays` and `trustedDeviceCount`, setup / verify-setup / disable with their
- * `{ code }` refusals, and GET / DELETE /api/auth/mfa/trusted-devices. The server's rules (who may
+ * `{ code }` refusals, and GET / DELETE /api/auth/mfa/trusted-devices. Wave 2 (mfa2-contract):
+ * verify-setup and enrollment/verify-setup answer 200 `{ backupCodes }` (or the older 204),
+ * POST /api/auth/mfa/backup-codes regenerates, status gains `backupCodesRemaining`, and
+ * challenge/verify takes `backupCode` instead of `totpCode`. The server's rules (who may
  * turn it off, what a trusted browser skips, revocation) are the backend suite's job; these prove
  * the screens: what is offered, what is sent, and what each refusal says.
  *
@@ -34,7 +37,12 @@ type Reply = { status: number; body?: unknown };
 interface Status {
   enabled: boolean; required: boolean; requiredBecause: string | null; enforceFromUtc: string | null;
   enforced: boolean; promptToEnroll: boolean; canDisable: boolean; rememberDeviceDays: number; trustedDeviceCount: number;
+  backupCodesRemaining?: number;
 }
+
+// Ten codes in the contract's shape: 10 Crockford base32 characters, shown as XXXXX-XXXXX.
+const CODES = ['K7Q2M-9XH4P', '3TBWN-6RZ8D', 'HV5JC-2YQ7A', 'M8E4R-XK3TG', '9PDZW-5NC2H', 'B6TXQ-7JM4V', 'R2HKE-8WP9Z', '5YGCN-3DT6Q', 'WQ7MA-4BX2K', 'D3ZVR-9HE5N'];
+const NEW_CODES = ['XN4QA-7TB2R', 'GK9WD-3MZ5E', 'P2VHC-8QJ6T', 'Z5RMB-4XW9K', 'C7TEN-2HD3Q', 'J3KZV-6PA8M', 'T8QXW-5BG2D', 'E4MDR-9CN7Z', 'A6HPK-3VT5X', 'Y9BCG-7RE4W'];
 
 interface Device {
   id: string; createdAtUtc: string; lastUsedAtUtc: string | null; expiresAtUtc: string;
@@ -78,13 +86,24 @@ interface World {
   theme?: 'light' | 'dark';
   signedIn?: boolean;
   login?: Reply[];
+  /** verify-setup and enrollment/verify-setup answer 200 with these; absent = the older 204 (no codes). */
+  backupCodes?: string[];
+  /** POST /api/auth/mfa/backup-codes replies; default 200 with NEW_CODES. */
+  regenerate?: Reply[];
+  /** POST /api/auth/mfa/challenge/verify replies; default a session. */
+  challengeVerify?: Reply[];
+  /** Stub navigator.clipboard so Copy all can be read back in every project. */
+  clipboard?: boolean;
 }
 
 async function mockApi(page: Page, world: World) {
   const calls: Call[] = [];
   const errors: string[] = [];
+  /** Everything the page writes to the console: backup codes must never appear in it. */
+  const logs: string[] = [];
   let sessionEnded = false;
   page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => logs.push(message.text()));
   await page.addInitScript(({ locale, theme, signedIn }) => {
     if (locale) localStorage.setItem('kynexone-locale-choice-v2', locale);
     localStorage.setItem('kynexone.theme', theme ?? 'light');
@@ -95,6 +114,17 @@ async function mockApi(page: Page, world: World) {
       sessionStorage.setItem('fixture-booted', '1');
     }
   }, { locale: world.locale, theme: world.theme, signedIn: world.signedIn ?? true });
+  if (world.clipboard) {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => { (window as any).__copied = text; },
+          readText: async () => (window as any).__copied ?? '',
+        },
+      });
+    });
+  }
 
   const next = (list: Reply[] | undefined, fallback: Reply) => (!list?.length ? fallback : list.length > 1 ? list.shift()! : list[0]);
 
@@ -111,8 +141,17 @@ async function mockApi(page: Page, world: World) {
 
     if (p === '/api/auth/login') { const r = next(world.login, { status: 200, body: {} }); return json(r.body, r.status); }
     if (p === '/api/auth/mfa/enrollment/setup') return json({ provisioningUri: URI });
+    // An older API answered 200 {} here; a wave-2 API answers 200 { backupCodes }.
+    if (p === '/api/auth/mfa/enrollment/verify-setup') return json(world.backupCodes ? { backupCodes: world.backupCodes } : {});
     if (p === '/api/auth/mfa/challenge/verify') {
+      const r = next(world.challengeVerify, { status: 200 });
+      if (r.status !== 200) return json(r.body, r.status);
       return json({ accessToken: 'fixture-access', refreshToken: 'fixture-refresh', expiresAtUtc: '2026-10-23T00:00:00Z', user: user(!!world.privileged) });
+    }
+    if (p === '/api/auth/mfa/backup-codes' && method === 'POST') {
+      const r = next(world.regenerate, { status: 200, body: { backupCodes: NEW_CODES } });
+      if (r.status === 200) world.status = { ...world.status, backupCodesRemaining: (r.body as any)?.backupCodes?.length ?? 0 };
+      return json(r.body, r.status);
     }
     if (p === '/api/auth/me') return sessionEnded ? json({ message: 'Session ended.' }, 401) : json(user(!!world.privileged));
     if (p === '/api/auth/refresh') return sessionEnded ? json({ message: 'Session ended.' }, 401) : json({ accessToken: 'fixture-access', refreshToken: 'fixture-refresh' });
@@ -122,9 +161,10 @@ async function mockApi(page: Page, world: World) {
     if (p === '/api/auth/mfa/verify-setup' && method === 'POST') {
       const r = next(world.verifySetup, { status: 204 });
       if (r.status === 204) {
-        world.status = status({ ...world.status, enabled: true, promptToEnroll: false, canDisable: !world.status.required });
+        world.status = status({ ...world.status, enabled: true, promptToEnroll: false, canDisable: !world.status.required,
+          ...(world.backupCodes ? { backupCodesRemaining: world.backupCodes.length } : {}) });
         if (world.changeEndsSession) sessionEnded = true;
-        return noContent();
+        return world.backupCodes ? json({ backupCodes: world.backupCodes }) : noContent();
       }
       return json(r.body, r.status);
     }
@@ -154,7 +194,7 @@ async function mockApi(page: Page, world: World) {
     // Anything else the shell asks for: empty, never a real record.
     return json(method === 'GET' ? [] : {});
   });
-  return { calls, errors, world };
+  return { calls, errors, logs, world };
 }
 
 const card = (page: Page) => page.getByTestId('sign-in-security-card');
@@ -238,7 +278,7 @@ test.describe('sign-in code step: trust this browser', () => {
     await expect(page.locator('#mfa-code')).toHaveCSS('text-align', 'center');
     await expect(page.getByLabel('الرمز المكوّن من 6 أرقام', { exact: true })).toHaveAttribute('id', 'mfa-code');
     await page.getByRole('button', { name: 'فقدت هاتفك؟' }).click();
-    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveText('اطلب من مسؤول النظام في شركتك إعادة تعيين التحقق بخطوتين، وستُعدّه من جديد عند تسجيل الدخول التالي.');
+    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveText('اطلب من مسؤول النظام في شركتك إعادة تعيين التحقق بخطوتين، أو استخدم أحد رموزك الاحتياطية. بعد إعادة التعيين ستُعدّه من جديد عند تسجيل الدخول التالي.');
     await shot(page, 'login-code-step-ar', info.outputPath.bind(info));
   });
 
@@ -252,7 +292,8 @@ test.describe('sign-in code step: trust this browser', () => {
     await page.keyboard.press('Enter');
     await expect(lost).toHaveAttribute('aria-expanded', 'true');
     await expect(lost).toHaveAttribute('aria-controls', 'mfa-lost-phone-help');
-    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveText("Ask your company's administrator to reset two-step sign-in. You'll set it up again the next time you sign in.");
+    // The existing way out, plus the backup codes that need nobody.
+    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveText("Ask your company's administrator to reset two-step sign-in, or use one of your backup codes. After a reset, you'll set it up again the next time you sign in.");
     await page.keyboard.press('Enter');
     await expect(page.getByTestId('mfa-lost-phone-help')).toHaveCount(0);
   });
@@ -301,7 +342,7 @@ test.describe('sign-in code step: trust this browser', () => {
     await page.locator('#li-pw').press('Enter');
     await expect(page.getByRole('heading', { name: 'Set up two-step sign-in' })).toBeVisible();
     await expect(page.getByLabel('6-digit code', { exact: true })).toHaveAttribute('id', 'mfa-enroll-code');
-    await expect(page.getByText('If you lose this phone, your administrator can reset it.')).toBeVisible();
+    await expect(page.getByText('If you lose this phone, your administrator can reset it, or you can use one of your backup codes.')).toBeVisible();
     await expect(page.getByText(/two-factor/i)).toHaveCount(0);
     await page.getByLabel('6-digit code', { exact: true }).fill('123456');
     await page.getByRole('button', { name: 'Turn on two-step sign-in' }).click();
@@ -346,7 +387,7 @@ test.describe('Sign-in security: an everyday user turns it on and off', () => {
     await expect(code).toHaveAttribute('autocomplete', 'one-time-code');
     await expect(code).toHaveAttribute('inputmode', 'numeric');
     await expect(page.getByText('Turning it on signs you out everywhere else, and you may need to sign in again here.')).toBeVisible();
-    await expect(page.getByTestId('two-step-lost-phone-note')).toHaveText('If you lose this phone, your administrator can reset it.');
+    await expect(page.getByTestId('two-step-lost-phone-note')).toHaveText('If you lose this phone, your administrator can reset it, or you can use one of your backup codes.');
     // Nothing typed yet: "Turn on" is visibly disabled (grey), not a faded blue.
     await expect(page.getByRole('button', { name: 'Turn on', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Turn on', exact: true })).toHaveCSS('background-color', 'rgb(241, 245, 249)');
@@ -357,6 +398,9 @@ test.describe('Sign-in security: an everyday user turns it on and off', () => {
     await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is on');
     await expect(card(page).getByText('Two-step sign-in is on. You were signed out everywhere else.')).toBeVisible();
     expect(api.calls.find((c) => c.path === '/api/auth/mfa/verify-setup')?.body).toEqual({ tempSecret: 'JBSWY3DPEHPK3PXP', totpCode: '654321' });
+    // An API from before backup codes answers 204: no codes step, and no count promised.
+    await expect(page.getByTestId('backup-codes-step')).toHaveCount(0);
+    await expect(page.getByTestId('backup-codes-remaining')).toHaveCount(0);
     // On now: the trusted browsers appear, empty.
     await expect(page.getByTestId('trusted-browsers-empty')).toHaveText('No trusted browsers. Every sign-in asks for a code.');
     expect(api.errors).toEqual([]);
@@ -603,6 +647,383 @@ test.describe('trusted browsers', () => {
     await mockApi(page, { status: status({ enabled: true, rememberDeviceDays: 0 }), devices: [] });
     await openSecurity(page);
     await expect(trusted(page).getByText('Your company has switched off trusted browsers, so every sign-in asks for a code.')).toBeVisible();
+  });
+});
+
+const codesStep = (page: Page) => page.getByTestId('backup-codes-step');
+const ENROLMENT = { status: 200, body: { mfaEnrollmentRequired: true, enrollmentToken: 'enr-1', expiresInSeconds: 600, message: 'Set up two-step sign-in.' } };
+const challengeReply = (days: number) => ({ status: 200, body: { mfaRequired: true, challengeToken: 'chal-1', expiresInSeconds: 300, rememberDeviceDays: days } });
+
+/** After Done, no code is left anywhere in the page: not in the DOM, not in an attribute. */
+async function expectCodesGone(page: Page, codes: string[]) {
+  const html = await page.content();
+  for (const c of codes) {
+    expect(html).not.toContain(c);
+    expect(html).not.toContain(c.replace('-', ''));
+  }
+}
+
+/** No code was ever written to the console. */
+function expectNotLogged(logs: string[], codes: string[]) {
+  expect(logs.filter((line) => codes.some((c) => line.includes(c) || line.includes(c.replace('-', ''))))).toEqual([]);
+}
+
+/** Copy all puts every code on the clipboard, and Download saves kynexone-backup-codes.txt with every code. */
+async function expectCopyAndDownload(page: Page, codes: string[]) {
+  const step = codesStep(page);
+  await step.getByTestId('backup-codes-copy').click();
+  await expect(step.getByTestId('backup-codes-copy')).toHaveText('Copied');
+  await expect(step.getByRole('status')).toHaveText('The codes are copied. Paste them somewhere safe.');
+  const copied = await page.evaluate(() => (window as any).__copied as string);
+  for (const c of codes) expect(copied).toContain(c);
+  expect(copied).toContain('Each code works once. Keep them somewhere safe, away from your phone.');
+  const [download] = await Promise.all([page.waitForEvent('download'), step.getByRole('button', { name: 'Download' }).click()]);
+  expect(download.suggestedFilename()).toBe('kynexone-backup-codes.txt');
+  const text = fs.readFileSync((await download.path())!, 'utf8');
+  for (const c of codes) expect(text).toContain(c);
+  expect(text).toContain(EMAIL);
+}
+
+async function turnOnFromPage(page: Page) {
+  await openSecurity(page);
+  await card(page).getByRole('button', { name: 'Turn on two-step sign-in' }).click();
+  await page.getByLabel('Enter the 6-digit code the app shows').fill('654321');
+  await page.getByRole('button', { name: 'Turn on', exact: true }).click();
+  await expect(codesStep(page)).toBeVisible();
+}
+
+async function enrolAtSignIn(page: Page, code = '123456') {
+  await page.goto('/login');
+  await page.locator('#li-em').fill(EMAIL);
+  await page.locator('#li-pw').fill('Desert-Falcon-2026');
+  await page.locator('#li-pw').press('Enter');
+  await page.locator('#mfa-enroll-code').fill(code);
+  await page.locator('#mfa-enroll-code').press('Enter');
+  await expect(codesStep(page)).toBeVisible();
+}
+
+test.describe('backup codes: saved once, after turning on', () => {
+  test('on the page: two columns, Copy all and Download work, "I\'ve saved" gates Done, and Done leaves nothing behind', async ({ page }, info) => {
+    const api = await mockApi(page, { status: status(), devices: [], backupCodes: CODES, clipboard: true });
+    await turnOnFromPage(page);
+    const step = codesStep(page);
+    await expect(step.getByRole('heading', { name: 'Save your backup codes' })).toBeFocused();
+    // Turned on, so the heading says so; but nothing is re-read under the codes (turning on can end the session).
+    await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is on');
+    const verifiedAt = api.calls.findIndex((c) => c.path === '/api/auth/mfa/verify-setup');
+    const list = step.getByTestId('backup-codes-list');
+    await expect(list.locator('li')).toHaveText(CODES);
+    expect(await list.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(2);
+    expect(await list.evaluate((el) => getComputedStyle(el).fontFamily)).toMatch(/mono/i);
+    await expect(list.locator('li').first()).toHaveAttribute('dir', 'ltr');
+    await expect(step.getByTestId('backup-codes-keep-safe')).toHaveText('Each code works once. Keep them somewhere safe, away from your phone.');
+    const done = step.getByRole('button', { name: 'Done' });
+    await expect(done).toBeDisabled();
+    await shot(page, 'codes-step-page-en', info.outputPath.bind(info));
+
+    await expectCopyAndDownload(page, CODES);
+    await expect(done).toBeDisabled();
+    await step.getByRole('checkbox', { name: "I've saved these codes" }).check();
+    await expect(done).toBeEnabled();
+    expect(api.calls.slice(verifiedAt + 1).filter((c) => c.path.startsWith('/api/auth/mfa/'))).toEqual([]);
+    await done.click();
+
+    await expect(codesStep(page)).toHaveCount(0);
+    await expect(card(page).getByText('Two-step sign-in is on. You were signed out everywhere else.')).toBeVisible();
+    await expect(card(page).getByTestId('backup-codes-remaining')).toHaveText('Backup codes: 10 left');
+    await expect(card(page).getByTestId('two-step-status')).toBeFocused();
+    await expectCodesGone(page, CODES);
+    expectNotLogged(api.logs, CODES);
+    expect(api.errors).toEqual([]);
+  });
+
+  test('when turning on ended this session, the codes still come first, then sign-in says why', async ({ page }) => {
+    await mockApi(page, { status: status(), devices: [], backupCodes: CODES, changeEndsSession: true });
+    await turnOnFromPage(page);
+    await expect(codesStep(page).getByTestId('backup-codes-list').locator('li')).toHaveCount(10);
+    await codesStep(page).getByRole('checkbox', { name: "I've saved these codes" }).check();
+    await codesStep(page).getByRole('button', { name: 'Done' }).click();
+    await page.waitForURL(/\/login/);
+    await expect(page.locator('.lx-ok')).toHaveText(/Two-step sign-in is on, and you were signed out everywhere for your security\./);
+    await expectCodesGone(page, CODES);
+  });
+
+  test('forced setup at sign-in: the codes come before signing in again', async ({ page }, info) => {
+    const api = await mockApi(page, { status: status(), devices: [], signedIn: false, backupCodes: CODES, clipboard: true, login: [ENROLMENT] });
+    await enrolAtSignIn(page);
+    const step = codesStep(page);
+    await expect(step.getByRole('heading', { name: 'Save your backup codes' })).toBeFocused();
+    await expect(step.getByTestId('backup-codes-list').locator('li')).toHaveText(CODES);
+    expect(await step.getByTestId('backup-codes-list').evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(2);
+    await expect(step.getByTestId('backup-codes-keep-safe')).toHaveText('Each code works once. Keep them somewhere safe, away from your phone.');
+    const done = step.getByRole('button', { name: 'Done' });
+    await expect(done).toBeDisabled();
+    await shot(page, 'codes-step-login-en', info.outputPath.bind(info));
+    await expectCopyAndDownload(page, CODES);
+    await page.locator('label', { hasText: "I've saved these codes" }).click();
+    await expect(step.getByRole('checkbox', { name: "I've saved these codes" })).toBeChecked();
+    await done.click();
+    await expect(page.locator('.lx-ok')).toHaveText('Two-step sign-in is on. Sign in again to continue.');
+    await expect(page.locator('#li-em')).toBeVisible();
+    await expectCodesGone(page, CODES);
+    expectNotLogged(api.logs, CODES);
+    expect(api.errors).toEqual([]);
+  });
+
+  test('an older API (200 without codes) at sign-in goes straight back to sign in', async ({ page }) => {
+    await mockApi(page, { status: status(), devices: [], signedIn: false, login: [ENROLMENT] });
+    await page.goto('/login');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.locator('#li-pw').fill('Desert-Falcon-2026');
+    await page.locator('#li-pw').press('Enter');
+    await page.locator('#mfa-enroll-code').fill('123456');
+    await page.locator('#mfa-enroll-code').press('Enter');
+    await expect(page.locator('.lx-ok')).toHaveText('Two-step sign-in is on. Sign in again to continue.');
+    await expect(codesStep(page)).toHaveCount(0);
+  });
+});
+
+test.describe('backup codes: on the Sign-in security card', () => {
+  test('Get new backup codes needs a current code, warns the old ones stop working, and the count updates', async ({ page }, info) => {
+    const api = await mockApi(page, {
+      status: status({ enabled: true, backupCodesRemaining: 3 }), devices: [],
+      regenerate: [{ status: 400, body: { code: 'ERR_MFA_CODE_INVALID', message: 'Invalid code.' } }, { status: 200, body: { backupCodes: NEW_CODES } }],
+    });
+    await openSecurity(page);
+    await expect(card(page).getByTestId('backup-codes-remaining')).toHaveText('Backup codes: 3 left');
+    // 3 or fewer: a quiet note, not an alarm.
+    await expect(card(page).getByTestId('backup-codes-low')).toHaveText('Only a few backup codes are left. Get new ones before they run out.');
+    await expect(card(page).getByTestId('backup-codes-low').getByRole('alert')).toHaveCount(0);
+    await shot(page, 'card-low-codes-en', info.outputPath.bind(info));
+
+    await card(page).getByRole('button', { name: 'Get new backup codes' }).click();
+    await expect(page.getByTestId('backup-codes-regenerate-heading')).toBeFocused();
+    await expect(page.getByTestId('backup-codes-regenerate-warning')).toHaveText('Your old codes stop working. Only the new ones will sign you in.');
+    const submit = page.getByRole('button', { name: 'Get new codes' });
+    await expect(submit).toBeDisabled();
+    const code = page.getByLabel('Current 6-digit code from your authenticator app');
+    await expect(code).toHaveAttribute('autocomplete', 'one-time-code');
+    await shot(page, 'card-regenerate-en', info.outputPath.bind(info));
+    await code.fill('111111');
+    await submit.click();
+    await expect(page.getByRole('alert').filter({ hasText: "That code didn't match. Enter the newest code from your authenticator app. Each code works only once." })).toBeVisible();
+    await expect(codesStep(page)).toHaveCount(0);
+    await code.fill('222222');
+    await submit.click();
+
+    const step = codesStep(page);
+    await expect(step.getByRole('heading', { name: 'Save your backup codes' })).toBeFocused();
+    await expect(step).toContainText('These replace your old backup codes, which no longer work.');
+    await expect(step.getByTestId('backup-codes-list').locator('li')).toHaveText(NEW_CODES);
+    await expect(step.getByRole('button', { name: 'Done' })).toBeDisabled();
+    await step.getByRole('checkbox', { name: "I've saved these codes" }).check();
+    await step.getByRole('button', { name: 'Done' }).click();
+
+    await expect(card(page).getByTestId('backup-codes-remaining')).toHaveText('Backup codes: 10 left');
+    await expect(card(page).getByTestId('backup-codes-low')).toHaveCount(0);
+    await expect(card(page).getByText('Your new backup codes are ready. The old ones no longer work.')).toBeVisible();
+    await expect(card(page).getByTestId('two-step-status')).toBeFocused();
+    expect(api.calls.filter((c) => c.path === '/api/auth/mfa/backup-codes').map((c) => c.body)).toEqual([{ totpCode: '111111' }, { totpCode: '222222' }]);
+    await expectCodesGone(page, NEW_CODES);
+    expectNotLogged(api.logs, NEW_CODES);
+  });
+
+  test('the note shows at 3 or fewer, not at 4, and says so when none are left', async ({ page }) => {
+    const api = await mockApi(page, { status: status({ enabled: true, backupCodesRemaining: 4 }), devices: [] });
+    await openSecurity(page);
+    await expect(card(page).getByTestId('backup-codes-remaining')).toHaveText('Backup codes: 4 left');
+    await expect(card(page).getByTestId('backup-codes-low')).toHaveCount(0);
+    api.world.status = status({ enabled: true, backupCodesRemaining: 0 });
+    await page.reload();
+    await expect(card(page).getByTestId('backup-codes-remaining')).toHaveText('Backup codes: 0 left', { timeout: 30_000 });
+    await expect(card(page).getByTestId('backup-codes-low')).toHaveText('You have no backup codes left. Get new ones so you can still sign in without your phone.');
+  });
+
+  test('Cancel returns focus to Get new backup codes; a 409 says two-step is off', async ({ page }) => {
+    await mockApi(page, {
+      status: status({ enabled: true, backupCodesRemaining: 8 }), devices: [],
+      regenerate: [{ status: 409, body: { code: 'ERR_MFA_NOT_ENABLED', message: 'Not enabled.' } }],
+    });
+    await openSecurity(page);
+    await card(page).getByRole('button', { name: 'Get new backup codes' }).click();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(card(page).getByRole('button', { name: 'Get new backup codes' })).toBeFocused();
+    await card(page).getByRole('button', { name: 'Get new backup codes' }).click();
+    await page.getByLabel('Current 6-digit code from your authenticator app').fill('123456');
+    await page.getByRole('button', { name: 'Get new codes' }).click();
+    await expect(card(page).getByText('Two-step sign-in is off for your account, so there are no backup codes.')).toBeVisible();
+    await expect(codesStep(page)).toHaveCount(0);
+  });
+
+  test('a status without a count (an older API) promises nothing', async ({ page }) => {
+    await mockApi(page, { status: status({ enabled: true }), devices: [] });
+    await openSecurity(page);
+    await expect(card(page).getByTestId('backup-codes-remaining')).toHaveCount(0);
+    await expect(card(page).getByRole('button', { name: 'Get new backup codes' })).toHaveCount(0);
+  });
+});
+
+test.describe('sign-in code step: a backup code instead', () => {
+  async function reachCodeStep(page: Page) {
+    await page.goto('/login');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.locator('#li-pw').fill('Desert-Falcon-2026');
+    await page.locator('#li-pw').press('Enter');
+    await expect(page.locator('#mfa-code')).toBeVisible();
+  }
+
+  test('switching keeps focus on the field, hides the trust choice, and sends backupCode without rememberDevice', async ({ page }, info) => {
+    const api = await mockApi(page, { status: status({ enabled: true }), devices: [], signedIn: false, login: [challengeReply(30)] });
+    await reachCodeStep(page);
+    // Ticked before switching: a backup code still never trusts this browser.
+    await page.getByTestId('mfa-trust-browser').check();
+    await page.getByRole('button', { name: 'Use a backup code instead' }).click();
+    const field = page.getByLabel('Backup code', { exact: true });
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute('type', 'text');
+    await expect(field).toHaveAttribute('autocomplete', 'one-time-code');
+    await expect(page.getByTestId('mfa-trust-browser')).toHaveCount(0);
+    await expect(page.locator('#mfa-code')).toHaveCount(0);
+    await expect(page.getByText('Enter one of the backup codes you saved when you turned on two-step sign-in.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Verify' })).toBeDisabled();
+    await shot(page, 'login-backup-code-en', info.outputPath.bind(info));
+
+    // And back, from the keyboard: the cursor goes to the field now shown, and the trust choice returns.
+    await page.getByRole('button', { name: 'Use the app code instead' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mfa-code')).toBeFocused();
+    await expect(page.getByTestId('mfa-trust-browser')).toBeVisible();
+    await page.getByRole('button', { name: 'Use a backup code instead' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(field).toBeFocused();
+
+    // As read off paper: lower case, a space instead of the hyphen.
+    await field.fill('k7q2m 9xh4p');
+    await page.getByRole('button', { name: 'Verify' }).click();
+    await expect.poll(() => api.calls.find((c) => c.path === '/api/auth/mfa/challenge/verify')?.body)
+      .toEqual({ challengeToken: 'chal-1', backupCode: 'K7Q2M9XH4P' });
+    await page.waitForURL(/\/(ess|dashboard)/);
+    expect(api.errors).toEqual([]);
+  });
+
+  test('a wrong or used backup code, a wrong app code, and a missing code each say so', async ({ page }) => {
+    const api = await mockApi(page, {
+      status: status({ enabled: true }), devices: [], signedIn: false, login: [challengeReply(0)],
+      challengeVerify: [
+        { status: 400, body: { code: 'ERR_MFA_CODE_INVALID', message: 'Invalid code.' } },
+        { status: 400, body: { code: 'ERR_MFA_CODE_INVALID', message: 'Invalid code.' } },
+        { status: 400, body: { code: 'ERR_MFA_CODE_REQUIRED', message: 'Exactly one code.' } },
+      ],
+    });
+    await reachCodeStep(page);
+    await page.getByRole('button', { name: 'Use a backup code instead' }).click();
+    await page.getByLabel('Backup code', { exact: true }).fill('K7Q2M-9XH4P');
+    await page.getByRole('button', { name: 'Verify' }).click();
+    await expect(page.locator('.lx-fault')).toHaveText("That backup code didn't work. Check it, or use another one. Each code works once.");
+    await page.getByRole('button', { name: 'Use the app code instead' }).click();
+    await expect(page.locator('.lx-fault')).toHaveCount(0);
+    await page.locator('#mfa-code').fill('123456');
+    await page.getByRole('button', { name: 'Verify' }).click();
+    await expect(page.locator('.lx-fault')).toHaveText("That code didn't match. Enter the newest code from your authenticator app. Each code works only once.");
+    await page.getByRole('button', { name: 'Use a backup code instead' }).click();
+    await page.getByRole('button', { name: 'Verify' }).click();
+    await expect(page.locator('.lx-fault')).toHaveText('Enter one of your backup codes.');
+    const sent = api.calls.filter((c) => c.path === '/api/auth/mfa/challenge/verify').map((c) => c.body);
+    expect(sent).toEqual([
+      { challengeToken: 'chal-1', backupCode: 'K7Q2M9XH4P' },
+      { challengeToken: 'chal-1', totpCode: '123456' },
+      { challengeToken: 'chal-1', backupCode: 'K7Q2M9XH4P' },
+    ]);
+  });
+
+  test('a backup code that is too short is not sent', async ({ page }) => {
+    const api = await mockApi(page, { status: status({ enabled: true }), devices: [], signedIn: false, login: [challengeReply(30)] });
+    await reachCodeStep(page);
+    await page.getByRole('button', { name: 'Use a backup code instead' }).click();
+    await page.getByLabel('Backup code', { exact: true }).fill('K7Q2M-9XH');
+    await expect(page.getByRole('button', { name: 'Verify' })).toBeDisabled();
+    await page.getByLabel('Backup code', { exact: true }).press('Enter');
+    expect(api.calls.some((c) => c.path === '/api/auth/mfa/challenge/verify')).toBe(false);
+  });
+});
+
+test.describe('backup codes: Arabic, dark and phone', () => {
+  test('Arabic: the switch, the backup field and the forced-setup codes read right to left', async ({ page }, info) => {
+    await mockApi(page, { locale: 'ar', status: status({ enabled: true }), devices: [], signedIn: false, login: [challengeReply(30)] });
+    await page.goto('/login');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.locator('#li-pw').fill('Desert-Falcon-2026');
+    await page.locator('#li-pw').press('Enter');
+    await page.getByRole('button', { name: 'استخدم رمزًا احتياطيًا بدلًا من ذلك' }).click();
+    const field = page.getByLabel('الرمز الاحتياطي', { exact: true });
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute('dir', 'ltr');
+    await expect(field).toHaveCSS('text-align', 'center');
+    await expect(page.getByRole('button', { name: 'استخدم رمز التطبيق بدلًا من ذلك' })).toBeVisible();
+    await shot(page, 'login-backup-code-ar', info.outputPath.bind(info));
+  });
+
+  test('Arabic: the codes step on the page', async ({ page }, info) => {
+    await mockApi(page, { locale: 'ar', status: status(), devices: [], backupCodes: CODES });
+    await page.goto('/account/security');
+    await card(page).getByRole('button', { name: 'تفعيل التحقق بخطوتين' }).click({ timeout: 30_000 });
+    await page.getByLabel('أدخل الرمز المكوّن من 6 أرقام الذي يعرضه التطبيق').fill('654321');
+    await page.getByRole('button', { name: 'تفعيل', exact: true }).click();
+    const step = codesStep(page);
+    const heading = step.getByRole('heading', { name: 'احفظ رموزك الاحتياطية' });
+    await expect(heading).toBeFocused();
+    await expect(heading).toHaveCSS('text-transform', 'none');
+    await expect(heading).toHaveCSS('letter-spacing', 'normal');
+    await expect(step.getByTestId('backup-codes-keep-safe')).toHaveText('يعمل كل رمز مرة واحدة فقط. احتفظ بها في مكان آمن بعيدًا عن هاتفك.');
+    await expect(step.getByTestId('backup-codes-list').locator('li').first()).toHaveAttribute('dir', 'ltr');
+    await expect(step.getByTestId('backup-codes-copy')).toHaveText('نسخ الكل');
+    await expect(step.getByRole('checkbox', { name: 'حفظتُ هذه الرموز' })).toBeVisible();
+    await expect(page.locator('main')).not.toContainText('الثنائي');
+    await shot(page, 'codes-step-page-ar', info.outputPath.bind(info));
+  });
+
+  test('Arabic: forced setup codes on the sign-in card', async ({ page }, info) => {
+    await mockApi(page, { locale: 'ar', status: status(), devices: [], signedIn: false, backupCodes: CODES, login: [ENROLMENT] });
+    await enrolAtSignIn(page);
+    await expect(page.locator('.lx-card')).toHaveAttribute('dir', 'rtl');
+    await expect(codesStep(page).getByRole('heading', { name: 'احفظ رموزك الاحتياطية' })).toBeFocused();
+    await shot(page, 'codes-step-login-ar', info.outputPath.bind(info));
+  });
+
+  test('dark: the codes step and Get new backup codes', async ({ page }, info) => {
+    await mockApi(page, { theme: 'dark', status: status({ enabled: true, backupCodesRemaining: 2 }), devices: [] });
+    await openSecurity(page);
+    await expect(page.locator('html')).toHaveClass(/dark/);
+    await shot(page, 'card-low-codes-dark', info.outputPath.bind(info));
+    await card(page).getByRole('button', { name: 'Get new backup codes' }).click();
+    await page.getByLabel('Current 6-digit code from your authenticator app').fill('123456');
+    await page.getByRole('button', { name: 'Get new codes' }).click();
+    await expect(codesStep(page).getByTestId('backup-codes-list').locator('li')).toHaveText(NEW_CODES);
+    await shot(page, 'codes-step-page-dark', info.outputPath.bind(info));
+  });
+
+  test('390px: the codes step fits on the page and on the sign-in card', async ({ page }, info) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockApi(page, { status: status(), devices: [], backupCodes: CODES });
+    await turnOnFromPage(page);
+    await expect(codesStep(page).getByTestId('backup-codes-list').locator('li')).toHaveCount(10);
+    expect(await codesStep(page).getByTestId('backup-codes-list').evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length)).toBe(2);
+    await expectNoHorizontalScroll(page);
+    await shot(page, 'codes-step-page-390', info.outputPath.bind(info));
+  });
+
+  test('390px: the forced-setup codes fit on the sign-in card', async ({ page }, info) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockApi(page, { status: status(), devices: [], signedIn: false, backupCodes: CODES, login: [ENROLMENT] });
+    await enrolAtSignIn(page);
+    await expectNoHorizontalScroll(page);
+    // Every code is fully inside the card: none clipped at phone width.
+    const cardBox = (await page.locator('.lx-card').boundingBox())!;
+    for (const box of await Promise.all((await codesStep(page).getByTestId('backup-codes-list').locator('li').all()).map((li) => li.boundingBox()))) {
+      expect(box!.x).toBeGreaterThanOrEqual(cardBox.x);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5);
+    }
+    await shot(page, 'codes-step-login-390', info.outputPath.bind(info));
   });
 });
 
