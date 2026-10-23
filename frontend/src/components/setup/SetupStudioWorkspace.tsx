@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { CompanyDto } from '../../api/organization';
 import { useAuth } from '../../contexts/AuthContext';
@@ -15,6 +15,28 @@ import { SetupAreaNavigator } from './SetupAreaNavigator';
 import { SetupFocusedWorkspace } from './SetupFocusedWorkspace';
 import { SetupNextActionsRail } from './SetupNextActionsRail';
 import { SETUP_SECTION_HEADING_ID } from './SetupSectionNav';
+import { useLocale } from '../../contexts/LocaleContext';
+import { readinessProgress } from '../../lib/companySetupWizard';
+import type { ManageableCompany } from '../../api/companySetup';
+import {
+  RECORD_CHECKED_SECTIONS, areaProgressItems, areaStatus, missingReadinessItems, progressCompany,
+  type AreaProgressItem, type AreaStatus, type RecordCheckedSection,
+} from './setupProgress';
+import { useReadinessItems, useRecordCounts, type ProgressLoad } from './useSetupProgress';
+
+/** What a status means, for assistive tech (the row shows the short form). */
+export function areaStatusDescription(status: AreaStatus, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (status.state === 'done') return t('Done: all {total} checked items are set up', { total: status.total });
+  if (status.state === 'notStarted') return t('Not started: none of {total} checked items is set up', { total: status.total });
+  return t('{done} of {total} checked items set up', { done: status.done, total: status.total });
+}
+
+/** "Not started", "{x} of {y}" or "Done": always words, never a colour alone. */
+export function areaStatusText(status: AreaStatus, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (status.state === 'done') return t('Done');
+  if (status.state === 'notStarted') return t('Not started');
+  return t('{done} of {total}', { done: status.done, total: status.total });
+}
 
 interface ReturnOrigin {
   destinationId: string;
@@ -25,8 +47,10 @@ interface ReturnOrigin {
  * All setup areas: the twelve business areas, each area's settings and related workspaces, and an embedded setting
  * opened in place. The page's section header names it; this component starts at the selected scope.
  */
-export function SetupStudioWorkspace({ companies, renderSettings, confirmLeave, onDirtyChange }: {
+export function SetupStudioWorkspace({ companies, guidedCompanies, renderSettings, confirmLeave, onDirtyChange }: {
   companies: CompanyDto[];
+  /** Guided setup's per-company progress, as its chooser reads it (SetupPage loads it once for the navigation too). */
+  guidedCompanies?: { status: ProgressLoad; companies: ManageableCompany[] | null };
   renderSettings: (id: string, onDirtyChange: (dirty: boolean) => void) => ReactNode;
   confirmLeave: SetupNavigationGuard;
   onDirtyChange: (dirty: boolean) => void;
@@ -94,6 +118,42 @@ export function SetupStudioWorkspace({ companies, renderSettings, confirmLeave, 
       return companyName ? t('Applies to {company}', { company: companyName }) : 'Requires a selected company';
     }
     return 'Scope depends on the selected record';
+  };
+
+  // ── Setup progress: Guided setup's checklist for the selected company, and record checks per section ─────────────
+  const { locale } = useLocale();
+  const guidedCompany = progressCompany(guidedCompanies?.companies, authorizedCompany);
+  const guidedName = guidedCompany ? ((locale === 'ar' && guidedCompany.legalNameAr?.trim()) || guidedCompany.legalNameEn) : '';
+  // Re-read on every move inside All setup areas, so a record saved in an embedded setting counts on the way back.
+  // SetupPage re-reads Guided setup's context on the same moves.
+  const progressRefresh = `${companyVersion}:${activeArea}:${params?.get('setting') ?? ''}`;
+  const readiness = useReadinessItems(guidedCompany?.id ?? null, progressRefresh);
+  // The headline counts the checklist it opens once that list is read (the server counts the context's number from
+  // the same list), so the two can never disagree, even while the context is still being re-read.
+  const guidedProgress = !guidedCompany ? null : readiness.items
+    ? readinessProgress({ readinessDone: readiness.items.filter(item => item.status === 'done').length, readinessTotal: readiness.items.length })
+    : readinessProgress(guidedCompany);
+  const availableByArea = useMemo(() => new Map(SETUP_AREAS.map(item => [item.id, item.destinations
+    .filter(destination => destinationAvailability(destination, access) === 'available')
+    .sort((a, b) => a.groupOrder - b.groupOrder || a.destinationOrder - b.destinationOrder)
+    .map(destination => destination.id)])),
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- access is rebuilt each render from these inputs
+  [hasPermission, hasRole, flags.isFeatureEnabled, flags.verdictForPath, flags.status, accountType, isGroupScope]);
+  const checkedSections = useMemo(() => RECORD_CHECKED_SECTIONS.filter(section => [...availableByArea.values()].some(ids => ids.includes(section))), [availableByArea]);
+  const recordCounts = useRecordCounts(checkedSections as RecordCheckedSection[], authorizedCompany ?? 'all', progressRefresh);
+  const progressByArea = useMemo(() => new Map(SETUP_AREAS.map(item => [item.id, areaProgressItems(item.id, availableByArea.get(item.id) ?? [], readiness.items, recordCounts)])), [availableByArea, readiness.items, recordCounts]);
+  const statusByArea = new Map(SETUP_AREAS.map(item => [item.id, areaStatus(progressByArea.get(item.id) ?? [])]));
+  const areaItems: AreaProgressItem[] = area ? progressByArea.get(area.id) ?? [] : [];
+  const missing = missingReadinessItems(readiness.items);
+  const [missingOpen, setMissingOpen] = useState(false);
+  const readinessLabel = (label: string, labelAr?: string | null) => (locale === 'ar' && labelAr?.trim()) || label;
+  const openReadinessItem = (href: string) => (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    confirmLeave(href, () => {
+      onDirtyChange(false);
+      router.push(href, { scroll: false });
+    });
   };
 
   const destinations: SetupBlueprintDestination[] = area?.destinations.map(destination => ({
@@ -204,7 +264,41 @@ export function SetupStudioWorkspace({ companies, renderSettings, confirmLeave, 
     <div data-testid="setup-studio-workspace" className="space-y-4">
       <div className="min-w-0 border-b border-slate-200 pb-4 dark:border-white/10">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 rtl:normal-case rtl:tracking-normal rtl:text-[13px] dark:text-slate-400">{t('Selected scope')}</p>
-        <p className="mt-1 font-semibold text-slate-950 dark:text-white">{companyName ?? t(isGroupScope ? 'All authorized companies' : 'No company selected')}</p>
+        {guidedCompany && guidedProgress && guidedProgress.total > 0 ? (
+          <>
+            {/* The same number as Guided setup's chooser, for the same company. It opens the items behind it. */}
+            <button type="button" aria-expanded={missingOpen} aria-controls="setup-progress-items" onClick={() => setMissingOpen(value => !value)}
+              data-testid="setup-progress-summary"
+              className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded text-start font-semibold text-slate-950 underline decoration-slate-300 underline-offset-4 hover:decoration-sapphire focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sapphire dark:text-white dark:decoration-white/30 dark:hover:decoration-cyanAccent">
+              <span className="min-w-0">{t('{company} · {done} of {total} setup items done', { company: guidedName, done: guidedProgress.done, total: guidedProgress.total })}</span>
+              <ChevronDown aria-hidden="true" className={`h-4 w-4 shrink-0 text-slate-500 motion-safe:transition-transform ${missingOpen ? 'rotate-180' : ''}`} />
+            </button>
+            <div id="setup-progress-items" hidden={!missingOpen} className="mt-3 max-w-2xl rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-white/10 dark:bg-white/[0.03]" data-testid="setup-progress-items">
+              <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{t('The same checklist as Guided setup, read from your saved records. Each item is done when what it checks is saved.')}</p>
+              {readiness.items ? (
+                missing.length > 0 ? (
+                  <ul aria-label={t('Still to do')} className="mt-2 divide-y divide-slate-200 dark:divide-white/10">
+                    {missing.map(item => (
+                      <li key={item.key} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2" data-testid={`setup-progress-item-${item.key}`}>
+                        <span className="min-w-0 text-sm">
+                          <bdi className="font-medium text-slate-900 dark:text-white">{readinessLabel(item.label, item.labelAr)}</bdi>
+                          <span className="ms-2 text-xs text-slate-500 dark:text-slate-400">{item.status === 'recommended' ? t('Recommended') : t('To do')}</span>
+                        </span>
+                        <a href={item.href} onClick={openReadinessItem(item.href)} className="text-sm font-semibold text-sapphire underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-sapphire dark:text-cyanAccent">
+                          {t('Set it up')}<span className="sr-only"> <bdi>{readinessLabel(item.label, item.labelAr)}</bdi></span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{t('Every Guided setup item is done for this company.')}</p>
+              ) : readiness.status === 'loading' ? (
+                <p role="status" className="mt-2 text-sm text-slate-600 dark:text-slate-400">{t('Loading the checklist…')}</p>
+              ) : (
+                <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{t('The checklist could not be loaded here. Guided setup lists it for each company.')}</p>
+              )}
+            </div>
+          </>
+        ) : <p className="mt-1 font-semibold text-slate-950 dark:text-white">{companyName ?? t(isGroupScope ? 'All authorized companies' : 'No company selected')}</p>}
         <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Area navigation does not save changes. Starter drafts are stored in this browser; settings use each form’s save action.')}</p>
       </div>
 
@@ -249,12 +343,17 @@ export function SetupStudioWorkspace({ companies, renderSettings, confirmLeave, 
                   {t(selectedItem.availability === 'restricted' ? 'Your role does not have access' : selectedItem.availability === 'unavailable' ? 'Not enabled for this tenant' : selectedItem.availability === 'checking' ? 'Checking availability…' : 'Availability could not be checked')}
                 </p>
               )}
-              <SetupAreaBlueprint area={area} destinations={destinations} onOpenDestination={openDestination} />
+              <SetupAreaBlueprint area={area} destinations={destinations} onOpenDestination={openDestination} progress={areaItems} />
             </section>
           ) : (
             <section data-testid="setup-area-content" className="surface min-w-0 px-2 py-1 sm:px-3" aria-labelledby={SETUP_SECTION_HEADING_ID}>
+              <p className="border-b border-slate-200 px-2 py-2.5 text-xs leading-5 text-slate-600 dark:border-white/10 dark:text-slate-400 sm:px-3" data-testid="setup-area-status-definition">
+                {t('Status counts what can be checked in each area. Done means at least one active record is saved, or Guided setup’s check has passed. Areas with nothing to check show no status.')}
+              </p>
               <ul className="divide-y divide-slate-200 dark:divide-white/10">
-                {SETUP_AREAS.map(item => (
+                {SETUP_AREAS.map(item => {
+                  const status = statusByArea.get(item.id);
+                  return (
                   <li key={item.id}>
                     <a
                       href={areaHref(item.id)}
@@ -265,10 +364,18 @@ export function SetupStudioWorkspace({ companies, renderSettings, confirmLeave, 
                         <span className="block font-medium text-slate-900 group-hover:text-sapphire dark:text-white dark:group-hover:text-cyanAccent">{t(item.label)}</span>
                         <span className="mt-0.5 block text-xs leading-5 text-slate-600 dark:text-slate-400">{t(item.description)}</span>
                       </span>
+                      {status && (
+                        <span data-testid="setup-area-status" data-state={status.state}
+                          className={`shrink-0 text-end text-xs font-medium tabular-nums ${status.state === 'done' ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-300'}`}>
+                          <span aria-hidden="true">{areaStatusText(status, t)}</span>
+                          <span className="sr-only">{areaStatusDescription(status, t)}</span>
+                        </span>
+                      )}
                       <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 text-slate-400 rtl:rotate-180 dark:text-slate-500" />
                     </a>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </section>
           )}
@@ -276,7 +383,7 @@ export function SetupStudioWorkspace({ companies, renderSettings, confirmLeave, 
 
         {area && (
           <div className="hidden min-w-0 xl:block">
-            <SetupNextActionsRail destinations={destinations} selectedDestination={selectedDestination} onOpenDestination={activateDestination} />
+            <SetupNextActionsRail destinations={destinations} selectedDestination={selectedDestination} onOpenDestination={activateDestination} progress={areaItems} />
           </div>
         )}
       </div>

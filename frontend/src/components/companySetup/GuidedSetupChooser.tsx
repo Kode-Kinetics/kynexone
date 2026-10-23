@@ -15,24 +15,31 @@ type Load = 'loading' | 'ready' | 'error' | 'forbidden';
 
 /**
  * Setup → Guided setup (Addendum A): one wizard for both journeys. A big "Create a new company" card, then one row
- * per active company the caller may manage with its readiness, its draft and one next action. A link that names a
- * company (`?companyId=`, the old studio's deep links) opens that company's wizard directly.
+ * per active company the caller may manage with its readiness, its draft and one next action. A deep link that names
+ * a company (`linkedCompanyId`: a link from elsewhere in the app, a notification, an old studio bookmark) opens that
+ * company's wizard directly.
+ *
+ * The chooser never reads `companyId` from the address itself: there it is Setup's company scope, which every in-page
+ * move keeps (the navigation's Guided setup entry included). Setup decides which arrival is a deep link
+ * (setupLandingCompanyLink) and hands it over once.
  *
  * Who sees what is the server's answer (context.manageableCompanies / canCreate): a company super admin gets only
  * their own company and no create card.
  */
-export function GuidedSetupChooser({ showHeading = true }: {
+export function GuidedSetupChooser({ showHeading = true, linkedCompanyId = null, onLinkedCompanyUsed }: {
   /** Setup's section header already names the section; the chooser then shows only its explanation. */
   showHeading?: boolean;
+  /** The company a deep link named, to open its wizard instead of the chooser. */
+  linkedCompanyId?: string | null;
+  /** Called once the link has been followed or refused, so it is never followed twice. */
+  onLinkedCompanyUsed?: () => void;
 } = {}) {
   const { t, locale } = useLocale();
   const fmt = useFormat();
   const country = useCountryName();
   const router = useRouter();
   const searchParams = useSearchParams();
-  // Only the address this visit arrived with is a deep link. The company switcher later writes its own selection into
-  // the URL; following that would skip the chooser for anyone who has a company selected.
-  const linkedCompany = useRef(searchParams?.get('companyId') ?? null);
+  const linkedCompany = useRef(linkedCompanyId);
   const [load, setLoad] = useState<Load>('loading');
   const [context, setContext] = useState<CompanySetupContext | null>(null);
   const [drafts, setDrafts] = useState<CompanySetupDraftSummary[]>([]);
@@ -49,6 +56,7 @@ export function GuidedSetupChooser({ showHeading = true }: {
         const linked = linkedCompany.current;
         linkedCompany.current = null;
         if (linked) {
+          onLinkedCompanyUsed?.();
           const target = ctx.manageableCompanies?.find(c => c.id === linked);
           if (target) { setRedirectTo(completeCompanyHref(target.id, target.openDraftId)); return; }
           // Fail closed: a link to a company this caller cannot manage opens nothing in its place.

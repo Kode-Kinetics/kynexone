@@ -27,6 +27,12 @@ import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { POLICY_INTAKE_FLAG } from '../lib/policyIntake';
 import { permissionAccessDescription } from '../lib/permissionAreas';
 import { useLocale } from '../contexts/LocaleContext';
+import { useCompany } from '../contexts/CompanyContext';
+import { setupNavigationModel } from '../lib/setupAreas';
+import { buildSetupSearchIndex, matchSetupEntries } from '../components/setup/setupSearch';
+
+/** Setup's own route gate (app/(dashboard)/setup/page.tsx): any one of these opens /setup. */
+const SETUP_ROUTE_PERMISSIONS = ['organization.read', 'organization.write', 'organization.establishment.write', 'payroll.rates.read', 'payroll.rates.statutory_override'];
 
 const HISTORY_KEY = 'kynexone-search-history';
 const MAX_HISTORY = 8;
@@ -65,12 +71,14 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   // <main> remounts (and fades in) on navigation. The Self-Service workspace's tabs are one screen:
   // keyed as one, its tab row stays put and keeps keyboard focus when a tab is chosen.
   const mainKey = pathname === '/ess' || pathname?.startsWith('/ess/') ? '/ess' : pathname;
-  const { hasPermission, beginMfaEnrollment } = useAuth();
+  const { hasPermission, hasRole, beginMfaEnrollment } = useAuth();
+  const { accountType, isGroupScope } = useCompany();
   const startMfaEnrollment = useCallback(async () => {
     await beginMfaEnrollment();
     router.replace('/login');
   }, [beginMfaEnrollment, router]);
-  const { isFeatureEnabled } = useFeatureFlags();
+  const featureFlags = useFeatureFlags();
+  const { isFeatureEnabled } = featureFlags;
   const { t, locale } = useLocale();
   // ess.read alone opens the assistant only for policy questions, which exist only while policy intake is on.
   const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view')
@@ -137,6 +145,22 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
       )
       .slice(0, 10);
   }, [commandQuery, visibleModules]);
+
+  // Settings: Setup's own "Find a setting" entries, from the same model as Setup's navigation, so the palette never
+  // offers a section the navigation would hide from this user.
+  const setupEntries = useMemo(() => {
+    if (!SETUP_ROUTE_PERMISSIONS.some(permission => hasPermission(permission)) || !featureFlags.verdictForPath('/setup').allowed) return [];
+    const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
+    const model = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake: isFeatureEnabled(POLICY_INTAKE_FLAG) });
+    return buildSetupSearchIndex({
+      model,
+      access: { hasPermission, hasRole, isFeatureEnabled, verdictForPath: featureFlags.verdictForPath, flagStatus: featureFlags.status, isCompanyScopedGroup },
+    });
+  }, [accountType, featureFlags.status, featureFlags.verdictForPath, hasPermission, hasRole, isFeatureEnabled, isGroupScope]);
+  const settingResults = useMemo(
+    () => (commandQuery.trim() ? matchSetupEntries(setupEntries, commandQuery, t).slice(0, 6) : []),
+    [commandQuery, setupEntries, t],
+  );
 
   const showingSearchResults = commandQuery.trim().length >= 2
     && (employeeResults.length > 0 || userResults.length > 0 || reportResults.length > 0);
@@ -284,6 +308,13 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     closeCommandPalette();
   };
 
+  const openSettingResult = (href: string) => {
+    if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
+    setSearchHistory(loadHistory());
+    navigationGuard.push(href, commandTriggerRef.current);
+    closeCommandPalette();
+  };
+
   const removeHistoryItem = (item: string) => {
     const next = searchHistory.filter((h) => h !== item);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
@@ -296,6 +327,14 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   };
 
   const paletteItems = useMemo<PaletteItem[]>(() => {
+    // Shown after the other results, in the same order as on screen.
+    const settings = settingResults.map((hit) => ({
+      id: `setting-${hit.entry.id}`,
+      label: hit.label,
+      sublabel: hit.group,
+      icon: 'search' as const,
+      onSelect: () => openSettingResult(hit.entry.href),
+    }));
     if (showingSearchResults) {
       return [
         ...employeeResults.map((item) => ({
@@ -319,17 +358,18 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
           icon: 'search' as const,
           onSelect: () => openReportResult(item.key),
         })),
+        ...settings,
       ];
     }
 
-    return filteredCommands.map((item) => ({
+    return [...filteredCommands.map((item) => ({
       id: `${item.path}-${item.label}`,
       label: item.label,
       sublabel: item.description,
       icon: item.path === '/ai-assistant' ? 'assistant' as const : 'search' as const,
       onSelect: () => runCommand(item.path),
-    }));
-  }, [employeeResults, filteredCommands, reportResults, showingSearchResults, userResults]);
+    })), ...settings];
+  }, [employeeResults, filteredCommands, reportResults, settingResults, showingSearchResults, userResults]);
 
   useEffect(() => {
     if (!commandOpen) {
@@ -565,7 +605,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                     <div className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">{t('Searching across employees, users, and reports…')}</div>
                   )}
                 </div>
-              ) : filteredCommands.length === 0 ? (
+              ) : filteredCommands.length === 0 && settingResults.length === 0 ? (
                 <div className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
                   {t('No matches found. Try a module name like payroll, leave, or reports.')}
                 </div>
@@ -594,6 +634,33 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                     </button>
                   );
                 })
+              )}
+              {settingResults.length > 0 && (
+                <div className="p-2" data-testid="command-palette-settings">
+                  <p id="command-palette-settings-label" className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Settings')}</p>
+                  <div role="group" aria-labelledby="command-palette-settings-label" className="space-y-1">
+                    {settingResults.map((hit) => {
+                      const index = paletteItems.findIndex((entry) => entry.id === `setting-${hit.entry.id}`);
+                      const selected = index === activeIndex;
+                      return (
+                        <button
+                          key={`setting-${hit.entry.id}`}
+                          type="button"
+                          onClick={() => openSettingResult(hit.entry.href)}
+                          className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-start transition ${selected ? 'bg-sapphire/10 dark:bg-cyanAccent/10' : 'hover:bg-slate-50 dark:hover:bg-white/[0.05]'}`}
+                        >
+                          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-300">
+                            <Search className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-semibold text-slate-900 dark:text-white"><bdi>{hit.label}</bdi></span>
+                            <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{hit.group}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
             </div>
           </div>
