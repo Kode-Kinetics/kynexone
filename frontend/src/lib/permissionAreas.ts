@@ -33,6 +33,7 @@ export const PERMISSION_AREA_LABELS: Record<string, string> = {
   roles: msg('User management'),
   security: msg('Security'),
   organization: msg('Organization setup'),
+  finance: msg('Finance'),
 };
 
 /** Names that keep their capital in the middle of an English sentence. */

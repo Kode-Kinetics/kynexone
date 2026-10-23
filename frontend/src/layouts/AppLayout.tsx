@@ -120,7 +120,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
       // A feature-flagged screen (e.g. Release A, off unless enabled) is offered only when its flag is on.
       if (navMatch?.requiredFeatureKey && !isFeatureEnabled(navMatch.requiredFeatureKey)) return false;
       if (!navMatch?.requiredPermissions?.length) return true;
-      return navMatch.requiredPermissions.every((permission) => hasPermission(permission));
+      // Any one of them, as the sidebar, ProtectedRoute and the page gates read the same list.
+      return navMatch.requiredPermissions.some((permission) => hasPermission(permission));
     }),
     [commandItems, hasPermission, mayUseAssistant, isFeatureEnabled],
   );
