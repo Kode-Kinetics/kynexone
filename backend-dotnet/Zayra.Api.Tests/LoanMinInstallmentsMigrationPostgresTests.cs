@@ -19,7 +19,6 @@ namespace Zayra.Api.Tests;
 public sealed class LoanMinInstallmentsMigrationPostgresTests
 {
     private const string ThisMigration = "20261023155309_LoanMinInstallments";
-    private const string PreviousMigration = "20261022183516_AddMfaTrustedDevices";
     private const string CheckViolation = "23514";
 
     [Fact]
@@ -31,7 +30,9 @@ public sealed class LoanMinInstallmentsMigrationPostgresTests
         var migrator = db.Database.GetInfrastructure().GetRequiredService<IMigrator>();
         var all = db.Database.GetMigrations().ToList();
         all.Should().Contain(ThisMigration);
-        all.IndexOf(ThisMigration).Should().Be(all.IndexOf(PreviousMigration) + 1);
+        // The migration immediately before this one, whatever it is: a fixed name broke as soon as another branch's
+        // migration landed in between (three did on the 2026-10-23 train).
+        var PreviousMigration = all[all.IndexOf(ThisMigration) - 1];
 
         await migrator.MigrateAsync(PreviousMigration);
         // Existing rows, written before the column existed.
