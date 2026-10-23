@@ -23,10 +23,8 @@ public class NotificationAudienceRatchetTests
     // file (relative to Zayra.Api) -> approved number of null-user NotifyAsync calls for a person-specific entity.
     private static readonly Dictionary<string, int> Approved = new(StringComparer.Ordinal)
     {
-        // Attendance correction submitted / pending HR (AttendanceRegularizationRequest). Owned by the attendance
-        // work stream, which routes them to the employee and the deciders; 2 -> 0 when that lands. Until then the
-        // NotificationService guard drops them rather than broadcasting.
-        ["Infrastructure/Attendance/AttendanceService.cs"] = 2,
+        // Empty: every person-specific notice is addressed. Attendance corrections are routed to the employee and
+        // the deciders by AttendanceService itself.
     };
 
     [Fact]
