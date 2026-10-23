@@ -76,7 +76,7 @@
     }
   ],
   "totals": {
-    "hardcoded": 5326,
+    "hardcoded": 5322,
     "rawStatus": 59,
     "locale": 211,
     "icons": 0,
@@ -470,7 +470,7 @@
       "locale": 3
     },
     "src/views/LoansPage.tsx": {
-      "hardcoded": 272,
+      "hardcoded": 269,
       "rawStatus": 1,
       "locale": 2
     },
@@ -541,7 +541,7 @@
       "locale": 2
     },
     "src/views/SetupPage.tsx": {
-      "hardcoded": 80,
+      "hardcoded": 79,
       "rawStatus": 1,
       "locale": 3
     },

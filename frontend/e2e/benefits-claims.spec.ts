@@ -366,3 +366,36 @@ test('the approver sees child, school, country, term, covered and not-covered li
   await expect(lines.filter({ hasText: 'VAT' })).toContainText('Not covered');
   await expect(detail).toContainText('1,350.00');
 });
+
+test('without Release A, HR records the children a per-child education claim names, on the employee benefits tab', async ({ page }) => {
+  const fixture = await boot(page);
+  const added: { path: string; body: Record<string, unknown> }[] = [];
+  let dependants: Record<string, unknown>[] = [];
+  const employee = { id: 42, employeeCode: 'E-42', fullName: 'Alex Morgan', firstName: 'Alex', lastName: 'Morgan', status: 'Active', companyId: plan.companyId, gradeId: 'g3', complianceRecords: [], documents: [], history: [], transfers: [] };
+  const childPlan = { ...enrollment, planName: 'Child education', planCode: 'EDU', classification: 'Discretionary', paymentPolicy: eduPolicy, claimBalance: eduBalance(eduRules, []) };
+  await page.route('**/api/employees/42**', route => {
+    const req = route.request(), path = new URL(req.url()).pathname;
+    if (path === '/api/employees/42') return route.fulfill({ json: employee });
+    if (path === '/api/employees/42/dependants' && req.method() === 'POST') {
+      added.push({ path, body: req.postDataJSON() });
+      dependants = [{ id: 'dep-1', ...req.postDataJSON() }];
+      return route.fulfill({ json: dependants[0] });
+    }
+    if (path === '/api/employees/42/dependants') return route.fulfill({ json: dependants });
+    if (path === '/api/employees/42/readiness') return route.fulfill({ status: 404, json: { error: 'n/a' } });
+    return route.fulfill({ json: [] });
+  });
+  await page.route(`**${base}/employees/42/claims**`, route => route.fulfill({ json: [] }));
+  await page.route(`**${base}/employees/42/package**`, route => route.fulfill({ json: { employeeId: 42, employeeName: 'Alex Morgan', gradeId: 'g3', companyId: plan.companyId, asOf: '2026-10-23', enrollments: [childPlan], additionalRequests: [] } }));
+  await page.goto('/people/42?section=pay-benefits&panel=benefits');
+  const panel = page.getByRole('region', { name: 'Dependants', exact: true });
+  await expect(panel).toContainText('No dependants on file.');
+  await panel.getByRole('button', { name: 'Add a dependant' }).click();
+  await panel.getByLabel('Full name').fill('Sara Morgan');
+  await panel.getByLabel('Date of birth').fill('2016-05-01');
+  await panel.getByRole('button', { name: 'Save dependant' }).click();
+  await expect(panel).toContainText('Sara Morgan');
+  // The per-plan path posts to /api/employees, never the Release A-only /api/entitlements prefix.
+  expect(added).toEqual([{ path: '/api/employees/42/dependants', body: expect.objectContaining({ fullName: 'Sara Morgan', relationship: 'Child' }) }]);
+  expect(fixture.errors).toEqual([]);
+});

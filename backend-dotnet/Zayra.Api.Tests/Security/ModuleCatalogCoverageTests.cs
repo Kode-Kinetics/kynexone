@@ -37,16 +37,19 @@ public class ModuleCatalogCoverageTests
         {
             if (!typeof(ControllerBase).IsAssignableFrom(type) || type.IsAbstract) continue;
 
-            var attr = type.GetCustomAttribute<RouteAttribute>();
-            if (attr?.Template is not { } template) continue;
+            // A controller may serve several routes (e.g. dependants under /api/entitlements and /api/employees).
+            foreach (var attr in type.GetCustomAttributes<RouteAttribute>())
+            {
+                if (attr.Template is not { } template) continue;
 
-            // "api/[controller]" → "api/features" (strip the "Controller" suffix).
-            var resolved = template.Replace(
-                "[controller]",
-                Regex.Replace(type.Name, "Controller$", string.Empty),
-                StringComparison.OrdinalIgnoreCase);
+                // "api/[controller]" → "api/features" (strip the "Controller" suffix).
+                var resolved = template.Replace(
+                    "[controller]",
+                    Regex.Replace(type.Name, "Controller$", string.Empty),
+                    StringComparison.OrdinalIgnoreCase);
 
-            routes.Add("/" + resolved.TrimStart('/'));
+                routes.Add("/" + resolved.TrimStart('/'));
+            }
         }
 
         return routes.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(r => r).ToList();

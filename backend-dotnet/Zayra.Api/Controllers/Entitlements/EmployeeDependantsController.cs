@@ -13,13 +13,15 @@ namespace Zayra.Api.Controllers.Entitlements;
 /// <summary>
 /// The employee's dependants (Release A slice R2, CTO decision in review round 1): HR records the spouse and children a
 /// medical, ticket or education entitlement covers. Uses the existing <c>employee_dependents</c> table — no migration.
-/// Under /api/entitlements, so closed unless the tenant has release_a on. Every change is audited; the ID number is never
+/// Served at two routes: /api/entitlements (Release A, closed unless the tenant has release_a on) and /api/employees, so a
+/// tenant on the per-plan benefits path can record the children an education claim names. Every change is audited; the ID number is never
 /// written to the audit log in full, and is shown in full only to callers with employees.write or employees.sensitive.
 /// Removing a dependant is a soft delete (expand-only migration 20261008000200).
 /// </summary>
 [Authorize]
 [ApiController]
 [Route("api/entitlements/employees/{employeeId:int}/dependants")]
+[Route("api/employees/{employeeId:int}/dependants")]
 public sealed class EmployeeDependantsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
