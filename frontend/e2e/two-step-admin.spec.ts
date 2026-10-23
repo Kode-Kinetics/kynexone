@@ -13,6 +13,10 @@ import { expect, test, type Page, type Route } from '@playwright/test';
  * rule (backend tests); these prove the screens: who is offered the action, what is sent, and what
  * each refusal says.
  *
+ * Also the session limits (session-contract C): the relabelled idle timeout and the maximum session
+ * length (`sessionMaxHours`) in the same form, and the sign-in notice after a refresh refused with
+ * 401 ERR_SESSION_EXPIRED.
+ *
  *   npx playwright test -c e2e/playwright.fixture.config.ts e2e/two-step-admin.spec.ts
  *
  * Screenshots go to SIGN_IN_SECURITY_SHOTS when it is set (a review folder), else the test output.
@@ -44,11 +48,15 @@ interface World {
   locale?: 'en' | 'ar';
   theme?: 'light' | 'dark';
   security?: Record<string, unknown>;
+  /** Replies to PUT /api/access/security-settings, in order (the last one repeats); default: saved. */
+  securityPut?: Reply[];
+  /** /api/auth/me answers 401, so the API client tries POST /api/auth/refresh, which answers this. */
+  refreshRefusal?: Reply;
 }
 
 const SECURITY = {
   passwordMinLength: 12, passwordRequireUppercase: true, passwordRequireLowercase: true, passwordRequireDigit: true,
-  passwordRequireSpecial: true, sessionTimeoutMinutes: 60, maxFailedLoginAttempts: 5, lockoutDurationMinutes: 15,
+  passwordRequireSpecial: true, sessionTimeoutMinutes: 60, sessionMaxHours: 12, maxFailedLoginAttempts: 5, lockoutDurationMinutes: 15,
   mfaRequired: false, mfaTrustedDeviceDays: 30,
 };
 
@@ -57,12 +65,17 @@ async function mockApi(page: Page, world: World = {}) {
   const errors: string[] = [];
   let users = [noah, layla, self];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.addInitScript(({ locale, theme }) => {
-    localStorage.setItem('zayra_access_token', 'fixture-token');
-    localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
+  await page.addInitScript(({ locale, theme, seedOnce }) => {
+    // A refused refresh clears the tokens and reloads /login: seed them once per tab, so the reload
+    // shows what the app left behind instead of a fresh sign-in.
+    if (!seedOnce || !sessionStorage.getItem('fixture-seeded')) {
+      localStorage.setItem('zayra_access_token', 'fixture-token');
+      localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
+      if (seedOnce) sessionStorage.setItem('fixture-seeded', '1');
+    }
     localStorage.setItem('kynexone.theme', theme ?? 'light');
     if (locale) localStorage.setItem('kynexone-locale-choice-v2', locale);
-  }, { locale: world.locale, theme: world.theme });
+  }, { locale: world.locale, theme: world.theme, seedOnce: Boolean(world.refreshRefusal) });
   const next = (list: Reply[] | undefined, fallback: Reply) => (!list?.length ? fallback : list.length > 1 ? list.shift()! : list[0]);
   const permissions = world.permissions ?? ['users.manage', 'roles.manage', 'security.manage'];
   let security = { ...SECURITY, ...(world.security ?? {}) };
@@ -86,9 +99,16 @@ async function mockApi(page: Page, world: World = {}) {
       }
       return json(r.body ?? {}, r.status);
     }
-    if (p === '/api/access/security-settings' && method === 'PUT') { security = { ...security, ...body }; return json(security); }
+    if (p === '/api/access/security-settings' && method === 'PUT') {
+      const r = next(world.securityPut, { status: 200 });
+      if (r.status !== 200) return json(r.body ?? {}, r.status);
+      security = { ...security, ...body };
+      return json(security);
+    }
+    if (p === '/api/auth/refresh' && method === 'POST' && world.refreshRefusal) return json(world.refreshRefusal.body ?? {}, world.refreshRefusal.status);
     if (method !== 'GET') return json({}); // Never touch a real account.
 
+    if (p === '/api/auth/me' && world.refreshRefusal) return json({ message: 'Unauthorized' }, 401);
     if (p === '/api/auth/me') return json({ id: ME, tenantId: 't1', tenantSlug: 'kkdemo', email: 'admin@kkdemo.com', fullName: 'Tenant Admin', roles: ['Admin'], accountType: 'SingleCompany', isGroupScope: true, companies: [], permissions });
     if (p === '/api/access/users') return json({ items: users, total: users.length, page: 1, pageSize: 20 });
     if (p === '/api/access/roles') return json(['Admin', 'HR Manager', 'Employee'].map((name, index) => ({ id: String(index), name, permissions: [] })));
@@ -368,5 +388,185 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
     await page.getByTestId('two-step-policy').scrollIntoViewIfNeeded();
     await expectNoHorizontalScroll(page);
     await shot(page, 'tenant-admin-two-step-dark-390', info.outputPath.bind(info));
+  });
+});
+
+/*
+ * Session limits (session-contract C): the idle timeout, relabelled, and the maximum session length
+ * (`sessionMaxHours`, 1–168, 12 by default) in Tenant Admin → Security; and the sign-in page's
+ * notice when a refresh is refused with 401 ERR_SESSION_EXPIRED. That the server enforces the limit
+ * is the backend tests' job; these prove what the screens show and send.
+ */
+test.describe('Tenant Admin → Security: sessions and lockout', () => {
+  async function openSecurity(page: Page) {
+    await page.goto('/tenant-admin');
+    await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
+    await expect(page.getByTestId('session-limits')).toBeVisible();
+  }
+  const putBodies = (calls: Call[]) => calls.filter((c) => c.method === 'PUT' && c.path === '/api/access/security-settings').map((c) => c.body);
+
+  test('the idle timeout reads "Sign out after inactivity", with what it does', async ({ page }) => {
+    const api = await mockApi(page);
+    await openSecurity(page);
+    const group = page.getByTestId('session-limits');
+    await expect(group.getByRole('heading', { name: 'Sessions and lockout' })).toBeVisible();
+    const idle = group.getByLabel('Sign out after inactivity (minutes)');
+    await expect(idle).toHaveValue('60');
+    await expect(idle).toHaveAccessibleDescription('Ends a session nobody has used for this long.');
+    await expect(page.getByText(/Session Timeout/i)).toHaveCount(0);
+    await idle.fill('45');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => putBodies(api.calls).at(-1)).toMatchObject({ sessionTimeoutMinutes: 45, sessionMaxHours: 12 });
+    expect(api.errors).toEqual([]);
+  });
+
+  test('"Maximum session length": its choices, 12 by default, and it saves sessionMaxHours', async ({ page }, info) => {
+    const api = await mockApi(page);
+    await openSecurity(page);
+    const group = page.getByTestId('session-limits');
+    const max = group.getByLabel('Maximum session length');
+    await expect(max).toHaveValue('12');
+    await expect(max.locator('option')).toHaveText(['4 hours', '8 hours', '12 hours (default)', '24 hours', '72 hours (3 days)', '168 hours (7 days)']);
+    expect(await max.locator('option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value))).toEqual(['4', '8', '12', '24', '72', '168']);
+    await expect(max).toHaveAccessibleDescription('Everyone signs in again after this long, even if they are active. Shorter is safer.');
+    await shot(page, `session-limits-en-${info.project.name}`, info.outputPath.bind(info));
+
+    await max.selectOption('4');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => putBodies(api.calls).at(-1)).toMatchObject({ sessionMaxHours: 4, sessionTimeoutMinutes: 60 });
+    await expect(page.getByText('Saved!')).toBeVisible();
+    await max.selectOption('168');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => putBodies(api.calls).length).toBe(2);
+    expect(putBodies(api.calls)[1]).toMatchObject({ sessionMaxHours: 168 });
+    expect(api.errors).toEqual([]);
+  });
+
+  test('a stored length outside the choices is shown as "(current)" and kept on save', async ({ page }) => {
+    const api = await mockApi(page, { security: { sessionMaxHours: 6 } });
+    await openSecurity(page);
+    const max = page.getByTestId('session-limits').getByLabel('Maximum session length');
+    await expect(max).toHaveValue('6');
+    await expect(max.locator('option:checked')).toHaveText('6 hours (current)');
+    await expect(max.locator('option')).toHaveText(['4 hours', '6 hours (current)', '8 hours', '12 hours (default)', '24 hours', '72 hours (3 days)', '168 hours (7 days)']);
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => putBodies(api.calls).at(-1)).toMatchObject({ sessionMaxHours: 6 });
+  });
+
+  test('one hour, stored, reads "1 hour (current)"', async ({ page }) => {
+    await mockApi(page, { security: { sessionMaxHours: 1 } });
+    await openSecurity(page);
+    await expect(page.getByTestId('session-limits').getByLabel('Maximum session length').locator('option:checked')).toHaveText('1 hour (current)');
+  });
+
+  test('the server\'s range refusal is said in plain words', async ({ page }) => {
+    await mockApi(page, { securityPut: [{ status: 400, body: { code: 'ERR_SESSION_MAX_HOURS_RANGE', message: 'Session max hours must be 1-168.' } }] });
+    await openSecurity(page);
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect(page.getByText('Maximum session length must be between 1 and 168 hours.')).toBeVisible();
+    await expect(page.getByText('Saved!')).toHaveCount(0);
+  });
+
+  test('Arabic: the group is Arabic and right to left, with no capitals or tracking', async ({ page }, info) => {
+    await mockApi(page, { locale: 'ar', security: { sessionMaxHours: 6 } });
+    await page.goto('/tenant-admin');
+    await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+    const group = page.getByTestId('session-limits');
+    const heading = group.getByRole('heading', { name: 'الجلسات وقفل الحساب' });
+    await expect(heading).toBeVisible();
+    await expect(heading).toHaveCSS('text-transform', 'none');
+    await expect(heading).toHaveCSS('letter-spacing', 'normal');
+    const idle = group.getByLabel('تسجيل الخروج بعد عدم النشاط (بالدقائق)');
+    await expect(idle).toHaveAccessibleDescription('تنتهي الجلسة التي لم يستخدمها أحد طوال هذه المدة.');
+    const max = group.getByLabel('الحد الأقصى لمدة الجلسة');
+    await expect(max.locator('option')).toHaveText(['4 ساعات', '6 ساعات (الحالي)', '8 ساعات', '12 ساعة (الافتراضي)', '24 ساعة', '72 ساعة (3 أيام)', '168 ساعة (7 أيام)']);
+    await expect(max).toHaveAccessibleDescription('يسجّل الجميع الدخول من جديد بعد هذه المدة، حتى لو كانوا نشطين. المدة الأقصر أكثر أمانًا.');
+    await expect(group.getByLabel('الحد الأقصى للمحاولات الفاشلة (1–20)')).toBeVisible();
+    await expect(group.getByLabel('مدة قفل الحساب (بالدقائق)')).toBeVisible();
+    // Right to left: the first field of the row sits on the right.
+    const idleBox = (await idle.boundingBox())!;
+    const maxBox = (await max.boundingBox())!;
+    if (idleBox.y === maxBox.y) expect(idleBox.x).toBeGreaterThan(maxBox.x);
+    await expectNoHorizontalScroll(page);
+    await group.scrollIntoViewIfNeeded();
+    await shot(page, `session-limits-ar-${info.project.name}`, info.outputPath.bind(info));
+  });
+
+  test('dark and 390px: the fields stack and fit', async ({ page }, info) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockApi(page, { theme: 'dark' });
+    await openSecurity(page);
+    await expect(page.locator('html')).toHaveClass(/dark/);
+    const group = page.getByTestId('session-limits');
+    await group.scrollIntoViewIfNeeded();
+    const idle = (await group.getByLabel('Sign out after inactivity (minutes)').boundingBox())!;
+    const max = (await group.getByLabel('Maximum session length').boundingBox())!;
+    // One column: the maximum length sits under the idle timeout, and both fit the screen.
+    expect(max.y).toBeGreaterThan(idle.y);
+    for (const box of [idle, max]) {
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(390);
+    }
+    await expectNoHorizontalScroll(page);
+    await shot(page, 'session-limits-dark-390', info.outputPath.bind(info));
+  });
+});
+
+test.describe('Sign-in page: a session that reached its maximum length', () => {
+  const ended = (page: Page) => page.getByRole('status').filter({ hasText: 'Your session has ended. Sign in again.' });
+
+  test('a refresh refused with 401 ERR_SESSION_EXPIRED lands on sign-in with "Your session has ended. Sign in again."', async ({ page }, info) => {
+    const api = await mockApi(page, { refreshRefusal: { status: 401, body: { code: 'ERR_SESSION_EXPIRED', message: 'Your session has ended. Sign in again.' } } });
+    await page.goto('/dashboard');
+    await page.waitForURL('**/login', { timeout: 30_000 });
+    await expect(ended(page)).toBeVisible({ timeout: 30_000 });
+    // A notice, not an error (Next's route announcer is the page's only role=alert).
+    await expect(page.locator('.lx-fault')).toHaveCount(0);
+    expect(api.calls.filter((c) => c.path === '/api/auth/refresh')).toEqual([{ method: 'POST', path: '/api/auth/refresh', body: { refreshToken: 'fixture-refresh' } }]);
+    // Signed out for real: the tokens are gone, and the stored sentence was taken by the page now shown.
+    expect(await page.evaluate(() => [localStorage.getItem('zayra_access_token'), localStorage.getItem('zayra_refresh_token')])).toEqual([null, null]);
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('kynexone.sign-in-notice'))).toBeNull();
+    await shot(page, `login-session-ended-en-${info.project.name}`, info.outputPath.bind(info));
+    // Said once: coming back to sign-in later does not repeat it.
+    await page.reload();
+    await expect(page.getByLabel(/email/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(ended(page)).toHaveCount(0);
+    expect(api.errors).toEqual([]);
+  });
+
+  test('any other refused refresh keeps today\'s behaviour: sign-in, signed out, no sentence', async ({ page }) => {
+    const api = await mockApi(page, { refreshRefusal: { status: 401, body: { message: 'Invalid or expired refresh token.' } } });
+    await page.goto('/dashboard');
+    await page.waitForURL('**/login', { timeout: 30_000 });
+    await expect(page.getByLabel(/email/i).first()).toBeVisible({ timeout: 30_000 });
+    expect(api.calls.filter((c) => c.path === '/api/auth/refresh')).toHaveLength(1);
+    expect(await page.evaluate(() => localStorage.getItem('zayra_refresh_token'))).toBeNull();
+    expect(await page.evaluate(() => sessionStorage.getItem('kynexone.sign-in-notice'))).toBeNull();
+    await expect(page.getByText('Your session has ended. Sign in again.')).toHaveCount(0);
+    await expect(page.getByRole('status').filter({ hasText: /signed out everywhere/ })).toHaveCount(0);
+  });
+
+  test('Arabic: the notice is Arabic, right to left', async ({ page }, info) => {
+    await mockApi(page, { locale: 'ar', refreshRefusal: { status: 401, body: { code: 'ERR_SESSION_EXPIRED', message: 'Your session has ended. Sign in again.' } } });
+    await page.goto('/dashboard');
+    await page.waitForURL('**/login', { timeout: 30_000 });
+    await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+    await expect(page.getByRole('status').filter({ hasText: 'انتهت جلستك. سجّل الدخول مجددًا.' })).toBeVisible({ timeout: 30_000 });
+    await expectNoHorizontalScroll(page);
+    await shot(page, `login-session-ended-ar-${info.project.name}`, info.outputPath.bind(info));
+  });
+
+  test('dark and 390px: the notice fits', async ({ page }, info) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockApi(page, { theme: 'dark', refreshRefusal: { status: 401, body: { code: 'ERR_SESSION_EXPIRED' } } });
+    await page.goto('/dashboard');
+    await page.waitForURL('**/login', { timeout: 30_000 });
+    await expect(ended(page)).toBeVisible({ timeout: 30_000 });
+    const box = (await ended(page).boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(390);
+    await expectNoHorizontalScroll(page);
+    await shot(page, 'login-session-ended-dark-390', info.outputPath.bind(info));
   });
 });
