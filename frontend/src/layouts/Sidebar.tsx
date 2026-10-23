@@ -357,7 +357,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 type="button"
                 onClick={(event) => handleNav('/account/security', event.currentTarget)}
                 aria-current={pathname === '/account/security' ? 'page' : undefined}
-                className="mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-start text-[12px] font-medium text-slate-600 transition hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-100"
+                className="mb-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-2 text-start text-[13px] font-medium text-slate-600 transition hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-100"
                 data-testid="sidebar-sign-in-security"
               >
                 <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden /> {t('Sign-in security')}

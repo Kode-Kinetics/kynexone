@@ -16,6 +16,12 @@ const ar: Record<string, string> = {
     "تم إيقاف التحقق بخطوتين، وسُجّل خروجك من كل الأجهزة حفاظًا على أمانك. سجّل الدخول مجددًا بكلمة المرور.",
 
   "Two-step sign-in": "التحقق بخطوتين",
+  "6-digit code": "الرمز المكوّن من 6 أرقام",
+  "Lost your phone?": "فقدت هاتفك؟",
+  "Ask your company's administrator to reset two-step sign-in. You'll set it up again the next time you sign in.":
+    "اطلب من مسؤول النظام في شركتك إعادة تعيين التحقق بخطوتين، وستُعدّه من جديد عند تسجيل الدخول التالي.",
+  "Set up two-step sign-in": "إعداد التحقق بخطوتين",
+  "If you lose this phone, your administrator can reset it.": "إذا فقدت هذا الهاتف، يمكن لمسؤول النظام إعادة تعيينه.",
   "Two-step sign-in setup expired. Please sign in again.": "انتهت صلاحية إعداد التحقق بخطوتين. يُرجى تسجيل الدخول مرة أخرى.",
   "Two-step sign-in is on. Sign in again to continue.": "تم تفعيل التحقق بخطوتين. يُرجى تسجيل الدخول مرة أخرى للمتابعة.",
 
@@ -33,9 +39,9 @@ const ar: Record<string, string> = {
     "تسجّل الدخول الآن بكلمة المرور فقط. فعّل التحقق بخطوتين ليُطلب أيضًا رمز من 6 أرقام من تطبيق المصادقة على هاتفك، فلا تكفي كلمة مرور مسروقة للدخول.",
   "Turn on two-step sign-in": "تفعيل التحقق بخطوتين",
   "Turn off two-step sign-in": "إيقاف التحقق بخطوتين",
-  "Your role can see or change payroll, banking or access, so your company requires two-step sign-in.":
-    "يتيح لك دورك الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها، لذلك تشترط شركتك التحقق بخطوتين.",
-  "Your company requires two-step sign-in for everyone.": "تشترط شركتك التحقق بخطوتين على جميع المستخدمين.",
+  "Required for your role, because you can see or change payroll, banking or access.":
+    "مطلوب لدورك، لأنك تستطيع الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها.",
+  "Required by your company for everyone.": "تشترطه شركتك على جميع المستخدمين.",
   "Your sign-in settings could not be loaded.": "تعذّر تحميل إعدادات تسجيل الدخول.",
   "Two-step sign-in is on. You were signed out everywhere else.": "تم تفعيل التحقق بخطوتين. سُجّل خروجك من كل الأجهزة الأخرى.",
   "Two-step sign-in is off. You were signed out everywhere else.": "تم إيقاف التحقق بخطوتين. سُجّل خروجك من كل الأجهزة الأخرى.",
@@ -64,7 +70,7 @@ const ar: Record<string, string> = {
   // Turn off
   "Current 6-digit code from your authenticator app": "الرمز الحالي المكوّن من 6 أرقام من تطبيق المصادقة",
   "I understand that only my password will protect this account, and every browser I trusted will be forgotten.":
-    "أفهم أن كلمة المرور وحدها ستحمي هذا الحساب، وأن كل المتصفحات التي وثقت بها ستُنسى.",
+    "أفهم أن كلمة المرور وحدها ستحمي هذا الحساب، وأنه سيُلغى الوثوق بكل المتصفحات التي وثقت بها.",
   "Turning it off signs you out everywhere else, and you may need to sign in again here.":
     "يؤدي الإيقاف إلى تسجيل خروجك من كل الأجهزة الأخرى، وقد تحتاج إلى تسجيل الدخول مجددًا هنا.",
   "Turn off": "إيقاف",
@@ -75,8 +81,8 @@ const ar: Record<string, string> = {
 
   // Trusted browsers
   "Trusted browsers": "المتصفحات الموثوقة",
-  "{days, plural, one {A trusted browser doesn't ask for a code for # day after you trust it. Forget any browser you don't recognise or no longer use.} other {A trusted browser doesn't ask for a code for # days after you trust it. Forget any browser you don't recognise or no longer use.}}":
-    "{days, plural, one {لا يطلب المتصفح الموثوق رمزًا لمدة يوم واحد بعد أن تثق به. انسَ أي متصفح لا تعرفه أو لم تعد تستخدمه.} two {لا يطلب المتصفح الموثوق رمزًا لمدة يومين بعد أن تثق به. انسَ أي متصفح لا تعرفه أو لم تعد تستخدمه.} few {لا يطلب المتصفح الموثوق رمزًا لمدة # أيام بعد أن تثق به. انسَ أي متصفح لا تعرفه أو لم تعد تستخدمه.} many {لا يطلب المتصفح الموثوق رمزًا لمدة # يومًا بعد أن تثق به. انسَ أي متصفح لا تعرفه أو لم تعد تستخدمه.} other {لا يطلب المتصفح الموثوق رمزًا لمدة # يوم بعد أن تثق به. انسَ أي متصفح لا تعرفه أو لم تعد تستخدمه.}}",
+  "{days, plural, one {A trusted browser skips the code for # day. Your company sets this period.} other {A trusted browser skips the code for # days. Your company sets this period.}}":
+    "{days, plural, one {لا يطلب المتصفح الموثوق الرمز لمدة يوم واحد. تحدّد شركتك هذه المدة.} two {لا يطلب المتصفح الموثوق الرمز لمدة يومين. تحدّد شركتك هذه المدة.} few {لا يطلب المتصفح الموثوق الرمز لمدة # أيام. تحدّد شركتك هذه المدة.} many {لا يطلب المتصفح الموثوق الرمز لمدة # يومًا. تحدّد شركتك هذه المدة.} other {لا يطلب المتصفح الموثوق الرمز لمدة # يوم. تحدّد شركتك هذه المدة.}}",
   "Your company has switched off trusted browsers, so every sign-in asks for a code.":
     "أوقفت شركتك خاصية المتصفحات الموثوقة، لذلك يُطلب الرمز عند كل تسجيل دخول.",
   "Your trusted browsers could not be loaded.": "تعذّر تحميل المتصفحات الموثوقة.",
@@ -84,24 +90,25 @@ const ar: Record<string, string> = {
   "This browser": "هذا المتصفح",
   "Unknown browser": "متصفح غير معروف",
   "Trusted since": "موثوق منذ",
-  "Not used yet": "لم يُستخدم بعد",
-  "Network address": "عنوان الشبكة",
-  "Forget": "نسيان",
-  "Forget {browser}": "نسيان {browser}",
-  "Forgetting…": "جارٍ النسيان…",
-  "Forget all browsers": "نسيان كل المتصفحات",
-  "Forget all browsers?": "نسيان كل المتصفحات؟",
+  "Not used since you trusted it": "لم يُستخدم منذ الوثوق به",
+  "IP address": "عنوان IP",
+  // "Forget" a browser is «إلغاء الوثوق» (stop trusting), never «نسيان», which reads as a memory lapse.
+  "Forget": "إلغاء الوثوق",
+  "Forget {browser}": "إلغاء الوثوق بـ {browser}",
+  "Forgetting…": "جارٍ إلغاء الوثوق…",
+  "Forget all browsers": "إلغاء الوثوق بكل المتصفحات",
+  "Forget all browsers?": "إلغاء الوثوق بكل المتصفحات؟",
   "Every browser, this one included, will ask for a code the next time you sign in.":
-    "سيطلب كل متصفح، بما فيه هذا المتصفح، رمزًا في المرة القادمة التي تسجّل فيها الدخول.",
+    "سيُطلب الرمز على كل متصفح، بما فيه هذا المتصفح، عند تسجيل الدخول التالي.",
   "This browser is forgotten. It will ask for a code the next time you sign in.":
-    "تم نسيان هذا المتصفح. سيطلب رمزًا في المرة القادمة التي تسجّل فيها الدخول.",
+    "لم يعد هذا المتصفح موثوقًا. سيُطلب الرمز عند تسجيل الدخول التالي.",
   "{browser} is forgotten. It will ask for a code the next time you sign in.":
-    "تم نسيان {browser}. سيطلب رمزًا في المرة القادمة التي تسجّل فيها الدخول.",
-  "That browser was already forgotten. The list is up to date.": "تم نسيان هذا المتصفح من قبل. القائمة محدّثة الآن.",
-  "The browser could not be forgotten. Try again in a moment.": "تعذّر نسيان المتصفح. حاول مرة أخرى بعد قليل.",
-  "The browsers could not be forgotten. Try again in a moment.": "تعذّر نسيان المتصفحات. حاول مرة أخرى بعد قليل.",
+    "لم يعد {browser} موثوقًا. سيُطلب الرمز عند تسجيل الدخول التالي.",
+  "That browser was already forgotten. The list is up to date.": "سبق إلغاء الوثوق بهذا المتصفح. القائمة محدّثة الآن.",
+  "The browser could not be forgotten. Try again in a moment.": "تعذّر إلغاء الوثوق بالمتصفح. حاول مرة أخرى بعد قليل.",
+  "The browsers could not be forgotten. Try again in a moment.": "تعذّر إلغاء الوثوق بالمتصفحات. حاول مرة أخرى بعد قليل.",
   "All browsers are forgotten. Each will ask for a code the next time you sign in.":
-    "تم نسيان كل المتصفحات. سيطلب كل منها رمزًا في المرة القادمة التي تسجّل فيها الدخول.",
+    "لم يعد أي متصفح موثوقًا. سيُطلب الرمز على كل متصفح عند تسجيل الدخول التالي.",
 };
 
 export const signInSecurity = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

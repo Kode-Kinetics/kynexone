@@ -43,8 +43,13 @@ interface Device {
 
 const DEVICES: Device[] = [
   { id: 'd-1', createdAtUtc: '2026-10-01T08:00:00Z', lastUsedAtUtc: '2026-10-21T07:30:00Z', expiresAtUtc: '2026-10-31T08:00:00Z', browser: 'Chrome on Windows', ipAddress: '203.0.113.7', current: true },
-  { id: 'd-2', createdAtUtc: '2026-09-28T18:00:00Z', lastUsedAtUtc: null, expiresAtUtc: '2026-10-28T18:00:00Z', browser: 'Safari on iPhone', ipAddress: '198.51.100.24', current: false },
+  // The server's own wording (MfaTrustedDevices.DescribeBrowser): browser on OS, never the hardware.
+  { id: 'd-2', createdAtUtc: '2026-09-28T18:00:00Z', lastUsedAtUtc: null, expiresAtUtc: '2026-10-28T18:00:00Z', browser: 'Safari on iOS', ipAddress: '198.51.100.24', current: false },
 ];
+const THIRD: Device = { id: 'd-3', createdAtUtc: '2026-09-20T09:00:00Z', lastUsedAtUtc: '2026-10-19T12:00:00Z', expiresAtUtc: '2026-10-20T09:00:00Z', browser: 'Firefox on macOS', ipAddress: null, current: false };
+
+const ROLE_REASON = 'Required for your role, because you can see or change payroll, banking or access.';
+const WORKSPACE_REASON = 'Required by your company for everyone.';
 
 const status = (over: Partial<Status> = {}): Status => {
   const s = { enabled: false, required: false, requiredBecause: null, enforceFromUtc: null, enforced: false, promptToEnroll: false,
@@ -105,6 +110,7 @@ async function mockApi(page: Page, world: World) {
     calls.push({ method, path: p, body });
 
     if (p === '/api/auth/login') { const r = next(world.login, { status: 200, body: {} }); return json(r.body, r.status); }
+    if (p === '/api/auth/mfa/enrollment/setup') return json({ provisioningUri: URI });
     if (p === '/api/auth/mfa/challenge/verify') {
       return json({ accessToken: 'fixture-access', refreshToken: 'fixture-refresh', expiresAtUtc: '2026-10-23T00:00:00Z', user: user(!!world.privileged) });
     }
@@ -187,6 +193,10 @@ test.describe('sign-in code step: trust this browser', () => {
     await expect(page.getByText("You won't be asked for a code on this browser until then. Don't use on a shared computer.")).toBeVisible();
     await expect(page.locator('#mfa-code')).toHaveAttribute('autocomplete', 'one-time-code');
     await expect(page.locator('#mfa-code')).toHaveAttribute('inputmode', 'numeric');
+    // One name for the field in both login modes, in plain words.
+    await expect(page.getByLabel('6-digit code', { exact: true })).toHaveAttribute('id', 'mfa-code');
+    await expect(page.getByRole('heading', { name: 'Two-step sign-in' })).toBeVisible();
+    await expect(page.getByText(/two-factor/i)).toHaveCount(0);
     await shot(page, 'login-code-step-en', info.outputPath.bind(info));
     await box.check();
     await page.locator('#mfa-code').fill('123456');
@@ -224,7 +234,79 @@ test.describe('sign-in code step: trust this browser', () => {
     const boxX = (await page.getByTestId('mfa-trust-browser').boundingBox())!.x;
     const labelX = (await page.locator('label[for="mfa-trust"]').boundingBox())!.x;
     expect(boxX).toBeGreaterThan(labelX);
+    // The code (and its 000000 placeholder) is centred in Arabic too, not pushed to the left edge.
+    await expect(page.locator('#mfa-code')).toHaveCSS('text-align', 'center');
+    await expect(page.getByLabel('الرمز المكوّن من 6 أرقام', { exact: true })).toHaveAttribute('id', 'mfa-code');
+    await page.getByRole('button', { name: 'فقدت هاتفك؟' }).click();
+    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveText('اطلب من مسؤول النظام في شركتك إعادة تعيين التحقق بخطوتين، وستُعدّه من جديد عند تسجيل الدخول التالي.');
     await shot(page, 'login-code-step-ar', info.outputPath.bind(info));
+  });
+
+  test('"Lost your phone?" says who can help, and toggles from the keyboard', async ({ page }) => {
+    await mockApi(page, { status: status({ enabled: true }), devices: [], signedIn: false, login: [challenge(30)] });
+    await reachCodeStep(page);
+    const lost = page.getByRole('button', { name: 'Lost your phone?' });
+    await expect(lost).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveCount(0);
+    await lost.focus();
+    await page.keyboard.press('Enter');
+    await expect(lost).toHaveAttribute('aria-expanded', 'true');
+    await expect(lost).toHaveAttribute('aria-controls', 'mfa-lost-phone-help');
+    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveText("Ask your company's administrator to reset two-step sign-in. You'll set it up again the next time you sign in.");
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('mfa-lost-phone-help')).toHaveCount(0);
+  });
+
+  test('the trust checkbox: a real, labelled, described checkbox painted to the page', async ({ page }) => {
+    await mockApi(page, { status: status({ enabled: true }), devices: [], signedIn: false, login: [challenge(30)] });
+    await reachCodeStep(page);
+    const box = page.getByTestId('mfa-trust-browser');
+    // Still the native control: its role, its <label for> and its hint survive the restyle.
+    await expect(box).toHaveAttribute('type', 'checkbox');
+    await expect(page.getByRole('checkbox', { name: 'Trust this browser for 30 days' })).toHaveAttribute('aria-describedby', 'mfa-trust-hint');
+    await expect(box).toHaveAccessibleDescription("You won't be asked for a code on this browser until then. Don't use on a shared computer.");
+    await expect(box).toHaveCSS('appearance', 'none');
+    const coarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches);
+    const size = (await box.boundingBox())!;
+    expect(Math.round(size.width)).toBe(coarse ? 24 : 20);
+    if (coarse) expect((await page.locator('label[for="mfa-trust"]').boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    // Cyan with a drawn tick when checked; clicking the LABEL checks it.
+    await page.locator('label[for="mfa-trust"]').click();
+    await expect(box).toBeChecked();
+    await expect(box).toHaveCSS('background-color', 'rgb(94, 235, 255)');
+    expect(await box.evaluate((el) => getComputedStyle(el).backgroundImage)).toContain('data:image/svg+xml');
+    // Keyboard: Space toggles it, and focus shows a visible ring.
+    await page.locator('#mfa-code').focus();
+    await page.keyboard.press('Tab');
+    await expect(box).toBeFocused();
+    await expect(box).toHaveCSS('outline-style', 'solid');
+    await expect(box).toHaveCSS('outline-color', 'rgb(94, 235, 255)');
+    await page.keyboard.press('Space');
+    await expect(box).not.toBeChecked();
+    // Forced colours: the system draws the control again, so the tick cannot vanish.
+    await page.emulateMedia({ forcedColors: 'active' });
+    await expect(box).toHaveCSS('appearance', 'auto');
+    await page.keyboard.press('Space');
+    await expect(box).toBeChecked();
+  });
+
+  test('a required first-time setup at sign-in says two-step sign-in, and who resets a lost phone', async ({ page }) => {
+    const api = await mockApi(page, {
+      status: status(), devices: [], signedIn: false,
+      login: [{ status: 200, body: { mfaEnrollmentRequired: true, enrollmentToken: 'enr-1', expiresInSeconds: 600, message: 'Set up two-step sign-in.' } }],
+    });
+    await page.goto('/login');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.locator('#li-pw').fill('Desert-Falcon-2026');
+    await page.locator('#li-pw').press('Enter');
+    await expect(page.getByRole('heading', { name: 'Set up two-step sign-in' })).toBeVisible();
+    await expect(page.getByLabel('6-digit code', { exact: true })).toHaveAttribute('id', 'mfa-enroll-code');
+    await expect(page.getByText('If you lose this phone, your administrator can reset it.')).toBeVisible();
+    await expect(page.getByText(/two-factor/i)).toHaveCount(0);
+    await page.getByLabel('6-digit code', { exact: true }).fill('123456');
+    await page.getByRole('button', { name: 'Turn on two-step sign-in' }).click();
+    await expect.poll(() => api.calls.find((c) => c.path === '/api/auth/mfa/enrollment/verify-setup')?.body)
+      .toEqual({ enrollmentToken: 'enr-1', tempSecret: 'JBSWY3DPEHPK3PXP', totpCode: '123456' });
   });
 
   test('phone width: the code step fits', async ({ page }, info) => {
@@ -264,6 +346,11 @@ test.describe('Sign-in security: an everyday user turns it on and off', () => {
     await expect(code).toHaveAttribute('autocomplete', 'one-time-code');
     await expect(code).toHaveAttribute('inputmode', 'numeric');
     await expect(page.getByText('Turning it on signs you out everywhere else, and you may need to sign in again here.')).toBeVisible();
+    await expect(page.getByTestId('two-step-lost-phone-note')).toHaveText('If you lose this phone, your administrator can reset it.');
+    // Nothing typed yet: "Turn on" is visibly disabled (grey), not a faded blue.
+    await expect(page.getByRole('button', { name: 'Turn on', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Turn on', exact: true })).toHaveCSS('background-color', 'rgb(241, 245, 249)');
+    await expect(page.getByRole('button', { name: 'Turn on', exact: true })).toHaveCSS('opacity', '1');
     await shot(page, 'card-setup-en', info.outputPath.bind(info));
     await code.fill('654321');
     await page.getByRole('button', { name: 'Turn on', exact: true }).click();
@@ -315,7 +402,11 @@ test.describe('Sign-in security: an everyday user turns it on and off', () => {
     await expect(submit).toBeDisabled();
     await page.getByLabel('Current 6-digit code from your authenticator app').fill('123456');
     await expect(submit).toBeDisabled();
+    await expect(submit).toHaveCSS('background-color', 'rgb(241, 245, 249)');
     await page.getByRole('checkbox', { name: /only my password will protect this account/ }).check();
+    // Enabled, it is the shared danger button: white on rose-700.
+    await expect(submit).toHaveClass(/btn-danger/);
+    await expect(submit).toHaveCSS('background-color', 'rgb(190, 18, 60)');
     await shot(page, 'card-disable-en', info.outputPath.bind(info));
     await submit.click();
     await expect(page.getByText("That code didn't match. Enter the newest code from your authenticator app. Each code works only once.")).toBeVisible();
@@ -358,8 +449,68 @@ test.describe('Sign-in security: an everyday user turns it on and off', () => {
     await page.getByLabel('Current 6-digit code from your authenticator app').fill('123456');
     await page.getByRole('checkbox', { name: /only my password will protect this account/ }).check();
     await page.getByRole('button', { name: 'Turn off', exact: true }).click();
-    await expect(page.getByTestId('two-step-required-reason')).toHaveText('Your company requires two-step sign-in for everyone.');
+    await expect(page.getByTestId('two-step-required-reason')).toHaveText(WORKSPACE_REASON);
     await expect(card(page).getByRole('button', { name: 'Turn off two-step sign-in' })).toHaveCount(0);
+  });
+});
+
+test.describe('Sign-in security: focus follows the person', () => {
+  test('opening a panel focuses its heading; Cancel returns to the button that opened it', async ({ page }) => {
+    const api = await mockApi(page, { status: status(), devices: [] });
+    await openSecurity(page);
+    await card(page).getByRole('button', { name: 'Turn on two-step sign-in' }).click();
+    await expect(page.getByTestId('two-step-setup-heading')).toBeFocused();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(card(page).getByRole('button', { name: 'Turn on two-step sign-in' })).toBeFocused();
+
+    api.world.status = status({ enabled: true });
+    await page.reload();
+    await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is on', { timeout: 30_000 });
+    await card(page).getByRole('button', { name: 'Turn off two-step sign-in' }).click();
+    await expect(page.getByTestId('two-step-disable-heading')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.getByLabel('Current 6-digit code from your authenticator app')).toBeFocused();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(card(page).getByRole('button', { name: 'Turn off two-step sign-in' })).toBeFocused();
+  });
+
+  test('after a change in place, focus lands on the new status', async ({ page }) => {
+    await mockApi(page, { status: status(), devices: [] });
+    await openSecurity(page);
+    await card(page).getByRole('button', { name: 'Turn on two-step sign-in' }).click();
+    await page.getByLabel('Enter the 6-digit code the app shows').fill('654321');
+    await page.getByRole('button', { name: 'Turn on', exact: true }).click();
+    await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is on');
+    await expect(card(page).getByTestId('two-step-status')).toBeFocused();
+  });
+
+  test('after Forget, focus moves to the next Forget, and to the heading once the list is empty', async ({ page }) => {
+    await mockApi(page, { status: status({ enabled: true, trustedDeviceCount: 3 }), devices: [...DEVICES, THIRD] });
+    await openSecurity(page);
+    const rows = page.getByTestId('trusted-browser-row');
+    await expect(rows).toHaveCount(3);
+    // The middle row goes: the row that slides into its place is focused.
+    await page.getByRole('button', { name: 'Forget Safari on iOS' }).click();
+    await expect(rows).toHaveCount(2);
+    await expect(page.getByRole('button', { name: 'Forget Firefox on macOS' })).toBeFocused();
+    // The last row goes: the new last row is focused.
+    await page.keyboard.press('Enter');
+    await expect(rows).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Forget Chrome on Windows' })).toBeFocused();
+    // One browser left: no "Forget all" sweep for a single row.
+    await expect(page.getByTestId('forget-all-browsers')).toHaveCount(0);
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('trusted-browsers-empty')).toBeVisible();
+    await expect(page.getByTestId('trusted-browsers-heading')).toBeFocused();
+  });
+
+  test('after Forget all, focus lands on the "Trusted browsers" heading, not the page', async ({ page }) => {
+    await mockApi(page, { status: status({ enabled: true, trustedDeviceCount: 2 }), devices: [...DEVICES] });
+    await openSecurity(page);
+    await page.getByTestId('forget-all-browsers').click();
+    await page.getByRole('dialog', { name: 'Forget all browsers?' }).getByRole('button', { name: 'Forget all browsers' }).click();
+    await expect(page.getByTestId('trusted-browsers-empty')).toBeVisible();
+    await expect(page.getByTestId('trusted-browsers-heading')).toBeFocused();
   });
 });
 
@@ -372,7 +523,7 @@ test.describe('Sign-in security: a privileged user', () => {
     });
     await openSecurity(page);
     await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is on');
-    await expect(page.getByTestId('two-step-required-reason')).toHaveText('Your role can see or change payroll, banking or access, so your company requires two-step sign-in.');
+    await expect(page.getByTestId('two-step-required-reason')).toHaveText(ROLE_REASON);
     await expect(card(page).getByRole('button', { name: /Turn off/ })).toHaveCount(0);
     await shot(page, 'card-privileged-en', info.outputPath.bind(info));
   });
@@ -389,28 +540,40 @@ test.describe('Sign-in security: a privileged user', () => {
     await page.getByLabel('Current 6-digit code from your authenticator app').fill('123456');
     await page.getByRole('checkbox', { name: /only my password will protect this account/ }).check();
     await page.getByRole('button', { name: 'Turn off', exact: true }).click();
-    await expect(page.getByTestId('two-step-required-reason')).toHaveText('Your role can see or change payroll, banking or access, so your company requires two-step sign-in.');
+    await expect(page.getByTestId('two-step-required-reason')).toHaveText(ROLE_REASON);
     await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is on');
   });
 });
 
 test.describe('trusted browsers', () => {
   test('list, forget one, forget all behind a confirmation, then the empty state', async ({ page }, info) => {
-    const api = await mockApi(page, { status: status({ enabled: true, trustedDeviceCount: 2 }), devices: [...DEVICES] });
+    const api = await mockApi(page, { status: status({ enabled: true, trustedDeviceCount: 3 }), devices: [...DEVICES, THIRD] });
     await openSecurity(page);
-    await expect(trusted(page).getByText("A trusted browser doesn't ask for a code for 30 days after you trust it.", { exact: false })).toBeVisible();
+    await expect(trusted(page).getByText('A trusted browser skips the code for 30 days. Your company sets this period.')).toBeVisible();
     const rows = page.getByTestId('trusted-browser-row');
-    await expect(rows).toHaveCount(2);
+    await expect(rows).toHaveCount(3);
     await expect(rows.nth(0)).toContainText('Chrome on Windows');
     await expect(rows.nth(0).getByTestId('this-browser-badge')).toHaveText('This browser');
     await expect(rows.nth(1).getByTestId('this-browser-badge')).toHaveCount(0);
-    await expect(rows.nth(1)).toContainText('Not used yet');
+    // The device picture follows the server's words: a monitor for Windows/macOS, a phone for iOS.
+    await expect(rows.nth(0).getByTestId('device-icon')).toHaveAttribute('data-kind', 'computer');
+    await expect(rows.nth(1).getByTestId('device-icon')).toHaveAttribute('data-kind', 'phone');
+    await expect(rows.nth(2).getByTestId('device-icon')).toHaveAttribute('data-kind', 'computer');
+    // Each fact is a labelled pair; a browser never used since it was trusted says so in words.
+    await expect(rows.nth(1).locator('dt')).toHaveText(['Trusted since', 'Last used', 'Expires', 'IP address']);
+    await expect(rows.nth(1).locator('dd').nth(1)).toHaveText('Not used since you trusted it');
     await expect(rows.nth(1)).toContainText('198.51.100.24');
+    // No address recorded: no empty "IP address" line.
+    await expect(rows.nth(2).locator('dt')).toHaveText(['Trusted since', 'Last used', 'Expires']);
+    // Row Forget is the shared secondary button; Forget all is a quiet text button, never full width.
+    await expect(rows.nth(0).getByTestId('forget-browser')).toHaveClass(/btn-secondary/);
+    const sweep = (await page.getByTestId('forget-all-browsers').boundingBox())!;
+    expect(sweep.width).toBeLessThan((await trusted(page).boundingBox())!.width / 2);
     await shot(page, 'card-trusted-en', info.outputPath.bind(info));
 
-    await page.getByRole('button', { name: 'Forget Safari on iPhone' }).click();
-    await expect(rows).toHaveCount(1);
-    await expect(trusted(page).getByText('Safari on iPhone is forgotten. It will ask for a code the next time you sign in.')).toBeVisible();
+    await page.getByRole('button', { name: 'Forget Safari on iOS' }).click();
+    await expect(rows).toHaveCount(2);
+    await expect(trusted(page).getByText('Safari on iOS is forgotten. It will ask for a code the next time you sign in.')).toBeVisible();
     expect(api.calls.some((c) => c.method === 'DELETE' && c.path === '/api/auth/mfa/trusted-devices/d-2')).toBe(true);
 
     await page.getByTestId('forget-all-browsers').click();
@@ -431,7 +594,7 @@ test.describe('trusted browsers', () => {
     await openSecurity(page);
     await expect(page.getByTestId('trusted-browser-row')).toHaveCount(2);
     api.world.devices = [DEVICES[0]];
-    await page.getByRole('button', { name: 'Forget Safari on iPhone' }).click();
+    await page.getByRole('button', { name: 'Forget Safari on iOS' }).click();
     await expect(trusted(page).getByText('That browser was already forgotten. The list is up to date.')).toBeVisible();
     await expect(page.getByTestId('trusted-browser-row')).toHaveCount(1);
   });
@@ -452,9 +615,19 @@ test.describe('Arabic, dark and phone', () => {
     await page.goto('/account/security');
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
     await expect(card(page).getByTestId('two-step-status')).toHaveText('التحقق بخطوتين مُفعّل', { timeout: 30_000 });
-    await expect(page.getByTestId('two-step-required-reason')).toContainText('تشترط شركتك التحقق بخطوتين');
+    await expect(page.getByTestId('two-step-required-reason')).toHaveText('مطلوب لدورك، لأنك تستطيع الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها.');
     await expect(page.getByRole('heading', { name: 'المتصفحات الموثوقة' })).toBeVisible();
     await expect(page.getByTestId('this-browser-badge')).toHaveText('هذا المتصفح');
+    // "Forget" is «إلغاء الوثوق» (stop trusting), never «نسيان».
+    await expect(page.getByTestId('forget-browser').first()).toHaveText('إلغاء الوثوق');
+    await expect(page.getByTestId('forget-all-browsers')).toHaveText('إلغاء الوثوق بكل المتصفحات');
+    await expect(page.locator('main')).not.toContainText('نسيان');
+    await expect(page.locator('main')).not.toContainText('الثنائي');
+    // The Arabic eyebrow: no capitals or tracking, and at least 13px.
+    const eyebrow = page.getByText('حسابي', { exact: true });
+    await expect(eyebrow).toHaveCSS('letter-spacing', 'normal');
+    await expect(eyebrow).toHaveCSS('text-transform', 'none');
+    expect(parseFloat(await eyebrow.evaluate((el) => getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(13);
     // The status icon is at the inline start: the right edge in Arabic.
     const cardBox = (await card(page).boundingBox())!;
     const headingBox = (await card(page).getByTestId('two-step-status').boundingBox())!;
@@ -488,7 +661,11 @@ test.describe('Arabic, dark and phone', () => {
     // Any signed-in page; the Self-Service overview needs richer fixtures than this spec's.
     await page.goto('/ess/documents');
     await page.getByRole('button', { name: 'Open navigation' }).click();
-    await page.getByTestId('sidebar-sign-in-security').click();
+    // A full 44px touch row in the drawer, in readable 13px type.
+    const entry = page.getByTestId('sidebar-sign-in-security');
+    expect((await entry.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await expect(entry).toHaveCSS('font-size', '13px');
+    await entry.click();
     await page.waitForURL(/\/account\/security$/);
     await expect(card(page).getByTestId('two-step-status')).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('trusted-browser-row')).toHaveCount(2);
@@ -508,4 +685,64 @@ test.describe('Arabic, dark and phone', () => {
     await expectNoHorizontalScroll(page);
     await shot(page, 'card-390-ar-setup', info.outputPath.bind(info));
   });
+});
+
+/**
+ * The review set: every state of the page and the code step, in English, Arabic, dark and at 390px.
+ * Runs only when SIGN_IN_SECURITY_SHOTS names a folder, once (desktop project), so CI pays nothing.
+ */
+test.describe('review screenshots', () => {
+  type Variant = { name: string; locale?: 'ar'; theme?: 'dark'; phone?: boolean };
+  const variants: Variant[] = [
+    { name: 'en' }, { name: 'ar', locale: 'ar' }, { name: 'dark', theme: 'dark' }, { name: '390', phone: true },
+  ];
+  const states: { name: string; world: () => Omit<World, 'locale' | 'theme'>; act?: (page: Page) => Promise<void> }[] = [
+    { name: 'off', world: () => ({ status: status(), devices: [] }) },
+    { name: 'setup', world: () => ({ status: status(), devices: [] }), act: async (page) => {
+      await page.getByTestId('two-step-turn-on').click();
+      await expect(page.getByTestId('two-step-qr')).toBeVisible();
+    } },
+    { name: 'on-trusted', world: () => ({ status: status({ enabled: true, trustedDeviceCount: 3 }), devices: [...DEVICES, THIRD] }) },
+    { name: 'disable', world: () => ({ status: status({ enabled: true, trustedDeviceCount: 1 }), devices: [DEVICES[0]] }), act: async (page) => {
+      await page.getByTestId('two-step-turn-off').click();
+      await expect(page.getByTestId('two-step-disable-heading')).toBeFocused();
+    } },
+    { name: 'required-role', world: () => ({ privileged: true, status: status({ enabled: true, required: true, requiredBecause: 'privileged_role', trustedDeviceCount: 2 }), devices: [...DEVICES] }) },
+    { name: 'required-workspace', world: () => ({ status: status({ enabled: false, required: true, requiredBecause: 'workspace_policy' }), devices: [] }) },
+    { name: 'empty-trusted', world: () => ({ status: status({ enabled: true }), devices: [] }) },
+    { name: 'trust-off-by-company', world: () => ({ status: status({ enabled: true, rememberDeviceDays: 0 }), devices: [] }) },
+  ];
+
+  for (const v of variants) {
+    test(`code step, ${v.name}`, async ({ page }, info) => {
+      test.skip(!SHOTS || info.project.name !== 'desktop', 'review shots only');
+      if (v.phone) await page.setViewportSize({ width: 390, height: 844 });
+      await mockApi(page, { status: status({ enabled: true }), devices: [], signedIn: false, locale: v.locale, theme: v.theme,
+        login: [{ status: 200, body: { mfaRequired: true, challengeToken: 'chal-1', expiresInSeconds: 300, rememberDeviceDays: 30 } }] });
+      await page.goto('/login');
+      await page.locator('#li-em').fill(EMAIL);
+      await page.locator('#li-pw').fill('Desert-Falcon-2026');
+      await page.locator('#li-pw').press('Enter');
+      await expect(page.locator('#mfa-code')).toBeVisible();
+      await page.getByTestId('mfa-trust-browser').check();
+      await page.getByTestId('mfa-lost-phone').click();
+      await expect(page.getByTestId('mfa-lost-phone-help')).toBeVisible();
+      await page.locator('#mfa-code').fill('12');
+      await shot(page, `login-code-${v.name}`, info.outputPath.bind(info));
+    });
+
+    for (const st of states) {
+      test(`page ${st.name}, ${v.name}`, async ({ page }, info) => {
+        test.skip(!SHOTS || info.project.name !== 'desktop', 'review shots only');
+        if (v.phone) await page.setViewportSize({ width: 390, height: 844 });
+        await mockApi(page, { ...st.world(), locale: v.locale, theme: v.theme });
+        await page.goto('/account/security');
+        await expect(card(page).getByTestId('two-step-status')).toBeVisible({ timeout: 30_000 });
+        if (st.world().devices.length) await expect(page.getByTestId('trusted-browser-row').first()).toBeVisible();
+        if (st.act) await st.act(page);
+        await expectNoHorizontalScroll(page);
+        await shot(page, `page-${st.name}-${v.name}`, info.outputPath.bind(info));
+      });
+    }
+  }
 });

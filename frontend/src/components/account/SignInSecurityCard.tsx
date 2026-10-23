@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, Laptop, Loader2, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, Loader2, Monitor, RefreshCw, ShieldAlert, ShieldCheck, Smartphone, Tablet, type LucideIcon } from 'lucide-react';
 import { authApi, MFA_ERRORS, type MfaStatus, type TrustedDevice } from '@/src/api/auth';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLocale } from '@/src/contexts/LocaleContext';
@@ -26,17 +26,23 @@ import { toAsciiDigits } from '@/src/lib/welcomeCode';
 
 type Panel = 'none' | 'setup' | 'disable';
 
-const ROLE_REQUIRES =
-  'Your role can see or change payroll, banking or access, so your company requires two-step sign-in.';
-const WORKSPACE_REQUIRES = 'Your company requires two-step sign-in for everyone.';
+const ROLE_REQUIRES = 'Required for your role, because you can see or change payroll, banking or access.';
+const WORKSPACE_REQUIRES = 'Required by your company for everyone.';
 type RequiredBy = 'role' | 'workspace';
 
-const primaryBtn =
-  'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-500 dark:hover:bg-blue-400 dark:ring-offset-midnight';
-const secondaryBtn =
-  'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/[0.12] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08] dark:ring-offset-midnight';
-const dangerBtn =
-  'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:ring-offset-midnight';
+/**
+ * The app's shared buttons (styles/index.css), plus a real disabled state: grey surface, grey text, no
+ * shadow or lift. .btn-primary/.btn-secondary have none of their own, and fading them with opacity
+ * left a disabled "Turn on" looking like a pressable blue one. The arbitrary variant outranks the
+ * light theme's `!important` blue-700 fill on .btn-primary (index.css, WCAG guardrails).
+ */
+const DISABLED =
+  'disabled:cursor-not-allowed disabled:translate-y-0 disabled:scale-100 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none [html:not(.dark)_.tenant-app-shell_&:disabled]:!bg-slate-100 dark:disabled:border-white/[0.06] dark:disabled:bg-white/[0.04] dark:disabled:text-slate-500';
+const primaryBtn = `btn-primary justify-center ${DISABLED}`;
+const secondaryBtn = `btn-secondary justify-center ${DISABLED}`;
+const dangerBtn = 'btn-danger justify-center';
+/** Headings that receive focus when a panel opens or a list changes: reachable, never in the tab order. */
+const focusHeading = 'scroll-mt-24 focus:outline-none';
 const codeInput =
   'block w-full max-w-[14rem] rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-center font-mono text-lg tracking-[0.3em] text-slate-900 placeholder:text-slate-300 focus:border-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 dark:border-white/[0.16] dark:bg-white/[0.04] dark:text-white dark:placeholder:text-slate-600';
 
@@ -65,6 +71,20 @@ function groupKey(secret: string): string {
 }
 
 /**
+ * The device picture for a trusted browser, from the server's summary ("Chrome on Windows", "Safari on
+ * iOS"; MfaTrustedDevices.DescribeBrowser). The server names the OS, not the hardware, so iOS and Android
+ * are drawn as a phone, a tablet only if the words say so, and anything else (or nothing) as a monitor.
+ */
+export type DeviceKind = 'phone' | 'tablet' | 'computer';
+export function deviceKindOf(browser: string | null | undefined): DeviceKind {
+  const b = (browser ?? '').toLowerCase();
+  if (/\b(ipad|tablet)\b/.test(b)) return 'tablet';
+  if (/\b(ios|iphone|android)\b/.test(b)) return 'phone';
+  return 'computer';
+}
+const DEVICE_ICON: Record<DeviceKind, LucideIcon> = { phone: Smartphone, tablet: Tablet, computer: Monitor };
+
+/**
  * Whether this browser's session survived the change, asked without the API client: its 401
  * handling would sign out and navigate on its own, before this card can say anything.
  */
@@ -91,6 +111,21 @@ export function SignInSecurityCard() {
   const [notice, setNotice] = useState<Notice | null>(null);
   /** Set by a 409 ERR_MFA_REQUIRED_FOR_ROLE / _BY_WORKSPACE even when the status said the user could turn it off. */
   const [lockedBy, setLockedBy] = useState<RequiredBy | null>(null);
+  /** Where focus goes once a panel has closed: back to the button that opened it (Cancel), or to the status. */
+  const [focusAfterClose, setFocusAfterClose] = useState<'trigger' | 'status' | null>(null);
+  const statusRef = useRef<HTMLHeadingElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const closePanel = useCallback((focus: 'trigger' | 'status') => {
+    setPanel('none');
+    setFocusAfterClose(focus);
+  }, []);
+
+  useEffect(() => {
+    if (panel !== 'none' || !focusAfterClose || !status) return;
+    (focusAfterClose === 'trigger' && triggerRef.current ? triggerRef.current : statusRef.current)?.focus();
+    setFocusAfterClose(null);
+  }, [panel, focusAfterClose, status]);
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -105,7 +140,7 @@ export function SignInSecurityCard() {
 
   /** After turning two-step on or off: carry on here if the session lived, otherwise sign in again. */
   const afterChange = useCallback(async (turnedOn: boolean) => {
-    setPanel('none');
+    closePanel('status');
     if (await sessionStillValid()) {
       setNotice({ tone: 'ok', text: turnedOn
         ? t('Two-step sign-in is on. You were signed out everywhere else.')
@@ -116,7 +151,7 @@ export function SignInSecurityCard() {
     setSignInNotice(turnedOn ? 'two-step-on' : 'two-step-off');
     await logout();
     router.replace('/login');
-  }, [load, logout, router, t]);
+  }, [closePanel, load, logout, router, t]);
 
   if (loadError) {
     return (
@@ -159,7 +194,7 @@ export function SignInSecurityCard() {
             {on ? <ShieldCheck className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />}
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white" data-testid="two-step-status">
+            <h2 ref={statusRef} tabIndex={-1} className={`text-base font-semibold text-slate-900 dark:text-white ${focusHeading}`} data-testid="two-step-status">
               {on ? t('Two-step sign-in is on') : t('Two-step sign-in is off')}
             </h2>
             <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">
@@ -172,21 +207,25 @@ export function SignInSecurityCard() {
 
         {notice && <InlineNotice notice={notice} />}
 
+        {/* A fact about the account, not a warning: neutral, with the shield in the brand colour. */}
         {requiredBy && (!on || !canDisable) && (
-          <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/[0.06] dark:text-amber-200" data-testid="two-step-required-reason">
-            {requiredBy === 'workspace' ? t(WORKSPACE_REQUIRES) : t(ROLE_REQUIRES)}
-          </p>
+          <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-white/[0.08] dark:bg-white/[0.03]" data-testid="two-step-required-reason">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" aria-hidden />
+            <p className="text-sm leading-6 text-slate-700 dark:text-slate-300">
+              {requiredBy === 'workspace' ? t(WORKSPACE_REQUIRES) : t(ROLE_REQUIRES)}
+            </p>
+          </div>
         )}
 
         {panel === 'none' && (
           <div className="mt-4 flex flex-wrap gap-3">
             {!on && (
-              <button type="button" className={primaryBtn} onClick={() => { setNotice(null); setPanel('setup'); }} data-testid="two-step-turn-on">
+              <button type="button" ref={triggerRef} className={primaryBtn} onClick={() => { setNotice(null); setPanel('setup'); }} data-testid="two-step-turn-on">
                 {t('Turn on two-step sign-in')}
               </button>
             )}
             {on && canDisable && (
-              <button type="button" className={secondaryBtn} onClick={() => { setNotice(null); setPanel('disable'); }} data-testid="two-step-turn-off">
+              <button type="button" ref={triggerRef} className={secondaryBtn} onClick={() => { setNotice(null); setPanel('disable'); }} data-testid="two-step-turn-off">
                 {t('Turn off two-step sign-in')}
               </button>
             )}
@@ -195,17 +234,17 @@ export function SignInSecurityCard() {
 
         {panel === 'setup' && (
           <SetupPanel
-            onCancel={() => setPanel('none')}
+            onCancel={() => closePanel('trigger')}
             onDone={() => void afterChange(true)}
-            onAlreadyOn={() => { setPanel('none'); setNotice({ tone: 'ok', text: t('Two-step sign-in is already on for your account.') }); void load(); }}
+            onAlreadyOn={() => { closePanel('status'); setNotice({ tone: 'ok', text: t('Two-step sign-in is already on for your account.') }); void load(); }}
           />
         )}
         {panel === 'disable' && (
           <DisablePanel
-            onCancel={() => setPanel('none')}
+            onCancel={() => closePanel('trigger')}
             onDone={() => void afterChange(false)}
-            onRequired={(by) => { setLockedBy(by); setPanel('none'); }}
-            onAlreadyOff={() => { setPanel('none'); setNotice({ tone: 'ok', text: t('Two-step sign-in is already off for your account.') }); void load(); }}
+            onRequired={(by) => { setLockedBy(by); closePanel('status'); }}
+            onAlreadyOff={() => { closePanel('status'); setNotice({ tone: 'ok', text: t('Two-step sign-in is already off for your account.') }); void load(); }}
           />
         )}
       </Card>
@@ -242,6 +281,13 @@ function InlineNotice({ notice }: { notice: Notice }) {
       <span>{notice.text}</span>
     </p>
   );
+}
+
+/** A panel's heading takes focus when the panel opens, so a screen reader starts where the new content does. */
+function useFocusOnMount<T extends HTMLElement>(): RefObject<T | null> {
+  const ref = useRef<T>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  return ref;
 }
 
 /** The 6-digit code field: digits only (Arabic-Indic digits accepted), read by password managers and phones as a one-time code. */
@@ -282,6 +328,12 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
   const [copied, setCopied] = useState<'' | 'ok' | 'failed'>('');
   const [attempt, setAttempt] = useState(0);
   const secret = secretFrom(uri);
+  const headingRef = useFocusOnMount<HTMLHeadingElement>();
+  const heading = (
+    <h3 ref={headingRef} tabIndex={-1} className={`text-sm font-semibold text-slate-900 dark:text-white ${focusHeading}`} data-testid="two-step-setup-heading">
+      {t('Set up your authenticator app')}
+    </h3>
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -338,7 +390,8 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
 
   if (startError) {
     return (
-      <div className="mt-5 space-y-3" data-testid="two-step-setup">
+      <div className="mt-5 space-y-3 border-t border-slate-100 pt-5 dark:border-white/[0.07]" data-testid="two-step-setup">
+        {heading}
         <p role="alert" className="text-sm font-medium text-rose-700 dark:text-rose-300">{startError}</p>
         <div className="flex flex-wrap gap-3">
           <button type="button" className={primaryBtn} onClick={() => setAttempt((n) => n + 1)}>{t('Try again')}</button>
@@ -350,7 +403,7 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
 
   return (
     <form onSubmit={submit} noValidate className="mt-5 space-y-5 border-t border-slate-100 pt-5 dark:border-white/[0.07]" data-testid="two-step-setup" aria-busy={!uri}>
-      <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Set up your authenticator app')}</h3>
+      {heading}
       <ol className="space-y-5">
         <li className="flex gap-3">
           <StepNumber n={1} />
@@ -386,6 +439,9 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
           <StepNumber n={3} />
           <div className="min-w-0 flex-1">
             <CodeField id={`${id}-code`} label={t('Enter the 6-digit code the app shows')} value={code} onChange={(v) => { setCode(v); setError(''); }} error={error} />
+            <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400" data-testid="two-step-lost-phone-note">
+              {t('If you lose this phone, your administrator can reset it.')}
+            </p>
           </div>
         </li>
       </ol>
@@ -416,6 +472,7 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const headingRef = useFocusOnMount<HTMLHeadingElement>();
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -441,13 +498,13 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
 
   return (
     <form onSubmit={submit} noValidate className="mt-5 space-y-4 border-t border-slate-100 pt-5 dark:border-white/[0.07]" data-testid="two-step-disable">
-      <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Turn off two-step sign-in')}</h3>
+      <h3 ref={headingRef} tabIndex={-1} className={`text-sm font-semibold text-slate-900 dark:text-white ${focusHeading}`} data-testid="two-step-disable-heading">{t('Turn off two-step sign-in')}</h3>
       <CodeField id={`${id}-code`} label={t('Current 6-digit code from your authenticator app')} value={code}
         onChange={(v) => { setCode(v); setError(''); }} error={error} />
       <div className="flex items-start gap-2.5">
         <input id={`${id}-confirm`} type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)}
-          className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 text-rose-600 focus-visible:ring-2 focus-visible:ring-rose-500 dark:border-white/20 dark:bg-white/[0.04]" />
-        <label htmlFor={`${id}-confirm`} className="text-sm text-slate-700 dark:text-slate-300">
+          className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#0d1225]" />
+        <label htmlFor={`${id}-confirm`} className="cursor-pointer text-sm leading-6 text-slate-700 dark:text-slate-300">
           {t('I understand that only my password will protect this account, and every browser I trusted will be forgotten.')}
         </label>
       </div>
@@ -473,6 +530,13 @@ function TrustedBrowsers({ days }: { days: number }) {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  /**
+   * After a browser leaves the list, focus goes to the Forget button now in its place (the next row,
+   * or the new last one), or to the "Trusted browsers" heading when none are left. Never to <body>.
+   */
+  const focusRow = useRef<number | null>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const forgetRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -480,12 +544,24 @@ function TrustedBrowsers({ days }: { days: number }) {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
+  useEffect(() => {
+    const row = focusRow.current;
+    if (row === null || devices === null) return;
+    focusRow.current = null;
+    // A frame later: closing the confirmation dialog first hands focus back to its (now removed) opener.
+    requestAnimationFrame(() => {
+      const target = devices.length === 0 ? headingRef.current : forgetRefs.current[Math.min(row, devices.length - 1)];
+      target?.focus();
+    });
+  }, [devices]);
+
   const nameOf = (d: TrustedDevice) => d.browser?.trim() || t('Unknown browser');
 
-  const forget = async (d: TrustedDevice) => {
+  const forget = async (d: TrustedDevice, index: number) => {
     setBusyId(d.id); setNotice(null);
     try {
       await authApi.mfaForgetTrustedDevice(d.id);
+      focusRow.current = index;
       setDevices((list) => (list ?? []).filter((x) => x.id !== d.id));
       setNotice({ tone: 'ok', text: d.current
         ? t('This browser is forgotten. It will ask for a code the next time you sign in.')
@@ -493,6 +569,7 @@ function TrustedBrowsers({ days }: { days: number }) {
     } catch (err) {
       if (statusOf(err) === 404) {
         setNotice({ tone: 'ok', text: t('That browser was already forgotten. The list is up to date.') });
+        focusRow.current = index;
         await load();
       } else {
         setNotice({ tone: 'error', text: isNetwork(err)
@@ -520,6 +597,7 @@ function TrustedBrowsers({ days }: { days: number }) {
           ? t('Cannot reach the server. Check your connection and try again.')
           : t('The browsers could not be forgotten. Try again in a moment.'));
       }
+      focusRow.current = 0;
       setDevices([]);
       setNotice({ tone: 'ok', text: t('All browsers are forgotten. Each will ask for a code the next time you sign in.') });
     },
@@ -527,17 +605,21 @@ function TrustedBrowsers({ days }: { days: number }) {
 
   return (
     <Card testId="trusted-browsers">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:justify-between sm:gap-4">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-white">{t('Trusted browsers')}</h2>
+          <h2 ref={headingRef} tabIndex={-1} className={`text-base font-semibold text-slate-900 dark:text-white ${focusHeading}`} data-testid="trusted-browsers-heading">
+            {t('Trusted browsers')}
+          </h2>
           <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">
             {days > 0
-              ? t("{days, plural, one {A trusted browser doesn't ask for a code for # day after you trust it. Forget any browser you don't recognise or no longer use.} other {A trusted browser doesn't ask for a code for # days after you trust it. Forget any browser you don't recognise or no longer use.}}", { days })
+              ? t('{days, plural, one {A trusted browser skips the code for # day. Your company sets this period.} other {A trusted browser skips the code for # days. Your company sets this period.}}', { days })
               : t('Your company has switched off trusted browsers, so every sign-in asks for a code.')}
           </p>
         </div>
-        {devices && devices.length > 0 && (
-          <button type="button" className={`${secondaryBtn} shrink-0`} onClick={forgetAll} data-testid="forget-all-browsers">
+        {/* Quiet on purpose: a sweep for when several browsers are in doubt, never the page's main action. */}
+        {devices && devices.length >= 2 && (
+          <button type="button" onClick={forgetAll} data-testid="forget-all-browsers"
+            className="-mx-2 inline-flex min-h-9 shrink-0 items-center rounded-lg px-2 text-sm font-semibold text-rose-700 underline-offset-4 hover:bg-rose-50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:text-rose-300 dark:hover:bg-rose-500/10 [@media(pointer:coarse)]:min-h-11">
             {t('Forget all browsers')}
           </button>
         )}
@@ -561,33 +643,49 @@ function TrustedBrowsers({ days }: { days: number }) {
           </p>
         ) : (
           <ul className="divide-y divide-slate-100 rounded-xl border border-slate-100 dark:divide-white/[0.06] dark:border-white/[0.07]" data-testid="trusted-browsers-list">
-            {devices.map((d) => (
-              <li key={d.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4" data-testid="trusted-browser-row">
-                <div className="flex min-w-0 items-start gap-3">
-                  <Laptop className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" aria-hidden />
-                  <div className="min-w-0">
-                    <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-                      <bdi>{nameOf(d)}</bdi>
-                      {d.current && (
-                        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 dark:bg-blue-500/15 dark:text-blue-300" data-testid="this-browser-badge">
-                          {t('This browser')}
-                        </span>
-                      )}
-                    </p>
-                    <dl className="mt-1 grid gap-x-4 gap-y-0.5 text-xs text-slate-600 dark:text-slate-400 sm:grid-cols-2">
-                      <div className="flex gap-1"><dt>{t('Trusted since')}</dt><dd><bdi>{fx.date(d.createdAtUtc)}</bdi></dd></div>
-                      <div className="flex gap-1"><dt>{t('Last used')}</dt><dd><bdi>{d.lastUsedAtUtc ? fx.date(d.lastUsedAtUtc) : t('Not used yet')}</bdi></dd></div>
-                      <div className="flex gap-1"><dt>{t('Expires')}</dt><dd><bdi>{fx.date(d.expiresAtUtc)}</bdi></dd></div>
-                      {d.ipAddress && <div className="flex gap-1"><dt>{t('Network address')}</dt><dd><bdi dir="ltr">{d.ipAddress}</bdi></dd></div>}
-                    </dl>
+            {devices.map((d, i) => {
+              const kind = deviceKindOf(d.browser);
+              const Icon = DEVICE_ICON[kind];
+              return (
+                <li key={d.id} className="p-3 sm:p-4" data-testid="trusted-browser-row">
+                  <div className="flex items-start gap-3">
+                    <Icon className="mt-0.5 h-5 w-5 shrink-0 text-slate-500 dark:text-slate-400" aria-hidden data-testid="device-icon" data-kind={kind} />
+                    <div className="min-w-0 flex-1">
+                      {/* The name wraps inside its column, so Forget keeps its place at the row's end. */}
+                      <div className="flex items-start justify-between gap-3 sm:gap-4">
+                        <p className="flex min-w-0 flex-wrap items-center gap-2 pt-1.5 text-sm font-semibold text-slate-900 dark:text-white">
+                          <bdi>{nameOf(d)}</bdi>
+                          {d.current && (
+                            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 rtl:text-[13px] dark:bg-blue-500/15 dark:text-blue-300" data-testid="this-browser-badge">
+                              {t('This browser')}
+                            </span>
+                          )}
+                        </p>
+                        <button type="button" ref={(el) => { forgetRefs.current[i] = el; }} className={`${secondaryBtn} shrink-0`}
+                          onClick={() => void forget(d, i)} disabled={busyId === d.id}
+                          aria-label={t('Forget {browser}', { browser: nameOf(d) })} data-testid="forget-browser">
+                          {busyId === d.id ? t('Forgetting…') : t('Forget')}
+                        </button>
+                      </div>
+                      <dl className="mt-2 grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px] leading-5 sm:grid-cols-[13rem_minmax(0,1fr)]">
+                        <dt className="text-slate-500 dark:text-slate-400">{t('Trusted since')}</dt>
+                        <dd className="font-medium text-slate-800 dark:text-slate-200"><bdi>{fx.date(d.createdAtUtc)}</bdi></dd>
+                        <dt className="text-slate-500 dark:text-slate-400">{t('Last used')}</dt>
+                        {d.lastUsedAtUtc
+                          ? <dd className="font-medium text-slate-800 dark:text-slate-200"><bdi>{fx.date(d.lastUsedAtUtc)}</bdi></dd>
+                          : <dd className="text-slate-500 dark:text-slate-400">{t('Not used since you trusted it')}</dd>}
+                        <dt className="text-slate-500 dark:text-slate-400">{t('Expires')}</dt>
+                        <dd className="font-medium text-slate-800 dark:text-slate-200"><bdi>{fx.date(d.expiresAtUtc)}</bdi></dd>
+                        {d.ipAddress && <>
+                          <dt className="text-slate-500 dark:text-slate-400">{t('IP address')}</dt>
+                          <dd className="font-medium text-slate-800 dark:text-slate-200"><bdi dir="ltr">{d.ipAddress}</bdi></dd>
+                        </>}
+                      </dl>
+                    </div>
                   </div>
-                </div>
-                <button type="button" className={`${secondaryBtn} shrink-0 self-start sm:self-center`} onClick={() => void forget(d)}
-                  disabled={busyId === d.id} aria-label={t('Forget {browser}', { browser: nameOf(d) })}>
-                  {busyId === d.id ? t('Forgetting…') : t('Forget')}
-                </button>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

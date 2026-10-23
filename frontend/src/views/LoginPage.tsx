@@ -109,6 +109,8 @@ function LoginCard() {
   const [totpCode,     setTotpCode]     = useState('');
   /* "Trust this browser": unchecked by default, offered only when the company allows it (days > 0). */
   const [trustBrowser, setTrustBrowser] = useState(false);
+  /* "Lost your phone?" under Verify: the way out is the company's administrator, not a reset here. */
+  const [lostPhoneOpen, setLostPhoneOpen] = useState(false);
   const trustDays = mfaPending?.rememberDeviceDays ?? 0;
   const [enrollmentUri, setEnrollmentUri] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
@@ -500,10 +502,10 @@ function LoginCard() {
 
                 {mode === 'mfa' && (
                   <form onSubmit={handleMfa} noValidate className="lx-form">
-                    <Back onClick={() => { setMode('login'); setTotpCode(''); setTrustBrowser(false); }} label={t('Back to sign in')} />
+                    <Back onClick={() => { setMode('login'); setTotpCode(''); setTrustBrowser(false); setLostPhoneOpen(false); }} label={t('Back to sign in')} />
                     <Head kicker={t('Security check')} title={t('Two-step sign-in')}
                       sub={t('Enter the 6-digit code from your authenticator app.')} icon={<Smartphone />} />
-                    <Field legend={t('Authentication code')} htmlFor="mfa-code">
+                    <Field legend={t('6-digit code')} htmlFor="mfa-code">
                       <input id="mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
                         dir="ltr" value={totpCode} onChange={e => setTotpCode(toAsciiDigits(e.target.value).replace(/\D/g, ''))}
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" autoFocus required />
@@ -527,13 +529,24 @@ function LoginCard() {
                     )}
                     <Feedback error={error} info={info} />
                     <Submit busy={busy} label={t('Verify')} busyLabel={t('Verifying…')} disabled={totpCode.length !== 6} />
+                    {/* No self-service recovery exists, so this says who can help, in one sentence. */}
+                    <button type="button" className="lx-link lx-link-row" dir="auto" data-testid="mfa-lost-phone"
+                      aria-expanded={lostPhoneOpen} aria-controls="mfa-lost-phone-help"
+                      onClick={() => setLostPhoneOpen((v) => !v)}>
+                      {t('Lost your phone?')}
+                    </button>
+                    {lostPhoneOpen && (
+                      <p id="mfa-lost-phone-help" className="lx-hint lx-hint-block" data-testid="mfa-lost-phone-help">
+                        {t("Ask your company's administrator to reset two-step sign-in. You'll set it up again the next time you sign in.")}
+                      </p>
+                    )}
                   </form>
                 )}
 
                 {mode === 'mfa-enroll' && (
                   <form onSubmit={handleMfaEnrollment} noValidate className="lx-form">
                     <Back onClick={() => { setMode('login'); setTotpCode(''); }} label={t('Back to sign in')} />
-                    <Head kicker={t('Security check')} title={t('Set up two-factor authentication')}
+                    <Head kicker={t('Security check')} title={t('Set up two-step sign-in')}
                       sub={t('Add this account to your authenticator app, then enter the 6-digit code.')}
                       icon={<Smartphone />} />
                     {enrollmentSecret && (
@@ -543,13 +556,13 @@ function LoginCard() {
                       </Field>
                     )}
                     {enrollmentUri && <p className="lx-uri" dir="ltr">{enrollmentUri}</p>}
-                    <Field legend={t('Authentication code')} htmlFor="mfa-enroll-code">
+                    <Field legend={t('6-digit code')} htmlFor="mfa-enroll-code" hint={t('If you lose this phone, your administrator can reset it.')}>
                       <input id="mfa-enroll-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
                         dir="ltr" value={totpCode} onChange={e => setTotpCode(toAsciiDigits(e.target.value).replace(/\D/g, ''))}
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label={t('Turn on two-factor authentication')} busyLabel={t('Turning on…')} disabled={totpCode.length !== 6 || !enrollmentSecret} />
+                    <Submit busy={busy} label={t('Turn on two-step sign-in')} busyLabel={t('Turning on…')} disabled={totpCode.length !== 6 || !enrollmentSecret} />
                   </form>
                 )}
 
