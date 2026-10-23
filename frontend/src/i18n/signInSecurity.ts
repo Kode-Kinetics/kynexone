@@ -181,6 +181,30 @@ Object.assign(ar, {
     "{days, plural, one {يوم واحد (الحالي)} two {يومان (الحالي)} few {# أيام (الحالي)} many {# يومًا (الحالي)} other {# يوم (الحالي)}}",
   "Shorter is safer. Shortening it also shortens browsers already trusted.":
     "المدة الأقصر أكثر أمانًا. وتقصيرها يُقصّر أيضًا مدة المتصفحات الموثوقة حاليًا.",
+
+  // Tenant Admin → Security: sessions and lockout. Two limits end a session: inactivity, and the
+  // maximum session length counted from sign-in («الجلسة»).
+  "Sessions and lockout": "الجلسات وقفل الحساب",
+  "Sign out after inactivity": "تسجيل الخروج بعد عدم النشاط",
+  "(minutes)": "(بالدقائق)",
+  "Ends a session nobody has used for this long.": "تنتهي الجلسة التي لم يستخدمها أحد طوال هذه المدة.",
+  "Maximum session length": "الحد الأقصى لمدة الجلسة",
+  "Everyone signs in again after this long, even if they are active. Shorter is safer.":
+    "يسجّل الجميع الدخول من جديد بعد هذه المدة، حتى لو كانوا نشطين. المدة الأقصر أكثر أمانًا.",
+  "4 hours": "4 ساعات",
+  "8 hours": "8 ساعات",
+  "12 hours (default)": "12 ساعة (الافتراضي)",
+  "24 hours": "24 ساعة",
+  "72 hours (3 days)": "72 ساعة (3 أيام)",
+  "168 hours (7 days)": "168 ساعة (7 أيام)",
+  "{hours, plural, one {# hour (current)} other {# hours (current)}}":
+    "{hours, plural, one {ساعة واحدة (الحالي)} two {ساعتان (الحالي)} few {# ساعات (الحالي)} many {# ساعة (الحالي)} other {# ساعة (الحالي)}}",
+  "Maximum session length must be between 1 and 168 hours.": "يجب أن يكون الحد الأقصى لمدة الجلسة بين ساعة واحدة و168 ساعة.",
+  "Maximum failed attempts": "الحد الأقصى للمحاولات الفاشلة",
+  "Lockout duration": "مدة قفل الحساب",
+
+  // The sign-in page, after a refresh refused because the session reached its maximum length.
+  "Your session has ended. Sign in again.": "انتهت جلستك. سجّل الدخول مجددًا.",
 });
 
 export const signInSecurity = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

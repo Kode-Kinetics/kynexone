@@ -65,7 +65,10 @@ interface SecuritySettings {
   passwordRequireUppercase: boolean;
   passwordRequireDigit: boolean;
   passwordRequireSpecial: boolean;
+  /** The idle timeout: a session nobody has used for this many minutes ends. */
   sessionTimeoutMinutes: number;
+  /** The hard limit: every session ends this many hours after sign-in, active or not. 1–168; 12 by default. */
+  sessionMaxHours?: number;
   maxFailedLoginAttempts: number;
   lockoutDurationMinutes: number;
   /** Two-step sign-in for everyone, on top of the people who can see or change payroll, banking or access. */
@@ -77,6 +80,10 @@ interface SecuritySettings {
 /** The trusted-browser lifetimes offered (decision 3); 0 = off. A stored value outside these is shown as well. */
 const TRUST_DAY_CHOICES = [0, 7, 14, 30, 90] as const;
 const DEFAULT_TRUST_DAYS = 30;
+
+/** The maximum session lengths offered, in hours. A stored value outside these is shown as well. */
+const SESSION_MAX_HOUR_CHOICES = [4, 8, 12, 24, 72, 168] as const;
+const DEFAULT_SESSION_MAX_HOURS = 12;
 
 interface CountryRule {
   id: string;
@@ -214,7 +221,96 @@ function TwoStepPolicyGroup({ security, onChange }: {
   );
 }
 
+/**
+ * Sessions and lockout in the Security Settings form. Two limits end a session: inactivity
+ * (`sessionTimeoutMinutes`, the idle timeout) and the maximum session length (`sessionMaxHours`,
+ * counted from sign-in, active or not). Both are written by PUT /api/access/security-settings with
+ * the rest of the form; a shorter maximum applies to sessions already open at their next refresh.
+ */
+function SessionLimitsGroup({ security, onChange }: {
+  security: SecuritySettings;
+  onChange: (patch: Partial<SecuritySettings>) => void;
+}) {
+  const { t } = useLocale();
+  const hours = Number.isInteger(security.sessionMaxHours) ? (security.sessionMaxHours as number) : DEFAULT_SESSION_MAX_HOURS;
+  const choices: number[] = (SESSION_MAX_HOUR_CHOICES as readonly number[]).includes(hours)
+    ? [...SESSION_MAX_HOUR_CHOICES]
+    : [...SESSION_MAX_HOUR_CHOICES, hours].sort((a, b) => a - b);
+  const label = (h: number) => {
+    if (h === 4) return t('4 hours');
+    if (h === 8) return t('8 hours');
+    if (h === DEFAULT_SESSION_MAX_HOURS) return t('12 hours (default)');
+    if (h === 24) return t('24 hours');
+    if (h === 72) return t('72 hours (3 days)');
+    if (h === 168) return t('168 hours (7 days)');
+    return t('{hours, plural, one {# hour (current)} other {# hours (current)}}', { hours: h });
+  };
+  return (
+    <section className="space-y-4" aria-labelledby="sec-sessions-heading" data-testid="session-limits">
+      <h3 id="sec-sessions-heading" className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-2">{t('Sessions and lockout')}</h3>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label htmlFor="sec-timeout" className="block text-xs font-medium text-gray-700 mb-1 rtl:text-[13px]">
+            {t('Sign out after inactivity')} <span className="text-gray-400">{t('(minutes)')}</span>
+          </label>
+          <input
+            id="sec-timeout"
+            type="number"
+            min={1}
+            value={security.sessionTimeoutMinutes}
+            aria-describedby="sec-timeout-hint"
+            onChange={e => onChange({ sessionTimeoutMinutes: Number(e.target.value) })}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+          />
+          <p id="sec-timeout-hint" className="mt-1 text-xs leading-5 text-gray-500 rtl:text-[13px]">
+            {t('Ends a session nobody has used for this long.')}
+          </p>
+        </div>
+        <div>
+          <label htmlFor="sec-max-hours" className="block text-xs font-medium text-gray-700 mb-1 rtl:text-[13px]">{t('Maximum session length')}</label>
+          <select id="sec-max-hours" value={hours} aria-describedby="sec-max-hours-hint"
+            onChange={(e) => onChange({ sessionMaxHours: Number(e.target.value) })}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+            {choices.map((h) => <option key={h} value={h}>{label(h)}</option>)}
+          </select>
+          <p id="sec-max-hours-hint" className="mt-1 text-xs leading-5 text-gray-500 rtl:text-[13px]">
+            {t('Everyone signs in again after this long, even if they are active. Shorter is safer.')}
+          </p>
+        </div>
+        <div>
+          <label htmlFor="sec-maxfail" className="block text-xs font-medium text-gray-700 mb-1 rtl:text-[13px]">
+            {t('Maximum failed attempts')} <bdi dir="ltr" className="text-gray-400">(1–20)</bdi>
+          </label>
+          <input
+            id="sec-maxfail"
+            type="number"
+            min={1}
+            max={20}
+            value={security.maxFailedLoginAttempts}
+            onChange={e => onChange({ maxFailedLoginAttempts: Number(e.target.value) })}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+          />
+        </div>
+        <div>
+          <label htmlFor="sec-lockout" className="block text-xs font-medium text-gray-700 mb-1 rtl:text-[13px]">
+            {t('Lockout duration')} <span className="text-gray-400">{t('(minutes)')}</span>
+          </label>
+          <input
+            id="sec-lockout"
+            type="number"
+            min={1}
+            value={security.lockoutDurationMinutes}
+            onChange={e => onChange({ lockoutDurationMinutes: Number(e.target.value) })}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function TenantAdminPage() {
+  const { t } = useLocale();
   // Global providers loaded once on mount — re-sync them after a save so the rest of the
   // app (sidebar nav, currency formatting, etc.) reflects the change without a full reload.
   const { reload: reloadTenantSettings } = useTenantSettingsContext();
@@ -391,8 +487,11 @@ export default function TenantAdminPage() {
       await client.put('/api/access/security-settings', security);
       setSecuritySaved(true);
       setTimeout(() => setSecuritySaved(false), 2000);
-    } catch {
-      setSecurityError('Failed to save security settings. Please try again.');
+    } catch (err) {
+      const code = (err as { response?: { data?: { code?: unknown } } } | null)?.response?.data?.code;
+      setSecurityError(code === 'ERR_SESSION_MAX_HOURS_RANGE'
+        ? t('Maximum session length must be between 1 and 168 hours.')
+        : 'Failed to save security settings. Please try again.');
     } finally {
       setSecuritySaving(false);
     }
@@ -1064,47 +1163,7 @@ export default function TenantAdminPage() {
                 </div>
               </div>
 
-              <div className="space-y-4">
-                <h3 className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-2">Session &amp; Lockout</h3>
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label htmlFor="sec-timeout" className="block text-xs font-medium text-gray-700 mb-1">Session Timeout (min)</label>
-                    <input
-                      id="sec-timeout"
-                      type="number"
-                      min={1}
-                      value={security.sessionTimeoutMinutes}
-                      onChange={e => setSecurity(p => p ? { ...p, sessionTimeoutMinutes: Number(e.target.value) } : p)}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="sec-maxfail" className="block text-xs font-medium text-gray-700 mb-1">
-                      Max Failed Attempts <span className="text-gray-400">(1–20)</span>
-                    </label>
-                    <input
-                      id="sec-maxfail"
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={security.maxFailedLoginAttempts}
-                      onChange={e => setSecurity(p => p ? { ...p, maxFailedLoginAttempts: Number(e.target.value) } : p)}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="sec-lockout" className="block text-xs font-medium text-gray-700 mb-1">Lockout Duration (min)</label>
-                    <input
-                      id="sec-lockout"
-                      type="number"
-                      min={1}
-                      value={security.lockoutDurationMinutes}
-                      onChange={e => setSecurity(p => p ? { ...p, lockoutDurationMinutes: Number(e.target.value) } : p)}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-              </div>
+              <SessionLimitsGroup security={security} onChange={(patch) => setSecurity(p => p ? { ...p, ...patch } : p)} />
 
               <TwoStepPolicyGroup security={security} onChange={(patch) => setSecurity(p => p ? { ...p, ...patch } : p)} />
 
