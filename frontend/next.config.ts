@@ -17,7 +17,10 @@ export const SECURITY_HEADERS = [
   { key: 'Content-Security-Policy', value: "frame-ancestors 'self'" },
   {
     key: 'Permissions-Policy',
-    value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), browsing-topics=()',
+    // geolocation=(self): Setup's "Use my current location" pins a site from the admin's own device. Only this origin
+    // may ask (never an embedded frame), and the browser still asks the person. A per-route value would not work:
+    // the policy is fixed by the first page loaded, and the wizard is reached by client-side navigation.
+    value: 'camera=(), microphone=(), geolocation=(self), payment=(), usb=(), serial=(), hid=(), bluetooth=(), browsing-topics=()',
   },
 ];
 
@@ -52,7 +55,7 @@ const nextConfig: NextConfig = {
         // stricter set (SecurityHeaders.cs), and a second copy of a header would conflict with it.
         // Framing is limited to this origin, not refused outright: offer-letter and payslip PDF
         // previews are same-origin blob: iframes. The web app never asks for the camera, microphone
-        // or location (selfie attendance is the mobile app), so those are switched off.
+        // (selfie attendance is the mobile app), so those are switched off; location is same-origin only (see above).
         // A script-src Content-Security-Policy is deliberately not set here yet.
         source: '/:path((?!api/).*)',
         headers: SECURITY_HEADERS,

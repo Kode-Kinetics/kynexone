@@ -6,6 +6,7 @@ import { useT } from '../../hooks/useT';
 import type { ExistingRow } from '../../api/companySetup';
 import { editRow, rowChanged } from '../../lib/companySetupWizard';
 import { TagPill, WizardField, useWizardForm } from './wizardForm';
+import { ArabicSuggest, FillMissingArabic } from './ArabicSuggest';
 
 export interface RowColumn<T> {
   key: keyof T & string;
@@ -13,8 +14,10 @@ export interface RowColumn<T> {
   label: string;
   required?: boolean;
   kind?: 'text' | 'number' | 'select' | 'checkbox';
-  /** Arabic inputs are right-to-left whatever the page direction. */
+  /** Arabic inputs are right-to-left whatever the page direction, and offer "Suggest Arabic" from the English name. */
   arabic?: boolean;
+  /** The English column an Arabic column is suggested from; defaults to the same key ending in En (nameAr → nameEn). */
+  arabicSource?: keyof T & string;
   options?: { value: string; label: string }[];
   /** Tailwind width hint for the field inside a row. */
   width?: string;
@@ -65,6 +68,8 @@ export function RowsEditor<T extends { code: string } & ExistingRow>({
   // does not collapse into the read-only FIN summary at the third letter.
   const [activeRow, setActiveRow] = useState<number | null>(null);
   const set = (index: number, key: keyof T, value: unknown) => onChange(editRow(rows, index, key, value));
+  const arabicColumns = columns.filter(c => c.arabic);
+  const englishOf = (col: RowColumn<T>) => (row: T) => String(row[(col.arabicSource ?? col.key.replace(/Ar$/, 'En')) as keyof T] ?? '');
   return (
     <div className="space-y-2">
       {rows.length === 0 && <p className="rounded-lg border border-dashed border-slate-300 px-4 py-3 text-sm text-slate-600 dark:border-white/15 dark:text-slate-400">{emptyText}</p>}
@@ -129,11 +134,15 @@ export function RowsEditor<T extends { code: string } & ExistingRow>({
                           <option value="">{t('None')}</option>
                           {(col.options ?? []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                         </select>
-                      : <input {...control} className="input w-full" dir={col.arabic ? 'rtl' : undefined} lang={col.arabic ? 'ar' : undefined}
-                          type={col.kind === 'number' ? 'number' : 'text'} inputMode={col.inputMode}
-                          readOnly={locked || codeLocked}
-                          value={shown}
-                          onChange={e => set(index, col.key, col.kind === 'number' ? (e.target.value === '' ? 0 : Number(e.target.value)) : col.key === 'code' ? e.target.value.toUpperCase() : e.target.value)} />}
+                      : <>
+                          <input {...control} className="input w-full" dir={col.arabic ? 'rtl' : undefined} lang={col.arabic ? 'ar' : undefined}
+                            type={col.kind === 'number' ? 'number' : 'text'} inputMode={col.inputMode}
+                            readOnly={locked || codeLocked}
+                            value={shown}
+                            onChange={e => set(index, col.key, col.kind === 'number' ? (e.target.value === '' ? 0 : Number(e.target.value)) : col.key === 'code' ? e.target.value.toUpperCase() : e.target.value)} />
+                          {col.arabic && <ArabicSuggest source={englishOf(col)(row)} value={shown} inputId={control.id} readOnly={locked}
+                            context={rowLabel(index)} onAccept={arabic => set(index, col.key, arabic)} />}
+                        </>}
                   </WizardField>
                 );
               })}
@@ -142,9 +151,13 @@ export function RowsEditor<T extends { code: string } & ExistingRow>({
           </fieldset>
         );
       })}
-      {!readOnly && (canAdd || footer) && (
+      {!readOnly && (canAdd || footer || arabicColumns.length > 0) && (
         <div className="flex flex-wrap items-center gap-2 pt-1">
           {canAdd && <button type="button" className="btn-secondary" onClick={() => onChange([...rows, newRow()])}><Plus className="h-4 w-4" aria-hidden="true" />{addLabel}</button>}
+          {arabicColumns.map(col => (
+            <FillMissingArabic<T> key={col.key} rows={rows} arabicKey={col.key} english={englishOf(col)} onFill={onChange}
+              eligible={row => !reused?.(row)} label={(_, i) => rowLabel(i)} />
+          ))}
           {footer}
         </div>
       )}

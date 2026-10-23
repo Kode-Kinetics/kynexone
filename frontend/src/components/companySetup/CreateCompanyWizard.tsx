@@ -32,6 +32,7 @@ import { CompanySummaryStep } from './CompanySummaryStep';
 import { MoreSettingsLinks } from './MoreSettingsLinks';
 import { Notice, WizardFormProvider, fieldId } from './wizardForm';
 import { useDraftAutosave } from './useDraftAutosave';
+import { ArabicSuggestionsProvider } from './ArabicSuggest';
 
 const STEP_HEADINGS: Record<StepId, { heading: string; help: string }> = {
   1: { heading: msg('Create a company'), help: msg('Each screen leads to the next. Your work is saved as a draft as you go, so you can stop and come back.') },
@@ -584,6 +585,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
               </Notice></div>
             )}
             <WizardFormProvider value={{ body, update: change => setBody(b => change(b)), errorFor, context, readOnly: locked || autosave.state === 'conflict', baseline: existing ? defaults : null }}>
+              <ArabicSuggestionsProvider>
               <div onBlurCapture={event => {
                 const field = (event.target as HTMLElement).dataset?.field;
                 if (field && !touched.has(field)) setTouched(prev => new Set([...prev, field]));
@@ -600,6 +602,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                 {step === 7 && <ReviewStep plan={plan} state={planState} onRetry={() => void refreshPlan(body)} onGoTo={goToField} visibleSteps={steps}
                   onChangeAndCheck={changeAndCheck} onReloadPrefill={existing ? reloadFromCompany : undefined} />}
               </div>
+              </ArabicSuggestionsProvider>
             </WizardFormProvider>
             {commitError && (
               <div className="mt-4"><Notice tone="error" role="alert">

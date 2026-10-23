@@ -24,7 +24,9 @@ test('every page carries the baseline browser hardening headers', async () => {
     expect(headers['content-security-policy'], path).toBe("frame-ancestors 'self'");
     expect(headers['permissions-policy'], path).toContain('camera=()');
     expect(headers['permissions-policy'], path).toContain('microphone=()');
-    expect(headers['permissions-policy'], path).toContain('geolocation=()');
+    // Same-origin only, for Setup's "Use my current location"; no third-party frame may ask.
+    expect(headers['permissions-policy'], path).toContain('geolocation=(self)');
+    expect(headers['permissions-policy'], path).not.toMatch(/geolocation=\*|geolocation=\(\s*\*/);
   }
 });
 

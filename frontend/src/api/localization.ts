@@ -21,4 +21,10 @@ export const localizationApi = {
     client
       .post<TransliterateResult>('/api/localization/transliterate', { text, target, ...(kind ? { kind } : {}) })
       .then((r) => r.data),
+  /** Organisation labels only: one request for a whole wizard section ("" = no confident suggestion). */
+  transliterateOrganizationLabels: (texts: string[]) =>
+    client
+      .post<{ suggestions: { text: string; suggestion: string; requiresManualEntry: boolean }[] }>(
+        '/api/localization/transliterate/batch', { texts, target: 'ar', kind: 'organization-label' })
+      .then((r) => r.data),
 };

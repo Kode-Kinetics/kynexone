@@ -53,6 +53,33 @@ public class TransliterationController : ControllerBase
         var suggestion = _svc.ToArabic(text);
         return Ok(new { suggestion, requiresManualEntry = false });
     }
+
+    /// <summary>
+    /// Organisation labels only (branch, department, title, grade names), for a wizard section that offers
+    /// "Fill missing Arabic names (N)": one request answers every row. Same curated wording as the single call;
+    /// "" means no confident suggestion. Person names are never batched.
+    /// </summary>
+    [HttpPost("batch")]
+    public IActionResult TransliterateBatch([FromBody] TransliterateBatchRequest req)
+    {
+        if (this.GetTenantId() is null) return Unauthorized();
+        Response.Headers["Cache-Control"] = "no-store";
+        if (!string.Equals(req?.Kind?.Trim(), "organization-label", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = "unsupported_transliteration_kind", message = "Only organization-label suggestions can be requested together." });
+        var texts = req!.Texts ?? [];
+        if (texts.Count > MaxBatch)
+            return BadRequest(new { error = "too_many_labels", message = $"Ask for at most {MaxBatch} labels at a time." });
+        var suggestions = texts.Select(t =>
+        {
+            var text = t ?? string.Empty;
+            var suggestion = text.Length > 200 ? string.Empty : _svc.ToArabicOrganizationLabel(text);
+            return new { text, suggestion, requiresManualEntry = string.IsNullOrEmpty(suggestion) };
+        }).ToList();
+        return Ok(new { suggestions });
+    }
+
+    public const int MaxBatch = 100;
 }
 
 public record TransliterateRequest(string? Text, string? Target, string? Kind = null);
+public record TransliterateBatchRequest(List<string?>? Texts, string? Target, string? Kind = null);
