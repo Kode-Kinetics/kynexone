@@ -36,6 +36,14 @@ public interface IAccessManagementService
     /// </summary>
     Task<AdminPasswordResetLinkDto> IssuePasswordResetLinkAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<bool> DeleteUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>
+    /// An administrator resets ANOTHER user's two-step sign-in (lost phone). Same permission and account ceiling as the
+    /// other account actions; never yourself; a 3-500 character reason. In one transaction: factor cleared, every
+    /// session and open challenge ended, every trusted browser revoked (mfa_admin_reset), backup codes deleted,
+    /// audited as auth.mfa.admin_reset. A ceiling refusal throws <see cref="PrivilegeCeilingException"/>.
+    /// </summary>
+    Task<MfaAdminResetResult> ResetUserMfaAsync(Guid tenantId, Guid userId, string? reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This IAccessManagementService does not support two-step reset.");
     Task<IReadOnlyCollection<EmployeeTeamMemberDto>> GetTeamAsync(Guid tenantId, int managerEmployeeId, CancellationToken cancellationToken);
     Task<ApprovalDelegationDto> CreateDelegationAsync(Guid tenantId, ApprovalDelegationRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<ApprovalDelegationDto>> GetDelegationsAsync(Guid tenantId, CancellationToken cancellationToken);

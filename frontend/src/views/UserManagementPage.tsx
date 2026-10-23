@@ -30,6 +30,9 @@ import { localReturnPathOrNull } from '../lib/publicAuth';
 import { useLocale } from '../contexts/LocaleContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
+import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
+import { useAuth } from '../contexts/AuthContext';
+import { useAppToast } from '../components/ui/AppToast';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -111,6 +114,8 @@ interface UsageData {
 
 function UsersTab() {
   const { t } = useLocale();
+  const { user: me, hasPermission } = useAuth();
+  const toast = useAppToast();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [users, setUsers] = useState<UserListItem[]>([]);
@@ -142,6 +147,13 @@ function UsersTab() {
   const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
   // Link a login to its employee record (opened from a row), or invite an employee (opened from the toolbar).
   const [employeeLink, setEmployeeLink] = useState<{ user: UserListItem | null } | null>(null);
+  // Reset another user's two-step sign-in (opened from a row).
+  const [resetTwoStep, setResetTwoStep] = useState<UserListItem | null>(null);
+  // The same permission as every other user action here (AccessController's security.manage), never on
+  // yourself, and only for someone who has two-step set up. The server enforces all three again.
+  const canManageUsers = hasPermission('security.manage');
+  const isMe = (u: UserListItem) => (!!me && me.id.toLowerCase() === u.id.toLowerCase()) || isSelf(ceiling, u.id);
+  const canResetTwoStep = (u: UserListItem) => canManageUsers && u.mfaEnabled === true && !isMe(u);
 
   const pageSize = 20;
 
@@ -317,6 +329,11 @@ function UsersTab() {
                 <td className="px-4 py-3">
                   <p className="font-medium text-slate-800 dark:text-slate-200">{u.fullName}</p>
                   <p className="text-xs text-slate-500">{u.email}</p>
+                  {u.mfaEnabled && (
+                    <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-700 rtl:text-[13px] dark:text-emerald-400" data-testid="user-two-step-on">
+                      <Shield className="h-3 w-3" aria-hidden="true" /> {t('Two-step sign-in is on')}
+                    </p>
+                  )}
                   {u.employeeId && (
                     <p className="text-xs text-violet-500">
                       {!u.employeeName
@@ -366,6 +383,16 @@ function UsersTab() {
                     <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
+                    {canResetTwoStep(u) && (
+                      <button
+                        type="button"
+                        onClick={() => setResetTwoStep(u)}
+                        className="ms-1 whitespace-nowrap rounded-lg border border-rose-200 px-2 py-1 text-xs font-medium text-rose-700 rtl:text-[13px] hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-900/30"
+                        data-testid="user-reset-two-step"
+                      >
+                        {t('Reset two-step sign-in')}
+                      </button>
+                    )}
                     {!u.employeeId && (
                       <button
                         type="button"
@@ -405,6 +432,21 @@ function UsersTab() {
       {/* Link a login to its employee record / invite an employee to Self-Service */}
       {employeeLink && (
         <LinkEmployeeLoginDialog user={employeeLink.user} onClose={() => setEmployeeLink(null)} onChanged={load} />
+      )}
+
+      {/* Reset another user's two-step sign-in */}
+      {resetTwoStep && (
+        <ResetTwoStepDialog
+          user={resetTwoStep}
+          onClose={() => setResetTwoStep(null)}
+          onReset={() => {
+            const name = resetTwoStep.fullName?.trim() || resetTwoStep.email;
+            setResetTwoStep(null);
+            toast.success(t('Two-step sign-in reset for {name}', { name }));
+            load();
+          }}
+          onStale={load}
+        />
       )}
 
       {/* Create User Modal */}

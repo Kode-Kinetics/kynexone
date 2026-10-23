@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
-import type { AuthResponse, AuthUser } from '../api/auth';
+import type { AuthResponse, AuthUser, MfaChallengeCode } from '../api/auth';
 import { afterMeFailure, afterMeSuccess, type AuthLoadError } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from '../api/clearSession';
 
@@ -41,8 +41,11 @@ interface AuthContextValue {
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
   login: (email: string, password: string, tenantSlug?: string) => Promise<LoginOutcome>;
-  /** Complete login after TOTP entry during challenge flow. `rememberDevice` only when the choice was offered. */
-  verifyMfaChallenge: (totpCode: string, rememberDevice?: boolean) => Promise<void>;
+  /**
+   * Complete login after the code step: the app's 6-digit code (a string), or `{ backupCode }`.
+   * `rememberDevice` only when the choice was offered; it is never sent with a backup code.
+   */
+  verifyMfaChallenge: (code: string | MfaChallengeCode, rememberDevice?: boolean) => Promise<void>;
   /** From a signed-in session: obtain an enrolment token, end this session, and hand the token to
    *  the sign-in page's existing "Set up two-factor authentication" step. */
   beginMfaEnrollment: () => Promise<void>;
@@ -186,11 +189,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return 'authenticated';
   }, []);
 
-  const verifyMfaChallenge = useCallback(async (totpCode: string, rememberDevice?: boolean) => {
+  const verifyMfaChallenge = useCallback(async (code: string | MfaChallengeCode, rememberDevice?: boolean) => {
     if (!mfaPending) throw new Error('No MFA challenge in progress.');
     const res = await authApi.mfaVerifyChallenge(
       mfaPending.challengeToken,
-      totpCode,
+      code,
       mfaPending.rememberDeviceDays > 0 ? rememberDevice === true : undefined,
     );
     localStorage.setItem('zayra_access_token', res.accessToken);

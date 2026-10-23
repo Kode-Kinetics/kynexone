@@ -569,8 +569,9 @@ public sealed class MfaTrustedDeviceTests
         await using (var db = kit.NewDb())
         {
             var controller = SignedIn(kit, db, userId, kit.TenantId);
+            // Wave 2: success is 200 with the new backup codes (was 204).
             (await controller.VerifySetup(new MfaVerifySetupRequest(secret, Totp.Now(secret)), CancellationToken.None))
-                .Should().BeOfType<NoContentResult>();
+                .Should().BeOfType<OkObjectResult>();
         }
         await AssertRevokedAsync(kit, raw, MfaTrustRevokeReasons.MfaResetup);
         ChallengeOf((await LoginAsync(kit, raw)).Result);
@@ -721,7 +722,7 @@ public sealed class MfaTrustedDeviceTests
 
         long? stampBefore;
         await using (var db = kit.NewDb()) stampBefore = (await db.Users.AsNoTracking().SingleAsync(u => u.Id == userId)).UpdatedAtUtc?.Ticks;
-        (await VerifySetupAsync(kit, userId, secret, Totp.Now(secret))).Should().BeOfType<NoContentResult>();
+        (await VerifySetupAsync(kit, userId, secret, Totp.Now(secret))).Should().BeOfType<OkObjectResult>("success returns the backup codes (wave 2)");
         await using (var db = kit.NewDb())
         {
             var user = await db.Users.AsNoTracking().SingleAsync(u => u.Id == userId);

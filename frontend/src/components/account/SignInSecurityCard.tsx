@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, Loader2, Monitor, RefreshCw, ShieldAlert, ShieldCheck, Smartphone, Tablet, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Info, Loader2, Monitor, RefreshCw, ShieldAlert, ShieldCheck, Smartphone, Tablet, type LucideIcon } from 'lucide-react';
 import { authApi, MFA_ERRORS, type MfaStatus, type TrustedDevice } from '@/src/api/auth';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLocale } from '@/src/contexts/LocaleContext';
@@ -10,13 +10,18 @@ import { useFormat } from '@/src/hooks/useFormat';
 import { ConfirmDialog, type ConfirmState } from '@/src/components/ui/ConfirmDialog';
 import { setSignInNotice } from '@/src/lib/signInNotice';
 import { toAsciiDigits } from '@/src/lib/welcomeCode';
+import { BackupCodesStep, primaryBtn, secondaryBtn } from './BackupCodesStep';
 
 /**
  * Sign-in security: the signed-in person's own two-step sign-in and the browsers they trust.
  *
- * Endpoints (GET /api/auth/mfa/status, POST setup / verify-setup / disable,
+ * Endpoints (GET /api/auth/mfa/status, POST setup / verify-setup / disable / backup-codes,
  * GET and DELETE /api/auth/mfa/trusted-devices). Every endpoint needs only a session, so this card
  * is for every role, and nothing on it depends on a permission.
+ *
+ * Backup codes: verify-setup returns the first set once (an older API's 204 returns none, and the
+ * card goes straight on); "Get new backup codes" replaces the set behind a current app code. Either
+ * way the codes are shown in the "Save your backup codes" step and dropped from state on Done.
  *
  * Turning two-step on or off ends every session of the account today (the server rotates the
  * session stamp, and disable revokes the refresh tokens). After either change the card asks the
@@ -24,22 +29,16 @@ import { toAsciiDigits } from '@/src/lib/welcomeCode';
  * is taken to the sign-in page with one sentence saying why.
  */
 
-type Panel = 'none' | 'setup' | 'disable';
+type Panel = 'none' | 'setup' | 'disable' | 'regenerate' | 'codes';
+
+/** At this many unused backup codes or fewer, the card suggests getting new ones. */
+const FEW_BACKUP_CODES = 3;
 
 const ROLE_REQUIRES = 'Required for your role, because you can see or change payroll, banking or access.';
 const WORKSPACE_REQUIRES = 'Required by your company for everyone.';
 type RequiredBy = 'role' | 'workspace';
 
-/**
- * The app's shared buttons (styles/index.css), plus a real disabled state: grey surface, grey text, no
- * shadow or lift. .btn-primary/.btn-secondary have none of their own, and fading them with opacity
- * left a disabled "Turn on" looking like a pressable blue one. The arbitrary variant outranks the
- * light theme's `!important` blue-700 fill on .btn-primary (index.css, WCAG guardrails).
- */
-const DISABLED =
-  'disabled:cursor-not-allowed disabled:translate-y-0 disabled:scale-100 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none [html:not(.dark)_.tenant-app-shell_&:disabled]:!bg-slate-100 dark:disabled:border-white/[0.06] dark:disabled:bg-white/[0.04] dark:disabled:text-slate-500';
-const primaryBtn = `btn-primary justify-center ${DISABLED}`;
-const secondaryBtn = `btn-secondary justify-center ${DISABLED}`;
+/** .btn-primary / .btn-secondary with a real disabled state live in ./BackupCodesStep, shared with it. */
 const dangerBtn = 'btn-danger justify-center';
 /** Headings that receive focus when a panel opens or a list changes: reachable, never in the tab order. */
 const focusHeading = 'scroll-mt-24 focus:outline-none';
@@ -102,8 +101,14 @@ async function sessionStillValid(): Promise<boolean> {
 
 export function SignInSecurityCard() {
   const { t } = useLocale();
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const router = useRouter();
+  /**
+   * The codes on screen in the "Save your backup codes" step, and why they are there: the first set
+   * right after turning two-step on (Done then carries on as a finished turn-on), or a replacement.
+   * Held only while the step is open; Done sets this back to null.
+   */
+  const [freshCodes, setFreshCodes] = useState<{ codes: string[]; after: 'turn-on' | 'regenerate' } | null>(null);
 
   const [status, setStatus] = useState<MfaStatus | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -115,9 +120,12 @@ export function SignInSecurityCard() {
   const [focusAfterClose, setFocusAfterClose] = useState<'trigger' | 'status' | null>(null);
   const statusRef = useRef<HTMLHeadingElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  /** Which button opened the panel, so Cancel can hand focus back to that one. */
+  const [trigger, setTrigger] = useState<'main' | 'regenerate'>('main');
 
   const closePanel = useCallback((focus: 'trigger' | 'status') => {
     setPanel('none');
+    setFreshCodes(null);
     setFocusAfterClose(focus);
   }, []);
 
@@ -153,6 +161,23 @@ export function SignInSecurityCard() {
     router.replace('/login');
   }, [closePanel, load, logout, router, t]);
 
+  /** Turned on: show the first backup codes before anything else happens, when the server sent some. */
+  const afterTurnOn = useCallback((codes: string[] | null) => {
+    if (!codes?.length) { void afterChange(true); return; }
+    setFreshCodes({ codes, after: 'turn-on' });
+    setPanel('codes');
+  }, [afterChange]);
+
+  /** Done on the codes step: the codes leave state (and the DOM) here, then the flow carries on. */
+  const codesDone = useCallback(() => {
+    const after = freshCodes?.after;
+    setFreshCodes(null);
+    if (after === 'turn-on') { void afterChange(true); return; }
+    closePanel('status');
+    setNotice({ tone: 'ok', text: t('Your new backup codes are ready. The old ones no longer work.') });
+    void load();
+  }, [afterChange, closePanel, freshCodes, load, t]);
+
   if (loadError) {
     return (
       <Card testId="sign-in-security-card">
@@ -178,7 +203,14 @@ export function SignInSecurityCard() {
     );
   }
 
-  const on = status.enabled;
+  /*
+   * Right after turning on, the status is not re-read until Done: turning on can end this session,
+   * and a request that finds it ended navigates to sign-in, taking the unsaved codes with it. The
+   * heading still says it is on.
+   */
+  const on = status.enabled || freshCodes?.after === 'turn-on';
+  const remaining = status.enabled && Number.isInteger(status.backupCodesRemaining)
+    ? Math.max(0, status.backupCodesRemaining as number) : null;
   const canDisable = !lockedBy && (status.canDisable ?? (status.enabled && !status.required));
   const requiredBy: RequiredBy | null = lockedBy
     ?? (status.required ? (status.requiredBecause === 'workspace_policy' ? 'workspace' : 'role') : null);
@@ -205,6 +237,22 @@ export function SignInSecurityCard() {
           </div>
         </div>
 
+        {remaining !== null && panel !== 'codes' && (
+          <div className="mt-4 space-y-2" data-testid="backup-codes-summary">
+            <p className="text-sm font-medium text-slate-800 dark:text-slate-200" data-testid="backup-codes-remaining">
+              {t('Backup codes: {count} left', { count: remaining })}
+            </p>
+            {remaining <= FEW_BACKUP_CODES && (
+              <p className="flex items-start gap-2 text-sm leading-6 text-slate-600 dark:text-slate-400" data-testid="backup-codes-low">
+                <Info className="mt-1 h-4 w-4 shrink-0 text-slate-500 dark:text-slate-400" aria-hidden />
+                <span>{remaining === 0
+                  ? t('You have no backup codes left. Get new ones so you can still sign in without your phone.')
+                  : t('Only a few backup codes are left. Get new ones before they run out.')}</span>
+              </p>
+            )}
+          </div>
+        )}
+
         {notice && <InlineNotice notice={notice} />}
 
         {/* A fact about the account, not a warning: neutral, with the shield in the brand colour. */}
@@ -220,12 +268,19 @@ export function SignInSecurityCard() {
         {panel === 'none' && (
           <div className="mt-4 flex flex-wrap gap-3">
             {!on && (
-              <button type="button" ref={triggerRef} className={primaryBtn} onClick={() => { setNotice(null); setPanel('setup'); }} data-testid="two-step-turn-on">
+              <button type="button" ref={trigger === 'main' ? triggerRef : undefined} className={primaryBtn} onClick={() => { setTrigger('main'); setNotice(null); setPanel('setup'); }} data-testid="two-step-turn-on">
                 {t('Turn on two-step sign-in')}
               </button>
             )}
+            {remaining !== null && (
+              <button type="button" ref={trigger === 'regenerate' ? triggerRef : undefined} className={secondaryBtn}
+                onClick={() => { setTrigger('regenerate'); setNotice(null); setPanel('regenerate'); }} data-testid="backup-codes-regenerate">
+                {t('Get new backup codes')}
+              </button>
+            )}
             {on && canDisable && (
-              <button type="button" ref={triggerRef} className={secondaryBtn} onClick={() => { setNotice(null); setPanel('disable'); }} data-testid="two-step-turn-off">
+              <button type="button" ref={trigger === 'main' ? triggerRef : undefined} className={secondaryBtn}
+                onClick={() => { setTrigger('main'); setNotice(null); setPanel('disable'); }} data-testid="two-step-turn-off">
                 {t('Turn off two-step sign-in')}
               </button>
             )}
@@ -235,7 +290,7 @@ export function SignInSecurityCard() {
         {panel === 'setup' && (
           <SetupPanel
             onCancel={() => closePanel('trigger')}
-            onDone={() => void afterChange(true)}
+            onDone={afterTurnOn}
             onAlreadyOn={() => { closePanel('status'); setNotice({ tone: 'ok', text: t('Two-step sign-in is already on for your account.') }); void load(); }}
           />
         )}
@@ -247,9 +302,20 @@ export function SignInSecurityCard() {
             onAlreadyOff={() => { closePanel('status'); setNotice({ tone: 'ok', text: t('Two-step sign-in is already off for your account.') }); void load(); }}
           />
         )}
+        {panel === 'regenerate' && (
+          <RegeneratePanel
+            onCancel={() => closePanel('trigger')}
+            onDone={(codes) => { setFreshCodes({ codes, after: 'regenerate' }); setPanel('codes'); }}
+            onNotOn={() => { closePanel('status'); setNotice({ tone: 'ok', text: t('Two-step sign-in is off for your account, so there are no backup codes.') }); void load(); }}
+          />
+        )}
+        {panel === 'codes' && freshCodes && (
+          <BackupCodesStep codes={freshCodes.codes} account={user?.email} variant="app"
+            replaced={freshCodes.after === 'regenerate'} onDone={codesDone} />
+        )}
       </Card>
 
-      {(on || (status.trustedDeviceCount ?? 0) > 0) && <TrustedBrowsers days={days} />}
+      {(status.enabled || (status.trustedDeviceCount ?? 0) > 0) && <TrustedBrowsers days={days} />}
     </div>
   );
 }
@@ -313,7 +379,7 @@ function CodeField({ id, label, hint, value, onChange, error }: {
   );
 }
 
-function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; onDone: () => void; onAlreadyOn: () => void }) {
+function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; onDone: (codes: string[] | null) => void; onAlreadyOn: () => void }) {
   const { t } = useLocale();
   const id = useId();
   const [uri, setUri] = useState('');
@@ -372,8 +438,7 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
     if (code.length !== 6 || !secret || busy) return;
     setBusy(true); setError('');
     try {
-      await authApi.mfaVerifySetup(secret, code);
-      onDone();
+      onDone(await authApi.mfaVerifySetup(secret, code));
     } catch (err) {
       const s = statusOf(err);
       const c = codeOf(err);
@@ -440,7 +505,7 @@ function SetupPanel({ onCancel, onDone, onAlreadyOn }: { onCancel: () => void; o
           <div className="min-w-0 flex-1">
             <CodeField id={`${id}-code`} label={t('Enter the 6-digit code the app shows')} value={code} onChange={(v) => { setCode(v); setError(''); }} error={error} />
             <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400" data-testid="two-step-lost-phone-note">
-              {t('If you lose this phone, your administrator can reset it.')}
+              {t('If you lose this phone, your administrator can reset it, or you can use one of your backup codes.')}
             </p>
           </div>
         </li>
@@ -515,6 +580,61 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
         <button type="submit" className={dangerBtn} disabled={busy || code.length !== 6 || !confirmed} aria-busy={busy}>
           {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {busy ? t('Turning off…') : t('Turn off')}
+        </button>
+        <button type="button" className={secondaryBtn} onClick={onCancel} disabled={busy}>{t('Cancel')}</button>
+      </div>
+    </form>
+  );
+}
+
+/** "Get new backup codes": a current app code, a plain warning, then the new set in the codes step. */
+function RegeneratePanel({ onCancel, onDone, onNotOn }: {
+  onCancel: () => void; onDone: (codes: string[]) => void; onNotOn: () => void;
+}) {
+  const { t } = useLocale();
+  const id = useId();
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const headingRef = useFocusOnMount<HTMLHeadingElement>();
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (code.length !== 6 || busy) return;
+    setBusy(true); setError('');
+    try {
+      const codes = await authApi.mfaRegenerateBackupCodes(code);
+      if (codes.length) { onDone(codes); return; }
+      setError(t('New backup codes could not be made. Try again in a moment.'));
+      setCode('');
+    } catch (err) {
+      const s = statusOf(err);
+      const c = codeOf(err);
+      if (c === MFA_ERRORS.notEnabled) { onNotOn(); return; }
+      if (isNetwork(err)) setError(t('Cannot reach the server. Check your connection and try again.'));
+      else if (c === MFA_ERRORS.codeInvalid || s === 400) setError(t("That code didn't match. Enter the newest code from your authenticator app. Each code works only once."));
+      else setError(t('New backup codes could not be made. Try again in a moment.'));
+      setCode('');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} noValidate className="mt-5 space-y-4 border-t border-slate-100 pt-5 dark:border-white/[0.07]" data-testid="backup-codes-regenerate-panel">
+      <h3 ref={headingRef} tabIndex={-1} className={`text-sm font-semibold text-slate-900 dark:text-white ${focusHeading}`} data-testid="backup-codes-regenerate-heading">
+        {t('Get new backup codes')}
+      </h3>
+      <p className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium leading-6 text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/[0.06] dark:text-amber-200" data-testid="backup-codes-regenerate-warning">
+        <AlertTriangle className="mt-1 h-4 w-4 shrink-0" aria-hidden />
+        <span>{t('Your old codes stop working. Only the new ones will sign you in.')}</span>
+      </p>
+      <CodeField id={`${id}-code`} label={t('Current 6-digit code from your authenticator app')} value={code}
+        onChange={(v) => { setCode(v); setError(''); }} error={error} />
+      <div className="flex flex-wrap gap-3">
+        <button type="submit" className={primaryBtn} disabled={busy || code.length !== 6} aria-busy={busy}>
+          {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+          {busy ? t('Getting new codes…') : t('Get new codes')}
         </button>
         <button type="button" className={secondaryBtn} onClick={onCancel} disabled={busy}>{t('Cancel')}</button>
       </div>

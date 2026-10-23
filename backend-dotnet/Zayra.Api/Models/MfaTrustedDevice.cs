@@ -45,10 +45,12 @@ public static class MfaTrustRevokeReasons
     public const string UserDeleted = "user_deleted";
     /// <summary>The tenant shortened its trust lifetime and this browser's shorter period had already run out.</summary>
     public const string PolicyShortened = "policy_shortened";
+    /// <summary>A tenant administrator reset the user's two-step sign-in (POST /api/access/users/{id}/mfa/reset).</summary>
+    public const string MfaAdminReset = "mfa_admin_reset";
 
     public static readonly string[] All =
     [
         UserRevoked, UserRevokedAll, PasswordChanged, PasswordReset, MfaDisabled, MfaRecoveryDisabled, MfaResetup,
-        UserDeactivated, UserDeleted, PolicyShortened,
+        UserDeactivated, UserDeleted, PolicyShortened, MfaAdminReset,
     ];
 }
