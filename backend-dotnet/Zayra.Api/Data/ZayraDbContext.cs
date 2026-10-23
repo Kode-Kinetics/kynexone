@@ -4434,9 +4434,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<LoanType>(entity =>
         {
             entity.ToTable("loan_types", t =>
+            {
                 t.HasCheckConstraint("ck_loan_types__grade_limited_has_component",
-                    "NOT grade_limited OR entitlement_component_code IS NOT NULL"));
+                    "NOT grade_limited OR entitlement_component_code IS NOT NULL");
+                // Shortest repayment, within the longest once a minimum is set. 1 (= no minimum) is accepted whatever
+                // max_installments holds, so a legacy row with an invalid maximum (eligibility refuses those) can still
+                // be updated and the CHECK validates on every existing row.
+                t.HasCheckConstraint("ck_loan_types__min_installments", LoanTypeSql.MinInstallmentsCheck);
+            });
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.MinInstallments).HasDefaultValue(1);
             entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
             entity.Property(x => x.InterestRate).HasPrecision(8, 4);
             entity.Property(x => x.GradeLimited).HasDefaultValue(false);
@@ -4513,8 +4520,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 // Only the offering switch records what a version copied, and a switch stub only ever says "not offered".
                 t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
                 t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
+                // Same rule as loan_types. max_installments has a database default of 0 and was backfilled from
+                // loan_types, so a legacy row may hold 0: min 1 (no minimum) stays valid on it.
+                t.HasCheckConstraint("ck_loan_policies__min_installments", LoanTypeSql.MinInstallmentsCheck);
             });
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.MinInstallments).HasDefaultValue(1);
             entity.HasAlternateKey(x => new { x.TenantId, x.Id });
             entity.HasOne<LoanPolicy>().WithMany().HasForeignKey(x => new { x.TenantId, x.CopiedFromPolicyId })
                 .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);

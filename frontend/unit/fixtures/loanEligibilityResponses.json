@@ -106,6 +106,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": false,
@@ -174,6 +176,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": true,
@@ -243,6 +247,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": false,
@@ -322,6 +328,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": true,
@@ -409,6 +417,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": true,
@@ -478,6 +488,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": false,
@@ -539,6 +551,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": true,
@@ -608,6 +622,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": false,
       "eligible": true,
@@ -672,6 +688,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": false,
       "eligible": true,
@@ -736,6 +754,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": false,
       "eligible": true,
@@ -800,6 +820,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": false,
       "eligible": true,
@@ -864,6 +886,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": false,
       "eligible": true,
@@ -939,6 +963,8 @@
         "installments": null
       }
     ],
+    "minInstallments": 1,
+    "maxInstallments": 24,
     "gradeLimit": {
       "applies": true,
       "eligible": true,

@@ -190,7 +190,9 @@ public class LoanLifecycleTests
                 // no personnel identifiers — the grade block carries grade id/code/name and the cell's figures only.
                 "GradeLimit", "Available", "BindingLimit", "Limits",
                 // Release A R3: the Art. 92 10% test (instalment, wage, share). Same sensitivity as MonthlySalary.
-                "Art92" };
+                "Art92",
+                // The effective repayment range (shortest/longest, in instalments): policy terms, nothing personal.
+                "MinInstallments", "MaxInstallments" };
             Assert.Equal(allowed.OrderBy(x => x), document.RootElement.EnumerateObject().Select(x => x.Name).OrderBy(x => x));
             Assert.True(document.RootElement.GetProperty("Eligible").GetBoolean());
             Assert.Equal(10_000m, document.RootElement.GetProperty("MonthlySalary").GetDecimal());
@@ -498,6 +500,34 @@ public class LoanLifecycleTests
         Assert.Empty(await h.Db.LoanChangeRequests.ToListAsync());
         Assert.Equal(90m, h.Loan.OutstandingBalance);
         Assert.Equal(3, await h.Db.LoanInstallments.CountAsync());
+    }
+
+    [Fact]
+    public async Task Reschedule_EnforcesFrozenMinimumOnTheNewTotal_KeptPlusNew()
+    {
+        await using var h = await Harness.Create();
+        // Instalment 1 has money paid against it and is kept, so the new schedule's total is 1 + the requested count.
+        h.Loan.PolicySnapshotJson = JsonSerializer.Serialize(new { AllowRescheduling = true, MaxInstallments = 12, MinInstallments = 6 });
+        await h.Db.SaveChangesAsync();
+        var refused = Assert.IsType<BadRequestObjectResult>(await h.Controller("Finance").RequestLoanChange(h.Loan.Id,
+            new LoanChangeRequestInput("Reschedule", "Shorter than the policy allows", 4, h.Today.AddMonths(1)), default));
+        Assert.Equal("Repayment must be spread over at least 6 instalments.", refused.Value);
+        Assert.Empty(await h.Db.LoanChangeRequests.ToListAsync());
+        Assert.IsType<OkObjectResult>(await h.Controller("Finance").RequestLoanChange(h.Loan.Id,
+            new LoanChangeRequestInput("Reschedule", "Spread over the minimum", 5, h.Today.AddMonths(1)), default));
+        var change = await h.Db.Set<LoanChangeRequest>().SingleAsync();
+        Assert.IsType<OkObjectResult>(await h.Controller("Finance").DecideLoanChange(h.Loan.Id, change.Id, new LoanChangeDecisionRequest("Approved", "Approved minimum schedule"), default));
+        Assert.Equal(6, h.Loan.ApprovedInstallments);
+        Assert.Equal(6, await h.Db.LoanInstallments.CountAsync());
+    }
+
+    [Fact]
+    public async Task Reschedule_SnapshotWithoutMinimum_KeepsLegacyBehaviour()
+    {
+        await using var h = await Harness.Create();
+        // The harness snapshot predates minimums (no MinInstallments): a one-instalment reschedule is still allowed.
+        Assert.IsType<OkObjectResult>(await h.Controller("Finance").RequestLoanChange(h.Loan.Id,
+            new LoanChangeRequestInput("Reschedule", "Settle the rest next month", 1, h.Today.AddMonths(1)), default));
     }
 
     [Fact]

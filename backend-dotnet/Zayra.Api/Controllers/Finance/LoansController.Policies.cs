@@ -46,6 +46,8 @@ public partial class LoansController
                 || req.MinServiceMonths is < 0 or > 600 || req.MaxInstallments is < 1 or > 600 || req.MaxConcurrentLoans is < 1 or > 100
                 || req.CooldownMonthsAfterRepayment is < 0 or > 120)
                 return BadRequest("Policy limits are invalid. Use nonnegative monetary limits, 1–600 installments and 1–100 concurrent loans.");
+            if (req.MinInstallments < 1 || req.MinInstallments > req.MaxInstallments)
+                return BadRequest($"Set the shortest repayment between 1 and the longest repayment ({req.MaxInstallments} instalments).");
             if (req.AllowedEmploymentStatuses == null || req.AllowedEmploymentStatuses.Length == 0
                 || req.AllowedEmploymentStatuses.Any(x => x is not ("Active" or "Offboarded"))
                 || req.AllowedRepaymentMethods == null || req.AllowedRepaymentMethods.Length == 0
@@ -65,7 +67,7 @@ public partial class LoansController
                 Version = version + 1, PolicyName = req.PolicyName.Trim(), MaxAmount = req.MaxAmount,
                 MaxTotalOutstanding = req.MaxTotalOutstanding, MaxMultiplierOfSalary = req.MaxMultiplierOfSalary,
                 MaxInstallmentPercentOfSalary = req.MaxInstallmentPercentOfSalary, MinServiceMonths = req.MinServiceMonths,
-                MaxInstallments = req.MaxInstallments, MaxConcurrentLoans = req.MaxConcurrentLoans,
+                MaxInstallments = req.MaxInstallments, MinInstallments = req.MinInstallments, MaxConcurrentLoans = req.MaxConcurrentLoans,
                 RequireProbationCompleted = req.RequireProbationCompleted, BlockDuringNotice = req.BlockDuringNotice,
                 BlockOnOverdue = req.BlockOnOverdue, AllowedEmploymentStatusesJson = JsonSerializer.Serialize(req.AllowedEmploymentStatuses.Distinct()),
                 AllowedContractTypesJson = JsonSerializer.Serialize(req.AllowedContractTypes ?? []),
@@ -108,6 +110,8 @@ public partial class LoansController
         return Ok(new { result.Eligible, result.Reasons, result.Codes, result.MaxAvailableAmount, result.PolicyId, result.PolicyVersion,
             monthlySalary, result.CommittedAmount, canRequestException,
             preview, available = result.Available, bindingLimit = result.BindingLimit, limitBreakdowns = limits,
+            // The repayment range the applicant may choose (the stricter of type and policy), for the apply form.
+            minInstallments = result.MinInstallments, maxInstallments = result.MaxInstallments,
             gradeLimit = GradeLimitDto(result.GradeLimit, maySeeSalary),
             // Release A: the Art. 92 10% test for this request (null in a preview, or when the tenant does not have it).
             art92 = await ReleaseAEnabledAsync(tid, ct) ? Art92Dto(result.Art92, maySeeSalary) : null,
@@ -127,7 +131,7 @@ public partial class LoansController
 
     private static object ProjectPolicy(LoanPolicy p) => new { p.Id, p.CompanyId, p.LoanTypeId, p.Version, p.PolicyName,
         p.MaxAmount, p.MaxTotalOutstanding, p.MaxMultiplierOfSalary, p.MaxInstallmentPercentOfSalary, p.MinServiceMonths,
-        p.MaxInstallments, p.MaxConcurrentLoans, p.RequireProbationCompleted, p.BlockDuringNotice, p.BlockOnOverdue,
+        p.MaxInstallments, p.MinInstallments, p.MaxConcurrentLoans, p.RequireProbationCompleted, p.BlockDuringNotice, p.BlockOnOverdue,
         AllowedEmploymentStatuses = JsonSerializer.Deserialize<string[]>(p.AllowedEmploymentStatusesJson),
         AllowedContractTypes = JsonSerializer.Deserialize<string[]>(p.AllowedContractTypesJson),
         AllowedRepaymentMethods = JsonSerializer.Deserialize<string[]>(p.AllowedRepaymentMethodsJson),
@@ -143,4 +147,4 @@ public record LoanPolicyRequest(Guid CompanyId, Guid LoanTypeId, string PolicyNa
     bool BlockOnOverdue = true, string[]? AllowedEmploymentStatuses = null, string[]? AllowedContractTypes = null,
     string[]? AllowedRepaymentMethods = null, int CooldownMonthsAfterRepayment = 0, decimal AdditionalApprovalThreshold = 0,
     string AdditionalApproverRole = "HR Director", bool AllowExceptions = false, bool AllowEarlySettlement = true, bool AllowRescheduling = false,
-    string[]? AllowedRepaymentFrequencies = null, bool IsOffered = true);
+    string[]? AllowedRepaymentFrequencies = null, bool IsOffered = true, int MinInstallments = 1);

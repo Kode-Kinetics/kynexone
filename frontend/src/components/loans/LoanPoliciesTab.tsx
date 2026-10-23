@@ -14,7 +14,7 @@ import { LoanOfferingsPanel } from './LoanOfferingsPanel';
 
 const defaults: LoanPolicyInput = {
   companyId: '', loanTypeId: '', policyName: '', maxAmount: 0, maxTotalOutstanding: 0,
-  maxMultiplierOfSalary: 0, maxInstallmentPercentOfSalary: 0, minServiceMonths: 0, maxInstallments: 12,
+  maxMultiplierOfSalary: 0, maxInstallmentPercentOfSalary: 0, minServiceMonths: 0, maxInstallments: 12, minInstallments: 1,
   requireProbationCompleted: true, blockDuringNotice: true, blockOnOverdue: true,
   allowedEmploymentStatuses: ['Active'], allowedContractTypes: [], allowedRepaymentMethods: ['BankTransfer'],
   allowedRepaymentFrequencies: ['Monthly', 'Weekly', 'BiWeekly', 'Quarterly'],
@@ -24,7 +24,9 @@ const defaults: LoanPolicyInput = {
 const numericFields = [
   ['maxAmount', 'Maximum loan amount'], ['maxTotalOutstanding', 'Maximum total exposure'],
   ['maxMultiplierOfSalary', 'Maximum salary multiple'], ['maxInstallmentPercentOfSalary', 'Maximum installment (% of salary)'],
-  ['minServiceMonths', 'Minimum service (months)'], ['maxInstallments', 'Maximum installments'],
+  ['minServiceMonths', 'Minimum service (months)'],
+  // Shortest and longest repayment sit side by side; their labels are translated (see the render below).
+  ['minInstallments', 'Shortest repayment (instalments)'], ['maxInstallments', 'Longest repayment (instalments)'],
   ['maxConcurrentLoans', 'Maximum concurrent loans'], ['cooldownMonthsAfterRepayment', 'Cooldown after repayment (months)'],
   ['additionalApprovalThreshold', 'Additional approval threshold'],
 ] as const;
@@ -65,6 +67,8 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
   }, [accessibleCompanies.length]);
   const save = async () => {
     if (!form.companyId || !form.loanTypeId || !form.policyName.trim() || !form.allowedRepaymentMethods.length) { setError('Choose a company, loan type, policy name and at least one repayment method.'); return; }
+    const shortest = form.minInstallments ?? 1;
+    if (!Number.isInteger(shortest) || shortest < 1 || shortest > form.maxInstallments) { setError(t('The shortest repayment cannot be longer than the longest repayment.')); return; }
     setSaving(true); setError('');
     try { const policy = await loanGovernanceApi.createPolicy({ ...form, companyId: form.companyId || companyId, additionalApproverRole: 'HR Director', allowedContractTypes: contractTypesText.split(',').map(value => value.trim()).filter(Boolean) }); setOpen(false); setNotice(`Policy version ${policy.version} created. Existing applications retain their policy version.`); await load(); }
     catch (e) { setError(loanErrorMessage(e, 'Unable to create policy version.')); }
@@ -83,7 +87,7 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
           <label className="text-sm">Company<select className="select mt-1 w-full" value={form.companyId} onChange={e => setForm(f => ({ ...f, companyId: e.target.value }))}><option value="">Select company</option>{companies.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></label>
           <label className="text-sm">Loan type<select className="select mt-1 w-full" value={form.loanTypeId} onChange={e => setForm(f => ({ ...f, loanTypeId: e.target.value }))}>{loanTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}</select></label>
           <label className="text-sm sm:col-span-2">Policy name<input className="input mt-1 w-full" maxLength={160} value={form.policyName} onChange={e => setForm(f => ({ ...f, policyName: e.target.value }))} /></label>
-          {numericFields.map(([key, label]) => <label key={key} className="text-sm">{label}<input type="number" min="0" step={['maxMultiplierOfSalary', 'maxInstallmentPercentOfSalary', 'maxAmount', 'maxTotalOutstanding', 'additionalApprovalThreshold'].includes(key) ? '0.01' : '1'} className="input mt-1 w-full" value={form[key]} onChange={e => setForm(f => ({ ...f, [key]: Number(e.target.value) }))} /></label>)}
+          {numericFields.map(([key, label]) => <label key={key} className="text-sm">{key === 'minInstallments' || key === 'maxInstallments' ? t(label) : label}<input type="number" min={key === 'minInstallments' || key === 'maxInstallments' ? 1 : 0} step={['maxMultiplierOfSalary', 'maxInstallmentPercentOfSalary', 'maxAmount', 'maxTotalOutstanding', 'additionalApprovalThreshold'].includes(key) ? '0.01' : '1'} className="input mt-1 w-full" value={form[key] ?? 1} onChange={e => setForm(f => ({ ...f, [key]: Number(e.target.value) }))} />{key === 'minInstallments' && <span className="mt-1 block text-xs text-slate-500">{t('The fewest instalments an employee may choose. 1 = no minimum.')}</span>}</label>)}
           <label className="text-sm">Additional approver role<input className="input mt-1 w-full" value="HR Director" readOnly /></label>
           <label className="text-sm">Contract types (comma-separated, blank for all)<input className="input mt-1 w-full" value={contractTypesText} onChange={e => setContractTypesText(e.target.value)} /></label>
         </div>
