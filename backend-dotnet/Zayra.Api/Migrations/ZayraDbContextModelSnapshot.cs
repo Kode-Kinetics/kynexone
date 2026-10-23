@@ -7520,7 +7520,6 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("company_setup_drafts", null, t =>
                         {
-
                             t.HasCheckConstraint("ck_company_setup_drafts__status", "status IN ('Open', 'Submitted', 'Discarded')");
 
                             t.HasCheckConstraint("ck_company_setup_drafts__step", "step BETWEEN 1 AND 7");
@@ -21299,6 +21298,80 @@ namespace Zayra.Api.Migrations
                     b.ToTable("mfa_challenge_tokens", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.MfaTrustedDevice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("ip_address");
+
+                    b.Property<DateTime?>("LastUsedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at_utc");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<string>("RevokedReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("revoked_reason");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("token_hash");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ux_mfa_trusted_devices__token_hash");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("TenantId", "UserId")
+                        .HasDatabaseName("ix_mfa_trusted_devices__tenant_user_active")
+                        .HasFilter("revoked_at_utc IS NULL");
+
+                    b.ToTable("mfa_trusted_devices", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_mfa_trusted_devices__lifetime", "expires_at_utc > created_at_utc");
+
+                            t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_pair", "(revoked_at_utc IS NULL) = (revoked_reason IS NULL)");
+
+                            t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason", "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened')");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.MigrationImportBatch", b =>
                 {
                     b.Property<Guid>("Id")
@@ -29245,6 +29318,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("mfa_required");
 
+                    b.Property<int>("MfaTrustedDeviceDays")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(30)
+                        .HasColumnName("mfa_trusted_device_days");
+
                     b.Property<int>("PasswordExpiryDays")
                         .HasColumnType("integer")
                         .HasColumnName("password_expiry_days");
@@ -29302,7 +29381,10 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId")
                         .IsUnique();
 
-                    b.ToTable("security_settings", (string)null);
+                    b.ToTable("security_settings", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.ShiftAssignment", b =>
@@ -32690,6 +32772,21 @@ namespace Zayra.Api.Migrations
                         .HasForeignKey("TenantId", "ReversalGlEntryId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.MfaTrustedDevice", b =>
+                {
+                    b.HasOne("Zayra.Api.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.OfferArtifact", b =>

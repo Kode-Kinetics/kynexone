@@ -10,6 +10,8 @@ import { clearSessionKeepingLocale } from '../api/clearSession';
 export interface MfaPendingState {
   challengeToken: string;
   expiresInSeconds: number;
+  /** Days this browser may be trusted for; 0 = the "Trust this browser" choice is not offered. */
+  rememberDeviceDays: number;
 }
 
 export interface MfaEnrollmentPendingState {
@@ -39,8 +41,8 @@ interface AuthContextValue {
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
   login: (email: string, password: string, tenantSlug?: string) => Promise<LoginOutcome>;
-  /** Complete login after TOTP entry during challenge flow. */
-  verifyMfaChallenge: (totpCode: string) => Promise<void>;
+  /** Complete login after TOTP entry during challenge flow. `rememberDevice` only when the choice was offered. */
+  verifyMfaChallenge: (totpCode: string, rememberDevice?: boolean) => Promise<void>;
   /** From a signed-in session: obtain an enrolment token, end this session, and hand the token to
    *  the sign-in page's existing "Set up two-factor authentication" step. */
   beginMfaEnrollment: () => Promise<void>;
@@ -158,7 +160,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const res = await authApi.login(email, password, tenantSlug);
     if (isMfaChallenge(res)) {
       // Credentials verified; TOTP step required before tokens are issued.
-      setMfaPending({ challengeToken: res.challengeToken, expiresInSeconds: res.expiresInSeconds });
+      const days = Number(res.rememberDeviceDays);
+      setMfaPending({
+        challengeToken: res.challengeToken,
+        expiresInSeconds: res.expiresInSeconds,
+        rememberDeviceDays: Number.isInteger(days) && days > 0 ? days : 0,
+      });
       setMfaEnrollmentPending(null);
       return 'mfa';
     }
@@ -179,9 +186,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return 'authenticated';
   }, []);
 
-  const verifyMfaChallenge = useCallback(async (totpCode: string) => {
+  const verifyMfaChallenge = useCallback(async (totpCode: string, rememberDevice?: boolean) => {
     if (!mfaPending) throw new Error('No MFA challenge in progress.');
-    const res = await authApi.mfaVerifyChallenge(mfaPending.challengeToken, totpCode);
+    const res = await authApi.mfaVerifyChallenge(
+      mfaPending.challengeToken,
+      totpCode,
+      mfaPending.rememberDeviceDays > 0 ? rememberDevice === true : undefined,
+    );
     localStorage.setItem('zayra_access_token', res.accessToken);
     localStorage.setItem('zayra_refresh_token', res.refreshToken);
     authLoadGeneration.current += 1;

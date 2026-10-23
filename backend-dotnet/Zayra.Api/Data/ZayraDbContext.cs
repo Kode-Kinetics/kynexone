@@ -163,6 +163,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
         await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
+        await RevokeTrustedBrowsersOnCredentialChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
         {
             if (entry.State == EntityState.Added)
@@ -259,6 +260,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         EnforceAuditLogAppendOnly();
         ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
+        RevokeTrustedBrowsersOnCredentialChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
         // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
         // (Audit/actor + company stamping remain async-only, a pre-existing divergence.)
@@ -899,6 +901,61 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     }
 
     /// <summary>
+    /// TRUSTED BROWSERS FOLLOW THE CREDENTIAL (mfa_trusted_devices). A browser was trusted for a login as its password,
+    /// factor and active state stood; when any of them changes, every trusted browser of that login is revoked in the
+    /// same save, so no password, factor, deactivation or deletion path can forget it (the paths that know a more
+    /// specific reason revoke explicitly first; rows already revoked are skipped). The reason is derived from what
+    /// changed. A failed-password lockout (IsLocked / LockoutEnd) and login telemetry are deliberately NOT triggers.
+    /// Runs after the welcome-code hook, whose change-tracker walk already ran DetectChanges, so this walk reads the
+    /// entries without a second detect pass and returns at once on a save that touches no login.
+    /// </summary>
+    private async Task RevokeTrustedBrowsersOnCredentialChangeAsync(CancellationToken ct, bool synchronous = false)
+    {
+        List<(Guid UserId, Guid TenantId, string Reason)>? changed = null;
+        var autoDetect = ChangeTracker.AutoDetectChangesEnabled;
+        ChangeTracker.AutoDetectChangesEnabled = false;
+        try
+        {
+            foreach (var e in ChangeTracker.Entries())
+            {
+                if (e.Entity is not User user || e.State != EntityState.Modified) continue;
+                var reason = TrustRevokeReason(Entry(user));
+                if (reason is not null) (changed ??= new()).Add((user.Id, user.TenantId, reason));
+            }
+        }
+        finally { ChangeTracker.AutoDetectChangesEnabled = autoDetect; }
+        if (changed is null) return;
+
+        // A tenant request only ever revokes inside its own tenant (the write guard would refuse anything else).
+        var requestTenant = _tenantId;
+        foreach (var (userId, tenantId, reason) in changed)
+        {
+            if (requestTenant is Guid t && t != tenantId) continue;
+            await Infrastructure.Auth.MfaTrustedDevices.StageRevokeAllAsync(
+                this, tenantId, [userId], reason, DateTime.UtcNow,
+                // The actor is named only when it is a user of this tenant; a platform operator's id is not a user id.
+                new RequestContext(null, null, requestTenant is null ? null : _actorId, tenantId), ct, synchronous);
+        }
+    }
+
+    private static string? TrustRevokeReason(EntityEntry<User> e)
+    {
+        static bool Differs<T>(Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<User, T> p) =>
+            p.IsModified && !EqualityComparer<T>.Default.Equals(p.OriginalValue, p.CurrentValue);
+        var u = e.Entity;
+        if (Differs(e.Property(x => x.IsDeleted)) && u.IsDeleted) return MfaTrustRevokeReasons.UserDeleted;
+        if ((Differs(e.Property(x => x.IsActive)) && !u.IsActive)
+            || (Differs(e.Property(x => x.Status)) && u.Status is "Suspended" or "Deactivated" or "Locked")
+            || (Differs(e.Property(x => x.AccessMode)) && u.AccessMode == AccessModes.NoLogin))
+            return MfaTrustRevokeReasons.UserDeactivated;
+        if (Differs(e.Property(x => x.MFAEnabled)) && !u.MFAEnabled) return MfaTrustRevokeReasons.MfaDisabled;
+        if (Differs(e.Property(x => x.MfaSecretEncrypted)))
+            return u.MfaSecretEncrypted is null ? MfaTrustRevokeReasons.MfaDisabled : MfaTrustRevokeReasons.MfaResetup;
+        if (Differs(e.Property(x => x.PasswordHash))) return MfaTrustRevokeReasons.PasswordChanged;
+        return null;
+    }
+
+    /// <summary>
     /// User.UpdatedAtUtc is the tenant access-token security stamp (TenantSessionSecurity), compared
     /// at microsecond precision. A plain "= now" could equal or precede the stored stamp (same
     /// microsecond, clock skew between instances, or a stamp already advanced by RotateStamp), which
@@ -1158,6 +1215,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PlatformSupportSession> PlatformSupportSessions => Set<PlatformSupportSession>();
     public DbSet<PlatformUser> PlatformUsers => Set<PlatformUser>();
     public DbSet<MfaChallengeToken> MfaChallengeTokens => Set<MfaChallengeToken>();
+    // ── Trusted browsers for two-step sign-in (mfa_trusted_devices; MfaTrustedDevices) ──
+    public DbSet<MfaTrustedDevice> MfaTrustedDevices => Set<MfaTrustedDevice>();
     public DbSet<PlatformAnnouncement> PlatformAnnouncements => Set<PlatformAnnouncement>();
     public DbSet<PlatformLead> PlatformLeads => Set<PlatformLead>();
     public DbSet<PlatformComplianceControl> PlatformComplianceControls => Set<PlatformComplianceControl>();
@@ -3140,9 +3199,44 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<SecuritySetting>(entity =>
         {
-            entity.ToTable("security_settings");
+            entity.ToTable("security_settings", t =>
+                t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90"));
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.TenantId).IsUnique();
+            // How long a browser stays trusted after a two-step code (0 = never offer it). Default 30 (the column
+            // default serves rows that predate it). The sentinel is NOT 0: with the CLR default as sentinel EF would
+            // omit an explicit 0 on INSERT and the database would store 30, silently turning "off" into "30 days".
+            entity.Property(x => x.MfaTrustedDeviceDays)
+                .HasDefaultValue(SecuritySetting.DefaultMfaTrustedDeviceDays)
+                .HasSentinel(int.MinValue);
+        });
+
+        // Trusted browsers (MfaTrustedDevices). Tenant-owned (RLS shape a; live bridge: the ITenantOwned query filter).
+        // A credential row: only the token's SHA-256 is stored. The CHECKs hold the reason vocabulary, the revoked pair
+        // and a positive lifetime. Deleting the login deletes its trusted browsers (CASCADE); a tenant is erased by the
+        // model-driven ITenantOwned sweep, so the tenant FK is RESTRICT like every other tenant-owned table.
+        modelBuilder.Entity<MfaTrustedDevice>(entity =>
+        {
+            entity.ToTable("mfa_trusted_devices", t =>
+            {
+                t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason",
+                    "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened')");
+                t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_pair", "(revoked_at_utc IS NULL) = (revoked_reason IS NULL)");
+                t.HasCheckConstraint("ck_mfa_trusted_devices__lifetime", "expires_at_utc > created_at_utc");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.UserAgent).HasMaxLength(256);
+            entity.Property(x => x.IpAddress).HasMaxLength(64);
+            entity.Property(x => x.RevokedReason).HasMaxLength(64);
+            // Serves the sign-in lookup by cookie hash (and makes a hash collision impossible).
+            entity.HasIndex(x => x.TokenHash).IsUnique().HasDatabaseName("ux_mfa_trusted_devices__token_hash");
+            // Serves GET /api/auth/mfa/trusted-devices, the status count and every revoke-all: a user's live rows.
+            entity.HasIndex(x => new { x.TenantId, x.UserId })
+                .HasFilter("revoked_at_utc IS NULL")
+                .HasDatabaseName("ix_mfa_trusted_devices__tenant_user_active");
+            entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<User>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<TenantIdentityProviderSetting>(entity =>

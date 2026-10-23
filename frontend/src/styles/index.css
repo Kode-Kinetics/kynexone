@@ -153,6 +153,24 @@ textarea:focus-visible {
     box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 1px 0 rgba(255,255,255,0.60) inset;
   }
 
+  /* A destructive confirmation (turn off a protection, delete). Same shape as .btn-primary;
+     white on rose-700 is 6.2:1. Disabled is a real state, not a faded red: a grey surface, grey
+     text and no shadow, so "not yet" never reads as "pressable but dim". */
+  .btn-danger {
+    @apply inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-4
+      text-sm font-semibold text-white
+      shadow-sm transition-colors duration-150
+      hover:bg-rose-800 active:scale-[0.98]
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/60 focus-visible:ring-offset-2
+      dark:bg-rose-600 dark:hover:bg-rose-500 dark:focus-visible:ring-offset-[#0d1225]
+      disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none disabled:active:scale-100
+      dark:disabled:bg-white/[0.06] dark:disabled:text-slate-500;
+  }
+  @media (forced-colors: active) {
+    .btn-danger { border: 1px solid ButtonText; }
+    .btn-danger:disabled { border-color: GrayText; color: GrayText; }
+  }
+
   /* ─── Inputs / Selects ─────────────────────────────────── */
   .input {
     @apply h-9 rounded-lg border border-slate-200/90 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900

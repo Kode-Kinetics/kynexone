@@ -14,8 +14,9 @@ import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
 import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
 import { isWorkspaceRequired, normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
-import { isWelcomeCode, normalizeWelcomeCode } from '../lib/welcomeCode';
+import { isWelcomeCode, normalizeWelcomeCode, toAsciiDigits } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
+import { takeSignInNotice } from '../lib/signInNotice';
 import { dateLocale } from '../lib/format';
 import { markResetNoticeSeen } from '../components/ResetCodeNotice';
 import { homePathFor } from '../lib/homePath';
@@ -106,8 +107,23 @@ function LoginCard() {
   const [showPw,       setShowPw]       = useState(false);
   const [forgotEmail,  setForgotEmail]  = useState('');
   const [totpCode,     setTotpCode]     = useState('');
+  /* "Trust this browser": unchecked by default, offered only when the company allows it (days > 0). */
+  const [trustBrowser, setTrustBrowser] = useState(false);
+  /* "Lost your phone?" under Verify: the way out is the company's administrator, not a reset here. */
+  const [lostPhoneOpen, setLostPhoneOpen] = useState(false);
+  const trustDays = mfaPending?.rememberDeviceDays ?? 0;
   const [enrollmentUri, setEnrollmentUri] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
+
+  /* Sent here by Sign-in security after two-step was turned on or off, which ends every session:
+     say why, so the sign-in page is not an unexplained sign-out. */
+  useEffect(() => {
+    const notice = takeSignInNotice();
+    if (notice === 'two-step-on') setInfo(t('Two-step sign-in is on, and you were signed out everywhere for your security. Sign in again with your password and a code from your authenticator app.'));
+    else if (notice === 'two-step-off') setInfo(t('Two-step sign-in is off, and you were signed out everywhere for your security. Sign in again with your password.'));
+  // Read once, on arrival.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useLayoutEffect(() => {
     // Never retain a query-string bearer credential in browser history, logs, or
@@ -220,7 +236,7 @@ function LoginCard() {
   const handleMfa = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setLoading(true);
     try {
-      await verifyMfaChallenge(totpCode);
+      await verifyMfaChallenge(totpCode, trustDays > 0 ? trustBrowser : undefined);
       setSignedIn(true);
     }
     catch { setError(t('Invalid or expired code. Please try again.')); }
@@ -245,7 +261,7 @@ function LoginCard() {
         const parsed = new URL(res.provisioningUri);
         setEnrollmentSecret(parsed.searchParams.get('secret') ?? '');
       })
-      .catch(() => setError(t('Two-factor setup expired. Please sign in again.')));
+      .catch(() => setError(t('Two-step sign-in setup expired. Please sign in again.')));
   }, [mfaEnrollmentPending, t]);
 
   const handleMfaEnrollment = async (e: React.FormEvent) => {
@@ -253,7 +269,7 @@ function LoginCard() {
     try {
       if (!mfaEnrollmentPending || !enrollmentSecret) throw new Error('Missing enrollment challenge.');
       await authApi.mfaEnrollmentVerifySetup(mfaEnrollmentPending.enrollmentToken, enrollmentSecret, totpCode);
-      setInfo(t('Two-factor authentication is on. Sign in again to continue.'));
+      setInfo(t('Two-step sign-in is on. Sign in again to continue.'));
       setTotpCode('');
       setMode('login');
     }
@@ -486,23 +502,51 @@ function LoginCard() {
 
                 {mode === 'mfa' && (
                   <form onSubmit={handleMfa} noValidate className="lx-form">
-                    <Back onClick={() => { setMode('login'); setTotpCode(''); }} label={t('Back to sign in')} />
-                    <Head kicker={t('Security check')} title={t('Two-factor authentication')}
+                    <Back onClick={() => { setMode('login'); setTotpCode(''); setTrustBrowser(false); setLostPhoneOpen(false); }} label={t('Back to sign in')} />
+                    <Head kicker={t('Security check')} title={t('Two-step sign-in')}
                       sub={t('Enter the 6-digit code from your authenticator app.')} icon={<Smartphone />} />
-                    <Field legend={t('Authentication code')} htmlFor="mfa-code">
+                    <Field legend={t('6-digit code')} htmlFor="mfa-code">
                       <input id="mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
-                        dir="ltr" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                        dir="ltr" value={totpCode} onChange={e => setTotpCode(toAsciiDigits(e.target.value).replace(/\D/g, ''))}
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" autoFocus required />
                     </Field>
+                    {/* Offered only when the company allows trusted browsers. Unchecked by default:
+                        trusting a browser is a choice the person makes, never one made for them. */}
+                    {trustDays > 0 && (
+                      <div className="lx-check">
+                        <input id="mfa-trust" type="checkbox" checked={trustBrowser}
+                          onChange={e => setTrustBrowser(e.target.checked)}
+                          aria-describedby="mfa-trust-hint" data-testid="mfa-trust-browser" />
+                        <div className="lx-check-text">
+                          <label htmlFor="mfa-trust">
+                            {t('{days, plural, one {Trust this browser for # day} other {Trust this browser for # days}}', { days: trustDays })}
+                          </label>
+                          <p id="mfa-trust-hint" className="lx-hint">
+                            {t("You won't be asked for a code on this browser until then. Don't use on a shared computer.")}
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     <Feedback error={error} info={info} />
                     <Submit busy={busy} label={t('Verify')} busyLabel={t('Verifying…')} disabled={totpCode.length !== 6} />
+                    {/* No self-service recovery exists, so this says who can help, in one sentence. */}
+                    <button type="button" className="lx-link lx-link-row" dir="auto" data-testid="mfa-lost-phone"
+                      aria-expanded={lostPhoneOpen} aria-controls="mfa-lost-phone-help"
+                      onClick={() => setLostPhoneOpen((v) => !v)}>
+                      {t('Lost your phone?')}
+                    </button>
+                    {lostPhoneOpen && (
+                      <p id="mfa-lost-phone-help" className="lx-hint lx-hint-block" data-testid="mfa-lost-phone-help">
+                        {t("Ask your company's administrator to reset two-step sign-in. You'll set it up again the next time you sign in.")}
+                      </p>
+                    )}
                   </form>
                 )}
 
                 {mode === 'mfa-enroll' && (
                   <form onSubmit={handleMfaEnrollment} noValidate className="lx-form">
                     <Back onClick={() => { setMode('login'); setTotpCode(''); }} label={t('Back to sign in')} />
-                    <Head kicker={t('Security check')} title={t('Set up two-factor authentication')}
+                    <Head kicker={t('Security check')} title={t('Set up two-step sign-in')}
                       sub={t('Add this account to your authenticator app, then enter the 6-digit code.')}
                       icon={<Smartphone />} />
                     {enrollmentSecret && (
@@ -512,13 +556,13 @@ function LoginCard() {
                       </Field>
                     )}
                     {enrollmentUri && <p className="lx-uri" dir="ltr">{enrollmentUri}</p>}
-                    <Field legend={t('Authentication code')} htmlFor="mfa-enroll-code">
+                    <Field legend={t('6-digit code')} htmlFor="mfa-enroll-code" hint={t('If you lose this phone, your administrator can reset it.')}>
                       <input id="mfa-enroll-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
-                        dir="ltr" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                        dir="ltr" value={totpCode} onChange={e => setTotpCode(toAsciiDigits(e.target.value).replace(/\D/g, ''))}
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label={t('Turn on two-factor authentication')} busyLabel={t('Turning on…')} disabled={totpCode.length !== 6 || !enrollmentSecret} />
+                    <Submit busy={busy} label={t('Turn on two-step sign-in')} busyLabel={t('Turning on…')} disabled={totpCode.length !== 6 || !enrollmentSecret} />
                   </form>
                 )}
 

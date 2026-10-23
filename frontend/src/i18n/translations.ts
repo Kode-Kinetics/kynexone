@@ -10,6 +10,7 @@ import { glSetup } from './glSetup';
 import { glErp } from './glErp';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
+import { signInSecurity } from './signInSecurity';
 import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
@@ -1431,6 +1432,8 @@ const en: Dict = {
   ...glErp.en,
   ...statutoryRules.en,
   ...glApiKeys.en,
+  // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
+  ...signInSecurity.en,
   ...reportsAnalytics.en,
   ...approvalChanges.en,
   ...compensation.en,
@@ -2839,6 +2842,7 @@ const ar: Dict = {
   ...glErp.ar,
   ...statutoryRules.ar,
   ...glApiKeys.ar,
+  ...signInSecurity.ar,
   ...reportsAnalytics.ar,
   ...approvalChanges.ar,
   ...compensation.ar,
