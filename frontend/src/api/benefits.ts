@@ -15,16 +15,39 @@ export interface BenefitPaymentPolicy {
   receiptLabel: string;
   claimWindowDays: number | null;
   instructions: string;
+  // Education-style reimbursement rules. All optional: absent = today's behaviour (the whole amount counts, any
+  // country, no term, the claim is for the employee).
+  claimFor?: 'Employee' | 'Child';
+  limitPerChild?: boolean;
+  maxChildren?: number | null;
+  extraChildByException?: boolean;
+  coveredCosts?: string[] | null;
+  allowedCountries?: string[] | null;
+  claimTerms?: string[] | null;
 }
+
+export type BenefitLimitPeriod = 'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime' | 'ContractYear';
 
 export interface BenefitClaimBalance {
   canClaim: boolean; maximumAmount: number; reservedAmount: number; approvedAmount: number;
   remainingAmount: number; periodFrom: string; periodTo: string;
+  children?: BenefitChildBalance[] | null;
+  rules?: BenefitClaimRules | null;
 }
+export interface BenefitChildBalance {
+  dependantId: string; name: string; maximumAmount: number; reservedAmount: number; approvedAmount: number;
+  remainingAmount: number; withinChildLimit: boolean;
+}
+export interface BenefitClaimRules {
+  claimFor: 'Employee' | 'Child'; limitPerChild: boolean; maxChildren: number | null; extraChildByException: boolean;
+  coveredCosts: string[] | null; allowedCountries: string[] | null; claimTerms: string[] | null; limitPeriod: string;
+}
+export interface BenefitClaimLine { type: string; amount: number; }
 export interface BenefitReceipt { id: string; fileName: string; contentType: string; versionNumber: number; }
 export interface BenefitClaimInput {
   enrollmentId: string; amount: number; expenseDate: string; invoiceReference: string;
   description: string; documentIds: string[];
+  dependantId?: string; schoolName?: string; schoolCountry?: string; claimTerm?: string; lines?: BenefitClaimLine[];
 }
 export interface BenefitClaim {
   id: string; status: string; employeeId: number; employeeName: string; enrollmentId: string;
@@ -33,6 +56,8 @@ export interface BenefitClaim {
   approvalRequestId: string; payrollRunId: string | null;
   settlementStatus: 'AwaitingApproval' | 'AwaitingPayroll' | 'IncludedInPayroll' | 'Paid' | 'Rejected' | 'Withdrawn';
   reservedAmount: number; remainingAmount: number; requestedByUserId?: string | null; canWithdraw: boolean;
+  dependantId?: string | null; dependantName?: string | null; schoolName?: string | null; schoolCountry?: string | null;
+  claimTerm?: string | null; lines?: BenefitClaimLine[] | null; invoiceTotal?: number | null; exceptionReason?: string | null;
 }
 
 export interface BenefitPlan {
@@ -76,7 +101,7 @@ export interface BenefitEligibilityRule {
   gradeMatchMode: 'Exact' | 'LevelAndAbove';
   tierName: string;
   maxBenefitAmount: number | null;
-  limitPeriod: 'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime';
+  limitPeriod: BenefitLimitPeriod;
   minimumServiceMonths: number;
   requireProbationCompleted: boolean;
   customCriteriaNote: string;
@@ -91,7 +116,7 @@ export interface BenefitEligibilityRuleInput {
   gradeMatchMode: 'Exact' | 'LevelAndAbove';
   tierName: string | null;
   maxBenefitAmount: number | null;
-  limitPeriod: 'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime';
+  limitPeriod: BenefitLimitPeriod;
   minimumServiceMonths: number;
   requireProbationCompleted: boolean;
   customCriteriaNote: string | null;
@@ -204,7 +229,7 @@ export interface AdditionalBenefitTerms {
   entitlementTier: string;
   maximumBenefitAmount: number | null;
   requestedBenefitAmount: number | null;
-  limitPeriod: 'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime';
+  limitPeriod: BenefitLimitPeriod;
   effectiveFrom: string;
   effectiveTo: string | null;
   reviewDate: string | null;
