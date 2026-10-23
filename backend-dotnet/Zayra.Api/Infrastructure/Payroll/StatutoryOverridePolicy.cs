@@ -217,7 +217,7 @@ public static class StatutoryOverridePolicy
     public static bool ViolatesDirection(string? ruleKey, string? value, decimal? platformValue, string? platformText = null)
         => DirectionRefusal(ruleKey, value, platformValue, platformText) is not null;
 
-    /// <summary>How the UI should present a value: percent | multiplier | days | hours | amount | text.</summary>
+    /// <summary>How the UI should present a value: percent | multiplier | days | hours | minutes | amount | text.</summary>
     public static string DisplayUnitFor(string? ruleKey)
     {
         var spec = StatutoryValueUnits.SpecFor(ruleKey);
@@ -226,7 +226,8 @@ public static class StatutoryOverridePolicy
             StatutoryValueUnits.Unit.Fraction => "percent",
             StatutoryValueUnits.Unit.Multiplier => "multiplier",
             StatutoryValueUnits.Unit.Days => "days",
-            StatutoryValueUnits.Unit.Hours or StatutoryValueUnits.Unit.Minutes => "hours",
+            StatutoryValueUnits.Unit.Hours => "hours",
+            StatutoryValueUnits.Unit.Minutes => "minutes",
             StatutoryValueUnits.Unit.Amount => "amount",
             // Divisors and year counts are plain numbers of days/years; shown as days for divisors.
             StatutoryValueUnits.Unit.Divisor => "days",

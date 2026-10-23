@@ -47,6 +47,7 @@ const ar: Record<string, string> = {
   '{value}%': '{value}%',
   '{value}×': '{value}×',
   '{count, plural, one {# day} other {# days}}': '{count, plural, zero {# يوم} one {يوم واحد} two {يومان} few {# أيام} many {# يومًا} other {# يوم}}',
+  '{count, plural, one {# minute} other {# minutes}}': '{count, plural, zero {# دقيقة} one {دقيقة واحدة} two {دقيقتان} few {# دقائق} many {# دقيقة} other {# دقيقة}}',
   '{count, plural, one {# hour} other {# hours}}': '{count, plural, zero {# ساعة} one {ساعة واحدة} two {ساعتان} few {# ساعات} many {# ساعة} other {# ساعة}}',
   'Since {from}': 'منذ {from}',
   'From {date}': 'من {date}',

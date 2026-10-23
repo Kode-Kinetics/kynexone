@@ -552,6 +552,8 @@ public class GlStatutoryHardeningTests
         StatutoryOverridePolicy.DirectionFor("ot.hourly_base").Should().Be("floor", "basic → wage only: wage → basic cuts KSA overtime ~30%");
         StatutoryOverridePolicy.DisplayUnitFor("gosi.saudi_employee_rate").Should().Be("percent");
         StatutoryOverridePolicy.DisplayUnitFor("leave.annual_base_days").Should().Be("days");
+        // Minutes were once reported as "hours", so 480 minutes read as "480 hours" in GL & rates.
+        StatutoryOverridePolicy.DisplayUnitFor("ramadan.muslim_minutes_per_day").Should().Be("minutes");
         StatutoryOverridePolicy.IsVerified("Value NOT independently confirmed").Should().BeFalse();
         StatutoryOverridePolicy.CompanyAppliedKeys.Should().BeEquivalentTo(new[]
         {

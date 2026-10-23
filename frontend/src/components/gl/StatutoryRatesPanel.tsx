@@ -68,6 +68,7 @@ function unitFor(row: StatutoryRateRow): StatutoryDisplayUnit {
   if (k.endsWith('_multiplier')) return 'multiplier';
   if (k.endsWith('_days') || k.endsWith('days_per_year')) return 'days';
   if (k.endsWith('_hours')) return 'hours';
+  if (k.endsWith('_minutes_per_day') || k.endsWith('_minutes_per_week')) return 'minutes';
   if (k.endsWith('_sar') || k.endsWith('_aed') || k.endsWith('_amount')) return 'amount';
   return 'text';
 }
@@ -165,6 +166,7 @@ export function StatutoryRatesPanel({ scope, scopeName, countryCode, jurisdictio
       case 'multiplier': return t('{value}×', { value: f.number(n, { maximumFractionDigits: 4 }) });
       case 'days': return t('{count, plural, one {# day} other {# days}}', { count: n });
       case 'hours': return t('{count, plural, one {# hour} other {# hours}}', { count: n });
+      case 'minutes': return t('{count, plural, one {# minute} other {# minutes}}', { count: n });
       case 'amount': return f.money(n, currencyFromKey(r.ruleKey));
       default: return f.number(n, { maximumFractionDigits: 4 });
     }
