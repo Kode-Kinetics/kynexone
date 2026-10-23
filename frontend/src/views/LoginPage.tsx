@@ -14,7 +14,7 @@ import { BackupCodesStep } from '../components/account/BackupCodesStep';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
 import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
-import { isWorkspaceRequired, normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
+import { isWorkspaceRequired, localReturnPathOrNull, normalizeWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
 import { isWelcomeCode, normalizeWelcomeCode, toAsciiDigits } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
 import { takeSignInNotice } from '../lib/signInNotice';
@@ -89,7 +89,7 @@ function LoginCard() {
   /* An explicit, safe ?from= wins. Otherwise the landing page follows who signed in:
      self-service-only employees go to /ess, everyone else to /dashboard (lib/homePath.ts). */
   const fromParam    = searchParams?.get('from') ?? '';
-  const askedFor     = fromParam && safeLocalReturnPath(fromParam) === fromParam ? fromParam : null;
+  const askedFor     = localReturnPathOrNull(fromParam);
   const from         = askedFor ?? homePathFor(user);
 
   const [mode,         setMode]         = useState<Mode>('login');

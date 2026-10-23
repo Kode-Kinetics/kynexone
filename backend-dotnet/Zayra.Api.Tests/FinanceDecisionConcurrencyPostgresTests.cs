@@ -245,6 +245,33 @@ public class FinanceDecisionConcurrencyPostgresTests
         }
     }
 
+    [Fact]
+    public async Task TwoSimultaneousAdvanceRequests_CannotBothPassTheYearlyLimit_AndNeitherDisburses()
+    {
+        for (var round = 0; round < Rounds; round++)
+        {
+            // A fresh tenant per round: the policy is tenant-wide. One advance a year. The policy also says "no
+            // approval step", which used to disburse on create; every advance now waits for an approver instead.
+            var tenantId = await SeedTenantAsync();
+            var (employeePublicId, employeeId) = await SeedAdvanceEmployeeAsync(tenantId);
+
+            var results = await RaceAsync(
+                () => CreateAdvanceAsync(tenantId, employeePublicId, employeeId),
+                () => CreateAdvanceAsync(tenantId, employeePublicId, employeeId));
+
+            results.Should().NotContainNulls($"round {round}: no contender may throw a 500");
+            results.OfType<OkObjectResult>().Should().HaveCount(1, $"round {round}: the yearly limit admits one request");
+            results.OfType<BadRequestObjectResult>().Should().HaveCount(1, $"round {round}: the second is refused by the policy");
+
+            await using var db = _fx.CreateDb();
+            (await db.SalaryAdvances.AsNoTracking().CountAsync(x => x.TenantId == tenantId))
+                .Should().Be(1, $"round {round}");
+            (await db.FinanceGlEntries.AsNoTracking()
+                .CountAsync(x => x.TenantId == tenantId && x.SourceModule == "Advance" && x.EventType == "Disbursement"))
+                .Should().Be(0, $"round {round}: no cash leaves until a second person approves");
+        }
+    }
+
     // ══════════════════════ Racing harness ══════════════════════
 
     [Fact]
@@ -413,6 +440,41 @@ public class FinanceDecisionConcurrencyPostgresTests
         db.SalaryAdvances.Add(adv);
         await db.SaveChangesAsync();
         return adv.Id;
+    }
+
+    private async Task<(Guid PublicId, int Id)> SeedAdvanceEmployeeAsync(Guid tenantId)
+    {
+        await using var db = _fx.CreateDb();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Advance Race Co", CountryCode = "SAU", DefaultCurrency = "SAR", IsActive = true };
+        var structure = new SalaryStructure { TenantId = tenantId, Code = "BASE", Name = "Base", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true };
+        var employee = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = $"A-{Guid.NewGuid():N}"[..16], FullName = "Advance Racer",
+            Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2),
+        };
+        db.AddRange(company, structure, employee);
+        db.AdvancePolicies.Add(new AdvancePolicy
+        {
+            TenantId = tenantId, PolicyName = "One a year", MaxPercentageOfSalary = 50, MaxAdvancesPerYear = 1,
+            MinServiceMonths = 0, AllowInstallments = true, MaxInstallments = 3, CooldownMonths = 0, RequiresApproval = false, IsActive = true,
+        });
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, SalaryStructureId = structure.Id, BasicSalary = 10_000m, Currency = "SAR",
+            EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
+        });
+        await db.SaveChangesAsync();
+        return (employee.PublicId, employee.Id);
+    }
+
+    private async Task<IActionResult> CreateAdvanceAsync(Guid tenantId, Guid employeePublicId, int employeeId)
+    {
+        await using var db = _fx.CreateDb();
+        await db.Database.OpenConnectionAsync();
+        return await Advances(db, tenantId).Create(
+            new CreateAdvanceRequest(employeePublicId, "Advance Racer", 1_500m, "Installments", 3, null, "raced", employeeId),
+            CancellationToken.None);
     }
 
     private async Task<IActionResult> DecideLoanAsync(Guid tenantId, Guid loanId, Guid approvalId, string decision)
