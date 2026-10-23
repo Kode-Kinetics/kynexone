@@ -51,6 +51,14 @@ public static class CountryCodeStandard
         return null;
     }
 
+    /// <summary>
+    /// The value an entity CountryCode column stores: canonical ISO-2 for any recognized code ("SAU" → "SA"),
+    /// otherwise the trimmed upper-case input (empty stays empty). Writers validate first; storing "SAU" as
+    /// given broke every ISO-2 reader, down to the browser's region names (Setup crashed on it).
+    /// </summary>
+    public static string ToStored(string? value) =>
+        NormalizeToIso2(value) ?? (value ?? string.Empty).Trim().ToUpperInvariant();
+
     /// <summary>Maps canonical ISO-2 (or already-ISO-3) input to the CountryPack ISO-3 key; null if unknown.</summary>
     public static string? ToIso3(string? value)
     {
