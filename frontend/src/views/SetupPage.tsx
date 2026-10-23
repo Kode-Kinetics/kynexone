@@ -11,6 +11,12 @@ import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
 import { SetupSectionNav, SetupSectionsToggle, type SetupSectionNavGroup, type SetupSectionNavItem } from '../components/setup/SetupSectionNav';
 import { SetupSectionHeader } from '../components/setup/SetupSectionHeader';
+import { buildSetupSearchIndex, type SetupSearchEntry } from '../components/setup/setupSearch';
+import { progressCompany } from '../components/setup/setupProgress';
+import { useGuidedSetupCompanies } from '../components/setup/useSetupProgress';
+import { readinessProgress } from '../lib/companySetupWizard';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useLocale } from '../contexts/LocaleContext';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
 import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChooser';
@@ -84,7 +90,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
-import { COMPANY_OWNED_SETTING_IDS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, resolveSetupArea, type SetupSettingId, type SetupSettingSection } from '../lib/setupAreas';
+import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSettingId, type SetupSettingSection } from '../lib/setupAreas';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
@@ -117,11 +123,11 @@ const tabs: (SetupSettingSection & { icon: React.ElementType })[] = SETUP_SETTIN
 
 /** The setup tools at the top of the navigation, keyed by their entry. */
 const toolSections: Record<Exclude<SetupNavId, SettingsTab>, { label: string; icon: React.ElementType }> = {
-  guidedSetup: { label: msg('Guided setup'), icon: Sparkles },
-  allSetupAreas: { label: msg('All setup areas'), icon: LayoutGrid },
-  importOrganization: { label: msg('Import organization'), icon: Upload },
-  policyStarter: { label: msg('Policy starter'), icon: FileText },
-  policyLibrary: { label: msg('Policy library'), icon: ClipboardList },
+  guidedSetup: { label: SETUP_TOOLS.guidedSetup.label, icon: Sparkles },
+  allSetupAreas: { label: SETUP_TOOLS.allSetupAreas.label, icon: LayoutGrid },
+  importOrganization: { label: SETUP_TOOLS.importOrganization.label, icon: Upload },
+  policyStarter: { label: SETUP_TOOLS.policyStarter.label, icon: FileText },
+  policyLibrary: { label: SETUP_TOOLS.policyLibrary.label, icon: ClipboardList },
 };
 const studioPaths: Record<'guidedSetup' | 'allSetupAreas' | 'policyStarter', SetupStudioPath> = {
   guidedSetup: 'guided', allSetupAreas: 'configuration', policyStarter: 'policyStarter',
@@ -2469,17 +2475,17 @@ export function SetupPage() {
   const searchParams = useSearchParams();
   const { hasPermission, hasRole, authorizationRefreshStatus, retryAuthorization } = useAuth();
   const { accountType, isGroupScope, companyVersion, companies: authorizedCompanies, setSelectedCompany } = useCompany();
+  const flags = useFeatureFlags();
+  const { locale } = useLocale();
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
   // The policy library exists only while the tenant has policy intake switched on (off by the owner's decision).
   const policyIntake = usePolicyIntake();
-  const canManagePolicies = policyIntake && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
-  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
-  const canReadCompanies = canWrite || hasPermission('organization.read');
-  const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
-  const writableTabs = isCompanyScopedGroup ? tabs.filter(tab => COMPANY_OWNED_SETTING_IDS.has(tab.id)) : tabs;
-  const visibleTabs = canWrite ? writableTabs : tabs.filter((tab) => (tab.id === 'companies' && canReadCompanies) || (tab.id === 'statutoryRules' && canReadStatutoryRules));
+  // One model decides who sees which section: the navigation, "Find a setting" and the ⌘K palette all read it.
+  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake });
+  const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules } = navigationModel;
+  const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
   const tabParam = searchParams?.get('tab');
   const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
@@ -2635,21 +2641,28 @@ export function SetupPage() {
     // The tab follows the address (requestedTab), so no in-between section is shown or announced on the way.
     confirmLeave(href, () => { router.push(href, { scroll: false }); });
   };
+  // Guided setup's own progress (its chooser's "N of M done"), refreshed on a company change and each time Guided
+  // setup or All setup areas is opened, so a section saved in between is counted when the user comes back.
+  const progressRefresh = `${companyVersion}:${selectedNavId === 'guidedSetup' || selectedNavId === 'allSetupAreas' ? selectedNavId : 'section'}`;
+  const guidedCompanies = useGuidedSetupCompanies(canWrite, progressRefresh);
+  const guidedCompany = progressCompany(guidedCompanies.companies, authorizedCompany);
+  const guidedProgress = guidedCompany ? readinessProgress(guidedCompany) : null;
+  const guidedCompanyName = guidedCompany ? ((locale === 'ar' && guidedCompany.legalNameAr?.trim()) || guidedCompany.legalNameEn) : '';
+  const toolHref = (id: Exclude<SetupNavId, SettingsTab>) => (id === 'importOrganization' || id === 'policyLibrary' ? tabHref(id) : studioHref(id));
   const navItem = (id: Exclude<SetupNavId, SettingsTab>): SetupSectionNavItem<SetupNavId> => ({
     id,
     label: t(toolSections[id].label),
     icon: toolSections[id].icon,
-    href: id === 'importOrganization' || id === 'policyLibrary' ? tabHref(id) : studioHref(id),
+    href: toolHref(id),
+    // A quiet count while the company's checklist is incomplete; nothing once it is done (or when there is none).
+    status: id === 'guidedSetup' && guidedProgress && guidedProgress.total > 0 && !guidedProgress.complete ? {
+      text: t('{done} of {total}', { done: guidedProgress.done, total: guidedProgress.total }),
+      description: t('{company}: {done} of {total} setup items done', { company: guidedCompanyName, done: guidedProgress.done, total: guidedProgress.total }),
+    } : undefined,
   });
   // Get started: the setup paths and tools. The Policy starter is for setup writers, like the rest of this group.
-  const setupTools: SetupSectionNavItem<SetupNavId>[] = canWrite ? [
-    navItem('guidedSetup'),
-    navItem('allSetupAreas'),
-    ...(!isCompanyScopedGroup ? [navItem('importOrganization')] : []),
-    navItem('policyStarter'),
-    ...(canManagePolicies ? [navItem('policyLibrary')] : []),
-  ] : [];
-  const navigationSettings = canWrite ? writableTabs : visibleTabs;
+  const setupTools: SetupSectionNavItem<SetupNavId>[] = navigationModel.tools.map(navItem);
+  const navigationSettings = visibleTabs;
   const navigationGroups: SetupSectionNavGroup<SetupNavId>[] = SETUP_SECTION_GROUPS.map(group => ({
     id: group.id,
     label: t(group.label),
@@ -2657,6 +2670,34 @@ export function SetupPage() {
       ? setupTools
       : navigationSettings.filter(tab => tab.group === group.id).map(tab => ({ id: tab.id, label: t(tab.label), icon: tab.icon, href: tabHref(tab.id) })),
   })).filter(group => group.items.length > 0);
+  // "Find a setting": the navigation's own sections, All setup areas' destinations and Payroll accounting's tabs, from
+  // the same model as the navigation (and the ⌘K palette), so nothing is found that this user cannot open.
+  const areaPageHref = (areaId: string, setting?: string) => {
+    const next = new URLSearchParams({ tab: 'aiSetup', path: 'configuration', area: areaId });
+    if (setting) next.set('setting', setting);
+    if (authorizedCompany) next.set('companyId', authorizedCompany);
+    return `/setup?${next.toString()}`;
+  };
+  const searchEntries = buildSetupSearchIndex({
+    model: navigationModel,
+    access: { hasPermission, hasRole, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status, isCompanyScopedGroup },
+    sectionHref: id => (id in toolSections ? toolHref(id as Exclude<SetupNavId, SettingsTab>) : tabHref(id as SettingsTab)),
+    areaHref: areaPageHref,
+    routeHref: destination => {
+      const [pathname, query] = destination.path.split('?');
+      const target = new URLSearchParams(query);
+      if (authorizedCompany) target.set('companyId', authorizedCompany);
+      target.set('setupArea', destination.areaId);
+      return `${pathname}?${target.toString()}`;
+    },
+  });
+  const openSearchResult = (entry: SetupSearchEntry) => {
+    if (entry.navId) { selectNavigation(entry.navId as SetupNavId); return; }
+    confirmLeave(entry.href, () => {
+      setEditorDirty(false);
+      router.push(entry.href, { scroll: false });
+    });
+  };
   const currentSection = isSettings ? { label: selectedSetting.label, icon: selectedSetting.icon } : toolSections[selectedNavId as Exclude<SetupNavId, SettingsTab>];
   const currentSectionLabel = t(currentSection.label);
   const [sectionListOpen, setSectionListOpen] = useState(false);
@@ -2803,6 +2844,12 @@ export function SetupPage() {
             onOpenChange={setSectionListOpen}
             toggleRef={sectionToggle}
             onSelect={selectNavigation}
+            locationKey={searchParams?.toString() ?? ''}
+            search={{
+              entries: searchEntries,
+              onOpen: openSearchResult,
+              allAreas: canWrite ? { href: studioHref('allSetupAreas'), onOpen: () => selectNavigation('allSetupAreas') } : undefined,
+            }}
           />
         </div>
       )}
@@ -2847,6 +2894,7 @@ export function SetupPage() {
             </div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
+              guidedCompanies={guidedCompanies}
               confirmLeave={confirmLeave}
               onDirtyChange={setEditorDirty}
               renderSettings={(id, onDirtyChange) => {

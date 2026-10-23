@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { ArrowUpRight, ChevronRight } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import type { SetupAreaDefinition, SetupDestination } from '../../lib/setupAreas';
+import type { AreaProgressItem } from './setupProgress';
 
 export type SetupDestinationAvailability = 'available' | 'restricted' | 'unavailable' | 'checking' | 'unknown';
 
@@ -21,12 +22,16 @@ const availabilityLabels: Record<Exclude<SetupDestinationAvailability, 'availabl
   unknown: 'Availability could not be checked',
 };
 
-export function SetupAreaBlueprint({ area, destinations, onOpenDestination }: {
+export function SetupAreaBlueprint({ area, destinations, onOpenDestination, progress = [] }: {
   area: SetupAreaDefinition;
   destinations: readonly SetupBlueprintDestination[];
   onOpenDestination: (destination: SetupDestination) => void;
+  /** The area's measurable items: each one's row says Done or Not started (the area's status drills down to these). */
+  progress?: readonly AreaProgressItem[];
 }) {
   const t = useT();
+  const statusOf = (id: string) => progress.find(item => item.destinationId === id);
+  const statusId = (id: string) => `setup-destination-status-${area.id}-${id}`;
   const groups = [...new Map(
     [...destinations]
       .sort((a, b) => a.destination.groupOrder - b.destination.groupOrder || a.destination.destinationOrder - b.destination.destinationOrder)
@@ -42,6 +47,15 @@ export function SetupAreaBlueprint({ area, destinations, onOpenDestination }: {
           <span className="mt-1 block text-sm leading-5 text-slate-600 dark:text-slate-300">{t(availabilityLabels[item.availability])}</span>
         )}
       </span>
+      {(() => {
+        const status = statusOf(item.destination.id);
+        return status ? (
+          <span id={statusId(item.destination.id)} data-testid="setup-destination-status" data-done={status.done ? 'true' : 'false'}
+            className={`shrink-0 text-xs font-medium ${status.done ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-600 dark:text-slate-300'}`}>
+            {status.done ? t('Done') : t('Not started')}
+          </span>
+        ) : null;
+      })()}
       {trailing}
     </>
   );
@@ -66,7 +80,7 @@ export function SetupAreaBlueprint({ area, destinations, onOpenDestination }: {
                 if (destination.presentation === 'route') {
                   return (
                     <li key={destination.id}>
-                      <Link data-setup-destination={destination.id} aria-label={t(destination.label)} href={item.href!} className={`${rowClass} hover:bg-sapphire/[0.04] dark:hover:bg-cyanAccent/[0.05]`}>
+                      <Link data-setup-destination={destination.id} aria-label={t(destination.label)} aria-describedby={statusOf(destination.id) ? statusId(destination.id) : undefined} href={item.href!} className={`${rowClass} hover:bg-sapphire/[0.04] dark:hover:bg-cyanAccent/[0.05]`}>
                         {content(item, <ArrowUpRight aria-hidden="true" className="h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />)}
                       </Link>
                     </li>
@@ -74,7 +88,7 @@ export function SetupAreaBlueprint({ area, destinations, onOpenDestination }: {
                 }
                 return (
                   <li key={destination.id}>
-                    <button data-setup-destination={destination.id} aria-label={t(destination.label)} type="button" onClick={() => onOpenDestination(destination)} className={`${rowClass} hover:bg-sapphire/[0.04] dark:hover:bg-cyanAccent/[0.05]`}>
+                    <button data-setup-destination={destination.id} aria-label={t(destination.label)} aria-describedby={statusOf(destination.id) ? statusId(destination.id) : undefined} type="button" onClick={() => onOpenDestination(destination)} className={`${rowClass} hover:bg-sapphire/[0.04] dark:hover:bg-cyanAccent/[0.05]`}>
                       {content(item, <ChevronRight aria-hidden="true" className="h-5 w-5 shrink-0 text-sapphire rtl:rotate-180 dark:text-cyanAccent" />)}
                     </button>
                   </li>
