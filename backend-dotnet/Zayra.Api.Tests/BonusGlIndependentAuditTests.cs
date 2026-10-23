@@ -155,6 +155,22 @@ public class BonusGlIndependentAuditTests
         { ControllerContext = new ControllerContext { HttpContext = http } };
     }
 
+    /// <summary>
+    /// An advance disburses only when a second person approves it, so the request is made by one login and the
+    /// approval by another (each <see cref="Advances"/> call signs in a fresh user). Returns the approval result,
+    /// which is where the disbursement journal is posted, and where a closed period refuses it.
+    /// </summary>
+    private static async Task<IActionResult> RequestAndApproveAdvance(ZayraDbContext db, Guid tid, Employee emp, decimal amount)
+    {
+        (await Advances(db, tid).Create(
+                new CreateAdvanceRequest(Guid.Empty, emp.FullName, amount, "Installments", 3, null, "rent", emp.Id), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>("requesting an advance posts nothing, so it is never refused by a closed period");
+        db.ChangeTracker.Clear();
+        var pending = await db.SalaryAdvances.IgnoreQueryFilters()
+            .SingleAsync(x => x.TenantId == tid && x.EmployeeIntId == emp.Id && x.Status == "Pending");
+        return await Advances(db, tid).Approve(pending.Id, new AdvanceApproveRequest(amount, 3, null), CancellationToken.None);
+    }
+
     private static FinanceGlController Gl(ZayraDbContext db, Guid tid)
     {
         var http = Ctx(tid);
@@ -198,9 +214,11 @@ public class BonusGlIndependentAuditTests
         };
         db.Employees.Add(e);
         await db.SaveChangesAsync();
+        // The wage is paid in the employer's currency: the advance policy's salary cap only reads a wage in it.
+        var payCurrency = await db.Companies.Where(c => c.Id == companyId).Select(c => c.DefaultCurrency).SingleAsync();
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
         {
-            TenantId = tid, EmployeeId = e.Id, SalaryStructureId = structure.Id,
+            TenantId = tid, EmployeeId = e.Id, SalaryStructureId = structure.Id, Currency = payCurrency,
             BasicSalary = 10_000m, HousingAllowance = 2_000m, TransportAllowance = 1_000m,
             EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
         });
@@ -536,13 +554,10 @@ public class BonusGlIndependentAuditTests
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
-        // ── ADVANCE: auto-disbursed on create (policy RequiresApproval = false). ──
-        var advances = Advances(db, tid);
-        (await advances.Create(new CreateAdvanceRequest(Guid.Empty, empA.FullName, 900m, "Installments", 3, null, "rent", empA.Id), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+        // ── ADVANCE: disbursed when a second person approves it. ──
+        (await RequestAndApproveAdvance(db, tid, empA, 900m)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
-        (await advances.Create(new CreateAdvanceRequest(Guid.Empty, empB.FullName, 1_200m, "Installments", 3, null, "rent", empB.Id), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+        (await RequestAndApproveAdvance(db, tid, empB, 1_200m)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
@@ -636,7 +651,6 @@ public class BonusGlIndependentAuditTests
 
         var bonuses = Bonuses(db, tid);
         var loans = Loans(db, tid);
-        var advances = Advances(db, tid);
 
         // ── Company A: every module refuses, and commits nothing. ──
         var batchA = await Batch(db, tid, period, "BON-EA", (empA, 1_000m, 0m));
@@ -648,8 +662,7 @@ public class BonusGlIndependentAuditTests
             .Should().BeOfType<UnprocessableEntityObjectResult>("company A's period is closed to loan disbursement");
         db.ChangeTracker.Clear();
 
-        await FluentActions.Awaiting(() => advances.Create(
-                new CreateAdvanceRequest(Guid.Empty, empA.FullName, 900m, "Installments", 3, null, "rent", empA.Id), CancellationToken.None))
+        await FluentActions.Awaiting(() => RequestAndApproveAdvance(db, tid, empA, 900m))
             .Should().ThrowAsync<PeriodClosedException>("company A's period is closed to advance disbursement");
         db.ChangeTracker.Clear();
 
@@ -657,7 +670,8 @@ public class BonusGlIndependentAuditTests
             "the guard throws BEFORE SaveChanges — a closed period must leave no partial journal behind");
         (await db.EmployeeLoans.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tid)).Status.Should().Be("Approved",
             "the approved loan remains awaiting payment when the payment period is closed");
-        (await db.SalaryAdvances.IgnoreQueryFilters().CountAsync(x => x.TenantId == tid)).Should().Be(0);
+        (await db.SalaryAdvances.IgnoreQueryFilters().SingleAsync(x => x.TenantId == tid)).Status.Should().Be("Pending",
+            "the refused approval leaves the request waiting, with nothing disbursed");
 
         // ── Company B: same period, still open → all three post normally. ──
         var batchB = await Batch(db, tid, period, "BON-EB", (empB, 2_000m, 0m));
@@ -667,8 +681,7 @@ public class BonusGlIndependentAuditTests
         (await DisburseLoan(db, tid, empB, loanType.Id, 8_000m, 8))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
-        (await advances.Create(new CreateAdvanceRequest(Guid.Empty, empB.FullName, 1_200m, "Installments", 3, null, "rent", empB.Id), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+        (await RequestAndApproveAdvance(db, tid, empB, 1_200m)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
@@ -721,8 +734,7 @@ public class BonusGlIndependentAuditTests
                 "tightening the guard to per-company must NOT weaken a group-wide close");
         db.ChangeTracker.Clear();
 
-        await FluentActions.Awaiting(() => Advances(db, tid).Create(
-                new CreateAdvanceRequest(Guid.Empty, empB.FullName, 1_200m, "Installments", 3, null, "rent", empB.Id), CancellationToken.None))
+        await FluentActions.Awaiting(() => RequestAndApproveAdvance(db, tid, empB, 1_200m))
             .Should().ThrowAsync<PeriodClosedException>();
         db.ChangeTracker.Clear();
 

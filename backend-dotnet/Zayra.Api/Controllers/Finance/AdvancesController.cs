@@ -7,7 +7,9 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -126,23 +128,61 @@ public class AdvancesController : ControllerBase
         return Ok(new { advance = SalaryAdvanceDto.Project(adv), installments, approvals, auditLogs, glEntries });
     }
 
+    /// <summary>The tenant-wide lock every advance request takes, as LoansController.CreateLoan takes
+    /// "finance.loan-create": the per-year count, the cooldown and the advance number are all read-then-write,
+    /// so two simultaneous requests for one employee could otherwise both pass the policy.</summary>
+    private const string AdvanceCreateLockScope = "finance.advance-create";
+
+    /// <summary>Installment ceiling when the tenant has no active advance policy: the loan module's sanity bound.</summary>
+    private const int MaxInstallmentsWithoutPolicy = 600;
+
     [HttpPost]
-    public async Task<IActionResult> Create([FromBody] CreateAdvanceRequest req, CancellationToken ct)
+    [HasPermission("loans.self", "loans.write")]
+    public Task<IActionResult> Create([FromBody] CreateAdvanceRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, AdvanceCreateLockScope, GetTenantId(), GetTenantId(), () => CreateCore(req, ct), ct);
+
+    private async Task<IActionResult> CreateCore(CreateAdvanceRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        if (uid == null) return Unauthorized();
+        if (!IsMoney(req.RequestedAmount))
+            return BadRequest("The requested amount must be a positive amount with at most two decimal places.");
+        // Who the caller IS comes from the login-to-employee link (CallerEmployeeResolver), the one lookup
+        // self-service, mobile and the data scope share. The legacy Employee.UserAccountId column is not used:
+        // a login linked only through EmployeeUserAccounts would otherwise be refused its own request.
+        var ownId = await CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct);
+        if (req.EmployeeId == Guid.Empty && !req.EmployeeIntId.HasValue)
+        {
+            // Self-service: no employee named means the signed-in employee, as for a loan request.
+            if (!ownId.HasValue) return BadRequest(EssLinkGuidance.En);
+            req = req with { EmployeeIntId = ownId };
+        }
         var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
         if (!identity.IsSuccess) return BadRequest(identity.Error);
         var employee = identity.Employee!;
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+        // Only HR or Finance may request an advance on someone else's behalf (LoansController.CreateLoanCore):
+        // the HR/Finance roles, or loans.write ("create loan and advance applications"). The Employee role holds
+        // loans.self only, so self-service stays limited to the caller's own record.
+        if (employee.Id != ownId && !IsHrActor() && !IsFinanceActor() && !User.HasPermission("loans.write"))
+            return Forbid();
 
         var policy = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
 
-        // Policy compliance checks
+        // Every policy limit is checked here, before the advance is recorded. Nothing is paid until a second person approves it.
+        if (InstallmentsRefusal(policy, req.RequestedAmount, req.Installments) is { } installmentsRefusal)
+            return BadRequest(installmentsRefusal);
         if (policy != null)
         {
-            var currentYear = DateTime.UtcNow.Year;
+            var now = DateTime.UtcNow;
+            if (policy.MinServiceMonths > 0
+                && (employee.JoiningDate == default || employee.JoiningDate.Date > now.Date.AddMonths(-policy.MinServiceMonths)))
+                return BadRequest($"At least {policy.MinServiceMonths} completed service month(s) are required before a salary advance.");
+
+            var currentYear = now.Year;
             var advancesThisYear = await _db.SalaryAdvances.CountAsync(
                 x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
                      && x.CreatedAtUtc.Year == currentYear, ct);
@@ -151,13 +191,17 @@ public class AdvancesController : ControllerBase
 
             if (policy.CooldownMonths > 0)
             {
-                var cooldownCutoff = DateTime.UtcNow.AddMonths(-policy.CooldownMonths);
+                var cooldownCutoff = now.AddMonths(-policy.CooldownMonths);
+                // Payroll closes a fully deducted advance as "Closed"; a manual settlement used "Settled".
                 var recentlySettled = await _db.SalaryAdvances.AnyAsync(
                     x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
-                         && x.Status == "Settled" && x.UpdatedAtUtc > cooldownCutoff, ct);
+                         && (x.Status == "Settled" || x.Status == "Closed") && x.UpdatedAtUtc > cooldownCutoff, ct);
                 if (recentlySettled)
                     return BadRequest($"Employee must wait {policy.CooldownMonths} month(s) after settling an advance before requesting a new one.");
             }
+
+            if (await SalaryCapRefusalAsync(tid, employee, policy, req.RequestedAmount, ct) is { } capRefusal)
+                return BadRequest(capRefusal);
         }
 
         var count = await _db.SalaryAdvances.CountAsync(x => x.TenantId == tid, ct);
@@ -171,20 +215,12 @@ public class AdvancesController : ControllerBase
             AdvanceNumber = advNumber, RequestedAmount = req.RequestedAmount,
             RepaymentType = req.RepaymentType, Installments = req.Installments,
             Reason = req.Reason ?? string.Empty,
-            Status = (policy?.RequiresApproval ?? true) ? "Pending" : "Approved",
+            // Every advance waits for a second person. A policy's RequiresApproval=false used to disburse here on
+            // create, with nobody deciding; money now always moves through Approve, where the requester and the
+            // employee it is for are both barred. The flag is kept on the policy but no longer skips approval.
+            Status = "Pending",
             CreatedBy = uid,
         };
-
-        if (!(policy?.RequiresApproval ?? true))
-        {
-            adv.ApprovedAmount = req.RequestedAmount;
-            adv.InstallmentAmount = req.Installments > 0 ? req.RequestedAmount / req.Installments : req.RequestedAmount;
-            adv.OutstandingBalance = req.RequestedAmount;
-            adv.Status = "Active";
-            GenerateAdvanceInstallments(tid, adv, req.RepaymentStartDate);
-            await PostGlEntry(tid, uid, await ResolveAdvanceCompanyAsync(tid, adv, ct), adv.Id, adv.AdvanceNumber,
-                "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", adv.ApprovedAmount, null, ct);
-        }
 
         _db.SalaryAdvances.Add(adv);
         await _db.SaveChangesAsync(ct);
@@ -207,8 +243,16 @@ public class AdvancesController : ControllerBase
         return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
             _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
         {
-        var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
-        var employeeIsDecider = adv is not null && uid.HasValue && await IsAdvanceEmployeeAsync(adv, uid.Value, ct);
+        if (uid == null) return Unauthorized();
+        var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        // Object-level authorization, as Get: a scoped approver decides only for employees in their scope.
+        if (adv is not null && !await CanAccessAdvanceAsync(adv, ct)) return Forbid();
+        // The subject never decides on their own money: the directly linked login, and any login linked to the
+        // employee through the login-link table (SubjectDecisionBar), whatever company the employee is in now.
+        var employeeIsDecider = adv is not null
+            && (await IsAdvanceEmployeeAsync(adv, uid.Value, ct)
+                || (adv.EmployeeIntId is int subjectId
+                    && await SubjectDecisionBar.CallerIsSubjectAsync(_db, tid, uid, subjectId, ct)));
 
         // Shared checklist — see ApprovalDecisionGuard. This endpoint IS the decision, so there is
         // no decision vocabulary to validate, and an advance carries no approval step rows.
@@ -238,6 +282,28 @@ public class AdvancesController : ControllerBase
         });
         if (!verdict.Passed) return AdvanceApproveRefusal(verdict);
         ArgumentNullException.ThrowIfNull(adv);
+
+        // The approved terms are bounded by the request and by the active policy; the checker may lower the
+        // amount, never raise it past what was asked for or past the salary cap.
+        if (!IsMoney(req.ApprovedAmount))
+            return BadRequest("The approved amount must be a positive amount with at most two decimal places.");
+        if (req.ApprovedAmount > adv.RequestedAmount)
+            return BadRequest("The approved amount cannot exceed the requested amount.");
+        var policy = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
+        if (InstallmentsRefusal(policy, req.ApprovedAmount, req.Installments) is { } installmentsRefusal)
+            return BadRequest(installmentsRefusal);
+        if (policy is { MaxPercentageOfSalary: > 0 })
+        {
+            var employee = adv.EmployeeIntId is int empId
+                ? await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tid,
+                    "Read the advance's employee to apply the salary cap at approval, even after a legal-entity transfer.")
+                    .AsNoTracking().FirstOrDefaultAsync(x => x.Id == empId, ct)
+                : null;
+            if (employee == null)
+                return BadRequest("The advance has no linked employee, so the policy's salary cap cannot be applied.");
+            if (await SalaryCapRefusalAsync(tid, employee, policy, req.ApprovedAmount, ct) is { } capRefusal)
+                return BadRequest(capRefusal);
+        }
 
         var oldStatus = adv.Status;
         adv.Status = "Active"; adv.ApprovedAmount = req.ApprovedAmount;
@@ -280,7 +346,8 @@ public class AdvancesController : ControllerBase
         return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
             _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
         {
-        var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        if (adv is not null && !await CanAccessAdvanceAsync(adv, ct)) return Forbid();
 
         // This is the hole the correctness batch closed, and the reason the checklist is now shared:
         // Reject wrote "Rejected" over ANY status while Approve (above) has always required Pending.
@@ -317,35 +384,19 @@ public class AdvancesController : ControllerBase
         }, ct);
     }
 
+    /// <summary>
+    /// Refused, exactly as <c>LoansController.MarkInstallmentPaid</c> refuses it. This route let an operator write
+    /// any amount (negative included) straight onto an installment, retire the balance and post a cash receipt,
+    /// with no payment reference, no bounds, no data-scope check and no bar on the borrower recording their own
+    /// repayment. Salary advances are collected by payroll deduction (<c>PayrollController.Process</c> takes every
+    /// Active advance and stamps the installment it funded), and a payroll-deducted loan likewise cannot take a
+    /// standalone receipt. A cash receipt against an advance would need its own receipt record with a unique
+    /// payment reference, which advances do not have yet.
+    /// </summary>
     [HttpPatch("{id:guid}/installments/{installmentId:guid}/pay")]
     [Authorize(Roles = "Admin,Finance,HR Manager")]
-    public async Task<IActionResult> MarkInstallmentPaid(Guid id, Guid installmentId, [FromBody] PayAdvanceInstallmentRequest req, CancellationToken ct)
-    {
-        var tid = GetTenantId();
-        var uid = GetUserId();
-        var inst = await _db.AdvanceInstallments.FirstOrDefaultAsync(x => x.Id == installmentId && x.AdvanceId == id && x.TenantId == tid, ct);
-        if (inst == null) return NotFound();
-        if (inst.Status == "Paid") return BadRequest("Installment already paid.");
-
-        inst.AmountPaid = req.AmountPaid;
-        inst.PaidDate = req.PaidDate;
-        inst.PayrollRunId = req.PayrollRunId;
-        inst.Status = req.AmountPaid >= inst.AmountDue ? "Paid" : "Pending";
-
-        var adv = await _db.SalaryAdvances.FirstAsync(x => x.Id == id && x.TenantId == tid, ct);
-        adv.TotalRepaid += req.AmountPaid;
-        adv.OutstandingBalance = Math.Max(0, adv.OutstandingBalance - req.AmountPaid);
-        if (adv.OutstandingBalance == 0) adv.Status = "Settled";
-        adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
-
-        await PostGlEntry(tid, uid, await ResolveAdvanceCompanyAsync(tid, adv, ct), adv.Id, adv.AdvanceNumber,
-            "Advance", "Repayment", "CASH_BANK", "ADVANCE_RECEIVABLE", req.AmountPaid, null, ct);
-
-        await _db.SaveChangesAsync(ct);
-        await WriteAdvanceAudit(tid, uid, id, "InstallmentPaid", null,
-            JsonSerializer.Serialize(new { InstallmentNumber = inst.InstallmentNumber, AmountPaid = req.AmountPaid }), ct);
-        return Ok(new { installment = inst, advance = adv });
-    }
+    public Task<IActionResult> MarkInstallmentPaid(Guid id, Guid installmentId, [FromBody] PayAdvanceInstallmentRequest req, CancellationToken ct) =>
+        Task.FromResult<IActionResult>(Conflict("Salary advances are repaid through payroll deduction. An installment cannot be marked paid by hand; a cash repayment needs a receipt with a payment reference, which is not available for advances yet."));
 
     // ── Audit & Reconciliation Report ────────────────────────────────────────
 
@@ -495,6 +546,53 @@ public class AdvancesController : ControllerBase
             "Exclude the authenticated employee from approving a salary advance paid to them, even after a legal-entity transfer.")
             .AnyAsync(x => x.UserAccountId == userId
                 && (x.Id == adv.EmployeeIntId || x.PublicId == adv.EmployeeId), ct);
+
+    private bool IsHrActor() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Director");
+    private bool IsFinanceActor() => User.IsInRole("Admin") || User.IsInRole("Finance");
+    /// <summary>Same money shape as LoansController.IsMoney: positive, two decimals, within the column.</summary>
+    private static bool IsMoney(decimal value) => value > 0 && value <= 999999999999.99m && decimal.Round(value, 2) == value;
+
+    private async Task<bool> CanAccessAdvanceAsync(SalaryAdvance adv, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, adv.TenantId, ct);
+        return scope.IsUnrestricted || (adv.EmployeeIntId is int empId && scope.CanAccessEmployee(empId));
+    }
+
+    /// <summary>The policy's installment rule for an amount: 1..MaxInstallments, exactly 1 when installments are
+    /// not allowed, and every installment at least 0.01. Null when the request complies.</summary>
+    private static string? InstallmentsRefusal(AdvancePolicy? policy, decimal amount, int installments)
+    {
+        var max = policy == null ? MaxInstallmentsWithoutPolicy
+            : !policy.AllowInstallments ? 1
+            : Math.Clamp(policy.MaxInstallments, 1, MaxInstallmentsWithoutPolicy);
+        if (installments < 1 || installments > max)
+            return max == 1
+                ? "This advance policy requires repayment in a single installment."
+                : $"Installments must be between 1 and {max}.";
+        if (amount < installments * .01m)
+            return "Each installment must be at least 0.01.";
+        return null;
+    }
+
+    /// <summary>
+    /// The policy's MaxPercentageOfSalary cap, against the employee's monthly wage as the loan module computes it
+    /// (<see cref="LoanEligibilityService.MonthlyWage"/>: the salary structure in force today, basic plus fixed
+    /// allowances, in the company's currency). An unknown wage refuses rather than lets the request through.
+    /// Null when the amount is within the cap or the policy sets no percentage.
+    /// </summary>
+    private async Task<string?> SalaryCapRefusalAsync(Guid tid, Employee employee, AdvancePolicy policy, decimal amount, CancellationToken ct)
+    {
+        if (policy.MaxPercentageOfSalary <= 0) return null;
+        var salary = await new LoanEligibilityService(_db).SalaryAsOfAsync(tid, employee.Id, DateOnly.FromDateTime(DateTime.UtcNow), ct);
+        var wage = LoanEligibilityService.MonthlyWage(salary);
+        var currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, employee.CompanyId, ct);
+        if (salary == null || wage <= 0 || !string.Equals(salary.Currency, currency, StringComparison.OrdinalIgnoreCase))
+            return "An active salary structure in the company's currency is required to apply the advance policy's salary cap.";
+        var cap = decimal.Round(wage * policy.MaxPercentageOfSalary / 100m, 2, MidpointRounding.ToZero);
+        return amount > cap
+            ? $"The amount exceeds the policy limit of {policy.MaxPercentageOfSalary:0.##}% of monthly salary ({cap:0.00} {currency})."
+            : null;
+    }
 
     private async Task WriteAdvanceAudit(Guid tid, Guid? uid, Guid advId, string action, string? oldVal, string newVal, CancellationToken ct)
     {
