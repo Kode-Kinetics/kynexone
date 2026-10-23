@@ -11,6 +11,9 @@ using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Audit;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -22,6 +25,7 @@ public class AttendanceService : IAttendanceService
     private readonly INotificationService _notifications;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly WorkWeekService _workWeek;
+    private readonly IHrmHierarchyService _hierarchy;
     // KSA Labour Law Art. 98 — the Ramadan working-hours baseline. Constructed here rather than
     // injected for the same reason WorkWeekService is: this service is resolved in several places
     // with a hand-rolled constructor call, and widening the signature would break all of them.
@@ -46,6 +50,8 @@ public class AttendanceService : IAttendanceService
         _notifications = notifications;
         _httpClientFactory = httpClientFactory;
         _workWeek = new WorkWeekService(db);
+        // Built here for the same reason: only its read-only approver resolution is used (it never audits on that path).
+        _hierarchy = new HrmHierarchyService(db, new AuditService(db));
         _ksaWorkingHours = new KsaWorkingHoursBaselineService(
             new StatutoryRuleReader(db), new HijriDateService());
     }
@@ -151,6 +157,70 @@ public class AttendanceService : IAttendanceService
         return true;
     }
 
+    // ── Device pull limits ─────────────────────────────────────────────────────────────────────────
+    // A tenant admin chooses the endpoint a pull calls, and one API instance serves every tenant, so what a pull may
+    // cost the process is bounded here rather than by the remote.
+
+    /// <summary>The pull timeout when a device sets no <c>timeout_seconds</c>.</summary>
+    internal const int DefaultDeviceTimeoutSeconds = 30;
+    /// <summary>The range a device's <c>timeout_seconds</c> is clamped to.</summary>
+    internal const int MinDeviceTimeoutSeconds = 5;
+    internal const int MaxDeviceTimeoutSeconds = 60;
+    /// <summary>A connection test only waits for response headers.</summary>
+    internal const int TestConnectionTimeoutSeconds = 10;
+    /// <summary>The most a single pull may read from a device before the response is discarded.</summary>
+    internal const int SyncResponseByteCap = 4 * 1024 * 1024;
+
+    internal const string DeviceRefusedMessage =
+        "The device did not accept the request. Check the endpoint URL, poll path and credentials in the device settings.";
+    internal const string DeviceUnreachableHint =
+        "Check that the endpoint URL and port are correct and that the device is reachable from the internet.";
+
+    /// <summary>
+    /// The handler every device pull and connection test is sent through: <see cref="SsrfGuard.CreateGuardedClientHandler"/>
+    /// in production. Tests swap in a scripted handler to play a device.
+    /// </summary>
+    internal Func<HttpMessageHandler> DeviceHandlerFactory { get; init; } = SsrfGuard.CreateGuardedClientHandler;
+
+    /// <summary>
+    /// The device's <c>timeout_seconds</c>, clamped to <see cref="MinDeviceTimeoutSeconds"/>..<see cref="MaxDeviceTimeoutSeconds"/>.
+    /// <paramref name="note"/> is the sentence the sync log carries when the configured value was not used.
+    /// </summary>
+    internal static int ResolveDeviceTimeoutSeconds(IReadOnlyDictionary<string, string> deviceParameters, out string? note)
+    {
+        note = null;
+        if (!deviceParameters.TryGetValue("timeout_seconds", out var raw) || string.IsNullOrWhiteSpace(raw))
+            return DefaultDeviceTimeoutSeconds;
+        if (!int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var configured))
+        {
+            note = $"timeout_seconds is not a whole number, so {DefaultDeviceTimeoutSeconds} seconds was used.";
+            return DefaultDeviceTimeoutSeconds;
+        }
+        var clamped = Math.Clamp(configured, MinDeviceTimeoutSeconds, MaxDeviceTimeoutSeconds);
+        if (clamped != configured)
+            note = $"timeout_seconds {configured} is outside the allowed {MinDeviceTimeoutSeconds}-{MaxDeviceTimeoutSeconds} seconds, so {clamped} seconds was used.";
+        return clamped;
+    }
+
+    /// <summary>
+    /// Reads at most <paramref name="cap"/> bytes of <paramref name="content"/> as UTF-8. Null when the device declares, or
+    /// sends, more than that: reading stops at the cap, so memory stays bounded whatever the remote sends.
+    /// </summary>
+    internal static async Task<string?> ReadCappedAsync(HttpContent content, int cap, CancellationToken ct)
+    {
+        if (content.Headers.ContentLength is long declared && declared > cap) return null;
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await stream.ReadAsync(chunk.AsMemory(0, (int)Math.Min(chunk.Length, cap + 1L - buffer.Length)), ct)) > 0)
+        {
+            buffer.Write(chunk, 0, read);
+            if (buffer.Length > cap) return null;
+        }
+        return System.Text.Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+    }
+
     public async Task<AttendanceDeviceSyncLog?> TestConnectionAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct)
     {
         var device = await GetDeviceAsync(tenantId, id, ct);
@@ -187,26 +257,30 @@ public class AttendanceService : IAttendanceService
             }
             else
             {
+                // Headers only: a connection test never reads the body, so a device (or a server posing as one) cannot
+                // make the shared API buffer anything. The text written back is ours, never the remote's status line or
+                // an exception message, so this endpoint cannot be used to map which ports and services answer.
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(TestConnectionTimeoutSeconds));
                 try
                 {
-                    using var handler = SsrfGuard.CreateGuardedClientHandler(); // no auto-redirect (rebind defence)
-                    using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
-                    var req = BuildDeviceRequest(device, pullUrl);
-                    var response = await http.SendAsync(req, ct);
-                    status = response.IsSuccessStatusCode ? "Success" : $"HTTP {(int)response.StatusCode}";
+                    using var http = new HttpClient(DeviceHandlerFactory()) { Timeout = Timeout.InfiniteTimeSpan };
+                    using var req = BuildDeviceRequest(device, pullUrl);
+                    using var response = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+                    status = response.IsSuccessStatusCode ? "Success" : "Failed";
                     errorMessage = response.IsSuccessStatusCode
-                        ? $"Device responded with HTTP {(int)response.StatusCode}. Connection OK. Auth: {device.AuthType ?? "None"}."
-                        : $"Device returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Check endpoint URL and credentials.";
+                        ? $"Device responded. Connection OK. Auth: {device.AuthType ?? "None"}."
+                        : DeviceRefusedMessage;
                 }
-                catch (TaskCanceledException)
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
                 {
                     status = "Failed";
-                    errorMessage = $"Connection timed out after 10 seconds. Check device IP/endpoint: {device.EndpointUrl}";
+                    errorMessage = $"Connection timed out after {TestConnectionTimeoutSeconds} seconds. {DeviceUnreachableHint}";
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     status = "Failed";
-                    errorMessage = $"Connection error: {ex.Message}";
+                    errorMessage = $"Could not connect to the device. {DeviceUnreachableHint}";
                 }
             }
         }
@@ -235,10 +309,11 @@ public class AttendanceService : IAttendanceService
                 status = "Success";
                 errorMessage = $"TCP connection to {device.IpAddress}:{port} succeeded.";
             }
-            catch (Exception ex)
+            catch (Exception)
             {
+                // Our own text, not the socket error: "refused" versus "timed out" would tell a caller which ports are open.
                 status = "Failed";
-                errorMessage = $"TCP connection to {device.IpAddress} failed: {ex.Message}";
+                errorMessage = $"TCP connection to {device.IpAddress} failed. {DeviceUnreachableHint}";
             }
         }
         else
@@ -299,41 +374,54 @@ public class AttendanceService : IAttendanceService
             }
             else
             {
+                // One API instance serves every tenant, and the endpoint is tenant-supplied: the wait is bounded
+                // (timeout_seconds is clamped, and the limit covers reading the body too, not only the headers) and
+                // the body is read through a byte cap instead of being buffered whole.
+                var timeoutSec = ResolveDeviceTimeoutSeconds(TryParseJson(device.DeviceParametersJson), out var timeoutNote);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
                 try
                 {
-                    var devParams = TryParseJson(device.DeviceParametersJson);
-                    var timeoutSec = devParams.TryGetValue("timeout_seconds", out var ts) && int.TryParse(ts, out var t) ? t : 30;
-                    using var handler = SsrfGuard.CreateGuardedClientHandler(); // no auto-redirect (rebind defence)
-                    using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(timeoutSec) };
-                    var req = BuildDeviceRequest(device, syncUrl);
-                    var response = await http.SendAsync(req, ct);
-                    var body = await response.Content.ReadAsStringAsync(ct);
+                    using var http = new HttpClient(DeviceHandlerFactory()) { Timeout = Timeout.InfiniteTimeSpan };
+                    using var req = BuildDeviceRequest(device, syncUrl);
+                    using var response = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
                     if (response.IsSuccessStatusCode)
                     {
-                        status = "Completed";
-                        rawEventsReceived = body.TrimStart().StartsWith('[') ? body.Split('{').Length - 1 : 0;
-                        errorMessage = rawEventsReceived > 0
-                            ? $"Device responded: {rawEventsReceived} potential records found. Configure field mappings to auto-process on next pull."
-                            : $"Device endpoint responded HTTP 200. Configure 'poll_path' and field mappings in Device Parameters to capture records.";
+                        var body = await ReadCappedAsync(response.Content, SyncResponseByteCap, timeout.Token);
+                        if (body is null)
+                        {
+                            status = "Failed";
+                            errorMessage = $"The device sent more than {SyncResponseByteCap / (1024 * 1024)} MB in one pull, so the response was discarded. "
+                                           + "Set 'poll_path' or the device's own filters so each pull returns fewer records.";
+                        }
+                        else
+                        {
+                            status = "Completed";
+                            rawEventsReceived = body.TrimStart().StartsWith('[') ? body.Split('{').Length - 1 : 0;
+                            errorMessage = rawEventsReceived > 0
+                                ? $"Device responded: {rawEventsReceived} potential records found. Configure field mappings to auto-process on next pull."
+                                : $"Device endpoint responded. Configure 'poll_path' and field mappings in Device Parameters to capture records.";
+                        }
                     }
                     else
                     {
+                        // Neither the body nor the status line is reflected: with a tenant-supplied endpoint either would
+                        // make this an oracle for what answers where.
                         status = "Failed";
-                        // Do NOT reflect the response body: with a user-controlled endpoint this would turn
-                        // the SSRF into a full-read oracle. Status code only.
-                        errorMessage = $"Device returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Check endpoint URL and credentials.";
+                        errorMessage = DeviceRefusedMessage;
                     }
                 }
-                catch (TaskCanceledException)
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
                 {
                     status = "Failed";
-                    errorMessage = $"Sync timed out. Increase timeout_seconds in Device Parameters or check endpoint: {device.EndpointUrl}";
+                    errorMessage = $"Sync timed out after {timeoutSec} seconds. {DeviceUnreachableHint}";
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     status = "Failed";
-                    errorMessage = $"Sync error: {ex.Message}";
+                    errorMessage = $"Could not connect to the device. {DeviceUnreachableHint}";
                 }
+                if (timeoutNote is not null) errorMessage = $"{errorMessage} {timeoutNote}";
             }
         }
         else if (device.SyncMethod?.Contains("CSV", StringComparison.OrdinalIgnoreCase) == true
@@ -1150,11 +1238,55 @@ public class AttendanceService : IAttendanceService
         _db.AttendanceCorrectionApprovals.Add(new AttendanceCorrectionApproval { TenantId = tenantId, RegularizationRequestId = reg.Id, ApprovalLevel = "HR" });
         await Audit(tenantId, context, "attendance.regularization.submitted", "AttendanceRegularizationRequest", reg.Id.ToString(), ct);
         await _db.SaveChangesAsync(ct);
-        await _notifications.NotifyAsync(tenantId, null,
-            "Correction Request Submitted",
-            $"Attendance correction request submitted for {reg.WorkDate:yyyy-MM-dd} (employee {reg.EmployeeId}).",
-            "AttendanceRegularizationRequest", reg.Id.ToString(), ct);
+        // To the people this correction concerns, never the whole tenant: the employee (their own login) and the
+        // approvers the Attendance workflow resolves for them (direct manager, department head), the same people
+        // CanDecideRegularizationAsync lets decide it. Nobody resolved means nothing is sent.
+        var employeeUsers = await LinkedUserIdsAsync(tenantId, [reg.EmployeeId], ct);
+        var approverUsers = (await LinkedUserIdsAsync(tenantId, await AttendanceApproverEmployeeIdsAsync(tenantId, reg.EmployeeId, ct), ct))
+            .Except(employeeUsers).ToList();
+        foreach (var userId in employeeUsers)
+            await _notifications.NotifyAsync(tenantId, userId,
+                "Correction Request Submitted",
+                $"Your attendance correction for {reg.WorkDate:yyyy-MM-dd} was submitted and is waiting for approval.",
+                "AttendanceRegularizationRequest", reg.Id.ToString(), ct);
+        foreach (var userId in approverUsers)
+            await _notifications.NotifyAsync(tenantId, userId,
+                "Correction Request Submitted",
+                $"{employee.FullName} submitted an attendance correction for {reg.WorkDate:yyyy-MM-dd}. It is waiting for your decision.",
+                "AttendanceRegularizationRequest", reg.Id.ToString(), ct);
         return reg;
+    }
+
+    /// <summary>
+    /// The employees the Attendance approval workflow resolves for <paramref name="employeeId"/>
+    /// (<see cref="IHrmHierarchyService.ResolveWorkflowApproversAsync"/>). Empty when the hierarchy cannot be resolved
+    /// (a broken reporting chain must not fail the submission it is only notifying about).
+    /// </summary>
+    private async Task<IReadOnlyCollection<int>> AttendanceApproverEmployeeIdsAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        try
+        {
+            var resolved = await _hierarchy.ResolveWorkflowApproversAsync(tenantId, employeeId, "Attendance", ct);
+            return resolved.Approvers.Select(a => a.EmployeeId).Where(id => id != employeeId).Distinct().ToList();
+        }
+        catch (InvalidOperationException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// The active logins linked to <paramref name="employeeIds"/> through employee_user_accounts (the link the employee_id
+    /// claim is issued from), within the tenant.
+    /// </summary>
+    private async Task<IReadOnlyCollection<Guid>> LinkedUserIdsAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds, CancellationToken ct)
+    {
+        if (employeeIds.Count == 0) return [];
+        return await (from link in _db.EmployeeUserAccounts.AsNoTracking()
+                      join user in _db.Users.AsNoTracking() on link.UserId equals user.Id
+                      where link.TenantId == tenantId && !link.IsDeleted && employeeIds.Contains(link.EmployeeId)
+                            && user.TenantId == tenantId && user.IsActive && !user.IsDeleted
+                      select user.Id).Distinct().ToListAsync(ct);
     }
 
     public async Task<PagedResult<AttendanceRegularizationRequest>> GetRegularizationAsync(Guid tenantId, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
@@ -1204,10 +1336,20 @@ public class AttendanceService : IAttendanceService
                 await _db.SaveChangesAsync(ct);
                 return r;
             }, ct);
-            await _notifications.NotifyAsync(tenantId, null,
-                "Correction Request Pending HR",
-                $"Attendance correction for {reg.WorkDate:yyyy-MM-dd} is pending HR approval.",
-                "AttendanceRegularizationRequest", reg.Id.ToString(), ct);
+            // Not a tenant broadcast: the employee and whoever filed it, plus the employee's HR business partner (the HR
+            // person named on their record) when one is set. Nobody resolved means nothing is sent.
+            var hrPartner = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == reg.EmployeeId)
+                .Select(e => e.HRBusinessPartnerEmployeeId).FirstOrDefaultAsync(ct);
+            var recipients = new HashSet<Guid>(await LinkedUserIdsAsync(tenantId, [reg.EmployeeId], ct));
+            if (reg.RequestedByUserId is Guid requester) recipients.Add(requester);
+            if (hrPartner is int hrPartnerId && hrPartnerId != reg.EmployeeId)
+                recipients.UnionWith(await LinkedUserIdsAsync(tenantId, [hrPartnerId], ct));
+            foreach (var userId in recipients)
+                await _notifications.NotifyAsync(tenantId, userId,
+                    "Correction Request Pending HR",
+                    $"Attendance correction for {reg.WorkDate:yyyy-MM-dd} is pending HR approval.",
+                    "AttendanceRegularizationRequest", reg.Id.ToString(), ct);
             return reg;
         }
 
@@ -1292,21 +1434,32 @@ public class AttendanceService : IAttendanceService
         return new AttendanceDashboardDto(date, activeEmployees, records.Count(x => x.Status is "Present" or "Late" or "Half day"), records.Count(x => x.Status == "Absent"), records.Count(x => x.LateMinutes > 0), records.Count(x => x.MissingPunch), records.Count(x => x.OvertimeMinutes > 0), await _db.AttendanceDevices.CountAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.LastSyncStatus == "Failed", ct), await _db.AttendanceRegularizationRequests.CountAsync(x => x.TenantId == tenantId && x.Status == "Submitted", ct));
     }
 
-    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportDailyAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct) =>
-        await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate >= from && x.WorkDate <= to).OrderByDescending(x => x.WorkDate).Select(x => x.ToDto()).ToListAsync(ct);
-
-    public Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthlyAsync(Guid tenantId, int year, int month, CancellationToken ct) =>
-        GetMonthlyAsync(tenantId, year, month, null, ct);
-
-    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportByStatusAsync(Guid tenantId, DateOnly from, DateOnly to, string status, CancellationToken ct) =>
-        await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate >= from && x.WorkDate <= to && x.Status == status).OrderByDescending(x => x.WorkDate).Select(x => x.ToDto()).ToListAsync(ct);
-
-    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunchAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct) =>
-        await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate >= from && x.WorkDate <= to && x.MissingPunch).OrderByDescending(x => x.WorkDate).Select(x => x.ToDto()).ToListAsync(ct);
-
-    public async Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct)
+    /// <summary>
+    /// The day records the attendance reports read: the tenant's, within the range and, for a scoped caller, only the
+    /// employees in <paramref name="scopeIds"/>. The scope is part of the SQL, so a team-scoped caller never makes the
+    /// API load the whole tenant's range and discard most of it.
+    /// </summary>
+    internal IQueryable<AttendanceDailyRecord> ReportRecords(Guid tenantId, DateOnly from, DateOnly to, IReadOnlyCollection<int>? scopeIds)
     {
-        var records = await _db.AttendanceDailyRecords.Where(x => x.TenantId == tenantId && x.WorkDate >= from && x.WorkDate <= to).ToListAsync(ct);
+        var query = _db.AttendanceDailyRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.WorkDate >= from && x.WorkDate <= to);
+        return scopeIds is null ? query : query.Where(x => scopeIds.Contains(x.EmployeeId));
+    }
+
+    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportDailyAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null) =>
+        await ReportRecords(tenantId, from, to, scopeIds).OrderByDescending(x => x.WorkDate).Select(x => x.ToDto()).ToListAsync(ct);
+
+    public Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthlyAsync(Guid tenantId, int year, int month, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null) =>
+        GetMonthlyAsync(tenantId, year, month, null, ct, scopeIds);
+
+    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportByStatusAsync(Guid tenantId, DateOnly from, DateOnly to, string status, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null) =>
+        await ReportRecords(tenantId, from, to, scopeIds).Where(x => x.Status == status).OrderByDescending(x => x.WorkDate).Select(x => x.ToDto()).ToListAsync(ct);
+
+    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunchAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null) =>
+        await ReportRecords(tenantId, from, to, scopeIds).Where(x => x.MissingPunch).OrderByDescending(x => x.WorkDate).Select(x => x.ToDto()).ToListAsync(ct);
+
+    public async Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
+    {
+        var records = await ReportRecords(tenantId, from, to, scopeIds).ToListAsync(ct);
         // Late / early-exit minutes held on a half-pair day are not deductible yet, so the payroll summary leaves them
         // out and agrees with the payroll impacts (AttendanceDerivedArtifacts.LatenessCountsExpression, the shared rule).
         var counts = AttendanceDerivedArtifacts.LatenessCountsExpression.Compile();
@@ -1951,10 +2104,17 @@ public class AttendanceService : IAttendanceService
     }
 
     // Build an HttpRequestMessage with all auth and custom headers from the device config applied.
-    private static HttpRequestMessage BuildDeviceRequest(AttendanceDevice device, string url)
+    internal static HttpRequestMessage BuildDeviceRequest(AttendanceDevice device, string url)
     {
         var req = new HttpRequestMessage(HttpMethod.Get, url);
         var creds = TryParseJson(device.AuthCredentialsJson);
+
+        void AddHeader(string name, string value)
+        {
+            // A tenant-supplied header never chooses the Host the request claims to be for, nor the framing or hops of
+            // the connection; those stay what the URL and the handler make them.
+            if (!ReservedDeviceRequestHeaders.Contains(name.Trim())) req.Headers.TryAddWithoutValidation(name.Trim(), value);
+        }
 
         switch (device.AuthType?.ToLowerInvariant())
         {
@@ -1969,7 +2129,7 @@ public class AttendanceService : IAttendanceService
                 break;
             case "customheader":
                 if (creds.TryGetValue("headerName", out var hn) && creds.TryGetValue("headerValue", out var hv))
-                    req.Headers.TryAddWithoutValidation(hn, hv);
+                    AddHeader(hn, hv);
                 break;
             case "apikeyquery":
                 // handled by caller — append to URL query string
@@ -1977,10 +2137,17 @@ public class AttendanceService : IAttendanceService
         }
 
         foreach (var (k, v) in TryParseJson(device.CustomHeadersJson))
-            req.Headers.TryAddWithoutValidation(k, v);
+            AddHeader(k, v);
 
         return req;
     }
+
+    /// <summary>Request headers a device's configuration may not set: Host, and the hop-by-hop and framing headers.</summary>
+    internal static readonly IReadOnlySet<string> ReservedDeviceRequestHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "Host", "Connection", "Keep-Alive", "Proxy-Connection", "Proxy-Authenticate", "Proxy-Authorization",
+        "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Content-Length", "Expect",
+    };
 
     private static Dictionary<string, string> TryParseJson(string? json)
     {

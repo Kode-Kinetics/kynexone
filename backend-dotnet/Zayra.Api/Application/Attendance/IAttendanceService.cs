@@ -49,15 +49,16 @@ public interface IAttendanceService
     Task<AttendanceRegularizationRequest?> CancelRegularizationAsync(Guid tenantId, Guid id, string reason, RequestContext context, CancellationToken ct);
 
     Task<AttendanceDashboardDto> DashboardAsync(Guid tenantId, DateOnly date, CancellationToken ct);
-    Task<IReadOnlyCollection<AttendanceDailyDto>> ReportDailyAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
-    Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthlyAsync(Guid tenantId, int year, int month, CancellationToken ct);
-    Task<IReadOnlyCollection<AttendanceDailyDto>> ReportByStatusAsync(Guid tenantId, DateOnly from, DateOnly to, string status, CancellationToken ct);
-    Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunchAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
+    // scopeIds: the caller's data scope (DataScope.AllowedEmployeeIds), applied in the query; null is org-wide.
+    Task<IReadOnlyCollection<AttendanceDailyDto>> ReportDailyAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
+    Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthlyAsync(Guid tenantId, int year, int month, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
+    Task<IReadOnlyCollection<AttendanceDailyDto>> ReportByStatusAsync(Guid tenantId, DateOnly from, DateOnly to, string status, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
+    Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunchAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
     Task<PagedResult<AttendanceExceptionDto>> GetExceptionsAsync(Guid tenantId, string? state, string? type, DateOnly? from, DateOnly? to,
         int? employeeId, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
     Task<AttendanceExceptionDto?> ResolveExceptionAsync(Guid tenantId, Guid id, string reason, string resolvedBy, RequestContext context,
         CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
-    Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct);
+    Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> PayrollSummaryAsync(Guid tenantId, DateOnly from, DateOnly to, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
     Task<IReadOnlyCollection<AttendanceDeviceSyncDto>> DeviceSyncReportAsync(Guid tenantId, CancellationToken ct, bool revealSecrets = true);
     /// <param name="visibleEmployeeIds">The caller's data scope (<c>DataScope.AllowedEmployeeIds</c>); null is org-wide.
     /// Generation always covers the tenant; only the returned insights are scoped.</param>
