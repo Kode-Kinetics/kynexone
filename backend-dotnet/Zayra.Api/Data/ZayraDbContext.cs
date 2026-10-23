@@ -917,6 +917,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     private async Task RevokeTrustedBrowsersOnCredentialChangeAsync(CancellationToken ct, bool synchronous = false)
     {
         List<(Guid UserId, Guid TenantId, string Reason)>? changed = null;
+        List<(User User, string Trigger)>? ended = null;
         var autoDetect = ChangeTracker.AutoDetectChangesEnabled;
         ChangeTracker.AutoDetectChangesEnabled = false;
         try
@@ -924,17 +925,22 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             foreach (var e in ChangeTracker.Entries())
             {
                 if (e.Entity is not User user || e.State != EntityState.Modified) continue;
-                ClearBackupCodesWithTheFactor(Entry(user));
-                var reason = TrustRevokeReason(Entry(user));
+                var entry = Entry(user);
+                ClearBackupCodesWithTheFactor(entry);
+                var reason = TrustRevokeReason(entry);
                 if (reason is not null) (changed ??= new()).Add((user.Id, user.TenantId, reason));
+                var epoch = entry.Property(x => x.SessionEpoch);
+                var raisedExplicitly = epoch.CurrentValue != epoch.OriginalValue;
+                if (reason is not null || raisedExplicitly)
+                    (ended ??= new()).Add((user, reason ?? Infrastructure.Auth.TenantSessionSecurity.EndAllSessionsTrigger));
             }
         }
         finally { ChangeTracker.AutoDetectChangesEnabled = autoDetect; }
-        if (changed is null) return;
+        if (changed is null && ended is null) return;
 
         // A tenant request only ever revokes inside its own tenant (the write guard would refuse anything else).
         var requestTenant = _tenantId;
-        foreach (var (userId, tenantId, reason) in changed)
+        foreach (var (userId, tenantId, reason) in changed ?? [])
         {
             if (requestTenant is Guid t && t != tenantId) continue;
             await Infrastructure.Auth.MfaTrustedDevices.StageRevokeAllAsync(
@@ -942,6 +948,57 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 // The actor is named only when it is a user of this tenant; a platform operator's id is not a user id.
                 new RequestContext(null, null, requestTenant is null ? null : _actorId, tenantId), ct, synchronous);
         }
+        foreach (var (user, trigger) in ended ?? [])
+            await EndSessionsOfAsync(user, trigger, requestTenant, ct, synchronous);
+    }
+
+    /// <summary>
+    /// SESSIONS FOLLOW THE CREDENTIAL (users.session_epoch). The same changes that revoke trusted browsers — password,
+    /// factor, deactivation, suspension, admin lock, NoLogin, deletion; never a failed-password lockout or login
+    /// telemetry — and an explicit <see cref="Infrastructure.Auth.TenantSessionSecurity.EndAllSessions"/> raise the
+    /// user's epoch in this save, so every refresh token issued before it is refused at its next refresh whatever path
+    /// made the change. The epoch is raised once per save (an explicit raise in the same save is not doubled; the
+    /// trg_users__session_epoch_increments trigger makes the stored value exactly one above the row it replaces, so
+    /// two concurrent raises cannot collapse into one). In the same save it stages, idempotently, the revocation of the
+    /// user's live refresh tokens and the consumption of their open two-step challenges, and one
+    /// <c>auth.sessions_ended</c> audit row naming the trigger.
+    /// </summary>
+    private async Task EndSessionsOfAsync(User user, string trigger, Guid? requestTenant, CancellationToken ct, bool synchronous)
+    {
+        var epoch = Entry(user).Property(x => x.SessionEpoch);
+        if (epoch.CurrentValue == epoch.OriginalValue)
+            epoch.CurrentValue = epoch.OriginalValue + 1;
+        if (requestTenant is Guid t && t != user.TenantId) return;
+        var raisedTo = epoch.CurrentValue;
+        var atUtc = DateTime.UtcNow;
+
+        var tokenQuery = RefreshTokens.Where(x => x.UserId == user.Id && x.RevokedAtUtc == null);
+        var tokens = synchronous ? tokenQuery.ToList() : await tokenQuery.ToListAsync(ct);
+        // A token added earlier in this unit of work carries the epoch it was issued at; one below the new epoch is dead.
+        tokens.AddRange(ChangeTracker.Entries<RefreshToken>()
+            .Where(e => e.State == EntityState.Added && e.Entity.UserId == user.Id && e.Entity.SessionEpoch < raisedTo)
+            .Select(e => e.Entity));
+        var revoked = 0;
+        foreach (var token in tokens.Distinct().Where(x => x.RevokedAtUtc is null))
+        {
+            token.RevokedAtUtc = atUtc;
+            revoked++;
+        }
+
+        var challengeQuery = MfaChallengeTokens.Where(x => x.UserId == user.Id && x.UsedAtUtc == null);
+        var challenges = synchronous ? challengeQuery.ToList() : await challengeQuery.ToListAsync(ct);
+        var consumed = 0;
+        foreach (var challenge in challenges.Where(x => x.UsedAtUtc is null))
+        {
+            challenge.UsedAtUtc = atUtc;
+            consumed++;
+        }
+
+        AuditLogs.Add(Infrastructure.Auth.AuthAuditEntry.Create(
+            Guid.NewGuid(), atUtc, Infrastructure.Auth.TenantSessionSecurity.SessionsEndedAuditAction, "User", user.Id.ToString(),
+            // The actor is named only when it is a user of this tenant; a platform operator's id is not a user id.
+            new RequestContext(null, null, requestTenant is null ? null : _actorId, user.TenantId),
+            $"{{\"trigger\":\"{trigger}\",\"sessionEpoch\":{raisedTo},\"refreshTokensRevoked\":{revoked},\"challengesConsumed\":{consumed}}}"));
     }
 
     /// <summary>
@@ -3217,6 +3274,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.AccessMode).HasMaxLength(40).HasDefaultValue("FullPortal");
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
             entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(1024);
+            // Raised by the save hook (EndSessionsOfAsync); trg_users__session_epoch_increments keeps every raise to
+            // exactly one above the stored row. 0 for every login that predates it, so the deploy ends no session.
+            entity.Property(x => x.SessionEpoch).HasDefaultValue(0L);
             entity.HasIndex(x => new { x.TenantId, x.NormalizedEmail }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
@@ -3226,8 +3286,14 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<SecuritySetting>(entity =>
         {
             entity.ToTable("security_settings", t =>
-                t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90"));
+            {
+                t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90");
+                t.HasCheckConstraint("ck_security_settings__session_max_hours", "session_max_hours BETWEEN 1 AND 168");
+            });
             entity.HasKey(x => x.Id);
+            // The hard session limit in hours (1..168). Default 12 for every tenant, including rows that predate it.
+            // 0 is never valid, so the CLR default can stay the sentinel.
+            entity.Property(x => x.SessionMaxHours).HasDefaultValue(SecuritySetting.DefaultSessionMaxHours);
             entity.HasIndex(x => x.TenantId).IsUnique();
             // How long a browser stays trusted after a two-step code (0 = never offer it). Default 30 (the column
             // default serves rows that predate it). The sentinel is NOT 0: with the CLR default as sentinel EF would
@@ -3378,6 +3444,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ReplacedByTokenHash).HasMaxLength(128);
             entity.Property(x => x.CreatedByIp).HasMaxLength(64);
             entity.Property(x => x.RevokedByIp).HasMaxLength(64);
+            // Both are always written by the issuing code (the CLR initializer is never the sentinel); the column
+            // defaults only serve a row written by an earlier release during a rollback.
+            entity.Property(x => x.SessionStartedAtUtc).HasDefaultValueSql("now()");
+            entity.Property(x => x.SessionEpoch).HasDefaultValue(0L);
             entity.HasIndex(x => x.TokenHash).IsUnique();
             entity.HasIndex(x => new { x.FamilyId, x.UserId, x.RevokedAtUtc });
             entity.HasOne(x => x.User).WithMany(x => x.RefreshTokens).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);

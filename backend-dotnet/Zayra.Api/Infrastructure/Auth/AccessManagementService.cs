@@ -2416,6 +2416,11 @@ public class AccessManagementService : IAccessManagementService
             if (request.MaxFailedLoginAttempts.HasValue) setting.MaxFailedLoginAttempts = Math.Clamp(request.MaxFailedLoginAttempts.Value, 1, 20);
             if (request.LockoutDurationMinutes.HasValue) setting.LockoutDurationMinutes = Math.Clamp(request.LockoutDurationMinutes.Value, 5, 1440);
             if (request.SessionTimeoutMinutes.HasValue) setting.SessionTimeoutMinutes = Math.Clamp(request.SessionTimeoutMinutes.Value, 15, 1440);
+            // The endpoint refuses values outside 1..168 (ERR_SESSION_MAX_HOURS_RANGE); the clamp only backs it up. Nothing is
+            // staged per session: every refresh computes the limit, so a lower value applies at each session's next refresh.
+            if (request.SessionMaxHours.HasValue)
+                setting.SessionMaxHours = Math.Clamp(request.SessionMaxHours.Value,
+                    Models.SecuritySetting.MinSessionMaxHours, Models.SecuritySetting.MaxSessionMaxHours);
             if (request.RefreshTokenExpiryDays.HasValue) setting.RefreshTokenExpiryDays = Math.Clamp(request.RefreshTokenExpiryDays.Value, 1, 90);
             if (request.AllowMultipleSessions.HasValue) setting.AllowMultipleSessions = request.AllowMultipleSessions.Value;
             if (request.MfaRequired.HasValue) setting.MfaRequired = request.MfaRequired.Value;
@@ -3411,7 +3416,7 @@ public class AccessManagementService : IAccessManagementService
     }
 
     private static SecuritySettingDto ToSecuritySettingDto(Models.SecuritySetting s) =>
-        new(s.Id, s.TenantId, s.PasswordMinLength, s.PasswordRequireUppercase, s.PasswordRequireLowercase, s.PasswordRequireDigit, s.PasswordRequireSpecial, s.PasswordExpiryDays, s.PasswordHistoryCount, s.MaxFailedLoginAttempts, s.LockoutDurationMinutes, s.SessionTimeoutMinutes, s.RefreshTokenExpiryDays, s.AllowMultipleSessions, s.MfaRequired, s.UpdatedAtUtc, s.MfaTrustedDeviceDays);
+        new(s.Id, s.TenantId, s.PasswordMinLength, s.PasswordRequireUppercase, s.PasswordRequireLowercase, s.PasswordRequireDigit, s.PasswordRequireSpecial, s.PasswordExpiryDays, s.PasswordHistoryCount, s.MaxFailedLoginAttempts, s.LockoutDurationMinutes, s.SessionTimeoutMinutes, s.RefreshTokenExpiryDays, s.AllowMultipleSessions, s.MfaRequired, s.UpdatedAtUtc, s.MfaTrustedDeviceDays, s.SessionMaxHours);
 
     private static RoleDto ToRoleDto(Role role) =>
         new(role.Id, role.Name, role.Description, role.IsSystem, role.IsActive, role.IsEditable, role.AuthorityLevel,

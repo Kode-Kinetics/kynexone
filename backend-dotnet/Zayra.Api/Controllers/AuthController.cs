@@ -156,6 +156,11 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<AuthResponse>> Refresh(RefreshTokenRequest request, CancellationToken cancellationToken)
     {
         try { return Ok(await _authService.RefreshAsync(request, GetContext(), cancellationToken)); }
+        // The session reached the company's maximum length: the client tells the user why they must sign in again.
+        catch (Zayra.Api.Infrastructure.Auth.SessionExpiredException ex)
+        {
+            return Unauthorized(new { code = Zayra.Api.Infrastructure.Auth.SessionExpiredException.Code, message = ex.Message });
+        }
         catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }
     }
 

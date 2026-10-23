@@ -3038,6 +3038,8 @@ public class PlatformController : ControllerBase
                 .ToListAsync(cancellationToken);
 
             TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+            // Ends every refresh lineage at its next refresh, whatever is revoked below (auth.sessions_ended, in this save).
+            TenantSessionSecurity.EndAllSessions(user);
             if (_db.Database.IsRelational())
             {
                 // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
