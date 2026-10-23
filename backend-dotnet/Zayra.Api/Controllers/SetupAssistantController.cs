@@ -443,9 +443,7 @@ public class SetupAssistantController : ControllerBase
                 // writing one here would be a way round that refusal, not a feature.
                 CarryForwardMax = 0m,
                 CarryForwardExpiry = 0,
-                // A 0-day cap encashes nothing (EncashmentController refuses every request above it), so it is stored as
-                // what it is — not allowed — instead of a switch that reads "on" and pays nothing.
-                EncashmentAllowed = lp.EncashmentAllowed && lp.EncashmentMaxDays > 0,
+                EncashmentAllowed = StoredEncashmentAllowed(lp.EncashmentAllowed, lp.EncashmentMaxDays),
                 EncashmentMaxDays = Math.Clamp(lp.EncashmentMaxDays, 0m, 365m),
                 MinimumDaysPerRequest = lp.MinimumDaysPerRequest > 0 ? lp.MinimumDaysPerRequest : 1m,
                 MaximumDaysPerRequest = Math.Clamp(lp.MaximumDaysPerRequest, 0m, 365m),
@@ -826,6 +824,13 @@ public class SetupAssistantController : ControllerBase
         c.AutoCreateDeptOnImport, c.AutoCreateDesignationOnImport, c.RequireImportPreviewBeforeCommit,
         c.AllowCrossDeptManager, c.AllowCrossLocationManager, c.RequireCostCenterForPayroll, c.RequireGradeForApprovalPolicy);
 
+    /// <summary>
+    /// What a draft's encashment switch is stored as. A 0-day cap encashes nothing (EncashmentController refuses every
+    /// request above it), so it is stored as not allowed instead of a switch that reads "on" and pays nothing. Apply and
+    /// the replay comparison both read it through here, so re-applying the same draft is not "different settings".
+    /// </summary>
+    private static bool StoredEncashmentAllowed(bool allowed, decimal maxDays) => allowed && maxDays > 0;
+
     private static bool SameLeaveScope(LeavePolicy policy, List<LeavePolicyEligibility> eligibility,
         Guid? gradeId, Guid? departmentId, string employmentType, string country, Guid? companyId)
     {
@@ -991,7 +996,7 @@ public class SetupAssistantController : ControllerBase
                 if (existing is not null && (!string.Equals(existing.Name, policy.Name.Trim(), StringComparison.OrdinalIgnoreCase)
                     || existing.AnnualEntitlementDays != policy.AnnualEntitlementDays
                     || !string.Equals(existing.AccrualMethod, policy.AccrualMethod, StringComparison.OrdinalIgnoreCase)
-                    || existing.ProratePartialMonths != policy.ProratePartialMonths || existing.EncashmentAllowed != policy.EncashmentAllowed
+                    || existing.ProratePartialMonths != policy.ProratePartialMonths || existing.EncashmentAllowed != StoredEncashmentAllowed(policy.EncashmentAllowed, policy.EncashmentMaxDays)
                     || existing.EncashmentMaxDays != policy.EncashmentMaxDays || existing.MinimumDaysPerRequest != policy.MinimumDaysPerRequest
                     || existing.MaximumDaysPerRequest != policy.MaximumDaysPerRequest || existing.NoticeRequiredDays != policy.NoticeRequiredDays
                     || existing.WeekendsIncluded != policy.WeekendsIncluded || existing.PublicHolidaysIncluded != policy.PublicHolidaysIncluded
