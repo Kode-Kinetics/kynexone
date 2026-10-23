@@ -32,6 +32,7 @@ const ar: Record<string, string> = {
   'User management': 'إدارة المستخدمين',
   'Security': 'الأمان',
   'Organization setup': 'إعداد المنظمة',
+  'Finance': 'المالية',
   'Search Employees': 'البحث عن الموظفين',
   'Jump to employee search and records': 'الانتقال إلى البحث عن الموظفين وسجلاتهم',
   'Review Approvals': 'مراجعة الاعتمادات',

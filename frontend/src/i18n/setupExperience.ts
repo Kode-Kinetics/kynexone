@@ -49,6 +49,7 @@ const ar: Record<string, string> = {
   'All sections': 'كل الأقسام',
   'Setup tools': 'أدوات الإعداد',
   'Review the setup areas available to your role.': 'راجع مجالات الإعداد المتاحة لصلاحيات دورك.',
+  'Your role has no Setup sections to open. Ask an administrator if you need one.': 'لا يتيح دورك فتح أي قسم من أقسام الإعداد. تواصل مع المسؤول إذا احتجت إلى أحدها.',
   'Cost Centres & Budget': 'مراكز التكلفة والميزانية',
   'Grades': 'الدرجات',
   'Employee Reference Lists': 'قوائم القيم المرجعية للموظفين',
