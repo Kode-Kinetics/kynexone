@@ -24,24 +24,42 @@ public class NotificationsController : ControllerBase
         _db = db;
     }
 
+    /// <summary>
+    /// The caller's bell: rows addressed to them, plus genuine workspace-wide broadcasts. A broadcast row of a
+    /// person-specific type (<see cref="NotificationAudience.PersonSpecificEntityTypes"/>) is never returned:
+    /// those were written before notices were routed to the people involved (a colleague's leave, a candidate,
+    /// a new hire) and stay in the table, so the read path is what keeps them private. No data is changed.
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> Recent(CancellationToken cancellationToken)
     {
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
-        var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var parsed) ? parsed : (Guid?)null;
+        var userId = CallerUserId();
+        var personSpecific = NotificationAudience.PersonSpecificEntityTypes.ToArray();
         var items = await _db.Notifications
-            .Where(x => x.TenantId == tenantId && (x.UserId == null || x.UserId == userId))
+            .Where(x => x.TenantId == tenantId
+                && ((userId != null && x.UserId == userId)
+                    || (x.UserId == null && !personSpecific.Contains(x.EntityName))))
             .OrderByDescending(x => x.CreatedAtUtc)
             .Take(50)
             .ToListAsync(cancellationToken);
         return Ok(items);
     }
 
+    // READ STATE AND DISMISSAL are the addressee's alone. A Notification row has ONE Status and is ONE row: a
+    // broadcast has no per-user read state, so marking or deleting it changed it for every user in the tenant,
+    // and these endpoints used to find a row by id and tenant only, so any user could do that to anyone's row.
+    // A user may now change only rows addressed to them. A broadcast is read-only for everybody (404 here),
+    // which is the smallest correct rule without a per-user read-state table.
+
     [HttpPost("{id:guid}/read")]
     public async Task<IActionResult> MarkRead(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
-        var notification = await _db.Notifications.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
+        var userId = CallerUserId();
+        if (userId is null) return NotFound();
+        var notification = await _db.Notifications.FirstOrDefaultAsync(
+            x => x.Id == id && x.TenantId == tenantId && x.UserId == userId, cancellationToken);
         if (notification is null) return NotFound();
         notification.Status = "Read";
         notification.ReadAtUtc = DateTime.UtcNow;
@@ -53,9 +71,10 @@ public class NotificationsController : ControllerBase
     public async Task<IActionResult> MarkAllRead(CancellationToken cancellationToken)
     {
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
-        var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var parsed) ? parsed : (Guid?)null;
+        var userId = CallerUserId();
+        if (userId is null) return NoContent();
         await _db.Notifications
-            .Where(x => x.TenantId == tenantId && (x.UserId == null || x.UserId == userId) && x.Status == "Unread")
+            .Where(x => x.TenantId == tenantId && x.UserId == userId && x.Status == "Unread")
             .ExecuteUpdateAsync(s => s
                 .SetProperty(n => n.Status, "Read")
                 .SetProperty(n => n.ReadAtUtc, DateTime.UtcNow),
@@ -67,12 +86,18 @@ public class NotificationsController : ControllerBase
     public async Task<IActionResult> Dismiss(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
-        var notification = await _db.Notifications.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, cancellationToken);
+        var userId = CallerUserId();
+        if (userId is null) return NotFound();
+        var notification = await _db.Notifications.FirstOrDefaultAsync(
+            x => x.Id == id && x.TenantId == tenantId && x.UserId == userId, cancellationToken);
         if (notification is null) return NotFound();
         _db.Notifications.Remove(notification);
         await _db.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
+
+    private Guid? CallerUserId() =>
+        Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var parsed) ? parsed : null;
 
     // ── POD-D5: DELIVERY VISIBILITY ──────────────────────────────────────────
     // Before this, a "payslip ready" notice could fail for every employee in a tenant and leave no

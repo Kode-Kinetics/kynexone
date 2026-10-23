@@ -145,7 +145,12 @@ public class RequisitionsController : ControllerBase
         }
         catch (SubmitRefused refused) { return refused.Result; }
 
-        await _notify.NotifyAsync(tenantId, null,
+        // Whoever decides the approval it started; with no approval step there is nobody to tell.
+        var approval = r.ApprovalRequestId is Guid approvalId
+            ? await _db.ApprovalRequests.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == approvalId, ct)
+            : null;
+        await _notify.NotifyEachAsync(tenantId,
+            approval is null ? [] : [.. await NotificationAudience.ApprovalDecidersAsync(_db, approval, ct)],
             "Requisition Submitted",
             $"{r.RequisitionNumber} — {r.DesignationTitle} × {r.HeadCount} has been submitted for approval.",
             "ManpowerRequisition", r.Id.ToString(), ct);
