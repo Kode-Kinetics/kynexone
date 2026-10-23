@@ -2175,6 +2175,139 @@ public class AccessManagementService : IAccessManagementService
         };
     }
 
+    /// <summary>Shortest and longest reason an administrator must give for resetting someone's two-step sign-in.</summary>
+    internal const int MfaResetReasonMin = 3, MfaResetReasonMax = 500;
+
+    /// <inheritdoc />
+    public async Task<MfaAdminResetResult> ResetUserMfaAsync(
+        Guid tenantId,
+        Guid userId,
+        string? reason,
+        EntityScopeContext entityScope,
+        RequestContext context,
+        CancellationToken cancellationToken)
+    {
+        var trimmed = reason?.Trim() ?? string.Empty;
+        if (trimmed.Length is < MfaResetReasonMin or > MfaResetReasonMax)
+            return new MfaAdminResetResult(MfaAdminResetOutcome.ReasonInvalid);
+        // A tenant action only: the caller is a user of this tenant (AccessController answers 401 otherwise).
+        if (context.UserId is null)
+            throw new InvalidOperationException("Sign in as an administrator of this workspace.");
+        // Never yourself: clearing your own factor without proving it would make two-step optional.
+        if (userId == context.UserId)
+            return new MfaAdminResetResult(MfaAdminResetOutcome.Self);
+
+        var resetAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        var outcome = MfaAdminResetOutcome.NotFound;
+
+        async Task<bool> ResetOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            outcome = MfaAdminResetOutcome.NotFound;
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+            if (tenant is null) return false;
+            // Locks the user, its roles and overrides, so the ceiling below is judged on the graph that is changed.
+            // Another tenant's user, an unknown id and a user outside the caller's company scope all read as absent.
+            var user = await LockAccessUserAsync(tenantId, userId, entityScope, ct);
+            if (user is null) return false;
+            await EnsureMayManageAccountAsync(tenantId, context, user, ct);
+            if (!user.MFAEnabled && string.IsNullOrEmpty(user.MfaSecretEncrypted))
+            {
+                outcome = MfaAdminResetOutcome.NotEnabled;
+                return false;
+            }
+
+            var actor = context with { TenantId = tenantId };
+            var trustedRevoked = await MfaTrustedDevices.StageRevokeAllAsync(_db, tenantId, [user.Id],
+                MfaTrustRevokeReasons.MfaAdminReset, resetAtUtc, actor, ct);
+            await _db.MfaChallengeTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == user.Id && x.UsedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                .OrderBy(x => x.Id).Select(x => x.Id).ToListAsync(ct);
+            int sessionsRevoked;
+            if (_db.Database.IsRelational())
+            {
+                await _db.MfaChallengeTokens
+                    .Where(x => x.UserId == user.Id && x.UsedAtUtc == null)
+                    .ExecuteUpdateAsync(u => u.SetProperty(x => x.UsedAtUtc, resetAtUtc), ct);
+                sessionsRevoked = await _db.RefreshTokens
+                    .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null)
+                    .ExecuteUpdateAsync(u => u
+                        .SetProperty(x => x.RevokedAtUtc, resetAtUtc)
+                        .SetProperty(x => x.RevokedByIp, context.IpAddress ?? "mfa-admin-reset"), ct);
+            }
+            else
+            {
+                foreach (var challenge in await _db.MfaChallengeTokens
+                    .Where(x => x.UserId == user.Id && x.UsedAtUtc == null).ToListAsync(ct))
+                    challenge.UsedAtUtc = resetAtUtc;
+                var refreshes = await _db.RefreshTokens
+                    .Where(x => x.UserId == user.Id && x.RevokedAtUtc == null).ToListAsync(ct);
+                foreach (var refresh in refreshes)
+                {
+                    refresh.RevokedAtUtc = resetAtUtc;
+                    refresh.RevokedByIp = context.IpAddress ?? "mfa-admin-reset";
+                }
+                sessionsRevoked = refreshes.Count;
+            }
+
+            var backupCodesDeleted = MfaBackupCodes.Remaining(user.MfaRecoveryCodeHashes);
+            user.MFAEnabled = false;
+            user.MfaSecretEncrypted = null;
+            user.MfaConfiguredAtUtc = null;
+            user.MfaLastVerifiedAtUtc = null;
+            user.MfaLastTotpStep = null;
+            user.MfaFailedCount = 0;
+            user.MfaRecoveryCodeHashes = null;
+            // Ends every access token at once (TenantSessionSecurity): signed out everywhere.
+            TenantSessionSecurity.RotateStamp(user, resetAtUtc);
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                resetAtUtc,
+                "auth.mfa.admin_reset",
+                "User",
+                user.Id.ToString(),
+                actor,
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    subjectUserId = user.Id,
+                    reason = trimmed,
+                    sessionsRevoked,
+                    trustedBrowsersRevoked = trustedRevoked,
+                    backupCodesDeleted,
+                })));
+            await _db.SaveChangesAsync(ct);
+            outcome = MfaAdminResetOutcome.Reset;
+            return true;
+        }
+
+        // Lost COMMIT acknowledgement: the reset is idempotent, so "no factor left" is the success evidence.
+        Task<bool> NoFactorLeftAsync(CancellationToken ct) =>
+            _db.Users.AsNoTracking().AnyAsync(x => x.Id == userId && x.TenantId == tenantId
+                && !x.MFAEnabled && x.MfaSecretEncrypted == null && x.MfaRecoveryCodeHashes == null, ct);
+
+        bool ok;
+        if (_db.Database.IsRelational())
+        {
+            ok = await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+                ResetOnceAsync, NoFactorLeftAsync, IsolationLevel.ReadCommitted, cancellationToken);
+            if (!ok && outcome == MfaAdminResetOutcome.Reset)
+            {
+                _db.ChangeTracker.Clear();
+                ok = await NoFactorLeftAsync(cancellationToken);
+            }
+        }
+        else
+        {
+            ok = await ResetOnceAsync(cancellationToken);
+        }
+        return ok ? new MfaAdminResetResult(MfaAdminResetOutcome.Reset, auditId) : new MfaAdminResetResult(outcome);
+    }
+
     public async Task<bool> DeleteUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
         var changedAtUtc = DateTime.UtcNow;
@@ -3274,7 +3407,7 @@ public class AccessManagementService : IAccessManagementService
             ? found
             : null;
         return new UserListDto(user.Id, user.Email, user.FullName, user.PhoneNumber, user.Status, user.IsActive, user.IsLocked, user.MustChangePassword, roles, link?.AccessMode ?? user.AccessMode, link?.EmployeeId, user.LastLoginAtUtc, user.CreatedAtUtc,
-            employee?.Name, employee?.Code);
+            employee?.Name, employee?.Code, PrivilegedMfaPolicy.IsTenantUserEnrolled(user));
     }
 
     private static SecuritySettingDto ToSecuritySettingDto(Models.SecuritySetting s) =>

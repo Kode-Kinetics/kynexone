@@ -55,19 +55,38 @@ public class MfaController : ControllerBase
     /// After this the user's MFA is fully enabled and required at every subsequent login.</summary>
     [HttpPost("verify-setup")]
     [Authorize]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> VerifySetup([FromBody] MfaVerifySetupRequest request, CancellationToken ct)
     {
         var userId = GetUserId();
         var tenantId = GetTenantId();
         if (userId is null || tenantId is null) return Unauthorized();
 
-        var outcome = await _mfa.VerifySetupWithOutcomeAsync(userId.Value, tenantId.Value, request, ct);
-        switch (outcome)
+        var setup = await _mfa.VerifySetupWithBackupCodesAsync(userId.Value, tenantId.Value, request, ct);
+        switch (setup.Outcome)
         {
             case MfaSetupOutcome.Enabled:
                 // Every trusted browser was revoked with the new secret; this browser's cookie is now useless.
                 MfaTrustedDevices.ClearCookie(Response);
-                return NoContent();
+                // Amendment 1: every session ended with the rotated stamp, this one included. Re-issue THIS session the
+                // way login does (tokens in the body, the known-device cookie) so the caller stays signed in while the
+                // codes are on screen. Best effort: the factor is already on, so a failure here must never lose the codes.
+                AuthResponse? session = null;
+                if (setup.ConfiguredAtUtc is { } configuredAtUtc)
+                {
+                    try
+                    {
+                        session = await _authService.IssueSessionAfterMfaSetupAsync(userId.Value, tenantId.Value, configuredAtUtc, GetContext(), ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        session = null;
+                    }
+                }
+                if (session is not null)
+                    LoginAbuseGuard.AppendKnownDeviceCookie(Response, "tenant", session.KnownDeviceToken);
+                return Ok(new MfaSetupResponse(setup.BackupCodes ?? [], session?.AccessToken, session?.RefreshToken,
+                    session?.ExpiresAtUtc, session?.User));
             case MfaSetupOutcome.AlreadyEnabled:
                 return Conflict(new { code = MfaErrorCodes.AlreadyEnabled, message = "Two-step sign-in is already on." });
             case MfaSetupOutcome.SetupInvalid:
@@ -96,13 +115,40 @@ public class MfaController : ControllerBase
     [HttpPost("enrollment/verify-setup")]
     [AllowAnonymous]
     [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> VerifyEnrollmentSetup([FromBody] MfaEnrollmentVerifySetupRequest request, CancellationToken ct)
     {
-        var ok = await _mfa.VerifyEnrollmentSetupAsync(
+        var backupCodes = await _mfa.VerifyEnrollmentSetupWithBackupCodesAsync(
             request.EnrollmentToken,
             new MfaVerifySetupRequest(request.TempSecret, request.TotpCode),
             ct);
-        return ok ? NoContent() : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
+        return backupCodes is not null
+            ? Ok(new MfaBackupCodesResponse(backupCodes))
+            : Unauthorized(new { message = "Invalid or expired MFA enrollment challenge." });
+    }
+
+    /// <summary>
+    /// Replaces the signed-in user's backup codes (a current app code is required) and returns the new ten, once. The
+    /// old codes stop working at once. 400 ERR_MFA_CODE_INVALID for a wrong or reused code, 409 ERR_MFA_NOT_ENABLED when
+    /// two-step is off.
+    /// </summary>
+    [HttpPost("backup-codes")]
+    [Authorize]
+    [EnableRateLimiting("auth_login")]
+    [Zayra.Api.Infrastructure.Http.NoStore]
+    public async Task<IActionResult> RegenerateBackupCodes([FromBody] MfaRegenerateBackupCodesRequest request, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        var tenantId = GetTenantId();
+        if (userId is null || tenantId is null) return Unauthorized();
+        var (outcome, codes) = await _mfa.RegenerateBackupCodesAsync(userId.Value, tenantId.Value, request.TotpCode ?? string.Empty, GetContext(), ct);
+        return outcome switch
+        {
+            MfaBackupCodesOutcome.Generated => Ok(new MfaBackupCodesResponse(codes ?? [])),
+            MfaBackupCodesOutcome.NotEnabled => Conflict(new { code = MfaErrorCodes.NotEnabled, message = "Two-step sign-in is off." }),
+            MfaBackupCodesOutcome.CodeInvalid => BadRequest(new { code = MfaErrorCodes.CodeInvalid, message = "That code is not right. Check your authenticator app and try again." }),
+            _ => Unauthorized(),
+        };
     }
 
     // ── Mandatory-MFA status and self-service enrolment ──────────────────────
@@ -150,7 +196,8 @@ public class MfaController : ControllerBase
             PromptToEnroll: !enrolled && (state.ShouldPrompt || policy?.MfaRequired == true),
             CanDisable: enrolled && !required,
             RememberDeviceDays: trustDays,
-            TrustedDeviceCount: trustedCount));
+            TrustedDeviceCount: trustedCount,
+            BackupCodesRemaining: enrolled ? MfaBackupCodes.Remaining(user.MfaRecoveryCodeHashes) : 0));
     }
 
     /// <summary>
@@ -191,19 +238,37 @@ public class MfaController : ControllerBase
     [Zayra.Api.Infrastructure.Http.NoStore]
     public async Task<IActionResult> VerifyChallenge([FromBody] MfaChallengeVerifyRequest request, CancellationToken ct)
     {
+        // Exactly one of the two codes. Refused before the challenge is touched, so it costs no attempt.
+        var hasTotp = !string.IsNullOrWhiteSpace(request.TotpCode);
+        var hasBackup = !string.IsNullOrWhiteSpace(request.BackupCode);
+        if (hasTotp == hasBackup)
+            return BadRequest(new { code = MfaErrorCodes.CodeRequired, message = "Enter the code from your authenticator app, or one backup code." });
         try
         {
-            var response = await _authService.CompleteMfaLoginAsync(
-                request.ChallengeToken,
-                request.TotpCode,
-                GetContext() with { KnownDeviceToken = LoginAbuseGuard.KnownDeviceCookie(Request, "tenant") },
-                request.RememberDevice == true,
-                ct);
+            var context = GetContext() with { KnownDeviceToken = LoginAbuseGuard.KnownDeviceCookie(Request, "tenant") };
+            var response = hasBackup
+                ? await _authService.CompleteMfaLoginWithBackupCodeAsync(request.ChallengeToken, request.BackupCode!, context, ct)
+                : await _authService.CompleteMfaLoginAsync(
+                    request.ChallengeToken,
+                    request.TotpCode!,
+                    context,
+                    request.RememberDevice == true,
+                    ct);
             // The sign-in is complete: remember this browser for the account (LoginAbuseGuard).
             LoginAbuseGuard.AppendKnownDeviceCookie(Response, "tenant", response.KnownDeviceToken);
             // "Trust this browser": the trusted-browser cookie, only when a row was really created.
             MfaTrustedDevices.AppendCookie(Response, response.MfaTrustToken, response.MfaTrustDays);
             return Ok(response);
+        }
+        catch (MfaCodeInvalidException)
+        {
+            return BadRequest(new
+            {
+                code = MfaErrorCodes.CodeInvalid,
+                message = hasBackup
+                    ? "That backup code is not right, or it was already used."
+                    : "That code is not right. Check your authenticator app and try again.",
+            });
         }
         catch (UnauthorizedAccessException ex)
         {

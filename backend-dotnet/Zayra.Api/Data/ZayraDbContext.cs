@@ -205,7 +205,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                         .All(property => property.Metadata.Name is
                             nameof(User.FailedLoginCount) or
                             nameof(User.MfaFailedCount) or
-                            nameof(User.LastLoginAtUtc));
+                            nameof(User.LastLoginAtUtc) or
+                            // Regenerating backup codes changes no identity, role or factor (as for platform
+                            // recovery codes): rotating the stamp would sign the user out of the session that
+                            // is about to show the new codes. Replay bookkeeping of the code that proved it, likewise.
+                            nameof(User.MfaRecoveryCodeHashes) or
+                            nameof(User.MfaLastTotpStep));
                 if (entry.Entity is User && !tenantLoginTelemetryOnly)
                     StampUserSecurityStampMonotonically(entry, now);
                 else if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
@@ -919,6 +924,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             foreach (var e in ChangeTracker.Entries())
             {
                 if (e.Entity is not User user || e.State != EntityState.Modified) continue;
+                ClearBackupCodesWithTheFactor(Entry(user));
                 var reason = TrustRevokeReason(Entry(user));
                 if (reason is not null) (changed ??= new()).Add((user.Id, user.TenantId, reason));
             }
@@ -936,6 +942,21 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 // The actor is named only when it is a user of this tenant; a platform operator's id is not a user id.
                 new RequestContext(null, null, requestTenant is null ? null : _actorId, tenantId), ct, synchronous);
         }
+    }
+
+    /// <summary>
+    /// BACKUP CODES FOLLOW THE FACTOR (users.mfa_recovery_code_hashes): a save that turns two-step off or replaces the
+    /// secret drops the codes of the old factor, unless the same save sets a new set itself (setup does). Every path
+    /// that clears a factor (offboarding, welcome codes, access-mode changes) gets this without knowing about codes.
+    /// </summary>
+    private static void ClearBackupCodesWithTheFactor(EntityEntry<User> e)
+    {
+        static bool Differs<T>(Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<User, T> p) =>
+            p.IsModified && !EqualityComparer<T>.Default.Equals(p.OriginalValue, p.CurrentValue);
+        var codes = e.Property(x => x.MfaRecoveryCodeHashes);
+        if (codes.IsModified || codes.CurrentValue is null) return;
+        if ((Differs(e.Property(x => x.MFAEnabled)) && !e.Entity.MFAEnabled) || Differs(e.Property(x => x.MfaSecretEncrypted)))
+            codes.CurrentValue = null;
     }
 
     private static string? TrustRevokeReason(EntityEntry<User> e)
@@ -3176,7 +3197,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<User>(entity =>
         {
-            entity.ToTable("users");
+            // Backup codes exist only with a factor: a path that clears the secret but forgets the codes fails here
+            // rather than leaving codes that a later factor would silently inherit.
+            entity.ToTable("users", t =>
+                t.HasCheckConstraint("ck_users__mfa_recovery_code_hashes_need_factor",
+                    "mfa_recovery_code_hashes IS NULL OR mfa_secret_encrypted IS NOT NULL"));
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Email).HasMaxLength(256).IsRequired();
             entity.Property(x => x.NormalizedEmail).HasMaxLength(256).IsRequired();
@@ -3191,6 +3216,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Status).HasMaxLength(40).HasDefaultValue("Active");
             entity.Property(x => x.AccessMode).HasMaxLength(40).HasDefaultValue("FullPortal");
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
+            entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(1024);
             entity.HasIndex(x => new { x.TenantId, x.NormalizedEmail }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
@@ -3220,7 +3246,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("mfa_trusted_devices", t =>
             {
                 t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason",
-                    "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened')");
+                    "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened', 'mfa_admin_reset')");
                 t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_pair", "(revoked_at_utc IS NULL) = (revoked_reason IS NULL)");
                 t.HasCheckConstraint("ck_mfa_trusted_devices__lifetime", "expires_at_utc > created_at_utc");
             });
