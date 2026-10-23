@@ -3,6 +3,7 @@ import path from 'node:path';
 import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { translate } from '../src/i18n/translations';
+import { openSetupSection, setupSection } from './setupSections';
 import type {
   CompanySetupContext, CompanySetupDraft, CompanySetupDraftBody, CompanySetupPlan, CompanySetupResult, PlanItem,
 } from '../src/api/companySetup';
@@ -856,7 +857,10 @@ for (const locale of ['en', 'ar'] as const) {
     const t = T(locale);
     const { server, pageErrors } = await boot(page, { locale });
     await openChooser(page);
-    await expect(page.getByRole('button', { name: t('Guided setup'), exact: true })).toHaveAttribute('aria-pressed', 'true');
+    // Guided setup is the current Setup section, named once in its header.
+    await expect(page.locator('#setup-section-heading')).toHaveText(t('Guided setup'));
+    await expect(await setupSection(page, t('Guided setup'), t('Setup sections'))).toHaveAttribute('aria-current', 'page');
+    await page.keyboard.press('Escape');
     // The old 5-step studio is gone from Guided setup.
     await expect(page.getByRole('button', { name: 'Generate draft' })).toHaveCount(0);
     const create = page.getByTestId('chooser-create');
@@ -890,16 +894,18 @@ test('old studio links land on the chooser; a companyId link opens that company,
   await expect(page).not.toHaveURL(/\/complete/);
 });
 
-test('the old studio stays reachable only as Configuration Center → Policy starter', async ({ page }) => {
+test('the old studio stays reachable only as Setup → Policy starter', async ({ page }) => {
   await boot(page);
   await page.goto('/setup?tab=aiSetup&path=configuration');
-  await page.getByRole('button', { name: 'Policy starter (attendance, overtime, benefits…)', exact: true }).click();
+  await openSetupSection(page, 'Policy starter');
   await expect(page).toHaveURL(/path=policyStarter/);
   await expect(page.getByTestId('policy-starter-banner')).toBeVisible();
-  // Under Configuration Center, never Guided setup.
-  await expect(page.getByRole('button', { name: 'Configuration Center', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('button', { name: 'Guided setup', exact: true })).toHaveAttribute('aria-pressed', 'false');
-  await page.getByRole('button', { name: 'Back to Configuration Center', exact: true }).click();
+  // Its own Setup section, never Guided setup.
+  await expect(page.locator('#setup-section-heading')).toHaveText('Policy starter');
+  await expect(await setupSection(page, 'Policy starter')).toHaveAttribute('aria-current', 'page');
+  await expect(await setupSection(page, 'Guided setup')).not.toHaveAttribute('aria-current', 'page');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Back to All setup areas', exact: true }).click();
   await expect(page).toHaveURL(/path=configuration/);
 });
 

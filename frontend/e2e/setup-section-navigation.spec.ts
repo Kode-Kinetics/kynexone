@@ -371,7 +371,7 @@ test('a skip link jumps past the list to the section, and a section change is an
   await expect(sectionHeading(page)).toBeFocused();
   await expect(sectionHeading(page)).toHaveAttribute('tabindex', '-1');
   await expect(page).toHaveURL(/[?&]tab=companies(&|$)/);
-  const status = setupSections(page).getByRole('status');
+  const status = setupSections(page).locator('[aria-live="polite"]');
   await expect(status).toHaveText('');
   await openSetupSection(page, 'Grades');
   await expect(status).toHaveText('Grades shown');
