@@ -39,7 +39,6 @@ public sealed class SessionLimitsMigrationPostgresTests
         var migrator = db.Database.GetInfrastructure().GetRequiredService<IMigrator>();
         var all = db.Database.GetMigrations().ToList();
         Assert.Equal(all.IndexOf(PreviousMigration) + 1, all.IndexOf(ThisMigration));
-        Assert.Equal(ThisMigration, all[^1]);
 
         // Seed through the current model, then step back: the rows exist before the columns do.
         await migrator.MigrateAsync(null);
@@ -75,6 +74,9 @@ public sealed class SessionLimitsMigrationPostgresTests
 
         await migrator.MigrateAsync(ThisMigration);
         await AssertUpgradedAsync(cs, userId, tenantId);
+        // Later migrations exist (they shipped in the same release); the real pipeline below runs the CURRENT model,
+        // so bring the database to the latest schema first rather than assume this migration is the newest.
+        await migrator.MigrateAsync(null);
 
         // A row written by an earlier release (no new columns named) still gets a usable session start and epoch.
         await Exec(cs, $"INSERT INTO refresh_tokens (id, family_id, user_id, token_hash, expires_at_utc, created_at_utc) " +
