@@ -1096,7 +1096,7 @@ test('publishes a reviewed policy to an explicit company then withdraws it', asy
 
 test('Kody company policy mode uses the employee endpoint and shows versioned evidence', async ({ page }, info) => {
   const state = await boot(page, { policyIntelligence: true, policyEmployee: true, employeeOnly: true });
-  await page.getByRole('button', { name: 'Open Kody the HR Assistant', exact: true }).click();
+  await page.getByRole('button', { name: 'Open Kody, HR assistant', exact: true }).click();
   await expect(page.getByRole('button', { name: 'HR operations', exact: true })).toHaveCount(0);
   await page.getByLabel('Ask about your policy', { exact: true }).fill('How is leave prorated?');
   await page.getByRole('button', { name: 'Ask Kody', exact: true }).click();
