@@ -242,7 +242,7 @@ public class LeaveService : ILeaveService
         var monthDays = DateTime.DaysInMonth(currentYear, accrualMonth.Month);
         var employees = await _db.Employees
             .Where(e => e.TenantId == tenantId && (e.Status == EmployeeStatuses.Active || e.Status == EmployeeStatuses.Offboarded))
-            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.JoiningDate, e.Status })
+            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.Nationality, e.JoiningDate, e.Status })
             .ToListAsync(ct);
         // Offboarded means serving notice, not that employment has already ended. The
         // non-cancelled offboarding's last working day bounds this service period; a
@@ -298,7 +298,7 @@ public class LeaveService : ILeaveService
                 var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
                     ? companyCountry
                     : string.Empty;
-                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, referenceLists))
+                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
                     continue;
                 // Several active policies can overlap (for example a tenant default and a
                 // company-specific override). Accrue only the same most-specific policy that
@@ -308,7 +308,7 @@ public class LeaveService : ILeaveService
                     .Where(p => p.LeaveTypeId == policy.LeaveTypeId
                         && IsPolicyEligible(p, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId,
                             emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType,
-                            emp.ContractType, emp.Gender, referenceLists))
+                            emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
                     .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, emp.DepartmentId, emp.GradeId))
                     .ThenByDescending(p => p.UpdatedAtUtc)
                     .FirstOrDefault();
@@ -841,6 +841,17 @@ public class LeaveService : ILeaveService
             if (!effectivePolicy.AppliesOnProbation && employee.ProbationEndDate.HasValue
                 && request.StartDate <= employee.ProbationEndDate.Value)
                 throw new InvalidOperationException("This leave policy does not apply during probation.");
+            // The company's service requirement. Statutory event leave is the law's to grant, not the policy's.
+            if (statutoryKind is null && effectivePolicy.MinimumServiceMonths > 0)
+            {
+                if (employee.JoiningDate == default)
+                    throw new InvalidOperationException(
+                        $"This leave policy applies after {effectivePolicy.MinimumServiceMonths} month(s) of service, and the employee has no joining date. Add the joining date first.");
+                var eligibleFrom = DateOnly.FromDateTime(employee.JoiningDate).AddMonths(effectivePolicy.MinimumServiceMonths);
+                if (request.StartDate < eligibleFrom)
+                    throw new InvalidOperationException(
+                        $"This leave policy applies after {effectivePolicy.MinimumServiceMonths} month(s) of service — from {eligibleFrom:dd MMM yyyy}.");
+            }
         }
 
         var yearSegments = await CalculateRequestYearSegmentsAsync(tenantId, request, effectivePolicy?.Id, ct);
@@ -2656,7 +2667,16 @@ public class LeaveService : ILeaveService
             _ => string.IsNullOrWhiteSpace(approverType) ? "HR Manager" : approverType.Trim()
         };
 
-    private async Task<LeavePolicy?> ResolveLeavePolicyAsync(Guid tenantId, Employee employee, Guid leaveTypeId, Guid? requestedPolicyId, CancellationToken ct)
+    private Task<LeavePolicy?> ResolveLeavePolicyAsync(Guid tenantId, Employee employee, Guid leaveTypeId, Guid? requestedPolicyId, CancellationToken ct)
+        => ResolveLeavePolicyAsync(_db, tenantId, employee, leaveTypeId, requestedPolicyId, ct);
+
+    /// <summary>
+    /// The one policy that governs this employee for this leave type: active, eligible on every scope (country, company,
+    /// branch, department, grade, employment type, contract type, gender, nationality), most specific first. Requests,
+    /// in-service encashment and final settlement all resolve through here, so a locals/expats or employment-type split
+    /// means the same thing on every path.
+    /// </summary>
+    internal static async Task<LeavePolicy?> ResolveLeavePolicyAsync(ZayraDbContext _db, Guid tenantId, Employee employee, Guid leaveTypeId, Guid? requestedPolicyId, CancellationToken ct)
     {
         var referenceLists = await PolicyReferenceLists.LoadAsync(_db, tenantId, ct);
         var policies = await _db.LeavePolicies
@@ -2677,13 +2697,13 @@ public class LeaveService : ILeaveService
             var requested = policies.FirstOrDefault(p => p.Id == requestedPolicyId.Value);
             if (requested is null)
                 throw new InvalidOperationException("Selected leave policy is not active for this leave type.");
-            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, referenceLists))
+            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, employee.Nationality, referenceLists))
                 throw new InvalidOperationException("Selected leave policy is not eligible for the employee's country, legal entity, branch, department, grade, employment type, or contract type.");
             return requested;
         }
 
         return policies
-            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, referenceLists))
+            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, employee.Nationality, referenceLists))
             .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, employee.DepartmentId, employee.GradeId))
             .ThenByDescending(p => p.UpdatedAtUtc)
             .FirstOrDefault();
@@ -2702,16 +2722,19 @@ public class LeaveService : ILeaveService
         string? employmentType,
         string? contractType,
         string? gender,
+        string? nationality,
         PolicyReferenceLists lists)
     {
         if (!CountryMatches(policy.CountryCode, countryCode)) return false;
+        if (!LeavePolicyScope.AdmitsNationality(policy.NationalityScope, nationality, countryCode)) return false;
         if (policy.CompanyId.HasValue && policy.CompanyId != companyId) return false;
         if (policy.BranchId.HasValue && policy.BranchId != branchId) return false;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName) && !string.Equals(policy.DepartmentName, departmentName, StringComparison.OrdinalIgnoreCase)) return false;
         if (!string.IsNullOrWhiteSpace(policy.Grade) && !string.Equals(policy.Grade, grade, StringComparison.OrdinalIgnoreCase)) return false;
         // Reference-list values: a policy or employee may hold the code (FULL_TIME) or the older English label
-        // (Full-Time); ReferenceList.Same treats them as one value.
-        if (!string.IsNullOrWhiteSpace(policy.EmploymentType) && !lists.EmploymentType.Same(policy.EmploymentType, employmentType)) return false;
+        // (Full-Time); ReferenceList.Same treats them as one value. Employment Type is a list — the policy
+        // admits the employee when ANY listed type matches (LeavePolicyScope).
+        if (!LeavePolicyScope.AdmitsEmploymentType(policy.EmploymentType, employmentType, lists.EmploymentType)) return false;
         if (!string.IsNullOrWhiteSpace(policy.ContractType) && !lists.ContractType.Same(policy.ContractType, contractType)) return false;
         if (!string.IsNullOrWhiteSpace(policy.Gender) && !lists.Gender.Same(policy.Gender, gender)) return false;
 
@@ -2723,7 +2746,7 @@ public class LeaveService : ILeaveService
             (!r.BranchId.HasValue || r.BranchId == branchId) &&
             (!r.DepartmentId.HasValue || r.DepartmentId == departmentId) &&
             (!r.GradeId.HasValue || r.GradeId == gradeId) &&
-            (string.IsNullOrWhiteSpace(r.EmploymentType) || lists.EmploymentType.Same(r.EmploymentType, employmentType)) &&
+            LeavePolicyScope.AdmitsEmploymentType(r.EmploymentType, employmentType, lists.EmploymentType) &&
             (string.IsNullOrWhiteSpace(r.ContractType) || lists.ContractType.Same(r.ContractType, contractType)));
     }
 
@@ -2755,8 +2778,8 @@ public class LeaveService : ILeaveService
     internal static bool CountryMatches(string? policyCountry, string? employeeCountry)
     {
         if (string.IsNullOrWhiteSpace(policyCountry)) return true;
-        var left = CountryCodeStandard.NormalizeToIso2(policyCountry);
-        var right = CountryCodeStandard.NormalizeToIso2(employeeCountry);
+        var left = LeavePolicyScope.CountryIso2(policyCountry);
+        var right = LeavePolicyScope.CountryIso2(employeeCountry);
         if (left is not null && right is not null)
             return string.Equals(left, right, StringComparison.Ordinal);
         return string.Equals(policyCountry.Trim(), (employeeCountry ?? string.Empty).Trim(),
@@ -2777,8 +2800,11 @@ public class LeaveService : ILeaveService
         if (policy.BranchId.HasValue) score += 6;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName)) score += 4;
         if (!string.IsNullOrWhiteSpace(policy.Grade)) score += 3;
-        if (!string.IsNullOrWhiteSpace(policy.EmploymentType)) score += 2;
+        // A single employment type is narrower than a list of them: Full-Time alone outranks Full-Time + Part-Time.
+        var employmentTypes = LeavePolicyScope.EmploymentTypes(policy.EmploymentType).Length;
+        if (employmentTypes > 0) score += employmentTypes == 1 ? 2 : 1;
         if (!string.IsNullOrWhiteSpace(policy.ContractType)) score += 2;
+        if (policy.NationalityScope is LeaveNationalityScopes.National or LeaveNationalityScopes.Expatriate) score += 2;
         var rowScore = rows.Where(r => r.LeavePolicyId == policy.Id)
             .Select(r =>
                 (r.CompanyId.HasValue ? 8 : 0) +

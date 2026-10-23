@@ -497,7 +497,9 @@ public static class BenefitLimitPeriods
     public const string Monthly = "Monthly";
     public const string Annual = "Annual";
     public const string Lifetime = "Lifetime";
-    public static readonly string[] All = [PerEnrollment, Monthly, Annual, Lifetime];
+    /// <summary>Runs from the employee's contract start date and follows renewals; resolved from EmployeeContract, never the calendar.</summary>
+    public const string ContractYear = "ContractYear";
+    public static readonly string[] All = [PerEnrollment, Monthly, Annual, Lifetime, ContractYear];
 }
 
 public class BenefitEnrollment : ITenantOwned, ICompanyScopedOperational

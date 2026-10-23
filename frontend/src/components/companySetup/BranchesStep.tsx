@@ -7,6 +7,7 @@ import { MANAGE_TAB, TIME_ZONES, stepWarnings, withOneHeadOffice } from '../../l
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
 import { UseDefaultsButton } from './UseDefaultsButton';
+import { LocationPinPanel } from './LocationPinPanel';
 
 const PACK_TIME_ZONE: Record<string, string> = { SA: 'Asia/Riyadh', AE: 'Asia/Dubai', QA: 'Asia/Qatar', KW: 'Asia/Kuwait', BH: 'Asia/Bahrain', OM: 'Asia/Muscat', EG: 'Africa/Cairo', IN: 'Asia/Kolkata', PK: 'Asia/Karachi', GB: 'Europe/London', US: 'America/New_York' };
 
@@ -35,10 +36,14 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
     { key: 'code', label: msg('Code'), required: true, width: 'w-full sm:w-28' },
     { key: 'nameEn', label: msg('Name (English)'), required: true, width: 'w-full sm:w-48' },
     { key: 'nameAr', label: msg('Name (Arabic)'), arabic: true, width: 'w-full sm:w-48' },
-    { key: 'latitude', label: msg('Latitude'), kind: 'number', inputMode: 'decimal', width: 'w-full sm:w-28' },
-    { key: 'longitude', label: msg('Longitude'), kind: 'number', inputMode: 'decimal', width: 'w-full sm:w-28' },
-    { key: 'radiusMeters', label: msg('Radius (m)'), kind: 'number', inputMode: 'numeric', width: 'w-full sm:w-24' },
   ];
+  // Latitude, longitude and radius live in the location's "Pin this location" panel.
+  // Applied to the latest draft, never to the locations this render saw: a pin can land after an await (the device's
+  // location, a short-link lookup), and a stale copy would undo whatever was typed meanwhile.
+  const editLocation = (branchIndex: number, locationIndex: number, patch: Partial<CompanySetupLocation>) =>
+    update(b => ({ ...b, branches: b.branches.map((row, i) => (i === branchIndex
+      ? { ...row, locations: row.locations.map((l, j) => (j === locationIndex ? { ...l, ...patch } : l)) }
+      : row)) }));
   const branchError = errorFor('branches');
   const warnings = stepWarnings(3, { body, context });
   return (
@@ -66,7 +71,7 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
         rowExtra={(row, index) => (
           <details className="mt-3 rounded-lg bg-slate-50 p-3 dark:bg-white/[0.03]" open={row.locations.length > 0}>
             <summary className="cursor-pointer text-sm font-semibold text-slate-800 dark:text-slate-200">{t('Locations for this branch ({count})', { count: row.locations.length })}</summary>
-            <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{t('Optional. A location is a site people punch in at; latitude, longitude and radius set its geofence.')}</p>
+            <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{t('Optional. A location is a site people punch in at. Pin it on the map to set its geofence.')}</p>
             <div className="mt-2">
               <RowsEditor<CompanySetupLocation>
                 path={`branches.${index}.locations`}
@@ -79,6 +84,11 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
                 addLabel={t('Add location')}
                 emptyText={t('No locations for this branch.')}
                 rowLabel={i => t('Location {number}', { number: i + 1 })}
+                rowExtra={(location, j) => (
+                  <LocationPinPanel path={`branches.${index}.locations.${j}`} location={location} countryCode={body.company.countryCode}
+                    name={location.nameEn?.trim() || t('Location {number}', { number: j + 1 })}
+                    onChange={patch => editLocation(index, j, patch)} />
+                )}
               />
             </div>
           </details>

@@ -7,8 +7,9 @@ import {
 import {
   benefitsApi, benefitsErrorMessage,
   type BenefitEligibilityCheck, type BenefitEligibilityRule,
-  type BenefitEnrollment, type BenefitPlan,
+  type BenefitEnrollment, type BenefitLimitPeriod, type BenefitPlan,
 } from '@/src/api/benefits';
+import { educationRulesProblem } from '@/src/lib/benefitEducation';
 import { employeesApi, type EmployeeListItem } from '@/src/api/employees';
 import { gradesApi, type GradeDto } from '@/src/api/organization';
 import { useAuth } from '@/src/contexts/AuthContext';
@@ -399,12 +400,13 @@ function AddRuleForm({ planId, planFrom, companies, grades, onCancel, onAdded }:
   onCancel: () => void; onAdded: () => void;
 }) {
   const toast = useAppToast();
+  const { t } = useLocale();
   const [companyId, setCompanyId] = useState('');
   const [gradeId, setGradeId] = useState('');
   const [gradeMatchMode, setGradeMatchMode] = useState<'Exact' | 'LevelAndAbove'>('Exact');
   const [tierName, setTierName] = useState('');
   const [maxBenefitAmount, setMaxBenefitAmount] = useState('');
-  const [limitPeriod, setLimitPeriod] = useState<'PerEnrollment' | 'Monthly' | 'Annual' | 'Lifetime'>('PerEnrollment');
+  const [limitPeriod, setLimitPeriod] = useState<BenefitLimitPeriod>('PerEnrollment');
   const [minimumServiceMonths, setMinimumServiceMonths] = useState('0');
   const [requireProbationCompleted, setRequireProbationCompleted] = useState(false);
   const [customCriteriaNote, setCustomCriteriaNote] = useState('');
@@ -473,7 +475,9 @@ function AddRuleForm({ planId, planFrom, companies, grades, onCancel, onAdded }:
             <option value="Monthly">Monthly</option>
             <option value="Annual">Annual</option>
             <option value="Lifetime">Lifetime</option>
+            <option value="ContractYear">{t('Contract year')}</option>
           </select>
+          {limitPeriod === 'ContractYear' && <span className="mt-1 block font-normal text-slate-500">{t('Starts on the employee’s contract start date and follows renewals, not January to December.')}</span>}
         </label>
         <label className={LABEL}>Minimum service (months)
           <input type="number" min="0" max="600" step="1" className={INPUT} value={minimumServiceMonths} onChange={(e) => setMinimumServiceMonths(e.target.value)} />
@@ -504,6 +508,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
   onClose: () => void; onSaved: (p: BenefitPlan) => void;
 }) {
   const toast = useAppToast();
+  const { t } = useLocale();
   const editing = initial !== null;
   const [paymentPolicy, setPaymentPolicy] = useState(initial?.paymentPolicy ?? DEFAULT_PAYMENT_POLICY);
   const initialUsesCustomType = !!initial && !PLAN_TYPES.includes(initial.planType);
@@ -528,6 +533,8 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
     e.preventDefault();
     if (form.effectiveTo && form.effectiveTo < form.effectiveFrom) { setError('Effective to cannot be before effective from.'); return; }
     if (form.planType === 'Custom' && !customPlanType.trim()) { setError('Enter a custom benefit type.'); return; }
+    const rulesProblem = educationRulesProblem(paymentPolicy);
+    if (rulesProblem) { setError(t(rulesProblem.key, rulesProblem.params)); return; }
     setSaving(true); setError(null);
     try {
       const body = {
@@ -591,7 +598,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
             <input type="date" value={form.effectiveTo} onChange={(e) => set('effectiveTo', e.target.value)} className={INPUT} />
           </label>
         </div>
-        <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />
+        <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} planName={form.name} planCode={form.code} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />
         {editing && <p className="text-[11px] text-slate-500 dark:text-slate-400">Code and company scope identify the plan to existing enrolments and cannot be changed.</p>}
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
           <input type="checkbox" checked={form.isActive} onChange={(e) => set('isActive', e.target.checked)} /> Active (open for enrolment)

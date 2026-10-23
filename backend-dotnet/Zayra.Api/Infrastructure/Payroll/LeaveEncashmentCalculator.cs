@@ -100,6 +100,14 @@ public static class LeaveEncashmentCalculator
             .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.CompanyId != null)
                                             .ThenByDescending(p => p.Status == "Active")
                                             .First());
+        // The leaver's own policy wins where one resolves — the same resolution a leave request uses, so a locals/expats
+        // or employment-type split settles each group under its own rules. The company-first pick above stays the
+        // fallback (e.g. a policy archived since), which is exactly what every tenant without scoped policies gets today.
+        var leaver = await db.Employees.AsNoTracking().FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == employeeId, ct);
+        if (leaver is not null)
+            foreach (var typeId in typeIds)
+                if (await Leave.LeaveService.ResolveLeavePolicyAsync(db, tenantId, leaver, typeId, null, ct) is { } resolved)
+                    policyByType[typeId] = resolved;
 
         var lines = new List<EncashableLeave>();
         // The per-type cap applies to the TYPE, not to each yearly row, so carry-forward + current-year

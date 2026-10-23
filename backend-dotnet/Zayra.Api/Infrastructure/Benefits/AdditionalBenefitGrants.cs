@@ -374,6 +374,8 @@ public static class AdditionalBenefitGrants
         if (plan.CompanyId.HasValue && plan.CompanyId != employee.CompanyId) throw new InvalidOperationException("This benefit plan belongs to a different company.");
         if (terms.EffectiveFrom < plan.EffectiveFrom || (plan.EffectiveTo.HasValue && (!terms.EffectiveTo.HasValue || terms.EffectiveTo > plan.EffectiveTo)))
             throw new InvalidOperationException("The requested dates must fit within the active benefit plan period.");
+        if (terms.LimitPeriod == BenefitLimitPeriods.ContractYear && BenefitPaymentPolicies.ReadPlan(plan).Delivery is "SalaryAllowance" or "PayrollDeduction")
+            throw new InvalidOperationException(BenefitPaymentPolicies.ContractYearSalaryMessage);
         return plan;
     }
 

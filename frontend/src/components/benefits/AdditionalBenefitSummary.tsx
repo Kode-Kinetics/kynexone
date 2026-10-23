@@ -6,7 +6,7 @@ import { useFormat } from '@/src/hooks/useFormat';
 import { useLocale } from '@/src/contexts/LocaleContext';
 
 export const TREATMENT_LABELS = { Coverage: 'Insurance or benefit coverage', CashAllowance: 'Cash allowance', Reimbursement: 'Reimbursement', LoanEligibility: 'Loan eligibility', OtherNonCash: 'Other non-cash benefit' };
-export const PERIOD_LABELS = { PerEnrollment: 'Per enrollment', Monthly: 'Monthly', Annual: 'Annual', Lifetime: 'Lifetime' };
+export const PERIOD_LABELS = { PerEnrollment: 'Per enrollment', Monthly: 'Monthly', Annual: 'Annual', Lifetime: 'Lifetime', ContractYear: 'Contract year' };
 export const COST_FREQUENCY_LABELS = { OneTime: 'One-time', Monthly: 'Monthly', Annual: 'Annual' };
 
 export function AdditionalBenefitSummary({ terms, currency, baseline, employeeName, planName, paymentPolicy }: {

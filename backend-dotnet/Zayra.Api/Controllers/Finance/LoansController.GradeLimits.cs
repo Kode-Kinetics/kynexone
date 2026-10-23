@@ -346,6 +346,8 @@ public partial class LoansController
                 ? await _db.Set<LoanPolicy>().AsNoTracking().FirstAsync(x => x.TenantId == tid && x.Id == shadowing.CopiedFromPolicyId, ct)
                 : current ?? new LoanPolicy { PolicyName = type.NameEn, MaxAmount = type.MaxAmount,
                 MaxInstallments = Math.Clamp(type.MaxInstallments, 1, 600), MinServiceMonths = type.MinServiceMonths,
+                // Within 1..max, as the loan_policies CHECK requires (a legacy type's minimum may exceed its clamped maximum).
+                MinInstallments = Math.Clamp(type.MinInstallments, 1, Math.Clamp(type.MaxInstallments, 1, 600)),
                 // Same as the eligibility baseline (unlimited), so "not offered" is the only reason shown while off.
                 MaxConcurrentLoans = int.MaxValue };
             var next = JsonSerializer.Deserialize<LoanPolicy>(JsonSerializer.Serialize(basis))!;

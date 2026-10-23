@@ -12,6 +12,9 @@ public class LoanType : ITenantOwned
     public string NameAr { get; set; } = string.Empty;
     public decimal MaxAmount { get; set; }
     public int MaxInstallments { get; set; } = 12;
+    /// <summary>The shortest repayment allowed, in instalments (e.g. a housing advance recovered over at least 12).
+    /// Default 1 keeps every existing type exactly as it was. Database CHECK: <see cref="LoanTypeSql.MinInstallmentsCheck"/>.</summary>
+    public int MinInstallments { get; set; } = 1;
     public string RepaymentFrequency { get; set; } = "Monthly";
     public bool IsInterestFree { get; set; } = true;
     public decimal InterestRate { get; set; }               // 0 if interest-free
@@ -41,6 +44,10 @@ public static class LoanTypeSql
     public const string AddInterestFreeCheck =
         "ALTER TABLE loan_types ADD CONSTRAINT ck_loan_types__interest_free CHECK (is_interest_free AND interest_rate = 0) NOT VALID;";
     public const string DropInterestFreeCheck = "ALTER TABLE loan_types DROP CONSTRAINT IF EXISTS ck_loan_types__interest_free;";
+
+    /// <summary>Shortest repayment (loan_types and loan_policies): at least 1, and within the longest once a minimum is
+    /// actually set. 1 means "no minimum", so it holds on every legacy row whatever its max_installments.</summary>
+    public const string MinInstallmentsCheck = "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)";
 }
 
 public class LoanPolicy : ITenantOwned, ICompanyScoped
@@ -55,6 +62,10 @@ public class LoanPolicy : ITenantOwned, ICompanyScoped
     public decimal MaxInstallmentPercentOfSalary { get; set; }
     public int MinServiceMonths { get; set; }
     public int MaxInstallments { get; set; } = 600;
+    /// <summary>The shortest repayment this policy allows, in instalments. Default 1 keeps every existing policy (and
+    /// every frozen snapshot written before this field existed) exactly as it was. The effective minimum is the
+    /// stricter of this and the loan type's, frozen into the application's snapshot. Database CHECK: <see cref="LoanTypeSql.MinInstallmentsCheck"/>.</summary>
+    public int MinInstallments { get; set; } = 1;
     public bool RequireProbationCompleted { get; set; }
     public bool BlockDuringNotice { get; set; } = true;
     public bool BlockOnOverdue { get; set; } = true;

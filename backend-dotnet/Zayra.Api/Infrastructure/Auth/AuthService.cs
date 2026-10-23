@@ -390,8 +390,10 @@ public class AuthService : IAuthService
         var replacementHash = _tokenService.HashToken(replacementRaw);
         var replacementId = Guid.NewGuid();
         var reuseAuditId = Guid.NewGuid();
+        var expiredAuditId = Guid.NewGuid();
         var reuseDetected = false;
         var deniedAndRevoked = false;
+        var sessionExpired = false;
         var rotationCompleted = false;
         AuthResponse? preparedResponse = null;
 
@@ -401,6 +403,7 @@ public class AuthService : IAuthService
             _db.ChangeTracker.Clear();
             reuseDetected = false;
             deniedAndRevoked = false;
+            sessionExpired = false;
             rotationCompleted = false;
             preparedResponse = null;
 
@@ -477,6 +480,17 @@ public class AuthService : IAuthService
             if (token.RevokedAtUtc is not null || token.ExpiresAtUtc <= decidedAtUtc)
                 throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
+            // The user's sessions were ended after this lineage was issued (users.session_epoch moved on: a password,
+            // factor or active-state change, or an explicit end of every session). Read from the row locked above, so
+            // a concurrent raise is either visible here or waits for this commit. Refuse and end the whole lineage.
+            if (token.SessionEpoch != userAnchor.SessionEpoch)
+            {
+                await RevokeLiveFamilyAsync(token, decidedAtUtc, context.IpAddress, ct);
+                await _db.SaveChangesAsync(ct);
+                deniedAndRevoked = true;
+                return true;
+            }
+
             var policy = await LoadSecuritySettingAsync(presentedTenantId, ct);
             var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == presentedTenantId, ct);
@@ -499,6 +513,24 @@ public class AuthService : IAuthService
                 token.RevokedByIp = context.IpAddress;
                 await _db.SaveChangesAsync(ct);
                 deniedAndRevoked = true;
+                return true;
+            }
+
+            // Hard limit: however active, a session ends security_settings.session_max_hours after its sign-in. The
+            // limit is read now, not stored on the token, so lowering it applies to sessions already running.
+            if (TenantSessionSecurity.HasReachedMaxLength(token, policy, decidedAtUtc))
+            {
+                await RevokeLiveFamilyAsync(token, decidedAtUtc, context.IpAddress, ct);
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    expiredAuditId,
+                    decidedAtUtc,
+                    TenantSessionSecurity.SessionExpiredAuditAction,
+                    "RefreshToken",
+                    token.Id.ToString(),
+                    context with { UserId = token.UserId, TenantId = token.User.TenantId },
+                    $"{{\"familyId\":\"{token.FamilyId:D}\",\"sessionMaxHours\":{TenantSessionSecurity.EffectiveSessionMaxHours(policy)},\"sessionStartedAtUtc\":\"{token.SessionStartedAtUtc.ToUniversalTime():O}\"}}"));
+                await _db.SaveChangesAsync(ct);
+                sessionExpired = true;
                 return true;
             }
 
@@ -530,6 +562,9 @@ public class AuthService : IAuthService
                 TokenHash = replacementHash,
                 ExpiresAtUtc = token.ExpiresAtUtc,
                 CreatedAtUtc = decidedAtUtc,
+                // A rotation continues the same session: its start and its epoch never move.
+                SessionStartedAtUtc = token.SessionStartedAtUtc,
+                SessionEpoch = token.SessionEpoch,
                 CreatedByIp = context.IpAddress
             });
 
@@ -575,6 +610,8 @@ public class AuthService : IAuthService
             await ApplyOnceAsync(cancellationToken);
         }
 
+        if (sessionExpired)
+            throw new SessionExpiredException();
         if (reuseDetected || deniedAndRevoked)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
         if (rotationCompleted && preparedResponse is not null)
@@ -582,11 +619,17 @@ public class AuthService : IAuthService
 
         // A lost COMMIT acknowledgement is recovered only from this call's exact durable edge.
         _db.ChangeTracker.Clear();
+        // A committed refusal is answered as it was decided: replay (generic) or the hard limit (ERR_SESSION_EXPIRED).
         // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
-        if (await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
-                x.Id == reuseAuditId
-                && x.Action == "auth.refresh_reuse_detected"
-                && x.EntityId == presentedTokenId.ToString(), cancellationToken))
+        var committedRefusal = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => ((x.Id == reuseAuditId && x.Action == "auth.refresh_reuse_detected")
+                    || (x.Id == expiredAuditId && x.Action == TenantSessionSecurity.SessionExpiredAuditAction))
+                && x.EntityId == presentedTokenId.ToString())
+            .Select(x => x.Action)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (committedRefusal == TenantSessionSecurity.SessionExpiredAuditAction)
+            throw new SessionExpiredException();
+        if (committedRefusal is not null)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
         var committedReplacement = await _db.RefreshTokens.AsNoTracking()
@@ -615,7 +658,46 @@ public class AuthService : IAuthService
                 committedPolicy,
                 DateTime.UtcNow).Allowed)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        // The same two session checks as under the lock: a raise of the epoch or the hard limit reached since the
+        // commit ends the lineage instead of handing its replacement back.
+        if (committedReplacement.SessionEpoch != committedUser.SessionEpoch)
+        {
+            await RevokeLiveFamilyAfterCommitAsync(presentedFamilyId, presentedUserId, context.IpAddress, cancellationToken);
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        }
+        if (TenantSessionSecurity.HasReachedMaxLength(committedReplacement, committedPolicy, DateTime.UtcNow))
+        {
+            await RevokeLiveFamilyAfterCommitAsync(presentedFamilyId, presentedUserId, context.IpAddress, cancellationToken);
+            throw new SessionExpiredException();
+        }
         return BuildAuthResponse(committedUser, replacementRaw);
+    }
+
+    /// <summary>Stages the revocation of every live token of <paramref name="token"/>'s lineage (the caller saves).</summary>
+    private async Task RevokeLiveFamilyAsync(RefreshToken token, DateTime atUtc, string? ipAddress, CancellationToken ct)
+    {
+        var family = await _db.RefreshTokens
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.FamilyId == token.FamilyId && x.UserId == token.UserId && x.RevokedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+        if (token.RevokedAtUtc is null && !family.Contains(token)) family.Add(token);
+        foreach (var live in family)
+        {
+            live.RevokedAtUtc = atUtc;
+            live.RevokedByIp = ipAddress;
+        }
+    }
+
+    /// <summary>The lost-acknowledgement recovery's revocation: one idempotent statement, outside the finished transaction.</summary>
+    private async Task RevokeLiveFamilyAfterCommitAsync(Guid familyId, Guid userId, string? ipAddress, CancellationToken ct)
+    {
+        var atUtc = DateTime.UtcNow;
+        await _db.RefreshTokens
+            .Where(x => x.FamilyId == familyId && x.UserId == userId && x.RevokedAtUtc == null)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.RevokedAtUtc, atUtc)
+                .SetProperty(x => x.RevokedByIp, ipAddress), ct);
     }
 
     /// <summary>The exact refresh-token + user graph token issuance needs. Shared by the initial
@@ -1205,6 +1287,10 @@ public class AuthService : IAuthService
                 TokenHash = refreshHash,
                 ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
                 CreatedAtUtc = issuedAtUtc,
+                // A new session: setup just raised the epoch (a new factor), and this one is issued AT that new epoch
+                // from the row locked above, so the caller stays signed in while every earlier session is refused.
+                SessionStartedAtUtc = issuedAtUtc,
+                SessionEpoch = anchor.SessionEpoch,
                 CreatedByIp = context.IpAddress
             });
             _db.AuditLogs.Add(AuthAuditEntry.Create(
@@ -1507,6 +1593,9 @@ public class AuthService : IAuthService
                 TokenHash = refreshHash,
                 ExpiresAtUtc = completedAtUtc.AddDays(refreshDays),
                 CreatedAtUtc = completedAtUtc,
+                SessionStartedAtUtc = completedAtUtc,
+                // The epoch of the row locked above, the same snapshot the factor was verified against.
+                SessionEpoch = userAnchor.SessionEpoch,
                 CreatedByIp = context.IpAddress
             });
             _db.LoginActivities.Add(new LoginActivity
@@ -1617,6 +1706,7 @@ public class AuthService : IAuthService
             || committedRefresh.ReplacedByTokenHash is not null
             || committedRefresh.ExpiresAtUtc <= DateTime.UtcNow
             || committedUser?.Tenant is null
+            || committedRefresh.SessionEpoch != committedUser.SessionEpoch
             || committedUser.TenantId != envelope.TenantId.Value
             || !string.Equals(
                 TenantSessionSecurity.StampValue(committedUser),
@@ -1874,6 +1964,9 @@ public class AuthService : IAuthService
                 TokenHash = refreshHash,
                 ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
                 CreatedAtUtc = issuedAtUtc,
+                SessionStartedAtUtc = issuedAtUtc,
+                // The epoch of the row locked above, the same snapshot whose password hash was just compared.
+                SessionEpoch = anchor!.SessionEpoch,
                 CreatedByIp = context.IpAddress
             });
             _db.LoginActivities.Add(new LoginActivity
@@ -1957,6 +2050,7 @@ public class AuthService : IAuthService
             || committedRefresh.ExpiresAtUtc <= DateTime.UtcNow
             || !committedAudit
             || committedUser?.Tenant is null
+            || committedRefresh.SessionEpoch != committedUser.SessionEpoch
             || committedUser.TenantId != issuedTenantId.Value
             || !string.Equals(committedUser.Tenant.Slug, tenantSlug, StringComparison.Ordinal)
             || !string.Equals(
@@ -2089,12 +2183,17 @@ public class AuthService : IAuthService
 
         var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
         var refreshToken = _tokenService.CreateSecureToken();
+        var issuedAtUtc = DateTime.UtcNow;
         _db.RefreshTokens.Add(new RefreshToken
         {
             FamilyId = Guid.NewGuid(),
             UserId = user.Id,
             TokenHash = _tokenService.HashToken(refreshToken),
-            ExpiresAtUtc = DateTime.UtcNow.AddDays(refreshDays),
+            ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
+            CreatedAtUtc = issuedAtUtc,
+            SessionStartedAtUtc = issuedAtUtc,
+            // The caller's snapshot of the user, the one its credential was verified against.
+            SessionEpoch = user.SessionEpoch,
             CreatedByIp = context.IpAddress
         });
         return refreshToken;

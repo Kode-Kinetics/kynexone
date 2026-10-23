@@ -396,6 +396,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("revoked_by_ip");
 
+                    b.Property<long>("SessionEpoch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("session_epoch");
+
+                    b.Property<DateTime>("SessionStartedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("session_started_at_utc")
+                        .HasDefaultValueSql("now()");
+
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -812,6 +824,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(40)")
                         .HasDefaultValue("Local")
                         .HasColumnName("provisioning_source");
+
+                    b.Property<long>("SessionEpoch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("session_epoch");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -19503,10 +19521,24 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("minimum_days_per_request");
 
+                    b.Property<int>("MinimumServiceMonths")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("minimum_service_months");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("name");
+
+                    b.Property<string>("NationalityScope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("Any")
+                        .HasColumnName("nationality_scope");
 
                     b.Property<int>("NoticeRequiredDays")
                         .HasColumnType("integer")
@@ -19550,7 +19582,12 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "LeaveTypeId", "Status");
 
-                    b.ToTable("leave_policies", (string)null);
+                    b.ToTable("leave_policies", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_leave_policies__minimum_service_months", "minimum_service_months BETWEEN 0 AND 600");
+
+                            t.HasCheckConstraint("ck_leave_policies__nationality_scope", "nationality_scope IN ('Any', 'National', 'Expatriate')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LeavePolicyEligibility", b =>
@@ -20515,6 +20552,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("max_total_outstanding");
 
+                    b.Property<int>("MinInstallments")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("min_installments");
+
                     b.Property<int>("MinServiceMonths")
                         .HasColumnType("integer")
                         .HasColumnName("min_service_months");
@@ -20555,6 +20598,8 @@ namespace Zayra.Api.Migrations
                     b.ToTable("loan_policies", null, t =>
                         {
                             t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
+
+                            t.HasCheckConstraint("ck_loan_policies__min_installments", "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)");
 
                             t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
                         });
@@ -20766,6 +20811,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_installments");
 
+                    b.Property<int>("MinInstallments")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("min_installments");
+
                     b.Property<int>("MinServiceMonths")
                         .HasColumnType("integer")
                         .HasColumnName("min_service_months");
@@ -20801,6 +20852,8 @@ namespace Zayra.Api.Migrations
                     b.ToTable("loan_types", null, t =>
                         {
                             t.HasCheckConstraint("ck_loan_types__grade_limited_has_component", "NOT grade_limited OR entitlement_component_code IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_loan_types__min_installments", "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)");
                         });
                 });
 
@@ -29368,6 +29421,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("refresh_token_expiry_days");
 
+                    b.Property<int>("SessionMaxHours")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(12)
+                        .HasColumnName("session_max_hours");
+
                     b.Property<int>("SessionTimeoutMinutes")
                         .HasColumnType("integer")
                         .HasColumnName("session_timeout_minutes");
@@ -29392,6 +29451,8 @@ namespace Zayra.Api.Migrations
                     b.ToTable("security_settings", null, t =>
                         {
                             t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90");
+
+                            t.HasCheckConstraint("ck_security_settings__session_max_hours", "session_max_hours BETWEEN 1 AND 168");
                         });
                 });
 

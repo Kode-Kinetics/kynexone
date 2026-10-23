@@ -5,6 +5,8 @@ import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { SetupSettingSearch } from './SetupSettingSearch';
+import type { SetupSearchEntry } from './setupSearch';
 
 export interface SetupSectionNavItem<Id extends string> {
   id: Id;
@@ -13,6 +15,11 @@ export interface SetupSectionNavItem<Id extends string> {
   icon: ElementType;
   /** The section's own address, so a Cmd/Ctrl/middle click opens it in a new tab. */
   href: string;
+  /**
+   * A quiet status after the label (Guided setup's "4 of 9"). `text` is shown; `description` is what assistive tech
+   * reads with the entry. Kept out of the link's name, so the entry is still found by its label alone.
+   */
+  status?: { text: string; description: string };
 }
 
 export interface SetupSectionNavGroup<Id extends string> {
@@ -28,7 +35,8 @@ export const SETUP_SECTION_LIST_ID = 'setup-section-list';
 export const SETUP_SECTION_HEADING_ID = 'setup-section-heading';
 
 const SHEET_QUERY = '(max-width: 639.98px)';
-const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const WIDE_QUERY = '(min-width: 1280px)';
 
 /** A plain primary click stays in the page (so the unsaved-changes guard can run); any modified click is the browser's. */
 function isPlainPrimaryClick(event: ReactMouseEvent) {
@@ -47,7 +55,7 @@ function isPlainPrimaryClick(event: ReactMouseEvent) {
  * modified click opens the section in a new tab. The list stays mounted while closed: the guard resumes a navigation
  * by clicking the original entry again once the user chooses "Discard and leave", so the entry must stay connected.
  */
-export function SetupSectionNav<Id extends string>({ groups, selectedId, currentLabel, collapsed = false, open, onOpenChange, toggleRef, onSelect }: {
+export function SetupSectionNav<Id extends string>({ groups, selectedId, currentLabel, collapsed = false, open, onOpenChange, toggleRef, onSelect, search, locationKey = '' }: {
   groups: SetupSectionNavGroup<Id>[];
   /** The entry for the section on screen, or null when the section has no entry of its own. */
   selectedId: Id | null;
@@ -60,10 +68,22 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
   /** The "All sections" toggle, where focus returns when the folded list closes. */
   toggleRef: RefObject<HTMLButtonElement | null>;
   onSelect: (id: Id) => void;
+  /** "Find a setting": what this user may open, and how a result is opened. Absent: no search box. */
+  search?: {
+    entries: readonly SetupSearchEntry[];
+    onOpen: (entry: SetupSearchEntry) => void;
+    allAreas?: { href: string; onOpen: () => void };
+  };
+  /** The page address. A query is cleared once a result has been opened and the address follows it. */
+  locationKey?: string;
 }) {
   const t = useT();
   const list = useRef<HTMLDivElement>(null);
   const isPhone = useMediaQuery(SHEET_QUERY);
+  const isWide = useMediaQuery(WIDE_QUERY);
+  const [query, setQuery] = useState('');
+  const searchInput = useRef<HTMLInputElement>(null);
+  const searching = !!search && query.trim().length > 0;
   const [announcement, setAnnouncement] = useState('');
   const previousSelected = useRef(selectedId);
   const previousLabel = useRef(currentLabel);
@@ -84,6 +104,23 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
     setAnnouncement(t('{label} shown', { label: currentLabel }));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on a section change only
   }, [selectedId, currentLabel]);
+
+  // A result was opened and the address has followed it: the query is done with. Until then the results stay on
+  // screen (the unsaved-changes guard may replay the clicked one), and any other address change, such as the company
+  // being written into the URL, leaves the query alone. A keyboard user in the wide column lands back in the box.
+  const openedResult = useRef(false);
+  const openResult = (entry: SetupSearchEntry) => {
+    openedResult.current = true;
+    search?.onOpen(entry);
+  };
+  useEffect(() => {
+    if (!openedResult.current) return;
+    openedResult.current = false;
+    const hadFocus = !!list.current?.querySelector('[data-testid="setup-search-results"]')?.contains(document.activeElement);
+    setQuery('');
+    if (hadFocus && isWide && !collapsed) window.requestAnimationFrame(() => searchInput.current?.focus());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the address or the section changes only
+  }, [locationKey, selectedId]);
 
   // The wide column is capped at the window height less the page title above it (10rem), so even before it sticks its
   // last entry is never under the window's bottom edge.
@@ -132,7 +169,8 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || !(event.target instanceof Node)) return;
+      // A search that cleared its query with this Escape has handled it (React's listener shares this document).
+      if (event.key !== 'Escape' || event.defaultPrevented || !(event.target instanceof Node)) return;
       const target = event.target;
       if (!(nav.current?.contains(target) || list.current?.contains(target) || toggleRef.current?.contains(target))) return;
       event.stopPropagation();
@@ -152,7 +190,8 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
   };
 
   const listClass = sheet
-    ? `${open ? 'flex' : 'hidden'} setup-section-sheet fixed inset-x-0 bottom-0 z-40 max-h-[85dvh] flex-col overflow-y-auto overscroll-contain rounded-t-2xl border-t border-slate-200 bg-white pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-2xl dark:border-white/10 dark:bg-[#0d1225]`
+    // While a query shows its few results the sheet keeps its height instead of dropping to the bottom edge.
+    ? `${open ? 'flex' : 'hidden'} setup-section-sheet fixed inset-x-0 bottom-0 z-40 max-h-[85dvh] ${searching ? 'min-h-[60dvh]' : ''} flex-col overflow-y-auto overscroll-contain rounded-t-2xl border-t border-slate-200 bg-white pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-2xl dark:border-white/10 dark:bg-[#0d1225]`
     : `${open ? 'mt-2 grid' : 'hidden'} setup-section-list surface max-h-[60dvh] gap-x-4 gap-y-1 overflow-y-auto overscroll-contain p-2 sm:grid-cols-2 ${collapsed ? 'lg:grid-cols-3' : 'lg:grid-cols-3 xl:mt-0 xl:block xl:max-h-[calc(100vh-10rem)] xl:rounded-none xl:border-0 xl:border-e xl:border-slate-200 xl:bg-transparent xl:p-0 xl:pe-4 xl:shadow-none xl:dark:border-white/10 xl:dark:bg-transparent'}`;
 
   // The sheet is portalled to <body>: <main> keeps a stacking context from its entry animation, which held a fixed
@@ -182,17 +221,25 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
           </div>
         )}
         <div className={sheet ? 'px-2 pt-1' : 'contents'}>
+          {search && (
+            <div className="col-span-full">
+              <SetupSettingSearch entries={search.entries} query={query} onQueryChange={setQuery} onOpen={openResult} allAreas={search.allAreas ? { ...search.allAreas, onOpen: () => { openedResult.current = true; search.allAreas!.onOpen(); } } : undefined} inputRef={searchInput} />
+            </div>
+          )}
           {groups.map((group, index) => (
-            <div key={group.id} className={`setup-section-group min-w-0 py-1 ${collapsed ? '' : 'xl:py-0.5'} ${index > 0 && !collapsed ? 'xl:mt-1 xl:border-t xl:border-slate-200/70 xl:pt-1 xl:dark:border-white/[0.06]' : ''}`}>
+            // Hidden, not removed, while a query shows its results: the unsaved-changes guard may replay an entry.
+            <div key={group.id} hidden={searching || undefined} className={`setup-section-group min-w-0 py-1 ${collapsed ? '' : 'xl:py-0.5'} ${index > 0 && !collapsed ? 'xl:mt-1 xl:border-t xl:border-slate-200/70 xl:pt-1 xl:dark:border-white/[0.06]' : ''}`}>
               <p id={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`px-3 pb-1 pt-1.5 ${collapsed ? '' : 'xl:pb-0.5 xl:pt-1'} text-[11px] font-semibold uppercase leading-4 tracking-[0.08em] text-slate-500 rtl:normal-case rtl:text-[13px] rtl:tracking-normal dark:text-slate-400`}>{group.label}</p>
               <ul aria-labelledby={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`space-y-0.5 ${collapsed ? '' : 'xl:space-y-0'}`}>
-                {group.items.map(({ id, label, icon: Icon, href }) => {
+                {group.items.map(({ id, label, icon: Icon, href, status }) => {
                   const active = id === selectedId;
+                  const statusId = status ? `${SETUP_SECTION_LIST_ID}-${id}-status` : undefined;
                   return (
                     <li key={id}>
                       <a
                         href={href}
                         aria-current={active ? 'page' : undefined}
+                        aria-describedby={statusId}
                         onClick={event => {
                           if (event.defaultPrevented || !isPlainPrimaryClick(event)) return;
                           event.preventDefault();
@@ -207,7 +254,10 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
                         {active && <span aria-hidden="true" className="absolute inset-y-1.5 start-0 w-[3px] rounded-full bg-sapphire dark:bg-cyanAccent" />}
                         <Icon aria-hidden="true" className={`h-4 w-4 shrink-0 ${active ? '' : 'text-slate-400 dark:text-slate-500'}`} />
                         <span className="min-w-0 flex-1">{label}</span>
+                        {status && <span aria-hidden="true" className="shrink-0 text-xs font-medium tabular-nums text-slate-500 dark:text-slate-400" data-setup-entry-status="">{status.text}</span>}
                       </a>
+                      {/* Outside the link, so its name stays the label; read as the entry's description. */}
+                      {status && <span id={statusId} hidden>{status.description}</span>}
                     </li>
                   );
                 })}

@@ -983,6 +983,12 @@ public class AccessController : ControllerBase
                 code = MfaErrorCodes.TrustDaysRange,
                 message = "Trusted browser days must be between 0 (off) and 90.",
             });
+        if (request.SessionMaxHours is < Models.SecuritySetting.MinSessionMaxHours or > Models.SecuritySetting.MaxSessionMaxHours)
+            return BadRequest(new
+            {
+                code = SessionErrorCodes.MaxHoursRange,
+                message = "Maximum session length must be between 1 and 168 hours.",
+            });
         return Ok(await _accessManagement.UpdateSecuritySettingsAsync(tenantId.Value, request, GetContext(), cancellationToken));
     }
 

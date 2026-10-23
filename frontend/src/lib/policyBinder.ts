@@ -25,7 +25,9 @@ export function policySources(value: SetupConfiguration): PolicyDraftSource[] {
 export function policyItemKey(field: string, value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   const item = value as Record<string, unknown>;
-  if (field === 'leavePolicies') return JSON.stringify([item.leaveTypeCode, item.gradeCode ?? '', item.departmentCode ?? '', item.employmentType ?? ''].map(part => String(part ?? '').trim().toLowerCase()));
+  if (field === 'leavePolicies') return JSON.stringify([item.leaveTypeCode, item.gradeCode ?? '', item.departmentCode ?? '',
+    // Employment type is a list: "Full-Time,Part-Time" and "part-time, full-time" are one scope (backend LeavePolicyScope).
+    String(item.employmentType ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean).sort().join(',')].map(part => String(part ?? '').trim().toLowerCase()));
   return String(item.code ?? item.name ?? JSON.stringify(value)).trim().toLowerCase();
 }
 

@@ -41,7 +41,28 @@ interface BootOptions {
   hqRenamedElsewhere?: string;
   /** Existing mode: Evostel was saved with no MOL number, before today's checks. */
   legacyMol?: boolean;
+  /** Existing mode: the head office's Arabic name came from the old letter-by-letter auto-transliteration. */
+  badArabic?: boolean;
+  /** Existing mode: the location has coordinates but no geofence radius (attendance verification skips it). */
+  locationWithoutRadius?: boolean;
 }
+
+/**
+ * What the offline organisation-label suggester (TransliterationService.ToArabicOrganizationLabel) answers for the
+ * labels these tests type; backend OrganizationLabelArabicTests prove the wording itself. Anything else is "".
+ */
+const ORG_ARABIC: Record<string, string> = {
+  'head office': 'المكتب الرئيسي', 'main gate': 'البوابة الرئيسية', 'administration': 'الإدارة', 'human resources': 'الموارد البشرية',
+  'finance': 'المالية', 'operations': 'العمليات', 'sales': 'المبيعات', 'marketing': 'التسويق', 'accountant': 'محاسب',
+  'software engineer': 'مهندس برمجيات', 'grade 9': 'الدرجة 9', 'human resources cost center': 'مركز تكلفة الموارد البشرية',
+  'sulaymaniyah branch': 'فرع السليمانية', 'jeddah branch': 'فرع جدة', 'olaya': 'العليا',
+};
+const OLD_LETTER_BY_LETTER = 'هيد اوففيكي';
+/** The short link the mocked resolver can read, and where it points. */
+const SHORT_LINK = 'https://maps.app.goo.gl/kynexDemo1';
+const SHORT_LINK_AT = { latitude: 21.5433, longitude: 39.1728 };
+/** A 1×1 transparent PNG for OpenStreetMap tiles, so the map is offline and deterministic (WIZARD_REAL_TILES=1 for real ones). */
+const BLANK_TILE = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 
 const sister = { id: 'sister-1', legalNameEn: 'Sister Trading KSA', countryCode: 'SA' };
 /** An active company to complete (Addendum A). */
@@ -58,6 +79,10 @@ class ContractServer {
   results = new Map<string, CompanySetupResult>();
   resetLinks: string[] = [];
   errors: string[] = [];
+  /** Every batch of labels sent to the Arabic suggester. */
+  suggestionRequests: string[][] = [];
+  /** Every short link sent to the map-link resolver. */
+  mapLinks: string[] = [];
   sequence = 0;
   constructor(public options: BootOptions) {}
 
@@ -99,10 +124,10 @@ class ContractServer {
       company: { legalNameEn: EVOSTEL.legalNameEn, legalNameAr: EVOSTEL.legalNameAr, tradeName: 'Evostel', countryCode: 'SA', currency: 'SAR', registrationNumber: '1010999888',
         molEstablishmentNumber: this.options.legacyMol ? '' : '7-7654321', qiwaEstablishmentId: '7-7654321', emailDomain: 'evostel.com', workEmailPattern: 'first.last', firstPayrollMonth: '2026-11',
         cutoverStatus: this.options.cutoverStatus ?? 'Planned', baseline: { legalNameEn: EVOSTEL.legalNameEn, tradeName: 'Evostel', firstPayrollMonth: '2026-11' } },
-      branches: [{ existingId: 'br-hq', code: 'HQ', nameEn: 'Head Office', nameAr: 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: true,
-        baseline: { nameEn: 'Head Office', nameAr: 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'true' },
-        locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: 150,
-          baseline: { nameEn: 'Main gate', nameAr: null, latitude: '24.7', longitude: '46.7', radiusMeters: '150' } }] }],
+      branches: [{ existingId: 'br-hq', code: 'HQ', nameEn: 'Head Office', nameAr: this.options.badArabic ? OLD_LETTER_BY_LETTER : 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: true,
+        baseline: { nameEn: 'Head Office', nameAr: this.options.badArabic ? OLD_LETTER_BY_LETTER : 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'true' },
+        locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: this.options.locationWithoutRadius ? null : 150,
+          baseline: { nameEn: 'Main gate', nameAr: null, latitude: '24.7', longitude: '46.7', radiusMeters: this.options.locationWithoutRadius ? null : '150' } }] }],
       costCentres: [{ existingId: 'cc-adm', code: 'ADM', nameEn: 'Administration', nameAr: 'الإدارة', baseline: { nameEn: 'Administration' } }],
       departments: [{ existingId: 'dep-hr', code: 'HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية' }],
       designations: [{ existingId: 'des-acc', code: 'ACC', titleEn: 'Accountant', titleAr: 'محاسب' }],
@@ -358,12 +383,27 @@ async function boot(page: Page, options: BootOptions = {}, server = new Contract
     }
     localStorage.setItem('kynexone-locale-choice-v2', locale);
   }, { locale: options.locale ?? 'en' });
+  if (!process.env.WIZARD_REAL_TILES) await page.route('https://tile.openstreetmap.org/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: BLANK_TILE }));
   await page.route('**/api/**', async route => {
     const request = route.request();
     const p = new URL(request.url()).pathname;
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
     if (p.startsWith('/api/company-setup')) return server.handle(route, p.slice('/api/company-setup'.length));
+    if (p === '/api/localization/transliterate/batch' && request.method() === 'POST') {
+      const { texts, kind } = request.postDataJSON() as { texts: string[]; kind: string };
+      if (kind !== 'organization-label') return reply({ error: 'unsupported_transliteration_kind' }, 400);
+      server.suggestionRequests.push(texts);
+      return reply({ suggestions: texts.map(text => {
+        const suggestion = ORG_ARABIC[text.trim().replace(/\s+/g, ' ').toLowerCase()] ?? '';
+        return { text, suggestion, requiresManualEntry: !suggestion };
+      }) });
+    }
+    if (p === '/api/geo/resolve-map-link') {
+      const link = new URL(request.url()).searchParams.get('url') ?? '';
+      server.mapLinks.push(link);
+      return link === SHORT_LINK ? reply(SHORT_LINK_AT) : reply({ error: 'ERR_MAP_LINK_UNREADABLE', message: 'This map link could not be read.' }, 422);
+    }
     if (p === '/api/auth/me') return reply(me(server));
     if (p === '/api/auth/login') return reply({ accessToken: 'wizard-fixture-token-2', refreshToken: 'wizard-refresh-2', expiresAtUtc: '2099-01-01T00:00:00Z', user: me(server) });
     if (p === '/api/auth/logout') return route.fulfill({ status: 204 });
@@ -990,7 +1030,7 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(page.getByTestId('review-no-change')).toHaveCount(0);
     await contained(page);
     await vshot(page, info, `existing-${locale}-7-review`);
-    await page.getByRole('button', { name: t('Update company'), exact: true }).click();
+    await page.getByRole('button', { name: t('Save all changes'), exact: true }).click();
 
     await expect(page.getByTestId('create-company-success')).toHaveAttribute('data-mode', 'existing');
     await expect(page.getByRole('heading', { name: t('{name} is updated', { name: locale === 'ar' ? 'شركة إيفوستل' : 'Evostel LLC' }) })).toBeVisible();
@@ -1125,7 +1165,7 @@ test('a branch renamed elsewhere since the draft started is a conflict on review
   const conflict = page.locator('[data-testid="review-plan"] li[data-code="changed_since_draft_started"]');
   await expect(conflict).toContainText('Head Office (Setup)');
   await expect(conflict).toHaveAttribute('data-field', 'branches.0.nameEn');
-  await expect(page.getByRole('button', { name: t('Update company'), exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: t('Save all changes'), exact: true })).toBeDisabled();
   // Linked to the field: Go to opens the step with that field focused and the same words on it.
   await conflict.getByRole('button', { name: t('Go to {step}', { step: t('Branches & locations') }) }).click();
   await expect(page.locator('#ccw-branches-0-nameEn')).toBeFocused();
@@ -1134,7 +1174,7 @@ test('a branch renamed elsewhere since the draft started is a conflict on review
   await expectStep(page, t, 'Review & update');
   await conflict.getByRole('button', { name: t('Use the current value ({value})', { value: 'Head Office (Setup)' }) }).click();
   await expect(conflict).toHaveCount(0);
-  await expect(page.getByRole('button', { name: t('Update company'), exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: t('Save all changes'), exact: true })).toBeEnabled();
   const sent = server.dryRuns.at(-1)!;
   expect(sent.branches[0].nameEn).toBe('Head Office (Setup)');
   // Every other field of the baseline is carried back exactly as the prefill sent it.
@@ -1213,3 +1253,489 @@ test('a company super admin is told, in plain words, that shared country default
   await expect(page.getByTestId('review-plan')).toContainText(t('Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.'));
   await expect(page.getByRole('button', { name: t('Finish without changes'), exact: true })).toBeEnabled();
 });
+
+// ── Suggest Arabic (every Arabic name field) and Pin this location (step 3) ───────────────────────────
+
+async function toBranches(page: Page, t: ReturnType<typeof T>) {
+  await openWizardFromCompanies(page, t);
+  await startAndFillCompany(page, t);
+  await next(page, t);
+  await expectStep(page, t, 'Branches & locations');
+}
+
+async function addLocation(page: Page, t: ReturnType<typeof T>, nameEn = 'Main gate') {
+  const hq = page.getByTestId('branches-row').first();
+  if (!(await hq.locator('details').first().evaluate(d => (d as HTMLDetailsElement).open))) await hq.locator('summary').first().click();
+  await hq.getByRole('button', { name: t('Add location'), exact: true }).click();
+  const location = page.getByTestId('branches.0.locations-row').last();
+  await location.getByLabel(t('Code')).fill('GATE1');
+  await location.getByLabel(t('Name (English)')).fill(nameEn);
+  return location;
+}
+
+const arabicInput = (row: ReturnType<Page['getByTestId']>, t: ReturnType<typeof T>, label = 'Name (Arabic)') => row.getByLabel(t(label), { exact: true });
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`Suggest Arabic sits under every Arabic name field: use, replace, and no suggestion (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    if (info.project.name === 'pilot') await page.emulateMedia({ colorScheme: 'dark' });
+    const { server, pageErrors } = await boot(page, { locale });
+    await openWizardFromCompanies(page, t);
+    await startAndFillCompany(page, t);
+
+    // Company legal name: no confident suggestion is said in words, and nothing is written.
+    await page.getByTestId('suggest-arabic').first().click();
+    await expect(page.getByTestId('suggest-arabic-none')).toHaveText(new RegExp(t('No suggestion for this wording. Type the Arabic name.').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    await expect(page.getByLabel(t('Legal name (Arabic)'))).toHaveValue('شركة الرياض للتجارة');
+    await shot(page, info, `arloc-${locale}-suggest-none`);
+    await next(page, t);
+
+    // A branch name already filled: offered as "Replace with «…»", never written until chosen.
+    await expectStep(page, t, 'Branches & locations');
+    const hq = page.getByTestId('branches-row').first();
+    await hq.getByTestId('suggest-arabic').first().click();
+    const replace = hq.getByRole('button', { name: new RegExp(t('Replace with «{arabic}»', { arabic: 'المكتب الرئيسي' })) });
+    await expect(replace).toBeVisible();
+    await expect(arabicInput(hq, t).first()).toHaveValue('المقر الرئيسي');
+    await shot(page, info, `arloc-${locale}-suggest-replace`);
+    await replace.click();
+    await expect(arabicInput(hq, t).first()).toHaveValue('المكتب الرئيسي');
+    await expect(arabicInput(hq, t).first()).toBeFocused();
+
+    // An empty location name: "Use «…»".
+    const location = await addLocation(page, t);
+    await location.getByTestId('suggest-arabic').click();
+    await location.getByRole('button', { name: new RegExp(t('Use «{arabic}»', { arabic: 'البوابة الرئيسية' })) }).click();
+    await expect(arabicInput(location, t)).toHaveValue('البوابة الرئيسية');
+    await next(page, t);
+
+    // Step 4: cost centres, departments, designations and grades each carry the button on their Arabic column.
+    await expectStep(page, t, 'Organisation');
+    const add = async (section: string, button: string, code: string, english: string, englishLabel = 'Name (English)') => {
+      await page.getByRole('button', { name: t(button), exact: true }).click();
+      const row = page.getByTestId(`${section}-row`).last();
+      await row.getByLabel(t('Code')).fill(code);
+      await row.getByLabel(t(englishLabel)).fill(english);
+      return row;
+    };
+    const checks: [ReturnType<Page['getByTestId']>, string, string?][] = [
+      [await add('costCentres', 'Add cost centre', 'CC_HR', 'Human Resources Cost Center'), 'مركز تكلفة الموارد البشرية'],
+      [await add('departments', 'Add department', 'OPS', 'Operations'), 'العمليات'],
+      [await add('designations', 'Add designation', 'SWE', 'Software Engineer', 'Title (English)'), 'مهندس برمجيات', 'Title (Arabic)'],
+      [await add('grades', 'Add grade', 'G9', 'Grade 9'), 'الدرجة 9'],
+    ];
+    for (const [row, arabic, label] of checks) {
+      await expect(row.getByTestId('suggest-arabic')).toHaveCount(1);
+      await row.getByTestId('suggest-arabic').click();
+      await row.getByRole('button', { name: new RegExp(t('Use «{arabic}»', { arabic })) }).click();
+      await expect(arabicInput(row, t, label)).toHaveValue(arabic);
+    }
+    // A shared catalog row (HR) is read-only: no button.
+    await expect(page.getByTestId('departments-row').first().getByTestId('suggest-arabic')).toHaveCount(0);
+    // Dismiss leaves a typed value alone.
+    const typed = await add('departments', 'Add department', 'MKT', 'Marketing');
+    await arabicInput(typed, t).fill('تسويق خاص');
+    await typed.getByTestId('suggest-arabic').click();
+    await typed.getByRole('button', { name: new RegExp(`^${t('Dismiss')}`) }).click();
+    await expect(arabicInput(typed, t)).toHaveValue('تسويق خاص');
+    await contained(page);
+    await shot(page, info, `arloc-${locale}-suggest-organisation`);
+
+    // Suggestions come from our own offline endpoint, organisation wording only.
+    expect(server.suggestionRequests.flat()).toEqual(expect.arrayContaining(['Riyadh Trading Company', 'Head Office', 'Main gate', 'Operations']));
+    await expect.poll(() => server.puts.at(-1)?.body.designations.find(d => d.code === 'SWE')?.titleAr).toBe('مهندس برمجيات');
+    expect(pageErrors).toEqual([]);
+  });
+
+  test(`Fill missing Arabic names fills only the empty ones and lists what it left blank (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server } = await boot(page, { locale });
+    await toBranches(page, t);
+    await next(page, t);
+    await expectStep(page, t, 'Organisation');
+    const departments = [['OPS', 'Operations', ''], ['WID', 'Widget Lab', ''], ['SAL', 'Sales', ''], ['MKT', 'Marketing', 'تسويق خاص']];
+    for (const [code, english, arabic] of departments) {
+      await page.getByRole('button', { name: t('Add department'), exact: true }).click();
+      const row = page.getByTestId('departments-row').last();
+      await row.getByLabel(t('Code')).fill(code);
+      await row.getByLabel(t('Name (English)')).fill(english);
+      if (arabic) await arabicInput(row, t).fill(arabic);
+    }
+    const section = page.locator('section').filter({ has: page.getByRole('heading', { name: t('Departments'), exact: true }) });
+    const fill = section.getByTestId('fill-missing-arabic');
+    await expect(fill).toHaveText(t('Fill missing Arabic names ({count})', { count: 2 }));
+    await shot(page, info, `arloc-${locale}-bulk-before`);
+    await fill.click();
+    const rows = page.getByTestId('departments-row');
+    await expect(arabicInput(rows.nth(1), t)).toHaveValue('العمليات');
+    await expect(arabicInput(rows.nth(2), t)).toHaveValue('');
+    await expect(arabicInput(rows.nth(3), t)).toHaveValue('المبيعات');
+    await expect(arabicInput(rows.nth(4), t)).toHaveValue('تسويق خاص');
+    const result = section.getByTestId('fill-missing-arabic-result');
+    await expect(result).toContainText(t('Arabic names filled: {count}. Check them before you save.', { count: 2 }));
+    await expect(result).toContainText(t('Left blank, with no confident suggestion: {names}', { names: 'Widget Lab' }));
+    // Nothing left to fill: the action goes away.
+    await expect(fill).toHaveCount(0);
+    await contained(page);
+    await shot(page, info, `arloc-${locale}-bulk-after`);
+    await expect.poll(() => server.puts.at(-1)?.body.departments.map(d => d.nameAr ?? '')).toEqual(['الموارد البشرية', 'العمليات', '', 'المبيعات', 'تسويق خاص']);
+  });
+}
+
+test('an old letter-by-letter Arabic name is offered a fix, and stored data changes only when chosen', async ({ page }, info) => {
+  const t = T('en');
+  const { server } = await boot(page, { badArabic: true });
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await next(page, t);
+  const hq = page.getByTestId('branches-row').first();
+  await expect(arabicInput(hq, t).first()).toHaveValue(OLD_LETTER_BY_LETTER);
+  expect(server.drafts.values().next().value!.body.branches[0].nameAr).toBe(OLD_LETTER_BY_LETTER);
+  await hq.getByTestId('suggest-arabic').first().click();
+  await hq.getByRole('button', { name: new RegExp(t('Replace with «{arabic}»', { arabic: 'المكتب الرئيسي' })) }).click();
+  await expect(arabicInput(hq, t).first()).toHaveValue('المكتب الرئيسي');
+  await shot(page, info, 'arloc-en-fix-old-arabic');
+  await expect.poll(() => server.puts.at(-1)?.body.branches[0].nameAr).toBe('المكتب الرئيسي');
+  expect(server.commits).toEqual([]);
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`Pin this location: paste formats, short link, current location, drag, radius, Google Maps and the GCC warning (${locale})`, async ({ page, context }, info) => {
+    const t = T(locale);
+    if (info.project.name === 'pilot') await page.emulateMedia({ colorScheme: 'dark' });
+    const { server, pageErrors } = await boot(page, { locale });
+    await toBranches(page, t);
+    const location = await addLocation(page, t);
+    const panel = location.getByTestId('location-pin');
+    const status = panel.getByTestId('pin-status');
+    const paste = panel.getByTestId('pin-paste');
+    const placePin = panel.getByRole('button', { name: t('Place pin'), exact: true });
+    await expect(status).toHaveText(t('Not pinned yet.'));
+    await expect(panel.getByTestId('location-map')).toHaveAttribute('data-ready', 'true');
+    // Nothing is pinned on load: no marker until the person places one.
+    await expect(panel.locator('.leaflet-marker-icon')).toHaveCount(0);
+    await shot(page, info, `arloc-${locale}-pin-empty`);
+
+    const placeFrom = async (text: string) => { await paste.fill(text); await placePin.click(); };
+    await placeFrom('21.5433, 39.1728');
+    await expect(status).toContainText('21.543300, 39.172800');
+    await expect(panel.getByTestId('pin-feedback')).toHaveText(t('Pin placed from the coordinates.'));
+    await placeFrom('https://www.google.com/maps/place/Kingdom+Centre/@24.7114,46.6744,17z/data=!3m1!4b1!3d24.7113741!4d46.6743887');
+    await expect(status).toContainText('24.711374, 46.674389');
+    await expect(panel.getByTestId('pin-feedback')).toHaveText(t('Pin placed from the link.'));
+    await placeFrom('https://www.google.com/maps?q=26.2235,50.5876');
+    await expect(status).toContainText('26.223500, 50.587600');
+    await placeFrom(`21°32'35.9"N 39°10'22.1"E`);
+    await expect(status).toContainText('21.543306, 39.172806');
+    await placeFrom('Riyadh');
+    await expect(panel.getByTestId('pin-feedback')).toHaveText(t('This is not a map link or coordinates we can read. Paste a Google Maps link, or coordinates such as 24.7136, 46.6753.'));
+    await expect(status).toContainText('21.543306, 39.172806');
+
+    // A real paste (clipboard) places the pin without pressing anything.
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.evaluate(text => navigator.clipboard.writeText(text), 'https://www.google.com/maps/@24.7136,46.6753,15z');
+    await paste.fill('');
+    await paste.focus();
+    await page.keyboard.press('ControlOrMeta+V');
+    await expect(status).toContainText('24.713600, 46.675300');
+
+    // A short link goes to the backend resolver; an unreadable one says what to do instead.
+    await placeFrom(SHORT_LINK);
+    await expect(status).toContainText('21.543300, 39.172800');
+    await placeFrom('https://maps.app.goo.gl/unknownLink');
+    await expect(panel.getByTestId('pin-feedback')).toHaveText(t('This link could not be read. Open it, then copy the full address from the browser bar, or paste the coordinates.'));
+    expect(server.mapLinks).toEqual([SHORT_LINK, 'https://maps.app.goo.gl/unknownLink']);
+
+    // Current location, with its accuracy; a fix wider than the geofence warns.
+    await context.grantPermissions(['geolocation']);
+    await context.setGeolocation({ latitude: 24.7136, longitude: 46.6753, accuracy: 25 });
+    await panel.getByTestId('pin-locate').click();
+    await expect(panel.getByTestId('pin-feedback')).toHaveText(t('Pin placed at your current location, accurate to ±{accuracy} m.', { accuracy: 25 }));
+    await expect(status).toContainText('24.713600, 46.675300');
+    const wide = t('Your device placed you within ±{accuracy} m, wider than the {radius} m geofence. Drag the pin to the exact spot, or choose a larger radius.', { accuracy: 400, radius: 150 });
+    await expect(panel.getByText(wide)).toHaveCount(0);
+    await context.setGeolocation({ latitude: 24.7, longitude: 46.68, accuracy: 400 });
+    await panel.getByTestId('pin-locate').click();
+    await expect(panel.getByText(wide)).toBeVisible();
+    await shot(page, info, `arloc-${locale}-pin-accuracy`);
+
+    // Radius presets and a custom value, drawn as the circle.
+    await panel.getByText(t('{meters} m', { meters: 300 }), { exact: true }).click();
+    await expect(panel.getByLabel(t('Radius (m)'))).toHaveValue('300');
+    const circleWidth = () => panel.locator('path.leaflet-interactive').evaluate(el => el.getBoundingClientRect().width);
+    const at300 = await circleWidth();
+    await panel.getByText(t('{meters} m', { meters: 50 }), { exact: true }).click();
+    await expect.poll(circleWidth).toBeLessThan(at300);
+    await panel.getByLabel(t('Radius (m)')).fill('75');
+    await expect(panel.getByRole('radio', { name: t('Custom') })).toBeChecked();
+
+    // Drag the pin: the coordinates follow.
+    await context.setGeolocation({ latitude: 24.7136, longitude: 46.6753, accuracy: 10 });
+    await panel.getByTestId('pin-locate').click();
+    await expect(status).toContainText('24.713600, 46.675300');
+    const pin = panel.locator('.leaflet-marker-icon');
+    await pin.scrollIntoViewIfNeeded();
+    const box = (await pin.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height - 6);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height - 36, { steps: 8 });
+    await page.mouse.up();
+    await expect(status).not.toContainText('24.713600, 46.675300');
+    const statusText = await status.textContent();
+    const [lat, lng] = statusText!.match(/-?\d+\.\d{6}/g)!.map(Number);
+    expect(lat).toBeGreaterThan(24.7136);
+    expect(lng).toBeGreaterThan(46.6753);
+    await expect(panel.locator('details').getByLabel(t('Latitude'))).toHaveValue(String(lat));
+
+    // Check in Google Maps opens the same point in a new tab.
+    const google = panel.getByTestId('pin-google');
+    await expect(google).toHaveAttribute('href', `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
+    await expect(google).toHaveAttribute('target', '_blank');
+    await expect(google).toHaveAttribute('rel', /noopener/);
+
+    // Outside the GCC warns, never blocks; a swapped pair offers the swap.
+    await placeFrom('46.6753, 24.7136');
+    await expect(panel.getByText(t('These coordinates are outside the GCC. Check the pin before you continue.'))).toBeVisible();
+    await shot(page, info, `arloc-${locale}-pin-gcc`);
+    await panel.getByRole('button', { name: t('Swap latitude and longitude') }).click();
+    await expect(status).toContainText('24.713600, 46.675300');
+    await expect(panel.getByText(t('These coordinates are outside the GCC. Check the pin before you continue.'))).toHaveCount(0);
+    await placeFrom('51.5072, -0.1276');
+    await expect(panel.getByText(t('These coordinates are outside the GCC. Check the pin before you continue.'))).toBeVisible();
+    await expect(panel.getByRole('button', { name: t('Swap latitude and longitude') })).toHaveCount(0);
+    await placeFrom('24.7136, 46.6753');
+
+    // The raw numbers stay editable under Coordinates.
+    await panel.locator('details summary').click();
+    await panel.locator('details').getByLabel(t('Latitude')).fill('24.75');
+    await expect(status).toContainText('24.750000, 46.675300');
+    await contained(page);
+    await panel.scrollIntoViewIfNeeded();
+    await shot(page, info, `arloc-${locale}-pin-done`);
+
+    // What is saved is just the location's latitude, longitude and radius.
+    await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0], { timeout: 15_000 }).toMatchObject({ code: 'GATE1', latitude: 24.75, longitude: 46.6753, radiusMeters: 75 });
+    await next(page, t);
+    await expectStep(page, t, 'Organisation');
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('a location with a half-entered coordinate stops Next at the field', async ({ page }) => {
+  const t = T('en');
+  await boot(page);
+  await toBranches(page, t);
+  const location = await addLocation(page, t);
+  const panel = location.getByTestId('location-pin');
+  await panel.locator('details summary').click();
+  await panel.locator('details').getByLabel(t('Latitude')).fill('24.7');
+  await next(page, t);
+  await expectStep(page, t, 'Branches & locations');
+  await expect(panel.locator('details').getByLabel(t('Longitude'))).toBeFocused();
+  await expect(panel.getByText(t('Enter both latitude and longitude, or neither.')).first()).toBeVisible();
+});
+
+// ── Per-section Save: explicit, visible confirmation on top of the background autosave ─────────────────
+
+const sectionStatus = (page: Page, section: string) => page.getByTestId(`section-status-${section}`);
+const sectionBar = (page: Page, section: string) => page.getByTestId(`section-save-${section}`);
+const railStep = (page: Page, t: ReturnType<typeof T>, title: string) => page.getByTestId('wizard-rail').getByRole('button', { name: new RegExp(t(title).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
+
+async function startEvostel(page: Page, t: ReturnType<typeof T>) {
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+}
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`each section saves on its own, moves to the next, and nothing changes in the company before Save all changes (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    if (info.project.name === 'pilot') await page.emulateMedia({ colorScheme: 'dark' });
+    const { server, pageErrors } = await boot(page, { locale });
+    await openEvostel(page, t);
+    await expect(page.getByText(t('See what this company has today, then go step by step. Save each section as you finish it. Nothing changes in the company until you choose Save all changes at the end.'))).toBeVisible();
+    await page.getByRole('button', { name: t('Start'), exact: true }).click();
+    await expectStep(page, t, 'Company details');
+
+    // Before any Save: the section and the rail say so.
+    await expect(sectionStatus(page, 'company')).toHaveAttribute('data-status', 'notSaved');
+    await expect(railStep(page, t, 'Company details')).toHaveAttribute('data-saved', 'unsaved');
+    await page.getByLabel(t('Trade name (optional)')).fill('Evostel Trading');
+    await expect(sectionStatus(page, 'company')).toHaveText(t('Unsaved changes'));
+    await expect(sectionBar(page, 'company').getByTestId('section-save-status-company')).toHaveText(t('Unsaved changes'));
+    await contained(page);
+    await shot(page, info, `save-${locale}-company-unsaved`);
+
+    // The last (only) section of a step: "Save" saves now and opens the next step, its heading focused.
+    const putsBefore = server.puts.length;
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Branches & locations');
+    await expect(page.getByRole('heading', { level: 2, name: t('Branches & locations'), exact: true })).toBeFocused();
+    expect(server.puts.length).toBeGreaterThan(putsBefore);
+    expect(server.puts.at(-1)!.body.company.tradeName).toBe('Evostel Trading');
+    await expect(railStep(page, t, 'Company details')).toHaveAttribute('data-saved', 'saved');
+    await sectionBar(page, 'branches').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Organisation');
+
+    // Organisation: four sections; "Save and continue" moves focus to the next section's heading.
+    for (const [section, nextSection] of [['costCentres', 'departments'], ['departments', 'designations'], ['designations', 'grades']] as const) {
+      await sectionBar(page, section).getByRole('button', { name: new RegExp(`^${t('Save and continue')}`) }).click();
+      await expect(page.locator(`#ccw-section-${nextSection}`)).toBeFocused();
+      await expect(sectionStatus(page, section)).toHaveAttribute('data-status', 'saved');
+      await expect(sectionStatus(page, section)).toContainText(t('Saved at {time}', { time: '' }).trim());
+    }
+    await shot(page, info, `save-${locale}-organisation-saved`);
+    await sectionBar(page, 'grades').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Work & pay rules');
+    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'saved');
+
+    // An edit after Save shows as unsaved again, in the section, its header and the rail.
+    await railStep(page, t, 'Organisation').click();
+    await expectStep(page, t, 'Organisation');
+    await page.getByTestId('costCentres-row').first().getByLabel(t('Name (English)')).fill('Administration & Support');
+    await expect(sectionStatus(page, 'costCentres')).toHaveAttribute('data-status', 'unsaved');
+    await expect(sectionStatus(page, 'departments')).toHaveAttribute('data-status', 'saved');
+    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'unsaved');
+    await expect(railStep(page, t, 'Organisation')).toContainText(t('Unsaved changes'));
+    await contained(page);
+    await shot(page, info, `save-${locale}-organisation-edited`);
+    await sectionBar(page, 'costCentres').getByRole('button', { name: new RegExp(`^${t('Save and continue')}`) }).click();
+    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'saved');
+
+    // Section saves write the draft only: nothing is applied to the company until the final button.
+    expect(server.commits).toEqual([]);
+    await railStep(page, t, 'Review & update').click();
+    await expectStep(page, t, 'Review & update');
+    await expect(page.getByText(t('These are exactly the changes that will be saved. Nothing changes in the company until you choose Save all changes.'))).toBeVisible();
+    const saveAll = page.getByRole('button', { name: t('Save all changes'), exact: true });
+    await expect(saveAll).toBeEnabled();
+    await expect(page.getByTestId('review-plan')).toContainText('Administration & Support');
+    expect(server.commits).toEqual([]);
+    await shot(page, info, `save-${locale}-review`);
+    await saveAll.click();
+    await expect(page.getByTestId('create-company-success')).toBeVisible();
+    expect(server.commits).toHaveLength(1);
+    expect(pageErrors).toEqual([]);
+  });
+
+  test(`a section with a problem stays put with the message at the field, and saves nothing (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server } = await boot(page, { locale });
+    await startEvostel(page, t);
+    await page.getByLabel(t('Legal name (English)')).fill('');
+    await page.getByLabel(t('Trade name (optional)')).fill('Changed');
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Company details');
+    await expect(page.getByTestId('section-save-problem-company')).toHaveText(t('{count, plural, one {# field needs} other {# fields need}} attention in this section. Nothing was saved.', { count: 1 }));
+    await expect(page.getByLabel(t('Legal name (English)'))).toBeFocused();
+    await expect(page.getByLabel(t('Legal name (English)'))).toHaveAttribute('aria-invalid', 'true');
+    await expect(sectionStatus(page, 'company')).toHaveAttribute('data-status', 'unsaved');
+    await contained(page);
+    await shot(page, info, `save-${locale}-invalid`);
+    expect(server.commits).toEqual([]);
+  });
+
+  test(`a draft saved elsewhere stops the section Save with the conflict flow (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server } = await boot(page, { locale });
+    await startEvostel(page, t);
+    await page.getByLabel(t('Trade name (optional)')).fill('Mine');
+    server.touchElsewhere([...server.drafts.keys()][0]);
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expect(page.getByTestId('section-save-problem-company')).toHaveText(t('This draft was changed elsewhere, so this section was not saved. Reload the draft, then save the section again.'));
+    await expect(page.getByText(t('This draft was changed elsewhere — reload'))).toBeVisible();
+    await expectStep(page, t, 'Company details');
+    await expect(sectionStatus(page, 'company')).not.toHaveAttribute('data-status', 'saved');
+    await shot(page, info, `save-${locale}-conflict`);
+    // The existing flow: reload takes their version, and the section matches the draft again.
+    await page.getByRole('button', { name: t('Reload draft') }).first().click();
+    await expect(page.getByText(t('This draft was changed elsewhere — reload'))).toHaveCount(0);
+    // Reload opens the draft at the step it was saved on; their version is what is on screen, and it is saved.
+    if (await railStep(page, t, 'Company details').getAttribute('aria-current') !== 'step') await railStep(page, t, 'Company details').click();
+    await expect(page.getByLabel(t('Trade name (optional)'))).toHaveValue('Saved elsewhere');
+    await expect(sectionStatus(page, 'company')).toHaveAttribute('data-status', 'saved');
+  });
+}
+
+test('a failed section save keeps the changes and says so in plain words', async ({ page }) => {
+  const t = T('en');
+  await boot(page);
+  await startEvostel(page, t);
+  let refused = false;
+  await page.route('**/api/company-setup/drafts/*', async route => {
+    if (route.request().method() === 'PUT' && !refused) { refused = true; return route.fulfill({ status: 503, json: { message: 'unavailable' } }); }
+    return route.fallback();
+  });
+  await page.getByLabel(t('Trade name (optional)')).fill('Offline edit');
+  await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+  await expect(page.getByTestId('section-save-problem-company')).toHaveText(t('This section could not be saved. Your changes are still here. Check your connection and try again.'));
+  await expectStep(page, t, 'Company details');
+  await expect(page.getByLabel(t('Trade name (optional)'))).toHaveValue('Offline edit');
+  // Trying again works.
+  await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+  await expectStep(page, t, 'Branches & locations');
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`leaving with an unsaved section asks first; after Save it does not (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    await boot(page, { locale });
+    await startEvostel(page, t);
+    await page.getByLabel(t('Trade name (optional)')).fill('Not saved yet');
+    // Browser Back: the guard holds the navigation, so there is no load to wait for.
+    await page.evaluate(() => history.back());
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(t('These sections have changes you have not saved: {sections}. The automatic draft backup may already hold them. Leave anyway?', { sections: t('Company details') }));
+    await shot(page, info, `save-${locale}-leave-warning`);
+    await dialog.getByRole('button', { name: locale === 'ar' ? 'إلغاء' : 'Cancel', exact: true }).click();
+    await expect(page).toHaveURL(/\/setup\/company\/co-evostel\/complete/);
+    await expectStep(page, t, 'Company details');
+    await expect(page.getByLabel(t('Trade name (optional)'))).toHaveValue('Not saved yet');
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Branches & locations');
+    await page.evaluate(() => history.back());
+    await expect(page).not.toHaveURL(/\/complete/);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+}
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`a location without a radius never looks like a geofence, and the saved draft carries the radius shown (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server } = await boot(page, { locale, locationWithoutRadius: true });
+    await startEvostel(page, t);
+    await next(page, t);
+    await expectStep(page, t, 'Branches & locations');
+    const panel = page.getByTestId('branches.0.locations-row').first().getByTestId('location-pin');
+    await expect(panel.getByTestId('location-map')).toHaveAttribute('data-ready', 'true');
+    // Pinned, but no radius: said in words; no circle, no preset selected, nothing written behind the person's back.
+    await expect(panel.getByTestId('pin-status')).toContainText(t('No geofence radius set'));
+    await expect(panel.getByTestId('pin-no-radius')).toBeVisible();
+    await expect(panel.locator('path.leaflet-interactive')).toHaveCount(0);
+    await expect(panel.getByRole('radio', { checked: true })).toHaveCount(0);
+    await expect(panel.getByLabel(t('Radius (m)'))).toHaveValue('');
+    await contained(page);
+    await panel.scrollIntoViewIfNeeded();
+    await shot(page, info, `arloc-${locale}-pin-no-radius`);
+    await page.waitForTimeout(1500);
+    expect(server.puts.every(p => p.body.branches[0].locations[0].radiusMeters == null)).toBe(true);
+    // Choosing one shows it, draws it and saves exactly it.
+    await panel.getByText(t('{meters} m', { meters: 100 }), { exact: true }).click();
+    await expect(panel.getByTestId('pin-status')).toContainText(t('{meters} m', { meters: 100 }));
+    await expect(panel.locator('path.leaflet-interactive')).toHaveCount(1);
+    await expect(panel.getByTestId('pin-no-radius')).toHaveCount(0);
+    await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0].radiusMeters, { timeout: 15_000 }).toBe(100);
+
+    // Clearing the radius and placing a new pin writes the default it then shows (150 m), never a display-only value.
+    await panel.getByLabel(t('Radius (m)')).fill('');
+    await expect(panel.getByTestId('pin-no-radius')).toBeVisible();
+    await panel.getByTestId('pin-paste').fill('24.7136, 46.6753');
+    await panel.getByRole('button', { name: t('Place pin'), exact: true }).click();
+    await expect(panel.getByTestId('pin-status')).toContainText(t('{meters} m', { meters: 150 }));
+    await expect(panel.getByRole('radio', { name: t('{meters} m', { meters: 150 }) })).toBeChecked();
+    await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0], { timeout: 15_000 })
+      .toMatchObject({ latitude: 24.7136, longitude: 46.6753, radiusMeters: 150 });
+  });
+}

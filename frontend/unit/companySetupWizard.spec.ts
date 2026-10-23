@@ -4,7 +4,7 @@ import {
   buildTree, canCommit, defaultFirstPayrollMonth, eligibleCompanySuperAdmins, emptyBody, firstBlockingStep, groupPlan, molEstablishmentError,
   normalizeFieldPath, numberingPreview, planUsage, stepState, stepWarnings, validateStep,
   completeCompanyHref, draftHref, firstPayrollMonthLocked, isPlanChange, planCounts, planIsNoChange, readinessProgress, rowChanged, stepCopy, wizardMode,
-  legacyWarnings, reasonFields, setupCodeCopy,
+  legacyWarnings, reasonFields, setupCodeCopy, setupLandingCompanyLink,
   CHANGED_ELSEWHERE, chooseWeekend, countryDisplayName, currentValueLabel, editRow, resolveChangedElsewhere, withOneHeadOffice,
 } from '../src/lib/companySetupWizard';
 
@@ -404,4 +404,24 @@ test('a stored country that is not a region code is shown as written, never thro
   expect(countryDisplayName(names, ' ')).toBe('');
   expect(countryDisplayName(names, null)).toBe('');
   expect(countryDisplayName(null, 'SA')).toBe('SA');
+});
+
+test('a Guided setup deep link is a Setup arrival that names a company on the guided path, never a reload', () => {
+  const link = (query: string, navigation?: string) => setupLandingCompanyLink(new URLSearchParams(query), navigation);
+  // Links from elsewhere in the app, notifications and old studio bookmarks.
+  expect(link('tab=aiSetup&path=guided&companyId=co-1')).toBe('co-1');
+  expect(link('tab=aiSetup&mode=starter&companyId=co-1')).toBe('co-1');
+  expect(link('tab=aiSetup&companyId=co-1')).toBe('co-1');
+  expect(link('companyId=co-1')).toBe('co-1');
+  // A forged company is still handed over: the chooser refuses it and says so.
+  expect(link('tab=aiSetup&path=guided&companyId=forged', 'navigate')).toBe('forged');
+  // No company, or another path or section: nothing to open.
+  expect(link('tab=aiSetup&path=guided')).toBeNull();
+  expect(link('tab=aiSetup&path=configuration&companyId=co-1')).toBeNull();
+  expect(link('tab=aiSetup&area=payroll&companyId=co-1')).toBeNull();
+  expect(link('tab=aiSetup&path=policyStarter&companyId=co-1')).toBeNull();
+  expect(link('tab=grades&companyId=co-1')).toBeNull();
+  // A reload or history restore brings back the scope Setup wrote into the address, not a followed link.
+  expect(link('tab=aiSetup&path=guided&companyId=co-1', 'reload')).toBeNull();
+  expect(link('tab=aiSetup&path=guided&companyId=co-1', 'back_forward')).toBeNull();
 });

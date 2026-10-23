@@ -33,7 +33,15 @@ public class SecuritySetting : ITenantOwned
     public int MaxFailedLoginAttempts { get; set; } = 5;
     public int LockoutDurationMinutes { get; set; } = 30;
     // Session policy
+    // Idle timeout: a session nobody has refreshed for this long ends (measured from the last rotation).
     public int SessionTimeoutMinutes { get; set; } = 480;
+    /// <summary>The default and the bounds of <see cref="SessionMaxHours"/> (CHECK 1..168).</summary>
+    public const int DefaultSessionMaxHours = 12;
+    public const int MinSessionMaxHours = 1;
+    public const int MaxSessionMaxHours = 168;
+    // Hard limit: every session ends this many hours after its sign-in, however active (refresh_tokens.session_started_at_utc).
+    // Computed at each refresh, never stored per token, so lowering it applies to sessions already running.
+    public int SessionMaxHours { get; set; } = DefaultSessionMaxHours;
     public int RefreshTokenExpiryDays { get; set; } = 30;
     public bool AllowMultipleSessions { get; set; } = true;
     // MFA policy — when true all tenant users must complete TOTP at login

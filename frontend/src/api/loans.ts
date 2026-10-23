@@ -10,6 +10,8 @@ export interface LoanType {
   nameAr: string;
   maxAmount: number;
   maxInstallments: number;
+  /** Shortest repayment, in instalments. 1 (or absent, from an older API) = no minimum. */
+  minInstallments?: number;
   repaymentFrequency: string;
   isInterestFree: boolean;
   interestRate: number;
@@ -260,7 +262,7 @@ export interface AuditLogEntry {
 export const loanTypesApi = {
   list: () =>
     client.get<LoanType[]>('/api/finance/loans/types').then(r => requireList<LoanType>(r.data, 'loan types')),
-  create: (body: { code: string; nameEn: string; nameAr?: string; maxAmount: number; maxInstallments: number; repaymentFrequency: string; isInterestFree: boolean; interestRate: number; minServiceMonths: number; requiresApproval: boolean }) =>
+  create: (body: { code: string; nameEn: string; nameAr?: string; maxAmount: number; maxInstallments: number; minInstallments?: number; repaymentFrequency: string; isInterestFree: boolean; interestRate: number; minServiceMonths: number; requiresApproval: boolean }) =>
     client.post<LoanType>('/api/finance/loans/types', body).then(r => r.data),
 };
 

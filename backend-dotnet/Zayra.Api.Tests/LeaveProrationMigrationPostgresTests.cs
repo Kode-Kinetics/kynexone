@@ -45,13 +45,12 @@ public sealed class LeaveProrationMigrationPostgresTests
 
         await migrator.MigrateAsync(MigrationId);
         await migrator.MigrateAsync(MigrationId); // replay must be a no-op
-        var legacy = await db.LeavePolicies.SingleAsync(p => p.Id == policyId);
-        legacy.ProratePartialMonths.Should().BeFalse();
-        legacy.AnnualEntitlementDays.Should().Be(24m);
-        legacy.ProratePartialMonths = true;
-        await db.SaveChangesAsync();
-        db.ChangeTracker.Clear();
-        (await db.LeavePolicies.SingleAsync(p => p.Id == policyId)).ProratePartialMonths.Should().BeTrue();
+        // Read the columns this migration owns, not the entity: the database is pinned at THIS migration, and the
+        // current model also maps every later leave_policies column, which does not exist yet at this point.
+        (await Prorate()).Should().BeFalse();
+        (await db.Database.SqlQuery<decimal>($"SELECT annual_entitlement_days AS \"Value\" FROM leave_policies WHERE id = {policyId}").SingleAsync()).Should().Be(24m);
+        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE leave_policies SET prorate_partial_months = true WHERE id = {policyId}");
+        (await Prorate()).Should().BeTrue();
 
         var refused = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => migrator.MigrateAsync(previous));
         refused.SqlState.Should().Be(Npgsql.PostgresErrorCodes.RaiseException);
@@ -60,7 +59,9 @@ public sealed class LeaveProrationMigrationPostgresTests
         (await db.Database.SqlQueryRaw<int>("SELECT count(*)::int AS \"Value\" FROM information_schema.columns WHERE table_name = 'leave_policies' AND column_name = 'prorate_partial_months'").SingleAsync()).Should().Be(0);
         await migrator.MigrateAsync(MigrationId);
         (await db.Database.GetAppliedMigrationsAsync()).Should().Contain(MigrationId);
-        db.ChangeTracker.Clear();
-        (await db.LeavePolicies.SingleAsync(p => p.Id == policyId)).ProratePartialMonths.Should().BeFalse();
+        (await Prorate()).Should().BeFalse();
+
+        Task<bool> Prorate() =>
+            db.Database.SqlQuery<bool>($"SELECT prorate_partial_months AS \"Value\" FROM leave_policies WHERE id = {policyId}").SingleAsync();
     }
 }

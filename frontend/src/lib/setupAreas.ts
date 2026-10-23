@@ -1,5 +1,6 @@
 import { msg } from '../i18n/translations';
 import { navigationItems } from '../routes/navigation';
+import { canListCompanies, canOpenGlAndRates } from './setupAccess';
 
 /**
  * Setup & Administration's own settings sections, in navigation order. The one source for each section's name and
@@ -268,4 +269,66 @@ export function destinationAvailability(destination: SetupDestination, context: 
   if (destination.requiredFeatureKey && !context.isFeatureEnabled(destination.requiredFeatureKey)) return 'unavailable';
   if (!context.verdictForPath(destination.path.split('?')[0]).allowed) return 'unavailable';
   return 'available';
+}
+
+// ── Who sees which Setup section ──────────────────────────────────────────────────────────────────────────────────
+
+/** The setup tools at the top of the navigation ("Get started"). */
+export type SetupToolId = 'guidedSetup' | 'allSetupAreas' | 'importOrganization' | 'policyStarter' | 'policyLibrary';
+
+export const SETUP_TOOLS: Record<SetupToolId, { label: string; description: string; href: string }> = {
+  guidedSetup: { label: msg('Guided setup'), description: msg('Create a company, or finish setting one up, one screen at a time.'), href: '/setup?tab=aiSetup&path=guided' },
+  allSetupAreas: { label: msg('All setup areas'), description: msg('Every setup area, with its settings and related workspaces.'), href: '/setup?tab=aiSetup&path=configuration&area=overview' },
+  importOrganization: { label: msg('Import organization'), description: msg('Load companies, branches, departments and jobs from a file.'), href: '/setup?tab=importOrganization' },
+  policyStarter: { label: msg('Policy starter'), description: msg('Attendance, overtime, benefits and other policies.'), href: '/setup?tab=aiSetup&path=policyStarter' },
+  policyLibrary: { label: msg('Policy library'), description: msg('Policy documents your company has uploaded.'), href: '/setup?tab=policyLibrary' },
+};
+
+export interface SetupNavigationAccess {
+  hasPermission: (permission: string) => boolean;
+  hasRole: (role: string) => boolean;
+  /** A group account's administrator who is limited to some companies. */
+  isCompanyScopedGroup: boolean;
+  /** The tenant has policy intake switched on (the Policy library exists only then). */
+  policyIntake: boolean;
+}
+
+export interface SetupNavigationModel {
+  canWrite: boolean;
+  canReadCompanies: boolean;
+  canReadStatutoryRules: boolean;
+  canReadGlAndRates: boolean;
+  canManagePolicies: boolean;
+  /** "Get started" entries, in order. Empty for a reader. */
+  tools: SetupToolId[];
+  /** The settings sections this user can open, in navigation order. */
+  settings: SetupSettingSection[];
+}
+
+/**
+ * The one answer to "which Setup sections can this user open". Setup's navigation, its "Find a setting" search and
+ * the ⌘K palette's Settings group all read it, so nothing is ever offered that the navigation would not show.
+ */
+export function setupNavigationModel(access: SetupNavigationAccess): SetupNavigationModel {
+  const { hasPermission, hasRole, isCompanyScopedGroup } = access;
+  const canManagePolicies = access.policyIntake && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
+  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
+  // A reader sees Companies only when the server will list them for its role (setupAccess.ts), and GL & rates when it
+  // holds any GL or rates permission: Payroll Manager and Finance hold those, and used to get a page with no sections.
+  const canReadCompanies = canWrite || (hasPermission('organization.read') && canListCompanies({ hasPermission, hasRole }));
+  const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
+  const canReadGlAndRates = canOpenGlAndRates({ hasPermission, hasRole });
+  const writable = isCompanyScopedGroup ? SETUP_SETTING_SECTIONS.filter(section => COMPANY_OWNED_SETTING_IDS.has(section.id)) : SETUP_SETTING_SECTIONS;
+  const settings = canWrite
+    ? [...writable]
+    : SETUP_SETTING_SECTIONS.filter(section => (section.id === 'companies' && canReadCompanies)
+      || (section.id === 'statutoryRules' && canReadStatutoryRules) || (section.id === 'glMapping' && canReadGlAndRates));
+  const tools: SetupToolId[] = canWrite ? [
+    'guidedSetup',
+    'allSetupAreas',
+    ...(!isCompanyScopedGroup ? ['importOrganization' as const] : []),
+    'policyStarter',
+    ...(canManagePolicies ? ['policyLibrary' as const] : []),
+  ] : [];
+  return { canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates, canManagePolicies, tools, settings };
 }

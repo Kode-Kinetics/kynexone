@@ -6,6 +6,8 @@ export interface LoanPolicyInput {
   companyId: string; loanTypeId: string; policyName: string;
   maxAmount: number; maxTotalOutstanding: number; maxMultiplierOfSalary: number;
   maxInstallmentPercentOfSalary: number; minServiceMonths: number; maxInstallments: number;
+  /** Shortest repayment, in instalments (1..maxInstallments). 1 (or absent, from an older API) = no minimum. */
+  minInstallments?: number;
   requireProbationCompleted: boolean; blockDuringNotice: boolean; blockOnOverdue: boolean;
   allowedEmploymentStatuses: string[]; allowedContractTypes: string[]; allowedRepaymentMethods: string[];
   allowedRepaymentFrequencies: string[];
@@ -28,6 +30,9 @@ export interface LoanEligibility {
   gradeLimit?: LoanGradeLimitCheck | null; bindingLimit?: LoanBindingLimit | null; limitBreakdowns?: LoanLimitBreakdown[] | null;
   /** Release A (Art. 92): the instalment as a share of the wage. Absent in a preview and for tenants without Release A. */
   art92?: LoanArt92Check | null;
+  /** The repayment range the applicant may choose: the stricter of the loan type's and the policy's. Absent from an older API. */
+  minInstallments?: number | null;
+  maxInstallments?: number | null;
 }
 
 /** Saudi Labour Law Art. 92: an employer-loan instalment deducted from pay above 10% of the wage needs written consent. */

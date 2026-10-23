@@ -1,5 +1,6 @@
 import { msg, type MessageParams } from '../i18n/translations';
 import { isValidEmailDomain } from '../api/organization';
+import { resolveSetupPath } from './setupPathState';
 import type {
   CodeName, CompanySetupCompany, CompanySetupContext, CompanySetupDraftBody, CompanySetupDraftSummary, CompanySetupPlan,
   ExistingRow, ManageableCompany, PlanAction, PlanArea, PlanItem, Problem, WithBaseline,
@@ -46,6 +47,25 @@ export function stepCopy(step: StepId, mode: WizardMode): { title: string; descr
 export const GUIDED_SETUP_HREF = '/setup?tab=aiSetup&path=guided';
 /** The Policy starter entry for the old studio (A7): attendance, overtime, benefits and HR rules starters. */
 export const POLICY_STARTER_HREF = '/setup?tab=aiSetup&path=policyStarter';
+
+/**
+ * The company a Setup arrival names as a Guided setup deep link, or null. Only the address a Setup visit arrives with
+ * can be one (a link from elsewhere in the app, a notification, an old studio bookmark such as
+ * `/setup?tab=aiSetup&mode=starter&companyId=…`); Setup reads it once, when the page mounts. Inside Setup, `companyId`
+ * is the company scope every move keeps, so the navigation's own Guided setup entry is never a deep link.
+ *
+ * `documentNavigation` is how the browser loaded this document when Setup is its first page: a reload or a history
+ * restore brings back an address Setup wrote itself, not a link someone followed, so it opens the chooser.
+ */
+export function setupLandingCompanyLink(params: URLSearchParams, documentNavigation?: string | null): string | null {
+  const tab = params.get('tab');
+  if (tab !== null && tab !== 'aiSetup') return null;
+  const companyId = params.get('companyId')?.trim();
+  if (!companyId) return null;
+  if (resolveSetupPath(params, { authorizedCompanyIds: new Set(), selectedCompanyId: null }).path !== 'guided') return null;
+  if (documentNavigation === 'reload' || documentNavigation === 'back_forward') return null;
+  return companyId;
+}
 
 /** Where the wizard for an existing company lives; `draft` resumes that draft. */
 export function completeCompanyHref(companyId: string, draftId?: string | null): string {
@@ -441,6 +461,14 @@ function validateStepRaw(step: StepId, { body, context, adminStepVisible = true 
         b.locations.forEach((l, j) => {
           if (blank(l.code)) errors.push({ field: `branches.${i}.locations.${j}.code`, message: msg('Enter a location code.') });
           if (blank(l.nameEn)) errors.push({ field: `branches.${i}.locations.${j}.nameEn`, message: msg('Enter the location name in English.') });
+          // The planner's own limits (CompanySetupPlanner), checked here so the message sits at the field.
+          const at = `branches.${i}.locations.${j}`;
+          const lat = l.latitude ?? null;
+          const lng = l.longitude ?? null;
+          if ((lat === null) !== (lng === null)) errors.push({ field: `${at}.${lat === null ? 'latitude' : 'longitude'}`, message: msg('Enter both latitude and longitude, or neither.') });
+          if (lat !== null && !(lat >= -90 && lat <= 90)) errors.push({ field: `${at}.latitude`, message: msg('Latitude must be between -90 and 90.') });
+          if (lng !== null && !(lng >= -180 && lng <= 180)) errors.push({ field: `${at}.longitude`, message: msg('Longitude must be between -180 and 180.') });
+          if (l.radiusMeters != null && !(l.radiusMeters >= 1 && l.radiusMeters <= 100_000)) errors.push({ field: `${at}.radiusMeters`, message: msg('The geofence radius must be between 1 and 100,000 metres.') });
         });
         duplicateCodes(b.locations, l => l.code, `branches.${i}.locations`, errors);
       });
