@@ -166,7 +166,7 @@ public class ApplicationsController : ControllerBase
         try { app = await _lifecycle.ChangeApplicationAsync(Actor(tenantId, app.CompanyId), id, req.ExpectedVersion, "Advance", req.Notes ?? "Advanced application stage.", ct); }
         catch (OfferLifecycleException e) { return LifecycleFailure(e); }
 
-        await _notify.NotifyAsync(tenantId, null,
+        await _notify.NotifyEachAsync(tenantId, await HiringTeamAsync(tenantId, app.JobOpeningId, ct),
             "Application Advanced",
             $"{app.CandidateName} moved to {app.Stage} stage for {app.JobTitle}.",
             "JobApplication", app.Id.ToString(), ct);
@@ -236,7 +236,7 @@ public class ApplicationsController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
-        await _notify.NotifyAsync(tenantId, null,
+        await _notify.NotifyEachAsync(tenantId, await HiringTeamAsync(tenantId, app.JobOpeningId, ct),
             "Interview Scheduled",
             $"{app.CandidateName} — {req.InterviewType} scheduled on {req.ScheduledAt:dd MMM yyyy}.",
             "InterviewSchedule", interview.Id.ToString(), ct);
@@ -322,7 +322,11 @@ public class ApplicationsController : ControllerBase
         offer = await _db.OfferLetters.AsNoTracking().SingleAsync(o => o.Id == offerId && o.TenantId == tenantId, ct);
         if (!acceptance.AlreadyRecorded)
         {
-            await _notify.NotifyAsync(tenantId, null,
+            var openingId = await _db.JobApplications.AsNoTracking()
+                .Where(a => a.TenantId == tenantId && a.Id == offer.ApplicationId)
+                .Select(a => (Guid?)a.JobOpeningId)
+                .FirstOrDefaultAsync(ct);
+            await _notify.NotifyEachAsync(tenantId, openingId is Guid oid ? await HiringTeamAsync(tenantId, oid, ct) : [],
                 "Offer Accepted — Onboarding Started",
                 $"{offer.CandidateName} accepted the offer for {offer.OfferedJobTitle}. Employee draft created.",
                 "OfferLetter", offer.Id.ToString(), ct);
@@ -367,6 +371,27 @@ public class ApplicationsController : ControllerBase
     }
 
     // ── Shared helpers ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Who follows a candidate: the opening's assigned recruiter and the manager who raised the requisition behind
+    /// it. Candidate news is never a workspace-wide broadcast; with neither set, nothing is sent
+    /// (NotificationAudience).
+    /// </summary>
+    private async Task<IReadOnlyList<Guid?>> HiringTeamAsync(Guid tenantId, Guid jobOpeningId, CancellationToken ct)
+    {
+        var opening = await _db.JobOpenings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.Id == jobOpeningId)
+            .Select(o => new { o.AssignedHrUserId, o.RequisitionId })
+            .FirstOrDefaultAsync(ct);
+        if (opening is null) return [];
+        var requester = opening.RequisitionId is Guid requisitionId
+            ? await _db.ManpowerRequisitions.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && r.Id == requisitionId)
+                .Select(r => r.RequestedByUserId)
+                .FirstOrDefaultAsync(ct)
+            : null;
+        return [opening.AssignedHrUserId, requester];
+    }
 
     private string UserName() => User.FindFirst("name")?.Value ?? User.Identity?.Name ?? "HR";
 

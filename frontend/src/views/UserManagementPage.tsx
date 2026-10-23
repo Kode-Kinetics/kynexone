@@ -26,6 +26,7 @@ import type {
 import type { CompanyDto } from '../api/organization';
 import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
 import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
+import { localReturnPathOrNull } from '../lib/publicAuth';
 import { useLocale } from '../contexts/LocaleContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
@@ -188,8 +189,8 @@ function UsersTab() {
   const createdFromGuidedFlow = () => {
     setShowCreate(false);
     load();
-    const returnTo = searchParams?.get('returnTo');
-    if (returnTo?.startsWith('/') && !returnTo.startsWith('//')) router.push(returnTo);
+    const returnTo = localReturnPathOrNull(searchParams?.get('returnTo'));
+    if (returnTo) router.push(returnTo);
   };
 
   // Opening any action dialog starts from a clean slate: a link issued for one user must never be
