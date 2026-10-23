@@ -1336,15 +1336,19 @@ public class AttendanceService : IAttendanceService
                 await _db.SaveChangesAsync(ct);
                 return r;
             }, ct);
-            // Not a tenant broadcast: the employee and whoever filed it, plus the employee's HR business partner (the HR
-            // person named on their record) when one is set. Nobody resolved means nothing is sent.
-            var hrPartner = await _db.Employees.AsNoTracking()
+            // Not a tenant broadcast: the employee and whoever filed it, the employee's HR business partner (the HR
+            // person named on their record) when one is set, and the people who can decide this step: the HR
+            // Manager and HR Director logins whose company access covers the employee's company (capped). Without
+            // that queue, a correction with no business partner reached no one who could approve it.
+            var subject = await _db.Employees.AsNoTracking()
                 .Where(e => e.TenantId == tenantId && e.Id == reg.EmployeeId)
-                .Select(e => e.HRBusinessPartnerEmployeeId).FirstOrDefaultAsync(ct);
+                .Select(e => new { e.HRBusinessPartnerEmployeeId, e.CompanyId }).FirstOrDefaultAsync(ct);
             var recipients = new HashSet<Guid>(await LinkedUserIdsAsync(tenantId, [reg.EmployeeId], ct));
             if (reg.RequestedByUserId is Guid requester) recipients.Add(requester);
-            if (hrPartner is int hrPartnerId && hrPartnerId != reg.EmployeeId)
+            if (subject?.HRBusinessPartnerEmployeeId is int hrPartnerId && hrPartnerId != reg.EmployeeId)
                 recipients.UnionWith(await LinkedUserIdsAsync(tenantId, [hrPartnerId], ct));
+            foreach (var hrRole in new[] { "HR Manager", "HR Director" })
+                recipients.UnionWith(await NotificationAudience.QueueHoldersAsync(_db, tenantId, hrRole, subject?.CompanyId, ct));
             foreach (var userId in recipients)
                 await _notifications.NotifyAsync(tenantId, userId,
                     "Correction Request Pending HR",

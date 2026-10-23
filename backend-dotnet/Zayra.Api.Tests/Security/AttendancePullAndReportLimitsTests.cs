@@ -371,6 +371,28 @@ public sealed class AttendancePullAndReportLimitsTests
         notifications.Sent.Select(n => n.UserId).Should().BeEquivalentTo(new Guid?[] { employeeUser });
     }
 
+    [Fact]
+    public async Task AManagerApprovedCorrection_ReachesTheHrDecisionQueue_AndNoOneElse()
+    {
+        var (db, tenantId) = await NewTenantAsync("reg-hr-queue");
+        var manager = await AddEmployeeAsync(db, tenantId, "Manager Person", managerId: null);
+        var employee = await AddEmployeeAsync(db, tenantId, "Worker Person", managerId: manager.Id);
+        var employeeUser = await LinkLoginAsync(db, tenantId, employee.Id);
+        var managerUser = await LinkLoginAsync(db, tenantId, manager.Id);
+        var hrManager = await RoleHolderAsync(db, tenantId, "HR Manager");
+        var hrDirector = await RoleHolderAsync(db, tenantId, "HR Director");
+        await RoleHolderAsync(db, tenantId, "HR Officer"); // cannot decide the HR step, so is not told
+        var notifications = new RecordingNotifications();
+        var service = new AttendanceService(db, notifications, new NullHttpClientFactory());
+        var reg = await service.CreateRegularizationAsync(tenantId, Correction(employee.Id), new RequestContext(null, null, employeeUser, tenantId), Ct);
+        notifications.Sent.Clear();
+
+        await service.ApproveRegularizationAsync(tenantId, reg.Id, new RegularizationDecisionRequest("ok"), new RequestContext(null, null, managerUser, tenantId), Ct);
+
+        notifications.Sent.Should().NotContain(n => n.UserId == null);
+        notifications.Sent.Select(n => n.UserId).Should().BeEquivalentTo(new Guid?[] { employeeUser, hrManager, hrDirector });
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────────────────────────
 
     private static RegularizationRequestDto Correction(int employeeId) => new(employeeId, new DateOnly(2026, 9, 15), "Missed punch",
@@ -386,6 +408,17 @@ public sealed class AttendancePullAndReportLimitsTests
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
         return employee;
+    }
+
+    /// <summary>An active, group-scope login holding <paramref name="roleName"/> (so its access covers every company).</summary>
+    private static async Task<Guid> RoleHolderAsync(ZayraDbContext db, Guid tenantId, string roleName)
+    {
+        var role = new Role { TenantId = tenantId, Name = roleName, NormalizedName = roleName.ToUpperInvariant(), IsActive = true };
+        var user = new User { TenantId = tenantId, Email = $"{Guid.NewGuid():N}@example.com", FullName = roleName, IsActive = true, IsGroupScope = true };
+        db.AddRange(role, user);
+        db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
+        await db.SaveChangesAsync();
+        return user.Id;
     }
 
     private static async Task<Guid> LinkLoginAsync(ZayraDbContext db, Guid tenantId, int employeeId)

@@ -131,6 +131,24 @@ public class AdvanceRepaymentControlTests
         Assert.Equal("Pending", adv.Status);
     }
 
+    [Fact]
+    public async Task Create_ByAnEmployeeLinkedOnlyThroughTheLoginLink_ForThemselves_IsAccepted()
+    {
+        // The legacy Employee.UserAccountId column is empty; the login is linked through EmployeeUserAccounts,
+        // which is what the employee_id claim carries. Both the "myself" default and an explicit self-target work.
+        await using var db = CreateDb();
+        var f = await SeedAsync(db);
+        var employee = await db.Employees.SingleAsync(x => x.Id == f.EmployeeId);
+        employee.UserAccountId = null;
+        await db.SaveChangesAsync();
+
+        Assert.IsType<OkObjectResult>(await Advances(db, f, f.EmployeeUserId, Roles("Employee"), perms: new[] { "loans.self" })
+            .Create(new CreateAdvanceRequest(Guid.Empty, "", 1_000m, "Installments", 2, null, "rent"), Ct));
+        Assert.IsType<OkObjectResult>(await Advances(db, f, f.EmployeeUserId, Roles("Employee"), perms: new[] { "loans.self" })
+            .Create(new CreateAdvanceRequest(f.EmployeePublicId, "", 500m, "Installments", 1, null, "rent"), Ct));
+        Assert.Equal(2, await db.SalaryAdvances.CountAsync(x => x.EmployeeIntId == f.EmployeeId));
+    }
+
     [Theory]
     [InlineData(-1_000)]
     [InlineData(0)]
@@ -555,6 +573,8 @@ public class AdvanceRepaymentControlTests
             new(ClaimTypes.NameIdentifier, userId.ToString()),
             new(ClaimTypes.Name, "Advance Tester"),
         };
+        // The token service issues employee_id from the login-to-employee link; the employee's own login carries it.
+        if (userId == f.EmployeeUserId) claims.Add(new Claim("employee_id", f.EmployeeId.ToString()));
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
         claims.AddRange((perms ?? Array.Empty<string>()).Select(p => new Claim("permission", p)));
         return new AdvancesController(db, scope ?? new FixedScope(null))

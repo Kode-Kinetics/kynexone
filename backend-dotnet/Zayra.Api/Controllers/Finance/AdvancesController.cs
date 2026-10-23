@@ -9,6 +9,7 @@ using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -148,12 +149,14 @@ public class AdvancesController : ControllerBase
         if (uid == null) return Unauthorized();
         if (!IsMoney(req.RequestedAmount))
             return BadRequest("The requested amount must be a positive amount with at most two decimal places.");
+        // Who the caller IS comes from the login-to-employee link (CallerEmployeeResolver), the one lookup
+        // self-service, mobile and the data scope share. The legacy Employee.UserAccountId column is not used:
+        // a login linked only through EmployeeUserAccounts would otherwise be refused its own request.
+        var ownId = await CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct);
         if (req.EmployeeId == Guid.Empty && !req.EmployeeIntId.HasValue)
         {
             // Self-service: no employee named means the signed-in employee, as for a loan request.
-            var ownId = await _db.Employees.Where(x => x.TenantId == tid && x.UserAccountId == uid && !x.IsDeleted)
-                .Select(x => (int?)x.Id).FirstOrDefaultAsync(ct);
-            if (!ownId.HasValue) return BadRequest("No linked employee account was found.");
+            if (!ownId.HasValue) return BadRequest(EssLinkGuidance.En);
             req = req with { EmployeeIntId = ownId };
         }
         var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
@@ -164,12 +167,12 @@ public class AdvancesController : ControllerBase
         // Only HR or Finance may request an advance on someone else's behalf (LoansController.CreateLoanCore):
         // the HR/Finance roles, or loans.write ("create loan and advance applications"). The Employee role holds
         // loans.self only, so self-service stays limited to the caller's own record.
-        if (employee.UserAccountId != uid && !IsHrActor() && !IsFinanceActor() && !User.HasPermission("loans.write"))
+        if (employee.Id != ownId && !IsHrActor() && !IsFinanceActor() && !User.HasPermission("loans.write"))
             return Forbid();
 
         var policy = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
 
-        // Every policy limit is checked here, before the auto-disbursement branch below can move cash.
+        // Every policy limit is checked here, before the advance is recorded. Nothing is paid until a second person approves it.
         if (InstallmentsRefusal(policy, req.RequestedAmount, req.Installments) is { } installmentsRefusal)
             return BadRequest(installmentsRefusal);
         if (policy != null)
