@@ -216,6 +216,15 @@ public record AuthResponse(
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string? KnownDeviceToken { get; init; }
+
+    /// <summary>Raw trusted-browser token for the HttpOnly kx_mfa_trust cookie (MfaTrustedDevices), set only when the
+    /// user asked to trust this browser. Never serialised.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? MfaTrustToken { get; init; }
+
+    /// <summary>The cookie's lifetime in days, with <see cref="MfaTrustToken"/>.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int MfaTrustDays { get; init; }
 }
 
 public record CompanyAccessDto(Guid Id, string Name, string Code, string CountryCode, bool IsActive);
@@ -382,13 +391,15 @@ public record SecuritySettingDto(
     int RefreshTokenExpiryDays,
     bool AllowMultipleSessions,
     bool MfaRequired,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    int MfaTrustedDeviceDays = Zayra.Api.Models.SecuritySetting.DefaultMfaTrustedDeviceDays);
 
 // ── MFA DTOs ──────────────────────────────────────────────────────────────────
 
 /// <summary>Issued after password validates when the user has MFA enabled.
-/// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.</summary>
-public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds);
+/// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.
+/// <c>RememberDeviceDays</c>: how long "Trust this browser" would last (the tenant setting); 0 = don't offer it.</summary>
+public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds, int RememberDeviceDays = 0);
 
 /// <summary>
 /// Mandatory-MFA standing for the signed-in principal. <c>RequiredBecause</c> is "privileged_role",
@@ -402,7 +413,11 @@ public record MfaStatusDto(
     DateTime? EnforceFromUtc,
     bool Enforced,
     bool PromptToEnroll,
-    int? RecoveryCodesRemaining = null);
+    int? RecoveryCodesRemaining = null,
+    // Tenant users only (contract API 3): enabled && !required; the tenant's trust lifetime; live trusted browsers.
+    bool CanDisable = false,
+    int RememberDeviceDays = 0,
+    int TrustedDeviceCount = 0);
 
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>
@@ -430,7 +445,38 @@ public record MfaVerifySetupRequest(
 
 public record MfaChallengeVerifyRequest(
     [System.ComponentModel.DataAnnotations.Required] string ChallengeToken,
-    [System.ComponentModel.DataAnnotations.Required] string TotpCode);
+    [System.ComponentModel.DataAnnotations.Required] string TotpCode,
+    bool? RememberDevice = null);
+
+/// <summary>One trusted browser of the signed-in user (GET /api/auth/mfa/trusted-devices): this browser first, then
+/// lastUsedAtUtc descending (never used last), then createdAtUtc descending.</summary>
+public record MfaTrustedDeviceDto(
+    Guid Id,
+    DateTime CreatedAtUtc,
+    DateTime? LastUsedAtUtc,
+    DateTime ExpiresAtUtc,
+    /// <summary>"Firefox on macOS"; null when the User-Agent says nothing we recognise (the UI shows "Unknown browser").</summary>
+    string? Browser,
+    string? IpAddress,
+    bool Current);
+
+/// <summary>What verify-setup did (Amendment 1 maps each to a coded response).</summary>
+public enum MfaSetupOutcome { Enabled, CodeInvalid, SetupInvalid, AlreadyEnabled }
+
+/// <summary>What disable did (Amendment 1 maps each to a coded response).</summary>
+public enum MfaDisableOutcome { Disabled, CodeInvalid, NotEnabled, RequiredForRole, RequiredByWorkspace, Refused }
+
+/// <summary>The coded errors of the two-step endpoints (contract + Amendment 1).</summary>
+public static class MfaErrorCodes
+{
+    public const string CodeInvalid = "ERR_MFA_CODE_INVALID";
+    public const string SetupInvalid = "ERR_MFA_SETUP_INVALID";
+    public const string AlreadyEnabled = "ERR_MFA_ALREADY_ENABLED";
+    public const string NotEnabled = "ERR_MFA_NOT_ENABLED";
+    public const string RequiredForRole = "ERR_MFA_REQUIRED_FOR_ROLE";
+    public const string RequiredByWorkspace = "ERR_MFA_REQUIRED_BY_WORKSPACE";
+    public const string TrustDaysRange = "ERR_MFA_TRUST_DAYS_RANGE";
+}
 
 public record MfaDisableRequest(
     [System.ComponentModel.DataAnnotations.Required] string TotpCode);
@@ -485,4 +531,5 @@ public record UpdateSecuritySettingRequest(
     int? SessionTimeoutMinutes,
     int? RefreshTokenExpiryDays,
     bool? AllowMultipleSessions,
-    bool? MfaRequired = null);
+    bool? MfaRequired = null,
+    int? MfaTrustedDeviceDays = null);

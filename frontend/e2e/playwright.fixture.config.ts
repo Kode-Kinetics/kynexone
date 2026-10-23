@@ -16,7 +16,7 @@ const EXTERNAL_BASE_URL = process.env.FIXTURE_BASE_URL;
 
 export default defineConfig({
   testDir: '.',
-  testMatch: /(?:dashboard-glass|user-password-requirements|user-employee-link|employee-access-hr|approvals-self-requested|release-a-package|release-a-deductions|employee-sign-in|reports-kpi-drilldown)\.spec\.ts/,
+  testMatch: /(?:dashboard-glass|user-password-requirements|user-employee-link|employee-access-hr|approvals-self-requested|release-a-package|release-a-deductions|employee-sign-in|reports-kpi-drilldown|sign-in-security)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,
@@ -36,6 +36,8 @@ export default defineConfig({
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
+    // Desktop Chrome's default size, which CI's Browser Pilot uses for every spec.
+    { name: 'laptop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } } },
     { name: 'tablet', use: { ...devices['Desktop Chrome'], viewport: { width: 834, height: 1112 }, hasTouch: true } },
     { name: 'phone', use: { ...devices['Pixel 7'] } },
   ],

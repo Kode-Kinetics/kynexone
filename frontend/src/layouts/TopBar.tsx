@@ -1,6 +1,6 @@
 'use client';
 
-import { Bell, BellOff, CheckCheck, Globe, LogOut, Menu, Moon, Sun, Trash2, UserCircle2, X } from 'lucide-react';
+import { Bell, BellOff, CheckCheck, Globe, LogOut, Menu, Moon, ShieldCheck, Sun, Trash2, UserCircle2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
@@ -346,6 +346,14 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navi
                 className="flex w-full items-center gap-2.5 px-4 py-2.5 text-start text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.04]"
               >
                 <UserCircle2 className="h-4 w-4 text-slate-400" /> {t('My Profile')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setUserMenuOpen(false); navigationGuard.push('/account/security', userButtonRef.current); }}
+                className="flex w-full items-center gap-2.5 px-4 py-2.5 text-start text-sm text-slate-700 transition hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/[0.04]"
+                data-testid="user-menu-sign-in-security"
+              >
+                <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden /> {t('Sign-in security')}
               </button>
               <button
                 type="button"

@@ -48,6 +48,16 @@ public interface IMfaService
     Task<bool> DisableAsync(Guid userId, Guid tenantId, string totpCode, CancellationToken cancellationToken);
     /// <summary>Privileged recovery: disables a tenant factor under platform authorization and full credential invalidation.</summary>
     Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>VerifySetupAsync with the reason a failure happened (Amendment 1 coded errors).</summary>
+    async Task<Zayra.Api.Application.Auth.MfaSetupOutcome> VerifySetupWithOutcomeAsync(Guid userId, Guid tenantId, Zayra.Api.Application.Auth.MfaVerifySetupRequest request, CancellationToken cancellationToken)
+        => await VerifySetupAsync(userId, tenantId, request, cancellationToken)
+            ? Zayra.Api.Application.Auth.MfaSetupOutcome.Enabled
+            : Zayra.Api.Application.Auth.MfaSetupOutcome.CodeInvalid;
+    /// <summary>The user turns two-step off: refused for a privileged role or a company-wide mandate (Amendment 1).</summary>
+    async Task<Zayra.Api.Application.Auth.MfaDisableOutcome> DisableWithOutcomeAsync(Guid userId, Guid tenantId, string totpCode, RequestContext context, CancellationToken cancellationToken)
+        => await DisableAsync(userId, tenantId, totpCode, cancellationToken)
+            ? Zayra.Api.Application.Auth.MfaDisableOutcome.Disabled
+            : Zayra.Api.Application.Auth.MfaDisableOutcome.CodeInvalid;
 
     // ── Platform user MFA ─────────────────────────────────────────────────────
     Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid platformUserId, CancellationToken cancellationToken);
