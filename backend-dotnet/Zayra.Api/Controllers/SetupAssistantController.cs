@@ -839,13 +839,13 @@ public class SetupAssistantController : ControllerBase
         if (policy.BranchId.HasValue || !string.IsNullOrEmpty(policy.DepartmentName) || !string.IsNullOrEmpty(policy.Grade)
             || !string.IsNullOrEmpty(policy.ContractType) || !string.IsNullOrEmpty(policy.Gender)
             || policy.NationalityScope is LeaveNationalityScopes.National or LeaveNationalityScopes.Expatriate
-            || !string.IsNullOrEmpty(policy.CountryCode) && CountryCodeStandard.NormalizeToIso2(policy.CountryCode) != CountryCodeStandard.NormalizeToIso2(country)
+            || !string.IsNullOrEmpty(policy.CountryCode) && LeavePolicyScope.CountryIso2(policy.CountryCode) != LeavePolicyScope.CountryIso2(country)
             || !LeavePolicyScope.SameEmploymentTypes(policy.EmploymentType, employmentType)) return false;
         var rows = eligibility.Where(e => e.LeavePolicyId == policy.Id && e.IsActive).ToArray();
         if (!gradeId.HasValue && !departmentId.HasValue) return rows.Length == 0;
         return rows.Length == 1 && rows[0].GradeId == gradeId && rows[0].DepartmentId == departmentId
             && (rows[0].CompanyId is null || rows[0].CompanyId == companyId) && rows[0].BranchId is null
-            && (string.IsNullOrEmpty(rows[0].CountryCode) || CountryCodeStandard.NormalizeToIso2(rows[0].CountryCode) == CountryCodeStandard.NormalizeToIso2(country))
+            && (string.IsNullOrEmpty(rows[0].CountryCode) || LeavePolicyScope.CountryIso2(rows[0].CountryCode) == LeavePolicyScope.CountryIso2(country))
             && (string.IsNullOrEmpty(rows[0].EmploymentType) || LeavePolicyScope.SameEmploymentTypes(rows[0].EmploymentType, employmentType))
             && string.IsNullOrEmpty(rows[0].ContractType);
     }

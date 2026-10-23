@@ -553,7 +553,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   useNavigationBlocker({
     id: 'company-setup-wizard',
     when: unsavedSections.length > 0,
-    message: t('These sections have changes you have not saved: {sections}. Leave and discard them?', {
+    message: t('These sections have changes you have not saved: {sections}. The automatic draft backup may already hold them. Leave anyway?', {
       sections: new Intl.ListFormat(locale, { type: 'conjunction' }).format(unsavedSections.map(id => t(SECTION_TITLE[id]))),
     }),
     onDiscard: () => {},

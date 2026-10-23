@@ -55,6 +55,19 @@ public sealed class LeavePolicyEmploymentTypesTests
         SetupAssistantService.LeaveScopesConflict(null, null, "Full-Time,Part-Time", null, null, "Contract").Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("KSA", "SA")]
+    [InlineData("KSA", "SAU")]
+    [InlineData("UAE", "AE")]
+    [InlineData("ksa ", "sa")]
+    [InlineData("SA", "KSA")]
+    public void A_KSA_or_UAE_policy_still_matches_a_company_backfilled_to_ISO2(string policyCountry, string companyCountry) =>
+        LeaveService.CountryMatches(policyCountry, companyCountry).Should().BeTrue();
+
+    [Fact]
+    public void Country_aliases_do_not_cross_countries() =>
+        LeaveService.CountryMatches("KSA", "AE").Should().BeFalse();
+
     [Fact]
     public void Admits_AnyListedType_ByCodeOrLabel()
     {

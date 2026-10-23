@@ -72,11 +72,24 @@ internal static class LeavePolicyScope
         return scope == LeaveNationalityScopes.National ? national : !national;
     }
 
+    /// <summary>
+    /// A country as ISO-2 for a leave-policy comparison: an ISO-2/ISO-3 code, or the two Gulf aliases the leave policy form
+    /// still offers and older companies were saved with (KSA, UAE). #258 backfills companies KSA→SA and UAE→AE, so a
+    /// comparison that did not know the aliases would stop matching every "KSA"/"UAE" policy to its own company.
+    /// </summary>
+    internal static string? CountryIso2(string? value) =>
+        value?.Trim().ToUpperInvariant() switch
+        {
+            "KSA" => "SA",
+            "UAE" => "AE",
+            _ => CountryCodeStandard.NormalizeToIso2(value),
+        };
+
     /// <summary>True/false when the nationality can be placed against the company country; null when it cannot.</summary>
     internal static bool? IsNational(string? nationality, string? companyCountry)
     {
         if (string.IsNullOrWhiteSpace(nationality)) return null;
-        var country = CountryCodeStandard.NormalizeToIso2(companyCountry);
+        var country = CountryIso2(companyCountry);
         if (country is null) return null;
         return NationalityIso2(nationality) is { } iso2 ? iso2 == country : null;
     }

@@ -1687,7 +1687,7 @@ for (const locale of ['en', 'ar'] as const) {
     await page.evaluate(() => history.back());
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText(t('These sections have changes you have not saved: {sections}. Leave and discard them?', { sections: t('Company details') }));
+    await expect(dialog).toContainText(t('These sections have changes you have not saved: {sections}. The automatic draft backup may already hold them. Leave anyway?', { sections: t('Company details') }));
     await shot(page, info, `save-${locale}-leave-warning`);
     await dialog.getByRole('button', { name: locale === 'ar' ? 'إلغاء' : 'Cancel', exact: true }).click();
     await expect(page).toHaveURL(/\/setup\/company\/co-evostel\/complete/);

@@ -13,7 +13,7 @@ const ar: Record<string, string> = {
   "{count, plural, one {# field needs} other {# fields need}} attention in this section. Nothing was saved.": "{count, plural, one {حقل واحد يحتاج} two {حقلان يحتاجان} few {# حقول تحتاج} many {# حقلًا يحتاج} other {# حقل يحتاج}} إلى مراجعة في هذا القسم. لم يُحفظ شيء.",
   "This draft was changed elsewhere, so this section was not saved. Reload the draft, then save the section again.": "تم تغيير هذه المسودة في مكان آخر، لذا لم يُحفظ هذا القسم. أعد تحميل المسودة، ثم احفظ القسم مرة أخرى.",
   "This section could not be saved. Your changes are still here. Check your connection and try again.": "تعذّر حفظ هذا القسم. تغييراتك لا تزال هنا. تحقق من الاتصال وأعد المحاولة.",
-  "These sections have changes you have not saved: {sections}. Leave and discard them?": "في هذه الأقسام تغييرات لم تحفظها: {sections}. هل تريد المغادرة وتجاهلها؟",
+  "These sections have changes you have not saved: {sections}. The automatic draft backup may already hold them. Leave anyway?": "في هذه الأقسام تغييرات لم تحفظها: {sections}. قد تكون النسخة الاحتياطية التلقائية للمسودة قد احتفظت بها. هل تريد المغادرة على أي حال؟",
   "Backing up the draft…": "جارٍ حفظ نسخة احتياطية من المسودة…",
   "Draft backed up {when}": "حُفظت نسخة احتياطية من المسودة {when}",
   "Draft backed up": "حُفظت نسخة احتياطية من المسودة",

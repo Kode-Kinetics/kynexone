@@ -2778,8 +2778,8 @@ public class LeaveService : ILeaveService
     internal static bool CountryMatches(string? policyCountry, string? employeeCountry)
     {
         if (string.IsNullOrWhiteSpace(policyCountry)) return true;
-        var left = CountryCodeStandard.NormalizeToIso2(policyCountry);
-        var right = CountryCodeStandard.NormalizeToIso2(employeeCountry);
+        var left = LeavePolicyScope.CountryIso2(policyCountry);
+        var right = LeavePolicyScope.CountryIso2(employeeCountry);
         if (left is not null && right is not null)
             return string.Equals(left, right, StringComparison.Ordinal);
         return string.Equals(policyCountry.Trim(), (employeeCountry ?? string.Empty).Trim(),
