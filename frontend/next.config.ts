@@ -10,6 +10,17 @@ const apiUrl =
   process.env.NEXT_PUBLIC_API_URL ||
   'http://localhost:5117';
 
+export const SECURITY_HEADERS = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+  { key: 'Content-Security-Policy', value: "frame-ancestors 'self'" },
+  {
+    key: 'Permissions-Policy',
+    value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), browsing-topics=()',
+  },
+];
+
 const nextConfig: NextConfig = {
   // Isolated local QA may run beside the existing dev server without sharing its build cache.
   distDir: process.env.NEXT_DIST_DIR || '.next',
@@ -37,6 +48,16 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        // Baseline browser hardening for every page. /api/* is left out: the API sets its own,
+        // stricter set (SecurityHeaders.cs), and a second copy of a header would conflict with it.
+        // Framing is limited to this origin, not refused outright: offer-letter and payslip PDF
+        // previews are same-origin blob: iframes. The web app never asks for the camera, microphone
+        // or location (selfie attendance is the mobile app), so those are switched off.
+        // A script-src Content-Security-Policy is deliberately not set here yet.
+        source: '/:path((?!api/).*)',
+        headers: SECURITY_HEADERS,
+      },
+      {
         // Hashed JS/CSS bundles are content-addressed — safe to cache forever in browser + CDN.
         source: '/_next/static/:path*',
         headers: [{ key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }],
@@ -63,9 +84,7 @@ const nextConfig: NextConfig = {
     ];
   },
 
-  images: {
-    remotePatterns: [{ protocol: 'https', hostname: '**' }],
-  },
+  // next/image is not used. No remotePatterns, so /_next/image cannot be used to fetch other sites.
 };
 
 export default withBundleAnalyzer(nextConfig);
