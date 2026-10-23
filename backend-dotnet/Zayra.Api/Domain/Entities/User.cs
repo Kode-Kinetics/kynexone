@@ -52,6 +52,13 @@ public class User : ITenantOwned
     public DateTime? LastLoginAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
+    /// <summary>
+    /// Every session of this login was issued at some epoch; a refresh is refused once this has moved past it. Raised
+    /// (never set) by the ZayraDbContext save hook when the password, the factor or the login's active state changes,
+    /// and by <c>TenantSessionSecurity.EndAllSessions</c>; a database trigger makes every raise exactly one step above
+    /// the stored row. Unlike <see cref="UpdatedAtUtc"/> (the access-token stamp) nothing routine moves it.
+    /// </summary>
+    public long SessionEpoch { get; set; }
     public ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
     public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
     public ICollection<PasswordResetToken> PasswordResetTokens { get; set; } = new List<PasswordResetToken>();

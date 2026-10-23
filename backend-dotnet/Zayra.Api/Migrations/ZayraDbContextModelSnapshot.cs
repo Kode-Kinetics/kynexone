@@ -396,6 +396,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("revoked_by_ip");
 
+                    b.Property<long>("SessionEpoch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("session_epoch");
+
+                    b.Property<DateTime>("SessionStartedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("session_started_at_utc")
+                        .HasDefaultValueSql("now()");
+
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -812,6 +824,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(40)")
                         .HasDefaultValue("Local")
                         .HasColumnName("provisioning_source");
+
+                    b.Property<long>("SessionEpoch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("session_epoch");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -29403,6 +29421,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("refresh_token_expiry_days");
 
+                    b.Property<int>("SessionMaxHours")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(12)
+                        .HasColumnName("session_max_hours");
+
                     b.Property<int>("SessionTimeoutMinutes")
                         .HasColumnType("integer")
                         .HasColumnName("session_timeout_minutes");
@@ -29427,6 +29451,8 @@ namespace Zayra.Api.Migrations
                     b.ToTable("security_settings", null, t =>
                         {
                             t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90");
+
+                            t.HasCheckConstraint("ck_security_settings__session_max_hours", "session_max_hours BETWEEN 1 AND 168");
                         });
                 });
 

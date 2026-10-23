@@ -394,7 +394,8 @@ public record SecuritySettingDto(
     bool AllowMultipleSessions,
     bool MfaRequired,
     DateTime UpdatedAtUtc,
-    int MfaTrustedDeviceDays = Zayra.Api.Models.SecuritySetting.DefaultMfaTrustedDeviceDays);
+    int MfaTrustedDeviceDays = Zayra.Api.Models.SecuritySetting.DefaultMfaTrustedDeviceDays,
+    int SessionMaxHours = Zayra.Api.Models.SecuritySetting.DefaultSessionMaxHours);
 
 // ── MFA DTOs ──────────────────────────────────────────────────────────────────
 
@@ -578,4 +579,14 @@ public record UpdateSecuritySettingRequest(
     int? RefreshTokenExpiryDays,
     bool? AllowMultipleSessions,
     bool? MfaRequired = null,
-    int? MfaTrustedDeviceDays = null);
+    int? MfaTrustedDeviceDays = null,
+    int? SessionMaxHours = null);
+
+/// <summary>The coded errors of the session policy (security settings and refresh).</summary>
+public static class SessionErrorCodes
+{
+    /// <summary>PUT /api/access/security-settings with <c>sessionMaxHours</c> outside 1..168 (400).</summary>
+    public const string MaxHoursRange = "ERR_SESSION_MAX_HOURS_RANGE";
+    /// <summary>POST /api/auth/refresh after the session reached its maximum length (401).</summary>
+    public const string Expired = Zayra.Api.Infrastructure.Auth.SessionExpiredException.Code;
+}

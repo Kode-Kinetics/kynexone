@@ -17,7 +17,7 @@ import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
 import { isWorkspaceRequired, localReturnPathOrNull, normalizeWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
 import { isWelcomeCode, normalizeWelcomeCode, toAsciiDigits } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
-import { takeSignInNotice } from '../lib/signInNotice';
+import { takeSignInNotice, type SignInNotice } from '../lib/signInNotice';
 import { dateLocale } from '../lib/format';
 import { markResetNoticeSeen } from '../components/ResetCodeNotice';
 import { homePathFor } from '../lib/homePath';
@@ -129,15 +129,30 @@ function LoginCard() {
   const [enrollmentUri, setEnrollmentUri] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
 
-  /* Sent here by Sign-in security after two-step was turned on or off, which ends every session:
-     say why, so the sign-in page is not an unexplained sign-out. */
+  /* Sent here by Sign-in security after two-step was turned on or off, which ends every session,
+     or by the API client when the session reached the company's maximum length: say why, so the
+     sign-in page is not an unexplained sign-out. */
+  const [arrivalNotice, setArrivalNotice] = useState<SignInNotice | null>(null);
+  // Read once, on arrival.
   useEffect(() => {
     const notice = takeSignInNotice();
-    if (notice === 'two-step-on') setInfo(t('Two-step sign-in is on, and you were signed out everywhere for your security. Sign in again with your password and a code from your authenticator app.'));
-    else if (notice === 'two-step-off') setInfo(t('Two-step sign-in is off, and you were signed out everywhere for your security. Sign in again with your password.'));
-  // Read once, on arrival.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (notice) setArrivalNotice(notice); // A second run (React's dev double-mount) finds none; keep the first.
   }, []);
+  /* After a full page load (the session-ended case) the saved language is applied after this page
+     first renders, so the sentence follows the language while it is still the one shown. Once
+     something else replaced it (a sign-in attempt), a language switch does not bring it back. */
+  const arrivalNoticeShown = useRef<string | null>(null);
+  useEffect(() => {
+    if (!arrivalNotice) return;
+    const text = arrivalNotice === 'two-step-on'
+      ? t('Two-step sign-in is on, and you were signed out everywhere for your security. Sign in again with your password and a code from your authenticator app.')
+      : arrivalNotice === 'two-step-off'
+        ? t('Two-step sign-in is off, and you were signed out everywhere for your security. Sign in again with your password.')
+        : t('Your session has ended. Sign in again.');
+    const shown = arrivalNoticeShown.current;
+    setInfo((prev) => ((shown === null && prev === '') || prev === shown ? text : prev));
+    arrivalNoticeShown.current = text;
+  }, [arrivalNotice, t]);
 
   useLayoutEffect(() => {
     // Never retain a query-string bearer credential in browser history, logs, or

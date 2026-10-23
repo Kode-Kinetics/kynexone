@@ -2221,7 +2221,8 @@ function SecurityTab() {
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-5 space-y-4">
         <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Session Policy</h4>
         <div className="grid grid-cols-2 gap-4">
-          {numField('sessionTimeoutMinutes', 'Session Timeout (minutes)', 15, 1440, 'Idle time before a signed-in user is logged out automatically.')}
+          {numField('sessionTimeoutMinutes', 'Sign out after inactivity (minutes)', 15, 1440, 'Ends a session nobody has used for this long.')}
+          {numField('sessionMaxHours', 'Maximum session length (hours)', 1, 168, 'Everyone signs in again after this long, even if they are active. Shorter is safer. Default 12.')}
           {numField('refreshTokenExpiryDays', 'Refresh Token Expiry (days)', 1, 90, 'Maximum days a login can stay remembered without re-entering the password. Lower = more secure, more frequent logins.')}
         </div>
         {boolField('allowMultipleSessions', 'Allow Multiple Concurrent Sessions')}

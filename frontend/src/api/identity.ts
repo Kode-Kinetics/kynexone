@@ -236,6 +236,8 @@ export interface SecuritySetting {
   refreshTokenExpiryDays: number;
   allowMultipleSessions: boolean;
   mfaRequired: boolean;
+  /** Hard cap: everyone signs in again after this many hours, even if active (1–168, default 12). */
+  sessionMaxHours?: number;
   updatedAtUtc: string;
 }
 

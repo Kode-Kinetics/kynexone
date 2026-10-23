@@ -907,8 +907,26 @@ cookie is stateless and cannot be revoked. RLS is a target rule — the live bri
 ### `security_settings.mfa_trusted_device_days` (column)
 - `integer NOT NULL DEFAULT 30`, `ck_security_settings__mfa_trusted_device_days` (`BETWEEN 0 AND 90`). How long a browser stays trusted after a two-step code; 0 = the tenant does not offer it. Read by sign-in (`rememberDeviceDays` on the challenge), `GET /api/auth/mfa/status`, and written by `PUT /api/access/security-settings` (`mfaTrustedDeviceDays`, out of range → 400 `ERR_MFA_TRUST_DAYS_RANGE`).
 
+## W. Session length and session epoch (live bridge)
 
-## W. Minimum loan repayment (live bridge)
+Not part of the 76. Four columns, no table, shipped on the **live** EF schema (migration
+`20261023134050_AddSessionMaxLengthAndEpoch`). Capability: every session ends a set number of hours after its sign-in
+however active it is, and ending every session of a login is one recorded fact rather than something each path must
+remember. No new table: both facts belong to the rows they qualify (the tenant policy, the login, the session lineage).
+
+### `security_settings.session_max_hours` (column)
+- `integer NOT NULL DEFAULT 12`, `ck_security_settings__session_max_hours` (`BETWEEN 1 AND 168`). The hard session limit. Read at every `POST /api/auth/refresh` (never copied onto a token, so lowering it applies to running sessions at their next refresh); written by `PUT /api/access/security-settings` (`sessionMaxHours`, out of range → 400 `ERR_SESSION_MAX_HOURS_RANGE`). `session_timeout_minutes` stays the idle timeout, measured from the last rotation.
+
+### `refresh_tokens.session_started_at_utc` (column)
+- `timestamptz NOT NULL DEFAULT now()`. When the sign-in that started the lineage happened: the issue time at password sign-in, trusted-browser sign-in, two-step sign-in and the session re-issued after signed-in two-step setup; copied unchanged by every rotation. A refresh at or after `session_started_at_utc + session_max_hours` revokes the family and answers 401 `ERR_SESSION_EXPIRED` (`auth.session_expired`, with `sessionMaxHours`). Backfilled with `created_at_utc`, so the deploy ends no session. The default only serves a row written by an earlier release.
+
+### `users.session_epoch` and `refresh_tokens.session_epoch` (columns)
+- `bigint NOT NULL DEFAULT 0` on both; no backfill (everything starts at 0). A refresh token carries the epoch of the user row it was issued from (locked, the same snapshot its password or factor was verified against); rotation copies it. A refresh whose token epoch differs from the user's, read under the user-row lock, revokes the family and answers the generic 401.
+- **Raised** (never set) by the `ZayraDbContext` save hook on the same change set that revokes trusted browsers — password, factor (two-step off or a new secret), active state (`is_active` off; status `Suspended`, `Deactivated` or `Locked` by an administrator; access mode `NoLogin`), deletion — and by `TenantSessionSecurity.EndAllSessions` (platform revoke-sessions). A failed-password lockout (`is_locked`/`lockout_end`), login telemetry, profile edits, role changes and two-step sign-ins do not raise it. In the same save the hook revokes the user's live refresh tokens, consumes their open two-step challenges and writes `auth.sessions_ended` with the `trigger`.
+- **Trigger** — `trg_users__session_epoch_increments` (`BEFORE UPDATE OF session_epoch`, `fn_users__session_epoch_increments`): any write of the column stores `OLD + 1`, whatever value was written, so concurrent raises from the same read never collapse into one and the epoch never goes down.
+- **Ratchet** — `SessionEpochTriggerColumnWriteRatchetTests`: no `ExecuteUpdate` or raw SQL may write `password_hash`, `mfa_secret_encrypted`, `mfa_enabled`, `status`, `is_active`, `is_deleted` or `access_mode` on `users` outside its allowlist (today only the sign-in password rehash, which keeps the same password and must not end sessions), because such a write would bypass the hook.
+
+## X. Minimum loan repayment (live bridge)
 
 Not part of the 76. Two columns on the **live** EF schema (migration `20261023155309_LoanMinInstallments`). Capability: a
 loan type or company loan policy can require a **shortest** repayment as well as a longest (e.g. a housing advance or

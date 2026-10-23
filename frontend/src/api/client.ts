@@ -2,6 +2,7 @@ import axios from 'axios';
 import { RefreshQueue } from './refreshQueue';
 import { isRefreshRefused } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from './clearSession';
+import { setSignInNotice, signInNoticeForRefreshRefusal } from '../lib/signInNotice';
 
 // In the browser, use relative URLs so Next.js proxy handles CORS.
 // On the server (SSR), we need the absolute URL since there's no proxy.
@@ -163,6 +164,10 @@ client.interceptors.response.use(
       // (offline, a deploy's 502s) the refresh token may still be good: keep the session and let
       // the caller show "can't reach the server" instead of signing the user out over a blip.
       if (!isRefreshRefused(refreshError)) return Promise.reject(refreshError);
+      // The session reached the company's maximum length: the sign-in page says so. Any other
+      // refusal is an ordinary sign-out, with no sentence.
+      const notice = signInNoticeForRefreshRefusal(refreshError);
+      if (notice) setSignInNotice(notice);
       clearSessionKeepingLocale();
       window.location.href = '/login';
       // The original 401: callers (AuthContext's /me) read it as a definite "signed out".

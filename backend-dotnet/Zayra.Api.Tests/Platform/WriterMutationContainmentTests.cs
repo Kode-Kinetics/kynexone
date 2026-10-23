@@ -53,6 +53,10 @@ public sealed class WriterMutationContainmentTests : PlatformTestBase
         db.ChangeTracker.Clear();
         var committedUser = await db.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == user.Id);
         TenantSessionSecurity.StampValue(committedUser).Should().NotBe(priorStamp);
+        // Every refresh lineage is ended by the epoch, once, and the end is recorded with its trigger.
+        committedUser.SessionEpoch.Should().Be(1);
+        (await db.AuditLogs.IgnoreQueryFilters().SingleAsync(x => x.Action == TenantSessionSecurity.SessionsEndedAuditAction && x.EntityId == user.Id.ToString()))
+            .Metadata.Should().Contain($"\"trigger\":\"{TenantSessionSecurity.EndAllSessionsTrigger}\"");
         (await db.RefreshTokens.SingleAsync(x => x.Id == refresh.Id)).RevokedAtUtc.Should().NotBeNull();
         (await db.MfaChallengeTokens.IgnoreQueryFilters().SingleAsync(x => x.Id == challenge.Id)).UsedAtUtc.Should().NotBeNull();
         (await db.AdminAuditLogs.IgnoreQueryFilters().CountAsync(x => x.Action == "SessionsRevoked")).Should().Be(1);

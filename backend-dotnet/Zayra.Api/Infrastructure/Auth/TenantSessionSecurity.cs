@@ -31,6 +31,33 @@ public static class TenantSessionSecurity
         user.UpdatedAtUtc = now <= current ? current.AddTicks(10) : now;
     }
 
+    // ── Session epoch and the hard session limit ─────────────────────────────────────────────────
+
+    /// <summary>Audit action of an epoch raise (ZayraDbContext.EndSessionsOfAsync); its metadata names the trigger.</summary>
+    public const string SessionsEndedAuditAction = "auth.sessions_ended";
+    /// <summary>Audit action of a refresh refused by the hard limit; its metadata carries the limit in hours.</summary>
+    public const string SessionExpiredAuditAction = "auth.session_expired";
+    /// <summary>The trigger recorded when <see cref="EndAllSessions"/> raised the epoch without a credential change.</summary>
+    public const string EndAllSessionsTrigger = "end_all_sessions";
+
+    /// <summary>
+    /// Ends every session of <paramref name="user"/>: raises its session epoch, so each refresh token issued before is
+    /// refused (and its family revoked) at its next refresh. The caller's SaveChanges commits it; the save hook stages the
+    /// revocation of the live refresh tokens and open challenges and writes <c>auth.sessions_ended</c> in the same save.
+    /// A credential change in the same save raises it once, not twice. Access tokens are ended separately by
+    /// <see cref="RotateStamp(User)"/>.
+    /// </summary>
+    public static void EndAllSessions(User user) => user.SessionEpoch += 1;
+
+    /// <summary>The tenant's hard session limit in hours; 12 when the tenant has no settings row; always 1..168.</summary>
+    public static int EffectiveSessionMaxHours(SecuritySetting? policy) =>
+        Math.Clamp(policy?.SessionMaxHours ?? SecuritySetting.DefaultSessionMaxHours,
+            SecuritySetting.MinSessionMaxHours, SecuritySetting.MaxSessionMaxHours);
+
+    /// <summary>True once the session that <paramref name="token"/> belongs to has run for the tenant's maximum length.</summary>
+    public static bool HasReachedMaxLength(RefreshToken token, SecuritySetting? policy, DateTime nowUtc) =>
+        token.SessionStartedAtUtc.AddHours(EffectiveSessionMaxHours(policy)) <= nowUtc;
+
     public static async Task<bool> IsCurrentAsync(ClaimsPrincipal principal, ZayraDbContext db, CancellationToken ct)
     {
         if (principal.HasClaim("is_platform_admin", "true")) return true;
@@ -149,4 +176,16 @@ public static class TenantSessionSecurity
             _ => !claimed.IsGroupLevel && claimed.AccessibleCompanyIds.Count == 0
         };
     }
+}
+
+/// <summary>
+/// A refresh refused because the session reached the tenant's maximum length (<c>security_settings.session_max_hours</c>).
+/// The refresh endpoint answers 401 <c>{ code: "ERR_SESSION_EXPIRED", message }</c>; every other refusal stays the
+/// generic invalid-token 401.
+/// </summary>
+public sealed class SessionExpiredException : UnauthorizedAccessException
+{
+    public const string Code = "ERR_SESSION_EXPIRED";
+    public const string UserMessage = "Your session has ended. Sign in again.";
+    public SessionExpiredException() : base(UserMessage) { }
 }
