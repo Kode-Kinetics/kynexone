@@ -185,7 +185,16 @@ export const authApi = {
 
   /** 200 `{ backupCodes }` (shown once), or the older 204: then `null`, and no codes step. */
   mfaVerifySetup: (tempSecret: string, totpCode: string) =>
-    client.post('/api/auth/mfa/verify-setup', { tempSecret, totpCode }).then((r) => backupCodesFrom(r.data)),
+    client.post('/api/auth/mfa/verify-setup', { tempSecret, totpCode }).then((r) => {
+      // Turning two-step on ends every session, this one included, and the server re-issues THIS session in the
+      // login shape. Keep it, or the next request signs the person out while their backup codes are on screen.
+      const session = r.data as Partial<AuthResponse> | undefined;
+      if (session?.accessToken && session.refreshToken) {
+        localStorage.setItem('zayra_access_token', session.accessToken);
+        localStorage.setItem('zayra_refresh_token', session.refreshToken);
+      }
+      return backupCodesFrom(r.data);
+    }),
 
   mfaEnrollmentSetup: (enrollmentToken: string) =>
     publicAuthClient.post<{ provisioningUri: string }>('/api/auth/mfa/enrollment/setup', { enrollmentToken }).then((r) => r.data),

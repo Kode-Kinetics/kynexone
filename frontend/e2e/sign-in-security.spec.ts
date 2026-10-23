@@ -79,6 +79,8 @@ interface World {
   privileged?: boolean;
   /** The change (turn on / off) ends this session too: /me answers 401 afterwards. */
   changeEndsSession?: boolean;
+  /** verify-setup re-issues this session in the login shape alongside the codes (the current server). */
+  reissueSession?: boolean;
   verifySetup?: Reply[];
   disable?: Reply[];
   forgetOne?: Reply[];
@@ -164,6 +166,7 @@ async function mockApi(page: Page, world: World) {
         world.status = status({ ...world.status, enabled: true, promptToEnroll: false, canDisable: !world.status.required,
           ...(world.backupCodes ? { backupCodesRemaining: world.backupCodes.length } : {}) });
         if (world.changeEndsSession) sessionEnded = true;
+        if (world.reissueSession) return json({ backupCodes: world.backupCodes ?? [], accessToken: 'reissued-access', refreshToken: 'reissued-refresh', expiresAtUtc: '2030-01-01T00:00:00Z' });
         return world.backupCodes ? json({ backupCodes: world.backupCodes }) : noContent();
       }
       return json(r.body, r.status);
@@ -735,6 +738,18 @@ test.describe('backup codes: saved once, after turning on', () => {
     await expectCodesGone(page, CODES);
     expectNotLogged(api.logs, CODES);
     expect(api.errors).toEqual([]);
+  });
+
+  test('the session the server re-issues on turning on is kept, so the codes are not lost to a sign-out', async ({ page }) => {
+    await mockApi(page, { status: status(), devices: [], backupCodes: CODES, reissueSession: true });
+    await turnOnFromPage(page);
+    await expect(codesStep(page).getByTestId('backup-codes-list').locator('li')).toHaveCount(10);
+    expect(await page.evaluate(() => [localStorage.getItem('zayra_access_token'), localStorage.getItem('zayra_refresh_token')]))
+      .toEqual(['reissued-access', 'reissued-refresh']);
+    await codesStep(page).getByRole('checkbox', { name: "I've saved these codes" }).check();
+    await codesStep(page).getByRole('button', { name: 'Done' }).click();
+    await expect(page).not.toHaveURL(/\/login/);
+    await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is on');
   });
 
   test('when turning on ended this session, the codes still come first, then sign-in says why', async ({ page }) => {
