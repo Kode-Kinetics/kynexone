@@ -22,6 +22,7 @@ import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
 import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
+import { educationClaims } from './educationClaims';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { attendanceExceptions } from './attendanceExceptions';
@@ -54,6 +55,7 @@ const en: Dict = {
   ...policyBinder.en,
   ...policyForms.en,
   ...gradeBenefitDefaults.en,
+  ...educationClaims.en,
   "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
   "Starts on {date}": "Starts on {date}",
   "Ends on {date}": "Ends on {date}",
@@ -1463,6 +1465,7 @@ const ar: Dict = {
   ...policyBinder.ar,
   ...policyForms.ar,
   ...gradeBenefitDefaults.ar,
+  ...educationClaims.ar,
   "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
   "Starts on {date}": "تبدأ في {date}",
   "Ends on {date}": "تنتهي في {date}",
