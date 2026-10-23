@@ -8,10 +8,12 @@ import { stepCopy, type StepId, type StepState, type WizardMode } from '../../li
  * The step rail: number, title and state for every step. A step is reachable once every step before
  * it has no blockers, so the rail can go back freely but never skip a required field.
  */
-export function WizardRail({ steps, current, states, reachable, onSelect, disabled, mode = 'create' }: {
+export function WizardRail({ steps, current, states, saved, reachable, onSelect, disabled, mode = 'create' }: {
   steps: StepId[];
   current: StepId;
   states: Record<StepId, StepState>;
+  /** Per step, beside Done / Needs attention: Saved once every section of it was saved with Save, Unsaved changes otherwise. */
+  saved?: Partial<Record<StepId, 'saved' | 'unsaved' | null>>;
   reachable: (step: StepId) => boolean;
   onSelect: (step: StepId) => void;
   disabled?: boolean;
@@ -26,11 +28,13 @@ export function WizardRail({ steps, current, states, reachable, onSelect, disabl
         {steps.map((id, index) => {
           const active = id === current;
           const state = states[id];
+          const savedState = saved?.[id] ?? null;
           return (
             <li key={id} className="min-w-0">
               <button type="button" onClick={() => onSelect(id)} disabled={disabled || (!active && !reachable(id))}
                 aria-current={active ? 'step' : undefined}
                 data-state={state}
+                data-saved={savedState ?? undefined}
                 className={`flex w-full items-center justify-center gap-3 rounded-lg px-1 py-2 text-start transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:justify-start lg:px-3 ${active ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-blue-200' : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/5'}`}>
                 <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
                   state === 'done' ? 'border-emerald-600 bg-emerald-600 text-white'
@@ -40,7 +44,10 @@ export function WizardRail({ steps, current, states, reachable, onSelect, disabl
                 </span>
                 <span className="sr-only lg:not-sr-only lg:min-w-0">
                   <span className="block text-sm font-semibold">{t(stepCopy(id, mode).title)}</span>
-                  <span className="block text-xs leading-5 text-slate-500 dark:text-slate-400">{stateLabel(state)}</span>
+                  <span className="block text-xs leading-5 text-slate-600 dark:text-slate-400">
+                    {stateLabel(state)}
+                    {savedState && <>{' · '}<span className={savedState === 'saved' ? 'text-emerald-700 dark:text-emerald-300' : 'font-medium text-amber-800 dark:text-amber-300'}>{savedState === 'saved' ? t('Saved') : t('Unsaved changes')}</span></>}
+                  </span>
                 </span>
               </button>
             </li>

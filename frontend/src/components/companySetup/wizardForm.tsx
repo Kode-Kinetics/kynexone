@@ -83,11 +83,19 @@ export function TagPill({ tag }: { tag: 'new' | 'reused' | 'existing' | 'changed
   return <span className={`${base} bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200`}>{t('New')}</span>;
 }
 
-export function SectionHeader({ title, description, actions }: { title: string; description?: string; actions?: ReactNode }) {
+export function SectionHeader({ title, description, actions, id, status }: {
+  title: string; description?: string; actions?: ReactNode;
+  /** Heading id: a section Save moves focus here ("Save and continue"). */
+  id?: string;
+  /** The section's saved state, beside its title. */
+  status?: ReactNode;
+}) {
   return (
     <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0">
-        <h3 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h3>
+        {/* The status sits inline after the heading, so the heading stays the row's first child. */}
+        <h3 id={id} tabIndex={id ? -1 : undefined} className="inline scroll-mt-24 text-base font-semibold text-slate-900 outline-none dark:text-white">{title}</h3>
+        {status && <span className="ms-2 inline-block align-middle">{status}</span>}
         {description && <p className="mt-0.5 max-w-2xl text-sm leading-5 text-slate-600 dark:text-slate-400">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}

@@ -9,6 +9,7 @@ import { MANAGE_TAB, inCatalog, stepWarnings } from '../../lib/companySetupWizar
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
 import { UseDefaultsButton } from './UseDefaultsButton';
+import { SectionSaveBar, SectionSavedStatus, sectionHeadingId } from './sectionSave';
 
 type ListKey = 'costCentres' | 'departments' | 'designations' | 'grades';
 
@@ -103,10 +104,11 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
   return (
     <div className="space-y-8">
       <section>
-        <SectionHeader title={t('Cost centres')} description={t('Belong to this company only. Departments below can be charged to one of them.')} actions={defaultsButton('costCentres')} />
+        <SectionHeader id={sectionHeadingId('costCentres')} status={<SectionSavedStatus section="costCentres" />} title={t('Cost centres')} description={t('Belong to this company only. Departments below can be charged to one of them.')} actions={defaultsButton('costCentres')} />
         <RowsEditor<CompanySetupCostCentre> path="costCentres" rows={body.costCentres} columns={costCentreCols} onChange={rows => set('costCentres', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '' })} addLabel={t('Add cost centre')} emptyText={t('No cost centres yet. Optional; add them if finance reports by cost centre.')}
           rowLabel={i => t('Cost centre {number}', { number: i + 1 })} manage={manage('costCentres')} baselineRows={baseline?.costCentres} />
+        <SectionSaveBar section="costCentres" />
       </section>
 
       <div className="rounded-xl border border-dashed border-slate-300 p-4 dark:border-white/15">
@@ -116,32 +118,35 @@ export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody
       {sharedNotice}
 
       <section>
-        <SectionHeader title={t('Departments')} actions={defaultsButton('departments')} />
+        <SectionHeader id={sectionHeadingId('departments')} status={<SectionSavedStatus section="departments" />} title={t('Departments')} actions={defaultsButton('departments')} />
         {reuseChips('departments', catalog?.departments, c => ({ code: c.code, nameEn: c.nameEn, nameAr: c.nameAr ?? '' }) as never)}
         <RowsEditor<CompanySetupDepartment> path="departments" rows={body.departments} columns={departmentCols} onChange={rows => set('departments', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '' })} addLabel={t('Add department')} emptyText={t('No departments yet.')}
           rowLabel={i => t('Department {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.departments, row.code) ?? sharedExisting(row, row.nameEn, row.nameAr)}
           manage={manage('departments')} baselineRows={baseline?.departments} canAdd={canAddShared}
           footer={!canAddShared ? <span className="text-xs text-slate-600 dark:text-slate-400">{t('New codes need a group administrator.')}</span> : undefined} />
+        <SectionSaveBar section="departments" />
       </section>
 
       <section>
-        <SectionHeader title={t('Designations')} actions={defaultsButton('designations')} />
+        <SectionHeader id={sectionHeadingId('designations')} status={<SectionSavedStatus section="designations" />} title={t('Designations')} actions={defaultsButton('designations')} />
         {reuseChips('designations', catalog?.designations, c => ({ code: c.code, titleEn: c.nameEn, titleAr: c.nameAr ?? '' }) as never)}
         <RowsEditor<CompanySetupDesignation> path="designations" rows={body.designations} columns={designationCols} onChange={rows => set('designations', rows)}
           newRow={() => ({ code: '', titleEn: '', titleAr: '' })} addLabel={t('Add designation')} emptyText={t('No designations yet.')}
           rowLabel={i => t('Designation {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.designations, row.code) ?? sharedExisting(row, row.titleEn, row.titleAr)}
           manage={manage('designations')} baselineRows={baseline?.designations} canAdd={canAddShared} />
+        <SectionSaveBar section="designations" />
       </section>
 
       <section>
-        <SectionHeader title={t('Grades')} description={context?.gradesCurrency ? t('Salary bands are in {currency}, the group’s grade currency.', { currency: context.gradesCurrency }) : t('Salary bands are in {currency}.', { currency: body.company.currency || '—' })} actions={defaultsButton('grades')} />
+        <SectionHeader id={sectionHeadingId('grades')} status={<SectionSavedStatus section="grades" />} title={t('Grades')} description={context?.gradesCurrency ? t('Salary bands are in {currency}, the group’s grade currency.', { currency: context.gradesCurrency }) : t('Salary bands are in {currency}.', { currency: body.company.currency || '—' })} actions={defaultsButton('grades')} />
         {reuseChips('grades', catalog?.grades, c => ({ code: c.code, nameEn: c.nameEn, nameAr: c.nameAr ?? '', level: 1, minSalary: 0, midSalary: 0, maxSalary: 0 }) as never)}
         <RowsEditor<CompanySetupGrade> path="grades" rows={body.grades} columns={gradeCols} onChange={rows => set('grades', rows)}
           newRow={() => ({ code: '', nameEn: '', nameAr: '', level: body.grades.length + 1, minSalary: 0, midSalary: 0, maxSalary: 0 })} addLabel={t('Add grade')} emptyText={t('No grades yet.')}
           rowLabel={i => t('Grade {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.grades, row.code) ?? sharedExisting(row, row.nameEn, row.nameAr)}
           manage={manage('grades')} baselineRows={baseline?.grades} canAdd={canAddShared} />
         {warnings.map(w => <div key={w.field} className="mt-3"><Notice tone="warning" role="status">{t(w.message, w.params)}</Notice></div>)}
+        <SectionSaveBar section="grades" />
       </section>
     </div>
   );

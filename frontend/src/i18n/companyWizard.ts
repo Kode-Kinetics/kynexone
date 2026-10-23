@@ -4,6 +4,24 @@
  * shared group catalog = الدليل المشترك للمجموعة; draft = مسودة.
  */
 const ar: Record<string, string> = {
+  // Per-section Save.
+  "Each screen leads to the next. Save each section as you finish it. Nothing is created until you choose Create company at the end.": "تقودك كل شاشة إلى التالية. احفظ كل قسم عند الانتهاء منه. لن يُنشأ أي شيء حتى تختار «إنشاء الشركة» في النهاية.",
+  "See what this company has today, then go step by step. Save each section as you finish it. Nothing changes in the company until you choose Save all changes at the end.": "اطّلع على ما لدى هذه الشركة اليوم، ثم تابع خطوة بخطوة. احفظ كل قسم عند الانتهاء منه. لن يتغير شيء في الشركة حتى تختار «حفظ كل التغييرات» في النهاية.",
+  "These are exactly the changes that will be saved. Nothing changes in the company until you choose Save all changes.": "هذه بالضبط التغييرات التي ستُحفظ. لن يتغير شيء في الشركة حتى تختار «حفظ كل التغييرات».",
+  "{count, plural, one {# field needs} other {# fields need}} attention in this section. Nothing was saved.": "{count, plural, one {حقل واحد يحتاج} two {حقلان يحتاجان} few {# حقول تحتاج} many {# حقلًا يحتاج} other {# حقل يحتاج}} إلى مراجعة في هذا القسم. لم يُحفظ شيء.",
+  "This draft was changed elsewhere, so this section was not saved. Reload the draft, then save the section again.": "تم تغيير هذه المسودة في مكان آخر، لذا لم يُحفظ هذا القسم. أعد تحميل المسودة، ثم احفظ القسم مرة أخرى.",
+  "This section could not be saved. Your changes are still here. Check your connection and try again.": "تعذّر حفظ هذا القسم. تغييراتك لا تزال هنا. تحقق من الاتصال وأعد المحاولة.",
+  "These sections have changes you have not saved: {sections}. Leave and discard them?": "في هذه الأقسام تغييرات لم تحفظها: {sections}. هل تريد المغادرة وتجاهلها؟",
+  "Backing up the draft…": "جارٍ حفظ نسخة احتياطية من المسودة…",
+  "Draft backed up {when}": "حُفظت نسخة احتياطية من المسودة {when}",
+  "Draft backed up": "حُفظت نسخة احتياطية من المسودة",
+  "Save all changes": "حفظ كل التغييرات",
+  "Saving all changes…": "جارٍ حفظ كل التغييرات…",
+  "Save all changes is available once every conflict above is resolved.": "يتاح «حفظ كل التغييرات» بعد حل كل التعارضات أعلاه.",
+  "Saved at {time}": "حُفظ الساعة {time}",
+  "Not saved yet": "لم يُحفظ بعد",
+  "Save and continue": "حفظ ومتابعة",
+  "Saved": "محفوظ",
   // Suggest Arabic and the location pin (step 3).
   "Suggest Arabic": "اقتراح بالعربية",
   "Suggesting…": "جارٍ الاقتراح…",
@@ -24,7 +42,7 @@ const ar: Record<string, string> = {
   "{meters} m": "{meters} م",
   "Not pinned yet.": "لم يُثبَّت بعد.",
   "Paste a Google Maps link or coordinates": "الصق رابط خرائط Google أو الإحداثيات",
-  "For example 24.7136, 46.6753, or the link from Share in Google Maps.": "مثل 24.7136, 46.6753، أو الرابط من زر المشاركة في خرائط Google.",
+  "For example 24.7136, 46.6753, or the link from Share in Google Maps.": "مثل ⁦24.7136, 46.6753⁩، أو الرابط من زر المشاركة في خرائط Google.",
   "Place pin": "تثبيت الدبوس",
   "Reading the link…": "جارٍ قراءة الرابط…",
   "Use my current location": "استخدام موقعي الحالي",
@@ -33,7 +51,7 @@ const ar: Record<string, string> = {
   "Pin placed from the link.": "ثُبّت الدبوس من الرابط.",
   "Pin placed from the coordinates.": "ثُبّت الدبوس من الإحداثيات.",
   "Pin placed at your current location, accurate to ±{accuracy} m.": "ثُبّت الدبوس في موقعك الحالي، بدقة ±{accuracy} م.",
-  "This is not a map link or coordinates we can read. Paste a Google Maps link, or coordinates such as 24.7136, 46.6753.": "هذا ليس رابط خريطة أو إحداثيات يمكن قراءتها. الصق رابطًا من خرائط Google، أو إحداثيات مثل 24.7136, 46.6753.",
+  "This is not a map link or coordinates we can read. Paste a Google Maps link, or coordinates such as 24.7136, 46.6753.": "هذا ليس رابط خريطة أو إحداثيات يمكن قراءتها. الصق رابطًا من خرائط Google، أو إحداثيات مثل ⁦24.7136, 46.6753⁩.",
   "This link could not be read. Open it, then copy the full address from the browser bar, or paste the coordinates.": "تعذّرت قراءة هذا الرابط. افتحه ثم انسخ العنوان الكامل من شريط المتصفح، أو الصق الإحداثيات.",
   "This browser cannot share its location. Paste a link or the coordinates instead.": "لا يستطيع هذا المتصفح مشاركة موقعه. الصق رابطًا أو الإحداثيات بدلًا من ذلك.",
   "Location access was refused. Allow it for this site in the browser, or paste a link instead.": "رُفض الوصول إلى الموقع. اسمح به لهذا الموقع في المتصفح، أو الصق رابطًا بدلًا من ذلك.",

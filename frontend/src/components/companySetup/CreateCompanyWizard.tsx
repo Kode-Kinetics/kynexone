@@ -33,9 +33,14 @@ import { MoreSettingsLinks } from './MoreSettingsLinks';
 import { Notice, WizardFormProvider, fieldId } from './wizardForm';
 import { useDraftAutosave } from './useDraftAutosave';
 import { ArabicSuggestionsProvider } from './ArabicSuggest';
+import {
+  SECTION_TITLE, STEP_SECTIONS, SectionSaveBar, SectionSaveProvider, SectionSavedStatus, sectionHeadingId, sectionOfField, sectionSnapshot,
+  type SectionId, type SectionSaveValue, type SectionStatus,
+} from './sectionSave';
+import { useNavigationBlocker } from '../../hooks/useNavigationBlocker';
 
 const STEP_HEADINGS: Record<StepId, { heading: string; help: string }> = {
-  1: { heading: msg('Create a company'), help: msg('Each screen leads to the next. Your work is saved as a draft as you go, so you can stop and come back.') },
+  1: { heading: msg('Create a company'), help: msg('Each screen leads to the next. Save each section as you finish it. Nothing is created until you choose Create company at the end.') },
   2: { heading: msg('Company details'), help: msg('The legal entity. Fields marked * are needed to continue.') },
   3: { heading: msg('Branches & locations'), help: msg('Where this company’s people are based and punch in.') },
   4: { heading: msg('Organisation'), help: msg('Cost centres for this company, and the departments, designations and grades it uses from the group.') },
@@ -46,8 +51,8 @@ const STEP_HEADINGS: Record<StepId, { heading: string; help: string }> = {
 
 /** Existing mode (Addendum A) reads differently only where the journey differs: the summary and the review. */
 const EXISTING_HEADINGS: Partial<Record<StepId, { heading: string; help: string }>> = {
-  1: { heading: msg('Complete setup for {company}'), help: msg('See what this company has today, then go step by step. Your work is saved as a draft as you go, so you can stop and come back.') },
-  7: { heading: msg('Review & update'), help: msg('These are exactly the changes Update will save. Nothing changes until you press Update company.') },
+  1: { heading: msg('Complete setup for {company}'), help: msg('See what this company has today, then go step by step. Save each section as you finish it. Nothing changes in the company until you choose Save all changes at the end.') },
+  7: { heading: msg('Review & update'), help: msg('These are exactly the changes that will be saved. Nothing changes in the company until you choose Save all changes.') },
 };
 
 const fieldStep = (field: string): StepId => {
@@ -101,6 +106,21 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   const [confirmation, setConfirmation] = useState<ConfirmState | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const focusField = useRef<string | null>(null);
+  /** Per section: what its last explicit Save (or the draft as opened) held, and when it was saved by Save. */
+  const [sectionRefs, setSectionRefs] = useState<Partial<Record<SectionId, { snapshot: string; at: string | null }>>>({});
+  const [sectionAttempts, setSectionAttempts] = useState<Set<SectionId>>(() => new Set());
+  const [sectionBusy, setSectionBusy] = useState<SectionId | null>(null);
+  const [sectionProblems, setSectionProblems] = useState<Partial<Record<SectionId, string>>>({});
+  const bodyRef = useRef(body);
+  bodyRef.current = body;
+  /** A draft as the server holds it: every section matches it. `at` is set when it was saved before (resumed). */
+  const markSections = useCallback((saved: CompanySetupDraftBody, at: string | null) => {
+    const refs: Partial<Record<SectionId, { snapshot: string; at: string | null }>> = {};
+    for (const id of Object.values(STEP_SECTIONS).flat()) refs[id] = { snapshot: sectionSnapshot(saved, id), at };
+    setSectionRefs(refs);
+    setSectionAttempts(new Set());
+    setSectionProblems({});
+  }, []);
 
   const autosave = useDraftAutosave({ draftId, body, step });
   const errorBody = (err: unknown) => (err as { response?: { data?: Partial<CompanySetupErrorBody> } } | null)?.response?.data;
@@ -163,6 +183,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
       setDraftId(draft.id);
       setDraftMeta({ createdByName: draft.createdByName, createdAtUtc: draft.createdAtUtc });
       setBody(draft.body);
+      markSections(draft.body, draft.updatedAtUtc);
       const resumeStep = (Math.min(Math.max(draft.step, 1), 7)) as StepId;
       setStep(resumeStep);
       setVisited(new Set(STEP_IDS.filter(s => s <= resumeStep)));
@@ -177,7 +198,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
       setError(httpStatus(err) === 404 ? t('This draft no longer exists. It may have been discarded.') : t('The draft could not be opened. Check your connection and try again.'));
       return false;
     } finally { setBusy(''); }
-  }, [autosave, router, t, draftAddress, existingCompanyId]);
+  }, [autosave, router, t, draftAddress, existingCompanyId, markSections]);
 
   /** Existing mode before a draft: what the company has today, shown (never saved) until Start. */
   const loadPrefill = useCallback(async () => {
@@ -229,14 +250,15 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   }, [steps, body, context, adminStepVisible, existing, defaults]);
   const errorFor = useCallback((field: string) => {
     const client = clientErrors.get(field);
-    if (client && (touched.has(field) || attempted.has(fieldStep(field)))) return t(client.message, client.params);
+    const section = sectionOfField(field);
+    if (client && (touched.has(field) || attempted.has(fieldStep(field)) || (section && sectionAttempts.has(section)))) return t(client.message, client.params);
     const server = serverProblems.get(field);
     if (server) {
       const copy = setupCodeCopy(server.code);
       return copy ? t(copy) : locale === 'ar' ? server.messageAr || server.message : server.message;
     }
     return undefined;
-  }, [clientErrors, touched, attempted, serverProblems, locale, t]);
+  }, [clientErrors, touched, attempted, sectionAttempts, serverProblems, locale, t]);
   const states = useMemo(() => {
     const out = {} as Record<StepId, StepState>;
     for (const s of STEP_IDS) out[s] = s === 7 ? (plan ? (canCommit(plan) ? 'done' : 'warning') : visited.has(7) ? 'warning' : 'notStarted') : stepState(s, { ...input, visited, serverProblems: plan?.problems });
@@ -297,6 +319,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     setDraftId(draft.id);
     setDraftMeta({ createdByName: draft.createdByName, createdAtUtc: draft.createdAtUtc });
     setBody(draft.body);
+    markSections(draft.body, null);
     setDrafts(list => [{ id: draft.id, legalNameEn: draft.body.company.legalNameEn, step: draft.step, updatedAtUtc: draft.updatedAtUtc, createdByName: draft.createdByName, existingCompanyId: draft.body.existingCompanyId ?? null }, ...list]);
     router.replace(draftAddress(draft.id), { scroll: false });
     goTo(2);
@@ -378,6 +401,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
       const draft = await companySetupApi.draft(draftId);
       autosave.adopt(draft);
       setBody(draft.body);
+      markSections(draft.body, draft.updatedAtUtc);
       setStep((Math.min(Math.max(draft.step, 1), 7)) as StepId);
       setPlan(null);
     } catch { setError(t('The draft could not be reloaded. Check your connection and try again.')); }
@@ -436,7 +460,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
         await companySetupApi.discardDraft(draftId);
         setConfirmation(null);
         setDraftId(null); setDraftMeta(null); setPlan(null);
-        setVisited(new Set([1])); setAttempted(new Set()); setTouched(new Set());
+        setVisited(new Set([1])); setAttempted(new Set()); setTouched(new Set()); setSectionRefs({});
         router.replace(completeCompanyHref(existingCompanyId), { scroll: false });
         await loadPrefill().catch(() => setError(t('The company could not be reloaded. Check your connection and try again.')));
       },
@@ -449,7 +473,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     const saved = await autosave.flush();
     if (!saved) {
       setBusy('');
-      setCommitError({ message: autosave.state === 'conflict' ? t('This draft was changed elsewhere. Reload it, check the review again, then create.') : t('The latest changes could not be saved, so nothing was created. Check your connection and try again.'), retry: autosave.state !== 'conflict' });
+      setCommitError({ message: autosave.isConflict() ? t('This draft was changed elsewhere. Reload it, check the review again, then create.') : t('The latest changes could not be saved, so nothing was created. Check your connection and try again.'), retry: !autosave.isConflict() });
       return;
     }
     try {
@@ -475,6 +499,72 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
           : t('We could not confirm whether the company was created. Try again: retrying never creates a second company.'), retry: true });
       }
     } finally { setBusy(''); }
+  };
+
+  // ── Per-section Save (on top of the background autosave) ───────────────────
+  const stepSections = (s: StepId) => (steps.includes(s) ? STEP_SECTIONS[s] : []);
+  const sectionStatus = (id: SectionId): SectionStatus => {
+    const ref = sectionRefs[id];
+    if (!ref) return { kind: 'notSaved' };
+    if (sectionSnapshot(body, id) !== ref.snapshot) return { kind: 'unsaved' };
+    return ref.at ? { kind: 'saved', at: ref.at } : { kind: 'notSaved' };
+  };
+  const saveSection = async (id: SectionId) => {
+    if (!draftId || sectionBusy) return;
+    setSectionProblems(p => ({ ...p, [id]: undefined }));
+    // This section's own checks only; the rest of the step is checked by its own Save or by Next.
+    const errors = validateStep(step, input).filter(e => sectionOfField(e.field) === id);
+    if (errors.length) {
+      setSectionAttempts(a => new Set([...a, id]));
+      setSectionProblems(p => ({ ...p, [id]: t('{count, plural, one {# field needs} other {# fields need}} attention in this section. Nothing was saved.', { count: errors.length }) }));
+      requestAnimationFrame(() => document.getElementById(fieldId(errors[0].field))?.focus());
+      return;
+    }
+    setSectionBusy(id);
+    const ok = await autosave.flush();
+    setSectionBusy(null);
+    if (!ok) {
+      setSectionProblems(p => ({ ...p, [id]: autosave.isConflict()
+        ? t('This draft was changed elsewhere, so this section was not saved. Reload the draft, then save the section again.')
+        : t('This section could not be saved. Your changes are still here. Check your connection and try again.') }));
+      return;
+    }
+    const saved = bodyRef.current;
+    setSectionRefs(r => ({ ...r, [id]: { snapshot: sectionSnapshot(saved, id), at: new Date().toISOString() } }));
+    const sections = stepSections(step);
+    const nextSection = sections[sections.indexOf(id) + 1];
+    if (nextSection) {
+      const heading = document.getElementById(sectionHeadingId(nextSection));
+      heading?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      heading?.focus({ preventScroll: true });
+      return;
+    }
+    const index = steps.indexOf(step);
+    if (index < steps.length - 1) goTo(steps[index + 1]);
+  };
+  /** The rail: a visited step with sections is Saved only when every section of it is. */
+  const savedStates = {} as Record<StepId, 'saved' | 'unsaved' | null>;
+  for (const s of STEP_IDS) {
+    const ids = stepSections(s);
+    savedStates[s] = !draftId || ids.length === 0 || !visited.has(s) ? null : ids.every(id => sectionStatus(id).kind === 'saved') ? 'saved' : 'unsaved';
+  }
+  const unsavedSections = draftId && !result ? steps.flatMap(stepSections).filter(id => sectionStatus(id).kind === 'unsaved') : [];
+  // Leaving the wizard (sidebar, Cancel, Back in the browser) with a section changed since its Save: the app's guard asks.
+  useNavigationBlocker({
+    id: 'company-setup-wizard',
+    when: unsavedSections.length > 0,
+    message: t('These sections have changes you have not saved: {sections}. Leave and discard them?', {
+      sections: new Intl.ListFormat(locale, { type: 'conjunction' }).format(unsavedSections.map(id => t(SECTION_TITLE[id]))),
+    }),
+    onDiscard: () => {},
+  });
+  const sectionSave: SectionSaveValue = {
+    status: sectionStatus,
+    save: id => { void saveSection(id); },
+    busy: sectionBusy,
+    problem: id => sectionProblems[id] ?? null,
+    isLast: id => { const ids = stepSections(STEP_IDS.find(s => STEP_SECTIONS[s].includes(id)) ?? 1); return ids[ids.length - 1] === id; },
+    disabled: !draftId || autosave.state === 'conflict' || (existing ? false : !context?.canCreate),
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -532,8 +622,9 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   const position = steps.indexOf(step) + 1;
   const isLast = step === 7;
   const saveLabel = {
-    idle: '', pending: t('Unsaved changes'), saving: t('Saving draft…'),
-    saved: autosave.savedAt ? t('Draft saved {when}', { when: fmt.time(autosave.savedAt) }) : t('Draft saved'),
+    // The background copy. Explicit Save, per section, is how progress is confirmed.
+    idle: '', pending: t('Backing up the draft…'), saving: t('Backing up the draft…'),
+    saved: autosave.savedAt ? t('Draft backed up {when}', { when: fmt.time(autosave.savedAt) }) : t('Draft backed up'),
     conflict: '', error: t('Not saved yet. Your changes are kept on this screen; we will try again when you next change something.'),
   }[autosave.state];
   const stepErrors = attempted.has(step) ? validateStep(step, input) : [];
@@ -551,7 +642,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-white/10 sm:px-5">
           <div className="min-w-0 text-xs text-slate-600 dark:text-slate-300">
             {draftId
-              ? <p role="status" data-testid="autosave-status" data-state={autosave.state}>{saveLabel || t('Draft saved')}{draftMeta && <span className="hidden sm:inline">{' · '}{t('Started by {name}', { name: draftMeta.createdByName })}</span>}</p>
+              ? <p role="status" data-testid="autosave-status" data-state={autosave.state}>{saveLabel || t('Draft backed up')}{draftMeta && <span className="hidden sm:inline">{' · '}{t('Started by {name}', { name: draftMeta.createdByName })}</span>}</p>
               : <p>{existing ? t('A draft is saved as soon as you start, and kept until you save the changes or discard it.') : t('A draft is saved as soon as you start, and kept until you create the company or discard it.')}</p>}
           </div>
           {draftId && <button type="button" className="btn-secondary" disabled={!!busy} onClick={() => void saveAndExit()}>{busy === 'exiting' ? t('Saving…') : t('Save draft & exit')}</button>}
@@ -567,12 +658,15 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
         )}
         <div className="grid lg:grid-cols-[13.5rem_minmax(0,1fr)] xl:grid-cols-[13.5rem_minmax(0,1fr)_17rem]">
           <aside className="border-b border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
-            <WizardRail steps={steps} current={step} states={states} reachable={reachable} onSelect={goTo} disabled={!!busy} mode={mode} />
+            <WizardRail steps={steps} current={step} states={states} saved={savedStates} reachable={reachable} onSelect={goTo} disabled={!!busy} mode={mode} />
           </aside>
           <div className={`min-w-0 p-4 sm:p-5 ${step === 7 ? 'xl:col-span-2' : ''}`}>
             <div className="mb-5">
               <p className="hidden text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 lg:block">{t('Step {position} of {total}', { position, total: steps.length })}</p>
-              <h2 ref={headingRef} tabIndex={-1} className="mt-1 text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white"><bdi>{t(heading.heading, headingParams)}</bdi></h2>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold tracking-tight text-slate-950 outline-none dark:text-white"><bdi>{t(heading.heading, headingParams)}</bdi></h2>
+                {draftId && stepSections(step).length === 1 && <SectionSaveProvider value={sectionSave}><SectionSavedStatus section={stepSections(step)[0]} /></SectionSaveProvider>}
+              </div>
               <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">{t(heading.help)}</p>
             </div>
             {error && <div className="mb-4"><Notice tone="error" role="alert">{error}</Notice></div>}
@@ -586,6 +680,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
             )}
             <WizardFormProvider value={{ body, update: change => setBody(b => change(b)), errorFor, context, readOnly: locked || autosave.state === 'conflict', baseline: existing ? defaults : null }}>
               <ArabicSuggestionsProvider>
+              <SectionSaveProvider value={sectionSave}>
               <div onBlurCapture={event => {
                 const field = (event.target as HTMLElement).dataset?.field;
                 if (field && !touched.has(field)) setTouched(prev => new Set([...prev, field]));
@@ -601,7 +696,9 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                 {step === 6 && adminStepVisible && <AdminStep />}
                 {step === 7 && <ReviewStep plan={plan} state={planState} onRetry={() => void refreshPlan(body)} onGoTo={goToField} visibleSteps={steps}
                   onChangeAndCheck={changeAndCheck} onReloadPrefill={existing ? reloadFromCompany : undefined} />}
+                {draftId && stepSections(step).length === 1 && <SectionSaveBar section={stepSections(step)[0]} />}
               </div>
+              </SectionSaveProvider>
               </ArabicSuggestionsProvider>
             </WizardFormProvider>
             {commitError && (
@@ -624,11 +721,11 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                   </button>
                 : <button type="button" className="btn-primary disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void create()} disabled={!!busy || !canCommit(plan) || planState === 'loading' || autosave.state === 'conflict'}>
                     {busy === 'creating'
-                      ? (existing ? t('Saving the changes…') : t('Creating the company…'))
-                      : existing ? (noChange ? t('Finish without changes') : t('Update company')) : t('Create company')}
+                      ? (existing ? t('Saving all changes…') : t('Creating the company…'))
+                      : existing ? (noChange ? t('Finish without changes') : t('Save all changes')) : t('Create company')}
                   </button>}
             </div>
-            {isLast && plan && !canCommit(plan) && <p className="mt-2 text-end text-xs text-rose-700 dark:text-rose-300">{existing ? t('Update is available once every conflict above is resolved.') : t('Create is available once every conflict above is resolved.')}</p>}
+            {isLast && plan && !canCommit(plan) && <p className="mt-2 text-end text-xs text-rose-700 dark:text-rose-300">{existing ? t('Save all changes is available once every conflict above is resolved.') : t('Create is available once every conflict above is resolved.')}</p>}
           </div>
           {step !== 7 && (
             <aside className="border-t border-slate-200 p-4 dark:border-white/10 lg:col-span-2 xl:col-span-1 xl:border-s xl:border-t-0" aria-label={t('Company structure')}>

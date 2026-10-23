@@ -1028,7 +1028,7 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(page.getByTestId('review-no-change')).toHaveCount(0);
     await contained(page);
     await vshot(page, info, `existing-${locale}-7-review`);
-    await page.getByRole('button', { name: t('Update company'), exact: true }).click();
+    await page.getByRole('button', { name: t('Save all changes'), exact: true }).click();
 
     await expect(page.getByTestId('create-company-success')).toHaveAttribute('data-mode', 'existing');
     await expect(page.getByRole('heading', { name: t('{name} is updated', { name: locale === 'ar' ? 'شركة إيفوستل' : 'Evostel LLC' }) })).toBeVisible();
@@ -1163,7 +1163,7 @@ test('a branch renamed elsewhere since the draft started is a conflict on review
   const conflict = page.locator('[data-testid="review-plan"] li[data-code="changed_since_draft_started"]');
   await expect(conflict).toContainText('Head Office (Setup)');
   await expect(conflict).toHaveAttribute('data-field', 'branches.0.nameEn');
-  await expect(page.getByRole('button', { name: t('Update company'), exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: t('Save all changes'), exact: true })).toBeDisabled();
   // Linked to the field: Go to opens the step with that field focused and the same words on it.
   await conflict.getByRole('button', { name: t('Go to {step}', { step: t('Branches & locations') }) }).click();
   await expect(page.locator('#ccw-branches-0-nameEn')).toBeFocused();
@@ -1172,7 +1172,7 @@ test('a branch renamed elsewhere since the draft started is a conflict on review
   await expectStep(page, t, 'Review & update');
   await conflict.getByRole('button', { name: t('Use the current value ({value})', { value: 'Head Office (Setup)' }) }).click();
   await expect(conflict).toHaveCount(0);
-  await expect(page.getByRole('button', { name: t('Update company'), exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: t('Save all changes'), exact: true })).toBeEnabled();
   const sent = server.dryRuns.at(-1)!;
   expect(sent.branches[0].nameEn).toBe('Head Office (Setup)');
   // Every other field of the baseline is carried back exactly as the prefill sent it.
@@ -1533,3 +1533,168 @@ test('a location with a half-entered coordinate stops Next at the field', async 
   await expect(panel.locator('details').getByLabel(t('Longitude'))).toBeFocused();
   await expect(panel.getByText(t('Enter both latitude and longitude, or neither.')).first()).toBeVisible();
 });
+
+// ── Per-section Save: explicit, visible confirmation on top of the background autosave ─────────────────
+
+const sectionStatus = (page: Page, section: string) => page.getByTestId(`section-status-${section}`);
+const sectionBar = (page: Page, section: string) => page.getByTestId(`section-save-${section}`);
+const railStep = (page: Page, t: ReturnType<typeof T>, title: string) => page.getByTestId('wizard-rail').getByRole('button', { name: new RegExp(t(title).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
+
+async function startEvostel(page: Page, t: ReturnType<typeof T>) {
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+}
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`each section saves on its own, moves to the next, and nothing changes in the company before Save all changes (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    if (info.project.name === 'pilot') await page.emulateMedia({ colorScheme: 'dark' });
+    const { server, pageErrors } = await boot(page, { locale });
+    await openEvostel(page, t);
+    await expect(page.getByText(t('See what this company has today, then go step by step. Save each section as you finish it. Nothing changes in the company until you choose Save all changes at the end.'))).toBeVisible();
+    await page.getByRole('button', { name: t('Start'), exact: true }).click();
+    await expectStep(page, t, 'Company details');
+
+    // Before any Save: the section and the rail say so.
+    await expect(sectionStatus(page, 'company')).toHaveAttribute('data-status', 'notSaved');
+    await expect(railStep(page, t, 'Company details')).toHaveAttribute('data-saved', 'unsaved');
+    await page.getByLabel(t('Trade name (optional)')).fill('Evostel Trading');
+    await expect(sectionStatus(page, 'company')).toHaveText(t('Unsaved changes'));
+    await expect(sectionBar(page, 'company').getByTestId('section-save-status-company')).toHaveText(t('Unsaved changes'));
+    await contained(page);
+    await shot(page, info, `save-${locale}-company-unsaved`);
+
+    // The last (only) section of a step: "Save" saves now and opens the next step, its heading focused.
+    const putsBefore = server.puts.length;
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Branches & locations');
+    await expect(page.getByRole('heading', { level: 2, name: t('Branches & locations'), exact: true })).toBeFocused();
+    expect(server.puts.length).toBeGreaterThan(putsBefore);
+    expect(server.puts.at(-1)!.body.company.tradeName).toBe('Evostel Trading');
+    await expect(railStep(page, t, 'Company details')).toHaveAttribute('data-saved', 'saved');
+    await sectionBar(page, 'branches').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Organisation');
+
+    // Organisation: four sections; "Save and continue" moves focus to the next section's heading.
+    for (const [section, nextSection] of [['costCentres', 'departments'], ['departments', 'designations'], ['designations', 'grades']] as const) {
+      await sectionBar(page, section).getByRole('button', { name: new RegExp(`^${t('Save and continue')}`) }).click();
+      await expect(page.locator(`#ccw-section-${nextSection}`)).toBeFocused();
+      await expect(sectionStatus(page, section)).toHaveAttribute('data-status', 'saved');
+      await expect(sectionStatus(page, section)).toContainText(t('Saved at {time}', { time: '' }).trim());
+    }
+    await shot(page, info, `save-${locale}-organisation-saved`);
+    await sectionBar(page, 'grades').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Work & pay rules');
+    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'saved');
+
+    // An edit after Save shows as unsaved again, in the section, its header and the rail.
+    await railStep(page, t, 'Organisation').click();
+    await expectStep(page, t, 'Organisation');
+    await page.getByTestId('costCentres-row').first().getByLabel(t('Name (English)')).fill('Administration & Support');
+    await expect(sectionStatus(page, 'costCentres')).toHaveAttribute('data-status', 'unsaved');
+    await expect(sectionStatus(page, 'departments')).toHaveAttribute('data-status', 'saved');
+    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'unsaved');
+    await expect(railStep(page, t, 'Organisation')).toContainText(t('Unsaved changes'));
+    await contained(page);
+    await shot(page, info, `save-${locale}-organisation-edited`);
+    await sectionBar(page, 'costCentres').getByRole('button', { name: new RegExp(`^${t('Save and continue')}`) }).click();
+    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'saved');
+
+    // Section saves write the draft only: nothing is applied to the company until the final button.
+    expect(server.commits).toEqual([]);
+    await railStep(page, t, 'Review & update').click();
+    await expectStep(page, t, 'Review & update');
+    await expect(page.getByText(t('These are exactly the changes that will be saved. Nothing changes in the company until you choose Save all changes.'))).toBeVisible();
+    const saveAll = page.getByRole('button', { name: t('Save all changes'), exact: true });
+    await expect(saveAll).toBeEnabled();
+    await expect(page.getByTestId('review-plan')).toContainText('Administration & Support');
+    expect(server.commits).toEqual([]);
+    await shot(page, info, `save-${locale}-review`);
+    await saveAll.click();
+    await expect(page.getByTestId('create-company-success')).toBeVisible();
+    expect(server.commits).toHaveLength(1);
+    expect(pageErrors).toEqual([]);
+  });
+
+  test(`a section with a problem stays put with the message at the field, and saves nothing (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server } = await boot(page, { locale });
+    await startEvostel(page, t);
+    await page.getByLabel(t('Legal name (English)')).fill('');
+    await page.getByLabel(t('Trade name (optional)')).fill('Changed');
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Company details');
+    await expect(page.getByTestId('section-save-problem-company')).toHaveText(t('{count, plural, one {# field needs} other {# fields need}} attention in this section. Nothing was saved.', { count: 1 }));
+    await expect(page.getByLabel(t('Legal name (English)'))).toBeFocused();
+    await expect(page.getByLabel(t('Legal name (English)'))).toHaveAttribute('aria-invalid', 'true');
+    await expect(sectionStatus(page, 'company')).toHaveAttribute('data-status', 'unsaved');
+    await contained(page);
+    await shot(page, info, `save-${locale}-invalid`);
+    expect(server.commits).toEqual([]);
+  });
+
+  test(`a draft saved elsewhere stops the section Save with the conflict flow (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server } = await boot(page, { locale });
+    await startEvostel(page, t);
+    await page.getByLabel(t('Trade name (optional)')).fill('Mine');
+    server.touchElsewhere([...server.drafts.keys()][0]);
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expect(page.getByTestId('section-save-problem-company')).toHaveText(t('This draft was changed elsewhere, so this section was not saved. Reload the draft, then save the section again.'));
+    await expect(page.getByText(t('This draft was changed elsewhere — reload'))).toBeVisible();
+    await expectStep(page, t, 'Company details');
+    await expect(sectionStatus(page, 'company')).not.toHaveAttribute('data-status', 'saved');
+    await shot(page, info, `save-${locale}-conflict`);
+    // The existing flow: reload takes their version, and the section matches the draft again.
+    await page.getByRole('button', { name: t('Reload draft') }).first().click();
+    await expect(page.getByText(t('This draft was changed elsewhere — reload'))).toHaveCount(0);
+    // Reload opens the draft at the step it was saved on; their version is what is on screen, and it is saved.
+    if (await railStep(page, t, 'Company details').getAttribute('aria-current') !== 'step') await railStep(page, t, 'Company details').click();
+    await expect(page.getByLabel(t('Trade name (optional)'))).toHaveValue('Saved elsewhere');
+    await expect(sectionStatus(page, 'company')).toHaveAttribute('data-status', 'saved');
+  });
+}
+
+test('a failed section save keeps the changes and says so in plain words', async ({ page }) => {
+  const t = T('en');
+  await boot(page);
+  await startEvostel(page, t);
+  let refused = false;
+  await page.route('**/api/company-setup/drafts/*', async route => {
+    if (route.request().method() === 'PUT' && !refused) { refused = true; return route.fulfill({ status: 503, json: { message: 'unavailable' } }); }
+    return route.fallback();
+  });
+  await page.getByLabel(t('Trade name (optional)')).fill('Offline edit');
+  await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+  await expect(page.getByTestId('section-save-problem-company')).toHaveText(t('This section could not be saved. Your changes are still here. Check your connection and try again.'));
+  await expectStep(page, t, 'Company details');
+  await expect(page.getByLabel(t('Trade name (optional)'))).toHaveValue('Offline edit');
+  // Trying again works.
+  await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+  await expectStep(page, t, 'Branches & locations');
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`leaving with an unsaved section asks first; after Save it does not (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    await boot(page, { locale });
+    await startEvostel(page, t);
+    await page.getByLabel(t('Trade name (optional)')).fill('Not saved yet');
+    // Browser Back: the guard holds the navigation, so there is no load to wait for.
+    await page.evaluate(() => history.back());
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(t('These sections have changes you have not saved: {sections}. Leave and discard them?', { sections: t('Company details') }));
+    await shot(page, info, `save-${locale}-leave-warning`);
+    await dialog.getByRole('button', { name: locale === 'ar' ? 'إلغاء' : 'Cancel', exact: true }).click();
+    await expect(page).toHaveURL(/\/setup\/company\/co-evostel\/complete/);
+    await expectStep(page, t, 'Company details');
+    await expect(page.getByLabel(t('Trade name (optional)'))).toHaveValue('Not saved yet');
+    await sectionBar(page, 'company').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Branches & locations');
+    await page.evaluate(() => history.back());
+    await expect(page).not.toHaveURL(/\/complete/);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+}
