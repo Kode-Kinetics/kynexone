@@ -109,7 +109,14 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
     if (!sheetOpen) return;
     const frame = window.requestAnimationFrame(() => {
       const container = list.current;
-      (container?.querySelector<HTMLElement>('[aria-current="page"]') ?? container?.querySelector<HTMLElement>('a[href]'))?.focus();
+      // A plain focus scrolls the entry only just into view, under the sheet's sticky header; centre it instead.
+      const entry = container?.querySelector<HTMLElement>('[aria-current="page"]') ?? container?.querySelector<HTMLElement>('a[href]');
+      entry?.focus({ preventScroll: true });
+      if (container && entry) {
+        // Only the sheet's own list scrolls; the page behind the scrim stays where it was.
+        const offset = entry.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+        container.scrollTop = Math.max(0, offset - (container.clientHeight - entry.offsetHeight) / 2);
+      }
     });
     return () => window.cancelAnimationFrame(frame);
   }, [sheetOpen]);

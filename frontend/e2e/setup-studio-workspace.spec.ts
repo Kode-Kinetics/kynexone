@@ -778,7 +778,7 @@ for (const action of ['override', 'rejection'] as const) test(`statutory_${actio
   if (action === 'override') {
     await page.getByRole('button', { name: 'New override', exact: true }).click();
     await page.getByRole('dialog').getByRole('combobox', { name: 'Rule', exact: true }).selectOption('custom.allowance');
-    await page.getByLabel('Override value', { exact: true }).fill('8');
+    await page.getByLabel("Your company's value", { exact: true }).fill('8');
     await page.getByLabel(/Approved reason and source/).fill('Preserve approved source');
   } else {
     await page.getByRole('button', { name: 'Reject', exact: true }).click();

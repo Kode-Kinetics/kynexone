@@ -359,7 +359,7 @@ export function StatutoryRulesPanel() {
             <div>
               <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{t('Tenant-wide statutory rules')}</h3>
               <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                {t('Review platform-maintained rules and governed tenant overrides used by payroll and compliance.')} {t('Company-specific rates are managed separately.')} <Link href="/setup?tab=glMapping" className="font-semibold text-sapphire hover:underline">{t('GL & rates')}</Link>
+                {t('Review platform-maintained rules and governed tenant overrides used by payroll and compliance.')} {t('Company-specific rates are managed separately.')} <Link href="/setup?tab=glMapping" className="font-semibold text-sapphire hover:underline">{t('Payroll accounting')}</Link>
               </p>
             </div>
           </div>

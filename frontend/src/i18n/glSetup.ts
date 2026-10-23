@@ -8,7 +8,7 @@ const ar: Record<string, string> = {
   'Posting Drivers': 'قواعد الترحيل',
   'Company Rates': 'معدلات الشركة',
   'Statutory Rates': 'المعدلات النظامية',
-  'GL & rates sections': 'أقسام دفتر الأستاذ العام والمعدلات',
+  'Payroll accounting sections': 'أقسام محاسبة الرواتب',
   'You do not have permission to view GL configuration.': 'ليست لديك صلاحية لعرض إعدادات دفتر الأستاذ العام.',
   'No companies are available in your scope.': 'لا توجد شركات ضمن نطاق صلاحياتك.',
   'Configuration scope': 'نطاق الإعداد',
