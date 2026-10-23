@@ -1209,7 +1209,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
           <Field label="Grade (blank=all)"><input className={inp} value={form.grade} onChange={e => set('grade', e.target.value)} /></Field>
         </div>
         <fieldset className="min-w-0">
-          <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">{t('Employment Type')} <span className="font-normal text-slate-400">· {t('Tick one or more, or All')}</span></legend>
+          <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">{t('Employment Type')} <span className="font-normal text-slate-500 dark:text-slate-400">· {t('Tick one or more, or All')}</span></legend>
           <div className="flex flex-wrap gap-2">
             {[{ value: '', label: t('All') }, ...employmentOptions].map(o => {
               const checked = o.value ? employmentTypes.some(s => sameReferenceValue(employmentTypeValues, s, o.value)) : employmentTypes.length === 0;
