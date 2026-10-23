@@ -279,7 +279,7 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
     }
 
     /// <summary>The employee's salary structure in force on <paramref name="asOf"/> (latest active row), or null.</summary>
-    private Task<EmployeeSalaryStructure?> SalaryAsOfAsync(Guid tid, int employeeId, DateOnly asOf, CancellationToken ct) =>
+    public Task<EmployeeSalaryStructure?> SalaryAsOfAsync(Guid tid, int employeeId, DateOnly asOf, CancellationToken ct) =>
         db.Set<EmployeeSalaryStructure>().AsNoTracking()
             .Where(x => x.TenantId == tid && x.EmployeeId == employeeId && x.IsActive && x.EffectiveDate <= asOf)
             .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);

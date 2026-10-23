@@ -198,9 +198,11 @@ public class BonusGlIndependentAuditTests
         };
         db.Employees.Add(e);
         await db.SaveChangesAsync();
+        // The wage is paid in the employer's currency: the advance policy's salary cap only reads a wage in it.
+        var payCurrency = await db.Companies.Where(c => c.Id == companyId).Select(c => c.DefaultCurrency).SingleAsync();
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
         {
-            TenantId = tid, EmployeeId = e.Id, SalaryStructureId = structure.Id,
+            TenantId = tid, EmployeeId = e.Id, SalaryStructureId = structure.Id, Currency = payCurrency,
             BasicSalary = 10_000m, HousingAllowance = 2_000m, TransportAllowance = 1_000m,
             EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
         });
