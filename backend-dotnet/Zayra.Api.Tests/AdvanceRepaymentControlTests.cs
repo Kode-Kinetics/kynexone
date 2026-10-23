@@ -198,8 +198,10 @@ public class AdvanceRepaymentControlTests
     }
 
     [Fact]
-    public async Task Create_WithoutApprovalRequired_WithinTheCap_DisbursesOnce()
+    public async Task Create_WhenThePolicySaysNoApprovalNeeded_StillWaitsForASecondPerson()
     {
+        // Strict separation of duties: every advance has one decider. A policy's RequiresApproval=false used to
+        // disburse on create with nobody deciding; it no longer skips approval.
         await using var db = CreateDb();
         var f = await SeedAsync(db, requiresApproval: false);
 
@@ -207,10 +209,10 @@ public class AdvanceRepaymentControlTests
 
         Assert.IsType<OkObjectResult>(result);
         var adv = await db.SalaryAdvances.SingleAsync();
-        Assert.Equal("Active", adv.Status);
-        Assert.Equal(3_000m, adv.OutstandingBalance);
-        Assert.Equal(3, await db.AdvanceInstallments.CountAsync());
-        Assert.Single(await db.FinanceGlEntries.Where(x => x.EventType == "Disbursement").ToListAsync());
+        Assert.Equal("Pending", adv.Status);
+        Assert.Equal(0m, adv.OutstandingBalance);
+        Assert.Empty(await db.AdvanceInstallments.ToListAsync());
+        Assert.Empty(await db.FinanceGlEntries.Where(x => x.EventType == "Disbursement").ToListAsync());
     }
 
     [Theory]

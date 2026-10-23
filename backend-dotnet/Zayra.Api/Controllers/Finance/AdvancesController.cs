@@ -212,21 +212,12 @@ public class AdvancesController : ControllerBase
             AdvanceNumber = advNumber, RequestedAmount = req.RequestedAmount,
             RepaymentType = req.RepaymentType, Installments = req.Installments,
             Reason = req.Reason ?? string.Empty,
-            Status = (policy?.RequiresApproval ?? true) ? "Pending" : "Approved",
+            // Every advance waits for a second person. A policy's RequiresApproval=false used to disburse here on
+            // create, with nobody deciding; money now always moves through Approve, where the requester and the
+            // employee it is for are both barred. The flag is kept on the policy but no longer skips approval.
+            Status = "Pending",
             CreatedBy = uid,
         };
-
-        if (!(policy?.RequiresApproval ?? true))
-        {
-            adv.ApprovedAmount = req.RequestedAmount;
-            adv.InstallmentAmount = req.Installments > 0 ? req.RequestedAmount / req.Installments : req.RequestedAmount;
-            adv.OutstandingBalance = req.RequestedAmount;
-            adv.RepaymentStartDate = req.RepaymentStartDate;
-            adv.Status = "Active";
-            GenerateAdvanceInstallments(tid, adv, req.RepaymentStartDate);
-            await PostGlEntry(tid, uid, await ResolveAdvanceCompanyAsync(tid, adv, ct), adv.Id, adv.AdvanceNumber,
-                "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", adv.ApprovedAmount, null, ct);
-        }
 
         _db.SalaryAdvances.Add(adv);
         await _db.SaveChangesAsync(ct);

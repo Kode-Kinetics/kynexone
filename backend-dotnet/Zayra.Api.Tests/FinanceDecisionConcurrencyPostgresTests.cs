@@ -246,12 +246,12 @@ public class FinanceDecisionConcurrencyPostgresTests
     }
 
     [Fact]
-    public async Task TwoSimultaneousAdvanceRequests_CannotBothPassTheYearlyLimit_NorBothDisburse()
+    public async Task TwoSimultaneousAdvanceRequests_CannotBothPassTheYearlyLimit_AndNeitherDisburses()
     {
         for (var round = 0; round < Rounds; round++)
         {
-            // A fresh tenant per round: the policy is tenant-wide. One advance a year, no approval step, so a
-            // request that slips past the limit would disburse straight away.
+            // A fresh tenant per round: the policy is tenant-wide. One advance a year. The policy also says "no
+            // approval step", which used to disburse on create; every advance now waits for an approver instead.
             var tenantId = await SeedTenantAsync();
             var (employeePublicId, employeeId) = await SeedAdvanceEmployeeAsync(tenantId);
 
@@ -268,7 +268,7 @@ public class FinanceDecisionConcurrencyPostgresTests
                 .Should().Be(1, $"round {round}");
             (await db.FinanceGlEntries.AsNoTracking()
                 .CountAsync(x => x.TenantId == tenantId && x.SourceModule == "Advance" && x.EventType == "Disbursement"))
-                .Should().Be(1, $"round {round}: cash leaves once");
+                .Should().Be(0, $"round {round}: no cash leaves until a second person approves");
         }
     }
 
