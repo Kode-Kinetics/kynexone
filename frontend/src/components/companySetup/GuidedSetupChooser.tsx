@@ -14,14 +14,17 @@ import { Notice } from './wizardForm';
 type Load = 'loading' | 'ready' | 'error' | 'forbidden';
 
 /**
- * Setup → Guided Setup (Addendum A): one wizard for both journeys. A big "Create a new company" card, then one row
+ * Setup → Guided setup (Addendum A): one wizard for both journeys. A big "Create a new company" card, then one row
  * per active company the caller may manage with its readiness, its draft and one next action. A link that names a
  * company (`?companyId=`, the old studio's deep links) opens that company's wizard directly.
  *
  * Who sees what is the server's answer (context.manageableCompanies / canCreate): a company super admin gets only
  * their own company and no create card.
  */
-export function GuidedSetupChooser() {
+export function GuidedSetupChooser({ showHeading = true }: {
+  /** Setup's section header already names the section; the chooser then shows only its explanation. */
+  showHeading?: boolean;
+} = {}) {
   const { t, locale } = useLocale();
   const fmt = useFormat();
   const country = useCountryName();
@@ -66,16 +69,16 @@ export function GuidedSetupChooser() {
     if (redirectTo && !legacyAddress) router.replace(redirectTo);
   }, [redirectTo, legacyAddress, router]);
 
-  if (load === 'loading' || redirectTo) return <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Opening Guided Setup…')}</p>;
+  if (load === 'loading' || redirectTo) return <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Opening Guided setup…')}</p>;
   if (load === 'forbidden') return (
     <Notice tone="warning" role="alert">
-      <p className="font-semibold">{t('Guided Setup is for administrators and HR managers.')}</p>
+      <p className="font-semibold">{t('Guided setup is for administrators and HR managers.')}</p>
       <p className="mt-1">{t('Ask your group super admin for access, or use the Setup sections your role can open.')}</p>
     </Notice>
   );
   if (load === 'error' || !context) return (
     <Notice tone="error" role="alert">
-      <p>{t('Guided Setup could not be opened. Check your connection and try again.')}</p>
+      <p>{t('Guided setup could not be opened. Check your connection and try again.')}</p>
       <button type="button" className="btn-secondary mt-3" onClick={() => setAttempt(a => a + 1)}>{t('Try again')}</button>
     </Notice>
   );
@@ -89,8 +92,8 @@ export function GuidedSetupChooser() {
   return (
     <div className="space-y-6" data-testid="guided-setup-chooser">
       <div className="min-w-0">
-        <h2 className="text-xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('Guided Setup')}</h2>
-        <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">{context.isGroupScope
+        {showHeading && <h2 className="text-xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('Guided setup')}</h2>}
+        <p className={`${showHeading ? 'mt-1 ' : ''}max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400`}>{context.isGroupScope
           ? t('Create a company, or finish setting one up. Each screen leads to the next, and nothing is saved until you review it.')
           : t('Finish setting up your company. Each screen leads to the next, and nothing is saved until you review it.')}</p>
       </div>
@@ -138,7 +141,7 @@ export function GuidedSetupChooser() {
           <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">{t('Adds what is missing and updates what you change. Nothing is removed.')}</p>
         </div>
         {context.manageableCompanies == null
-          ? <p className="rounded-xl border border-dashed border-slate-300 px-4 py-4 text-sm text-slate-600 dark:border-white/15 dark:text-slate-400" data-testid="chooser-unavailable">{t('Completing setup for an existing company is not available on this server yet. Use Configuration Center for now.')}</p>
+          ? <p className="rounded-xl border border-dashed border-slate-300 px-4 py-4 text-sm text-slate-600 dark:border-white/15 dark:text-slate-400" data-testid="chooser-unavailable">{t('Completing setup for an existing company is not available on this server yet. Use All setup areas for now.')}</p>
           : companies.length === 0
           ? <p className="rounded-xl border border-dashed border-slate-300 px-4 py-4 text-sm text-slate-600 dark:border-white/15 dark:text-slate-400" data-testid="chooser-empty">{context.isGroupScope
               ? t('There is no active company yet. Create the first one above.')

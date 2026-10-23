@@ -253,7 +253,7 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
       )}
 
       {/* Sub-tab nav */}
-      <div role="tablist" aria-label={t('GL & rates sections')} className="flex flex-wrap gap-1.5">
+      <div role="tablist" aria-label={t('Payroll accounting sections')} className="flex flex-wrap gap-1.5">
         {tabs.map(({ id, label, icon: Icon }, index) => (
           <button
             key={id}

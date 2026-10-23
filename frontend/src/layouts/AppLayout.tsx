@@ -25,6 +25,8 @@ import type { ThemeMode } from '../types/ui';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { POLICY_INTAKE_FLAG } from '../lib/policyIntake';
+import { permissionAccessDescription } from '../lib/permissionAreas';
+import { useLocale } from '../contexts/LocaleContext';
 
 const HISTORY_KEY = 'kynexone-search-history';
 const MAX_HISTORY = 8;
@@ -69,6 +71,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     router.replace('/login');
   }, [beginMfaEnrollment, router]);
   const { isFeatureEnabled } = useFeatureFlags();
+  const { t, locale } = useLocale();
   // ess.read alone opens the assistant only for policy questions, which exist only while policy intake is on.
   const mayUseAssistant = isFeatureEnabled('ai_assistant') && (hasPermission('ai.query') || hasPermission('ai.insights_view')
     || (isFeatureEnabled(POLICY_INTAKE_FLAG) && hasPermission('ess.read')));
@@ -92,22 +95,23 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     const base = commandNavigationItems
       .filter((item): item is typeof item & { path: string } => Boolean(item.path))
       .map((item) => ({
-        label: item.label,
+        label: t(item.label),
+        // The English name stays searchable in every language: people type "payroll" in Arabic too.
+        english: item.label,
         path: item.path,
-        description: item.requiredPermissions?.length
-          ? `Requires ${item.requiredPermissions.join(' or ')}`
-          : 'Open module',
+        // In words ("Needs payroll access"), never the raw permission key.
+        description: permissionAccessDescription(item.requiredPermissions ?? [], locale, t),
       }));
 
     const extras = [
-      { label: 'Kody', path: '/ai-assistant', description: 'Open Kody the HR Assistant' },
-      { label: 'Search Employees', path: '/people', description: 'Jump to employee search and records' },
-      { label: 'Review Approvals', path: '/approvals', description: 'Open approval center' },
-      { label: 'View Reports', path: '/reports', description: 'Open reports and analytics' },
+      { label: t('Kody'), english: 'Kody', path: '/ai-assistant', description: t('Open Kody the HR Assistant') },
+      { label: t('Search Employees'), english: 'Search Employees', path: '/people', description: t('Jump to employee search and records') },
+      { label: t('Review Approvals'), english: 'Review Approvals', path: '/approvals', description: t('Open approval center') },
+      { label: t('View Reports'), english: 'View Reports', path: '/reports', description: t('Open reports and analytics') },
     ];
 
     return [...new Map([...extras, ...base].map((item) => [item.path, item])).values()];
-  }, []);
+  }, [locale, t]);
 
   const visibleModules = useMemo(
     () => commandItems.filter((item) => {
@@ -127,6 +131,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     return visibleModules
       .filter((item) =>
         item.label.toLowerCase().includes(term) ||
+        item.english.toLowerCase().includes(term) ||
         item.path.toLowerCase().includes(term) ||
         item.description.toLowerCase().includes(term)
       )
@@ -428,12 +433,12 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                 autoFocus
                 value={commandQuery}
                 onChange={(event) => setCommandQuery(event.target.value)}
-                placeholder="Search modules, employees, reports…"
+                placeholder={t('Search modules, employees, reports…')}
                 className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 dark:text-white dark:placeholder:text-slate-500"
               />
               <button
                 type="button"
-                aria-label="Close search"
+                aria-label={t('Close search')}
                 onClick={closeCommandPalette}
                 className="grid h-7 w-7 place-items-center rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
               >
@@ -446,8 +451,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
               {!commandQuery.trim() && searchHistory.length > 0 && (
                 <div className="mb-2 p-2">
                   <div className="mb-1 flex items-center justify-between px-3">
-                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Recent Searches</p>
-                    <button type="button" onClick={clearHistory} className="text-[10px] text-slate-400 hover:text-rose-500 transition">Clear all</button>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Recent searches')}</p>
+                    <button type="button" onClick={clearHistory} className="text-[10px] text-slate-400 hover:text-rose-500 transition">{t('Clear all')}</button>
                   </div>
                   <div className="space-y-0.5">
                     {searchHistory.map((item) => (
@@ -456,7 +461,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                         <button type="button" className="flex-1 text-start text-sm text-slate-600 dark:text-slate-300" onClick={() => setCommandQuery(item)}>
                           {item}
                         </button>
-                        <button type="button" onClick={() => removeHistoryItem(item)} title="Remove from history" className="opacity-0 group-hover:opacity-100 transition grid h-5 w-5 place-items-center rounded text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400">
+                        <button type="button" onClick={() => removeHistoryItem(item)} title={t('Remove from history')} className="opacity-0 group-hover:opacity-100 transition grid h-5 w-5 place-items-center rounded text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400">
                           <X className="h-3 w-3" />
                         </button>
                       </div>
@@ -468,7 +473,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                 <div className="space-y-3 p-2">
                   {employeeResults.length > 0 && (
                     <div>
-                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Employees</p>
+                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Employees')}</p>
                       <div className="space-y-1">
                         {employeeResults.map((item) => (
                           (() => {
@@ -498,7 +503,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
 
                   {userResults.length > 0 && (
                     <div>
-                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Users</p>
+                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Users')}</p>
                       <div className="space-y-1">
                         {userResults.map((item) => (
                           (() => {
@@ -528,7 +533,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
 
                   {reportResults.length > 0 && (
                     <div>
-                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Reports</p>
+                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Reports')}</p>
                       <div className="space-y-1">
                         {reportResults.map((item) => (
                           (() => {
@@ -557,12 +562,12 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                   )}
 
                   {searching && (
-                    <div className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">Searching across employees, users, and reports…</div>
+                    <div className="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">{t('Searching across employees, users, and reports…')}</div>
                   )}
                 </div>
               ) : filteredCommands.length === 0 ? (
                 <div className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
-                  No matches found. Try a module name like payroll, leave, or reports.
+                  {t('No matches found. Try a module name like payroll, leave, or reports.')}
                 </div>
               ) : (
                 filteredCommands.map((item) => {

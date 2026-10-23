@@ -1163,7 +1163,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
 
   const submit = async () => {
     if (!email || !fullName || !password) { setErr('All fields are required.'); return; }
-    if (companyAdministratorFlow && companyId !== requestedCompanyId) { setErr(t('The new company could not be loaded. Return to Setup Studio and try again.')); return; }
+    if (companyAdministratorFlow && companyId !== requestedCompanyId) { setErr(t('The new company could not be loaded. Return to Guided setup and try again.')); return; }
     if (companyAdministratorFlow && (!createsAdministrator || requiredAdminRoleBlocked)) { setErr(t('You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step.')); return; }
     if (accessScope === 'company' && !companyId) { setErr(t('Choose the company this user will support.')); return; }
     if (policyLoading) return;
@@ -1204,7 +1204,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
       >
         <div>
           <h3 id={dialogTitleId} className="text-base font-semibold text-slate-800 dark:text-slate-200">{t(companyAdministratorFlow ? 'Create company administrator' : 'Create User')}</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{t(companyAdministratorFlow ? 'Add the administrator for this company, then continue to Setup Studio.' : 'Choose access before assigning roles. Company access is the safe default.')}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{t(companyAdministratorFlow ? 'Add the administrator for this company, then continue to Guided setup.' : 'Choose access before assigning roles. Company access is the safe default.')}</p>
         </div>
         <FormField label="Full Name" htmlFor={fullNameId}><input id={fullNameId} className={inp()} value={fullName} onChange={e => setFullName(e.target.value)} /></FormField>
         <FormField label="Email" htmlFor={emailId}><input id={emailId} type="email" className={inp()} value={email} onChange={e => setEmail(e.target.value)} /></FormField>

@@ -165,7 +165,7 @@ export const navigationHints: Record<string, string> = {
   '/saudi-compliance': 'Saudization (Nitaqat), Qiwa and Mudad status for the company.',
   '/gosi-filing': 'Prepare and check the monthly GOSI contribution filing.',
   '/tenant-admin': 'Company-wide settings: security, localisation and modules.',
-  '/setup': 'Companies, branches, departments and job titles.',
+  '/setup': 'Company structure, jobs and grades, payroll and country rules, and workspace settings.',
   '/opening-balances': 'Load leave, loan and end-of-service balances when going live.',
   '/payroll/variance': 'Compare a payroll run with the previous system’s register for the same month.',
 };
