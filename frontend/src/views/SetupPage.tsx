@@ -2503,7 +2503,7 @@ export function SetupPage() {
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission, hasRole, authorizationRefreshStatus, retryAuthorization } = useAuth();
-  const { accountType, isGroupScope, companyVersion, companies: authorizedCompanies, setSelectedCompany } = useCompany();
+  const { accountType, isGroupScope, companyVersion, companies: authorizedCompanies, selectedCompanyId, setSelectedCompany } = useCompany();
   const flags = useFeatureFlags();
   const { locale } = useLocale();
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
@@ -2775,7 +2775,7 @@ export function SetupPage() {
         // Incumbent GL subeditors have no save-state callback yet. Protect their
         // authored forms/rows conservatively, excluding the surrounding filters.
         if (!(event.target as Element).closest('[data-setup-filter]')) setEditorDirty(true);
-      }}><GlSetupPanel companies={glCompanies(companies, authorizedCompanies)} costCenters={costCenters} confirmLeave={confirmLeave} requestedTab={searchParams?.get('glTab')} /></div>;
+      }}><GlSetupPanel companies={glCompanies(companies, authorizedCompanies, selectedCompanyId)} costCenters={costCenters} confirmLeave={confirmLeave} requestedTab={searchParams?.get('glTab')} /></div>;
       case 'notificationTemplates': return <NotificationTemplatesTab />;
       case 'emailConfig': return <EmailConfigTab />;
       case 'adminAuditLogs': return <AdminAuditLogsTab />;

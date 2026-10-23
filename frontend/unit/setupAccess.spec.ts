@@ -34,6 +34,15 @@ test('GL & rates uses the full company list when there is one, else the companie
   expect(fallback[0].defaultCurrency).toBe('');
 });
 
+test('with a company chosen in the switcher, GL & rates offers only that company (the server refuses any other)', () => {
+  const authorized: CompanyAccess[] = [
+    { id: 'a1', name: 'Alpha Trading', code: 'ALPHA', countryCode: 'SA', isActive: true },
+    { id: 'b1', name: 'Beta Contracting', code: 'BETA', countryCode: 'AE', isActive: true },
+  ];
+  expect(glCompanies([], authorized, 'b1').map(c => c.id)).toEqual(['b1']);
+  expect(glCompanies([], authorized, null).map(c => c.id)).toEqual(['a1', 'b1']);
+});
+
 test('the Setup menu entry opens for every permission that opens a Setup section', () => {
   const setup = navigationGroups.flatMap(group => group.items).find(item => item.path === '/setup');
   expect(setup?.requiredPermissions).toEqual(expect.arrayContaining(['organization.write', ...GL_AND_RATES_PERMISSIONS]));
