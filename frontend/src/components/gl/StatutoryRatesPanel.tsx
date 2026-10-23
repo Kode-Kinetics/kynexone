@@ -12,6 +12,7 @@ import {
   type StatutoryRateRow,
 } from '../../api/financeRates';
 import { useFormat } from '../../hooks/useFormat';
+import { knownStatutoryRuleName as knownRuleName } from '../../lib/statutoryRuleLabels';
 import { useT } from '../../hooks/useT';
 import { useAppToast } from '../ui/AppToast';
 import { Modal } from '../Modal';
@@ -56,48 +57,8 @@ interface OverrideDraft {
   reason: string;
 }
 
-// ── Plain-language rule names (the server's own label wins when it sends one) ──
-function knownRuleName(t: Translator, key: string): string | null {
-  switch (key) {
-    case 'gosi.saudi_employee_rate': return t('GOSI contribution, Saudi employee share');
-    case 'gosi.saudi_employer_rate': return t('GOSI contribution, Saudi employer share');
-    case 'gosi.new_entrant_employee_rate': return t('GOSI annuities, new entrant (registered from 3 July 2024), employee share');
-    case 'gosi.new_entrant_employer_rate': return t('GOSI annuities, new entrant (registered from 3 July 2024), employer share');
-    case 'gosi.covered_wage_min_annuities_sar': return t('GOSI minimum contributory wage, annuities (warning only)');
-    case 'gosi.covered_wage_min_occupational_hazards_sar': return t('GOSI minimum contributory wage, occupational hazards (warning only)');
-    case 'gosi.employee_rate': return t('GOSI contribution, employee share');
-    case 'gosi.saned_rate': return t('SANED unemployment insurance contribution');
-    case 'gosi.expat_occupational_hazard_rate': return t('GOSI occupational hazards, non-Saudi employees');
-    case 'gosi.covered_wage_ceiling_sar': return t('GOSI maximum contributory wage');
-    case 'gosi.covered_wage_floor_sar': return t('GOSI minimum contributory wage');
-    case 'gosi.retirement_age_years': return t('GOSI retirement age');
-    case 'ot.standard_multiplier': return t('Overtime pay multiplier');
-    case 'ot.restday_multiplier': return t('Rest-day overtime multiplier');
-    case 'ot.holiday_multiplier': return t('Public-holiday overtime multiplier');
-    case 'ot.standard_monthly_hours': return t('Standard monthly working hours');
-    case 'leave.annual_base_days': return t('Annual leave entitlement');
-    case 'leave.annual_tiered_days': return t('Annual leave after the service threshold');
-    case 'leave.annual_tier_threshold_years': return t('Years of service for the higher annual leave');
-    case 'leave.maternity_days': return t('Maternity leave');
-    case 'leave.paternity_days': return t('Paternity leave');
-    case 'leave.marriage_days': return t('Marriage leave');
-    case 'leave.bereavement_days': return t('Bereavement leave');
-    case 'leave.hajj_max_days': return t('Hajj leave, maximum');
-    case 'leave.sick_band1_days': return t('Sick leave at full pay');
-    case 'leave.sick_band2_days': return t('Sick leave at reduced pay');
-    case 'leave.sick_band3_days': return t('Sick leave without pay');
-    case 'eosb.tier1_days_per_year': return t('End-of-service days per year, first five years');
-    case 'eosb.tier2_days_per_year': return t('End-of-service days per year, after five years');
-    case 'nitaqat.default_target_ratio': return t('Nitaqat Saudization target');
-    case 'gpssa.national_employee_rate': return t('GPSSA pension contribution, national employee share');
-    case 'gpssa.national_employer_rate': return t('GPSSA pension contribution, national employer share');
-    case 'grsia.national_employee_rate': return t('GRSIA pension contribution, national employee share');
-    case 'grsia.national_employer_rate': return t('GRSIA pension contribution, national employer share');
-    case 'dews.tier1_monthly_rate': return t('DEWS monthly contribution, first five years');
-    case 'dews.tier2_monthly_rate': return t('DEWS monthly contribution, after five years');
-    default: return null;
-  }
-}
+// Plain-language rule names live in lib/statutoryRuleLabels.ts, shared with Setup → Statutory rules
+// (the server's own label still wins when it sends one).
 
 /** The unit a value is shown in: the server's displayUnit, else inferred from the key's family. */
 function unitFor(row: StatutoryRateRow): StatutoryDisplayUnit {

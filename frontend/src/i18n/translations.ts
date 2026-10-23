@@ -8,6 +8,7 @@ import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
+import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
@@ -1426,6 +1427,7 @@ const en: Dict = {
   ...setupExperience.en,
   ...glSetup.en,
   ...glErp.en,
+  ...statutoryRules.en,
   ...glApiKeys.en,
   ...reportsAnalytics.en,
   ...approvalChanges.en,
@@ -2832,6 +2834,7 @@ const ar: Dict = {
   ...setupExperience.ar,
   ...glSetup.ar,
   ...glErp.ar,
+  ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...reportsAnalytics.ar,
   ...approvalChanges.ar,
