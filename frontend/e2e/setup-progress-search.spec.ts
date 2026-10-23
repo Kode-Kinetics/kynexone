@@ -33,30 +33,38 @@ test.afterEach(async ({ page }) => {
   expect(errorsByPage.get(page), 'No application runtime errors').toEqual([]);
 });
 
-interface BootOptions { url?: string; arabic?: boolean; dark?: boolean; readOnly?: boolean; complete?: boolean; readinessFails?: boolean; dirtyGuard?: boolean; expectWizard?: boolean }
+interface BootOptions { url?: string; arabic?: boolean; dark?: boolean; readOnly?: boolean; complete?: boolean; readinessFails?: boolean; dirtyGuard?: boolean; expectWizard?: boolean; permissions?: string[] }
+
+// Saving the first drop-down list configures the workspace: like the server, Guided setup then stops listing it.
+const SAVED_LIST = { id: 'type-1', code: 'NATIONALITY', nameEn: 'Nationality', nameAr: '', description: '', allowCustomValues: false, isActive: true, isSystemDefined: false };
 
 async function boot(page: Page, options: BootOptions = {}) {
   const writes: string[] = [];
+  const saved = { list: false };
   await page.addInitScript(({ arabic, dark }) => {
     localStorage.setItem('zayra_access_token', 'fixture');
     localStorage.setItem('kynexone-locale-choice-v2', arabic ? 'ar' : 'en');
     localStorage.setItem('kynexone-company:reviewer', 'fixture-company');
     localStorage.setItem('kynexone.theme', dark ? 'dark' : 'light');
   }, { arabic: options.arabic ?? false, dark: options.dark ?? false });
-  const readiness = options.complete ? READINESS.map(item => ({ ...item, status: 'done' })) : READINESS;
+  const checklist = () => (options.complete ? READINESS.map(item => ({ ...item, status: 'done' })) : READINESS)
+    .filter(item => !(saved.list && item.key === 'masterData'));
   await page.route('**/api/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const reply = (json: unknown) => route.fulfill({ json });
     if (request.method() !== 'GET') writes.push(path);
+    if (request.method() === 'POST' && path === '/api/admin/master-data/types') { saved.list = true; return reply(SAVED_LIST); }
+    if (path === '/api/admin/master-data/types' && saved.list) return reply([SAVED_LIST]);
+    const readiness = checklist();
     const company = { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', countryCode: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' };
     const companies = [company, { ...company, id: 'second-company', legalNameEn: 'Second Fixture LLC' }];
     if (path === '/api/auth/me') return reply({
       id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer',
       roles: [options.readOnly ? 'Auditor' : 'Admin'],
-      permissions: options.readOnly
+      permissions: options.permissions ?? (options.readOnly
         ? ['organization.read']
-        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'payroll.rates.read'],
+        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'payroll.rates.read']),
       accountType: 'Group', isGroupScope: true,
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SA', isActive: true })),
     });
@@ -64,7 +72,8 @@ async function boot(page: Page, options: BootOptions = {}) {
       canCreate: true, creationMode: 'GroupSelfServiceWithinLimit', accountType: 'Group', companiesUsed: 2, companiesAllowed: 5, isGroupScope: true,
       sisterCompanies: [], sharedCatalog: { departments: [], designations: [], grades: [] },
       manageableCompanies: [
-        { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', legalNameAr: null, countryCode: 'SA', readinessDone: options.complete ? TOTAL : DONE, readinessTotal: TOTAL, openDraftId: null },
+        // Counted from the same checklist, as the server does.
+        { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', legalNameAr: null, countryCode: 'SA', readinessDone: readiness.filter(item => item.status === 'done').length, readinessTotal: readiness.length, openDraftId: null },
         { id: 'second-company', legalNameEn: 'Second Fixture LLC', legalNameAr: null, countryCode: 'SA', readinessDone: 9, readinessTotal: 9, openDraftId: null },
       ],
     });
@@ -85,7 +94,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     ], total: 2, page: 1, pageSize: 100 });
     if (path === '/api/statutory-rules' || path === '/api/finance/rates/statutory/pending') return reply([]);
     if (['/api/admin/numbering-rules', '/api/admin/gcc-settings', '/api/admin/fiscal-years', '/api/admin/locations', '/api/admin/notification-templates'].includes(path)) return reply([]);
-    if (path === '/api/finance/gl/accounts' || path === '/api/finance/gl/mappings') return reply([]);
+    if (['/api/finance/gl/accounts', '/api/finance/gl/mappings', '/api/finance/gl/drivers', '/api/finance/rates/company', '/api/finance/rates/company/registry', '/api/finance/rates/statutory', '/api/finance/gl/periods'].includes(path)) return reply([]);
     if (path === '/api/dashboard/full') return route.fulfill({ status: 503, json: { message: 'Dashboard fixture unavailable' } });
     if (path === '/api/recruitment/onboarding/summary') return reply({ total: 0, pending: 0, completed: 0, blocked: 0, completionPct: 0 });
     if (path === '/api/companies') return reply({ items: companies, total: companies.length, page: 1, pageSize: 100 });
@@ -193,6 +202,89 @@ test('with a company selected, the navigation’s Guided setup shows the chooser
   await expect(page).toHaveURL(/[?&]companyId=second-company(&|$)/);
   await expect(page.getByTestId('setup-progress-summary')).toHaveText(`Second Fixture LLC · ${TOTAL} of ${TOTAL} setup items done`);
   if (isWide(page)) await shot(page, `${viewportName(page)}-en-guided-from-nav-scope-kept`);
+});
+
+test('Back from another screen to Guided setup shows the chooser, not a company wizard', async ({ page }) => {
+  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=second-company&area=overview' });
+  await (await setupSection(page, 'Guided setup')).click();
+  await expect(page.getByTestId('guided-setup-chooser')).toBeVisible();
+  await expect(page).toHaveURL(/[?&]companyId=second-company(&|$)/);
+  // Leave for another screen inside the app: a client-side route change, no document load.
+  await page.evaluate(() => { (window as unknown as { sameDocument: boolean }).sameDocument = true; });
+  await page.keyboard.press('ControlOrMeta+k');
+  await page.getByPlaceholder('Search modules, employees, reports…').fill('Dashboard');
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/dashboard/);
+  for (let round = 0; round < 2; round++) {
+    await page.goBack();
+    await expect(sectionHeading(page)).toHaveText('Guided setup');
+    await expect(page.getByTestId('guided-setup-chooser')).toBeVisible();
+    await expect(page).not.toHaveURL(/\/complete/);
+    expect(await page.evaluate(() => (window as unknown as { sameDocument?: boolean }).sameDocument)).toBe(true);
+    if (round === 0) { await page.goForward(); await expect(page).toHaveURL(/\/dashboard/); }
+  }
+  // The scope is still the same company.
+  await openSetupSection(page, 'All setup areas');
+  await expect(page.getByTestId('setup-progress-summary')).toHaveText(`Second Fixture LLC · ${TOTAL} of ${TOTAL} setup items done`);
+});
+
+test('a record saved in an embedded setting is counted by the headline, its checklist and the navigation together', async ({ page }) => {
+  const { writes } = await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=organization&setting=masterData' });
+  const summary = page.getByTestId('setup-progress-summary');
+  await expect(summary).toHaveText(`Workspace Fixture LLC · ${DONE} of ${TOTAL} setup items done`);
+  // Save the workspace's first drop-down list in the embedded setting.
+  await page.getByRole('region', { name: 'No drop-down lists yet' }).getByRole('button', { name: 'New list', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New type' });
+  await dialog.getByPlaceholder('NATIONALITY').fill('NATIONALITY');
+  await dialog.locator('input').nth(1).fill('Nationality');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(writes).toContain('/api/admin/master-data/types');
+  // Back to the area: Guided setup no longer lists the workspace item, and every number says so.
+  await page.getByTestId('setup-studio-workspace').getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Organization and core HR', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Organization and core HR', exact: true })).toBeVisible();
+  await expect(summary).toHaveText(`Workspace Fixture LLC · ${DONE} of ${TOTAL - 1} setup items done`);
+  await summary.click();
+  const missing = page.getByRole('list', { name: 'Still to do', exact: true });
+  await expect(missing.getByRole('listitem')).toHaveCount(TOTAL - 1 - DONE);
+  await expect(page.getByTestId('setup-progress-item-masterData')).toHaveCount(0);
+  // The navigation's count agrees with the headline.
+  const guided = await setupSection(page, 'Guided setup');
+  await expect(guided.locator('[data-setup-entry-status]')).toHaveText(`${DONE} of ${TOTAL - 1}`);
+  if (!isWide(page)) await page.keyboard.press('Escape');
+  // And the area counts the saved list as an active record.
+  await expect(page.getByTestId('setup-area-blueprint').locator('[data-setup-destination="masterData"]')).toHaveAccessibleDescription('Done');
+});
+
+test('Payroll accounting tab results open Payroll accounting on that tab', async ({ page }) => {
+  await boot(page, { url: '/setup?tab=companies', permissions: ['organization.read', 'organization.write', 'payroll.read', 'payroll.rates.read', 'finance.gl.read', 'dashboard.read'] });
+  for (const [query, tabName, id] of [['company rates', 'Company Rates', 'companyRates'], ['statutory rates', 'Statutory Rates', 'statutory'], ['accounting periods', 'Accounting periods', 'periods']] as const) {
+    const box = await searchBox(page);
+    await box.fill(query);
+    await results(page).getByRole('link', { name: new RegExp(`^${tabName}`) }).click();
+    await expect(sectionHeading(page)).toHaveText('Payroll accounting');
+    await expect(page).toHaveURL(new RegExp(`[?&]glTab=${id}(&|$)`));
+    await expect(page.getByRole('tab', { name: tabName, exact: true })).toHaveAttribute('aria-selected', 'true');
+  }
+  // The tab request stays with its link: the next section's address does not carry it.
+  await openSetupSection(page, 'Grades');
+  await expect(sectionHeading(page)).toHaveText('Grades');
+  expect(new URL(page.url()).searchParams.has('glTab')).toBe(false);
+});
+
+test('a Payroll accounting tab the reader may not see falls back to the first one they may', async ({ page }) => {
+  // No rates permission: Company Rates is not a tab for this reader.
+  await boot(page, { url: '/setup?tab=glMapping&glTab=companyRates', permissions: ['organization.read', 'organization.write', 'payroll.read', 'finance.gl.read', 'dashboard.read'] });
+  await expect(sectionHeading(page)).toHaveText('Payroll accounting');
+  await expect(page.getByRole('tab', { name: 'Company Rates', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Accounts & Mapping', exact: true })).toHaveAttribute('aria-selected', 'true');
+  // An unknown tab falls back the same way.
+  await page.goto('/setup?tab=glMapping&glTab=nonsense');
+  await expect(page.getByRole('tab', { name: 'Accounts & Mapping', exact: true })).toHaveAttribute('aria-selected', 'true');
+  // And search never offers the hidden tab.
+  const box = await searchBox(page);
+  await box.fill('company rates');
+  await expect(results(page).getByRole('link', { name: /^Company Rates/ })).toHaveCount(0);
 });
 
 test('a link from outside Setup that names a company still opens its wizard', async ({ page }) => {

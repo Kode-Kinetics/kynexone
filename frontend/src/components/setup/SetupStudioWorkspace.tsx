@@ -123,11 +123,16 @@ export function SetupStudioWorkspace({ companies, guidedCompanies, renderSetting
   // ── Setup progress: Guided setup's checklist for the selected company, and record checks per section ─────────────
   const { locale } = useLocale();
   const guidedCompany = progressCompany(guidedCompanies?.companies, authorizedCompany);
-  const guidedProgress = guidedCompany ? readinessProgress(guidedCompany) : null;
   const guidedName = guidedCompany ? ((locale === 'ar' && guidedCompany.legalNameAr?.trim()) || guidedCompany.legalNameEn) : '';
   // Re-read on every move inside All setup areas, so a record saved in an embedded setting counts on the way back.
+  // SetupPage re-reads Guided setup's context on the same moves.
   const progressRefresh = `${companyVersion}:${activeArea}:${params?.get('setting') ?? ''}`;
   const readiness = useReadinessItems(guidedCompany?.id ?? null, progressRefresh);
+  // The headline counts the checklist it opens once that list is read (the server counts the context's number from
+  // the same list), so the two can never disagree, even while the context is still being re-read.
+  const guidedProgress = !guidedCompany ? null : readiness.items
+    ? readinessProgress({ readinessDone: readiness.items.filter(item => item.status === 'done').length, readinessTotal: readiness.items.length })
+    : readinessProgress(guidedCompany);
   const availableByArea = useMemo(() => new Map(SETUP_AREAS.map(item => [item.id, item.destinations
     .filter(destination => destinationAvailability(destination, access) === 'available')
     .sort((a, b) => a.groupOrder - b.groupOrder || a.destinationOrder - b.destinationOrder)
@@ -270,7 +275,7 @@ export function SetupStudioWorkspace({ companies, guidedCompanies, renderSetting
             </button>
             <div id="setup-progress-items" hidden={!missingOpen} className="mt-3 max-w-2xl rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-white/10 dark:bg-white/[0.03]" data-testid="setup-progress-items">
               <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{t('The same checklist as Guided setup, read from your saved records. Each item is done when what it checks is saved.')}</p>
-              {readiness.status === 'ready' ? (
+              {readiness.items ? (
                 missing.length > 0 ? (
                   <ul aria-label={t('Still to do')} className="mt-2 divide-y divide-slate-200 dark:divide-white/10">
                     {missing.map(item => (

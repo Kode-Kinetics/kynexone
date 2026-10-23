@@ -80,7 +80,15 @@ test('All setup areas destinations and Payroll accounting tabs are found with th
   const rates = matchSetupEntries(entries, 'company rates', en)[0];
   expect(rates.label).toBe('Company Rates');
   expect(rates.group).toBe('Payroll accounting');
-  expect(rates.entry.navId).toBe('glMapping');
+  // Each tab carries its own id through navigation: Payroll accounting opens on that tab.
+  expect(rates.entry.navId).toBeUndefined();
+  expect(rates.entry.href).toBe('/setup?tab=glMapping&glTab=companyRates');
+  expect(matchSetupEntries(entries, 'statutory rates', en)[0].entry.href).toBe('/setup?tab=glMapping&glTab=statutory');
+  expect(matchSetupEntries(entries, 'accounting periods', en)[0].entry.href).toBe('/setup?tab=glMapping&glTab=periods');
+  // A page-supplied section address keeps its own parameters.
+  const { nav, flags } = access();
+  const scoped = buildSetupSearchIndex({ model: setupNavigationModel(nav), access: flags, sectionHref: id => `/setup?tab=${id}&companyId=co-1` });
+  expect(matchSetupEntries(scoped, 'company rates', en)[0].entry.href).toBe('/setup?tab=glMapping&companyId=co-1&glTab=companyRates');
   // A setting that is also a section is listed once, as the section.
   expect(ids(entries, 'Grades').filter(id => id.includes('grades'))).toEqual(['grades']);
 });

@@ -192,7 +192,10 @@ export function buildSetupSearchIndex({ model, access, sectionHref, areaHref = d
     const group = SETUP_SETTING_SECTIONS.find(section => section.id === 'glMapping')!.label;
     for (const tab of PAYROLL_ACCOUNTING_TABS) {
       if (!tab.visible(access.hasPermission, access.hasRole)) continue;
-      entries.push({ id: `gl:${tab.id}`, label: tab.label, group, href: hrefFor('glMapping', '/setup?tab=glMapping'), navId: 'glMapping', keywords: SETUP_SEARCH_SYNONYMS[`gl:${tab.id}`] });
+      // The tab travels in the address (`glTab`), which GlSetupPanel opens, falling back to the first tab the reader may
+      // see. Opened by its href, not as the section, so the tab is never dropped on the way.
+      const section = hrefFor('glMapping', '/setup?tab=glMapping');
+      entries.push({ id: `gl:${tab.id}`, label: tab.label, group, href: `${section}${section.includes('?') ? '&' : '?'}glTab=${tab.id}`, keywords: SETUP_SEARCH_SYNONYMS[`gl:${tab.id}`] });
     }
   }
   return entries;

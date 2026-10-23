@@ -31,19 +31,23 @@ export function useGuidedSetupCompanies(enabled: boolean, refreshKey: string): {
   return state;
 }
 
-/** The checklist behind one company's "N of M" (GET /api/company-setup/readiness/{id}); null until read or on failure. */
+/**
+ * The checklist behind one company's "N of M" (GET /api/company-setup/readiness/{id}); null until read or on failure.
+ * While it is re-read for the same company the last list stays (status 'loading'), so a headline counted from it never
+ * falls back to an older number in between; another company's list is never shown.
+ */
 export function useReadinessItems(companyId: string | null, refreshKey: string): { status: ProgressLoad; items: ReadinessItem[] | null } {
-  const [state, setState] = useState<{ status: ProgressLoad; items: ReadinessItem[] | null }>({ status: 'idle', items: null });
+  const [state, setState] = useState<{ companyId: string | null; status: ProgressLoad; items: ReadinessItem[] | null }>({ companyId: null, status: 'idle', items: null });
   useEffect(() => {
-    if (!companyId) { setState({ status: 'idle', items: null }); return; }
+    if (!companyId) { setState({ companyId: null, status: 'idle', items: null }); return; }
     let active = true;
-    setState({ status: 'loading', items: null });
+    setState(current => ({ companyId, status: 'loading', items: current.companyId === companyId ? current.items : null }));
     companySetupApi.readiness(companyId)
-      .then(items => { if (active) setState(Array.isArray(items) ? { status: 'ready', items } : { status: 'unavailable', items: null }); })
-      .catch(() => { if (active) setState({ status: 'unavailable', items: null }); });
+      .then(items => { if (active) setState(Array.isArray(items) ? { companyId, status: 'ready', items } : { companyId, status: 'unavailable', items: null }); })
+      .catch(() => { if (active) setState({ companyId, status: 'unavailable', items: null }); });
     return () => { active = false; };
   }, [companyId, refreshKey]);
-  return state;
+  return state.companyId === companyId ? { status: state.status, items: state.items } : { status: companyId ? 'loading' : 'idle', items: null };
 }
 
 type Row = Record<string, unknown>;

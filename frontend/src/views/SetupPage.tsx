@@ -2472,11 +2472,21 @@ export const AUTHORIZATION_BANNER_DELAY_MS = 800;
 let setupDocumentLandingSeen = false;
 
 /**
- * How the browser loaded this document, when this Setup visit is that load (the document landed on /setup and Setup
- * has not mounted before). Otherwise, and on the server, an ordinary navigation.
+ * The address the browser's own Back/Forward last restored inside this document (popstate). In-app routes are
+ * client-side, so leaving Setup for another screen and pressing Back remounts Setup without a document load: the
+ * document's navigation timing still says "navigate", and only this tells a history restore from a followed link.
  */
-function documentLandingNavigation(): string {
-  if (typeof window === 'undefined' || setupDocumentLandingSeen) return 'navigate';
+let lastTraversedHref: string | null = null;
+if (typeof window !== 'undefined') window.addEventListener('popstate', () => { lastTraversedHref = window.location.href; });
+
+/**
+ * How this Setup visit arrived: 'back_forward' when the browser's history restored it (inside this document, or as
+ * the document's own load), 'reload' for a reloaded Setup document, otherwise (and on the server) 'navigate'.
+ */
+function setupArrivalNavigation(): string {
+  if (typeof window === 'undefined') return 'navigate';
+  if (lastTraversedHref === window.location.href) return 'back_forward';
+  if (setupDocumentLandingSeen) return 'navigate';
   try {
     const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
     if (!entry || new URL(entry.name).pathname !== '/setup') return 'navigate';
@@ -2531,8 +2541,9 @@ export function SetupPage() {
   // reconciled into the URL. Every later return to Guided setup (navigation, search, Back) keeps `companyId` only as
   // the scope and opens the chooser.
   const landingCompanyLink = useRef<string | null | undefined>(undefined);
-  if (landingCompanyLink.current === undefined) landingCompanyLink.current = setupLandingCompanyLink(new URLSearchParams(searchParams?.toString()), documentLandingNavigation());
-  useEffect(() => { setupDocumentLandingSeen = true; }, []);
+  if (landingCompanyLink.current === undefined) landingCompanyLink.current = setupLandingCompanyLink(new URLSearchParams(searchParams?.toString()), setupArrivalNavigation());
+  // This arrival has been read: a later visit is classified afresh (a followed link after a Back is a link again).
+  useEffect(() => { setupDocumentLandingSeen = true; lastTraversedHref = null; }, []);
   const authorizedCompany = useSetupCompanyQuery();
   const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, pendingStarterFiles, authorizedCompany);
   const setupPath = resolveSetupPath(new URLSearchParams(searchParams?.toString()), {
@@ -2583,6 +2594,8 @@ export function SetupPage() {
     // the URL would reopen All setup areas on re-entry even after the user chose Guided setup (the path is kept).
     if (tab === 'aiSetup') params.set('area', resolveSetupArea(params.get('area')));
     else { params.delete('area'); params.delete('setting'); }
+    // Payroll accounting's tab request belongs to the link that made it, never to the next section's address.
+    params.delete('glTab');
     if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
     return `/setup?${params.toString()}`;
   };
@@ -2668,9 +2681,11 @@ export function SetupPage() {
     // The tab follows the address (requestedTab), so no in-between section is shown or announced on the way.
     confirmLeave(href, () => { router.push(href, { scroll: false }); });
   };
-  // Guided setup's own progress (its chooser's "N of M done"), refreshed on a company change and each time Guided
-  // setup or All setup areas is opened, so a section saved in between is counted when the user comes back.
-  const progressRefresh = `${companyVersion}:${selectedNavId === 'guidedSetup' || selectedNavId === 'allSetupAreas' ? selectedNavId : 'section'}`;
+  // Guided setup's own progress (its chooser's "N of M done"), refreshed on a company change, each time Guided setup
+  // or All setup areas is opened, and on every move inside All setup areas (an area, an embedded setting and back), the
+  // same moves that re-read its checklist, so a record saved in an embedded setting counts in both at once.
+  const progressRefresh = `${companyVersion}:${selectedNavId === 'guidedSetup' ? 'guided'
+    : selectedNavId === 'allSetupAreas' ? `areas:${setupPath.area}:${setupPath.setting ?? ''}` : 'section'}`;
   const guidedCompanies = useGuidedSetupCompanies(canWrite, progressRefresh);
   const guidedCompany = progressCompany(guidedCompanies.companies, authorizedCompany);
   const guidedProgress = guidedCompany ? readinessProgress(guidedCompany) : null;
@@ -2757,7 +2772,7 @@ export function SetupPage() {
         // Incumbent GL subeditors have no save-state callback yet. Protect their
         // authored forms/rows conservatively, excluding the surrounding filters.
         if (!(event.target as Element).closest('[data-setup-filter]')) setEditorDirty(true);
-      }}><GlSetupPanel companies={companies} costCenters={costCenters} confirmLeave={confirmLeave} /></div>;
+      }}><GlSetupPanel companies={companies} costCenters={costCenters} confirmLeave={confirmLeave} requestedTab={searchParams?.get('glTab')} /></div>;
       case 'notificationTemplates': return <NotificationTemplatesTab />;
       case 'emailConfig': return <EmailConfigTab />;
       case 'adminAuditLogs': return <AdminAuditLogsTab />;
