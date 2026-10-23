@@ -22,6 +22,7 @@ import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
 import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
+import { educationClaims } from './educationClaims';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { attendanceExceptions } from './attendanceExceptions';
@@ -54,6 +55,7 @@ const en: Dict = {
   ...policyBinder.en,
   ...policyForms.en,
   ...gradeBenefitDefaults.en,
+  ...educationClaims.en,
   "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
   "Starts on {date}": "Starts on {date}",
   "Ends on {date}": "Ends on {date}",
@@ -1180,6 +1182,13 @@ const en: Dict = {
   "The maximum number of open loans would be exceeded, counting requests still waiting for approval.": "The maximum number of open loans would be exceeded, counting requests still waiting for approval.",
   "The minimum service period for this loan type hasn't been completed.": "The minimum service period for this loan type hasn't been completed.",
   "The number of instalments is outside what the policy allows.": "The number of instalments is outside what the policy allows.",
+  "Repayment must be spread over at least {min} instalments.": "Repayment must be spread over at least {min} instalments.",
+  "Repay over {min}–{max} instalments": "Repay over {min}–{max} instalments",
+  "Choose between {min} and {max} instalments.": "Choose between {min} and {max} instalments.",
+  "Shortest repayment (instalments)": "Shortest repayment (instalments)",
+  "Longest repayment (instalments)": "Longest repayment (instalments)",
+  "The fewest instalments an employee may choose. 1 = no minimum.": "The fewest instalments an employee may choose. 1 = no minimum.",
+  "The shortest repayment cannot be longer than the longest repayment.": "The shortest repayment cannot be longer than the longest repayment.",
   "This amount is above the most that can be borrowed now.": "This amount is above the most that can be borrowed now.",
   "This amount is above the per-loan maximum for this employee's grade ({perLoanCap}).": "This amount is above the per-loan maximum for this employee's grade ({perLoanCap}).",
   "This employee's grade isn't eligible for this loan type.": "This employee's grade isn't eligible for this loan type.",
@@ -1478,6 +1487,7 @@ const ar: Dict = {
   ...policyBinder.ar,
   ...policyForms.ar,
   ...gradeBenefitDefaults.ar,
+  ...educationClaims.ar,
   "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
   "Starts on {date}": "تبدأ في {date}",
   "Ends on {date}": "تنتهي في {date}",
@@ -2604,6 +2614,13 @@ const ar: Dict = {
   "The maximum number of open loans would be exceeded, counting requests still waiting for approval.": "سيتم تجاوز الحد الأقصى لعدد القروض المفتوحة، بما فيها الطلبات التي تنتظر الموافقة.",
   "The minimum service period for this loan type hasn't been completed.": "لم يكتمل الحد الأدنى لمدة الخدمة لهذا النوع من القروض.",
   "The number of instalments is outside what the policy allows.": "عدد الأقساط خارج ما تسمح به السياسة.",
+  "Repayment must be spread over at least {min} instalments.": "يجب ألا يقل عدد أقساط السداد عن {min}.",
+  "Repay over {min}–{max} instalments": "عدد أقساط السداد من {min} إلى {max}",
+  "Choose between {min} and {max} instalments.": "اختر عدد أقساط من {min} إلى {max}.",
+  "Shortest repayment (instalments)": "أقصر مدة سداد (بالأقساط)",
+  "Longest repayment (instalments)": "أطول مدة سداد (بالأقساط)",
+  "The fewest instalments an employee may choose. 1 = no minimum.": "أقل عدد أقساط يمكن للموظف اختياره. 1 = بلا حد أدنى.",
+  "The shortest repayment cannot be longer than the longest repayment.": "لا يمكن أن تكون أقصر مدة سداد أطول من أطول مدة سداد.",
   "This amount is above the most that can be borrowed now.": "هذا المبلغ أعلى من الحد الأقصى المتاح للاقتراض حالياً.",
   "This amount is above the per-loan maximum for this employee's grade ({perLoanCap}).": "هذا المبلغ أعلى من الحد الأقصى للقرض الواحد لدرجة هذا الموظف ({perLoanCap}).",
   "This employee's grade isn't eligible for this loan type.": "درجة هذا الموظف غير مؤهلة لهذا النوع من القروض.",

@@ -9,6 +9,7 @@ import { useFormat } from '@/src/hooks/useFormat';
 import { useReleaseA } from '@/src/lib/releaseA';
 import { AssignmentLabel, EnrollmentDrawer } from './BenefitEnrollmentDrawer';
 import { BenefitClaimsPanel } from './BenefitClaims';
+import { DependantsPanel } from '../entitlements/DependantsPanel';
 import { BenefitPolicySummary } from './BenefitPaymentPolicy';
 import { BenefitChecklist } from './BenefitChecklist';
 import { AdditionalBenefitForm } from './AdditionalBenefitForm';
@@ -88,6 +89,8 @@ export function EmployeeBenefitsPanel({ employeeId, employeeName, companyId }: E
           {pending.length > 0 && <section className="space-y-2"><h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">{t('Pending benefit requests')}</h4>{pending.map(request => <button type="button" key={request.id} className={`${CARD} flex w-full items-center justify-between gap-3 p-3 text-start text-xs`} onClick={() => setRequestId(request.id)}><span className="font-semibold text-slate-800 dark:text-slate-100">{request.planName}</span><StatusPill active={false} label={t(['End', 'Cancel'].includes(request.operation ?? '') ? 'Removal pending approval' : 'Addition pending approval')} /></button>)}<p className="text-xs text-slate-500 dark:text-slate-400">{t('Pending requests do not change the employee’s benefits until approved.')}</p></section>}
           {current.length ? benefitList(current) : <div className={`${CARD} flex flex-col items-center gap-2 p-7 text-center`}><HeartPulse className="h-7 w-7 text-slate-300" /><p className="text-sm text-slate-600 dark:text-slate-300">{t('No current or upcoming benefits.')}</p></div>}
           {data?.enrollments.some(item => item.paymentPolicy?.delivery === 'Reimbursement') && <BenefitClaimsPanel employeeId={employeeId} benefits={data.enrollments} canWrite={canPropose} onChanged={() => void load()} />}
+          {/* A per-child claim names a child on file; without Release A this is the only place HR records them. */}
+          {!releaseA && data?.enrollments.some(item => item.paymentPolicy?.claimFor === 'Child') && <DependantsPanel employeeId={employeeId} onChanged={() => void load()} />}
           {requestHistory.length > 0 && <details className={`${CARD} p-4`}><summary className="cursor-pointer text-sm font-semibold text-slate-600 dark:text-slate-300">{t('Benefit request history')}</summary><div className="mt-3 space-y-2">{requestHistory.map(request => <button type="button" key={request.id} onClick={() => setRequestId(request.id)} className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-start text-xs dark:border-white/10"><span className="text-slate-700 dark:text-slate-200">{request.planName}</span><StatusPill active={request.status === 'Approved'} label={request.status} /></button>)}</div></details>}
           {previous.length > 0 && <details className={`${CARD} p-4`}><summary className="cursor-pointer text-sm font-semibold text-slate-600 dark:text-slate-300">{t('Past benefits ({count})', { count: previous.length })}</summary><div className="mt-3">{benefitList(previous)}</div></details>}
         </>}

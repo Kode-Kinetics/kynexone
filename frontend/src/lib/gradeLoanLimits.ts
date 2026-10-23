@@ -110,6 +110,8 @@ export const policyReasonKeys: Record<string, string> = {
   RepaymentMethod: "This repayment method isn't allowed by the company policy.",
   RepaymentFrequency: "This repayment frequency isn't allowed by the company policy.",
   Installments: 'The number of instalments is outside what the policy allows.',
+  // Needs {min}: callers pass the eligibility response's minInstallments.
+  MinInstallments: 'Repayment must be spread over at least {min} instalments.',
   InvalidAmount: 'Enter a positive amount with at most two decimals that covers every instalment.',
   AmountLimit: 'This amount is above the most that can be borrowed now.',
   ConcurrentLoans: 'The maximum number of open loans would be exceeded, counting requests still waiting for approval.',

@@ -907,6 +907,17 @@ cookie is stateless and cannot be revoked. RLS is a target rule — the live bri
 ### `security_settings.mfa_trusted_device_days` (column)
 - `integer NOT NULL DEFAULT 30`, `ck_security_settings__mfa_trusted_device_days` (`BETWEEN 0 AND 90`). How long a browser stays trusted after a two-step code; 0 = the tenant does not offer it. Read by sign-in (`rememberDeviceDays` on the challenge), `GET /api/auth/mfa/status`, and written by `PUT /api/access/security-settings` (`mfaTrustedDeviceDays`, out of range → 400 `ERR_MFA_TRUST_DAYS_RANGE`).
 
+
+## W. Minimum loan repayment (live bridge)
+
+Not part of the 76. Two columns on the **live** EF schema (migration `20261023155309_LoanMinInstallments`). Capability: a
+loan type or company loan policy can require a **shortest** repayment as well as a longest (e.g. a housing advance or
+car loan recovered over at least 12 instalments). Generic for every loan type and tenant.
+
+### `loan_types.min_installments` and `loan_policies.min_installments` (columns)
+- `integer NOT NULL DEFAULT 1` (1 = no minimum, the behaviour before this column). `ck_loan_types__min_installments` and `ck_loan_policies__min_installments`: `min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)` — a minimum, once set, sits within the longest repayment; 1 stays valid on a legacy row whose `max_installments` is 0 (the `loan_policies` column default). The API refuses min > max on every write.
+- The effective minimum is the stricter of the type's and the policy's, frozen into `employee_loans.policy_snapshot_json` (`MinInstallments`) at application; a snapshot frozen before this column reads as 1. Enforced at application, at approval (re-check against the frozen snapshot) and on a reschedule (instalments kept + new ones). Refusal code `MinInstallments`, never exceptionable.
+
 ---
 
 ## Views (not tables)

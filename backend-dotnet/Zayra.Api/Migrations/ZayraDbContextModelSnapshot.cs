@@ -20534,6 +20534,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("numeric(14,2)")
                         .HasColumnName("max_total_outstanding");
 
+                    b.Property<int>("MinInstallments")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("min_installments");
+
                     b.Property<int>("MinServiceMonths")
                         .HasColumnType("integer")
                         .HasColumnName("min_service_months");
@@ -20574,6 +20580,8 @@ namespace Zayra.Api.Migrations
                     b.ToTable("loan_policies", null, t =>
                         {
                             t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
+
+                            t.HasCheckConstraint("ck_loan_policies__min_installments", "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)");
 
                             t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
                         });
@@ -20785,6 +20793,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_installments");
 
+                    b.Property<int>("MinInstallments")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("min_installments");
+
                     b.Property<int>("MinServiceMonths")
                         .HasColumnType("integer")
                         .HasColumnName("min_service_months");
@@ -20820,6 +20834,8 @@ namespace Zayra.Api.Migrations
                     b.ToTable("loan_types", null, t =>
                         {
                             t.HasCheckConstraint("ck_loan_types__grade_limited_has_component", "NOT grade_limited OR entitlement_component_code IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_loan_types__min_installments", "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)");
                         });
                 });
 

@@ -7,7 +7,10 @@ namespace Zayra.Api.Infrastructure.Benefits;
 
 public record BenefitPaymentPolicy(string Delivery = "Coverage", decimal? Amount = null, string Frequency = "Monthly",
     int? PaymentMonth = null, bool Prorate = false, Guid? SalaryComponentId = null, bool ReceiptRequired = false,
-    string ReceiptLabel = "Receipt or invoice", int? ClaimWindowDays = null, string Instructions = "");
+    string ReceiptLabel = "Receipt or invoice", int? ClaimWindowDays = null, string Instructions = "",
+    // Education-style claim rules (reimbursement only). Defaults reproduce the plain claim exactly.
+    string ClaimFor = "Employee", bool LimitPerChild = false, int? MaxChildren = null, bool ExtraChildByException = false,
+    IReadOnlyList<string>? CoveredCosts = null, IReadOnlyList<string>? AllowedCountries = null, IReadOnlyList<string>? ClaimTerms = null);
 public record BenefitSalaryComponentSnapshot(Guid Id, string Code, string Name, string ComponentType, bool IsTaxable);
 public record BenefitPolicySnapshot(int Version, Guid PlanId, string Currency, BenefitPaymentPolicy Policy,
     BenefitSalaryComponentSnapshot? SalaryComponent = null);
@@ -19,6 +22,15 @@ public static class BenefitPaymentPolicies
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public static readonly string[] Deliveries = ["Coverage", "SalaryAllowance", "PayrollDeduction", "Reimbursement"];
     public static readonly string[] Frequencies = ["Monthly", "Annual", "OneTime"];
+    public const string ContractYearSalaryMessage = "A contract-year limit applies to claims (reimbursements). Use Annual for a salary allowance or deduction.";
+    public static readonly string[] ClaimForValues = ["Employee", "Child"];
+    public static readonly string[] CostLineTypes = ["Tuition", "Transport", "Books", "Uniform", "Vat", "Other"];
+    public static readonly string[] ClaimTermValues = ["Semester", "HalfYear", "FullYear"];
+    public static readonly string[] GccCountries = ["SA", "AE", "KW", "BH", "OM", "QA"];
+    private static readonly Dictionary<string, string> CountryNames = new(StringComparer.Ordinal)
+        { ["SA"] = "Saudi Arabia", ["AE"] = "the UAE", ["KW"] = "Kuwait", ["BH"] = "Bahrain", ["OM"] = "Oman", ["QA"] = "Qatar" };
+    public static string CountryName(string code) => CountryNames.GetValueOrDefault(code, code);
+    public static bool IsCountryCode(string? value) => value is { Length: 2 } && value.All(c => c is >= 'A' and <= 'Z');
     public static BenefitPaymentPolicy ReadPlan(BenefitPlan plan) => ReadSnapshotEnvelope(plan.PaymentPolicyJson)?.Policy ?? new();
     public static BenefitPaymentPolicy ReadSnapshot(BenefitEnrollment enrollment) => ReadSnapshotEnvelope(enrollment.PaymentPolicySnapshotJson)?.Policy ?? new();
     public static BenefitPolicySnapshot? ReadSnapshotEnvelope(string? json)
@@ -37,7 +49,9 @@ public static class BenefitPaymentPolicies
 
     public static async Task<string> ConfigureAsync(ZayraDbContext db, BenefitPlan plan, BenefitPaymentPolicy input, CancellationToken ct)
     {
-        var policy = input with { ReceiptLabel = input.ReceiptLabel?.Trim() ?? "", Instructions = input.Instructions?.Trim() ?? "" };
+        var policy = input with { ReceiptLabel = input.ReceiptLabel?.Trim() ?? "", Instructions = input.Instructions?.Trim() ?? "",
+            ClaimFor = string.IsNullOrWhiteSpace(input.ClaimFor) ? "Employee" : input.ClaimFor.Trim(),
+            AllowedCountries = input.AllowedCountries?.Select(x => x?.Trim().ToUpperInvariant() ?? "").ToList() };
         var component = await ValidateAsync(db, plan.TenantId, plan.CompanyId, plan.Currency, policy, ct);
         if (plan.PolicyVersion > 0 && ReadPlan(plan).Delivery != policy.Delivery)
             throw new InvalidOperationException("A configured plan keeps its payment behavior. Create a new benefit plan for a different delivery method.");
@@ -62,6 +76,7 @@ public static class BenefitPaymentPolicies
         if (policy.ReceiptRequired && policy.Delivery != "Reimbursement" || policy.ClaimWindowDays.HasValue && policy.Delivery != "Reimbursement")
             throw new InvalidOperationException("Receipt requirements and claim windows apply to reimbursement benefits.");
         if (policy.ReceiptRequired && policy.ReceiptLabel.Length == 0) throw new InvalidOperationException("A receipt label is required.");
+        ValidateClaimRules(policy);
         if (policy.Delivery == "Coverage")
         {
             if (policy.Amount.HasValue || policy.SalaryComponentId.HasValue) throw new InvalidOperationException("Coverage does not create a salary payment or deduction.");
@@ -75,5 +90,24 @@ public static class BenefitPaymentPolicies
         if (component.SalaryStructureId.HasValue)
             throw new InvalidOperationException("Select a dedicated salary component without a salary structure. A structure component would duplicate its salary or tax basis.");
         return new(component.Id, component.Code, component.Name, component.ComponentType, component.IsTaxable);
+    }
+
+    private static void ValidateClaimRules(BenefitPaymentPolicy policy)
+    {
+        var claimFor = policy.ClaimFor ?? "Employee";
+        if (!ClaimForValues.Contains(claimFor)) throw new InvalidOperationException("A claim is made either for the employee or for a child.");
+        var anyRule = claimFor != "Employee" || policy.LimitPerChild || policy.MaxChildren.HasValue || policy.ExtraChildByException
+            || policy.CoveredCosts is not null || policy.AllowedCountries is not null || policy.ClaimTerms is not null;
+        if (anyRule && policy.Delivery != "Reimbursement")
+            throw new InvalidOperationException("Claim rules (claiming for a child, covered costs, school countries and claim terms) apply to reimbursement benefits.");
+        if ((policy.LimitPerChild || policy.MaxChildren.HasValue || policy.ExtraChildByException) && claimFor != "Child")
+            throw new InvalidOperationException("A per-child limit, a maximum number of children and child exceptions need the benefit to be claimed for a child.");
+        if (policy.MaxChildren is < 1 or > 20) throw new InvalidOperationException("The maximum number of children must be between 1 and 20.");
+        if (policy.CoveredCosts is { } costs && (costs.Count == 0 || costs.Distinct().Count() != costs.Count || costs.Any(x => !CostLineTypes.Contains(x))))
+            throw new InvalidOperationException($"Covered costs must be one or more distinct types from: {string.Join(", ", CostLineTypes)}.");
+        if (policy.AllowedCountries is { } countries && (countries.Count == 0 || countries.Distinct().Count() != countries.Count || countries.Any(x => !IsCountryCode(x))))
+            throw new InvalidOperationException("School countries must be one or more distinct two-letter country codes, for example SA or AE.");
+        if (policy.ClaimTerms is { } terms && (terms.Count == 0 || terms.Distinct().Count() != terms.Count || terms.Any(x => !ClaimTermValues.Contains(x))))
+            throw new InvalidOperationException($"Claim terms must be one or more distinct values from: {string.Join(", ", ClaimTermValues)}.");
     }
 }

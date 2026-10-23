@@ -107,6 +107,64 @@ test('employee sees own loan statement and can submit an eligible application', 
   expect(queries.every(value => value === 'true')).toBe(true); expect(errors).toEqual([]);
 });
 
+test('the request form shows and enforces the repayment range, and a request below the shortest is refused plainly', async ({ page }) => {
+  const errors = await boot(page, 'Employee', (path, method, body, query) => {
+    if (path.endsWith('/eligibility')) {
+      const range = { minInstallments: 18, maxInstallments: 24 };
+      if (!query.get('amount')) return { eligible: true, reasons: [], codes: [], maxAvailableAmount: null, monthlySalary: null, committedAmount: 0, preview: true, ...range };
+      return Number(query.get('installments')) < 18
+        ? { eligible: false, reasons: ['Repayment must be spread over at least 18 instalments.'], codes: ['MinInstallments'], canRequestException: false, maxAvailableAmount: null, policyVersion: 2, monthlySalary: null, committedAmount: 0, ...range }
+        : { eligible: true, reasons: [], codes: [], maxAvailableAmount: null, policyVersion: 2, monthlySalary: null, committedAmount: 0, ...range };
+    }
+  });
+  await page.getByRole('button', { name: 'New Loan Request' }).click();
+  const dialog = page.getByRole('dialog');
+  // The range comes from the server (stricter of type and policy); the count is moved into it as soon as it is known.
+  await expect(dialog.getByText('Repay over 18–24 instalments', { exact: true })).toBeVisible();
+  const count = dialog.getByTitle('Requested installments');
+  await expect(count).toHaveValue('18');
+  await expect(count).toHaveAttribute('min', '18');
+  await expect(count).toHaveAttribute('max', '24');
+  await page.getByTitle('Requested Amount').fill('1200');
+  await count.fill('6');
+  await page.getByRole('button', { name: 'Check Eligibility', exact: true }).click();
+  await expect(dialog.getByText('Repayment must be spread over at least 18 instalments.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Submit Request', exact: true })).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
+test('HR sets the shortest repayment beside the longest on loan types and policy versions', async ({ page }) => {
+  let createdType: any; let policy: any;
+  const errors = await boot(page, 'HR Manager', (path, method, body) => {
+    if (path === '/api/finance/loans/types' && method === 'POST') { createdType = body; return { ...body, id: 'type-9', isActive: true }; }
+    if (path.endsWith('/policies') && method === 'GET') return policy ? [policy] : [];
+    if (path.endsWith('/policies') && method === 'POST') { policy = { ...body, id: 'policy-1', version: 1, createdAtUtc: '2026-10-23T00:00:00Z' }; return policy; }
+  });
+  await page.getByRole('button', { name: 'Loan Types', exact: true }).click();
+  await page.getByRole('button', { name: 'New Loan Type' }).click();
+  const typeDialog = page.getByRole('dialog');
+  await typeDialog.getByPlaceholder('PERSONAL_LOAN').fill('HOUSING');
+  await typeDialog.getByTitle('Name (EN)').fill('Housing advance');
+  await typeDialog.getByTitle('Longest repayment (instalments)').fill('60');
+  await typeDialog.getByTitle('Shortest repayment (instalments)').fill('61');
+  await typeDialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(typeDialog.getByText('The shortest repayment cannot be longer than the longest repayment.')).toBeVisible();
+  expect(createdType).toBeUndefined();
+  await typeDialog.getByTitle('Shortest repayment (instalments)').fill('12');
+  await typeDialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(createdType.minInstallments).toBe(12); expect(createdType.maxInstallments).toBe(60);
+
+  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await page.getByRole('button', { name: 'New Policy Version', exact: true }).click();
+  await page.getByLabel('Policy name', { exact: true }).fill('Housing advance policy');
+  await page.getByLabel('Longest repayment (instalments)', { exact: true }).fill('48');
+  await page.getByLabel('Shortest repayment (instalments)', { exact: false }).fill('12');
+  await page.getByRole('button', { name: 'Create Policy Version', exact: true }).click();
+  await expect(page.getByText(/Policy version 1 created/)).toBeVisible();
+  expect(policy.minInstallments).toBe(12); expect(policy.maxInstallments).toBe(48); expect(errors).toEqual([]);
+});
+
 test('HR creates an immutable company policy version with its approval route', async ({ page }) => {
   let policy: any;
   const errors = await boot(page, 'HR Manager', (path, method, body) => {

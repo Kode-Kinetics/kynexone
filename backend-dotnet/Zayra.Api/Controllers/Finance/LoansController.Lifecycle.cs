@@ -144,7 +144,7 @@ public partial class LoansController
         }
         else if (req.ChangeType == "Reschedule")
         {
-            var invalid = ValidateReschedule(loan, req.Installments, req.StartDate);
+            var invalid = ValidateReschedule(loan, req.Installments, req.StartDate, await KeptInstallmentCountAsync(loan, ct));
             if (invalid != null) return BadRequest(invalid);
         }
         else
@@ -207,7 +207,7 @@ public partial class LoansController
             }
             else if (change.ChangeType == "Reschedule")
             {
-                var invalid = ValidateReschedule(loan, change.RequestedInstallments, change.RequestedStartDate);
+                var invalid = ValidateReschedule(loan, change.RequestedInstallments, change.RequestedStartDate, await KeptInstallmentCountAsync(loan, ct));
                 if (invalid != null) return BadRequest(invalid);
                 if (loan.OutstandingBalance != change.OutstandingBalanceAtRequest) return Conflict("The balance changed after this request. Reject it and request a current schedule.");
                 var installments = await _db.LoanInstallments.Where(x => x.TenantId == tid && x.LoanId == id).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
@@ -259,7 +259,13 @@ public partial class LoansController
             .AnyAsync(x => x.UserAccountId == userId
                 && (x.Id == loan.EmployeeIntId || x.PublicId == loan.EmployeeId), ct);
 
-    private static string? ValidateReschedule(EmployeeLoan loan, int? installments, DateOnly? start)
+    /// <summary>The instalments a reschedule keeps (the last one with money paid against it): the new schedule's total
+    /// is this plus the requested count, exactly as the decision writes <c>ApprovedInstallments</c>.</summary>
+    private async Task<int> KeptInstallmentCountAsync(EmployeeLoan loan, CancellationToken ct) =>
+        await _db.LoanInstallments.Where(x => x.TenantId == loan.TenantId && x.LoanId == loan.Id && x.AmountPaid > 0)
+            .MaxAsync(x => (int?)x.InstallmentNumber, ct) ?? 0;
+
+    private static string? ValidateReschedule(EmployeeLoan loan, int? installments, DateOnly? start, int keptInstallments)
     {
         if (loan.Status is not ("Active" or "Overdue") || !loan.DisbursementDate.HasValue || loan.RepaymentMethod == "PayrollDeduction" || loan.OutstandingBalance <= 0)
             return "Only a disbursed standalone loan with remaining debt can be rescheduled.";
@@ -271,6 +277,14 @@ public partial class LoansController
             var limit = policy.RootElement.EnumerateObject().FirstOrDefault(x => x.Name.Equals("MaxInstallments", StringComparison.OrdinalIgnoreCase));
             if (limit.Value.ValueKind != JsonValueKind.Undefined && (!limit.Value.TryGetInt32(out var maximum) || maximum < 1 || installments > maximum))
                 return "The requested schedule exceeds the frozen policy's installment limit.";
+            // Shortest repayment: the new schedule in total (instalments kept + the new ones) must respect the frozen
+            // minimum. A snapshot frozen before minimums existed has none, so nothing changes for those loans.
+            var floor = policy.RootElement.EnumerateObject().FirstOrDefault(x => x.Name.Equals("MinInstallments", StringComparison.OrdinalIgnoreCase));
+            if (floor.Value.ValueKind != JsonValueKind.Undefined)
+            {
+                if (!floor.Value.TryGetInt32(out var minimum) || minimum < 1) return "The frozen loan policy is invalid.";
+                if (keptInstallments + installments.Value < minimum) return LoanEligibilityCodes.MinInstallmentsText(minimum);
+            }
         }
         catch (JsonException) { return "The frozen loan policy is invalid."; }
         var today = DateOnly.FromDateTime(DateTime.UtcNow);

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { benefitsApi, benefitsErrorMessage, type BenefitEnrollment } from '@/src/api/benefits';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { useAppToast } from '@/src/components/ui/AppToast';
+import { PERIOD_LABELS } from './AdditionalBenefitSummary';
 import { COVERAGE_TIERS, FormError, INPUT, LABEL, PRIMARY, SECONDARY, today } from './benefitUi';
 
 export function BenefitExceptionForm({ enrollment, mandatory, currency, onCancel, onSaved }: {
@@ -56,7 +57,7 @@ export function BenefitExceptionForm({ enrollment, mandatory, currency, onCancel
       <label className={LABEL}>{t('Individual benefit limit ({currency})', { currency })}<input className={INPUT} type="number" min="0.01" step="0.01" placeholder={t("No monetary cap")} value={form.maximumBenefitAmount} onChange={event => set('maximumBenefitAmount', event.target.value)} /></label>
       <label className={LABEL}>{t('Enrolled value ({currency})', { currency })}<input className={INPUT} type="number" min="0.01" step="0.01" placeholder={t("Not specified")} value={form.requestedBenefitAmount} onChange={event => set('requestedBenefitAmount', event.target.value)} /></label>
       <label className={LABEL}>{t("Limit period")}<select aria-label={t("Limit period")} aria-describedby={mandatory ? 'mandatory-benefit-limit-period-help' : undefined} disabled={mandatory} className={`${INPUT} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:disabled:bg-slate-800`} value={form.limitPeriod} onChange={event => set('limitPeriod', event.target.value)}>
-        {['PerEnrollment', 'Monthly', 'Annual', 'Lifetime'].map(period => <option key={period} value={period}>{period.replace(/([A-Z])/g, ' $1').trim()}</option>)}
+        {Object.entries(PERIOD_LABELS).map(([period, label]) => <option key={period} value={period}>{t(label)}</option>)}
       </select>{mandatory && <span id="mandatory-benefit-limit-period-help" className="mt-1 block text-xs font-normal text-slate-500 dark:text-slate-400">{t('Mandatory benefits keep their configured limit period.')}</span>}</label>
       <label className={LABEL}>{t("Benefit status")}<select aria-label={t("Benefit status")} className={INPUT} value={form.status} onChange={event => set('status', event.target.value)}>
         <option value="Active">{t("Active")}</option>{!mandatory && <option value="Waived">{t("Waived for this employee")}</option>}
