@@ -61,6 +61,20 @@ function asCoordinates(found: [number, number] | null, from: 'link' | 'text'): P
   return found ? { kind: 'coordinates', latitude: roundCoordinate(found[0]), longitude: roundCoordinate(found[1]), from } : null;
 }
 
+/** Google's own domains (the GCC's and the usual others). A host is Google Maps only on one of these, exactly. */
+const GOOGLE_DOMAINS = new Set([
+  'google.com', 'google.com.sa', 'google.ae', 'google.com.qa', 'google.com.kw', 'google.com.bh', 'google.com.om',
+  'google.co.uk', 'google.co.in', 'google.com.pk', 'google.com.eg', 'google.jo', 'google.com.lb',
+]);
+/** Exact hostname matches only: "google.com.evil.example" and "evilgoogle.com" are not Google. */
+export function isGoogleMapsHost(host: string): boolean {
+  const h = host.toLowerCase();
+  const bare = h.startsWith('www.') ? h.slice(4) : h.startsWith('maps.') ? h.slice(5) : h;
+  return GOOGLE_DOMAINS.has(bare);
+}
+export const isOpenStreetMapHost = (host: string) => { const h = host.toLowerCase(); return h === 'openstreetmap.org' || h.endsWith('.openstreetmap.org'); };
+export const isAppleMapsHost = (host: string) => host.toLowerCase() === 'maps.apple.com';
+
 function parseUrl(text: string): ParsedLocation | null {
   let url: URL;
   try {
@@ -78,7 +92,7 @@ function parseUrl(text: string): ParsedLocation | null {
   try { decoded = decodeURIComponent(url.href); } catch { decoded = url.href; }
   const params = url.searchParams;
 
-  if (/(^|\.)google\.[a-z.]+$/.test(host)) {
+  if (isGoogleMapsHost(host)) {
     // The place's own pin, then an explicit point, then the map's centre.
     const data = new RegExp(String.raw`!3d(${NUM})!4d(${NUM})`).exec(decoded);
     if (data) return asCoordinates(validPair(+data[1], +data[2]) ? [+data[1], +data[2]] : null, 'link');
@@ -92,7 +106,7 @@ function parseUrl(text: string): ParsedLocation | null {
     if (at) return asCoordinates(pair(`${at[1]},${at[2]}`), 'link');
     return { kind: 'unreadable' };
   }
-  if (host.endsWith('openstreetmap.org')) {
+  if (isOpenStreetMapHost(host)) {
     const mlat = params.get('mlat');
     const mlon = params.get('mlon');
     if (mlat && mlon) return asCoordinates(pair(`${mlat},${mlon}`), 'link') ?? { kind: 'unreadable' };
@@ -100,7 +114,7 @@ function parseUrl(text: string): ParsedLocation | null {
     if (hash) return asCoordinates(pair(`${hash[1]},${hash[2]}`), 'link') ?? { kind: 'unreadable' };
     return { kind: 'unreadable' };
   }
-  if (host === 'maps.apple.com') {
+  if (isAppleMapsHost(host)) {
     for (const name of ['ll', 'q', 'coordinate', 'sll']) {
       const found = pair(params.get(name));
       if (found) return asCoordinates(found, 'link');

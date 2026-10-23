@@ -14,7 +14,8 @@ import { roundCoordinate } from '../../lib/mapLink';
 export function LocationMap({ latitude, longitude, radius, fallback, readOnly, label, onMove }: {
   latitude: number | null;
   longitude: number | null;
-  radius: number;
+  /** Metres; null draws no circle, because a location without a radius is not a geofence. */
+  radius: number | null;
   fallback: [number, number];
   readOnly?: boolean;
   /** Accessible name, e.g. "Map of Main gate". */
@@ -96,16 +97,23 @@ export function LocationMap({ latitude, longitude, radius, fallback, readOnly, l
         own.current = next.join(',');
         moveRef.current(next[0], next[1]);
       });
-      circle.current = lib.circle(at, { radius, color: '#2F6BFF', weight: 2, fillColor: '#2F6BFF', fillOpacity: 0.12 }).addTo(m);
     } else {
       marker.current.setLatLng(at);
-      circle.current?.setLatLng(at);
     }
-    circle.current?.setRadius(radius);
+    if (radius && radius > 0) {
+      if (!circle.current) circle.current = lib.circle(at, { radius, color: '#2F6BFF', weight: 2, fillColor: '#2F6BFF', fillOpacity: 0.12 }).addTo(m);
+      circle.current.setLatLng(at);
+      circle.current.setRadius(radius);
+    } else {
+      circle.current?.remove(); circle.current = null;
+    }
     if (readOnly) marker.current.dragging?.disable(); else marker.current.dragging?.enable();
     const key = `${latitude},${longitude}`;
     // Frame the geofence when the pin came from outside (a link, coordinates, the device); not after a drag.
-    if (own.current !== key) m.fitBounds(circle.current!.getBounds(), { maxZoom: 17, padding: [24, 24], animate: false });
+    if (own.current !== key) {
+      if (circle.current) m.fitBounds(circle.current.getBounds(), { maxZoom: 17, padding: [24, 24], animate: false });
+      else m.setView(at, 17, { animate: false });
+    }
     own.current = key;
   }, [state, pinned, latitude, longitude, radius, readOnly, label]);
 

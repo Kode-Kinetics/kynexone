@@ -4,6 +4,8 @@
  * shared group catalog = الدليل المشترك للمجموعة; draft = مسودة.
  */
 const ar: Record<string, string> = {
+  "No geofence radius set": "لم يُحدَّد نطاق للسياج الجغرافي",
+  "No geofence radius set. Check-ins at this location are not verified until you choose a radius above.": "لم يُحدَّد نطاق للسياج الجغرافي. لا يُتحقق من تسجيل الحضور في هذا الموقع حتى تختار نطاقًا أعلاه.",
   // Per-section Save.
   "Each screen leads to the next. Save each section as you finish it. Nothing is created until you choose Create company at the end.": "تقودك كل شاشة إلى التالية. احفظ كل قسم عند الانتهاء منه. لن يُنشأ أي شيء حتى تختار «إنشاء الشركة» في النهاية.",
   "See what this company has today, then go step by step. Save each section as you finish it. Nothing changes in the company until you choose Save all changes at the end.": "اطّلع على ما لدى هذه الشركة اليوم، ثم تابع خطوة بخطوة. احفظ كل قسم عند الانتهاء منه. لن يتغير شيء في الشركة حتى تختار «حفظ كل التغييرات» في النهاية.",

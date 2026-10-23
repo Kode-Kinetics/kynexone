@@ -43,6 +43,8 @@ interface BootOptions {
   legacyMol?: boolean;
   /** Existing mode: the head office's Arabic name came from the old letter-by-letter auto-transliteration. */
   badArabic?: boolean;
+  /** Existing mode: the location has coordinates but no geofence radius (attendance verification skips it). */
+  locationWithoutRadius?: boolean;
 }
 
 /**
@@ -124,8 +126,8 @@ class ContractServer {
         cutoverStatus: this.options.cutoverStatus ?? 'Planned', baseline: { legalNameEn: EVOSTEL.legalNameEn, tradeName: 'Evostel', firstPayrollMonth: '2026-11' } },
       branches: [{ existingId: 'br-hq', code: 'HQ', nameEn: 'Head Office', nameAr: this.options.badArabic ? OLD_LETTER_BY_LETTER : 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: true,
         baseline: { nameEn: 'Head Office', nameAr: this.options.badArabic ? OLD_LETTER_BY_LETTER : 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'true' },
-        locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: 150,
-          baseline: { nameEn: 'Main gate', nameAr: null, latitude: '24.7', longitude: '46.7', radiusMeters: '150' } }] }],
+        locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: this.options.locationWithoutRadius ? null : 150,
+          baseline: { nameEn: 'Main gate', nameAr: null, latitude: '24.7', longitude: '46.7', radiusMeters: this.options.locationWithoutRadius ? null : '150' } }] }],
       costCentres: [{ existingId: 'cc-adm', code: 'ADM', nameEn: 'Administration', nameAr: 'الإدارة', baseline: { nameEn: 'Administration' } }],
       departments: [{ existingId: 'dep-hr', code: 'HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية' }],
       designations: [{ existingId: 'des-acc', code: 'ACC', titleEn: 'Accountant', titleAr: 'محاسب' }],
@@ -1696,5 +1698,44 @@ for (const locale of ['en', 'ar'] as const) {
     await page.evaluate(() => history.back());
     await expect(page).not.toHaveURL(/\/complete/);
     await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+}
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`a location without a radius never looks like a geofence, and the saved draft carries the radius shown (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server } = await boot(page, { locale, locationWithoutRadius: true });
+    await startEvostel(page, t);
+    await next(page, t);
+    await expectStep(page, t, 'Branches & locations');
+    const panel = page.getByTestId('branches.0.locations-row').first().getByTestId('location-pin');
+    await expect(panel.getByTestId('location-map')).toHaveAttribute('data-ready', 'true');
+    // Pinned, but no radius: said in words; no circle, no preset selected, nothing written behind the person's back.
+    await expect(panel.getByTestId('pin-status')).toContainText(t('No geofence radius set'));
+    await expect(panel.getByTestId('pin-no-radius')).toBeVisible();
+    await expect(panel.locator('path.leaflet-interactive')).toHaveCount(0);
+    await expect(panel.getByRole('radio', { checked: true })).toHaveCount(0);
+    await expect(panel.getByLabel(t('Radius (m)'))).toHaveValue('');
+    await contained(page);
+    await panel.scrollIntoViewIfNeeded();
+    await shot(page, info, `arloc-${locale}-pin-no-radius`);
+    await page.waitForTimeout(1500);
+    expect(server.puts.every(p => p.body.branches[0].locations[0].radiusMeters == null)).toBe(true);
+    // Choosing one shows it, draws it and saves exactly it.
+    await panel.getByText(t('{meters} m', { meters: 100 }), { exact: true }).click();
+    await expect(panel.getByTestId('pin-status')).toContainText(t('{meters} m', { meters: 100 }));
+    await expect(panel.locator('path.leaflet-interactive')).toHaveCount(1);
+    await expect(panel.getByTestId('pin-no-radius')).toHaveCount(0);
+    await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0].radiusMeters, { timeout: 15_000 }).toBe(100);
+
+    // Clearing the radius and placing a new pin writes the default it then shows (150 m), never a display-only value.
+    await panel.getByLabel(t('Radius (m)')).fill('');
+    await expect(panel.getByTestId('pin-no-radius')).toBeVisible();
+    await panel.getByTestId('pin-paste').fill('24.7136, 46.6753');
+    await panel.getByRole('button', { name: t('Place pin'), exact: true }).click();
+    await expect(panel.getByTestId('pin-status')).toContainText(t('{meters} m', { meters: 150 }));
+    await expect(panel.getByRole('radio', { name: t('{meters} m', { meters: 150 }) })).toBeChecked();
+    await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0], { timeout: 15_000 })
+      .toMatchObject({ latitude: 24.7136, longitude: 46.6753, radiusMeters: 150 });
   });
 }
