@@ -64,7 +64,7 @@ interface SecuritySettings {
   passwordMinLength: number;
   passwordRequireUppercase: boolean;
   passwordRequireDigit: boolean;
-  passwordRequireSpecialChar: boolean;
+  passwordRequireSpecial: boolean;
   sessionTimeoutMinutes: number;
   maxFailedLoginAttempts: number;
   lockoutDurationMinutes: number;
@@ -1048,7 +1048,9 @@ export default function TenantAdminPage() {
                   {[
                     { key: 'passwordRequireUppercase', label: 'Require Uppercase Letter', id: 'sec-upper' },
                     { key: 'passwordRequireDigit', label: 'Require Digit', id: 'sec-digit' },
-                    { key: 'passwordRequireSpecialChar', label: 'Require Special Character', id: 'sec-special' },
+                    // The API field is passwordRequireSpecial; this form used to send passwordRequireSpecialChar, which the
+                    // server ignored, so the setting never saved from here.
+                    { key: 'passwordRequireSpecial', label: 'Require Special Character', id: 'sec-special' },
                   ].map(opt => (
                     <div key={opt.key} className="flex items-center gap-2">
                       <Toggle

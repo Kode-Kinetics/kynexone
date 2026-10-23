@@ -321,6 +321,20 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
     expect(api.errors).toEqual([]);
   });
 
+  test('the special-character rule is read from and saved to the field the API uses', async ({ page }) => {
+    // The form used to send passwordRequireSpecialChar, which the server ignores, so this rule never saved from here.
+    const api = await mockApi(page, { security: { passwordRequireSpecial: false } });
+    await openSecurity(page);
+    const special = page.locator('#sec-special');
+    await expect(special).not.toBeChecked();
+    await special.click();
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => api.calls.find((c) => c.method === 'PUT' && c.path === '/api/access/security-settings')?.body)
+      .toMatchObject({ passwordRequireSpecial: true });
+    const sent = api.calls.find((c) => c.method === 'PUT' && c.path === '/api/access/security-settings')?.body as Record<string, unknown>;
+    expect(sent).not.toHaveProperty('passwordRequireSpecialChar');
+  });
+
   test('a stored lifetime outside the choices is shown, not silently changed', async ({ page }) => {
     const api = await mockApi(page, { security: { mfaTrustedDeviceDays: 45, mfaRequired: true } });
     await openSecurity(page);
