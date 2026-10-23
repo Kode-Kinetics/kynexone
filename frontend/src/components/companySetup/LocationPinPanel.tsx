@@ -19,6 +19,9 @@ const LocationMap = dynamic(() => import('./LocationMap').then(m => m.LocationMa
 
 type Feedback = { tone: 'success' | 'error'; text: string } | null;
 
+/** What a new location, or a first pin on a location without one, starts with: visible and saved, never implied. */
+const DEFAULT_RADIUS = 150;
+
 /**
  * "Pin this location", replacing bare latitude / longitude / radius inputs: paste a Google Maps link or coordinates
  * (parsed in the browser; short links via GET /api/geo/resolve-map-link), use the device's location, or click / drag
@@ -47,14 +50,17 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
   const lat = location.latitude ?? null;
   const lng = location.longitude ?? null;
   const pinned = lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
-  const radius = location.radiusMeters && location.radiusMeters > 0 ? location.radiusMeters : 150;
-  const custom = !RADIUS_PRESETS.includes(radius as (typeof RADIUS_PRESETS)[number]);
+  // The radius shown is the radius saved: never a display-only default. Attendance verification skips a location
+  // without one, so a pin with no radius says so instead of drawing a geofence that does not exist.
+  const radius = location.radiusMeters && location.radiusMeters > 0 ? location.radiusMeters : null;
+  const custom = radius != null && !RADIUS_PRESETS.includes(radius as (typeof RADIUS_PRESETS)[number]);
   const key = pinned ? `${lat},${lng}` : '';
   const accuracy = fix && fix.key === key ? fix.accuracy : null;
   const coordinateError = errorFor(`${path}.latitude`) || errorFor(`${path}.longitude`);
 
   const pin = (latitude: number, longitude: number, text?: string) => {
-    onChange({ latitude: roundCoordinate(latitude), longitude: roundCoordinate(longitude) });
+    // Placing a pin on a location with no radius also sets the default the person then sees selected.
+    onChange({ latitude: roundCoordinate(latitude), longitude: roundCoordinate(longitude), ...(radius == null ? { radiusMeters: DEFAULT_RADIUS } : {}) });
     setFeedback(text ? { tone: 'success', text } : null);
   };
 
@@ -118,7 +124,7 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
         </h4>
         <p className="text-xs text-slate-600 dark:text-slate-400" data-testid="pin-status">
           {pinned
-            ? <>{t('Pinned')}{' · '}<bdi dir="ltr" className="font-medium text-slate-800 dark:text-slate-200">{formatCoordinates(lat!, lng!)}</bdi>{' · '}<bdi>{t('{meters} m', { meters: radius })}</bdi></>
+            ? <>{t('Pinned')}{' · '}<bdi dir="ltr" className="font-medium text-slate-800 dark:text-slate-200">{formatCoordinates(lat!, lng!)}</bdi>{' · '}{radius != null ? <bdi>{t('{meters} m', { meters: radius })}</bdi> : <span className="font-medium text-amber-800 dark:text-amber-300">{t('No geofence radius set')}</span>}</>
             : t('Not pinned yet.')}
         </p>
       </div>
@@ -185,7 +191,10 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
           )}
         </Notice>
       )}
-      {accuracy != null && accuracy > radius && (
+      {pinned && radius == null && (
+        <div data-testid="pin-no-radius"><Notice tone="warning" role="status">{t('No geofence radius set. Check-ins at this location are not verified until you choose a radius above.')}</Notice></div>
+      )}
+      {accuracy != null && radius != null && accuracy > radius && (
         <Notice tone="warning" role="status">{t('Your device placed you within ±{accuracy} m, wider than the {radius} m geofence. Drag the pin to the exact spot, or choose a larger radius.', { accuracy, radius })}</Notice>
       )}
 

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { googleMapsUrl, isInGcc, looksSwapped, parseLocationInput } from '../src/lib/mapLink';
+import { googleMapsUrl, isAppleMapsHost, isGoogleMapsHost, isInGcc, isOpenStreetMapHost, looksSwapped, parseLocationInput } from '../src/lib/mapLink';
 
 const at = (latitude: number, longitude: number, from: 'link' | 'text') => ({ kind: 'coordinates', latitude, longitude, from });
 
@@ -55,4 +55,19 @@ test('the GCC box warns, not blocks, and spots a swapped pair', () => {
   expect(looksSwapped(46.6753, 24.7136)).toBe(true);
   expect(looksSwapped(24.7136, 46.6753)).toBe(false);
   expect(googleMapsUrl(24.7136, 46.6753)).toBe('https://www.google.com/maps/search/?api=1&query=24.7136,46.6753');
+});
+
+test('map hosts match exactly or as a real subdomain, never as a substring', () => {
+  for (const host of ['google.com', 'www.google.com', 'maps.google.com', 'www.google.com.sa', 'google.ae']) expect(isGoogleMapsHost(host), host).toBe(true);
+  for (const host of ['google.com.evil.com', 'www.google.evil.com', 'evilgoogle.com', 'google.evil', 'mail.google.com', 'google.com.sa.evil.com'])
+    expect(isGoogleMapsHost(host), host).toBe(false);
+  for (const host of ['openstreetmap.org', 'www.openstreetmap.org']) expect(isOpenStreetMapHost(host), host).toBe(true);
+  for (const host of ['openstreetmap.org.evil.com', 'evilopenstreetmap.org', 'openstreetmap.org-evil.com']) expect(isOpenStreetMapHost(host), host).toBe(false);
+  expect(isAppleMapsHost('maps.apple.com')).toBe(true);
+  for (const host of ['maps.apple.com.evil.com', 'evilmaps.apple.com', 'apple.com']) expect(isAppleMapsHost(host), host).toBe(false);
+  // Coordinates on a look-alike host are not read.
+  for (const link of ['https://openstreetmap.org.evil.com/?mlat=24.7&mlon=46.6', 'https://evilopenstreetmap.org/?mlat=24.7&mlon=46.6',
+    'https://www.google.com.evil.com/maps/@24.7,46.6,15z', 'https://www.google.evil.com/maps?q=24.7,46.6', 'https://maps.apple.com.evil.com/?ll=24.7,46.6'])
+    expect(parseLocationInput(link), link).toEqual({ kind: 'unreadable' });
+  expect(parseLocationInput('https://www.openstreetmap.org/?mlat=24.7&mlon=46.6')).toEqual(at(24.7, 46.6, 'link'));
 });

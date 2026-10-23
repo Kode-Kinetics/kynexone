@@ -149,7 +149,11 @@ export async function apiLoginLive(
   });
   if (!resp.ok()) throw new Error(`Login failed: ${resp.status()} ${await resp.text()}`);
   const data = await resp.json();
-  return data.accessToken ?? data.token ?? data.access_token;
+  const token = data.accessToken ?? data.token ?? data.access_token;
+  // A 200 with no token is a two-step challenge, not a session: say so rather than send "Bearer undefined" and
+  // surface as an unexplained 401 several specs later.
+  if (!token) throw new Error(`Login for ${email} / ${slug} returned no access token (two-step challenge?): ${JSON.stringify(data).slice(0, 200)}`);
+  return token;
 }
 
 /** Seconds left before a JWT's `exp`; Infinity when it carries none or cannot be read. */
