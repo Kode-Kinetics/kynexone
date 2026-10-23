@@ -917,6 +917,12 @@ public class AccessController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var gate = RequireGroupEntityScope();
         if (gate is not null) return gate;
+        if (request.MfaTrustedDeviceDays is < 0 or > Models.SecuritySetting.MaxMfaTrustedDeviceDays)
+            return BadRequest(new
+            {
+                code = MfaErrorCodes.TrustDaysRange,
+                message = "Trusted browser days must be between 0 (off) and 90.",
+            });
         return Ok(await _accessManagement.UpdateSecuritySettingsAsync(tenantId.Value, request, GetContext(), cancellationToken));
     }
 

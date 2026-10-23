@@ -12,6 +12,9 @@ public interface IAuthService
     Task ChangePasswordAsync(Guid userId, ChangePasswordRequest request, RequestContext context, CancellationToken cancellationToken);
     /// <summary>Atomically verifies and consumes a tenant-login MFA challenge, then issues one session.</summary>
     Task<AuthResponse> CompleteMfaLoginAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>As above; <paramref name="rememberDevice"/> also trusts this browser (MfaTrustedDevices) when the tenant allows it.</summary>
+    Task<AuthResponse> CompleteMfaLoginAsync(string challengeToken, string totpCode, RequestContext context, bool rememberDevice, CancellationToken cancellationToken)
+        => CompleteMfaLoginAsync(challengeToken, totpCode, context, cancellationToken);
 
     /// <summary>The workspace slug the email's domain routes to (unique active match only), or null.</summary>
     Task<string?> ResolveWorkspaceAsync(string? email, CancellationToken cancellationToken) => Task.FromResult<string?>(null);

@@ -69,6 +69,19 @@ public class TotpService
         return null;
     }
 
+    /// <summary>
+    /// True when <paramref name="base32Secret"/> could be a setup secret this service issued: RFC 4648 base32, at least
+    /// 80 bits (16 characters; issued secrets are 160). Lets verify-setup tell a broken setup from a wrong code.
+    /// </summary>
+    public static bool IsWellFormedSecret(string? base32Secret)
+    {
+        var input = base32Secret?.Trim().TrimEnd('=');
+        if (string.IsNullOrEmpty(input) || input.Length < 16 || input.Length > 128) return false;
+        foreach (var c in input.ToUpperInvariant())
+            if (Array.IndexOf(Base32Alphabet, c) < 0) return false;
+        return true;
+    }
+
     /// <summary>A matched step is usable only if it is strictly after the last one accepted.</summary>
     public static bool IsFreshStep(long? matched, long? lastAccepted)
         => matched is { } step && (lastAccepted is null || step > lastAccepted.Value);

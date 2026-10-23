@@ -384,6 +384,15 @@ filter).
 |---|---|---|
 | `company_setup_drafts` | T | `retention_policies` row: `rule_key = company-setup.draft-idle-90d`, `trigger_event = RecordDate` (the draft's `updated_at_utc`), `minimum_retention_months = 0`, `disposition = HardDelete`. An **Open** draft idle for **90 days** is deleted by `CompanySetupDraftRetentionRule` (re-checked at delete time, so a draft resumed meanwhile is kept). Its body can hold a proposed administrator's name and work email, which has no purpose once the draft is abandoned. **Submitted** drafts are kept as long as the company's audit trail (they are the idempotency witness of the company they created); **Discarded** drafts are kept for audit, as the discard promised. |
 
+### V. Trusted browsers for two-step sign-in (live bridge)
+
+**Owner:** Platform / Identity Engineering · **Approved by:** Security lead. RLS: shape (a) (live bridge: the
+`ITenantOwned` query filter).
+
+| Table | Class | Note |
+|---|---|---|
+| `mfa_trusted_devices` | T | `retention_policies` row: `rule_key = auth.mfa-trusted-device-expired`, `trigger_event = RecordDate` (the row's `expires_at_utc`, or `revoked_at_utc` when earlier), `minimum_retention_months = 0`, `disposition = HardDelete`. A credential, not a business record (like `refresh_tokens`): deleted by `MfaTrustedDeviceRetentionRule` **30 days** after it expired or was revoked, a forensic grace matching refresh tokens. It holds a browser User-Agent and an IP address, which have no purpose once the trust is over. The `auth.mfa.*` audit rows naming it are kept with the audit log. |
+
 ---
 
 ## 4. What the DPO must still decide
