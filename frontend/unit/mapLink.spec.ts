@@ -17,6 +17,8 @@ test('Google Maps links in every shape the Share and address bar give', () => {
   expect(parseLocationInput('https://www.openstreetmap.org/?mlat=24.7136&mlon=46.6753#map=17/24.7136/46.6753')).toEqual(at(24.7136, 46.6753, 'link'));
   expect(parseLocationInput('https://www.openstreetmap.org/#map=17/24.71360/46.67530')).toEqual(at(24.7136, 46.6753, 'link'));
   expect(parseLocationInput('https://maps.apple.com/?ll=24.7136,46.6753&q=Office')).toEqual(at(24.7136, 46.6753, 'link'));
+  // A lookalike host is not OpenStreetMap.
+  expect(parseLocationInput('https://evilopenstreetmap.org/?mlat=24.7136&mlon=46.6753')).not.toEqual(at(24.7136, 46.6753, 'link'));
 });
 
 test('short links go to the backend resolver, as https', () => {

@@ -92,7 +92,8 @@ function parseUrl(text: string): ParsedLocation | null {
     if (at) return asCoordinates(pair(`${at[1]},${at[2]}`), 'link');
     return { kind: 'unreadable' };
   }
-  if (host.endsWith('openstreetmap.org')) {
+  // The host itself or a subdomain of it — a bare suffix match would also accept evilopenstreetmap.org.
+  if (host === 'openstreetmap.org' || host.endsWith('.openstreetmap.org')) {
     const mlat = params.get('mlat');
     const mlon = params.get('mlon');
     if (mlat && mlon) return asCoordinates(pair(`${mlat},${mlon}`), 'link') ?? { kind: 'unreadable' };
