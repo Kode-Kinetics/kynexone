@@ -173,9 +173,10 @@ export function EmployeeCreateReview({ sections, onEdit, busy = false, readOnly 
   );
 }
 
-export function EmployeeAdditionalDetails({ title, children }: { title: string; children: ReactNode }) {
+/** `open`: shown expanded (the grade filled the lines inside, so they must be seen); the user can still collapse it. */
+export function EmployeeAdditionalDetails({ title, children, open }: { title: string; children: ReactNode; open?: boolean }) {
   const { t } = useLocale();
-  return <details className={styles.additionalDetails}>
+  return <details className={styles.additionalDetails} open={open || undefined}>
     <summary>{t(title)}</summary>
     <div className={styles.additionalFields}>{children}</div>
   </details>;

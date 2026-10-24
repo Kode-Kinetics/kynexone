@@ -21,6 +21,8 @@ interface MockOptions {
   failFirstCreate?: boolean;
   workEmailConflict?: boolean;
   duplicate?: boolean;
+  /** Grade id → its pay-scale lines (GET /api/grades/{id}/pay-scale). Every other grade has none. */
+  payScale?: Record<string, unknown[]>;
   masterData?: Record<string, Array<{
     id: string;
     typeId: string;
@@ -82,7 +84,7 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/designations') return reply(paged([{ id: 'designation-wizard', departmentId: 'department-wizard', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true }]));
     if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }, { ...grade, id: 'grade-retired', code: 'G0', name: 'Retired grade', isActive: false }]));
     if (path === '/api/compensation/benefits/grade-defaults') return reply([]);
-    if (path.endsWith('/pay-scale')) return reply([]);
+    if (path.endsWith('/pay-scale')) return reply(options.payScale?.[path.split('/')[3] ?? ''] ?? []);
     if (path === '/api/organization/cost-centers') return reply(paged([
       { id: 'cost-wizard', companyId: company.id, code: 'OPS', name: 'Operations cost center', isActive: true },
       { id: 'cost-finance', companyId: company.id, code: 'FIN', name: 'Finance cost center', isActive: true },
@@ -552,10 +554,8 @@ test('retains entered values across Back and review edits and submits the existi
   await dialog.getByLabel('Housing allowance', { exact: true }).fill('2000');
   await dialog.getByLabel('Fixed deduction', { exact: true }).fill('100');
   await dialog.getByLabel('Effective date', { exact: true }).fill('2026-10-15');
-  // A choice of the company's active structures — never free text; other companies' and retired ones are not offered.
-  const structure = dialog.getByRole('combobox', { name: 'Salary structure', exact: true });
-  await expect(structure.locator('option')).toHaveText(['Default for the grade', 'Operations band (OPS-BAND)']);
-  await structure.selectOption('OPS-BAND');
+  // No structure choice: the grade is the pay package, so the hire goes on the grade's default structure.
+  await expect(dialog.getByRole('combobox', { name: 'Salary structure', exact: true })).toHaveCount(0);
   await evidence(page, info, 'salary');
   await next(dialog, 4);
   await dialog.getByLabel(/^Passport number/i).fill('TEST-PASSPORT-001');
@@ -574,9 +574,11 @@ test('retains entered values across Back and review edits and submits the existi
     personalEmail: 'alex.personal@example.test', workEmail: 'alex.it-issued@example.test', companyId: company.id,
     branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id, costCenterId: 'cost-wizard',
     reportingManagerEmployeeId: 17, jobTitle: 'Operations specialist', joiningDate: '2026-10-15',
-    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true, salaryStructureReference: 'OPS-BAND' },
-    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR', salaryStructureCode: 'OPS-BAND' },
+    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true },
+    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR' },
   });
+  expect(creates[0].salaryBreakdown?.salaryStructureCode).toBeUndefined();
+  expect(creates[0].payrollProfile?.salaryStructureReference).toBeUndefined();
   expect(creates[0].complianceRecords).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'passport_number', fieldValue: 'TEST-PASSPORT-001' })]));
   expect(creates[0]).not.toHaveProperty('acknowledgeDuplicate');
   expect(errors).toEqual([]);
@@ -653,6 +655,63 @@ test('keeps salary-band validation on the salary step and allows correction', as
   await next(dialog, 4);
   await next(dialog, 5);
   expect(creates).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+// DEFECT (client demo): the grade's pay scale was printed as text ("Grade defaults: …") while the allowance inputs
+// stayed blank and collapsed, and the gross showed basic only. Choosing the grade now fills the package.
+test('choosing the grade fills basic and every allowance; percent lines follow the basic; exceptions are kept', async ({ page }) => {
+  const payLine = (id: string, componentCode: string, extra: Record<string, unknown>) => ({
+    id, componentCode, componentName: componentCode[0] + componentCode.slice(1).toLowerCase(), componentType: 'Earning', calculationType: 'Fixed',
+    amount: 0, percentage: 0, isTaxable: false, frequency: 'Monthly', sortOrder: 1, isActive: true, ...extra,
+  });
+  const { dialog, creates, errors } = await boot(page, { payScale: { [grade.id]: [
+    payLine('l1', 'BASIC', { amount: 4000 }),
+    payLine('l2', 'HOUSING', { calculationType: 'PercentOfBasic', percentage: 25 }),
+    payLine('l3', 'TRANSPORT', { amount: 500 }),
+    payLine('l4', 'MEDICAL', { componentType: 'Benefit', amount: 300 }),
+    payLine('l5', 'TICKET', { amount: 2400, frequency: 'Annual' }),
+  ] } });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await next(dialog, 1);
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@example.test');
+  await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
+  // The designation carries the grade, so it fills the salary too.
+  await dialog.getByRole('combobox', { name: 'Designation', exact: true }).selectOption('designation-wizard');
+  await expect(dialog.getByRole('combobox', { name: 'Grade', exact: true })).toHaveValue(grade.id);
+  await next(dialog, 2);
+  await next(dialog, 3);
+  const salaryStep = dialog.locator('[data-employee-step="3"]');
+  await expect(dialog.getByLabel('Basic salary', { exact: true })).toHaveValue('4000');
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toHaveValue('1000');
+  await expect(dialog.getByLabel('Transport allowance', { exact: true })).toHaveValue('500');
+  await expect(dialog.getByLabel('Other allowance', { exact: true })).toHaveValue('');
+  await expect(salaryStep).toContainText('Gross package: SAR 5,500');
+  await expect(salaryStep.getByTestId('grade-salary-note')).toContainText('Filled from grade Professional');
+  await expect(dialog.getByRole('combobox', { name: 'Salary structure', exact: true })).toHaveCount(0);
+  await expect(salaryStep).toContainText('Not part of the monthly salary: Medical · Ticket');
+
+  await dialog.getByLabel('Basic salary', { exact: true }).fill('4800');
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toHaveValue('1200');
+  await expect(dialog.getByLabel('Transport allowance', { exact: true })).toHaveValue('500');
+  await expect(salaryStep).toContainText('Gross package: SAR 6,500');
+
+  // An exception: transport changed by hand stays, while housing keeps following the basic.
+  await dialog.getByLabel('Transport allowance', { exact: true }).fill('650');
+  await dialog.getByLabel('Basic salary', { exact: true }).fill('5000');
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toHaveValue('1250');
+  await expect(dialog.getByLabel('Transport allowance', { exact: true })).toHaveValue('650');
+  await expect(salaryStep).toContainText('Gross package: SAR 6,900');
+
+  await next(dialog, 4);
+  await next(dialog, 5);
+  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('6,900');
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates).toHaveLength(1);
+  expect(creates[0].salaryBreakdown).toMatchObject({ basicSalary: 5000, housingAllowance: 1250, transportAllowance: 650 });
+  expect(creates[0].salaryBreakdown?.otherAllowance).toBeUndefined();
   expect(errors).toEqual([]);
 });
 
