@@ -3653,7 +3653,7 @@ public class EmployeesController : ControllerBase
                     _db.Employees.Add(employee);
                     await _db.SaveChangesAsync(ct); // allocate the internal employee key inside tx
                     if (compensation.Salary is not null)
-                        await EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, compensation.Salary, requestContext, ct);
+                        await EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, compensation.Salary, requestContext, ct, fillOmittedFromGrade: true);
                     await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
                         _db, employee, requestContext.UserId, ct);
 

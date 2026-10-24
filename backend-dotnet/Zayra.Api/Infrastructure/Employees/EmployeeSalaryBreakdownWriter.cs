@@ -10,7 +10,14 @@ namespace Zayra.Api.Infrastructure.Employees;
 /// <summary>Shared effective-dated salary writer for employee creation and approved profile changes.</summary>
 public static class EmployeeSalaryBreakdownWriter
 {
-    public static async Task ApplyAsync(ZayraDbContext db, Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
+    /// <param name="fillOmittedFromGrade">
+    /// True only where the employee is being CREATED (the hire form, a draft's approval): a breakdown that was not sent at
+    /// all is then filled wholly from the grade's pay scale. False everywhere else (a profile update, an approved change):
+    /// an omitted breakdown writes nothing, so a grade change on an existing employee never rewrites their pay behind the
+    /// approved salary-change path. A breakdown that IS sent is merged with the grade field by field in both cases.
+    /// </param>
+    public static async Task ApplyAsync(ZayraDbContext db, Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken,
+        bool fillOmittedFromGrade = false)
     {
         // A GRADE IS NO LONGER THE GATE. It used to be: an employee without a grade returned here
         // before the breakdown was ever read, so an explicit salaryBreakdown on the create/update
@@ -20,7 +27,7 @@ public static class EmployeeSalaryBreakdownWriter
         // grade. The repo rule is refuse rather than guess; silent partial success is neither, so
         // the operator's numbers are now honoured whether or not a grade resolves.
         if (employee.TenantId is null) return;
-        var (grade, salary, releaseA, components) = await ResolveSalaryAsync(db, employee, request, cancellationToken);
+        var (grade, salary, releaseA, components) = await ResolveSalaryAsync(db, employee, request, fillOmittedFromGrade, cancellationToken);
         var effectiveDate = SalaryEffectiveDate(employee, request);
         // Nothing to assign: no grade pay scale AND no supplied figures. Unchanged behaviour — this
         // is the ordinary "the salary section of the form was left empty" case, not a dropped value.
@@ -162,23 +169,26 @@ public static class EmployeeSalaryBreakdownWriter
         throw new InactiveSalaryStructureException(code);
     }
 
-    /// <summary>Pre-save check for the create path: <see cref="ResolveStructureAsync"/> with the employee's resolved grade.</summary>
     /// <summary>
     /// The pre-save structure check, for exactly the case <see cref="ApplyAsync"/> writes: only when the request, or the
     /// grade's pay scale, yields a positive salary. With nothing to write (a create with no salary, an update that omits
     /// the breakdown) no structure is used, so a retired grade default must not refuse an unrelated save.
+    /// Returns the breakdown <see cref="ApplyAsync"/> would write (same arguments, same answer), so the caller checks the
+    /// grade's salary range against the package that is actually paid, not only the figures that were typed.
     /// </summary>
-    public static async Task EnsureKnownStructureAsync(ZayraDbContext db, Employee employee, EmployeeSalaryBreakdownRequest? request, CancellationToken cancellationToken)
+    public static async Task<EmployeeSalaryBreakdownRequest> EnsureKnownStructureAsync(ZayraDbContext db, Employee employee, EmployeeSalaryBreakdownRequest? request,
+        CancellationToken cancellationToken, bool fillOmittedFromGrade = false)
     {
-        if (employee.TenantId is null) return;
-        var (grade, salary, _, _) = await ResolveSalaryAsync(db, employee, request, cancellationToken);
-        if (GrossSalary(salary) <= 0) return;
+        if (employee.TenantId is null) return request ?? EmptyBreakdown;
+        var (grade, salary, _, _) = await ResolveSalaryAsync(db, employee, request, fillOmittedFromGrade, cancellationToken);
+        if (GrossSalary(salary) <= 0) return salary;
         await ResolveStructureAsync(db, employee, grade, request?.SalaryStructureCode, cancellationToken);
+        return salary;
     }
 
     /// <summary>The grade and the breakdown <see cref="ApplyAsync"/> would write — one computation for the write and its pre-check.</summary>
     private static async Task<(Grade? Grade, EmployeeSalaryBreakdownRequest Salary, bool ReleaseA, List<GradePayScaleComponent> Components)> ResolveSalaryAsync(ZayraDbContext db, Employee employee,
-        EmployeeSalaryBreakdownRequest? request, CancellationToken cancellationToken)
+        EmployeeSalaryBreakdownRequest? request, bool fillOmittedFromGrade, CancellationToken cancellationToken)
     {
         var grade = employee.GradeId is null
             ? null
@@ -194,7 +204,12 @@ public static class EmployeeSalaryBreakdownWriter
                 .Where(x => x.TenantId == employee.TenantId && x.GradeId == grade.Id && x.IsActive)
                 .OrderBy(x => x.SortOrder)
                 .ToListAsync(cancellationToken);
-        return (grade, releaseA ? request ?? EmptyBreakdown : BuildSalaryBreakdown(request, components), releaseA, components);
+        var salary = releaseA
+            ? request ?? EmptyBreakdown
+            : request is null && !fillOmittedFromGrade
+                ? EmptyBreakdown
+                : MergeGradePayScale(request, components);
+        return (grade, salary, releaseA, components);
     }
 
     /// <summary>
@@ -224,25 +239,82 @@ public static class EmployeeSalaryBreakdownWriter
             .FirstOrDefaultAsync(cancellationToken);
         return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
     }
-    private static EmployeeSalaryBreakdownRequest BuildSalaryBreakdown(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)
-    {
-        if (request is not null && GrossSalary(request) > 0) return request;
+    /// <summary>The monthly salary field a grade pay-scale line lands on, or null when it is not monthly cash.</summary>
+    public enum GradeSalaryField { Basic, Housing, Transport, Food, Mobile, Other, FixedDeduction }
 
-        decimal basic = 0, housing = 0, transport = 0, food = 0, mobile = 0, other = 0, fixedDeduction = 0;
-        foreach (var component in components)
+    /// <summary>
+    /// Which field of the monthly salary row a grade pay-scale line belongs to — null when the line is not part of the
+    /// monthly salary at all. Only an active MONTHLY line counts: an Annual line (a yearly ticket, a yearly bonus) is not
+    /// a monthly payment. An Earning line is cash by its code (BASIC, HOUS…, TRANS…, FOOD…, MOBILE…, anything else Other);
+    /// a Deduction line is the fixed deduction; a Benefit line (medical cover, a ticket in kind) is not cash and is never
+    /// paid as an allowance. Blank type or frequency mean the entity defaults, Earning and Monthly. The frontend mirrors
+    /// this rule in <c>frontend/src/lib/gradeSalaryDefaults.ts</c>.
+    /// </summary>
+    public static GradeSalaryField? MonthlySalaryField(GradePayScaleComponent component)
+    {
+        if (!component.IsActive) return null;
+        var frequency = (component.Frequency ?? string.Empty).Trim();
+        if (frequency.Length > 0 && !frequency.Equals("Monthly", StringComparison.OrdinalIgnoreCase)) return null;
+        var type = (component.ComponentType ?? string.Empty).Trim();
+        if (type.Equals(PayComponentTypes.Deduction, StringComparison.OrdinalIgnoreCase)) return GradeSalaryField.FixedDeduction;
+        if (type.Length > 0 && !type.Equals(PayComponentTypes.Earning, StringComparison.OrdinalIgnoreCase)) return null;
+        var code = (component.ComponentCode ?? string.Empty).ToUpperInvariant();
+        if (code.Contains("BASIC")) return GradeSalaryField.Basic;
+        if (code.Contains("HOUS")) return GradeSalaryField.Housing;
+        if (code.Contains("TRANS")) return GradeSalaryField.Transport;
+        if (code.Contains("FOOD")) return GradeSalaryField.Food;
+        if (code.Contains("MOBILE")) return GradeSalaryField.Mobile;
+        return GradeSalaryField.Other;
+    }
+
+    private static bool IsPercentOfBasic(GradePayScaleComponent component) =>
+        string.Equals((component.CalculationType ?? string.Empty).Trim(), "PercentOfBasic", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// THE grade pay scale → salary rule for tenants without release_a (release_a reads Benefits by grade instead, in
+    /// EmployeeManagementService.PrefillSalaryFromMatrixAsync, with the same per-field semantics). Field by field: a
+    /// figure the operator supplied — an explicit 0 included — is kept; a field left blank (null) is filled from the
+    /// grade's monthly lines for it (see <see cref="MonthlySalaryField"/>). The basic salary resolves first (the
+    /// request's, else the grade's fixed BASIC), then every percent-of-basic line is that basic × its percentage, to the
+    /// halala (2 dp, half away from zero, as the matrix rounds). A field the grade has no line for stays blank.
+    /// <para>It used to be all-or-nothing: one typed figure (a basic of 4,800) dropped the whole pay scale, so the hire was
+    /// paid basic only; percent lines were read as their (zero) amount; and Benefit and Annual lines were paid as monthly
+    /// "other allowance" cash.</para>
+    /// </summary>
+    public static EmployeeSalaryBreakdownRequest MergeGradePayScale(EmployeeSalaryBreakdownRequest? request, IReadOnlyCollection<GradePayScaleComponent> components)
+    {
+        request ??= EmptyBreakdown;
+        var lines = components
+            .Select(component => (Component: component, Field: MonthlySalaryField(component)))
+            .Where(x => x.Field is not null)
+            .Select(x => (x.Component, Field: x.Field!.Value))
+            .ToList();
+        if (lines.Count == 0) return request;
+
+        var gradeBasicLines = lines.Where(x => x.Field == GradeSalaryField.Basic && !IsPercentOfBasic(x.Component)).ToList();
+        var basic = request.BasicSalary ?? (gradeBasicLines.Count > 0 ? gradeBasicLines.Sum(x => x.Component.Amount) : null);
+        var basisForPercent = basic ?? 0m;
+
+        decimal? Fill(decimal? supplied, GradeSalaryField field)
         {
-            var code = component.ComponentCode.ToUpperInvariant();
-            var amount = component.Amount;
-            if (code.Contains("BASIC")) basic += amount;
-            else if (code.Contains("HOUS")) housing += amount;
-            else if (code.Contains("TRANS")) transport += amount;
-            else if (code.Contains("FOOD")) food += amount;
-            else if (code.Contains("MOBILE")) mobile += amount;
-            else if (component.ComponentType.Equals("Deduction", StringComparison.OrdinalIgnoreCase)) fixedDeduction += amount;
-            else other += amount;
+            if (supplied is not null) return supplied;
+            var forField = lines.Where(x => x.Field == field).ToList();
+            if (forField.Count == 0) return null;
+            return forField.Sum(x => IsPercentOfBasic(x.Component)
+                ? Math.Round(basisForPercent * x.Component.Percentage / 100m, 2, MidpointRounding.AwayFromZero)
+                : x.Component.Amount);
         }
 
-        return new EmployeeSalaryBreakdownRequest(basic, housing, transport, food, mobile, other, fixedDeduction, request?.SalaryStructureCode, request?.EffectiveDate, request?.Currency);
+        return request with
+        {
+            BasicSalary = basic,
+            HousingAllowance = Fill(request.HousingAllowance, GradeSalaryField.Housing),
+            TransportAllowance = Fill(request.TransportAllowance, GradeSalaryField.Transport),
+            FoodAllowance = Fill(request.FoodAllowance, GradeSalaryField.Food),
+            MobileAllowance = Fill(request.MobileAllowance, GradeSalaryField.Mobile),
+            OtherAllowance = Fill(request.OtherAllowance, GradeSalaryField.Other),
+            FixedDeduction = Fill(request.FixedDeduction, GradeSalaryField.FixedDeduction),
+        };
     }
     private const string DirectSalaryStructureCode = "DIRECT";
     private static string Clean(string? text) => (text ?? string.Empty).Trim();
