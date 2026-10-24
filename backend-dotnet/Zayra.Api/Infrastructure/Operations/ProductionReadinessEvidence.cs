@@ -53,7 +53,8 @@ public static class ProductionReadinessEvidence
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
             pendingMigrations,
-            queues);
+            queues,
+            Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(config) ? true : null);
     }
 
     /// <summary>Pure status rule: ready iff the DB is reachable AND no migrations are pending.</summary>
@@ -403,7 +404,9 @@ public sealed record ReadinessEvidence(
     int Tenants,
     int ActiveTenants,
     int PendingMigrations,
-    QueueHealthEvidence Queues);
+    QueueHealthEvidence Queues,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    bool? MfaDisabledForTesting = null);
 
 /// <summary>
 /// The ONLY body the anonymous <c>/health/ready</c> returns. Render's health check reads the status
@@ -412,10 +415,13 @@ public sealed record ReadinessEvidence(
 /// told an anonymous caller how many customers we have and how outbound mail is wired, so it moved
 /// behind the PlatformAdmin policy at <c>/health/ready/details</c>.
 /// </summary>
-public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations)
+public sealed record PublicReadiness(
+    string Status, DateTime Utc, int PendingMigrations,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    bool? MfaDisabledForTesting = null)
 {
     public static PublicReadiness From(ReadinessEvidence evidence)
-        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations);
+        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations, evidence.MfaDisabledForTesting);
 }
 
 public sealed record ReadinessDependencies(

@@ -79,6 +79,8 @@ export interface MfaStatus {
   trustedDeviceCount?: number;
   /** Unused backup codes left (0 when two-step is off). Absent from an older API: nothing is shown. */
   backupCodesRemaining?: number;
+  /** True while the API runs with Auth__Mfa__DisabledForTesting: two-step is not asked for or enforced. */
+  disabledForTesting?: boolean;
 }
 
 /** GET /api/auth/mfa/trusted-devices — one browser that skips the code until it expires. */

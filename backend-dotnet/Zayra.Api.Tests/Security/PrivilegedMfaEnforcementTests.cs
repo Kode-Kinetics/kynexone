@@ -430,6 +430,149 @@ public sealed class PrivilegedMfaEnforcementTests
 
     // ── Platform operators ────────────────────────────────────────────────────────────────────
 
+    // ── Testing-phase off switch (Auth:Mfa:DisabledForTesting) ─────────────────────────────────
+
+    private static IConfiguration MfaOff(bool on = true) => new ConfigurationBuilder().AddInMemoryCollection(
+        new Dictionary<string, string?> { [PrivilegedMfaPolicy.DisabledForTestingConfigKey] = on ? "true" : "false" }).Build();
+
+    private static async Task EnrolAsync(AuthHardeningTestKit kit, Guid userId)
+    {
+        await using var db = kit.NewDb();
+        var user = await db.Users.SingleAsync(u => u.Id == userId);
+        user.MFAEnabled = true;
+        user.MfaSecretEncrypted = kit.Totp.EncryptSecret(kit.Totp.GenerateBase32Secret());
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task TestingSwitch_EnrolledPrivilegedUser_GetsASessionWithNoChallenge_AndTheFactorSurvives()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        var userId = await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
+        await EnrolAsync(kit, userId);
+
+        (await LoginAsync(kit, "admin@hardening.local")).RequiresMfa.Should().BeTrue("switch off: an enrolled user is challenged");
+        var off = await LoginAsync(kit, "admin@hardening.local", MfaOff());
+        off.Tokens.Should().NotBeNull();
+        off.RequiresMfa.Should().BeFalse();
+        off.RequiresMfaEnrollment.Should().BeFalse();
+
+        await using (var db = kit.NewDb())
+        {
+            var user = await db.Users.AsNoTracking().SingleAsync(u => u.Id == userId);
+            user.MFAEnabled.Should().BeTrue("the enrolled factor is never deleted");
+            user.MfaSecretEncrypted.Should().NotBeNullOrEmpty();
+        }
+        (await LoginAsync(kit, "admin@hardening.local", MfaOff(false))).RequiresMfa.Should().BeTrue("flag back off restores the challenge");
+    }
+
+    [Fact]
+    public async Task TestingSwitch_WorkspaceRequiredUser_GetsASession()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetWorkspaceMfaRequiredAsync(true);
+        await kit.SeedUserAsync("staff@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Employee");
+
+        (await LoginAsync(kit, "staff@hardening.local")).RequiresMfaEnrollment.Should().BeTrue();
+        var off = await LoginAsync(kit, "staff@hardening.local", MfaOff());
+        off.Tokens.Should().NotBeNull();
+        off.RequiresMfaEnrollment.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TestingSwitch_UnenrolledPrivilegedUserPastTheDate_GetsASession_AndRefreshKeepsRotating()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Future);
+        await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
+        var refresh = (await LoginAsync(kit, "admin@hardening.local", MfaOff())).Tokens!.RefreshToken;
+        await kit.SetPlatformEnforcementDateAsync(Past);
+
+        (await LoginAsync(kit, "admin@hardening.local")).RequiresMfaEnrollment.Should().BeTrue();
+        var again = await LoginAsync(kit, "admin@hardening.local", MfaOff());
+        again.Tokens.Should().NotBeNull();
+
+        await using var db = kit.NewDb();
+        var rotated = await kit.Auth(db, config: MfaOff())
+            .RefreshAsync(new RefreshTokenRequest(refresh), AuthHardeningTestKit.Ctx, CancellationToken.None);
+        rotated.Should().NotBeNull("privileged enforcement must not stop refresh rotation while the switch is on");
+    }
+
+    [Fact]
+    public async Task TestingSwitch_TrustedBrowsersAndFactorsAreLeftAlone_AndSelfDisableIsNotRefused()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        await kit.SetWorkspaceMfaRequiredAsync(true);
+        var userId = await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
+        var secret = kit.Totp.GenerateBase32Secret();
+        await using (var db = kit.NewDb())
+        {
+            var user = await db.Users.SingleAsync(u => u.Id == userId);
+            user.MFAEnabled = true;
+            user.MfaSecretEncrypted = kit.Totp.EncryptSecret(secret);
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = kit.NewDb())
+            (await kit.Mfa(db).DisableWithOutcomeAsync(userId, kit.TenantId, Totp.Now(secret), AuthHardeningTestKit.Ctx, CancellationToken.None))
+                .Should().Be(MfaDisableOutcome.RequiredForRole, "switch off: the rules refuse");
+
+        await using (var db = kit.NewDb())
+            (await kit.Mfa(db, config: MfaOff()).DisableWithOutcomeAsync(userId, kit.TenantId, "000000", AuthHardeningTestKit.Ctx, CancellationToken.None))
+                .Should().Be(MfaDisableOutcome.CodeInvalid, "the role/workspace rules no longer refuse; the code check still applies");
+    }
+
+    [Fact]
+    public async Task TestingSwitch_StatusReportsNotRequired_ForTenantUsers()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        await kit.SetWorkspaceMfaRequiredAsync(true);
+        var userId = await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
+
+        await using var db = kit.NewDb();
+        var user = await db.Users.AsNoTracking()
+            .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
+            .Include(x => x.PermissionOverrides).Include(x => x.EmployeeUserAccounts).Include(x => x.EntityAccesses)
+            .AsSplitQuery().SingleAsync(u => u.Id == userId);
+        var policy = await db.SecuritySettings.AsNoTracking().SingleAsync(s => s.TenantId == kit.TenantId);
+
+        (await PrivilegedMfaPolicy.ForTenantUserAsync(db, null, user, policy, Now, CancellationToken.None)).Status
+            .Should().Be(PrivilegedMfaStatus.Enforced);
+        var off = await PrivilegedMfaPolicy.ForTenantUserAsync(db, MfaOff(), user, policy, Now, CancellationToken.None);
+        off.Status.Should().Be(PrivilegedMfaStatus.NotRequired);
+        off.ShouldPrompt.Should().BeFalse();
+        off.BlocksSession.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TestingSwitch_PlatformOperatorIsStillChallenged()
+    {
+        await using var kit = await AuthHardeningTestKit.CreateAsync();
+        await kit.SetPlatformEnforcementDateAsync(Past);
+        await SeedOperatorAsync(kit, "owner@platform.test", PlatformRoles.Marketing);
+
+        await using var db = kit.NewDb();
+        var body = Body(await Platform(kit, db, configOverride: MfaOff())
+            .Login(new PlatformLoginRequest("owner@platform.test", Password), CancellationToken.None));
+        body.TryGetProperty("token", out _).Should().BeFalse("operator MFA is not covered by the testing switch");
+        body.GetProperty("mfaEnrollmentRequired").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public void TestingSwitch_IsReportedInReadiness_OnlyWhenOn()
+    {
+        var off = JsonSerializer.SerializeToElement(new Zayra.Api.Infrastructure.Operations.PublicReadiness("ready", Now, 0));
+        off.TryGetProperty("mfaDisabledForTesting", out _).Should().BeFalse("default output is unchanged");
+        var on = JsonSerializer.SerializeToElement(new Zayra.Api.Infrastructure.Operations.PublicReadiness("ready", Now, 0, true),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        on.GetProperty("mfaDisabledForTesting").GetBoolean().Should().BeTrue();
+        PrivilegedMfaPolicy.IsDisabledForTesting(MfaOff()).Should().BeTrue();
+        PrivilegedMfaPolicy.IsDisabledForTesting(new ConfigurationBuilder().Build()).Should().BeFalse();
+    }
+
     private static async Task<Guid> SeedOperatorAsync(AuthHardeningTestKit kit, string email, string role = PlatformRoles.Owner)
     {
         await using var db = kit.NewDb();
@@ -444,12 +587,12 @@ public sealed class PrivilegedMfaEnforcementTests
     }
 
     private static PlatformController Platform(AuthHardeningTestKit kit, Zayra.Api.Data.ZayraDbContext db, Guid? actingAs = null,
-        string role = PlatformRoles.Owner)
+        string role = PlatformRoles.Owner, IConfiguration? configOverride = null)
     {
         var jwt = AuthHardeningTestKit.Jwt;
         var hasher = new Pbkdf2PasswordHasher();
         var tokens = new JwtTokenService(jwt);
-        var config = new ConfigurationBuilder().Build();
+        var config = configOverride ?? new ConfigurationBuilder().Build();
         var controller = new PlatformController(
             db, jwt, hasher, new FakeAuthSeeder(db, hasher), tokens, new FakePlatformEmailService(), config,
             kit.Mfa(db),

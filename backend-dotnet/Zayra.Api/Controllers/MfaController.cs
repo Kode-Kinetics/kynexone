@@ -178,7 +178,9 @@ public class MfaController : ControllerBase
         var now = DateTime.UtcNow;
         var state = await PrivilegedMfaPolicy.ForTenantUserAsync(db, config, user, policy, now, ct);
         var enrolled = PrivilegedMfaPolicy.IsTenantUserEnrolled(user);
-        var required = policy?.MfaRequired == true || state.Status != PrivilegedMfaStatus.NotRequired;
+        var off = PrivilegedMfaPolicy.IsDisabledForTesting(config);
+        var workspaceRequires = !off && policy?.MfaRequired == true;
+        var required = workspaceRequires || state.Status != PrivilegedMfaStatus.NotRequired;
         var trustDays = MfaTrustedDevices.EffectiveDays(policy);
         var trustedCount = enrolled && trustDays > 0
             ? (await MfaTrustedDevices.Live(db, tenantId.Value, userId.Value, now).AsNoTracking()
@@ -189,15 +191,16 @@ public class MfaController : ControllerBase
         return Ok(new MfaStatusDto(
             Enabled: enrolled,
             Required: required,
-            RequiredBecause: policy?.MfaRequired == true ? "workspace_policy"
+            RequiredBecause: workspaceRequires ? "workspace_policy"
                 : state.Status != PrivilegedMfaStatus.NotRequired ? "privileged_role" : null,
             EnforceFromUtc: state.Status == PrivilegedMfaStatus.NotRequired ? null : state.EnforceFromUtc,
-            Enforced: state.Status == PrivilegedMfaStatus.Enforced || (policy?.MfaRequired == true && !enrolled),
-            PromptToEnroll: !enrolled && (state.ShouldPrompt || policy?.MfaRequired == true),
+            Enforced: state.Status == PrivilegedMfaStatus.Enforced || (workspaceRequires && !enrolled),
+            PromptToEnroll: !enrolled && (state.ShouldPrompt || workspaceRequires),
             CanDisable: enrolled && !required,
             RememberDeviceDays: trustDays,
             TrustedDeviceCount: trustedCount,
-            BackupCodesRemaining: enrolled ? MfaBackupCodes.Remaining(user.MfaRecoveryCodeHashes) : 0));
+            BackupCodesRemaining: enrolled ? MfaBackupCodes.Remaining(user.MfaRecoveryCodeHashes) : 0,
+            DisabledForTesting: off));
     }
 
     /// <summary>

@@ -58,7 +58,7 @@ public static class TenantSessionSecurity
     public static bool HasReachedMaxLength(RefreshToken token, SecuritySetting? policy, DateTime nowUtc) =>
         token.SessionStartedAtUtc.AddHours(EffectiveSessionMaxHours(policy)) <= nowUtc;
 
-    public static async Task<bool> IsCurrentAsync(ClaimsPrincipal principal, ZayraDbContext db, CancellationToken ct)
+    public static async Task<bool> IsCurrentAsync(ClaimsPrincipal principal, ZayraDbContext db, CancellationToken ct, bool mfaDisabledForTesting = false)
     {
         if (principal.HasClaim("is_platform_admin", "true")) return true;
         // Privileged tenant impersonation/support issuance is contained until its revocation
@@ -81,7 +81,7 @@ public static class TenantSessionSecurity
         var validationTimeUtc = DateTime.UtcNow;
         if (!db.Database.IsRelational())
             return await IsCurrentSnapshotAsync(
-                principal, db, userId, tenantId, stamp, validationTimeUtc, ct);
+                principal, db, userId, tenantId, stamp, validationTimeUtc, ct, mfaDisabledForTesting);
 
         if (db.Database.CurrentTransaction is not null)
         {
@@ -94,7 +94,7 @@ public static class TenantSessionSecurity
             }
 
             return await IsCurrentSnapshotAsync(
-                principal, db, userId, tenantId, stamp, validationTimeUtc, ct);
+                principal, db, userId, tenantId, stamp, validationTimeUtc, ct, mfaDisabledForTesting);
         }
 
         var strategy = db.Database.CreateExecutionStrategy();
@@ -103,7 +103,7 @@ public static class TenantSessionSecurity
             var isolation = AuthGraphSnapshot.SnapshotIsolation(db.Database);
             await using var transaction = await db.Database.BeginTransactionAsync(isolation, ct);
             var current = await IsCurrentSnapshotAsync(
-                principal, db, userId, tenantId, stamp, validationTimeUtc, ct);
+                principal, db, userId, tenantId, stamp, validationTimeUtc, ct, mfaDisabledForTesting);
             await transaction.CommitAsync(ct);
             return current;
         });
@@ -116,7 +116,8 @@ public static class TenantSessionSecurity
         Guid tenantId,
         string stamp,
         DateTime validationTimeUtc,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool mfaDisabledForTesting = false)
     {
         // Runs on EVERY authenticated request (JWT OnTokenValidated). Five collection includes in
         // one query return roles×permissions×overrides×accounts×grants rows, and AsNoTracking
@@ -149,7 +150,8 @@ public static class TenantSessionSecurity
             AuthCurrentEligibility.IsSsoOnly(user!, identity),
             policy,
             validationTimeUtc,
-            ignoreFailureLockout: true);
+            ignoreFailureLockout: true,
+            mfaDisabledForTesting: mfaDisabledForTesting);
         if (!eligibility.Allowed) return false;
 
         var currentRoles = user!.UserRoles

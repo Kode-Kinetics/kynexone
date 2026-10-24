@@ -422,7 +422,9 @@ public record MfaStatusDto(
     int RememberDeviceDays = 0,
     int TrustedDeviceCount = 0,
     // Tenant users only (wave 2): unused backup codes of the current factor; 0 when two-step is off.
-    int BackupCodesRemaining = 0);
+    int BackupCodesRemaining = 0,
+    // True while Auth__Mfa__DisabledForTesting is on: two-step sign-in is not asked for or enforced.
+    bool DisabledForTesting = false);
 
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>

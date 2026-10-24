@@ -203,6 +203,23 @@ export function SignInSecurityCard() {
     );
   }
 
+  // Testing phase: the API has two-step switched off, so the controls (which would be refused or
+  // pointless) give way to a notice. Enrolled factors are kept untouched on the server.
+  if (status.disabledForTesting) {
+    return (
+      <Card testId="sign-in-security-card">
+        <div className="flex items-start gap-3" data-testid="two-step-disabled-for-testing">
+          <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500 dark:bg-white/[0.06] dark:text-slate-400" aria-hidden>
+            <Info className="h-5 w-5" />
+          </span>
+          <p role="status" className="text-sm text-slate-700 dark:text-slate-300">
+            {t('Two-step sign-in is switched off while the product is in testing')}
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
   /*
    * Right after turning on, the status is not re-read until Done: turning on can end this session,
    * and a request that finds it ended navigates to sign-in, taking the unsaved codes with it. The
