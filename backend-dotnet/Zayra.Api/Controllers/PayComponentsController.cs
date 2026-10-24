@@ -290,6 +290,8 @@ public class PayComponentsController : ControllerBase
             return Conflict(c.Code.StartsWith("LOAN_", StringComparison.OrdinalIgnoreCase)
                 ? new { error = "facility_component", message = "This component holds a loan limit by grade. Change it from Loans → Loan Policies → Limits by grade." }
                 : new { error = "facility_component", message = "This component is a benefit set by grade, not pay. Change it from Benefits → Benefits by grade." });
+        if (c.CalcMethod == PayComponentCalcMethods.GradePackage)
+            return Conflict(new { error = "grade_package_component", message = "This component's amount is set on each grade. Change it in Setup → Grades." });
         if (c.IsSystem)
             return Conflict(new { error = "system_component", message = "System components reproduce the standard payslip and are read-only. Add a tenant component instead." });
         return null;

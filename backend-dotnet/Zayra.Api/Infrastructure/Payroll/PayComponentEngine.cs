@@ -146,6 +146,8 @@ public static class PayComponentEngine
             PayComponentCalcMethods.Fixed          => Pinned(c, Single(c, c.Code, c.NameEn, c.Value ?? 0m, "Salary")),
             PayComponentCalcMethods.PercentOfBasic => Pinned(c, Single(c, c.Code, c.NameEn, Math.Round(ctx.Basic * (c.Value ?? 0m) / 100m, 2), "Salary")),
             PayComponentCalcMethods.PercentOfGross => Pinned(c, Single(c, c.Code, c.NameEn, Math.Round(ctx.Gross * (c.Value ?? 0m) / 100m, 2), "Salary")),
+            // A grade pay-package definition carries no amount: the grade's figure is already in the salary columns.
+            PayComponentCalcMethods.GradePackage => Array.Empty<PayComponentLine>(),
             // Formula is a later client opt-in surface; never on the equivalence path (no seed uses it).
             _ => Array.Empty<PayComponentLine>(),
         };

@@ -780,162 +780,44 @@ public class PayrollModuleTests
         (await db.EmployeeSalaryStructures.AnyAsync()).Should().BeFalse();
     }
 
+    /// <summary>
+    /// Salary structures follow grades: a pay package is defined on its grade (Setup → Grades) and the grade's structure is
+    /// derived from it (GradeSalaryStructureSync — GradePackageTests). Every structure write endpoint — create, update,
+    /// delete and the CSV import — refuses with 409 salary_structures_follow_grades pointing at Setup, and writes nothing.
+    /// </summary>
     [Fact]
-    public async Task SalaryStructureImport_WithCompanyAndComponents_PersistsFullStructureContract()
+    public async Task SalaryStructureWrites_RefuseAndPointToSetupGrades()
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var company = new Company
-        {
-            TenantId = tenantId,
-            LegalNameEn = "Acme Arabia LLC",
-            CountryCode = "SA",
-            RegistrationNumber = "REG-001",
-            DefaultCurrency = "SAR"
-        };
-        var grade = new Grade { TenantId = tenantId, Code = "G-EXEC", Name = "Executive" };
-        var designation = new Designation { TenantId = tenantId, Code = "CEO", TitleEn = "Chief Executive" };
-        db.Companies.Add(company);
-        db.Grades.Add(grade);
-        db.Designations.Add(designation);
+        var structure = new SalaryStructure { TenantId = tenantId, Code = "STD", Name = "Standard", Currency = "AED", EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true };
+        db.SalaryStructures.Add(structure);
         await db.SaveChangesAsync();
-
         var ctrl = MakeCtrl(db, tenantId);
-        var csv = "CompanyLegalName,Code,Name,Currency,EffectiveDate,IsActive,MinGrossSalary,MaxGrossSalary,MinBasicSalary,MaxBasicSalary,EligibleGradeIds,EligibleDesignationIds,ComponentCode,ComponentName,ComponentType,CalculationType,Amount,Percentage,IsTaxable,ComponentIsActive\n" +
-                  $"Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,20000,50000,15000,35000,{grade.Id},{designation.Id},BASIC,Basic Salary,Earning,Fixed,15000,0,true,true\n" +
-                  $"Acme Arabia LLC,EXEC,Executive Structure,SAR,2026-01-01,true,20000,50000,15000,35000,{grade.Id},{designation.Id},HOUSING,Housing Allowance,Earning,Percentage,0,25,false,true\n";
+        var request = new SalaryStructureRequest("NEW", "New", "AED", new DateOnly(2026, 1, 1),
+            new[] { new SalaryComponentRequest("BASIC", "Basic Salary", "Earning", "Fixed", 1000m, 0m, true) });
+        const string csv = "CompanyLegalName,Code,Name,Currency,EffectiveDate,IsActive\n,IMP,Imported,AED,2026-01-01,true\n";
 
-        var result = await ctrl.ImportStructures(new ImportSalaryStructuresRequest(csv), CancellationToken.None);
-
-        var ok = Assert.IsType<OkObjectResult>(result);
-        var body = ok.Value!;
-        ((int)body.GetType().GetProperty("created")!.GetValue(body)!).Should().Be(1);
-
-        var structure = await db.SalaryStructures.SingleAsync(s => s.TenantId == tenantId && s.Code == "EXEC");
-        structure.CompanyId.Should().Be(company.Id);
-        structure.Currency.Should().Be("SAR");
-        structure.EffectiveDate.Should().Be(new DateOnly(2026, 1, 1));
-        structure.MinGrossSalary.Should().Be(20_000m);
-        structure.MaxGrossSalary.Should().Be(50_000m);
-        structure.MinBasicSalary.Should().Be(15_000m);
-        structure.MaxBasicSalary.Should().Be(35_000m);
-        structure.EligibleGradeIdsJson.Should().Contain(grade.Id.ToString());
-        structure.EligibleDesignationIdsJson.Should().Contain(designation.Id.ToString());
-
-        var components = await db.SalaryComponents.Where(c => c.TenantId == tenantId && c.SalaryStructureId == structure.Id).ToListAsync();
-        components.Should().HaveCount(2);
-        components.Should().Contain(c => c.Code == "BASIC" && c.Amount == 15000m && c.IsTaxable);
-        components.Should().Contain(c => c.Code == "HOUSING" && c.Percentage == 25m && !c.IsTaxable);
-    }
-
-    [Fact]
-    public async Task SalaryStructureCrud_Update_ReplacesComponentsAndReturnsUsage()
-    {
-        var db = CreateDb();
-        var tenantId = Guid.NewGuid();
-        var company = new Company
+        foreach (var result in new[]
+                 {
+                     ctrl.CreateSalaryStructure(request), ctrl.UpdateSalaryStructure(structure.Id, request),
+                     ctrl.DeleteSalaryStructure(structure.Id), ctrl.ImportStructures(new ImportSalaryStructuresRequest(csv)),
+                 })
         {
-            TenantId = tenantId,
-            LegalNameEn = "Acme Payroll LLC",
-            TradeName = "Acme Payroll",
-            CountryCode = "AE",
-            RegistrationNumber = "REG-002",
-            DefaultCurrency = "AED"
-        };
-        db.Companies.Add(company);
-        await db.SaveChangesAsync();
+            var conflict = Assert.IsType<ConflictObjectResult>(result);
+            var body = conflict.Value!;
+            body.GetType().GetProperty("error")!.GetValue(body).Should().Be(PayrollController.SalaryStructuresFollowGrades);
+            ((string)body.GetType().GetProperty("message")!.GetValue(body)!).Should().Contain("Setup → Grades");
+            body.GetType().GetProperty("setupHref")!.GetValue(body).Should().Be("/setup?tab=grades");
+        }
 
-        var ctrl = MakeCtrl(db, tenantId);
-        var create = await ctrl.CreateSalaryStructure(new SalaryStructureRequest(
-            "GCC-STD", "GCC Standard", "AED", new DateOnly(2026, 1, 1),
-            new[]
-            {
-                new SalaryComponentRequest("BASIC", "Basic Salary", "Earning", "Fixed", 0m, 0m, true),
-                new SalaryComponentRequest("HRA", "Housing", "Earning", "Percentage", 0m, 25m, false),
-            },
-            company.Id), CancellationToken.None);
+        var stored = await db.SalaryStructures.IgnoreQueryFilters().Where(s => s.TenantId == tenantId).ToListAsync();
+        stored.Should().ContainSingle().Which.Should().Match<SalaryStructure>(s => s.Name == "Standard" && s.IsActive && !s.IsDeleted);
+        (await db.SalaryComponents.AnyAsync()).Should().BeFalse();
 
-        var created = Assert.IsType<CreatedResult>(create);
-        var createdDto = Assert.IsType<SalaryStructureDto>(created.Value);
-        createdDto.CompanyId.Should().Be(company.Id);
-        createdDto.Components.Should().HaveCount(2);
-
-        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
-        {
-            TenantId = tenantId,
-            EmployeeId = 10,
-            SalaryStructureId = createdDto.Id,
-            BasicSalary = 10_000m,
-            EffectiveDate = new DateOnly(2026, 1, 1),
-            Currency = "AED",
-            IsActive = true
-        });
-        await db.SaveChangesAsync();
-
-        var update = await ctrl.UpdateSalaryStructure(createdDto.Id, new SalaryStructureRequest(
-            "GCC-EXEC", "GCC Executive", "SAR", new DateOnly(2026, 2, 1),
-            new[] { new SalaryComponentRequest("BASIC", "Basic Salary", "Earning", "Fixed", 12_000m, 0m, true) },
-            company.Id,
-            true), CancellationToken.None);
-
-        var ok = Assert.IsType<OkObjectResult>(update);
-        var updated = Assert.IsType<SalaryStructureDto>(ok.Value);
-        updated.Code.Should().StartWith("GCC-EXEC");
-        updated.Currency.Should().Be("SAR");
-        updated.AssignedEmployeeCount.Should().Be(0);
-        updated.PreviousVersionId.Should().Be(createdDto.Id);
-        updated.Components.Should().ContainSingle(c => c.Code == "BASIC" && c.Amount == 12_000m);
-
-        var storedComponents = await db.SalaryComponents.Where(c => c.TenantId == tenantId && c.SalaryStructureId == updated.Id).ToListAsync();
-        storedComponents.Should().ContainSingle();
-    }
-
-    [Fact]
-    public async Task SalaryStructureDelete_GuardsAssignedStructureAndSoftDeletesUnused()
-    {
-        var (db, conn) = CreateSqliteDb();
-        await using var _ = conn;
-        await using var __ = db;
-
-        var tenantId = Guid.NewGuid();
-        var assigned = new SalaryStructure
-        {
-            TenantId = tenantId,
-            Code = "ASSIGNED",
-            Name = "Assigned",
-            Currency = "AED",
-            EffectiveDate = new DateOnly(2026, 1, 1),
-            IsActive = true
-        };
-        var unused = new SalaryStructure
-        {
-            TenantId = tenantId,
-            Code = "UNUSED",
-            Name = "Unused",
-            Currency = "AED",
-            EffectiveDate = new DateOnly(2026, 1, 1),
-            IsActive = true
-        };
-        db.SalaryStructures.AddRange(assigned, unused);
-        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
-        {
-            TenantId = tenantId,
-            EmployeeId = 20,
-            SalaryStructureId = assigned.Id,
-            BasicSalary = 8_000m,
-            EffectiveDate = new DateOnly(2026, 1, 1),
-            Currency = "AED",
-            IsActive = true
-        });
-        await db.SaveChangesAsync();
-
-        var ctrl = MakeCtrl(db, tenantId);
-        var assignedResult = await ctrl.DeleteSalaryStructure(assigned.Id, CancellationToken.None);
-        Assert.IsType<BadRequestObjectResult>(assignedResult);
-
-        var unusedResult = await ctrl.DeleteSalaryStructure(unused.Id, CancellationToken.None);
-        Assert.IsType<NoContentResult>(unusedResult);
-        (await db.SalaryStructures.IgnoreQueryFilters().SingleAsync(s => s.Id == unused.Id)).IsDeleted.Should().BeTrue();
+        // Reads stay: the list and the single structure.
+        Assert.IsType<OkObjectResult>(await ctrl.SalaryStructures(null, CancellationToken.None));
+        Assert.IsType<OkObjectResult>(await ctrl.GetSalaryStructure(structure.Id, CancellationToken.None));
     }
 
     [Fact]
@@ -978,48 +860,46 @@ public class PayrollModuleTests
         (await db.EmployeeSalaryStructures.AnyAsync()).Should().BeFalse();
     }
 
+    /// <summary>A salary assigned without naming a structure goes on the employee's grade package structure, created from
+    /// the grade when it does not exist yet — structures are no longer made by hand.</summary>
     [Fact]
-    public async Task SalaryStructureUpdate_WhenAssigned_CreatesNewVersionInsteadOfOverwriting()
+    public async Task AssignEmployeeSalary_WithoutAStructure_UsesTheGradesPackageStructure()
     {
-        var db = CreateDb();
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        await using var __ = db;
         var tenantId = Guid.NewGuid();
-        var structure = new SalaryStructure
-        {
-            TenantId = tenantId,
-            Code = "STD",
-            Name = "Standard",
-            Currency = "AED",
-            EffectiveDate = new DateOnly(2026, 1, 1),
-            IsActive = true,
-            VersionNumber = 1
-        };
-        db.SalaryStructures.Add(structure);
-        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
-        {
-            TenantId = tenantId,
-            EmployeeId = 1,
-            SalaryStructureId = structure.Id,
-            BasicSalary = 10_000m,
-            EffectiveDate = new DateOnly(2026, 1, 1),
-            Currency = "AED",
-            IsActive = true
-        });
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Acme Arabia LLC", CountryCode = "SA", RegistrationNumber = "REG-9", DefaultCurrency = "SAR" };
+        var grade = new Grade { TenantId = tenantId, CompanyId = company.Id, Code = "G3", Name = "Grade 3", MinSalary = 5_000m, MaxSalary = 20_000m, Currency = "SAR" };
+        db.AddRange(company, grade);
+        db.GradePayScaleComponents.Add(new GradePayScaleComponent { TenantId = tenantId, GradeId = grade.Id, ComponentCode = "BASIC", ComponentName = "Basic salary", Amount = 9_000m, IsTaxable = true });
+        var employee = new Employee { TenantId = tenantId, CompanyId = company.Id, GradeId = grade.Id, EmployeeCode = "E-G3", FullName = "Graded", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1) };
+        var gradeless = new Employee { TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "E-NG", FullName = "No grade", Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-1) };
+        db.Employees.AddRange(employee, gradeless);
         await db.SaveChangesAsync();
-
         var ctrl = MakeCtrl(db, tenantId);
-        var result = await ctrl.UpdateSalaryStructure(structure.Id, new SalaryStructureRequest(
-            "STD", "Standard Updated", "AED", new DateOnly(2026, 2, 1),
-            Array.Empty<SalaryComponentRequest>(),
-            IsActive: true,
-            MinGrossSalary: 12_000m), CancellationToken.None);
 
-        var ok = Assert.IsType<OkObjectResult>(result);
-        var dto = Assert.IsType<SalaryStructureDto>(ok.Value);
-        dto.Id.Should().NotBe(structure.Id);
-        dto.PreviousVersionId.Should().Be(structure.Id);
-        dto.VersionNumber.Should().Be(2);
-        dto.Code.Should().StartWith("STD-V");
-        (await db.SalaryStructures.FindAsync(structure.Id))!.IsActive.Should().BeFalse();
+        var result = await ctrl.AssignEmployeeSalary(new EmployeeSalaryStructureRequest(
+            employee.Id, null, 9_000m, 1_000m, 0m, 0m, 0m, 0m, 0m, new DateOnly(2026, 1, 1), "SAR"), CancellationToken.None);
+        Assert.IsType<CreatedResult>(result);
+        var structure = await db.SalaryStructures.SingleAsync(s => s.Code == "GRADE-G3");
+        structure.CompanyId.Should().Be(company.Id);
+        (await db.SalaryComponents.SingleAsync(c => c.SalaryStructureId == structure.Id)).Code.Should().Be("BASIC");
+        (await db.EmployeeSalaryStructures.SingleAsync(a => a.EmployeeId == employee.Id)).SalaryStructureId.Should().Be(structure.Id);
+
+        Assert.IsType<CreatedResult>(await ctrl.AssignEmployeeSalary(new EmployeeSalaryStructureRequest(
+            gradeless.Id, null, 6_000m, 0m, 0m, 0m, 0m, 0m, 0m, new DateOnly(2026, 1, 1), "SAR"), CancellationToken.None));
+        var direct = await db.SalaryStructures.SingleAsync(s => s.Code == "DIRECT");
+        (await db.EmployeeSalaryStructures.SingleAsync(a => a.EmployeeId == gradeless.Id)).SalaryStructureId.Should().Be(direct.Id);
+
+        // Payroll → Grade packages: the grade's package, its gross and its people; DIRECT (not a grade's) is listed apart.
+        var view = (GradePackagesView)((OkObjectResult)await ctrl.GradePackages(null, CancellationToken.None)).Value!;
+        view.Source.Should().Be("GradePayScale");
+        var package = view.Grades.Should().ContainSingle().Subject;
+        package.Should().Match<GradePackageDto>(p => p.GradeCode == "G3" && p.MonthlyGross == 9_000m && !p.OutsideRange
+            && p.EmployeeCount == 1 && p.StructureCode == "GRADE-G3" && p.SalariesOnStructure == 1);
+        package.Lines.Should().ContainSingle(l => l.Code == "BASIC" && l.PeriodAmount == 9_000m);
+        view.OlderStructures.Should().ContainSingle(s => s.Code == "DIRECT" && s.AssignedEmployeeCount == 1);
     }
 
     // ── Section 10: Export writes audit log ───────────────────────────────────

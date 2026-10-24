@@ -12,6 +12,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Models;
 
@@ -528,6 +529,7 @@ public class OrganizationStructureImportController : ControllerBase
         // Release A (R1): the legacy grade pay scale is frozen for a release_a tenant — grade benefits are set in Benefits
         // by grade. Validation marks these rows Skipped with the reason, so the commit writes none of them.
         var gradePayRows = await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct) ? [] : parsed.GradePayComponents;
+        var packageGrades = new HashSet<Grade>();
         foreach (var row in gradePayRows)
         {
             var grade = grades[Val(row, "GradeCode").ToUpperInvariant()];
@@ -551,6 +553,16 @@ public class OrganizationStructureImportController : ControllerBase
             _db.GradePayScaleComponents.Add(component);
             Audit("organization.grade_pay_component_created", nameof(GradePayScaleComponent), component.Id, $"{grade.Code}/{code}");
             Bump("gradePayComponents");
+            packageGrades.Add(grade);
+        }
+        // The grade's salary structure follows its package (GradeSalaryStructureSync), in the same save as the lines.
+        foreach (var grade in packageGrades)
+        {
+            var lines = (await _db.GradePayScaleComponents.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.GradeId == grade.Id && x.IsActive).ToListAsync(ct))
+                .Concat(_db.GradePayScaleComponents.Local.Where(x => x.GradeId == grade.Id && _db.Entry(x).State == EntityState.Added))
+                .ToList();
+            await GradeSalaryStructureSync.StageAsync(_db, grade, lines, GetUserId(), createIfMissing: true, ct);
         }
 
         var designations = SavedIndex.Of(await _db.Designations.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "designation");
