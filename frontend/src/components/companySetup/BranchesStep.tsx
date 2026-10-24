@@ -4,6 +4,7 @@ import { useT } from '../../hooks/useT';
 import { msg } from '../../i18n/translations';
 import type { CompanySetupBranch, CompanySetupDraftBody, CompanySetupLocation } from '../../api/companySetup';
 import { MANAGE_TAB, TIME_ZONES, stepWarnings, withOneHeadOffice } from '../../lib/companySetupWizard';
+import { TIME_ZONE_CITY, cityFromCr, suggestBranchCode, timeZoneOffset } from '../../lib/companySetupFields';
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
 import { UseDefaultsButton } from './UseDefaultsButton';
@@ -24,12 +25,17 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
   const setBranches = (branches: CompanySetupBranch[]) => update(b => ({ ...b, branches: withOneHeadOffice(b.branches, branches) }));
   const setLocations = (index: number, locations: CompanySetupLocation[]) =>
     update(b => ({ ...b, branches: b.branches.map((row, i) => (i === index ? { ...row, locations } : row)) }));
+  // "Riyadh (GMT+3)", not "Asia/Riyadh".
+  const zoneLabel = (zone: string) => {
+    const offset = timeZoneOffset(zone);
+    return `${TIME_ZONE_CITY[zone] ? t(TIME_ZONE_CITY[zone]) : zone}${offset ? ` (${offset})` : ''}`;
+  };
   const branchColumns: RowColumn<CompanySetupBranch>[] = [
     { key: 'code', label: msg('Code'), required: true, width: 'w-full sm:w-28' },
     { key: 'nameEn', label: msg('Name (English)'), required: true, width: 'w-full sm:w-48' },
     { key: 'nameAr', label: msg('Name (Arabic)'), arabic: true, width: 'w-full sm:w-48' },
     { key: 'city', label: msg('City'), required: true, width: 'w-full sm:w-36' },
-    { key: 'timeZoneId', label: msg('Time zone'), kind: 'select', options: TIME_ZONES.map(z => ({ value: z, label: z })), width: 'w-full sm:w-44' },
+    { key: 'timeZoneId', label: msg('Time zone'), kind: 'select', options: TIME_ZONES.map(z => ({ value: z, label: zoneLabel(z) })), width: 'w-full sm:w-44' },
     { key: 'isHeadOffice', label: msg('Head office'), kind: 'checkbox' },
   ];
   const locationColumns: RowColumn<CompanySetupLocation>[] = [
@@ -44,13 +50,24 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
     update(b => ({ ...b, branches: b.branches.map((row, i) => (i === branchIndex
       ? { ...row, locations: row.locations.map((l, j) => (j === locationIndex ? { ...l, ...patch } : l)) }
       : row)) }));
+  // A new branch starts filled where the answer is known: HQ / BR2 codes; the head office named and, for a Saudi CR
+  // issued in a known office, its city. Everything stays editable.
+  const newBranch = (): CompanySetupBranch => {
+    const first = body.branches.length === 0;
+    const city = first ? cityFromCr(body.company.registrationNumber) : undefined;
+    return {
+      code: suggestBranchCode(body.branches.map(b => b.code)),
+      nameEn: first ? 'Head office' : '', nameAr: first ? 'المقر الرئيسي' : '',
+      city: city ?? '', timeZoneId: timeZone, isHeadOffice: first, locations: [],
+    };
+  };
   const branchError = errorFor('branches');
   const warnings = stepWarnings(3, { body, context });
   return (
     <div className="space-y-4">
       <SectionHeader
         title={t('Branches')}
-        description={t('Every company needs one head office. Add the other branches people are assigned to.')}
+        description={t('Every company needs one head office. Add the other branches people are assigned to. A code is short and permanent, for example HQ or JED; employee numbers can use it.')}
         actions={!readOnly && !existing && defaults && defaults.branches.length > 0
           ? <UseDefaultsButton current={body.branches} defaults={defaults.branches} section={t('Branches')}
               onApply={() => update(b => ({ ...b, branches: defaults.branches.map(row => ({ ...row, locations: row.locations ?? [] })) }))} />
@@ -64,7 +81,7 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
         onChange={setBranches}
         manage={manage('branches')}
         baselineRows={baseline?.branches}
-        newRow={() => ({ code: '', nameEn: '', nameAr: '', city: '', timeZoneId: timeZone, isHeadOffice: body.branches.length === 0, locations: [] })}
+        newRow={newBranch}
         addLabel={t('Add branch')}
         emptyText={t('No branches yet. Add the head office first.')}
         rowLabel={i => t('Branch {number}', { number: i + 1 })}

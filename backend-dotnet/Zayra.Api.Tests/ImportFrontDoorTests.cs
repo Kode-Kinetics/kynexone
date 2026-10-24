@@ -207,7 +207,7 @@ public sealed class ImportFrontDoorTests
     public async Task ImportAndForm_CannotProduceTwoDepartmentsWhoseCodesDifferOnlyInCase()
     {
         await using var db = CreateDb();
-        var tenantId = SeedTenant(db);
+        var tenantId = SeedOrgTenant(db);
         await db.SaveChangesAsync();
 
         // Door 1 — the importer.
@@ -235,7 +235,7 @@ public sealed class ImportFrontDoorTests
     public async Task LegacyCaseVariantCodes_AreRefusedWithAnExplanation_NotA500()
     {
         await using var db = CreateDb();
-        var tenantId = SeedTenant(db);
+        var tenantId = SeedOrgTenant(db);
         db.Departments.AddRange(
             new Department { TenantId = tenantId, Code = "ops", NameEn = "Operations (imported)" },
             new Department { TenantId = tenantId, Code = "OPS", NameEn = "Operations (typed)" });
@@ -260,7 +260,7 @@ public sealed class ImportFrontDoorTests
     public async Task DesignationImport_UnresolvedDepartmentCode_DoesNotNullALiveDepartment()
     {
         await using var db = CreateDb();
-        var tenantId = SeedTenant(db);
+        var tenantId = SeedOrgTenant(db);
         var department = new Department { TenantId = tenantId, Code = "HR", NameEn = "Human Resources" };
         db.Departments.Add(department);
         db.Designations.Add(new Designation
@@ -394,6 +394,14 @@ public sealed class ImportFrontDoorTests
 
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+
+    /// <summary>A tenant with its one company: Addendum B departments, designations and grades belong to a company.</summary>
+    private static Guid SeedOrgTenant(ZayraDbContext db)
+    {
+        var tenantId = SeedTenant(db);
+        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "Front Door Co", RegistrationNumber = $"FD-{tenantId:N}", DefaultCurrency = "SAR", IsActive = true });
+        return tenantId;
+    }
 
     private static Guid SeedTenant(
         ZayraDbContext db,

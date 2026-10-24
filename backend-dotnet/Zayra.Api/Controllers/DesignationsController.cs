@@ -63,7 +63,7 @@ public class DesignationsController : ControllerBase
             var designation = await _organization.CreateDesignationAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = designation.Id }, designation);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
     }
 
     [HttpPut("{id:guid}")]
@@ -78,7 +78,7 @@ public class DesignationsController : ControllerBase
             var designation = await _organization.UpdateDesignationAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return designation is null ? NotFound() : Ok(designation);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
     }
 
     [HttpDelete("{id:guid}")]
@@ -128,7 +128,10 @@ public class DesignationsController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunImportAsync(tenantId.Value, companyId, req.Csv, commit: false, ct);
     }
 
     [HttpPost("import")]
@@ -138,22 +141,29 @@ public class DesignationsController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunImportAsync(tenantId.Value, companyId, req.Csv, commit: true, ct);
     }
 
     /// <summary>
     /// Preview and commit walk the SAME loop; <paramref name="commit"/> decides only whether the
     /// service is called. Every validation and refusal above it is shared.
     /// </summary>
-    private async Task<IActionResult> RunImportAsync(Guid tenantId, string csv, bool commit, CancellationToken ct)
+    private async Task<IActionResult> RunImportAsync(Guid tenantId, Guid companyId, string csv, bool commit, CancellationToken ct)
     {
-        var designations = await _db.Designations.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
+        // Addendum B: the target company's rows, plus legacy rows no company owns yet whose code the company does not
+        // already use — an import into the company adopts such a row (the update assigns it the company).
+        var designations = OrgCodes.WithinCompany(await _db.Designations.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && (d.CompanyId == companyId || d.CompanyId == null) && !d.IsDeleted).ToListAsync(ct),
+            d => d.CompanyId, d => d.Code);
         if (!OrgCodes.TryBuildLookup(designations, d => d.Code, out var existingByCode, out var codeClash))
             return Conflict(OrgCodeCollision.Payload("designation", "Code", codeClash));
 
-        var departments = await _db.Departments.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
+        var departments = OrgCodes.WithinCompany(await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && (d.CompanyId == companyId || d.CompanyId == null) && !d.IsDeleted).ToListAsync(ct),
+            d => d.CompanyId, d => d.Code);
         if (!OrgCodes.TryBuildLookup(departments, d => d.Code, out var deptByCode, out var deptClash))
             return Conflict(OrgCodeCollision.Payload("department", "Code", deptClash));
 
@@ -187,7 +197,7 @@ public class DesignationsController : ControllerBase
             {
                 if (deptByCode.TryGetValue(OrgCodes.Normalize(deptCode), out var department)) deptId = department.Id;
                 else errors.Add(
-                    $"DepartmentCode '{deptCode}' not found in this tenant. Import the department first, " +
+                    $"DepartmentCode '{deptCode}' not found in this company. Import the department first, " +
                     $"or correct the code — this row was not applied, so designation '{code}' keeps the " +
                     $"department it already had.");
             }
@@ -211,7 +221,8 @@ public class DesignationsController : ControllerBase
                     JobLevel: existing?.JobLevel ?? string.Empty,
                     JobDescription: existing?.JobDescription ?? string.Empty,
                     IsManagerRole: existing?.IsManagerRole ?? false,
-                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase),
+                    CompanyId: companyId);
 
                 try
                 {
@@ -244,4 +255,5 @@ public class DesignationsController : ControllerBase
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 }
 
-public record DesigImportRequest(string Csv);
+/// <summary>CompanyId: the company the file's designations belong to (Addendum B). Optional only when the tenant has one company.</summary>
+public record DesigImportRequest(string Csv, Guid? CompanyId = null);

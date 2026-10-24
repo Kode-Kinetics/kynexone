@@ -272,6 +272,9 @@ public class LeaveService : ILeaveService
             .ToHashSet();
 
         var accrualOn = DateOnly.FromDateTime(accrualMonth);
+        // A policy only ever credits a leave type of the employee's own company (or an unassigned legacy type the
+        // company has no own type for) — never a sister company's.
+        var typeIndex = await LeaveCompanyScope.TypeIndex.LoadAsync(_db, tenantId, ct);
 
         foreach (var policy in activePolicies.Where(p => p.AccrualMethod == "Monthly"))
         {
@@ -298,6 +301,8 @@ public class LeaveService : ILeaveService
                 var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
                     ? companyCountry
                     : string.Empty;
+                if (!typeIndex.Usable(policy.LeaveTypeId, emp.CompanyId))
+                    continue;
                 if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
                     continue;
                 // Several active policies can overlap (for example a tenant default and a
@@ -651,6 +656,12 @@ public class LeaveService : ILeaveService
         var employee = await _db.Employees.AsNoTracking()
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == request.EmployeeId && !e.IsDeleted, ct)
             ?? throw new InvalidOperationException("Employee not found.");
+
+        // Leave types belong to one company (2026-10-23). A sister company's type would put this employee's balance on
+        // another legal entity's books; an unassigned legacy type is still a fallback when the company has no type of
+        // that code.
+        if (!await LeaveCompanyScope.IsUsableByAsync(_db, leaveType, employee.CompanyId, ct))
+            throw new InvalidOperationException(LeaveCompanyScope.NotThisCompanysType);
 
         var blackout = await _db.LeaveBlackoutDates.AsNoTracking()
             .Where(b => b.TenantId == tenantId
@@ -2796,7 +2807,10 @@ public class LeaveService : ILeaveService
         // to be written last. Ranked below CompanyId/BranchId: a company-specific policy is a
         // deliberate override of the country default and must still win.
         if (!string.IsNullOrWhiteSpace(policy.CountryCode)) score += 5;
-        if (policy.CompanyId.HasValue) score += 8;
+        // A company's own policy outranks a group default. Every policy now belongs to a company (2026-10-23); one that
+        // was a tenant-wide default before the per-company backfill keeps the rank it had (LegacyGroupDefault), so the
+        // backfill never silently changes which policy an employee resolves.
+        if (policy.CompanyId.HasValue && !policy.LegacyGroupDefault) score += 8;
         if (policy.BranchId.HasValue) score += 6;
         if (!string.IsNullOrWhiteSpace(policy.DepartmentName)) score += 4;
         if (!string.IsNullOrWhiteSpace(policy.Grade)) score += 3;

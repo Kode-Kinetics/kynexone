@@ -18,6 +18,10 @@ public interface IOrganizationSetupService
     Task<BranchDto> CreateBranchAsync(Guid tenantId, BranchRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<BranchDto?> UpdateBranchAsync(Guid tenantId, Guid id, BranchRequest request, RequestContext context, CancellationToken cancellationToken);
 
+    /// <summary>Addendum B: the company that owns a new department, designation or grade — the one requested (a live
+    /// company of the tenant), else the tenant's only company; otherwise <see cref="OrganizationRuleException"/>
+    /// with code <c>company_required</c>.</summary>
+    Task<Guid> ResolveOwningCompanyAsync(Guid tenantId, Guid? requested, CancellationToken cancellationToken);
     Task<PagedResult<DepartmentDto>> GetDepartmentsAsync(Guid tenantId, Guid? branchId, int page, int pageSize, CancellationToken cancellationToken);
     Task<DepartmentDto?> GetDepartmentAsync(Guid tenantId, Guid id, CancellationToken cancellationToken);
     Task<DepartmentDto> CreateDepartmentAsync(Guid tenantId, DepartmentRequest request, RequestContext context, CancellationToken cancellationToken);

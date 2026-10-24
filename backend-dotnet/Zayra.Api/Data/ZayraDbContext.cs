@@ -137,6 +137,22 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     // Explicit company IDs the current user may access. Empty when _isGroupScope=true.
     private List<Guid> _companyScopeIds => ResolveRequestScope().AccessibleCompanyIds.ToList();
 
+    /// <summary>
+    /// The one company this request is narrowed to — the company switcher's selection, or a caller who holds
+    /// exactly one company — else null (group scope, or several companies). Addendum B: the default owner of a
+    /// new department, designation or grade when the request names none.
+    /// </summary>
+    public Guid? SingleScopedCompanyId
+    {
+        get
+        {
+            var scope = ResolveRequestScope();
+            if (scope.IsGroupLevel) return null;
+            var ids = scope.AccessibleCompanyIds.Distinct().Take(2).ToList();
+            return ids.Count == 1 ? ids[0] : null;
+        }
+    }
+
     public ZayraDbContext(
         DbContextOptions<ZayraDbContext> options,
         IHttpContextAccessor? httpContextAccessor = null,
@@ -2030,7 +2046,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("departments");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Addendum B: a department belongs to one company (legal entity). Codes are unique per
+            // (tenant, company); NULLS NOT DISTINCT so two unassigned legacy rows cannot share a code.
+            // Serves: create/update duplicate-code check and the import resolver's code lookup.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.BranchId });
             entity.HasIndex(x => new { x.TenantId, x.ParentDepartmentId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
@@ -2040,7 +2061,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("designations");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Addendum B: per company, code unique per (tenant, company) — see departments.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.StaffingLevelId });
@@ -2069,7 +2093,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("grades");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Addendum B: per company, code unique per (tenant, company) — see departments.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.Property(x => x.MinSalary).HasPrecision(14, 2);
             entity.Property(x => x.MidSalary).HasPrecision(14, 2);
@@ -2239,7 +2266,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("cost_centers");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Addendum B (owner decision 2026-10-23): cost centres are per company like departments, designations
+            // and grades — the same code may exist in two companies. NULLS NOT DISTINCT so two unassigned rows
+            // still cannot share a code. Serves: create/update duplicate-code check and import code lookups.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.Property(x => x.NameAr).HasMaxLength(160);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
         });
@@ -2478,7 +2509,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<LeaveType>(entity => {
             entity.ToTable("leave_types");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Leave per company (2026-10-23): a leave type belongs to one company (legal entity). Codes are unique per
+            // (tenant, company); NULLS NOT DISTINCT so two unassigned legacy rows cannot share a code.
+            // Serves: create/import duplicate-code check and the by-code lookups of imports and the installer.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.IsActive });
         });
         modelBuilder.Entity<LeavePolicy>(entity => {
@@ -2497,6 +2533,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.MinimumDaysPerRequest).HasPrecision(5,2);
             entity.Property(x => x.MaximumDaysPerRequest).HasPrecision(5,2);
             entity.HasIndex(x => new { x.TenantId, x.LeaveTypeId, x.Status });
+            entity.Property(x => x.LegacyGroupDefault).HasDefaultValue(false);
+            // Leave per company (2026-10-23): the owning company. NULL only for an unattributed legacy row.
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
+                .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<LeavePolicyEligibility>(entity => { entity.ToTable("leave_policy_eligibilities"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.LeavePolicyId, x.IsActive }); });
         modelBuilder.Entity<LeaveAccrualRule>(entity => { entity.ToTable("leave_accrual_rules"); entity.HasKey(x => x.Id); entity.Property(x => x.AccrualDays).HasPrecision(6,2); entity.Property(x => x.CarryForwardMaxDays).HasPrecision(6,2); entity.HasIndex(x => new { x.TenantId, x.LeavePolicyId, x.IsActive }); });

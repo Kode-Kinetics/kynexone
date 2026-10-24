@@ -49,6 +49,11 @@ public static class CompanySetupReadiness
             .AnyAsync(g => g.CountryCode == country && (g.CompanyId == id || g.CompanyId == null), ct);
         Add("gccSettings", "Country settings (end of service, weekend)", "إعدادات الدولة (نهاية الخدمة، العطلة الأسبوعية)", gcc, V.ReadinessTodo, SetupHref("gccSettings", id));
 
+        // Statutory leave is per company (owner decision 2026-10-23): this company's own live policies for its country.
+        var leave = await ScopedBypass.TenantWide(db.LeavePolicies, tenantId, Why)
+            .AnyAsync(p => p.CompanyId == id && p.CountryCode == country && p.Status != "Archived", ct);
+        Add("leavePolicies", "Statutory leave policies", "سياسات الإجازة النظامية", leave, V.ReadinessTodo, $"/leave?companyId={id}");
+
         var iso3 = country switch { "SA" => "SAU", "AE" => "ARE", "QA" => "QAT", "KW" => "KWT", "BH" => "BHR", "OM" => "OMN", _ => country };
         var statutory = await ScopedBypass.NullableTenantWide(db.StatutoryRules, null,
                     "Platform statutory rules (tenant_id IS NULL) are the defaults every tenant inherits; readiness asks only whether any exist for the country.")

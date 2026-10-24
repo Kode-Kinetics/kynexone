@@ -5,6 +5,7 @@ import {
   normalizeFieldPath, numberingPreview, planUsage, stepState, stepWarnings, validateStep,
   completeCompanyHref, draftHref, firstPayrollMonthLocked, isPlanChange, planCounts, planIsNoChange, readinessProgress, rowChanged, stepCopy, wizardMode,
   legacyWarnings, reasonFields, setupCodeCopy, setupLandingCompanyLink,
+  gradeWarnings, sortedGradeIndexes, suggestedMidpoint,
   CHANGED_ELSEWHERE, chooseWeekend, countryDisplayName, currentValueLabel, editRow, resolveChangedElsewhere, withOneHeadOffice,
 } from '../src/lib/companySetupWizard';
 
@@ -84,27 +85,47 @@ test('no locations is a warning, not a blocker', () => {
   expect(stepWarnings(3, { body: b, context })).toEqual([]);
 });
 
-test('organisation rows: reused catalog codes need no names, new rows do, grades must rise', () => {
+test('organisation rows: every row is this company’s own and needs a code and a name; references must be in the lists; grades must rise', () => {
   const b = saudiBody();
-  b.departments = [{ code: 'HR', nameEn: '' }, { code: 'OPS', nameEn: '' }, { code: 'FIN', nameEn: 'Finance', costCentreCode: 'NOPE' }];
-  b.grades = [{ code: 'G1', nameEn: '', level: 0, minSalary: 0, midSalary: 0, maxSalary: 0 }, { code: 'G9', nameEn: 'Senior', level: 1, minSalary: 9000, midSalary: 8000, maxSalary: 12000 }];
+  b.departments = [{ code: 'HR', nameEn: '' }, { code: 'OPS', nameEn: 'Operations', parentCode: 'OPS' }, { code: 'FIN', nameEn: 'Finance', costCentreCode: 'NOPE' }];
+  b.grades = [{ code: 'G1', nameEn: 'Grade 1', level: 0, minSalary: 0, midSalary: 0, maxSalary: 0 }, { code: 'G9', nameEn: 'Senior', level: 1, minSalary: 9000, midSalary: 8000, maxSalary: 12000 }];
+  b.designations = [{ code: 'ACC', titleEn: 'Accountant', gradeCode: 'G7' }];
   expect(fields(validateStep(4, { body: b, context }))).toEqual([
-    'departments.1.nameEn', 'departments.2.costCentreCode', 'grades.1.maxSalary',
+    'departments.0.nameEn', 'departments.1.parentCode', 'departments.2.costCentreCode', 'grades.0.level', 'grades.1.maxSalary', 'designations.0.gradeCode',
   ]);
 });
 
-test('a grade currency different from the company currency warns on step 4', () => {
+test('a wholly blank new row asks to be filled in or removed; an existing row is never "blank"', () => {
   const b = saudiBody();
-  b.company.currency = 'AED';
-  b.grades = [{ code: 'G2', nameEn: 'Grade 2', level: 2, minSalary: 1, midSalary: 2, maxSalary: 3 }];
-  expect(stepWarnings(4, { body: b, context }).map(w => w.params)).toEqual([{ gradeCurrency: 'SAR', currency: 'AED' }]);
+  b.costCentres = [{ code: '', nameEn: '', nameAr: '' }, { existingId: 'cc-1', code: 'ADM', nameEn: '' }];
+  const errors = validateStep(4, { body: b, context });
+  expect(errors.map(e => [e.field, e.message])).toEqual([
+    ['costCentres.0.code', 'Fill in this row or remove it.'],
+    ['costCentres.1.nameEn', 'Enter the name in English.'],
+  ]);
+});
+
+test('grade bands: advice in amber for a shared level, an inverted minimum and an empty band; "use the middle" only when the midpoint is empty', () => {
+  const grades = [
+    { code: 'G1', nameEn: 'Junior', level: 1, minSalary: 5000, midSalary: 6000, maxSalary: 7000 },
+    { code: 'G2', nameEn: 'Senior', level: 2, minSalary: 4000, midSalary: 0, maxSalary: 9000 },
+    { code: 'G3', nameEn: 'Lead', level: 2, minSalary: 0, midSalary: 0, maxSalary: 0 },
+  ];
+  expect(gradeWarnings(grades).map(w => w.field).sort()).toEqual(['grades.1.minSalary', 'grades.2.level', 'grades.2.minSalary']);
+  expect(suggestedMidpoint(grades[1])).toBe(6500);
+  expect(suggestedMidpoint(grades[0])).toBeNull();
+  expect(sortedGradeIndexes([{ code: 'B', level: 3 }, { code: 'A', level: 1 }, { code: 'C', level: 1 }])).toEqual([1, 2, 0]);
 });
 
 test('company super admin: invite needs a name and an on-domain email; existing needs a user; hidden step never blocks', () => {
   const b = saudiBody();
   b.company.emailDomain = 'acme.sa';
-  b.companyAdmin = { mode: 'invite', fullNameEn: 'Sara', email: 'sara@gmail.com' };
+  b.companyAdmin = { mode: 'invite', fullNameEn: 'Sara', email: 'sara@other.sa' };
   expect(validateStep(6, { body: b, context }).map(e => e.params)).toEqual([{ domain: 'acme.sa' }]);
+  b.company.emailDomain = '';
+  b.companyAdmin.email = 'sara@gmail.com';
+  expect(validateStep(6, { body: b, context }).map(e => e.params)).toEqual([{ domain: 'gmail.com' }]);
+  b.company.emailDomain = 'acme.sa';
   b.companyAdmin.email = 'sara@acme.sa';
   expect(validateStep(6, { body: b, context })).toEqual([]);
   b.companyAdmin = { mode: 'existing' };
@@ -118,9 +139,9 @@ test('step state and the first blocking step drive the rail', () => {
   const b = saudiBody();
   const visited = new Set([1, 2, 3] as const);
   expect(stepState(2, { body: b, context, visited })).toBe('done');
-  expect(stepState(3, { body: b, context, visited })).toBe('warning'); // no locations
+  expect(stepState(3, { body: b, context, visited })).toBe('review'); // no locations: advice, not a blocker
   expect(stepState(4, { body: b, context, visited })).toBe('notStarted');
-  expect(stepState(2, { body: b, context, visited, serverProblems: [{ step: 2, field: 'company.registrationNumber', code: 'cr_taken', message: 'Taken' }] })).toBe('warning');
+  expect(stepState(2, { body: b, context, visited, serverProblems: [{ step: 2, field: 'company.registrationNumber', code: 'cr_taken', message: 'Taken' }] })).toBe('blocked');
   b.company.registrationNumber = '';
   expect(firstBlockingStep([2, 3, 4, 5, 6, 7], { body: b, context })).toBe(2);
 });
@@ -148,18 +169,20 @@ test('the plan groups by step, and any conflict or problem blocks Create', () =>
   expect(canCommit(null)).toBe(false);
 });
 
-test('the structure tree tags shared rows reused and shows the catalog name', () => {
+test('the structure tree puts every Organisation section under the company, with no shared catalog', () => {
   const b = saudiBody();
   b.branches[0].locations = [{ code: 'GATE', nameEn: 'Main gate' }];
   b.costCentres = [{ code: 'CC1', nameEn: 'Admin' }];
-  b.departments = [{ code: 'hr', nameEn: 'typed name' }, { code: 'OPS', nameEn: 'Operations' }];
+  b.departments = [{ code: 'HR', nameEn: 'Human Resources' }, { code: 'OPS', nameEn: 'Operations' }];
+  b.grades = [{ code: 'G2', nameEn: 'Two', level: 2, minSalary: 0, midSalary: 0, maxSalary: 0 }, { code: 'G1', nameEn: 'One', level: 1, minSalary: 0, midSalary: 0, maxSalary: 0 }];
   const tree = buildTree(b, context);
-  const [company, catalog] = tree.children;
+  expect(tree.children).toHaveLength(1);
+  const [company] = tree.children;
   expect(company.label).toBe('Riyadh Trading');
+  expect(company.children.map(n => [n.id, n.part ?? null])).toEqual([['branches', null], ['costCentres', 'costCentres'], ['departments', 'departments'], ['grades', 'grades'], ['designations', 'designations']]);
   expect(company.children[0].children[0].children.map(n => n.label)).toEqual(['Main gate']);
-  expect(company.children[1].children.map(n => n.code)).toEqual(['CC1']);
-  const departments = catalog.children[0].children;
-  expect(departments.map(n => [n.label, n.tag])).toEqual([['Human Resources', 'reused'], ['Operations', 'new']]);
+  expect(company.children[2].children.map(n => [n.label, n.tag])).toEqual([['Human Resources', 'new'], ['Operations', 'new']]);
+  expect(company.children[3].children.map(n => n.code)).toEqual(['G1', 'G2']); // by level
 });
 
 test('plan usage and numbering preview', () => {
@@ -329,8 +352,8 @@ test('the review opens only what changes in existing mode; unchanged and reused 
   expect(['create', 'update', 'conflict'].every(a => isPlanChange(a as never, 'existing'))).toBe(true);
   expect(isPlanChange('unchanged', 'existing')).toBe(false);
   expect(isPlanChange('reuse', 'existing')).toBe(false);
-  // Create mode keeps showing reused catalog rows as part of what Create does.
-  expect(isPlanChange('reuse', 'create')).toBe(true);
+  // Addendum B: there is no shared catalog, so reuse is never a change in either mode.
+  expect(isPlanChange('reuse', 'create')).toBe(false);
   const plan: CompanySetupPlan = { ok: true, problems: [], warnings: [], items: [
     { area: 'company', code: '1010123456', label: 'Evostel', action: 'unchanged' },
     { area: 'branch', code: 'HQ', label: 'Head Office', action: 'update', changedFields: ['nameEn'] },
@@ -424,4 +447,96 @@ test('a Guided setup deep link is a Setup arrival that names a company on the gu
   // A reload or history restore brings back the scope Setup wrote into the address, not a followed link.
   expect(link('tab=aiSetup&path=guided&companyId=co-1', 'reload')).toBeNull();
   expect(link('tab=aiSetup&path=guided&companyId=co-1', 'back_forward')).toBeNull();
+});
+
+// ── Addendum B4: parts, and the deterministic helpers that drive the reader ──
+import {
+  appendCopiedRows, firstBlockingPosition, latinDigits, namesLookAlike, partOfField, positionOfField, resumePart, sectionChanges,
+  stepStateFromParts, suggestCode, suggestCostCentre, withPart, wizardPositions,
+} from '../src/lib/companySetupWizard';
+
+test('steps 4 and 5 expand into their parts, in dependency order; field paths map to their part', () => {
+  const keys = wizardPositions([1, 2, 3, 4, 5, 6, 7]).map(p => (p.part ? `${p.step}:${p.part}` : String(p.step)));
+  expect(keys).toEqual(['1', '2', '3', '4:costCentres', '4:departments', '4:grades', '4:designations', '5:workRules', '5:leave', '5:endOfService', '5:moreSettings', '6', '7']);
+  expect(partOfField('Departments[2].CostCentreCode')).toBe('departments');
+  expect(positionOfField('grades.0.maxSalary')).toEqual({ step: 4, part: 'grades' });
+  expect(positionOfField('rules.employeeNumbering.nextSequence')).toEqual({ step: 5, part: 'workRules' });
+  expect(positionOfField('branches.0.code')).toEqual({ step: 3 });
+});
+
+test('the first blocked part stops the rail; resume lands on it, else on the part the address names', () => {
+  const b = saudiBody();
+  b.departments = [{ code: 'OPS', nameEn: '' }];
+  const positions = wizardPositions([2, 3, 4, 5, 6, 7]);
+  expect(firstBlockingPosition(positions, { body: b, context })).toEqual({ step: 4, part: 'departments' });
+  expect(resumePart(4, 'designations', { body: b, context })).toBe('departments');
+  b.departments[0].nameEn = 'Operations';
+  expect(resumePart(4, 'designations', { body: b, context })).toBe('designations');
+  expect(resumePart(4, 'nonsense', { body: b, context })).toBe('costCentres');
+  expect(resumePart(2, 'grades', { body: b, context })).toBeUndefined();
+});
+
+test('the address keeps the draft and follows the part', () => {
+  expect(withPart('/setup/new-company?draft=d1', 'grades')).toBe('/setup/new-company?draft=d1&part=grades');
+  expect(withPart('/setup/new-company?draft=d1&part=grades', undefined)).toBe('/setup/new-company?draft=d1');
+});
+
+test('a step with parts is blocked when any part is, in progress until every part is seen', () => {
+  expect(stepStateFromParts(['notStarted', 'notStarted'])).toBe('notStarted');
+  expect(stepStateFromParts(['done', 'notStarted'])).toBe('inProgress');
+  expect(stepStateFromParts(['done', 'blocked'])).toBe('blocked');
+  expect(stepStateFromParts(['skipped', 'review', 'done'])).toBe('review');
+  expect(stepStateFromParts(['skipped', 'done'])).toBe('done');
+});
+
+test('suggested codes come from the English name, never clash, and say nothing when the name gives nothing', () => {
+  expect(suggestCode('Human Resources', [])).toBe('HR');
+  expect(suggestCode('Finance', [])).toBe('FIN');
+  expect(suggestCode('Grade 3', [])).toBe('G3');
+  expect(suggestCode('Human Resources', ['HR'])).toBe('HR2');
+  expect(suggestCode('Finance Department', [], 'CC_')).toBe('CC_FIN');
+  expect(suggestCode('', [])).toBe('');
+  expect(suggestCode('الموارد البشرية', [])).toBe('');
+});
+
+test('look-alike names: HR ↔ Human Resources, filler words ignored, different teams are different', () => {
+  expect(namesLookAlike('HR', 'Human Resources')).toBe(true);
+  expect(namesLookAlike('Finance Department', 'finance')).toBe(true);
+  expect(namesLookAlike('Finance', 'Facilities')).toBe(false);
+  expect(namesLookAlike('', 'Finance')).toBe(false);
+});
+
+test('a department is offered the cost centre whose name starts with its own, for the reader to confirm', () => {
+  const centres = [{ code: 'CC_HR', nameEn: 'Human Resources Cost Center' }, { code: 'CC_FIN', nameEn: 'Finance Cost Centre' }];
+  expect(suggestCostCentre('Finance', centres)).toBe('CC_FIN');
+  expect(suggestCostCentre('Human Resources', centres)).toBe('CC_HR');
+  expect(suggestCostCentre('Sales', centres)).toBeUndefined();
+});
+
+test('copy from a sister company appends by value, skipping codes already here', () => {
+  const current: { code: string; nameEn: string; existingId?: string | null; baseline?: Record<string, string | null> | null }[] = [{ code: 'HR', nameEn: 'Human Resources', existingId: 'd1' }];
+  const copied: typeof current = [{ code: 'hr', nameEn: 'HR (sister)' }, { code: 'FIN', nameEn: 'Finance', existingId: 'sister-row', baseline: { nameEn: 'Finance' } }];
+  const { rows, added, skipped } = appendCopiedRows(current, copied);
+  expect([added, skipped]).toEqual([1, 1]);
+  expect(rows).toEqual([current[0], { code: 'FIN', nameEn: 'Finance' }]);
+});
+
+test('a section has changes when it adds a row or edits one the company has', () => {
+  const baseline = saudiBody();
+  baseline.costCentres = [{ existingId: 'c1', code: 'ADM', nameEn: 'Administration' }];
+  const body = structuredClone(baseline);
+  expect(sectionChanges(body, baseline, 'costCentres')).toEqual({ added: 0, changed: 0 });
+  body.costCentres = [{ ...body.costCentres[0], nameEn: 'Admin' }, { code: 'OPS', nameEn: 'Operations' }];
+  expect(sectionChanges(body, baseline, 'costCentres')).toEqual({ added: 1, changed: 1 });
+});
+
+test('Arabic-Indic and Persian digits are checked as the digits they are; a Saudi VAT number is 15 digits starting and ending with 3', () => {
+  expect(latinDigits('١٠١٠١٢٣٤٥٦')).toBe('1010123456');
+  expect(latinDigits('۷-۱۲۳')).toBe('7-123');
+  const b = saudiBody();
+  b.company.registrationNumber = '١٠١٠١٢٣٤٥٦';
+  b.company.taxNumber = '300000000000003';
+  expect(validateStep(2, { body: b, context })).toEqual([]);
+  b.company.taxNumber = '123';
+  expect(fields(validateStep(2, { body: b, context }))).toEqual(['company.taxNumber']);
 });

@@ -85,7 +85,11 @@ export function useDraftAutosave({ draftId, body, step, delayMs = 1200 }: {
     timer.current = setTimeout(() => { timer.current = null; void save(); }, delayMs);
   }, [body, step, draftId, delayMs, save]);
 
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  // Leaving the wizard inside the app (a link, the sidebar) unmounts it: a change still waiting for its debounce is
+  // sent now, never dropped. A full page unload is the beforeunload prompt below.
+  useEffect(() => () => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; void save(); }
+  }, [save]);
 
   // Leaving with an unsaved change: the browser asks first. Saved work never prompts.
   useEffect(() => {

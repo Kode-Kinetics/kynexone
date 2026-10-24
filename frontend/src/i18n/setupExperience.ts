@@ -1,4 +1,13 @@
 const ar: Record<string, string> = {
+  // Addendum B (2026-10-23): the organisation tabs' Company column, filter, notice and field.
+  'Choose the company this belongs to.': 'اختر الشركة التي يتبع لها هذا السجل.',
+  'Unassigned — choose the company': 'غير مُسنَد — اختر الشركة',
+  '{count} rows have no company yet. Open each one and choose the company it belongs to.': 'هناك {count} من السجلات بلا شركة حتى الآن. افتح كل سجل واختر الشركة التي يتبع لها.',
+  'Show unassigned rows': 'عرض السجلات غير المُسنَدة',
+  'Unassigned': 'غير مُسنَد',
+  "The company can't be changed after it is set.": 'لا يمكن تغيير الشركة بعد تحديدها.',
+  'Choose the company': 'اختر الشركة',
+  'Company currency': 'عملة الشركة',
   'Showing {shown} of {total} findings.': 'عرض {shown} من أصل {total} ملاحظة.',
   'Download all findings': 'تنزيل جميع الملاحظات',
   'Organization': 'المنظمة',

@@ -59,7 +59,7 @@ public static class OfferPlacement
                 .Where(d => departmentId != null
                     ? d.Id == departmentId
                     : d.NameEn.ToLower() == term.ToLower() || d.Code.ToUpper() == term.ToUpper())
-                .Select(d => new { d.Id, d.NameEn, d.Code, d.BranchId })
+                .Select(d => new { d.Id, d.NameEn, d.Code, d.BranchId, d.CompanyId })
                 .ToListAsync(ct);
             var branchIds = candidates.Where(c => c.BranchId != null).Select(c => c.BranchId!.Value).Distinct().ToList();
             var entityByBranch = branchIds.Count == 0
@@ -77,10 +77,12 @@ public static class OfferPlacement
                     : Refused("department",
                         $"'{term}' is not one of your organisation's departments. Pick the department from the list, or add it under Setup first.");
 
+            // Addendum B: a department names its own company; its branch's company is the fallback for an
+            // unassigned legacy row.
             var inEntity = companyId is { } offering
-                ? candidates.Where(c => EntityOf(c.BranchId) == offering).ToList()
+                ? candidates.Where(c => (c.CompanyId ?? EntityOf(c.BranchId)) == offering).ToList()
                 : candidates;
-            var entityNeutral = candidates.Where(c => EntityOf(c.BranchId) is null).ToList();
+            var entityNeutral = candidates.Where(c => (c.CompanyId ?? EntityOf(c.BranchId)) is null).ToList();
             var chosen = inEntity.FirstOrDefault() ?? entityNeutral.FirstOrDefault();
             if (chosen is null)
                 return new Result(string.Empty, string.Empty, "department",
@@ -109,7 +111,7 @@ public static class OfferPlacement
         {
             try
             {
-                designationTitle = (await EmployeeOrgFieldResolver.ResolveDesignationAsync(db, tenantId, designation, ct)).TitleEn;
+                designationTitle = (await EmployeeOrgFieldResolver.ResolveDesignationAsync(db, tenantId, designation, ct, companyId)).TitleEn;
             }
             catch (InvalidOperationException)
             {

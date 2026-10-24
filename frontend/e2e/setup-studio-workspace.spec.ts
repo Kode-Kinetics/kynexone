@@ -435,8 +435,9 @@ for (const failCurrent of [false, true]) {
       const path = new URL(route.request().url()).pathname;
       const name = old ? 'STALE scope value' : 'Current scope value';
       const item = path.endsWith('companies') ? { id: 'fixture-company', legalNameEn: name, countryCode: 'SAU', isActive: true }
-        : path.endsWith('grades') ? { id: 'grade', code: 'G1', name, level: 1, isActive: true }
-        : { id: 'cost', code: 'CC1', name, isActive: true };
+        // Departments, designations and grades belong to a company: the fixture's rows say whose they are.
+        : path.endsWith('grades') ? { id: 'grade', companyId: 'fixture-company', code: 'G1', name, level: 1, isActive: true }
+        : { id: 'cost', companyId: 'fixture-company', code: 'CC1', name, isActive: true };
       await route.fulfill(failCurrent && !old ? { status: 503, json: { message: 'Current scope unavailable' } } : { json: { items: [item], total: 1 } });
     };
     for (const route of currentScope) await fulfill(route, false);

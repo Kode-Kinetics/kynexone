@@ -84,7 +84,10 @@ public class CostCentersController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId ?? CallerSingleCompany(), ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunImportAsync(tenantId.Value, companyId, req.Csv, commit: false, ct);
     }
 
     [HttpPost("import")]
@@ -93,22 +96,36 @@ public class CostCentersController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId ?? CallerSingleCompany(), ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunImportAsync(tenantId.Value, companyId, req.Csv, commit: true, ct);
+    }
+
+    /// <summary>A caller narrowed to exactly one company (company-scoped, or the switcher) imports into it.</summary>
+    private Guid? CallerSingleCompany()
+    {
+        var scope = this.GetEntityScope();
+        return !scope.IsGroupLevel && scope.AccessibleCompanyIds.Count == 1 ? scope.AccessibleCompanyIds[0] : null;
     }
 
     /// <summary>
     /// Preview and commit walk the SAME loop; <paramref name="commit"/> decides only whether the
     /// service is called. Every validation and refusal above it is shared.
     /// </summary>
-    private async Task<IActionResult> RunImportAsync(Guid tenantId, string csv, bool commit, CancellationToken ct)
+    private async Task<IActionResult> RunImportAsync(Guid tenantId, Guid companyId, string csv, bool commit, CancellationToken ct)
     {
-        var costCenters = await _db.CostCenters.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted).ToListAsync(ct);
+        // Per company: the file is matched against the target company's cost centres, plus legacy rows no company
+        // owns yet whose code the company does not already use (an update assigns them the company).
+        var costCenters = OrgCodes.WithinCompany(await _db.CostCenters.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && (c.CompanyId == companyId || c.CompanyId == null) && !c.IsDeleted).ToListAsync(ct),
+            c => c.CompanyId, c => c.Code);
         if (!OrgCodes.TryBuildLookup(costCenters, c => c.Code, out var existingByCode, out var codeClash))
             return Conflict(OrgCodeCollision.Payload("cost centre", "Code", codeClash));
 
-        var departments = await _db.Departments.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
+        var departments = OrgCodes.WithinCompany(await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && (d.CompanyId == companyId || d.CompanyId == null) && !d.IsDeleted).ToListAsync(ct),
+            d => d.CompanyId, d => d.Code);
         if (!OrgCodes.TryBuildLookup(departments, d => d.Code, out var deptByCode, out var deptClash))
             return Conflict(OrgCodeCollision.Payload("department", "Code", deptClash));
 
@@ -146,7 +163,7 @@ public class CostCentersController : ControllerBase
                 var request = new CostCenterRequest(
                     // Not in the template. Carried over so an import cannot orphan a cost centre
                     // that the form had assigned to a company.
-                    CompanyId: existing?.CompanyId,
+                    CompanyId: existing?.CompanyId ?? companyId,
                     Code: code,
                     Name: name,
                     IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
@@ -185,4 +202,6 @@ public class CostCentersController : ControllerBase
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 }
 
-public record CostCenterImportRequest(string Csv);
+/// <summary>CompanyId: the company the file's cost centres belong to (per company since 2026-10-23). Optional when the
+/// caller's switcher names one company or the tenant has only one.</summary>
+public record CostCenterImportRequest(string Csv, Guid? CompanyId = null);

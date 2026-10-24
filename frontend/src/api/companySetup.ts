@@ -20,7 +20,9 @@ export interface CompanySetupContext {
   companiesAllowed?: number | null;
   isGroupScope: boolean;
   sisterCompanies: { id: string; legalNameEn: string; countryCode: string }[];
-  sharedCatalog: { departments: CodeName[]; designations: CodeName[]; grades: GradeRef[] };
+  /** Removed by Addendum B (departments, designations and grades are per company). Ignored when present. */
+  sharedCatalog?: { departments: CodeName[]; designations: CodeName[]; grades: GradeRef[] } | null;
+  /** Removed by Addendum B: grade bands are in each company's own currency. */
   gradesCurrency?: string | null;
   /** Whether this caller may appoint a company super admin. Absent on older servers: fall back to the role ceiling. */
   canGrantCompanyAdmin?: boolean | null;
@@ -98,9 +100,9 @@ export interface CompanySetupBranch extends ExistingRow, WithBaseline {
 }
 
 export interface CompanySetupCostCentre extends ExistingRow, WithBaseline { code: string; nameEn: string; nameAr?: string }
-export interface CompanySetupDepartment extends ExistingRow { code: string; nameEn: string; nameAr?: string; parentCode?: string; branchCode?: string; costCentreCode?: string }
-export interface CompanySetupDesignation extends ExistingRow { code: string; titleEn: string; titleAr?: string; departmentCode?: string; gradeCode?: string }
-export interface CompanySetupGrade extends ExistingRow { code: string; nameEn: string; nameAr?: string; level: number; minSalary: number; midSalary: number; maxSalary: number }
+export interface CompanySetupDepartment extends ExistingRow, WithBaseline { code: string; nameEn: string; nameAr?: string; parentCode?: string; branchCode?: string; costCentreCode?: string }
+export interface CompanySetupDesignation extends ExistingRow, WithBaseline { code: string; titleEn: string; titleAr?: string; departmentCode?: string; gradeCode?: string }
+export interface CompanySetupGrade extends ExistingRow, WithBaseline { code: string; nameEn: string; nameAr?: string; level: number; minSalary: number; midSalary: number; maxSalary: number }
 
 export interface EmployeeNumbering extends WithBaseline {
   prefix: string; useCountryPrefix: boolean; useBranchPrefix: boolean; useDepartmentPrefix: boolean;
@@ -167,6 +169,8 @@ export type PlanAction = 'create' | 'update' | 'unchanged' | 'reuse' | 'conflict
 
 export interface PlanItem {
   area: PlanArea; code: string; label: string; labelAr?: string | null; action: PlanAction; reason?: string | null;
+  /** The reason in Arabic; every reason the planner writes carries one. */
+  reasonAr?: string | null;
   /** Proposed, NOT in the backend contract yet: on `update`, the changed fields as lower-camel keys. Today the server
    *  lists them in `reason` ("Changes: name (English), city."), which the screen translates token by token. */
   changedFields?: string[] | null;
@@ -207,6 +211,29 @@ export interface CompanySetupResult {
   updated?: Partial<Record<PlanArea, number>> | null;
 }
 
+/** Addendum B: the Organisation sections, in dependency order (each references only earlier ones). */
+export type OrgSection = 'costCentres' | 'departments' | 'grades' | 'designations';
+export const ORG_SECTIONS: readonly OrgSection[] = ['costCentres', 'departments', 'grades', 'designations'];
+
+export interface SectionApplyResult {
+  draft: CompanySetupDraft;
+  section: OrgSection;
+  created: number;
+  updated: number;
+  unchanged: number;
+  replayed: boolean;
+}
+
+/** Rows of one section of a sister company, shaped as new draft rows; links are by code within that section set. */
+export interface CopyRows {
+  section: OrgSection;
+  fromCompanyId: string;
+  costCentres?: CompanySetupCostCentre[];
+  departments?: CompanySetupDepartment[];
+  grades?: CompanySetupGrade[];
+  designations?: CompanySetupDesignation[];
+}
+
 const BASE = '/api/company-setup';
 // The wizard works on a company the switcher cannot name yet, and the server refuses a switcher
 // header here (company_switcher_selected), so none of these calls carry it.
@@ -216,7 +243,7 @@ export const companySetupApi = {
   // A reply that is not the contract's shape (an older server, a proxy page) is "unavailable", never a crash.
   context: () => client.get<CompanySetupContext>(`${BASE}/context`, WS).then(r => {
     const d = r.data as Partial<CompanySetupContext> | null;
-    if (!d || typeof d.canCreate !== 'boolean' || !Array.isArray(d.sisterCompanies) || !d.sharedCatalog) throw new Error('company setup context unavailable');
+    if (!d || typeof d.canCreate !== 'boolean' || !Array.isArray(d.sisterCompanies)) throw new Error('company setup context unavailable');
     return d as CompanySetupContext;
   }),
   defaults: (country: string, copyFrom?: string) =>
@@ -235,6 +262,17 @@ export const companySetupApi = {
   /** The draft id is the idempotency key: a retried commit returns the first result (`replayed: true`). */
   commit: (draftId: string, version: number) =>
     client.post<CompanySetupResult>(`${BASE}`, { draftId, version }, { ...WS, headers: { 'Idempotency-Key': draftId } }).then(r => r.data),
+  /**
+   * Addendum B2: write one Organisation section of an existing-company draft to the company now (Save & Next).
+   * Under the setup lock; `version` is the draft version just saved. Returns the rebased draft (saved rows carry
+   * `existingId` and `baseline`, version + 1). A retry of the same version replays (`replayed: true`); 422/409 carry
+   * the usual error body with `plan.problems` limited to this section.
+   */
+  applySection: (draftId: string, section: OrgSection, version: number) =>
+    client.post<SectionApplyResult>(`${BASE}/drafts/${draftId}/sections/${section}`, { version }, WS).then(r => r.data),
+  /** Addendum B3: one section's rows of a sister company, as NEW draft rows (no existingId), to copy by value. */
+  copyRows: (fromCompanyId: string, section: OrgSection) =>
+    client.get<CopyRows>(`${BASE}/copy-rows`, { ...WS, params: { fromCompanyId, section } }).then(r => r.data),
   readiness: (companyId: string) => client.get<ReadinessItem[]>(`${BASE}/readiness/${companyId}`, WS).then(r => r.data),
 };
 

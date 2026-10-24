@@ -281,4 +281,148 @@ public class CompanySetupUnitTests
         System.Text.Json.JsonSerializer.Deserialize<Zayra.Api.Application.CompanySetup.CompanySetupBranch>(json, CompanySetupService.BodyJson)!
             .Baseline.Should().BeEquivalentTo(baseline);
     }
+
+    // ── Addendum B: per-company organisation rows (baselines, wire shapes) ──────────────────────────────
+
+    [Fact]
+    public void Department_designation_and_grade_baselines_project_the_row_and_the_draft_the_same_way()
+    {
+        var branchId = Guid.NewGuid(); var ccId = Guid.NewGuid(); var parentId = Guid.NewGuid(); var deptId = Guid.NewGuid(); var gradeId = Guid.NewGuid();
+        var codes = new Dictionary<Guid, string> { [parentId] = "ADMIN", [deptId] = "OPS" };
+        var branches = new Dictionary<Guid, string> { [branchId] = "HQ" };
+        var ccs = new Dictionary<Guid, string> { [ccId] = "CC_OPS" };
+        var grades = new Dictionary<Guid, string> { [gradeId] = "G1" };
+        var dept = new Zayra.Api.Models.Department { Id = deptId, Code = "OPS", NameEn = " Operations ", NameAr = "", ParentDepartmentId = parentId, BranchId = branchId, CostCenterId = ccId };
+        CompanySetupBaseline.Department(dept, codes, branches, ccs).Should().BeEquivalentTo(
+            CompanySetupBaseline.Department(new Zayra.Api.Application.CompanySetup.CompanySetupDepartment("ops", "Operations", null, "admin", "hq", "cc_ops")));
+        var desig = new Zayra.Api.Models.Designation { Code = "OFF", TitleEn = "Officer", TitleAr = "", DepartmentId = deptId, GradeId = gradeId };
+        CompanySetupBaseline.Designation(desig, codes, grades).Should().BeEquivalentTo(
+            CompanySetupBaseline.Designation(new Zayra.Api.Application.CompanySetup.CompanySetupDesignation("OFF", "Officer", null, "OPS", "G1")));
+        var grade = new Zayra.Api.Models.Grade { Code = "G1", Name = "Grade 1", Level = 1, MinSalary = 3000.00m, MidSalary = 4500m, MaxSalary = 6000.0m };
+        var fromRow = CompanySetupBaseline.Grade(grade);
+        fromRow.Should().BeEquivalentTo(CompanySetupBaseline.Grade(new Zayra.Api.Application.CompanySetup.CompanySetupGrade("G1", "Grade 1", null, 1, 3000m, 4500m, 6000m)));
+        fromRow["minSalary"].Should().Be("3000", "scale-free");
+        CompanySetupBaseline.CostCentre(new Zayra.Api.Models.CostCenter { Code = "CC", Name = "Ops", NameAr = "العمليات" })
+            .Should().ContainKey("nameAr").WhoseValue.Should().Be("العمليات");
+        CompanySetupBaseline.AbsentMeansEmpty("costCentre", "nameAr").Should().BeTrue("a cost-centre baseline saved before Addendum B has no Arabic name");
+        CompanySetupBaseline.AbsentMeansEmpty("department", "nameAr").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Section_apply_and_copy_rows_have_the_typescript_mirror_shapes()
+    {
+        var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var id = Guid.NewGuid();
+        var copy = new Zayra.Api.Application.CompanySetup.CopyRows("grades", id, Grades: [new("G1", "Grade 1", null, 1, 1, 2, 3)]);
+        var json = System.Text.Json.JsonSerializer.Serialize(copy, web);
+        json.Should().StartWith($"{{\"section\":\"grades\",\"fromCompanyId\":\"{id}\",\"grades\":[")
+            .And.NotContain("costCentres").And.NotContain("departments").And.NotContain("existingId").And.NotContain("baseline");
+        Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.Sections.All.Should().Equal("costCentres", "departments", "grades", "designations");
+        Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.Sections.IsValid("branches").Should().BeFalse();
+        var context = new Zayra.Api.Application.CompanySetup.CompanySetupContext(true, null, null, "", "", 0, null, true, [], null, null);
+        System.Text.Json.JsonSerializer.Serialize(context, web).Should().Contain("\"sharedCatalog\":null").And.Contain("\"gradesCurrency\":null");
+        System.Text.Json.JsonSerializer.Serialize(new Zayra.Api.Application.CompanySetup.CompanySetupSectionApplyRequest(4), web).Should().Be("{\"version\":4}");
+    }
+
+    // ── Data-entry audit: how registration numbers, VAT and coordinates are read ──────────────────────
+
+    [Theory]
+    [InlineData("١٠١٠٠٠٠٠٠١", "1010000001")]            // Arabic-Indic digits
+    [InlineData("۱۰۱۰۰۰۰۰۰۱", "1010000001")]            // Persian digits
+    [InlineData(" 1010 000-001 ", "1010000001")]         // spaces and dashes in a digits-only number
+    [InlineData("1010–000 001", "1010000001")] // en dash, no-break space
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    public void Cr_700_and_vat_numbers_are_read_as_ascii_digits_without_spaces_or_dashes(string? typed, string expected) =>
+        CompanySetupDataEntry.DigitsOnlyNumber(typed).Should().Be(expected);
+
+    [Theory]
+    [InlineData("٧-١٢٣٤٥٦٧", "7-1234567")]
+    [InlineData(" 7 – 1234567 ", "7-1234567")]  // a typed dash is the one hyphen the MOL format allows
+    [InlineData("۷۱۲۳۴۵۶۷", "71234567")]
+    public void The_mol_establishment_id_keeps_its_one_hyphen_and_loses_spaces(string typed, string expected)
+    {
+        CompanySetupDataEntry.EstablishmentId(typed).Should().Be(expected);
+        var issues = new List<SaudiBankExportIssueDto>();
+        KsaWageFileRules.ValidateEstablishmentId(CompanySetupDataEntry.EstablishmentId(typed), issues);
+        issues.Should().BeEmpty("the normalised value is a valid establishment id");
+    }
+
+    [Theory]
+    [InlineData("300000000000003", true)]
+    [InlineData("312345678901233", true)]
+    [InlineData("300000000000004", false)]   // must end with 3
+    [InlineData("200000000000003", false)]   // must start with 3
+    [InlineData("30000000000003", false)]    // 14 digits
+    [InlineData("3000000000000033", false)]  // 16 digits
+    public void A_saudi_vat_number_is_15_digits_starting_and_ending_with_3(string vat, bool valid) =>
+        CompanySetupDataEntry.IsSaudiVatNumber(vat).Should().Be(valid);
+
+    [Fact]
+    public void The_vat_country_mol_and_700_problems_carry_arabic_text()
+    {
+        CompanySetupDataEntry.VatInvalidMessageAr.Should().NotBeNullOrWhiteSpace();
+        CompanySetupDataEntry.CountryInvalidMessage.Should().Be("Choose the company's country from the list.");
+        CompanySetupDataEntry.CountryInvalidMessageAr.Should().NotBeNullOrWhiteSpace();
+        foreach (var code in new[]
+                 {
+                     KsaWageFileRules.Codes.EstablishmentMissing, KsaWageFileRules.Codes.EstablishmentInvalid, KsaWageFileRules.Codes.EstablishmentPlaceholder,
+                     KsaWageFileRules.Codes.NationalUnifiedNoMissing, KsaWageFileRules.Codes.NationalUnifiedNoInvalid,
+                 })
+            CompanySetupDataEntry.ArabicFor(code).Should().NotBeNullOrWhiteSpace(code);
+        CompanySetupDataEntry.ArabicFor("something_else").Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(0.0, 0.0, true)]
+    [InlineData(0.0, 39.2, false)]
+    [InlineData(21.5, 0.0, false)]
+    [InlineData(null, null, false)]
+    public void Coordinates_of_exactly_zero_zero_are_missing_not_a_geofence(double? lat, double? lng, bool missing)
+    {
+        decimal? la = lat is null ? null : (decimal)lat.Value, lo = lng is null ? null : (decimal)lng.Value;
+        CompanySetupDataEntry.IsZeroPoint(la, lo).Should().Be(missing);
+        var kept = CompanySetupDataEntry.Coordinates(la, lo);
+        if (missing) kept.Should().Be(((decimal?)null, (decimal?)null));
+        else kept.Should().Be((la, lo));
+    }
+
+    // ── Arabic reasons (PlanItem.ReasonAr) ────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("Changes: name (English), city.", "التغييرات: الاسم (بالإنجليزية)، المدينة.")]
+    [InlineData("Changes: from 2026-11-01.", "التغييرات: كانت 2026-11-01.")]
+    [InlineData("Changes: weekend, from Fri,Sat.", "التغييرات: العطلة الأسبوعية، كانت Fri,Sat.")]
+    [InlineData("Changes: parent department, branch, cost centre, title (Arabic), salary band, next number.", null)]
+    [InlineData(CompanySetupReasons.Kept, null)]
+    [InlineData("This company already has its 2026 holiday calendar; it is kept as it is.", null)]
+    [InlineData("Statutory default for SA, created for this company.", null)]
+    [InlineData("This company already has its SA default; it is kept as it is.", null)]
+    [InlineData("Overrides the workspace weekend (Fri,Sat) for this company only.", null)]
+    [InlineData("Already configured for this workspace.", null)]
+    [InlineData("No settings exist for this country yet; the country pack defaults are written once and never overwritten.", null)]
+    [InlineData("This company's own weekend, kept as it is.", null)]
+    [InlineData("Same as the workspace setting; no override is written.", null)]
+    [InlineData("The workspace working week applies.", null)]
+    [InlineData("Invited as this company's super admin (Admin, this company only).", null)]
+    [InlineData("Already a group super admin, so they manage this company already.", null)]
+    [InlineData("Already a super admin of this company.", null)]
+    [InlineData("Gets access to this company with their Admin role; their other access is unchanged.", null)]
+    public void Every_reason_the_planner_writes_has_arabic(string reason, string? exact)
+    {
+        var ar = CompanySetupReasons.Arabic(reason);
+        ar.Should().NotBeNullOrWhiteSpace(reason);
+        ar!.Should().MatchRegex("[؀-ۿ]");
+        if (exact is not null) ar.Should().Be(exact);
+    }
+
+    [Fact]
+    public void An_unknown_reason_has_no_invented_arabic_and_the_wire_carries_reason_ar()
+    {
+        CompanySetupReasons.Arabic("Changes: something new.").Should().BeNull("an unknown field word is never guessed");
+        CompanySetupReasons.Arabic(null).Should().BeNull();
+        var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var json = System.Text.Json.JsonSerializer.Serialize(new Zayra.Api.Application.CompanySetup.PlanItem("branch", "HQ", "HQ", "update", "Changes: city.") { ReasonAr = "التغييرات: المدينة." }, web);
+        System.Text.Json.JsonDocument.Parse(json).RootElement.GetProperty("reasonAr").GetString().Should().Be("التغييرات: المدينة.");
+    }
 }

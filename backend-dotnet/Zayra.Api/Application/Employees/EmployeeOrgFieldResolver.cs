@@ -21,36 +21,56 @@ public static class EmployeeOrgFieldResolver
     public sealed record ResolvedOrgRefs(Guid? DepartmentId, string? DepartmentName,
         Guid? DesignationId, string? DesignationTitle, Guid? BranchId, string? BranchName);
 
+    /// <param name="companyId">Addendum B: departments belong to one company. When the employee's company is
+    /// known the name resolves within it (an unassigned legacy row is the fallback); when it is not, a name that
+    /// matches departments of several companies is refused rather than guessed.</param>
     public static async Task<(Guid Id, string NameEn)> ResolveDepartmentAsync(
-        ZayraDbContext db, Guid tenantId, string name, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, string name, CancellationToken ct, Guid? companyId = null)
     {
         var term = name.Trim();
         // IgnoreQueryFilters is intentional: master-data name→ID resolution must not vary with the caller's company scope; explicit TenantId + !IsDeleted + IsActive filters are applied inline.
-        var match = await db.Departments.IgnoreQueryFilters().AsNoTracking()
+        var matches = await db.Departments.IgnoreQueryFilters().AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive
                      && (d.NameEn.ToLower() == term.ToLower() || d.Code.ToUpper() == term.ToUpper()))
-            .Select(d => new { d.Id, d.NameEn })
-            .FirstOrDefaultAsync(ct);
+            .Where(d => companyId == null || d.CompanyId == companyId || d.CompanyId == null)
+            .Select(d => new { d.Id, d.NameEn, d.CompanyId })
+            .ToListAsync(ct);
+        var match = PickWithinCompany(matches, m => m.CompanyId, m => m.Id, companyId, "Department", term);
         if (match is null)
             throw new InvalidOperationException(
                 $"Department '{term}' was not found in this tenant's organization master data. Create the department (or fix the name) before assigning employees to it.");
         return (match.Id, match.NameEn);
     }
 
+    /// <param name="companyId">See <see cref="ResolveDepartmentAsync"/>.</param>
     public static async Task<(Guid Id, string TitleEn)> ResolveDesignationAsync(
-        ZayraDbContext db, Guid tenantId, string title, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, string title, CancellationToken ct, Guid? companyId = null)
     {
         var term = title.Trim();
         // IgnoreQueryFilters is intentional: master-data name→ID resolution must not vary with the caller's company scope; explicit TenantId + !IsDeleted + IsActive filters are applied inline.
-        var match = await db.Designations.IgnoreQueryFilters().AsNoTracking()
+        var matches = await db.Designations.IgnoreQueryFilters().AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive
                      && (d.TitleEn.ToLower() == term.ToLower() || d.Code.ToUpper() == term.ToUpper()))
-            .Select(d => new { d.Id, d.TitleEn })
-            .FirstOrDefaultAsync(ct);
+            .Where(d => companyId == null || d.CompanyId == companyId || d.CompanyId == null)
+            .Select(d => new { d.Id, d.TitleEn, d.CompanyId })
+            .ToListAsync(ct);
+        var match = PickWithinCompany(matches, m => m.CompanyId, m => m.Id, companyId, "Designation", term);
         if (match is null)
             throw new InvalidOperationException(
                 $"Designation '{term}' was not found in this tenant's organization master data. Create the designation (or fix the title) before assigning employees to it.");
         return (match.Id, match.TitleEn);
+    }
+
+    /// <summary>The company's own row first, then an unassigned legacy row; lowest id breaks a tie so the pick is
+    /// stable. Without a company, matches in several companies are ambiguous and refused.</summary>
+    private static T? PickWithinCompany<T>(List<T> matches, Func<T, Guid?> company, Func<T, Guid> id, Guid? companyId, string label, string term)
+        where T : class
+    {
+        if (matches.Count == 0) return null;
+        if (companyId is null && matches.Select(company).Where(c => c is not null).Distinct().Count() > 1)
+            throw new InvalidOperationException(
+                $"{label} '{term}' exists in more than one company. Choose the employee's company first, or use the {label.ToLowerInvariant()} code.");
+        return matches.OrderBy(m => company(m) is null ? 1 : 0).ThenBy(id).First();
     }
 
     public static async Task<(Guid Id, string NameEn)> ResolveBranchAsync(
@@ -92,7 +112,7 @@ public static class EmployeeOrgFieldResolver
             }
             else
             {
-                var (id, nameEn) = await ResolveDepartmentAsync(db, tenantId, employee.Department, ct);
+                var (id, nameEn) = await ResolveDepartmentAsync(db, tenantId, employee.Department, ct, employee.CompanyId);
                 employee.DepartmentId = id;
                 employee.Department = nameEn;
 
@@ -121,7 +141,7 @@ public static class EmployeeOrgFieldResolver
             if (string.IsNullOrWhiteSpace(employee.Designation)) employee.DesignationId = null;
             else
             {
-                var (id, titleEn) = await ResolveDesignationAsync(db, tenantId, employee.Designation, ct);
+                var (id, titleEn) = await ResolveDesignationAsync(db, tenantId, employee.Designation, ct, employee.CompanyId);
                 employee.DesignationId = id;
                 employee.Designation = titleEn;
             }

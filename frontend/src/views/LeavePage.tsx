@@ -43,6 +43,7 @@ import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { describeApiError } from '../lib/apiError';
 import { useEmployeeReferenceLists } from '../hooks/useReferenceLists';
 import { referenceLabel, referenceOptions, sameReferenceValue, type ReferenceValue } from '../lib/referenceLists';
+import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
 const leaveTypesImportExport = {
@@ -538,7 +539,11 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string | boolean) => setForm(f => ({ ...f, [k]: v }));
 
-  useEffect(() => { leaveTypesApi.list().then(setLeaveTypes).catch(() => {}); }, []);
+  // Leave types are per company: offer the ones the chosen employee's company uses (the server refuses any other).
+  useEffect(() => {
+    const employeeId = Number(form.employeeId);
+    leaveTypesApi.list(employeeId > 0 ? { employeeId } : undefined).then(setLeaveTypes).catch(() => {});
+  }, [form.employeeId]);
 
   useEffect(() => {
     if (!form.employeeId || !form.leaveTypeId) { setBalance(null); return; }
@@ -996,21 +1001,30 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
 // ── Leave Types Tab ───────────────────────────────────────────────────────────
 
-function CreateLeaveTypeModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', category: 'Annual', isPaid: true, isHalfDayAllowed: true, isHourlyAllowed: false, requiresAttachment: false, requiresReason: false, maxConsecutiveDays: 0, colorCode: '#2F6BFF', sortOrder: 0 });
+function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCompany = false }: { onClose: () => void; onSaved: () => void; defaultCompanyId?: string; lockCompany?: boolean }) {
+  const { t } = useLocale();
+  const org = useOrgCompanies();
+  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', category: 'Annual', isPaid: true, isHalfDayAllowed: true, isHourlyAllowed: false, requiresAttachment: false, requiresReason: false, maxConsecutiveDays: 0, colorCode: '#2F6BFF', sortOrder: 0, companyId: defaultCompanyId });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
     if (!form.code || !form.nameEn) { setError('Code and English name are required.'); return; }
+    if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
-    try { await leaveTypesApi.create(form); onSaved(); } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
+    try { await leaveTypesApi.create({ ...form, companyId: form.companyId || undefined }); onSaved(); } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   return (
     <Modal title="New Leave Type" onClose={onClose}>
       <div className="space-y-4">
+        {(org.options.length > 1 || lockCompany) && (
+          <Field label={t('Company')}>
+            <CompanySelectField value={form.companyId} onChange={v => set('companyId', v)} options={org.options}
+              locked={lockCompany && !!form.companyId} lockedName={org.nameOf(form.companyId)} />
+          </Field>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Code *"><input className={inp} value={form.code} onChange={e => set('code', e.target.value)} placeholder="e.g. ANNUAL" /></Field>
           <Field label="Category">
@@ -1044,7 +1058,45 @@ function CreateLeaveTypeModal({ onClose, onSaved }: { onClose: () => void; onSav
   );
 }
 
-export function LeaveTypesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
+/**
+ * How a leave editor is shown. `embedded` is the company setup wizard (components/companySetup/rules): one narrow column,
+ * so lists stack, row actions stay visible (no hover-only controls) and "add" is a secondary button beside the wizard's Next.
+ */
+export type LeaveEditorChange = 'added' | 'updated' | 'removed';
+export interface LeaveEditorProps {
+  onDirtyChange?: (dirty: boolean) => void;
+  embedded?: boolean;
+  /** After each successful save, so a host can say so inline (the wizard's part header). */
+  onSaved?: (change: LeaveEditorChange) => void;
+}
+
+/** Embedded loading state: rows in their final shape, so nothing shifts when the list arrives. */
+function EmbeddedSkeleton() {
+  const { t } = useLocale();
+  return (
+    <div aria-busy="true" className="space-y-2">
+      <span className="sr-only">{t('Loading…')}</span>
+      {[0, 1, 2].map(i => <div key={i} aria-hidden="true" className="h-[68px] rounded-xl bg-slate-200/50 dark:bg-white/[0.05]" />)}
+    </div>
+  );
+}
+
+/**
+ * Leave types and policies belong to one company (2026-10-23). `companyId` scopes an editor to that company (the
+ * wizard): only its rows and the unassigned legacy ones are listed, and new rows belong to it. Without it, a Company
+ * filter (incl. "Unassigned — choose the company") starts at `initialCompanyFilter` (the Leave page's company, or
+ * `/leave?companyId=`).
+ */
+export interface LeaveCompanyScopeProps {
+  companyId?: string;
+  initialCompanyFilter?: string;
+}
+
+export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, companyId, initialCompanyFilter = '' }: LeaveEditorProps & LeaveCompanyScopeProps = {}) {
+  const { t: tr } = useLocale();
+  const org = useOrgCompanies();
+  const [companyFilter, setCompanyFilter] = useState(initialCompanyFilter);
+  useEffect(() => { setCompanyFilter(initialCompanyFilter); }, [initialCompanyFilter]);
   const [types, setTypes] = useState<LeaveType[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -1052,29 +1104,39 @@ export function LeaveTypesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boole
   const [loadError, setLoadError] = useState<unknown>(null);
   const load = () => {
     setLoading(true);
-    leaveTypesApi.list()
+    leaveTypesApi.list(companyId ? { companyId, includeUnassigned: true } : undefined)
       .then(rows => { setTypes(rows); setLoadError(null); })
       .catch(e => { setTypes([]); setLoadError(e); })
       .finally(() => setLoading(false));
   };
-  useEffect(load, []);
-  const del = async (id: string) => { if (!confirm('Deactivate this leave type?')) return; try { await leaveTypesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'The leave type could not be deactivated.'); } };
+  useEffect(load, [companyId]);
+  const unassignedCount = types.filter(x => !x.companyId).length;
+  const shown = companyId ? types : filterByCompany(types, companyFilter);
+  const newRowCompany = companyId ?? (companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId);
+  // An unassigned legacy type takes the company Setup names; it is fixed from then on.
+  const assign = async (id: string, company: string) => {
+    if (!company) return;
+    try { await leaveTypesApi.update(id, { companyId: company }); onSaved?.('updated'); load(); } catch (e) { notifyApiError(e, 'The leave type could not be updated.'); }
+  };
+  const del = async (id: string) => { if (!confirm('Deactivate this leave type?')) return; try { await leaveTypesApi.delete(id); onSaved?.('removed'); load(); } catch (e) { notifyApiError(e, 'The leave type could not be deactivated.'); } };
 
   return (
     <div className="space-y-4">
+      <UnassignedCompanyNotice count={companyFilter === UNASSIGNED_FILTER ? 0 : unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <ImportExportToolbar
+        {!companyId && <div className="me-auto"><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /></div>}
+        {!embedded && <ImportExportToolbar
           entityName="Leave Types"
           onExport={leaveTypesImportExport.export}
           onDownloadTemplate={leaveTypesImportExport.template}
           onImport={leaveTypesImportExport.import}
-        />
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Leave Type</button>
+        />}
+        <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Leave Type</button>
       </div>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? <LoadFailure what="Leave types" error={loadError} /> : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {types.map(t => (
-            <div key={t.id} className="surface p-4">
+      {loading ? (embedded ? <EmbeddedSkeleton /> : <p className="text-sm text-slate-400">Loading…</p>) : loadError != null ? <LoadFailure what="Leave types" error={loadError} /> : (
+        <div className={embedded ? 'grid gap-3' : 'grid gap-4 md:grid-cols-2 xl:grid-cols-3'}>
+          {shown.map(t => (
+            <div key={t.id} className="surface p-4" data-testid="leave-type-card">
               <div className="mb-3 flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <LeaveColorDot color={t.colorCode} />
@@ -1093,11 +1155,18 @@ export function LeaveTypesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boole
                 {t.requiresAttachment && <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Attachment Req.</span>}
               </div>
               <p className="mt-2 text-xs text-slate-400">Code: {t.code}{t.maxConsecutiveDays > 0 ? ` · Max ${t.maxConsecutiveDays}d consecutive` : ''}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-slate-500 dark:text-slate-400">{tr('Company')}:</span>
+                <CompanyCell name={org.nameOf(t.companyId)} />
+                {!t.companyId && org.options.length > 0 && (
+                  <div className="w-full"><CompanySelectField value="" onChange={v => assign(t.id, v)} options={org.options} locked={false} /></div>
+                )}
+              </div>
             </div>
           ))}
         </div>
       )}
-      {showCreate && <CreateLeaveTypeModal onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <CreateLeaveTypeModal defaultCompanyId={newRowCompany ?? ''} lockCompany={!!companyId} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); onSaved?.('added'); load(); }} />}
     </div>
   );
 }
@@ -1114,9 +1183,11 @@ const splitEmploymentTypes = (stored: string | null | undefined) =>
 const employmentTypesLabel = (values: readonly ReferenceValue[], stored: string, locale: string) =>
   splitEmploymentTypes(stored).map(s => referenceLabel(values, s, locale)).join(', ');
 
-function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSaved }: { leaveTypes: LeaveType[]; employmentTypeValues: readonly ReferenceValue[]; existing?: LeavePolicy; onClose: () => void; onSaved: () => void }) {
+function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSaved, defaultCompanyId = '', lockCompany = false }: { leaveTypes: LeaveType[]; employmentTypeValues: readonly ReferenceValue[]; existing?: LeavePolicy; onClose: () => void; onSaved: () => void; defaultCompanyId?: string; lockCompany?: boolean }) {
   const isEdit = !!existing;
+  const org = useOrgCompanies();
   const [form, setForm] = useState({
+    companyId: existing?.companyId ?? defaultCompanyId,
     name: existing?.name ?? '',
     leaveTypeId: existing?.leaveTypeId ?? '',
     countryCode: existing?.countryCode ?? 'UAE',
@@ -1176,12 +1247,13 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
   const save = async () => {
     if (!form.name || !form.leaveTypeId) { setError('Name and Leave Type are required.'); return; }
     if (form.encashmentAllowed && !(form.encashmentMaxDays > 0)) { setError(t('Enter the maximum days per encashment, or untick Encashment Allowed.')); return; }
+    if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
     try {
       if (isEdit) {
-        await leavePoliciesApi.update(existing!.id, form);
+        await leavePoliciesApi.update(existing!.id, { ...form, companyId: form.companyId || undefined });
       } else {
-        await leavePoliciesApi.create(form);
+        await leavePoliciesApi.create({ ...form, companyId: form.companyId || undefined });
       }
       onSaved();
     } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
@@ -1190,12 +1262,18 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
   return (
     <Modal title={isEdit ? 'Edit Leave Policy' : 'New Leave Policy'} onClose={onClose} wide>
       <div className="space-y-4">
+        {(org.options.length > 1 || !!existing?.companyId || lockCompany) && (
+          <Field label={t('Company')}>
+            <CompanySelectField value={form.companyId} onChange={v => setForm(f => ({ ...f, companyId: v, leaveTypeId: '' }))} options={org.options}
+              locked={!!existing?.companyId || (lockCompany && !!form.companyId)} lockedName={org.nameOf(form.companyId)} />
+          </Field>
+        )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Policy Name *"><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. UAE Annual Leave — Full-Time" /></Field>
           <Field label="Leave Type *" info="The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow." infoKey="leave.leave_type">
             <select className={sel} value={form.leaveTypeId} onChange={e => set('leaveTypeId', e.target.value)}>
               <option value="">Select…</option>
-              {leaveTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}
+              {leaveTypes.filter(lt => !form.companyId || !lt.companyId || lt.companyId === form.companyId).map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}
             </select>
           </Field>
         </div>
@@ -1328,7 +1406,10 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
   );
 }
 
-export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
+export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyId, initialCompanyFilter = '' }: LeaveEditorProps & LeaveCompanyScopeProps = {}) {
+  const org = useOrgCompanies();
+  const [companyFilter, setCompanyFilter] = useState(initialCompanyFilter);
+  useEffect(() => { setCompanyFilter(initialCompanyFilter); }, [initialCompanyFilter]);
   const [policies, setPolicies] = useState<LeavePolicy[]>([]);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1340,11 +1421,14 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
   const load = () => {
     setLoading(true);
     Promise.all([
-      leavePoliciesApi.list({ status: statusFilter || undefined }).then(setPolicies),
-      leaveTypesApi.list().then(setLeaveTypes),
+      leavePoliciesApi.list({ status: statusFilter || undefined, ...(companyId ? { companyId, includeUnassigned: true } : {}) }).then(setPolicies),
+      leaveTypesApi.list(companyId ? { companyId, includeUnassigned: true } : undefined).then(setLeaveTypes),
     ]).finally(() => setLoading(false));
   };
-  useEffect(load, [statusFilter]);
+  useEffect(load, [statusFilter, companyId]);
+  const unassignedCount = policies.filter(p => !p.companyId).length;
+  const shown = companyId ? policies : filterByCompany(policies, companyFilter);
+  const newRowCompany = companyId ?? (companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId);
 
   const typeName = (id: string) => leaveTypes.find(t => t.id === id)?.nameEn ?? id;
   const { locale } = useLocale();
@@ -1352,21 +1436,23 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
 
   const archive = async (id: string, name: string) => {
     if (!confirm(`Archive "${name}"? It will no longer be applied to new requests.`)) return;
-    try { await leavePoliciesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'Failed to archive policy.'); }
+    try { await leavePoliciesApi.delete(id); onSaved?.('removed'); load(); } catch (e) { notifyApiError(e, 'Failed to archive policy.'); }
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <UnassignedCompanyNotice count={companyFilter === UNASSIGNED_FILTER ? 0 : unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
+      <div className="flex flex-wrap items-center gap-3">
+        {!companyId && <CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
         <select className={`${sel} w-40`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="">All</option>
           {['Draft', 'Active', 'Inactive', 'Archived'].map(s => <option key={s}>{s}</option>)}
         </select>
-        <p className="flex-1 text-sm text-slate-400">{policies.length} polic{policies.length !== 1 ? 'ies' : 'y'}</p>
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Policy</button>
+        <p className="flex-1 text-sm text-slate-400">{shown.length} polic{shown.length !== 1 ? 'ies' : 'y'}</p>
+        <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Policy</button>
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : policies.length === 0 ? (
+      {loading ? (embedded ? <EmbeddedSkeleton /> : <p className="text-sm text-slate-400">Loading…</p>) : shown.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Settings className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No policies configured</p>
@@ -1374,9 +1460,9 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
-          {policies.map(p => (
-            <div key={p.id} className="flex items-start justify-between gap-4 px-5 py-4">
-              <div className="min-w-0 flex-1">
+          {shown.map(p => (
+            <div key={p.id} data-testid="leave-policy-row" className={embedded ? 'flex flex-wrap items-start justify-between gap-3 px-4 py-3' : 'flex items-start justify-between gap-4 px-5 py-4'}>
+              <div className={embedded ? 'min-w-[14rem] flex-1' : 'min-w-0 flex-1'}>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{p.name}</p>
                 <p className="mt-0.5 text-xs text-slate-400">
                   {typeName(p.leaveTypeId)} · {p.countryCode} · {p.annualEntitlementDays}d/yr · {p.accrualMethod}
@@ -1384,6 +1470,7 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
                   {p.grade ? ` · Grade ${p.grade}` : ''}
                   {p.employmentType ? ` · ${employmentTypesLabel(referenceLists.employmentType, p.employmentType, locale)}` : ''}
                 </p>
+                <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs"><CompanyCell name={org.nameOf(p.companyId)} /></p>
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                   {p.encashmentAllowed && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Encashment ✓</span>}
                   {p.weekendsIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10">Wknd incl.</span>}
@@ -1397,7 +1484,7 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
                   <Settings className="h-3.5 w-3.5" /> Edit
                 </button>
                 {p.status !== 'Archived' && (
-                  <button type="button" className={btn.danger} onClick={() => archive(p.id, p.name)}>
+                  <button type="button" className={embedded ? btn.ghost : btn.danger} onClick={() => archive(p.id, p.name)}>
                     <X className="h-3.5 w-3.5" /> Archive
                   </button>
                 )}
@@ -1406,8 +1493,8 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
           ))}
         </div>
       )}
-      {showCreate && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
-      {editPolicy && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} existing={editPolicy} onClose={() => setEditPolicy(null)} onSaved={() => { setEditPolicy(null); load(); }} />}
+      {showCreate && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} defaultCompanyId={newRowCompany ?? ''} lockCompany={!!companyId} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); onSaved?.('added'); load(); }} />}
+      {editPolicy && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} existing={editPolicy} onClose={() => setEditPolicy(null)} onSaved={() => { setEditPolicy(null); onSaved?.('updated'); load(); }} />}
     </div>
   );
 }
@@ -1417,7 +1504,10 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
 const BLANK_HOLIDAY_FORM = { nameEn: '', nameAr: '', date: '', hijriDate: '', holidayType: 'National', isRecurring: false, isOptional: false };
 const BLANK_CAL_FORM = { name: '', countryCode: 'UAE', calendarYear: new Date().getFullYear() };
 
-export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
+export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, companyId }: LeaveEditorProps & {
+  /** Show this company's calendars beside the workspace-wide ones (not other companies'), and create new ones for it. */
+  companyId?: string;
+} = {}) {
   const { t } = useLocale();
   const [calendars, setCalendars] = useState<PublicHolidayCalendar[]>([]);
   const [selected, setSelected] = useState<PublicHolidayCalendar | null>(null);
@@ -1454,6 +1544,8 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
     reloadHolidays(selected);
   }, [selected]);
 
+  const shownCalendars = companyId ? calendars.filter(c => !c.companyId || c.companyId === companyId) : calendars;
+
   // ── error helper ──
   // One translated sentence, never the raw response body (lib/apiError.ts).
   const apiErr = (err: unknown) => describeApiError(err, t);
@@ -1464,9 +1556,11 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
       if (calModal === 'edit' && selected) {
         const updated = await holidayCalendarApi.updateCalendar(selected.id, calForm);
         setSelected(updated);
+        onSaved?.('updated');
         await reloadCalendars();
       } else {
-        await holidayCalendarApi.createCalendar(calForm);
+        await holidayCalendarApi.createCalendar(companyId ? { ...calForm, companyId } : calForm);
+        onSaved?.('added');
         await reloadCalendars();
       }
       setCalModal('none');
@@ -1482,6 +1576,7 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
     if (!confirm(`Delete calendar "${c.name}"? All ${holidays.length} holidays will be removed.`)) return;
     try {
       await holidayCalendarApi.deleteCalendar(c.id);
+      onSaved?.('removed');
       if (selected?.id === c.id) { setSelected(null); setHolidays([]); }
       await reloadCalendars();
     } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
@@ -1510,8 +1605,10 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
     try {
       if (holidayModal === 'edit' && editingHoliday) {
         await holidayCalendarApi.updateHoliday(editingHoliday.id, holidayForm);
+        onSaved?.('updated');
       } else {
         await holidayCalendarApi.addHoliday(selected.id, holidayForm);
+        onSaved?.('added');
       }
       setHolidayModal('none');
       setEditingHoliday(null);
@@ -1540,6 +1637,7 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
     if (!confirm(`Remove "${h.nameEn}"?`)) return;
     try {
       await holidayCalendarApi.deleteHoliday(h.id);
+      onSaved?.('removed');
       setHolidays(prev => prev.filter(x => x.id !== h.id));
     } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
@@ -1552,25 +1650,25 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className={embedded ? 'grid gap-3' : 'grid gap-4 lg:grid-cols-3'}>
         {/* ── Calendars list ── */}
         <div className="surface p-4">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold text-slate-800 dark:text-white">Calendars</p>
-            <button type="button" className={btn.sm} onClick={() => { setCalForm({ ...BLANK_CAL_FORM }); setCalModal('create'); }}>
-              <Plus className="h-3 w-3" />
+            <button type="button" className={btn.sm} aria-label={t('New holiday calendar')} onClick={() => { setCalForm({ ...BLANK_CAL_FORM }); setCalModal('create'); }}>
+              <Plus className="h-3 w-3" aria-hidden="true" />{embedded && t('New calendar')}
             </button>
           </div>
-          {calendars.length === 0 ? <p className="text-xs text-slate-400">No calendars yet.</p> : (
+          {shownCalendars.length === 0 ? <p className="text-xs text-slate-400">No calendars yet.</p> : (
             <div className="space-y-2">
-              {calendars.map(c => (
+              {shownCalendars.map(c => (
                 <div key={c.id}
                   className={`group flex items-start justify-between rounded-lg p-3 transition ${selected?.id === c.id ? 'bg-sapphire/10 dark:bg-sapphire/20' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
                   <button type="button" className="min-w-0 flex-1 text-start" onClick={() => setSelected(c)}>
                     <p className={`text-sm font-medium truncate ${selected?.id === c.id ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{c.name}</p>
-                    <p className="text-xs text-slate-400">{c.countryCode} · {c.calendarYear}</p>
+                    <p className="text-xs text-slate-400">{c.countryCode} · {c.calendarYear}{companyId && <> · {c.companyId ? t('This company') : t('All companies')}</>}</p>
                   </button>
-                  <div className="ms-1 flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className={`ms-1 flex shrink-0 items-center gap-1 ${embedded ? '' : 'opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100'}`}>
                     <button type="button" title="Edit calendar" className="rounded p-1 text-slate-400 hover:text-sapphire dark:hover:text-cyanAccent" onClick={() => { setSelected(c); openEditCal(c); }}>
                       <Settings className="h-3 w-3" />
                     </button>
@@ -1585,20 +1683,20 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
         </div>
 
         {/* ── Holidays panel ── */}
-        <div className="surface col-span-2 p-4">
+        <div className={`surface p-4 ${embedded ? '' : 'col-span-2'}`}>
           {!selected ? (
             <div className="flex h-full min-h-[200px] items-center justify-center">
               <p className="text-sm text-slate-400">Select a calendar to view holidays</p>
             </div>
           ) : (
             <>
-              <div className="mb-3 flex items-center justify-between">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold text-slate-800 dark:text-white">{selected.name} — {holidays.length} holidays</p>
-                <button type="button" className={btn.primary} onClick={openAddHoliday}><Plus className="h-4 w-4" /> Add Holiday</button>
+                <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={openAddHoliday}><Plus className="h-4 w-4" /> Add Holiday</button>
               </div>
               <div className="divide-y divide-slate-100 dark:divide-white/5">
                 {holidays.map(h => (
-                  <div key={h.id} className="group flex items-center justify-between py-3">
+                  <div key={h.id} className={`group flex items-center justify-between py-3 ${embedded ? 'flex-wrap gap-2' : ''}`}>
                     <div>
                       <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{h.nameEn}</p>
                       {h.nameAr && <p className="text-xs text-slate-400" dir="rtl">{h.nameAr}</p>}
@@ -1616,7 +1714,7 @@ export function HolidayCalendarTab({ onDirtyChange }: { onDirtyChange?: (dirty: 
                       <button type="button" className={btn.ghost} onClick={() => openEditHoliday(h)}>
                         <Settings className="h-3.5 w-3.5" /> Edit
                       </button>
-                      <button type="button" className={btn.danger} onClick={() => delHoliday(h)}>
+                      <button type="button" className={embedded ? btn.ghost : btn.danger} onClick={() => delHoliday(h)}>
                         <X className="h-3.5 w-3.5" /> Remove
                       </button>
                     </div>
@@ -2186,6 +2284,15 @@ export function LeavePage() {
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [companyId, setCompanyId] = useState('');
   const [branchId, setBranchId] = useState('');
+  // `/leave?companyId={id}` (the company setup wizard's readiness item) opens that company's leave policies.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const linked = params.get('companyId');
+    if (!linked) return;
+    setCompanyId(linked);
+    const linkedTab = params.get('tab');
+    setTab(linkedTab === 'types' || linkedTab === 'policies' ? linkedTab : 'policies');
+  }, []);
 
   const isAdmin    = user?.roles.some(r => ['Admin', 'HR Manager', 'HR Officer'].includes(r)) ?? false;
   const isPayroll  = user?.roles.some(r => ['Payroll Officer', 'Payroll Manager'].includes(r)) ?? false;
@@ -2278,8 +2385,8 @@ export function LeavePage() {
       {tab === 'requests'   && <MyRequestsTab />}
       {tab === 'approvals'  && <ApprovalsTab groupFilter={groupFilter} />}
       {tab === 'calendar'   && <CalendarTab groupFilter={groupFilter} />}
-      {tab === 'types'      && <LeaveTypesTab />}
-      {tab === 'policies'   && <PoliciesTab />}
+      {tab === 'types'      && <LeaveTypesTab initialCompanyFilter={companyId} />}
+      {tab === 'policies'   && <PoliciesTab initialCompanyFilter={companyId} />}
       {tab === 'holidays'   && <HolidayCalendarTab />}
       {tab === 'encashment' && <EncashmentTab groupFilter={groupFilter} />}
       {tab === 'compoff'    && <CompOffTab groupFilter={groupFilter} />}

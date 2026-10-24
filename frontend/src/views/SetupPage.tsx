@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
@@ -84,6 +84,7 @@ import type {
 } from '../api/setup';
 import { Modal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
+import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
 import { notifyGradesChanged } from '../lib/gradeEvents';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -124,7 +125,7 @@ const tabs: (SetupSettingSection & { icon: React.ElementType })[] = SETUP_SETTIN
 
 /** The setup tools at the top of the navigation, keyed by their entry. */
 const toolSections: Record<Exclude<SetupNavId, SettingsTab>, { label: string; icon: React.ElementType }> = {
-  guidedSetup: { label: SETUP_TOOLS.guidedSetup.label, icon: Sparkles },
+  guidedSetup: { label: SETUP_TOOLS.guidedSetup.label, icon: ListChecks },
   allSetupAreas: { label: SETUP_TOOLS.allSetupAreas.label, icon: LayoutGrid },
   importOrganization: { label: SETUP_TOOLS.importOrganization.label, icon: Upload },
   policyStarter: { label: SETUP_TOOLS.policyStarter.label, icon: FileText },
@@ -715,6 +716,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const [editing, setEditing] = useState<DepartmentDto | null>(null);
   useSetupEditorState(modalOpen);
   const [form, setForm] = useState<DepartmentRequest>(emptyDept());
+  // Addendum B: a department belongs to one company.
+  const org = useOrgCompanies();
+  const [companyFilter, setCompanyFilter] = useState('');
+  const unassignedCount = items.filter((d) => !d.companyId).length;
+  const shown = filterByCompany(items, companyFilter);
+  const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -727,15 +734,16 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyDept()); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm({ ...emptyDept(), companyId: org.defaultCompanyId || undefined }); setError(''); setModalOpen(true); };
   const openEdit = (d: DepartmentDto) => {
     setEditing(d);
-    setForm({ branchId: d.branchId, parentDepartmentId: d.parentDepartmentId, costCenterId: d.costCenterId, code: d.code, nameEn: d.nameEn, nameAr: d.nameAr, managerEmployeeId: d.managerEmployeeId, isActive: d.isActive });
+    setForm({ branchId: d.branchId, parentDepartmentId: d.parentDepartmentId, costCenterId: d.costCenterId, code: d.code, nameEn: d.nameEn, nameAr: d.nameAr, managerEmployeeId: d.managerEmployeeId, isActive: d.isActive, companyId: d.companyId ?? undefined });
     setError(''); setModalOpen(true);
   };
 
   const handleSave = async () => {
     if (!form.nameEn.trim() || !form.code.trim()) { setError(t('Name and code are required')); return; }
+    if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await departmentsApi.update(editing.id, form);
@@ -755,26 +763,29 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
   return (
     <>
+      <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       <TableShell
-        columns={[msg('Code'), msg('Name'), msg('Status')]}
+        columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]}
         onAdd={openNew}
         addLabel={msg('Add Department')}
         loading={loading}
-        empty={items.length === 0}
+        empty={shown.length === 0}
         emptyLabel={msg('No departments yet')} emptyHint={msg('Add your first department, or import a CSV.')}
+        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
         actions={
           <ImportExportToolbar
             entityName="Departments"
             onExport={async () => { const csv = await departmentsApi.export(); downloadCsv(csv, 'departments.csv'); }}
             onDownloadTemplate={async () => { const csv = await departmentsApi.importTemplate(); downloadCsv(csv, 'departments-template.csv'); }}
-            onImport={async (csv) => { const r = await departmentsApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
+            onImport={async (csv) => { const r = await departmentsApi.import(csv, importCompanyId); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
       >
-        {items.map((d) => (
+        {shown.map((d) => (
           <tr key={d.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{d.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{d.nameEn}</td>
+            <td className="px-4 py-3"><CompanyCell name={org.nameOf(d.companyId)} /></td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
               <div className="flex items-center gap-1">
@@ -801,6 +812,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
       >
         <FormError error={error} />
         <div className="space-y-3">
+          <FormField label={t('Company')} required>
+            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, costCenterId: undefined }))}
+              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+          </FormField>
           <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="ENG" />
           </FormField>
@@ -816,7 +831,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
           <FormField label={t('Cost Center')}>
             <select value={form.costCenterId ?? ''} onChange={(e) => f('costCenterId', e.target.value || undefined)} className="select w-full">
               <option value="">{t('None')}</option>
-              {costCenters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {costCenters.filter((c) => !form.companyId || c.companyId === form.companyId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </FormField>
           <FormField label={t('Status')}>
@@ -843,6 +858,12 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   const [editing, setEditing] = useState<DesignationDto | null>(null);
   useSetupEditorState(modalOpen);
   const [form, setForm] = useState<DesignationRequest>(emptyDesig());
+  // Addendum B: a designation belongs to one company, and so does its grade.
+  const org = useOrgCompanies();
+  const [companyFilter, setCompanyFilter] = useState('');
+  const unassignedCount = items.filter((d) => !d.companyId).length;
+  const shown = filterByCompany(items, companyFilter);
+  const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -855,15 +876,16 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyDesig()); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm({ ...emptyDesig(), companyId: org.defaultCompanyId || undefined }); setError(''); setModalOpen(true); };
   const openEdit = (d: DesignationDto) => {
     setEditing(d);
-    setForm({ departmentId: d.departmentId, code: d.code, titleEn: d.titleEn, titleAr: d.titleAr, jobGrade: d.jobGrade, gradeId: d.gradeId, jobLevel: d.jobLevel, jobDescription: d.jobDescription, isManagerRole: d.isManagerRole, isActive: d.isActive });
+    setForm({ departmentId: d.departmentId, code: d.code, titleEn: d.titleEn, titleAr: d.titleAr, jobGrade: d.jobGrade, gradeId: d.gradeId, jobLevel: d.jobLevel, jobDescription: d.jobDescription, isManagerRole: d.isManagerRole, isActive: d.isActive, companyId: d.companyId ?? undefined });
     setError(''); setModalOpen(true);
   };
 
   const handleSave = async () => {
     if (!form.titleEn.trim() || !form.code.trim()) { setError(t('Title and code are required')); return; }
+    if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await designationsApi.update(editing.id, form);
@@ -883,26 +905,29 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
 
   return (
     <>
+      <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       <TableShell
-        columns={[msg('Code'), msg('Title'), msg('Job Grade'), msg('Manager Role'), msg('Status')]}
+        columns={[msg('Code'), msg('Title'), msg('Company'), msg('Job Grade'), msg('Manager Role'), msg('Status')]}
         onAdd={openNew}
         addLabel={msg('Add Designation')}
         loading={loading}
-        empty={items.length === 0}
+        empty={shown.length === 0}
+        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
         emptyLabel={msg('No designations yet')} emptyHint={msg('Add your first designation, or import a CSV.')}
         actions={
           <ImportExportToolbar
             entityName="Designations"
             onExport={async () => { const csv = await designationsApi.export(); downloadCsv(csv, 'designations.csv'); }}
             onDownloadTemplate={async () => { const csv = await designationsApi.importTemplate(); downloadCsv(csv, 'designations-template.csv'); }}
-            onImport={async (csv) => { const r = await designationsApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
+            onImport={async (csv) => { const r = await designationsApi.import(csv, importCompanyId); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
       >
-        {items.map((d) => (
+        {shown.map((d) => (
           <tr key={d.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{d.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{d.titleEn}</td>
+            <td className="px-4 py-3"><CompanyCell name={org.nameOf(d.companyId)} /></td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{d.jobGrade || '—'}</td>
             <td className="px-4 py-3">{d.isManagerRole ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-400">{t('Manager')}</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
@@ -931,6 +956,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
       >
         <FormError error={error} />
         <div className="space-y-3">
+          <FormField label={t('Company')} required>
+            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, gradeId: undefined, departmentId: undefined }))}
+              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+          </FormField>
           <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="SWE-L3" />
           </FormField>
@@ -940,7 +969,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
           <FormField label={t('Title (AR)')}>
             <div className="flex items-stretch gap-1.5">
               <input type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.titleEn} onSuggest={(s) => f('titleAr', s)} />
+              <TransliterateButton source={form.titleEn} kind="organization-label" onSuggest={(s) => f('titleAr', s)} />
             </div>
           </FormField>
           <FormField label={t('Job Grade')}>
@@ -949,7 +978,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
           <FormField label={t('Grade / Band')}>
             <select value={form.gradeId ?? ''} onChange={(e) => f('gradeId', e.target.value || undefined)} className="select w-full">
               <option value="">{t('None')}</option>
-              {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              {grades.filter((g) => !form.companyId || g.companyId === form.companyId).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
           </FormField>
           <FormField label={t('Job Level')}>
@@ -990,6 +1019,12 @@ function GradesTab() {
   useSetupEditorState(modalOpen);
   const [form, setForm] = useState<GradeRequest>(emptyGrade());
   const [payScale, setPayScale] = useState<GradePayScaleComponentRequest[]>([]);
+  // Addendum B: a grade belongs to one company and takes its currency by default.
+  const org = useOrgCompanies();
+  const [companyFilter, setCompanyFilter] = useState('');
+  const unassignedCount = items.filter((g) => !g.companyId).length;
+  const shown = filterByCompany(items, companyFilter);
+  const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -1002,10 +1037,10 @@ function GradesTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyGrade()); setPayScale([]); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm({ ...emptyGrade(), companyId: org.defaultCompanyId || undefined }); setPayScale([]); setError(''); setModalOpen(true); };
   const openEdit = async (g: GradeDto) => {
     setEditing(g);
-    setForm({ code: g.code, name: g.name, nameAr: g.nameAr ?? '', band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive });
+    setForm({ code: g.code, name: g.name, nameAr: g.nameAr ?? '', band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive, companyId: g.companyId ?? undefined });
     setPayScale([]);
     setError('');
     setModalOpen(true);
@@ -1016,6 +1051,7 @@ function GradesTab() {
   };
   const handleSave = async () => {
     if (!form.code.trim() || !form.name.trim()) { setError(t('Code and name are required')); return; }
+    if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError(t('Min salary cannot exceed max salary')); return; }
     setSaving(true); setError('');
     // The grade itself is saved before its pay scale: open employee forms must hear about it even if the pay
@@ -1042,20 +1078,23 @@ function GradesTab() {
 
   return (
     <>
-      <TableShell columns={[msg('Code'), msg('Name'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={items.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
+      <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
+        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
         actions={
           <ImportExportToolbar
             entityName="Grades"
             onExport={async () => { const csv = await gradesApi.export(); downloadCsv(csv, 'grades.csv'); }}
             onDownloadTemplate={async () => { const csv = await gradesApi.importTemplate(); downloadCsv(csv, 'grades-template.csv'); }}
-            onImport={async (csv) => { const r = await gradesApi.import(csv); load(); notifyGradesChanged(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
+            onImport={async (csv) => { const r = await gradesApi.import(csv, importCompanyId); load(); notifyGradesChanged(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
       >
-        {items.map((g) => (
+        {shown.map((g) => (
           <tr key={g.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{g.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{g.name}</td>
+            <td className="px-4 py-3"><CompanyCell name={org.nameOf(g.companyId)} /></td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{g.band || '—'}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{g.level}</td>
             <td className="px-4 py-3 tabular-nums text-slate-600 dark:text-slate-300">{payRange(g)}</td>
@@ -1074,6 +1113,10 @@ function GradesTab() {
       <Modal isOpen={modalOpen} title={editing ? t('Edit Grade') : t('Add Grade')} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
+          <FormField label={t('Company')} required>
+            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined }))}
+              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+          </FormField>
           <div className="grid grid-cols-2 gap-3">
             <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
             <FormField label={t('Level')}><input type="number" value={form.level} onChange={(e) => f('level', Number(e.target.value))} className="input w-full" /></FormField>
@@ -1089,7 +1132,7 @@ function GradesTab() {
               <FormField label={t('Min')}><input type="number" value={form.minSalary ?? 0} onChange={(e) => f('minSalary', Number(e.target.value))} className="input w-full" /></FormField>
               <FormField label={t('Mid')}><input type="number" value={form.midSalary ?? 0} onChange={(e) => f('midSalary', Number(e.target.value))} className="input w-full" /></FormField>
               <FormField label={t('Max')}><input type="number" value={form.maxSalary ?? 0} onChange={(e) => f('maxSalary', Number(e.target.value))} className="input w-full" /></FormField>
-              <FormField label={t('Currency')}><input value={form.currency ?? 'SAR'} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder="SAR" /></FormField>
+              <FormField label={t('Currency')}><input value={form.currency ?? ''} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder={t('Company currency')} /></FormField>
             </div>
             {benefitsByGrade
               ? <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Allowances and benefits for this grade are set in Benefits by grade.')}{' '}
@@ -1158,6 +1201,12 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
+  // Addendum B: a cost centre belongs to one company; the switcher's company is the default for a new one.
+  const org = useOrgCompanies(companies);
+  const [companyFilter, setCompanyFilter] = useState('');
+  const unassignedCount = items.filter((c) => !c.companyId).length;
+  const shown = filterByCompany(items, companyFilter);
+  const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1166,15 +1215,16 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyCostCenter(companies[0]?.id)); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm(emptyCostCenter(org.defaultCompanyId || undefined)); setError(''); setModalOpen(true); };
   const openEdit = (c: CostCenterDto) => {
     setEditing(c);
-    setForm({ companyId: c.companyId, code: c.code, name: c.name, isActive: c.isActive });
+    setForm({ companyId: c.companyId, code: c.code, name: c.name, nameAr: c.nameAr ?? '', isActive: c.isActive });
     setError('');
     setModalOpen(true);
   };
   const handleSave = async () => {
     if (!form.code.trim() || !form.name.trim()) { setError(t('Code and name are required')); return; }
+    if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await costCentersApi.update(editing.id, form);
@@ -1190,25 +1240,26 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
     try { await costCentersApi.remove(id); load(); } catch (e) { notifyApiError(e); }
     finally { setDeleting(null); }
   };
-  const companyName = (id?: string) => companies.find((c) => c.id === id)?.legalNameEn ?? '—';
 
   return (
     <>
-      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Cost Center')} loading={loading} empty={items.length === 0} emptyLabel={msg('No cost centres yet')} emptyHint={msg('Add your first cost centre, or import a CSV.')}
+      <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Cost Center')} loading={loading} empty={shown.length === 0} emptyLabel={msg('No cost centres yet')} emptyHint={msg('Add your first cost centre, or import a CSV.')}
+        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
         actions={
           <ImportExportToolbar
             entityName="Cost Centers"
             onExport={async () => { const csv = await costCentersApi.export(); downloadCsv(csv, 'cost-centers.csv'); }}
             onDownloadTemplate={async () => { const csv = await costCentersApi.importTemplate(); downloadCsv(csv, 'cost-centers-template.csv'); }}
-            onImport={async (csv) => { const r = await costCentersApi.import(csv); load(); return r; }}
+            onImport={async (csv) => { const r = await costCentersApi.import(csv, importCompanyId); load(); return r; }}
           />
         }
       >
-        {items.map((c) => (
+        {shown.map((c) => (
           <tr key={c.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{c.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{c.name}</td>
-            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{companyName(c.companyId)}</td>
+            <td className="px-4 py-3"><CompanyCell name={org.nameOf(c.companyId)} /></td>
             <td className="px-4 py-3"><ActiveBadge active={c.isActive} /></td>
             <td className="px-4 py-3">
               <div className="flex items-center gap-1">
@@ -1224,9 +1275,18 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
       <Modal isOpen={modalOpen} title={editing ? t('Edit Cost Center') : t('Add Cost Center')} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label={t('Company')}><select value={form.companyId ?? ''} onChange={(e) => f('companyId', e.target.value || undefined)} className="select w-full"><option value="">{t('None')}</option>{companies.map((c) => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></FormField>
+          <FormField label={t('Company')} required>
+            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => f('companyId', v || undefined)}
+              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+          </FormField>
           <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="HR-OPS" /></FormField>
           <FormField label={t('Name')} required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="HR Operations" /></FormField>
+          <FormField label={t('Name (AR)')}>
+            <div className="flex items-stretch gap-1.5">
+              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" lang="ar" />
+              <TransliterateButton source={form.name} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
+            </div>
+          </FormField>
           <FormField label={t('Status')}><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>
         </div>
       </Modal>
@@ -1683,7 +1743,8 @@ function SystemSettingsTab() {
 
 // ─── GCC Settings ────────────────────────────────────────────────────────────
 
-function GCCSettingsTab() {
+/** `countryCode` (the company setup wizard) shows only that country's rules and starts a new one on it. */
+export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string; onSaved?: (change: 'added' | 'updated') => void } = {}) {
   const t = useT();
   const [items, setItems] = useState<GCCComplianceSetting[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1709,7 +1770,7 @@ function GCCSettingsTab() {
 
   const openNew = () => {
     setEditing(null);
-    setForm({ countryCode: 'US', wpsEnabled: false, wpsAgentId: '', wpsMolCode: '', sifEnabled: false, eosbEnabled: true, eosbYears1To5Rate: 0.5, eosbYearsAbove5Rate: 1.0, eosbMinYears: 1, workWeek: 'Mon-Fri', weekendDays: 'Sat,Sun', visaTrackingEnabled: true, visaAlertDays: 30, iqamaRequired: false, iqamaAlertDays: 30, emiratesIdRequired: false, ramadanHoursEnabled: false, ramadanReducedHoursPerDay: 2 });
+    setForm({ countryCode: countryCode ?? 'US', wpsEnabled: false, wpsAgentId: '', wpsMolCode: '', sifEnabled: false, eosbEnabled: true, eosbYears1To5Rate: 0.5, eosbYearsAbove5Rate: 1.0, eosbMinYears: 1, workWeek: 'Mon-Fri', weekendDays: 'Sat,Sun', visaTrackingEnabled: true, visaAlertDays: 30, iqamaRequired: false, iqamaAlertDays: 30, emiratesIdRequired: false, ramadanHoursEnabled: false, ramadanReducedHoursPerDay: 2 });
     setError(''); setModalOpen(true);
   };
   const openEdit = (s: GCCComplianceSetting) => {
@@ -1719,23 +1780,25 @@ function GCCSettingsTab() {
   };
   const save = async () => {
     setSaving(true); setError('');
-    try { await gccSettingsApi.upsert(form as GCCComplianceSetting & { countryCode: string }); setModalOpen(false); load(); }
+    try { await gccSettingsApi.upsert(form as GCCComplianceSetting & { countryCode: string }); setModalOpen(false); onSaved?.(editing ? 'updated' : 'added'); load(); }
     catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
+  // Rows were saved as ISO-2 or ISO-3 over time (SA / SAU); compare both as ISO-2.
+  const shown = countryCode ? items.filter(s => setupCountryCode(s.countryCode) === setupCountryCode(countryCode)) : items;
 
   return (
     <>
       <div className="space-y-4">
-        <div className="flex justify-end">
-          <button type="button" onClick={openNew} className="btn-primary"><Plus className="h-4 w-4" /> {t('Add Country Config')}</button>
-        </div>
-        {loading ? <div className="flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
-          : items.length === 0 ? <div className="surface py-12 text-center text-sm text-slate-500 dark:text-slate-400">{t('No country rules yet')}</div>
+        {!(countryCode && (loading || shown.length > 0)) && <div className="flex justify-end">
+          <button type="button" onClick={openNew} className={countryCode ? 'btn-secondary' : 'btn-primary'}><Plus className="h-4 w-4" /> {t('Add Country Config')}</button>
+        </div>}
+        {loading ? (countryCode ? <div aria-busy="true" className="h-[148px] rounded-xl bg-slate-200/50 dark:bg-white/[0.05]" /> : <div className="flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>)
+          : shown.length === 0 ? <div className="surface py-12 text-center text-sm text-slate-500 dark:text-slate-400">{t('No country rules yet')}</div>
           : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              {items.map((s) => (
+            <div className={countryCode ? 'grid gap-4' : 'grid gap-4 sm:grid-cols-2'}>
+              {shown.map((s) => (
                 <div key={s.id} className="surface p-4 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-slate-900 dark:text-white text-lg">{s.countryCode}</span>
@@ -2455,13 +2518,14 @@ const emptyDesig = (): DesignationRequest => ({
   code: '', titleEn: '', titleAr: '', jobGrade: '', gradeId: undefined, jobLevel: '', jobDescription: '', isManagerRole: false, isActive: true,
 });
 
+// currency '' = the owning company's default currency (Addendum B), filled in by the API.
 const emptyGrade = (): GradeRequest => ({
   code: '', name: '', nameAr: '', band: '', level: 0,
-  minSalary: 0, midSalary: 0, maxSalary: 0, currency: 'SAR', isActive: true,
+  minSalary: 0, midSalary: 0, maxSalary: 0, currency: '', isActive: true,
 });
 
 const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
-  companyId, code: '', name: '', isActive: true,
+  companyId, code: '', name: '', nameAr: '', isActive: true,
 });
 
 // ─── SetupPage ───────────────────────────────────────────────────────────────

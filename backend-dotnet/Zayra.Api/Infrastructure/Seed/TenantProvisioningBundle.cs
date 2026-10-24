@@ -8,6 +8,8 @@ using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Recruitment;
 
+using Zayra.Api.Infrastructure.Leave;
+
 namespace Zayra.Api.Infrastructure.Seed;
 
 /// <summary>
@@ -478,12 +480,39 @@ public static class TenantProvisioningBundle
     internal static async Task<(int types, int policies)> InstallDefaultLeaveAsync(
         ZayraDbContext db, Guid tenantId, CancellationToken ct, string? homeCountryCode = null)
     {
+        // Leave types and policies belong to a company (owner decision 2026-10-23). A tenant that has companies gets the
+        // statutory set installed per company, for that company's country; only a tenant with no company yet (the
+        // pre-company provisioning order some tests and old tenants have) gets the legacy tenant-wide set, which every
+        // company later treats as an unassigned fallback.
+        const string why = "Provisioning and the boot backfill install leave defaults for every company of the tenant, whatever "
+            + "company scope the (absent) caller would have; the tenant filter is re-applied by the helper.";
+        var companies = await ScopedBypass.TenantWide(db.Companies, tenantId, why).AsNoTracking()
+            .Where(c => !c.IsDeleted)
+            .OrderBy(c => c.CreatedAtUtc).ThenBy(c => c.Id)
+            .Select(c => new { c.Id, c.CountryCode })
+            .ToListAsync(ct);
+        if (companies.Count > 0)
+        {
+            int types = 0, policies = 0;
+            foreach (var company in companies)
+            {
+                var country = CountryCodeStandard.NormalizeToIso2(company.CountryCode)
+                              ?? HomeJurisdiction.Normalize(homeCountryCode)
+                              ?? string.Empty;
+                var (t, p) = await InstallDefaultLeaveForCountryAsync(db, tenantId, company.Id, country, ct);
+                types += t;
+                policies += p;
+            }
+            return (types, policies);
+        }
+
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
         var existingTypes = await db.LeaveTypes.IgnoreQueryFilters().AsNoTracking()
             .Where(t => t.TenantId == tenantId)
             .Select(t => new { t.Id, t.Code })
             .ToListAsync(ct);
-        var typeByCode = existingTypes.ToDictionary(t => t.Code, t => t.Id, StringComparer.OrdinalIgnoreCase);
+        var typeByCode = existingTypes.GroupBy(t => t.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
 
         int typesAdded = 0, sort = 0;
         foreach (var (code, en, ar, category, paid) in LeaveTypeSeeds)
@@ -516,25 +545,34 @@ public static class TenantProvisioningBundle
         LeavePolicyBases.Select(b => (b.TypeCode, b.Label)).ToList();
 
     /// <summary>
-    /// The seeded leave types whose tenant-wide default policy for <paramref name="countryCode"/> is NOT yet
-    /// present (the type itself missing counts as missing). Read-only — the create-company wizard's planner
-    /// calls it so its dry run names exactly what <see cref="InstallDefaultLeaveForCountryAsync"/> will add.
-    /// Same natural key as the installer: (leave type, tenant-wide, country), archived rows included.
+    /// Compatibility form of <see cref="MissingDefaultLeavePoliciesAsync(ZayraDbContext, Guid, Guid?, string, CancellationToken)"/>
+    /// for a company that does not exist yet: only unassigned (legacy tenant-wide) rows can cover it.
+    /// </summary>
+    internal static Task<IReadOnlySet<string>> MissingDefaultLeavePoliciesAsync(
+        ZayraDbContext db, Guid tenantId, string countryCode, CancellationToken ct)
+        => MissingDefaultLeavePoliciesAsync(db, tenantId, companyId: null, countryCode, ct);
+
+    /// <summary>
+    /// The seeded leave types whose default policy for <paramref name="countryCode"/> is NOT yet present for
+    /// <paramref name="companyId"/> (the type itself missing counts as missing). Read-only — the create-company wizard's
+    /// planner calls it so its dry run names exactly what
+    /// <see cref="InstallDefaultLeaveForCountryAsync(ZayraDbContext, Guid, Guid, string, CancellationToken)"/> will add.
+    /// Same natural key as the installer: (the company's leave type of that code, the company or an unassigned legacy
+    /// row, country), archived rows included. A null <paramref name="companyId"/> is a company not created yet.
     /// </summary>
     internal static async Task<IReadOnlySet<string>> MissingDefaultLeavePoliciesAsync(
-        ZayraDbContext db, Guid tenantId, string countryCode, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, Guid? companyId, string countryCode, CancellationToken ct)
     {
-        const string why = "The create-company wizard plans the tenant-wide statutory leave defaults for a country: it must see "
-            + "every tenant-wide policy and leave type (archived ones included, which stay archived), whatever company the caller selected.";
-        var country = (countryCode ?? string.Empty).Trim().ToUpperInvariant();
-        var types = await ScopedBypass.TenantWide(db.LeaveTypes, tenantId, why).AsNoTracking()
-            .Select(t => new { t.Id, t.Code }).ToListAsync(ct);
-        var typeByCode = types.GroupBy(t => t.Code, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        const string why = "The create-company wizard plans a company's statutory leave defaults for a country: it must see "
+            + "every policy and leave type of that company and the unassigned legacy ones (archived included, which stay "
+            + "archived), whatever company the caller selected.";
+        var country = NormalizeLeaveCountry(countryCode);
+        var typeByCode = await CompanyLeaveTypesByCodeAsync(db, tenantId, companyId, why, ct);
         var policies = (await ScopedBypass.TenantWide(db.LeavePolicies, tenantId, why).AsNoTracking()
-                .Where(p => p.CompanyId == null)
+                .Where(p => p.CompanyId == companyId || p.CompanyId == null)
                 .Select(p => new { p.LeaveTypeId, p.CountryCode }).ToListAsync(ct))
-            .Select(x => (x.LeaveTypeId, Country: (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
+            // Stored countries may be ISO-3 or aliases (SAU, KSA, ARE): compare as ISO-2, as leave scoping does.
+            .Select(x => (x.LeaveTypeId, Country: LeavePolicyScope.CountryIso2(x.CountryCode) ?? (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
             .ToHashSet();
         var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var basis in LeavePolicyBases)
@@ -544,20 +582,33 @@ public static class TenantProvisioningBundle
     }
 
     /// <summary>
-    /// Installs the seeded leave types (when absent) and the tenant-wide default policies for ONE country only —
-    /// the create-company wizard's "statutory leave policies (pack)" for a company in a country the tenant has no
-    /// default set for. The same insert-if-absent contract, natural key and entitlement source
-    /// (<see cref="Packs"/>) as provisioning; it never updates, resets or resurrects an existing row.
+    /// The read-only plan of <see cref="InstallDefaultLeaveForCountryAsync(ZayraDbContext, Guid, Guid, string, CancellationToken)"/>:
+    /// the seeded leave-type codes whose default policy for <paramref name="countryCode"/> the company does not have yet.
+    /// Identity: (leave-type code, company, country) — archived policies count as present, so they are never re-created;
+    /// an unassigned legacy type/policy of that code and country also counts (the fallback rule). The installer installs
+    /// exactly these, so the wizard's plan and its commit cannot disagree.
+    /// </summary>
+    internal static Task<IReadOnlySet<string>> MissingDefaultLeaveForCountryAsync(
+        ZayraDbContext db, Guid tenantId, Guid companyId, string countryCode, CancellationToken ct)
+        => MissingDefaultLeavePoliciesAsync(db, tenantId, (Guid?)companyId, countryCode, ct);
+
+    /// <summary>
+    /// Installs the seeded statutory leave types (when absent) and the default policies for ONE country for ONE company —
+    /// the create-company wizard's "statutory leave policies (pack)", and provisioning / the boot backfill for each
+    /// company of a tenant. Leave types and policies belong to a company (owner decision 2026-10-23): every row added
+    /// here carries <paramref name="companyId"/>. Idempotent per company with the same insert-if-absent contract, natural
+    /// key and entitlement source (<see cref="Packs"/>) as provisioning; it never updates, resets or resurrects an
+    /// existing row. An unassigned legacy type or policy of the same code/country counts as present (the fallback rule),
+    /// so a company already served by one is not given a second, competing set.
     /// </summary>
     internal static async Task<(int types, int policies)> InstallDefaultLeaveForCountryAsync(
-        ZayraDbContext db, Guid tenantId, string countryCode, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, Guid companyId, string countryCode, CancellationToken ct)
     {
-        const string why = "The create-company wizard installs the tenant-wide leave defaults for one country: the gap check "
-            + "must see every leave type of the tenant whatever company the caller selected, or it would re-insert existing codes.";
-        var existingTypes = await ScopedBypass.TenantWide(db.LeaveTypes, tenantId, why).AsNoTracking()
-            .Select(t => new { t.Id, t.Code }).ToListAsync(ct);
-        var typeByCode = existingTypes.GroupBy(t => t.Code, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        const string why = "Installing a company's leave defaults: the gap check must see the company's own leave types and the "
+            + "unassigned legacy ones whatever company the caller selected, or it would re-insert existing codes.";
+        // The plan first, with the same helper the wizard's dry run reads.
+        var missing = await MissingDefaultLeaveForCountryAsync(db, tenantId, companyId, countryCode, ct);
+        var typeByCode = await CompanyLeaveTypesByCodeAsync(db, tenantId, companyId, why, ct);
         int typesAdded = 0, sort = 0;
         foreach (var (code, en, ar, category, paid) in LeaveTypeSeeds)
         {
@@ -565,21 +616,43 @@ public static class TenantProvisioningBundle
             if (typeByCode.ContainsKey(code)) continue;
             var lt = new LeaveType
             {
-                TenantId = tenantId, Code = code, NameEn = en, NameAr = ar, Category = category,
+                TenantId = tenantId, CompanyId = companyId, Code = code, NameEn = en, NameAr = ar, Category = category,
                 IsPaid = paid, RequiresReason = true, IsActive = true, SortOrder = sort,
             };
             db.LeaveTypes.Add(lt);
             typeByCode[code] = lt.Id;
             typesAdded++;
         }
-        var country = (countryCode ?? string.Empty).Trim().ToUpperInvariant();
-        var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct, onlyCountries: [country]);
+        var country = NormalizeLeaveCountry(countryCode);
+        var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct, onlyCountries: [country], companyId: companyId,
+            onlyTypeCodes: missing);
         return (typesAdded, policiesAdded);
     }
 
+    /// <summary>A policy's country as the installer stores it: ISO-2 when recognised ("SAU" → "SA"), else trimmed upper-case.</summary>
+    private static string NormalizeLeaveCountry(string? countryCode)
+        => LeavePolicyScope.CountryIso2(countryCode) ?? (countryCode ?? string.Empty).Trim().ToUpperInvariant();
+
     /// <summary>
-    /// Plants one tenant-wide default policy per seeded leave type, per country, for every
-    /// (type, country) pair the tenant has no tenant-wide policy for yet.
+    /// The leave types a company uses, by code: its own rows first, then unassigned legacy rows it has no own code for.
+    /// A null company (not created yet) sees only the unassigned rows.
+    /// </summary>
+    private static async Task<Dictionary<string, Guid>> CompanyLeaveTypesByCodeAsync(
+        ZayraDbContext db, Guid tenantId, Guid? companyId, string why, CancellationToken ct)
+    {
+        var rows = await ScopedBypass.TenantWide(db.LeaveTypes, tenantId, why).AsNoTracking()
+            .Where(t => t.CompanyId == companyId || t.CompanyId == null)
+            .Select(t => new { t.Id, t.CompanyId, t.Code }).ToListAsync(ct);
+        var result = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        foreach (var t in rows.OrderBy(t => t.CompanyId == null).ThenBy(t => t.Id))
+            result.TryAdd(t.Code.Trim(), t.Id);
+        return result;
+    }
+
+    /// <summary>
+    /// Plants one default policy per seeded leave type, per country, for every (type, country) pair
+    /// not covered yet — for <c>companyId</c> when given (the company's own policies and the
+    /// unassigned legacy ones cover it), else tenant-wide (only for a tenant with no company yet).
     ///
     /// <para><b>Natural key: (LeaveTypeId, CompanyId == null, CountryCode).</b> Coarser than the
     /// old "does this type have ANY tenant-wide policy" check, which would have let a tenant's
@@ -591,7 +664,8 @@ public static class TenantProvisioningBundle
     /// </summary>
     private static async Task<int> InstallDefaultLeavePoliciesAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyDictionary<string, Guid> typeByCode, CancellationToken ct,
-        string? homeCountryCode = null, IReadOnlyList<string>? onlyCountries = null)
+        string? homeCountryCode = null, IReadOnlyList<string>? onlyCountries = null, Guid? companyId = null,
+        IReadOnlySet<string>? onlyTypeCodes = null)
     {
         const string why =
             "Seeding/backfill runs with no HTTP principal, so the company read filter resolves to an "
@@ -601,10 +675,12 @@ public static class TenantProvisioningBundle
 
         var existing = (await ScopedBypass.TenantWide(db.LeavePolicies, tenantId, why)
                 .AsNoTracking()
-                .Where(p => p.CompanyId == null)
+                // The company's own policies and the unassigned legacy ones (which serve every company as a fallback).
+                .Where(p => p.CompanyId == companyId || p.CompanyId == null)
                 .Select(p => new { p.LeaveTypeId, p.CountryCode })
                 .ToListAsync(ct))
-            .Select(x => (x.LeaveTypeId, Country: (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
+            // Stored countries may be ISO-3 or aliases (SAU, KSA, ARE): compare as ISO-2, as leave scoping does.
+            .Select(x => (x.LeaveTypeId, Country: LeavePolicyScope.CountryIso2(x.CountryCode) ?? (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
             .ToHashSet();
 
         // The country-neutral row first (empty CountryCode = applies to any employee), then one per
@@ -624,6 +700,7 @@ public static class TenantProvisioningBundle
         var added = 0;
         foreach (var basis in LeavePolicyBases)
         {
+            if (onlyTypeCodes is not null && !onlyTypeCodes.Contains(basis.TypeCode)) continue;
             if (!typeByCode.TryGetValue(basis.TypeCode, out var leaveTypeId)) continue;
             foreach (var country in countries)
             {
@@ -634,7 +711,7 @@ public static class TenantProvisioningBundle
                     Name = country.Length == 0 ? $"Default {basis.Label}" : $"Default {basis.Label} — {country}",
                     LeaveTypeId = leaveTypeId,
                     CountryCode = country,
-                    CompanyId = null,
+                    CompanyId = companyId,
                     AnnualEntitlementDays = DefaultLeaveEntitlementDays(basis.TypeCode, country),
                     AccrualMethod = basis.AccrualMethod,
                     WeekendsIncluded = basis.WeekendsIncluded,

@@ -97,8 +97,9 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         db.Branches.Add(sisterBranch);
         var sisterCc = new CostCenter { TenantId = tenantId, CompanyId = sister.Id, Code = "CC_HR", Name = "HR cost centre" };
         db.CostCenters.Add(sisterCc);
-        db.Departments.Add(new Department { TenantId = tenantId, Code = "HR", NameEn = "Human Resources", BranchId = sisterBranch.Id, CostCenterId = sisterCc.Id });
-        db.Grades.Add(new Grade { TenantId = tenantId, Code = "G1", Name = "Grade 1", Level = 1, MinSalary = 3000, MidSalary = 4500, MaxSalary = 6000, Currency = "SAR" });
+        // Addendum B: the sister's own department and grade.
+        db.Departments.Add(new Department { TenantId = tenantId, CompanyId = sister.Id, Code = "HR", NameEn = "Human Resources", BranchId = sisterBranch.Id, CostCenterId = sisterCc.Id });
+        db.Grades.Add(new Grade { TenantId = tenantId, CompanyId = sister.Id, Code = "G1", Name = "Grade 1", Level = 1, MinSalary = 3000, MidSalary = 4500, MaxSalary = 6000, Currency = "SAR" });
         await db.SaveChangesAsync();
 
         var adminId = await AddUserAsync(tenantId, "Group Admin", adminRole.Id, groupScope: true);
@@ -147,7 +148,7 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
             [new CompanySetupCostCentre("CC_OPS_EX", "Operations cost centre", null)],
             [new CompanySetupDepartment("OPS_EX", "Operations", null, null, "JED", "CC_OPS_EX")],
             [new CompanySetupDesignation("OPS_OFF_EX", "Operations Officer", null, "OPS_EX", "G1")],
-            [],
+            [new CompanySetupGrade("G1", "Grade 1", null, 1, 3000, 4500, 6000)],
             new CompanySetupRules(new CompanySetupWorkWeek("Fri,Sat", false), new CompanySetupPackChoice(true), new CompanySetupPackChoice(true),
                 new CompanySetupEmployeeNumbering("EGC", true, false, true, true, 4, 1)),
             new CompanySetupCompanyAdmin(V.AdminGroupOnly, null, null, null, null));
@@ -528,7 +529,8 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         var body = await PrefillAsync(w, w.SisterId);
         body.Branches!.Should().ContainSingle().Which.ExistingId.Should().NotBeNull();
         body.CostCentres!.Should().ContainSingle(c => c.Code == "CC_HR").Which.ExistingId.Should().NotBeNull();
-        body.Departments!.Should().ContainSingle(d => d.Code == "HR").Which.ExistingId.Should().NotBeNull("referenced by the company's branch");
+        body.Departments!.Should().ContainSingle(d => d.Code == "HR").Which.ExistingId.Should().NotBeNull("the company's own department");
+        body.Grades!.Should().ContainSingle(g => g.Code == "G1").Which.Baseline.Should().NotBeNull("A9 covers grades too");
         var plan = await DryRunAsync(w, body);
         plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
         plan.Items.Single(i => i.Area == V.Areas.EmployeeIdRule).Action.Should().Be(V.ActionCreate);
@@ -619,20 +621,17 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     }
 
     [Fact]
-    public async Task A_company_super_admin_cannot_add_shared_catalog_codes_but_may_add_a_company_admin_for_their_own_company()
+    public async Task A_company_super_admin_may_add_organisation_rows_and_a_company_admin_for_their_own_company()
     {
+        // Addendum B: no shared group catalog — a company super admin manages their own company's departments.
         var w = await SeedAsync();
         var caller = Caller(w, w.CompanyAdminId, w.SisterId);
         var body = await PrefillAsync(w, w.SisterId, caller);
-        body.Departments!.Should().NotContain(d => d.ExistingId == null, "the prefill offers a company admin no new shared codes");
-        body.Grades!.Should().NotContain(g => g.ExistingId == null);
-        body.Designations!.Should().NotContain(d => d.ExistingId == null);
-
         var added = body with { Departments = [.. body.Departments!, new CompanySetupDepartment("FIN_NEW", "Finance", null, null, "HQ", null)] };
         var plan = await DryRunAsync(w, added, caller);
-        plan.Ok.Should().BeFalse();
-        plan.Items.Should().Contain(i => i.Code == "FIN_NEW" && i.Action == V.ActionConflict);
-        plan.Problems.Should().Contain(p => p.Code == "shared_catalog_needs_group_scope");
+        plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
+        plan.Items.Should().Contain(i => i.Code == "FIN_NEW" && i.Action == V.ActionCreate);
+        plan.Problems.Should().NotContain(p => p.Code == "shared_catalog_needs_group_scope");
 
         // Step 6: another company-scoped admin for their own company (never group scope).
         var invite = body with { CompanyAdmin = new CompanySetupCompanyAdmin(V.AdminInvite, null, "Second Admin", null, "second.admin@sister.example") };
@@ -669,12 +668,13 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     }
 
     [Fact]
-    public async Task A_company_super_admin_never_writes_workspace_wide_defaults_and_is_told_so()
+    public async Task Statutory_leave_is_judged_and_installed_for_the_company_and_workspace_country_settings_stay_group_only()
     {
+        // Owner decision 2026-10-23: leave types and policies are per company. The sister has none: a company super admin
+        // completing it installs the pack's policies FOR the sister; the workspace-wide country settings stay group-only.
         var w = await SeedAsync();
         await using (var db = fixture.CreateDb())
         {
-            db.LeavePolicies.RemoveRange(await db.LeavePolicies.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId).ToListAsync());
             db.GCCComplianceSettings.RemoveRange(await db.GCCComplianceSettings.IgnoreQueryFilters().Where(x => x.TenantId == w.TenantId && x.CompanyId == null).ToListAsync());
             await db.SaveChangesAsync();
         }
@@ -682,17 +682,25 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         var body = await PrefillAsync(w, w.SisterId, caller);
         var plan = await DryRunAsync(w, body, caller);
         plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
-        plan.Items.Should().NotContain(i => (i.Area == V.Areas.LeavePolicy || i.Area == V.Areas.GccSetting) && i.Action == V.ActionCreate);
-        plan.Warnings.Count(x => x.Code == "workspace_defaults_need_group_scope").Should().Be(2);
+        plan.Items.Where(i => i.Area == V.Areas.LeavePolicy).Should().NotBeEmpty().And.OnlyContain(i => i.Action == V.ActionCreate);
+        plan.Items.Should().NotContain(i => i.Area == V.Areas.GccSetting && i.Action == V.ActionCreate);
+        plan.Warnings.Count(x => x.Code == "workspace_defaults_need_group_scope").Should().Be(1, "only the country settings are workspace-wide now");
         var (_, result) = await DraftAndCommitAsync(w, body, caller);
         result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+        result.Value!.Readiness.Single(r => r.Key == "leavePolicies").Status.Should().Be(V.ReadinessDone);
         await using var verify = fixture.CreateDb();
-        (await verify.LeavePolicies.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.TenantId)).Should().Be(0);
+        (await verify.LeavePolicies.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.TenantId && x.CompanyId == w.SisterId && x.CountryCode == "SA"))
+            .Should().Be(plan.Items.Count(i => i.Area == V.Areas.LeavePolicy));
+        (await verify.LeavePolicies.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.TenantId && x.CompanyId == null)).Should().Be(0);
         (await verify.GCCComplianceSettings.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.TenantId && x.CompanyId == null)).Should().Be(0);
-        // The group admin's plan for the same company does add them.
-        var groupPlan = await DryRunAsync(w, await PrefillAsync(w, w.SisterId));
-        groupPlan.Items.Should().Contain(i => i.Area == V.Areas.GccSetting && i.Action == V.ActionCreate);
-        groupPlan.Items.Should().Contain(i => i.Area == V.Areas.LeavePolicy && i.Action == V.ActionCreate);
+
+        // The company that already has its policies reuses them; another company's policies never count for it.
+        var again = await DryRunAsync(w, await PrefillAsync(w, w.SisterId));
+        again.Items.Where(i => i.Area == V.Areas.LeavePolicy).Should().OnlyContain(i => i.Action == V.ActionReuse);
+        again.Items.Where(i => i.Area == V.Areas.LeavePolicy && i.Reason != null).Should().OnlyContain(i => i.ReasonAr != null);
+        var groupPlan = await DryRunAsync(w, await PrefillAsync(w, w.CompanyId));
+        groupPlan.Items.Where(i => i.Area == V.Areas.LeavePolicy).Should().OnlyContain(i => i.Action == V.ActionReuse, "the company under test installed its own");
+        groupPlan.Items.Should().Contain(i => i.Area == V.Areas.GccSetting && i.Action == V.ActionCreate, "a group admin adds the workspace country settings");
     }
 
     [Fact]
@@ -1018,6 +1026,381 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         read!.Body.Company.CutoverStatus.Should().Be(CutoverStatuses.Active, "a draft read reports the status now, not when it was saved");
         read.Body.Company.Baseline.Should().BeEquivalentTo(body.Company.Baseline);
         read.Body.Branches!.Select(b => b.Baseline).Should().BeEquivalentTo(body.Branches!.Select(b => b.Baseline));
+    }
+
+    // ── Addendum B2: live section saves ─────────────────────────────────────────────────────────────────
+
+    private async Task<CompanySetupDraft> NewDraftAsync(World w, CompanySetupDraftBody body, CompanySetupCaller? caller = null)
+    {
+        await using var db = fixture.CreateDb();
+        var created = await Service(db).CreateDraftAsync(caller ?? Caller(w), body, default);
+        created.Status.Should().Be(201, JsonSerializer.Serialize(created.Error));
+        return created.Value!;
+    }
+
+    private async Task<CompanySetupOutcome<SectionApplyResult>> ApplyAsync(World w, Guid draftId, string section, int version, CompanySetupCaller? caller = null)
+    {
+        await using var db = fixture.CreateDb();
+        return await Service(db).ApplySectionAsync(caller ?? Caller(w), draftId, section, new CompanySetupSectionApplyRequest(version), default);
+    }
+
+    private async Task<CompanySetupDraft> SavedDraftAsync(World w, Guid id)
+    {
+        await using var db = fixture.CreateDb();
+        return (await Service(db).GetDraftAsync(Caller(w), id, default))!;
+    }
+
+    [Fact]
+    public async Task Each_section_saves_live_rebases_the_draft_and_the_final_commit_sees_it_unchanged()
+    {
+        var w = await SeedAsync();
+        var prefill = await PrefillAsync(w, w.CompanyId);
+        prefill.CostCentres!.Should().ContainSingle().Which.Baseline.Should().ContainKey("nameAr");
+        prefill.Departments!.Should().OnlyContain(d => d.Baseline != null);
+        prefill.Designations!.Should().OnlyContain(d => d.Baseline != null);
+        prefill.Grades!.Should().OnlyContain(g => g.Baseline != null);
+        var body = prefill with
+        {
+            // An Arabic name on an existing cost centre (stored since Addendum B) and a new cost centre.
+            CostCentres = [prefill.CostCentres![0] with { NameAr = "مركز العمليات" }, new CompanySetupCostCentre("CC_NEW_EX", "New cost centre", "مركز جديد")],
+            Grades = [.. prefill.Grades!, new CompanySetupGrade("G2", "Grade 2", "الدرجة 2", 2, 5000, 6000, 7000)],
+            Departments = [.. prefill.Departments!, new CompanySetupDepartment("DEP2", "Projects", "المشاريع", "OPS_EX", "JED", "CC_NEW_EX")],
+            Designations = [.. prefill.Designations!, new CompanySetupDesignation("DES2", "Project Lead", null, "DEP2", "G2")],
+        };
+        var review = await DryRunAsync(w, body with { Branches = body.Branches!.Select(b => b with { City = b.City + " (edited)" }).ToList() });
+        review.Items.Should().Contain(i => i.Action == V.ActionUpdate);
+        review.Items.Where(i => i.Reason != null && string.IsNullOrWhiteSpace(i.ReasonAr))
+            .Select(i => $"{i.Area}:{i.Reason}").Should().BeEmpty("the Arabic review shows every reason");
+        var draft = await NewDraftAsync(w, body);
+        var version = draft.Version;
+
+        var cc = await ApplyAsync(w, draft.Id, V.Sections.CostCentres, version);
+        cc.Status.Should().Be(200, JsonSerializer.Serialize(cc.Error));
+        cc.Value!.Should().Match<SectionApplyResult>(r => r.Section == "costCentres" && r.Created == 1 && r.Updated == 1 && r.Unchanged == 0 && !r.Replayed);
+        cc.Value.Draft.Version.Should().Be(version + 1);
+        cc.Value.Draft.Step.Should().Be(4);
+        cc.Value.Draft.Body.CostCentres!.Should().OnlyContain(x => x.ExistingId != null && x.Baseline != null);
+        cc.Value.Draft.Body.CostCentres!.Select(x => x.Code).Should().Equal("CC_OPS_EX", "CC_NEW_EX");
+        cc.Value.Draft.Body.Departments!.Single(d => d.Code == "DEP2").ExistingId.Should().BeNull("other sections are untouched");
+        version = cc.Value.Draft.Version;
+
+        var grades = await ApplyAsync(w, draft.Id, V.Sections.Grades, version);
+        grades.Status.Should().Be(200, JsonSerializer.Serialize(grades.Error));
+        grades.Value!.Created.Should().Be(1);
+        grades.Value.Unchanged.Should().Be(1);
+        version = grades.Value.Draft.Version;
+
+        var departments = await ApplyAsync(w, draft.Id, V.Sections.Departments, version);
+        departments.Status.Should().Be(200, JsonSerializer.Serialize(departments.Error));
+        departments.Value!.Created.Should().Be(1);
+        version = departments.Value.Draft.Version;
+
+        var designations = await ApplyAsync(w, draft.Id, V.Sections.Designations, version);
+        designations.Status.Should().Be(200, JsonSerializer.Serialize(designations.Error));
+        designations.Value!.Created.Should().Be(1);
+        version = designations.Value.Draft.Version;
+
+        await using (var db = fixture.CreateDb())
+        {
+            var ops = await db.CostCenters.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Code == "CC_OPS_EX");
+            ops.NameAr.Should().Be("مركز العمليات", "the cost centre's Arabic name is stored");
+            var newCc = await db.CostCenters.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Code == "CC_NEW_EX");
+            newCc.CompanyId.Should().Be(w.CompanyId);
+            newCc.NameAr.Should().Be("مركز جديد");
+            var g2 = await db.Grades.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Code == "G2");
+            g2.CompanyId.Should().Be(w.CompanyId);
+            g2.Currency.Should().Be("SAR");
+            var dep2 = await db.Departments.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Code == "DEP2");
+            dep2.CompanyId.Should().Be(w.CompanyId);
+            dep2.CostCenterId.Should().Be(newCc.Id);
+            var des2 = await db.Designations.IgnoreQueryFilters().SingleAsync(x => x.TenantId == w.TenantId && x.Code == "DES2");
+            des2.CompanyId.Should().Be(w.CompanyId);
+            des2.DepartmentId.Should().Be(dep2.Id);
+            des2.GradeId.Should().Be(g2.Id);
+            (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.SectionAppliedAction && a.EntityId == draft.Id.ToString()))
+                .Should().Be(4, "one marker per section save");
+            var marker = await db.AuditLogs.IgnoreQueryFilters().FirstAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.SectionAppliedAction);
+            marker.CompanyId.Should().Be(w.CompanyId);
+            marker.Metadata.Should().Contain("\"draftId\"").And.Contain("\"section\"").And.Contain("\"fromVersion\"").And.Contain("\"counts\"");
+        }
+
+        // The final commit: the saved sections are unchanged, so it writes nothing for them.
+        var saved = await SavedDraftAsync(w, draft.Id);
+        saved.Version.Should().Be(version);
+        var plan = await DryRunAsync(w, saved.Body);
+        plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
+        plan.Items.Where(i => i.Area is "costCentre" or "department" or "designation" or "grade").Should().OnlyContain(i => i.Action == V.ActionUnchanged,
+            JsonSerializer.Serialize(plan.Items.Where(i => i.Area is "costCentre" or "department" or "designation" or "grade" && i.Action != V.ActionUnchanged)));
+        var before = await FingerprintAsync(w.TenantId);
+        await using var commitDb = fixture.CreateDb();
+        var commit = await Service(commitDb).CommitAsync(Caller(w), new CompanySetupCommitRequest(draft.Id, saved.Version), draft.Id, default);
+        commit.Status.Should().Be(201, JsonSerializer.Serialize(commit.Error));
+        commit.Value!.Created.Should().BeEmpty();
+        commit.Value.Updated.Should().BeEmpty();
+        (await FingerprintAsync(w.TenantId)).Should().Be(before);
+    }
+
+    [Fact]
+    public async Task A_section_save_retried_with_the_previous_version_replays_and_a_stale_version_is_409()
+    {
+        var w = await SeedAsync();
+        var prefill = await PrefillAsync(w, w.CompanyId);
+        var draft = await NewDraftAsync(w, prefill with { Grades = [.. prefill.Grades!, new CompanySetupGrade("G3", "Grade 3", null, 3, 1, 2, 3)] });
+        var first = await ApplyAsync(w, draft.Id, V.Sections.Grades, draft.Version);
+        first.Status.Should().Be(200, JsonSerializer.Serialize(first.Error));
+
+        var retry = await ApplyAsync(w, draft.Id, V.Sections.Grades, draft.Version);
+        retry.Status.Should().Be(200, JsonSerializer.Serialize(retry.Error));
+        retry.Value!.Replayed.Should().BeTrue();
+        retry.Value.Created.Should().Be(1, "the counts of the save that landed");
+        retry.Value.Draft.Version.Should().Be(draft.Version + 1);
+        await using (var db = fixture.CreateDb())
+        {
+            (await db.Grades.IgnoreQueryFilters().CountAsync(g => g.TenantId == w.TenantId && g.Code == "G3")).Should().Be(1, "a blind retry never writes twice");
+            (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.SectionAppliedAction)).Should().Be(1);
+        }
+
+        // One behind, but for a section that was not the one saved: stale.
+        var otherSection = await ApplyAsync(w, draft.Id, V.Sections.Departments, draft.Version);
+        otherSection.Status.Should().Be(409);
+        ErrorCode(otherSection.Error).Should().Be("draft_version_stale");
+        ErrorBody(otherSection.Error).GetProperty("currentVersion").GetInt32().Should().Be(draft.Version + 1);
+        // Two behind / ahead: stale.
+        (await ApplyAsync(w, draft.Id, V.Sections.Grades, draft.Version + 5)).Status.Should().Be(409);
+        // An autosave holding the old version is stale too (the draft moved on).
+        await using var putDb = fixture.CreateDb();
+        (await Service(putDb).UpdateDraftAsync(Caller(w), draft.Id, new CompanySetupDraftUpdate(draft.Version, 4, draft.Body), default)).Status.Should().Be(409);
+        (await ApplyAsync(w, draft.Id, "branches", draft.Version + 1)).Status.Should().Be(400);
+    }
+
+    [Fact]
+    public async Task A_create_mode_draft_cannot_save_a_section()
+    {
+        var w = await SeedAsync();
+        var draft = await NewDraftAsync(w, NewCompanyBody() with
+        {
+            Company = NewCompanyBody().Company with { LegalNameEn = "Another Co", RegistrationNumber = "1010000078" },
+        });
+        var outcome = await ApplyAsync(w, draft.Id, V.Sections.CostCentres, draft.Version);
+        outcome.Status.Should().Be(409);
+        ErrorCode(outcome.Error).Should().Be("section_apply_needs_company");
+    }
+
+    [Fact]
+    public async Task A_link_to_a_row_of_another_section_that_is_not_saved_yet_is_reference_not_saved_and_nothing_is_written()
+    {
+        var w = await SeedAsync();
+        var prefill = await PrefillAsync(w, w.CompanyId);
+        var body = prefill with
+        {
+            CostCentres = [.. prefill.CostCentres!, new CompanySetupCostCentre("CC_X", "Unsaved", null)],
+            Departments = [.. prefill.Departments!, new CompanySetupDepartment("DEP_X", "X", null, "DEP_Y", null, "CC_X"),
+                new CompanySetupDepartment("DEP_Y", "Y", null, null, null, null)],
+            Designations = [.. prefill.Designations!, new CompanySetupDesignation("DES_X", "X", null, "DEP_X", "G1")],
+        };
+        var draft = await NewDraftAsync(w, body);
+        var before = await FingerprintAsync(w.TenantId);
+        var departments = await ApplyAsync(w, draft.Id, V.Sections.Departments, draft.Version);
+        departments.Status.Should().Be(422, JsonSerializer.Serialize(departments.Error));
+        ErrorCode(departments.Error).Should().Be("reference_not_saved");
+        var plan = ErrorBody(departments.Error).GetProperty("plan");
+        var problem = plan.GetProperty("problems").EnumerateArray().Single(p => p.GetProperty("code").GetString() == "reference_not_saved");
+        problem.GetProperty("field").GetString().Should().Be($"departments.{prefill.Departments!.Count}.costCentreCode");
+        problem.GetProperty("message").GetString().Should().Contain("CC_X");
+        problem.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
+        plan.GetProperty("problems").EnumerateArray().Should().NotContain(p => p.GetProperty("field").GetString()!.EndsWith(".parentCode"),
+            "a parent may be new in the same section");
+        var designations = await ApplyAsync(w, draft.Id, V.Sections.Designations, draft.Version);
+        designations.Status.Should().Be(422);
+        ErrorCode(designations.Error).Should().Be("reference_not_saved");
+        (await FingerprintAsync(w.TenantId)).Should().Be(before, "a refused save writes nothing");
+        (await SavedDraftAsync(w, draft.Id)).Version.Should().Be(draft.Version, "nor moves the draft");
+
+        // Saving cost centres first unblocks departments (the parent new in the same section included).
+        var cc = await ApplyAsync(w, draft.Id, V.Sections.CostCentres, draft.Version);
+        cc.Status.Should().Be(200, JsonSerializer.Serialize(cc.Error));
+        var dept = await ApplyAsync(w, draft.Id, V.Sections.Departments, cc.Value!.Draft.Version);
+        dept.Status.Should().Be(200, JsonSerializer.Serialize(dept.Error));
+        await using var db = fixture.CreateDb();
+        var x = await db.Departments.IgnoreQueryFilters().SingleAsync(d => d.TenantId == w.TenantId && d.Code == "DEP_X");
+        x.ParentDepartmentId.Should().Be((await db.Departments.IgnoreQueryFilters().SingleAsync(d => d.TenantId == w.TenantId && d.Code == "DEP_Y")).Id);
+    }
+
+    [Fact]
+    public async Task Problems_in_other_steps_do_not_block_a_section_save()
+    {
+        var w = await SeedAsync();
+        var prefill = await PrefillAsync(w, w.CompanyId);
+        var body = prefill with
+        {
+            Company = prefill.Company with { LegalNameEn = "" },
+            Branches = prefill.Branches!.Select((b, i) => i == 0 ? b with { City = "" } : b).ToList(),
+            CostCentres = [.. prefill.CostCentres!, new CompanySetupCostCentre("", "No code", null)],
+            Grades = [.. prefill.Grades!, new CompanySetupGrade("G4", "Grade 4", null, 4, 1, 2, 3)],
+        };
+        var draft = await NewDraftAsync(w, body);
+        var plan = await DryRunAsync(w, body);
+        plan.Ok.Should().BeFalse("the whole commit is still blocked");
+        var grades = await ApplyAsync(w, draft.Id, V.Sections.Grades, draft.Version);
+        grades.Status.Should().Be(200, JsonSerializer.Serialize(grades.Error));
+        grades.Value!.Created.Should().Be(1);
+        var cc = await ApplyAsync(w, draft.Id, V.Sections.CostCentres, grades.Value.Draft.Version);
+        cc.Status.Should().Be(422, "its own section's problem blocks it");
+        var error = ErrorBody(cc.Error);
+        error.GetProperty("field").GetString().Should().Be($"costCentres.{prefill.CostCentres!.Count}.code");
+        error.GetProperty("plan").GetProperty("problems").EnumerateArray().Select(p => p.GetProperty("field").GetString())
+            .Should().OnlyContain(f => f!.StartsWith("costCentres."), "the refusal's plan is limited to the section");
+    }
+
+    [Fact]
+    public async Task A_company_super_admin_saves_sections_of_their_own_company_only()
+    {
+        var w = await SeedAsync();
+        var mine = Caller(w, w.CompanyAdminId, w.SisterId);
+        var sisterBody = await PrefillAsync(w, w.SisterId, mine);
+        var ownDraft = await NewDraftAsync(w, sisterBody with { Grades = [.. sisterBody.Grades!, new CompanySetupGrade("G5", "Grade 5", null, 5, 1, 2, 3)] }, mine);
+        var own = await ApplyAsync(w, ownDraft.Id, V.Sections.Grades, ownDraft.Version, mine);
+        own.Status.Should().Be(200, JsonSerializer.Serialize(own.Error));
+
+        var otherDraft = await NewDraftAsync(w, await PrefillAsync(w, w.CompanyId));
+        await using var db = fixture.CreateDb();
+        var controller = Controller(db, w.TenantId, w.CompanyAdminId, scopedCompany: w.SisterId);
+        var refused = (ObjectResult)(await controller.ApplySection(otherDraft.Id, V.Sections.Grades, new CompanySetupSectionApplyRequest(otherDraft.Version), default)).Result!;
+        refused.StatusCode.Should().Be(403);
+        ErrorCode(refused.Value).Should().Be(CompanySetupGates.CompanyNotManageableCode);
+        await using var hrDb = fixture.CreateDb();
+        var hr = Controller(hrDb, w.TenantId, w.HrManagerId, scopedCompany: w.SisterId, role: "HR Manager");
+        ((ObjectResult)(await hr.ApplySection(ownDraft.Id, V.Sections.Grades, new CompanySetupSectionApplyRequest(own.Value!.Draft.Version), default)).Result!)
+            .StatusCode.Should().Be(403, "a company-scoped HR Manager is not a company super admin");
+    }
+
+    [Fact]
+    public async Task A_department_renamed_elsewhere_stands_when_untouched_and_is_a_conflict_when_also_edited()
+    {
+        var w = await SeedAsync();
+        var body = await PrefillAsync(w, w.CompanyId);
+        var index = body.Departments!.FindIndex(d => d.Code == "OPS_EX");
+        await using (var db = fixture.CreateDb())
+        {
+            var row = await db.Departments.IgnoreQueryFilters().SingleAsync(d => d.TenantId == w.TenantId && d.Code == "OPS_EX");
+            row.NameEn = "Operations (renamed elsewhere)";
+            await db.SaveChangesAsync();
+        }
+        var untouched = await DryRunAsync(w, body);
+        untouched.Ok.Should().BeTrue(JsonSerializer.Serialize(untouched.Problems));
+        untouched.Items.Single(i => i.Area == "department" && i.Code == "OPS_EX").Action.Should().Be(V.ActionUnchanged, "the newer database value stands");
+
+        var edited = body with { Departments = body.Departments!.Select((d, i) => i == index ? d with { NameEn = "Operations (mine)" } : d).ToList() };
+        var conflict = await DryRunAsync(w, edited);
+        conflict.Ok.Should().BeFalse();
+        var problem = conflict.Problems.Single(p => p.Code == CompanySetupBaseline.ChangedCode);
+        problem.Field.Should().Be($"departments.{index}.nameEn");
+        problem.Current.Should().Be("Operations (renamed elsewhere)");
+        problem.MessageAr.Should().NotBeNullOrWhiteSpace();
+        var draft = await NewDraftAsync(w, edited);
+        var save = await ApplyAsync(w, draft.Id, V.Sections.Departments, draft.Version);
+        save.Status.Should().Be(422);
+        ErrorCode(save.Error).Should().Be(CompanySetupBaseline.ChangedCode);
+    }
+
+    [Fact]
+    public async Task A_cost_centre_code_clashes_only_with_the_company_s_own_codes_removed_ones_included()
+    {
+        var w = await SeedAsync();
+        await using (var db = fixture.CreateDb())
+        {
+            db.CostCenters.Add(new CostCenter { TenantId = w.TenantId, CompanyId = w.CompanyId, Code = "CC_OLD", Name = "Removed", IsActive = false, IsDeleted = true });
+            await db.SaveChangesAsync();
+        }
+        var prefill = await PrefillAsync(w, w.CompanyId);
+        prefill.CostCentres!.Should().NotContain(c => c.Code == "CC_OLD", "a removed row is not offered");
+        var n = prefill.CostCentres!.Count;
+        var body = prefill with
+        {
+            CostCentres = [.. prefill.CostCentres!, new CompanySetupCostCentre("CC_HR", "Sister's code", null),
+                new CompanySetupCostCentre("CC_OLD", "Removed code", null), new CompanySetupCostCentre("CC_OPS_EX", "Own live code", null)],
+        };
+        var plan = await DryRunAsync(w, body);
+        plan.Items.Should().Contain(i => i.Area == "costCentre" && i.Code == "CC_HR" && i.Action == V.ActionCreate, "the sister's code is free in this company");
+        plan.Problems.Should().Contain(p => p.Code == "cost_centre_code_taken" && p.Field == $"costCentres.{n + 1}.code");
+        plan.Problems.Should().Contain(p => p.Field == $"costCentres.{n + 2}.code", "a new row may not reuse a live code of the company");
+        plan.Problems.Where(p => p.Code == "cost_centre_code_taken").Should().OnlyContain(p => p.MessageAr != null);
+    }
+
+    // ── Addendum B3: copy from a sister company ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Copy_rows_is_group_scope_only_and_returns_new_rows_by_value()
+    {
+        var w = await SeedAsync();
+        await using var db = fixture.CreateDb();
+        var controller = Controller(db, w.TenantId, w.AdminId);
+        var departments = (ObjectResult)(await controller.CopyRows(w.SisterId, V.Sections.Departments, default)).Result!;
+        departments.StatusCode.Should().Be(200);
+        var rows = (CopyRows)departments.Value!;
+        rows.Section.Should().Be("departments");
+        rows.FromCompanyId.Should().Be(w.SisterId);
+        var hr = rows.Departments!.Should().ContainSingle().Which;
+        hr.Code.Should().Be("HR");
+        hr.ExistingId.Should().BeNull();
+        hr.Baseline.Should().BeNull();
+        hr.BranchCode.Should().Be("HQ", "links kept by code");
+        hr.CostCentreCode.Should().Be("CC_HR", "links kept by code; the copied cost centre has the same code in this company");
+        var json = JsonSerializer.Serialize(rows, Web);
+        json.Should().Contain("\"section\":\"departments\"").And.Contain("\"fromCompanyId\"").And.NotContain("\"grades\"").And.NotContain("existingId");
+
+        var costCentres = (CopyRows)((ObjectResult)(await controller.CopyRows(w.SisterId, V.Sections.CostCentres, default)).Result!).Value!;
+        costCentres.CostCentres!.Should().ContainSingle().Which.Code.Should().Be("CC_HR", "cost-centre codes are per company: copied as they are");
+        var grades = (CopyRows)((ObjectResult)(await controller.CopyRows(w.SisterId, V.Sections.Grades, default)).Result!).Value!;
+        grades.Grades!.Should().ContainSingle().Which.Should().Match<CompanySetupGrade>(g => g.Code == "G1" && g.ExistingId == null);
+
+        ((ObjectResult)(await controller.CopyRows(Guid.NewGuid(), V.Sections.Grades, default)).Result!).StatusCode.Should().Be(404);
+        ((ObjectResult)(await controller.CopyRows(w.SisterId, "branches", default)).Result!).StatusCode.Should().Be(400);
+        await using var scopedDb = fixture.CreateDb();
+        var scoped = Controller(scopedDb, w.TenantId, w.CompanyAdminId, scopedCompany: w.SisterId);
+        ((ObjectResult)(await scoped.CopyRows(w.SisterId, V.Sections.Grades, default)).Result!).StatusCode.Should().Be(403);
+    }
+
+    // ── Data-entry audit, end to end ─────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Arabic_digits_are_accepted_a_bad_saudi_vat_is_refused_and_a_zero_zero_location_has_no_geofence()
+    {
+        var w = await SeedAsync();
+        var typed = NewCompanyBody() with
+        {
+            Company = NewCompanyBody().Company with
+            {
+                LegalNameEn = "Digits Co", RegistrationNumber = "١٠١٠ ٠٠٠-٠٧٩", MolEstablishmentNumber = "٧-١٢٣٤٥٦٧", UnifiedNationalNumber = "۷۰۰ ۱۲۳ ۴۵۶۷",
+                TaxNumber = "300000000000004",
+            },
+            Branches = [new CompanySetupBranch("JED", "Jeddah HQ", null, "Jeddah", "Asia/Riyadh", true,
+                [new CompanySetupLocation("JED-ZZ", "Unplaced site", null, 0m, 0m, 150m)])],
+            CostCentres = [new CompanySetupCostCentre("CC_DIG", "Digits", null)],
+            Departments = [], Designations = [], Grades = [],
+        };
+        var plan = await DryRunAsync(w, typed);
+        plan.Problems.Should().ContainSingle().Which.Should().Match<Problem>(p =>
+            p.Code == "vat_number_invalid" && p.Field == "company.taxNumber" && p.MessageAr != null);
+        plan.Warnings.Should().Contain(p => p.Code == "location_coordinates_missing" && p.Field == "branches.0.locations.0.latitude");
+
+        var fixedVat = typed with { Company = typed.Company with { TaxNumber = "٣٠٠٠٠٠٠٠٠٠٠٠٠٠٣" } };
+        var (_, result) = await DraftAndCommitAsync(w, fixedVat);
+        result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+        await using var db = fixture.CreateDb();
+        var company = await db.Companies.IgnoreQueryFilters().SingleAsync(c => c.Id == result.Value!.CompanyId);
+        company.RegistrationNumber.Should().Be("1010000079");
+        company.WpsEmployerId.Should().Be("7-1234567");
+        company.UnifiedNationalNumber.Should().Be("7001234567");
+        company.TaxNumber.Should().Be("300000000000003");
+        var site = await db.Locations.IgnoreQueryFilters().SingleAsync(l => l.TenantId == w.TenantId && l.Code == "JED-ZZ");
+        site.Latitude.Should().BeNull("0,0 is never written as a geofence");
+        site.Longitude.Should().BeNull();
+
+        await using var defaultsDb = fixture.CreateDb();
+        var bad = await Service(defaultsDb).GetDefaultsAsync(Caller(w), "XX", null, default);
+        ErrorBody(bad.Error).GetProperty("message").GetString().Should().Be("Choose the company's country from the list.");
+        ErrorBody(bad.Error).GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────────────────

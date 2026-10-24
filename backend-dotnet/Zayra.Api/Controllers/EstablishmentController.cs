@@ -576,9 +576,10 @@ public class EstablishmentController : ControllerBase
         // IgnoreQueryFilters is intentional: reconciliation must see every employee of the tenant regardless of the caller's company scope; explicit TenantId + !IsDeleted filters are applied inline.
         var deptsByName = (await _db.Departments.IgnoreQueryFilters().AsNoTracking()
                 .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive)
-                .Select(d => new { d.Id, d.NameEn })
+                .Select(d => new { d.Id, d.NameEn, d.CompanyId })
                 .ToListAsync(ct))
-            .GroupBy(d => d.NameEn)
+            // Addendum B: a department belongs to one company; a name matches within the employee's company.
+            .GroupBy(d => (d.CompanyId, d.NameEn))
             .ToDictionary(g => g.Key, g => g.ToList());
         var candidates = await _db.Employees.IgnoreQueryFilters()
             .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.DepartmentId == null && e.Department != "")
@@ -588,7 +589,8 @@ public class EstablishmentController : ControllerBase
         int ambiguous = 0, unmatched = 0;
         foreach (var employee in candidates)
         {
-            if (!deptsByName.TryGetValue(employee.Department, out var matches)) { unmatched++; continue; }
+            if (!deptsByName.TryGetValue((employee.CompanyId, employee.Department), out var matches)
+                && !deptsByName.TryGetValue((null, employee.Department), out matches)) { unmatched++; continue; }
             if (matches.Count != 1) { ambiguous++; continue; }
             employee.DepartmentId = matches[0].Id;
             employee.UpdatedAtUtc = DateTime.UtcNow;
