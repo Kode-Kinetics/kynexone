@@ -12,7 +12,7 @@ import {
 import {
   payrollApi,
   type PayrollRun, type PayrollSlip, type PayrollValidationResult,
-  type SalaryStructure, type EmployeeSalaryStructure, type Payslip,
+  type SalaryStructure, type EmployeeSalaryStructure, type Payslip, type GradePackage, type GradePackagesView,
   type PayrollPaymentBatch, type PayrollPaymentRecord, type WpsEvidenceKind,
   type PayrollApproval, type PayrollSummary,
   type PayrollGLJournal, type PayrollReconciliation, type FinalSettlementResult, type FinalSettlementListRow,
@@ -27,10 +27,11 @@ import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, typ
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { notifyApiError } from '../api/client';
-import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
+import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -44,21 +45,6 @@ import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
-// ── Payroll import/export helpers ───────────────────────────────────────────────
-
-const salaryStructuresImportExport = {
-  export: async () => {
-    const csv = await client.get<string>('/api/payroll/salary-structures/export', { responseType: 'text' }).then(r => r.data);
-    downloadCsv(csv, 'salary-structures.csv');
-  },
-  template: async () => {
-    const csv = await client.get<string>('/api/payroll/salary-structures/import-template', { responseType: 'text' }).then(r => r.data);
-    downloadCsv(csv, 'salary-structures-template.csv');
-  },
-  import: (csvContent: string) =>
-    client.post<{ received: number; created: number; skipped: number; errors: string[] }>('/api/payroll/salary-structures/import', { csvContent }).then(r => r.data),
-};
-
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
@@ -151,7 +137,7 @@ type Tab = 'dashboard' | 'salary-structures' | 'employee-salary' | 'runs' | 'val
 
 const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: 'dashboard',        label: 'Dashboard',          icon: BarChart2 },
-  { key: 'salary-structures', label: 'Salary Structures',  icon: Layers3 },
+  { key: 'salary-structures', label: 'Grade Packages',     icon: Layers3 },
   { key: 'employee-salary',  label: 'Employee Salary',     icon: Users },
   { key: 'runs',             label: 'Payroll Runs',        icon: Play },
   { key: 'validation',       label: 'Validation',          icon: AlertTriangle },
@@ -746,7 +732,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
           {([
             ['New Payroll Run', 'runs', Plus],
-            ['Salary Structures', 'salary-structures', Layers3],
+            ['Grade Packages', 'salary-structures', Layers3],
             ['Employee Salary', 'employee-salary', Users],
             ['Validation', 'validation', AlertTriangle],
             ['Approvals', 'approvals', CheckCircle2],
@@ -766,263 +752,110 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
   );
 }
 
-// ── Salary Structures Tab ───────────────────────────────────────────────────────
+// ── Grade packages (read-only) ─────────────────────────────────────────────────
+// The grade is the one place a pay package is defined (Setup → Grades); its salary structure is derived from it. This tab
+// shows what payroll will use and links to the grade. Older hand-made structures that still have people on them are
+// listed apart, read-only — nothing is deleted or rewritten.
 
-type SalaryComponentForm = {
-  code: string;
-  name: string;
-  componentType: string;
-  calculationType: string;
-  amount: string;
-  percentage: string;
-  isTaxable: boolean;
-  isActive: boolean;
-};
+function GradePackagesTab() {
+  const t = useT();
+  const fmt = useFormat();
+  const { locale } = useLocale();
+  const [view, setView] = useState<GradePackagesView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
 
-const defaultSalaryComponents: SalaryComponentForm[] = [
-  { code: 'BASIC', name: 'Basic Salary', componentType: 'Earning', calculationType: 'Fixed', amount: '', percentage: '', isTaxable: true, isActive: true },
-  { code: 'HOUSING', name: 'Housing Allowance', componentType: 'Earning', calculationType: 'Percentage', amount: '', percentage: '25', isTaxable: false, isActive: true },
-  { code: 'TRANSPORT', name: 'Transport Allowance', componentType: 'Earning', calculationType: 'Fixed', amount: '', percentage: '', isTaxable: false, isActive: true },
-];
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setFailed(false);
+    payrollApi.gradePackages()
+      .then((v) => { if (!cancelled) setView(v); })
+      .catch(() => { if (!cancelled) setFailed(true); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
 
-function SalaryStructureModal({ structure, companies, onClose, onSaved }: { structure?: SalaryStructure | null; companies: PayrollCompany[]; onClose: () => void; onSaved: () => void }) {
-  const { currencyCode } = useTenantSettings();
-  const [form, setForm] = useState({
-    code: structure?.code ?? '',
-    name: structure?.name ?? '',
-    currency: structure?.currency ?? currencyCode,
-    effectiveDate: (structure?.effectiveDate ?? new Date().toISOString()).slice(0, 10),
-    companyId: structure?.companyId ?? '',
-    isActive: structure?.isActive ?? true,
-    minGrossSalary: String(structure?.minGrossSalary || ''),
-    maxGrossSalary: String(structure?.maxGrossSalary || ''),
-    minBasicSalary: String(structure?.minBasicSalary || ''),
-    maxBasicSalary: String(structure?.maxBasicSalary || ''),
-  });
-  const [components, setComponents] = useState<SalaryComponentForm[]>(
-    structure?.components?.length
-      ? structure.components.map(c => ({
-          code: c.code,
-          name: c.name,
-          componentType: c.componentType,
-          calculationType: c.calculationType,
-          amount: String(c.amount || ''),
-          percentage: String(c.percentage || ''),
-          isTaxable: c.isTaxable,
-          isActive: c.isActive,
-        }))
-      : defaultSalaryComponents
-  );
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const set = (k: keyof typeof form, v: string | boolean) => setForm(f => ({ ...f, [k]: v }));
-  const setComponent = (idx: number, key: keyof SalaryComponentForm, value: string | boolean) =>
-    setComponents(rows => rows.map((row, i) => i === idx ? { ...row, [key]: value } : row));
-  const addComponent = () => setComponents(rows => [...rows, { code: '', name: '', componentType: 'Earning', calculationType: 'Fixed', amount: '', percentage: '', isTaxable: false, isActive: true }]);
-  const removeComponent = (idx: number) => setComponents(rows => rows.filter((_, i) => i !== idx));
-
-  const save = async () => {
-    if (!form.code || !form.name) { setError('Code and name are required.'); return; }
-    setSaving(true); setError('');
-    const payload = {
-      code: form.code.trim(),
-      name: form.name.trim(),
-      currency: form.currency || currencyCode,
-      effectiveDate: form.effectiveDate,
-      companyId: form.companyId || null,
-      isActive: form.isActive,
-      minGrossSalary: Number(form.minGrossSalary) || 0,
-      maxGrossSalary: Number(form.maxGrossSalary) || 0,
-      minBasicSalary: Number(form.minBasicSalary) || 0,
-      maxBasicSalary: Number(form.maxBasicSalary) || 0,
-      eligibleGradeIds: structure?.eligibleGradeIds ?? [],
-      eligibleDesignationIds: structure?.eligibleDesignationIds ?? [],
-      components: components
-        .filter(c => c.code.trim() || c.name.trim())
-        .map(c => ({
-          code: c.code.trim(),
-          name: c.name.trim() || c.code.trim(),
-          componentType: c.componentType,
-          calculationType: c.calculationType,
-          amount: Number(c.amount) || 0,
-          percentage: Number(c.percentage) || 0,
-          isTaxable: c.isTaxable,
-          isActive: c.isActive,
-        })),
-    };
-    try {
-      if (structure) await payrollApi.updateSalaryStructure(structure.id, payload);
-      else await payrollApi.createSalaryStructure(payload);
-      onSaved();
-    } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Save failed.');
-      setSaving(false);
-    }
-  };
+  const benefitsByGrade = view?.source === 'BenefitsByGrade';
+  const editHref = (gradeId: string) => (benefitsByGrade ? '/benefits/by-grade' : `/setup?tab=grades&grade=${encodeURIComponent(gradeId)}`);
+  const range = (p: GradePackage) => (p.maxSalary > 0 || p.minSalary > 0
+    ? `${fmt.money(p.minSalary, p.currency)} – ${p.maxSalary > 0 ? fmt.money(p.maxSalary, p.currency) : '∞'}`
+    : '—');
 
   return (
-    <Modal title={structure ? 'Edit Salary Structure' : 'New Salary Structure'} onClose={onClose} wide>
-      <div className="space-y-5">
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Code *" info="Short unique reference for this salary structure, e.g. GCC-STD. Used when assigning salaries to employees." infoKey="payroll.structure_code"><input aria-label="Structure code" className={inp} value={form.code} onChange={e => set('code', e.target.value)} placeholder="e.g. GCC-STD" /></Field>
-          <Field label="Name *"><input aria-label="Structure name" className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. GCC Standard" /></Field>
-        </div>
-        <div className="grid grid-cols-4 gap-3">
-          <Field label="Entity scope">
-            <select aria-label="Entity scope" className={sel} value={form.companyId} onChange={e => set('companyId', e.target.value)}>
-              <option value="">Shared across tenant</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name || c.tradeName}</option>)}
-            </select>
-          </Field>
-          <Field label="Currency">
-            <select aria-label="Currency" className={sel} value={form.currency || currencyCode} onChange={e => set('currency', e.target.value)}>
-              {['USD', 'GBP', 'EUR', 'CAD', 'AUD', 'SGD', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'EGP', 'INR', 'PKR', 'PHP', 'JOD', 'ZAR', 'NGN', 'KES'].map(c => <option key={c}>{c}</option>)}
-            </select>
-          </Field>
-          <Field label="Effective Date"><input type="date" aria-label="Effective date" className={inp} value={form.effectiveDate} onChange={e => set('effectiveDate', e.target.value)} /></Field>
-          <Field label="Status">
-            <select aria-label="Structure status" className={sel} value={form.isActive ? 'active' : 'inactive'} onChange={e => set('isActive', e.target.value === 'active')}>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </Field>
-        </div>
+    <div className="space-y-4" data-testid="grade-packages">
+      <div className="surface flex flex-wrap items-center gap-3 p-4">
+        <Layers3 className="h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" aria-hidden="true" />
+        <p className="min-w-0 flex-1 text-sm text-slate-700 dark:text-slate-300">
+          {benefitsByGrade
+            ? t('Grade benefits are set in Benefits by grade. This shows the cash lines payroll uses for each grade.')
+            : t('Pay packages are set on each grade in Setup. Payroll uses them as they are shown here.')}
+        </p>
+        <Link href={benefitsByGrade ? '/benefits/by-grade' : '/setup?tab=grades'} className={btn.ghost}>
+          {benefitsByGrade ? t('Open Benefits by grade') : t('Open Setup → Grades')}
+        </Link>
+      </div>
 
-        <div className="grid grid-cols-4 gap-3">
-          <Field label="Min gross"><input type="number" step="0.01" aria-label="Minimum gross salary" className={inp} value={form.minGrossSalary} onChange={e => set('minGrossSalary', e.target.value)} /></Field>
-          <Field label="Max gross"><input type="number" step="0.01" aria-label="Maximum gross salary" className={inp} value={form.maxGrossSalary} onChange={e => set('maxGrossSalary', e.target.value)} /></Field>
-          <Field label="Min basic"><input type="number" step="0.01" aria-label="Minimum basic salary" className={inp} value={form.minBasicSalary} onChange={e => set('minBasicSalary', e.target.value)} /></Field>
-          <Field label="Max basic"><input type="number" step="0.01" aria-label="Maximum basic salary" className={inp} value={form.maxBasicSalary} onChange={e => set('maxBasicSalary', e.target.value)} /></Field>
-        </div>
-
-        <div className="rounded-lg border border-slate-200 dark:border-white/10">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/10">
-            <p className="text-xs font-bold uppercase text-slate-500">Components</p>
-            <button type="button" className={btn.ghost} onClick={addComponent}><Plus className="h-4 w-4" /> Add Component</button>
+      {loading ? <p className="text-sm text-slate-500">{t('Loading…')}</p>
+        : failed ? <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{t('Grade packages could not be loaded.')}</p>
+        : !view || view.grades.length === 0 ? (
+          <div className="surface flex flex-col items-center py-16 text-center">
+            <Layers3 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" aria-hidden="true" />
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('No grades yet')}</p>
+            <p className="text-xs text-slate-500">{t('Add grades and their pay packages in Setup → Grades.')}</p>
           </div>
-          <div className="divide-y divide-slate-100 dark:divide-white/10">
-            {components.map((component, idx) => (
-              <div key={idx} className="grid gap-3 p-4 md:grid-cols-[1fr_1.4fr_1fr_1fr_.8fr_.8fr_auto]">
-                <Field label="Code"><input aria-label={`Component ${idx + 1} code`} className={inp} value={component.code} onChange={e => setComponent(idx, 'code', e.target.value)} placeholder="BASIC" /></Field>
-                <Field label="Name"><input aria-label={`Component ${idx + 1} name`} className={inp} value={component.name} onChange={e => setComponent(idx, 'name', e.target.value)} placeholder="Basic Salary" /></Field>
-                <Field label="Type">
-                  <select aria-label={`Component ${idx + 1} type`} className={sel} value={component.componentType} onChange={e => setComponent(idx, 'componentType', e.target.value)}>
-                    <option>Earning</option>
-                    <option>Deduction</option>
-                    <option>EmployerContribution</option>
-                  </select>
-                </Field>
-                <Field label="Calculation">
-                  <select aria-label={`Component ${idx + 1} calculation`} className={sel} value={component.calculationType} onChange={e => setComponent(idx, 'calculationType', e.target.value)}>
-                    <option>Fixed</option>
-                    <option>Percentage</option>
-                    <option>Formula</option>
-                  </select>
-                </Field>
-                <Field label="Amount"><input type="number" step="0.01" aria-label={`Component ${idx + 1} amount`} className={inp} value={component.amount} onChange={e => setComponent(idx, 'amount', e.target.value)} /></Field>
-                <Field label="%"><input type="number" step="0.01" aria-label={`Component ${idx + 1} percentage`} className={inp} value={component.percentage} onChange={e => setComponent(idx, 'percentage', e.target.value)} /></Field>
-                <div className="flex items-end gap-2">
-                  <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 px-3 text-xs text-slate-600 dark:border-white/10 dark:text-slate-300">
-                    <input type="checkbox" checked={component.isTaxable} onChange={e => setComponent(idx, 'isTaxable', e.target.checked)} />
-                    Taxable
-                  </label>
-                  <button type="button" className={btn.danger} onClick={() => removeComponent(idx)} aria-label={`Remove component ${idx + 1}`}><X className="h-4 w-4" /></button>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {view.grades.map((p) => (
+              <article key={p.gradeId} className="surface flex flex-col p-4" data-testid="grade-package-card">
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="font-semibold text-slate-900 dark:text-white">{locale === 'ar' && p.gradeNameAr ? p.gradeNameAr : p.gradeName}</h3>
+                    <p className="text-xs text-slate-500">{p.gradeCode} · {p.companyName ?? t('Shared by all companies')}</p>
+                  </div>
+                  {!p.isActive && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-300">{t('Inactive')}</span>}
                 </div>
+                {p.lines.length === 0 ? <p className="text-xs text-slate-500">{t('No package lines')}</p> : (
+                  <ul className="space-y-0.5 text-xs">
+                    {p.lines.map((l) => (
+                      <li key={l.code} className="flex justify-between gap-2">
+                        <span className="min-w-0 break-words text-slate-600 dark:text-slate-300">{l.name}{l.calculationType !== 'Fixed' && l.percentage > 0 ? ` (${fmt.percent(l.percentage, l.percentage % 1 === 0 ? 0 : 2)})` : ''}</span>
+                        <span className={`tabular-nums ${l.componentType === 'Deduction' ? 'text-rose-600' : 'text-slate-800 dark:text-slate-200'}`}>{fmt.money(l.periodAmount, p.currency)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="mt-3 border-t border-slate-100 pt-2 text-xs dark:border-white/10">
+                  <p className="flex justify-between font-semibold text-slate-900 dark:text-white"><span>{t('Gross monthly')}</span><span className="tabular-nums" data-testid="grade-package-gross">{fmt.money(p.monthlyGross, p.currency)}</span></p>
+                  <p className="text-slate-500">{t('Range {range}', { range: range(p) })}</p>
+                  {p.outsideRange && <p className="mt-0.5 flex items-center gap-1 text-amber-800 dark:text-amber-200"><AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" /> {t("Outside the grade's range")}</p>}
+                  <p className="text-slate-500">{t('{count, plural, one {# employee} other {# employees}}', { count: p.employeeCount })}</p>
+                  <p className="text-slate-500">{p.structureCode ? t('Salary structure {code} · version {version}', { code: p.structureCode, version: p.structureVersion ?? 1 }) : t('No salary structure yet')}</p>
+                </div>
+                <div className="mt-3 flex justify-end">
+                  <Link href={editHref(p.gradeId)} className={btn.sm}><Pencil className="h-3.5 w-3.5" aria-hidden="true" /> {t('Edit in Setup')}</Link>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+
+      {view && view.olderStructures.length > 0 && (
+        <section className="space-y-2" data-testid="older-structures">
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Older structures (read-only)')}</h3>
+          <p className="text-xs text-slate-500">{t("These structures are not a grade's package but still have employees on them. They keep working and are not changed. Move people onto a grade to retire them.")}</p>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {view.olderStructures.map((s) => (
+              <div key={s.id} className="surface p-3 text-xs">
+                <p className="font-semibold text-slate-900 dark:text-white">{s.name}</p>
+                <p className="text-slate-500">{s.code} · {s.companyName ?? t('Shared by all companies')}</p>
+                <p className="mt-1 text-slate-600 dark:text-slate-300">
+                  {t('{count, plural, one {# component} other {# components}}', { count: s.components?.length ?? 0 })} · {t('{count, plural, one {# employee} other {# employees}}', { count: s.assignedEmployeeCount ?? 0 })}
+                </p>
               </div>
             ))}
           </div>
-        </div>
-        {error && <p className="text-xs text-rose-500">{error}</p>}
-        <div className="flex justify-end gap-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : structure ? 'Save Structure' : 'Create Structure'}</button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function SalaryStructuresTab() {
-  const [structures, setStructures] = useState<SalaryStructure[]>([]);
-  const [companies, setCompanies] = useState<PayrollCompany[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [editing, setEditing] = useState<SalaryStructure | null>(null);
-  const [error, setError] = useState('');
-
-  const load = () => {
-    setLoading(true); setError('');
-    Promise.all([
-      payrollApi.listSalaryStructures().then(setStructures),
-      payrollApi.listCompanies().then(setCompanies),
-    ]).catch(() => setError('Unable to load salary structures.')).finally(() => setLoading(false));
-  };
-  useEffect(load, []);
-  const remove = async (structure: SalaryStructure) => {
-    if (!window.confirm(`Delete salary structure ${structure.code}?`)) return;
-    setError('');
-    try {
-      await payrollApi.deleteSalaryStructure(structure.id);
-      load();
-    } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Delete failed.');
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <ImportExportToolbar
-          entityName="Salary Structures"
-          onExport={salaryStructuresImportExport.export}
-          onDownloadTemplate={salaryStructuresImportExport.template}
-          onImport={async (csv) => {
-            const result = await salaryStructuresImportExport.import(csv);
-            load(); // Refresh separately: a list error must not reclassify a committed import.
-            return result;
-          }}
-        />
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Structure</button>
-      </div>
-      {error && <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">{error}</div>}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : structures.length === 0 ? (
-        <div className="surface flex flex-col items-center py-16 text-center">
-          <Layers3 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No salary structures yet</p>
-          <p className="text-xs text-slate-400">Create a salary structure to define components like Basic, Housing, Transport allowances.</p>
-        </div>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {structures.map(s => (
-            <div key={s.id} className="surface p-4">
-              <div className="mb-2 flex items-start justify-between gap-2">
-                <div>
-                  <p className="font-semibold text-slate-900 dark:text-white">{s.name}</p>
-                  <p className="text-xs text-slate-400">{s.code} · {s.companyName ?? 'Shared tenant structure'}</p>
-                </div>
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${s.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{s.isActive ? 'Active' : 'Inactive'}</span>
-              </div>
-              <p className="mt-2 text-xs text-slate-500">Currency: <span className="font-medium text-slate-700 dark:text-slate-300">{s.currency}</span></p>
-              <p className="text-xs text-slate-500">Effective: <span className="font-medium text-slate-700 dark:text-slate-300">{fmtDate(s.effectiveDate)}</span></p>
-              <p className="text-xs text-slate-500">Version: <span className="font-medium text-slate-700 dark:text-slate-300">v{s.versionNumber ?? 1}</span></p>
-              {(s.minGrossSalary > 0 || s.maxGrossSalary > 0) && <p className="text-xs text-slate-500">Gross range: <span className="font-medium text-slate-700 dark:text-slate-300">{s.minGrossSalary || '0'} - {s.maxGrossSalary || 'open'}</span></p>}
-              <p className="text-xs text-slate-500">Components: <span className="font-medium text-slate-700 dark:text-slate-300">{s.components?.length ?? 0}</span> · Employees: <span className="font-medium text-slate-700 dark:text-slate-300">{s.assignedEmployeeCount ?? 0}</span></p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {(s.components ?? []).slice(0, 4).map(c => <span key={c.id} className="rounded bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-300">{c.code}</span>)}
-                {(s.components?.length ?? 0) > 4 && <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-300">+{s.components.length - 4}</span>}
-              </div>
-              <div className="mt-4 flex justify-end gap-2">
-                <button type="button" className={btn.ghost} onClick={() => setEditing(s)}><Pencil className="h-4 w-4" /> Edit</button>
-                <button type="button" className={btn.danger} onClick={() => remove(s)} disabled={(s.assignedEmployeeCount ?? 0) > 0}><Trash2 className="h-4 w-4" /> Delete</button>
-              </div>
-            </div>
-          ))}
-        </div>
+        </section>
       )}
-      {showCreate && <SalaryStructureModal companies={companies} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
-      {editing && <SalaryStructureModal structure={editing} companies={companies} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </div>
   );
 }
@@ -1030,6 +863,7 @@ function SalaryStructuresTab() {
 // ── Employee Salary Setup Tab ───────────────────────────────────────────────────
 
 function AssignSalaryModal({ structures, onClose, onSaved }: { structures: SalaryStructure[]; onClose: () => void; onSaved: () => void }) {
+  const t = useT();
   const today = new Date().toISOString().slice(0, 10);
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
@@ -1043,11 +877,12 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
-    if (!form.employeeId || !form.salaryStructureId || !form.basicSalary) { setError('Employee ID, salary structure, and basic salary are required.'); return; }
+    if (!form.employeeId || !form.basicSalary) { setError('Employee ID and basic salary are required.'); return; }
     setSaving(true); setError('');
     try {
       await payrollApi.assignEmployeeSalary({
-        employeeId: Number(form.employeeId), salaryStructureId: form.salaryStructureId,
+        // Blank: the employee's grade package structure (or DIRECT without a grade), resolved by the server.
+        employeeId: Number(form.employeeId), salaryStructureId: form.salaryStructureId || null,
         basicSalary: Number(form.basicSalary), housingAllowance: Number(form.housingAllowance) || 0,
         transportAllowance: Number(form.transportAllowance) || 0, foodAllowance: Number(form.foodAllowance) || 0,
         mobileAllowance: Number(form.mobileAllowance) || 0, otherAllowance: Number(form.otherAllowance) || 0,
@@ -1068,9 +903,9 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <Field label="Employee ID *"><input type="number" aria-label="Employee ID" className={inp} value={form.employeeId} onChange={e => set('employeeId', e.target.value)} /></Field>
-          <Field label="Salary Structure *" info="The pay template (basic %, allowances, deductions) applied to this employee. Defined under the Structures tab." infoKey="payroll.salary_structure">
-            <select aria-label="Salary structure" className={sel} value={form.salaryStructureId} onChange={e => set('salaryStructureId', e.target.value)}>
-              <option value="">Select…</option>
+          <Field label={t('Salary structure')}>
+            <select aria-label={t('Salary structure')} className={sel} value={form.salaryStructureId} onChange={e => set('salaryStructureId', e.target.value)}>
+              <option value="">{t("The employee's grade package (automatic)")}</option>
               {structures.map(s => <option key={s.id} value={s.id}>{s.name} ({s.currency})</option>)}
             </select>
           </Field>
@@ -3801,7 +3636,7 @@ export function PayrollPage() {
   const renderTab = () => {
     switch (activeTab) {
       case 'dashboard':       return <DashboardTab onNavigate={setActiveTab} />;
-      case 'salary-structures': return <SalaryStructuresTab />;
+      case 'salary-structures': return <GradePackagesTab />;
       case 'employee-salary': return <EmployeeSalaryTab />;
       case 'runs':            return <RunsTab onSelectRun={handleSelectRun} />;
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} />;

@@ -58,6 +58,7 @@ import type {
   GradeRequest,
   GradePayScaleComponentDto,
   GradePayScaleComponentRequest,
+  GradePackageComponentOption,
   CostCenterDto,
   CostCenterRequest,
 } from '../api/organization';
@@ -86,6 +87,8 @@ import { Modal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
 import { notifyGradesChanged } from '../lib/gradeEvents';
+import { GradePackageEditor } from '../components/setup/GradePackageEditor';
+import { linesToSave, unknownCodes } from '../lib/gradePackage';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -1019,6 +1022,12 @@ function GradesTab() {
   useSetupEditorState(modalOpen);
   const [form, setForm] = useState<GradeRequest>(emptyGrade());
   const [payScale, setPayScale] = useState<GradePayScaleComponentRequest[]>([]);
+  // The grade company's pay components, as the package editor loaded them: the save checks its lines against them.
+  const [catalogue, setCatalogue] = useState<GradePackageComponentOption[]>([]);
+  // Payroll → Grade packages links here with ?grade=<id>: that grade's editor opens once the list has loaded.
+  const searchParams = useSearchParams();
+  const requestedGrade = searchParams?.get('grade') ?? null;
+  const openedRequested = useRef<string | null>(null);
   // Addendum B: a grade belongs to one company and takes its currency by default.
   const org = useOrgCompanies();
   const [companyFilter, setCompanyFilter] = useState('');
@@ -1049,10 +1058,23 @@ function GradesTab() {
       setPayScale(comps.map(({ id, ...rest }: GradePayScaleComponentDto) => rest));
     } catch { /* empty pay scale */ }
   };
+  useEffect(() => {
+    if (!requestedGrade || openedRequested.current === requestedGrade || loading) return;
+    const grade = items.find((g) => g.id === requestedGrade);
+    if (!grade) return;
+    openedRequested.current = requestedGrade;
+    void openEdit(grade);
+    // openEdit is recreated each render; the guard above makes this run once per requested grade.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedGrade, items, loading]);
   const handleSave = async () => {
     if (!form.code.trim() || !form.name.trim()) { setError(t('Code and name are required')); return; }
     if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     if ((form.maxSalary ?? 0) > 0 && (form.minSalary ?? 0) > (form.maxSalary ?? 0)) { setError(t('Min salary cannot exceed max salary')); return; }
+    // Blank rows are dropped; every other line must name one of the company's pay components, once.
+    const lines = benefitsByGrade ? [] : linesToSave(payScale, catalogue);
+    if (!benefitsByGrade && catalogue.length > 0 && unknownCodes(lines, catalogue).length > 0) { setError(t('Choose a listed component for every line, or remove the line, before saving.')); return; }
+    if (new Set(lines.map((l) => l.componentCode)).size !== lines.length) { setError(t('Each pay component can be on a grade only once.')); return; }
     setSaving(true); setError('');
     // The grade itself is saved before its pay scale: open employee forms must hear about it even if the pay
     // scale write then fails.
@@ -1060,7 +1082,7 @@ function GradesTab() {
     try {
       const saved = editing ? await gradesApi.update(editing.id, form) : await gradesApi.create(form);
       gradeSaved = true;
-      if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, payScale);
+      if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, lines);
       setModalOpen(false); load();
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
     finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
@@ -1137,7 +1159,8 @@ function GradesTab() {
             {benefitsByGrade
               ? <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Allowances and benefits for this grade are set in Benefits by grade.')}{' '}
                 <Link href="/benefits/by-grade" className="text-sapphire underline">{t('Open Benefits by grade')}</Link></p>
-              : <PayScaleEditor components={payScale} onChange={setPayScale} />}
+              : <GradePackageEditor companyId={form.companyId ?? editing?.companyId ?? null} components={payScale} onChange={setPayScale}
+                  minSalary={form.minSalary} maxSalary={form.maxSalary} currency={form.currency || undefined} onCatalogue={setCatalogue} />}
           </div>
 
           <FormField label={t('Status')}><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>
@@ -1145,45 +1168,6 @@ function GradesTab() {
       </Modal>
       {confirmDialog}
     </>
-  );
-}
-
-/** Editable grid of benefit/earning lines that make up a grade's standard package. */
-function PayScaleEditor({ components, onChange }: { components: GradePayScaleComponentRequest[]; onChange: (c: GradePayScaleComponentRequest[]) => void }) {
-  const t = useT();
-  const update = (i: number, patch: Partial<GradePayScaleComponentRequest>) =>
-    onChange(components.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
-  const remove = (i: number) => onChange(components.filter((_, idx) => idx !== i));
-  const add = () => onChange([...components, {
-    componentCode: '', componentName: '', componentType: 'Earning', calculationType: 'Fixed',
-    amount: 0, percentage: 0, isTaxable: false, frequency: 'Monthly', sortOrder: components.length + 1, isActive: true,
-  }]);
-
-  return (
-    <div className="mt-3">
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">{t('Benefit components')}</span>
-        <button type="button" onClick={add} className="btn-secondary h-6 px-2 text-xs">+ {t('Add component')}</button>
-      </div>
-      {components.length === 0 ? (
-        <p className="py-2 text-xs text-slate-500 dark:text-slate-400">{t('No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.')}</p>
-      ) : (
-        <div className="space-y-1.5">
-          {components.map((c, i) => (
-            <div key={i} className="grid grid-cols-12 items-center gap-1.5">
-              <input aria-label={t('Component code')} value={c.componentCode} onChange={(e) => update(i, { componentCode: e.target.value })} className="input col-span-2 h-8 text-xs" placeholder="BASIC" />
-              <input aria-label={t('Component name')} value={c.componentName} onChange={(e) => update(i, { componentName: e.target.value })} className="input col-span-3 h-8 text-xs" placeholder={t('Basic')} />
-              <select aria-label={t('Component type')} title={t('Component type')} value={c.componentType} onChange={(e) => update(i, { componentType: e.target.value })} className="select col-span-2 h-8 text-xs"><option value="Earning">{t('Earning')}</option><option value="Benefit">{t('Benefit')}</option><option value="Deduction">{t('Deduction')}</option></select>
-              <select aria-label={t('Calculation type')} title={t('Calculation type')} value={c.calculationType} onChange={(e) => update(i, { calculationType: e.target.value })} className="select col-span-2 h-8 text-xs"><option value="Fixed">{t('Fixed')}</option><option value="PercentOfBasic">{t('% of Basic')}</option></select>
-              {c.calculationType === 'PercentOfBasic'
-                ? <input aria-label={t('Percentage of basic')} type="number" value={c.percentage} onChange={(e) => update(i, { percentage: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder="%" />
-                : <input aria-label={t('Amount')} type="number" value={c.amount} onChange={(e) => update(i, { amount: Number(e.target.value) })} className="input col-span-2 h-8 text-xs" placeholder={t('Amount')} />}
-              <button type="button" onClick={() => remove(i)} aria-label={t('Remove component')} className="col-span-1 grid h-8 place-items-center rounded-md border border-slate-200 text-slate-400 hover:border-rose-300 hover:text-rose-500 dark:border-white/10"><Trash2 className="h-3.5 w-3.5" /></button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 
