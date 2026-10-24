@@ -1988,6 +1988,8 @@ public class EmployeeManagementService : IEmployeeManagementService
                 if (record.ExpiryDate.HasValue) employee.IqamaExpiryDate = record.ExpiryDate;
                 break;
             case "iqama_expiry": employee.IqamaExpiryDate = record.ExpiryDate; break;
+            // KSA Border Number — no expiry. Mirrored so readiness (Iqama-or-border rule) and duplicate detection see it.
+            case "border_number": employee.BorderNumber = record.FieldValue; break;
             // Saudi host-national ID (Hawiyya, complianceFieldKey "id_number"). No first-class expiry
             // scalar exists for it, so this is a plain value copy — but it MUST be mirrored, because
             // IdNumber is what the duplicate detector's national-ID pass matches on (BuildCreateProbe →

@@ -36,11 +36,13 @@ public static class DuplicateCandidateBuilder
     public static DuplicateCandidate Build(
         int? employeeId, string? batchKey, string employeeCode, string? fullName, string? englishName,
         string? arabicName, System.Guid? companyId, string? nationality, DateOnly? dateOfBirth,
-        string? iqama, string? emiratesId, string? qid, string? civilId, string? idNumber, string? passport)
+        string? iqama, string? emiratesId, string? qid, string? civilId, string? idNumber, string? passport,
+        string? borderNumber = null)
     {
         var identity = new Dictionary<string, string>(System.StringComparer.Ordinal);
         void Add(string col, string? val) { var c = IdentityValueNormalizer.Canonical(val); if (c.Length > 0) identity[col] = c; }
         Add("IqamaNumber", iqama);
+        Add("BorderNumber", borderNumber);
         Add("EmiratesId", emiratesId);
         Add("Qid", qid);
         Add("CivilId", civilId);
@@ -64,7 +66,8 @@ public static class DuplicateCandidateBuilder
 
     public static DuplicateCandidate FromEmployee(Employee e, int? employeeId, string? batchKey) => Build(
         employeeId, batchKey, e.EmployeeCode, e.FullName, e.EnglishName, e.ArabicName, e.CompanyId,
-        e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber);
+        e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber,
+        e.BorderNumber);
 }
 
 /// <summary>
@@ -77,7 +80,7 @@ public static class DuplicateCandidateBuilder
 /// </summary>
 public sealed class EmployeeDuplicateMatcher
 {
-    private static readonly string[] NationalColumns = ["IqamaNumber", "EmiratesId", "Qid", "CivilId", "IdNumber"];
+    private static readonly string[] NationalColumns = ["IqamaNumber", "BorderNumber", "EmiratesId", "Qid", "CivilId", "IdNumber"];
 
     private readonly ITransliterationService? _transliterator;
     private readonly Dictionary<string, Dictionary<string, List<DuplicateCandidate>>> _byNational = new();
@@ -166,6 +169,7 @@ public sealed class EmployeeDuplicateMatcher
     private static string Label(string column) => column switch
     {
         "IqamaNumber" => "Iqama number",
+        "BorderNumber" => "Border number",
         "EmiratesId" => "Emirates ID",
         "Qid" => "Qatar ID (QID)",
         "CivilId" => "Civil ID",

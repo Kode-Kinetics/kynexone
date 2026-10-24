@@ -220,6 +220,7 @@ public sealed class ExpiredEmployeeRecordRule : IRetentionRule
         Clear(nameof(e.VisaNumber), () => e.VisaNumber, () => e.VisaNumber = string.Empty);
         Clear(nameof(e.VisaFileNumber), () => e.VisaFileNumber, () => e.VisaFileNumber = string.Empty);
         Clear(nameof(e.IqamaNumber), () => e.IqamaNumber, () => e.IqamaNumber = string.Empty);
+        Clear(nameof(e.BorderNumber), () => e.BorderNumber, () => e.BorderNumber = string.Empty);
         Clear(nameof(e.EmiratesId), () => e.EmiratesId, () => e.EmiratesId = string.Empty);
         Clear(nameof(e.Qid), () => e.Qid, () => e.Qid = string.Empty);
         Clear(nameof(e.CivilId), () => e.CivilId, () => e.CivilId = string.Empty);

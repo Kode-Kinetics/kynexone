@@ -86,12 +86,27 @@ public partial class PayrollController : ControllerBase
     {
         var hard = new HashSet<int>();
         var drift = new HashSet<int>();
-        if (employees.Count == 0) return (hard, drift);
+        foreach (var finding in await EvaluatePayReadinessAsync(tenantId, employees, ct))
+            (finding.IsActive ? drift : hard).Add(finding.EmployeeId);
+        return (hard, drift);
+    }
+
+    /// <summary>One employee the pay interlock holds, with WHAT is missing (the readiness items, by label).</summary>
+    private sealed record PayReadinessFinding(
+        int EmployeeId, bool IsActive, IReadOnlyList<Zayra.Api.Infrastructure.Employees.ReadinessItem> Items);
+
+    /// <summary>The per-employee detail behind <see cref="ComputePayReadinessAsync"/> — the same evaluator, the
+    /// same policy cache, the same split rule (Active ⇒ drift, otherwise hard).</summary>
+    private async Task<IReadOnlyList<PayReadinessFinding>> EvaluatePayReadinessAsync(
+        Guid tenantId, IReadOnlyList<Employee> employees, CancellationToken ct)
+    {
+        var findings = new List<PayReadinessFinding>();
+        if (employees.Count == 0) return findings;
         // Batch-load snapshots (3 bulk queries), resolve policy per distinct (company, country, nationality).
         var snapshots = await new Zayra.Api.Infrastructure.Employees.EmployeeReadinessEvaluator(_db)
-            .LoadSnapshotsAsync(tenantId, employees.Select(e => e.Id).ToList(), ct);
+            .LoadSnapshotsAsync(tenantId, employees.Select(e => e.Id).Distinct().ToList(), ct);
         var policyCache = new Dictionary<string, Zayra.Api.Infrastructure.Employees.ResolvedReadinessPolicy>();
-        foreach (var emp in employees)
+        foreach (var emp in employees.GroupBy(e => e.Id).Select(g => g.First()))
         {
             if (!snapshots.TryGetValue(emp.Id, out var snap)) continue;
             var key = $"{emp.CompanyId}|{emp.CountryCode}|{Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(emp.Nationality)}";
@@ -102,10 +117,42 @@ public partial class PayrollController : ControllerBase
             }
             var readiness = _activationGuard.Evaluate(snap, policy);
             if (readiness.PayBlocking.Count == 0 && !readiness.IsBlocked) continue;
-            if (string.Equals(emp.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)) drift.Add(emp.Id);
-            else hard.Add(emp.Id);
+            findings.Add(new PayReadinessFinding(
+                emp.Id,
+                string.Equals(emp.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase),
+                readiness.PayBlocking.Concat(readiness.Blocking).ToList()));
         }
-        return (hard, drift);
+        return findings;
+    }
+
+    /// <summary>
+    /// The pay interlock, NAMED on the run's Validation tab: one finding per held employee saying who they are
+    /// and exactly which documents are missing (e.g. "GOSI reference, Qiwa contract number"). WARNING severity on
+    /// purpose — this adds visibility, not a new gate. What the hold does is unchanged and stated in the message:
+    /// the WPS / bank file refuses a non-Active employee, and asks for explicit acknowledgement before including
+    /// an Active one (§6.6 — a mandated salary is never silently withheld). Approve/Lock are not affected.
+    /// </summary>
+    private async Task<List<PayrollValidationResult>> ReadinessPayValidationFindingsAsync(
+        Guid tenantId, Guid runId, IReadOnlyList<Employee> employees, CancellationToken ct)
+    {
+        var byId = employees.GroupBy(e => e.Id).ToDictionary(g => g.Key, g => g.First());
+        var results = new List<PayrollValidationResult>();
+        foreach (var f in await EvaluatePayReadinessAsync(tenantId, employees, ct))
+        {
+            var emp = byId[f.EmployeeId];
+            var name = string.IsNullOrWhiteSpace(emp.FullName) ? emp.EnglishName : emp.FullName;
+            var missing = string.Join(", ", f.Items.Select(i => i.Label).Distinct(StringComparer.OrdinalIgnoreCase));
+            results.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = runId, EmployeeId = f.EmployeeId,
+                Severity = "Warning", Code = Infrastructure.Payroll.PayrollPaymentPrerequisites.ReadinessPayBlocked,
+                Message = $"{name} ({emp.EmployeeCode}): required before payroll — {missing}. " +
+                          (f.IsActive
+                              ? "Until it is recorded, exporting the WPS / bank file needs an explicit acknowledgement to include this employee."
+                              : "The WPS / bank file will refuse this employee until this is recorded."),
+            });
+        }
+        return results;
     }
 
     [HttpGet("salary-structures")]
@@ -3238,6 +3285,9 @@ public partial class PayrollController : ControllerBase
                 Severity = "Warning", Code = code, Message = message,
             });
         foreach (var (code, empId, msg) in c3Warnings) C3Warn(code, empId, msg);
+        // The pay interlock, named per employee and document (Warning — visibility only; see the helper).
+        foreach (var finding in await ReadinessPayValidationFindingsAsync(tenantId, id, employees, cancellationToken))
+            _db.PayrollValidationResults.Add(finding);
         // POD-C3 (MF-2) — the shortfall, NAMED. Error severity, so it blocks Approve/Lock exactly as the
         // pre-existing ZERO_NET_WITH_GROSS does; what it adds is the AMOUNT and the most likely cause,
         // which the operator previously had to derive by hand from the payslip.
@@ -4231,6 +4281,8 @@ public partial class PayrollController : ControllerBase
                 new DateOnly(run.Year, run.Month, 1), null, cancellationToken) ?? 0m,
         };
         var results = PayrollValidationEngine.Run(ctx);
+        // Same finding Process writes — /validate replaces the stored results wholesale, so it must re-add it.
+        results.AddRange(await ReadinessPayValidationFindingsAsync(tenantId, id, employees, cancellationToken));
 
         // Replace stored results with fresh engine output.
         await _db.PayrollValidationResults

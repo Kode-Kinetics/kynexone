@@ -69,6 +69,8 @@ public static class DuplicateIdentityFields
         new Dictionary<string, (string, bool)>(System.StringComparer.OrdinalIgnoreCase)
         {
             ["iqama_number"] = ("Iqama number", true),
+            // KSA Border Number: issued once per person at first entry and never reissued ⇒ STRONG alone.
+            ["border_number"] = ("Border number", true),
             ["emirates_id"] = ("Emirates ID", true),
             ["qid"] = ("Qatar ID (QID)", true),
             ["civil_id"] = ("Civil ID", true),
@@ -190,6 +192,7 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
         q = column switch
         {
             "IqamaNumber" => q.Where(x => values.Contains(x.IqamaNumber)),
+            "BorderNumber" => q.Where(x => values.Contains(x.BorderNumber)),
             "EmiratesId" => q.Where(x => values.Contains(x.EmiratesId)),
             "Qid" => q.Where(x => values.Contains(x.Qid)),
             "CivilId" => q.Where(x => values.Contains(x.CivilId)),
@@ -219,6 +222,7 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
     private static string? ColumnFor(string fieldKey) => fieldKey.ToLowerInvariant() switch
     {
         "iqama_number" => "IqamaNumber",
+        "border_number" => "BorderNumber",
         "emirates_id" => "EmiratesId",
         "qid" => "Qid",
         "civil_id" => "CivilId",

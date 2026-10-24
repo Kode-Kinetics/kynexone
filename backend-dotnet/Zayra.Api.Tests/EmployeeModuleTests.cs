@@ -154,6 +154,37 @@ public class EmployeeModuleTests
         Assert.True(await db.ApprovalRequests.AnyAsync(x => x.EntityName == nameof(EmployeeChangeRequest) && x.Status == "Pending"));
     }
 
+    /// <summary>KSA Border Number is a national-identity number: an edit takes the same maker-checker route as
+    /// the Iqama — nothing changes until a different user approves it.</summary>
+    [Fact]
+    public async Task BorderNumberUpdate_IsApprovalGated_AndAppliesOnApproval()
+    {
+        await using var db = CreateDb();
+        var tenantId = await SeedTenantAndEmployeeRole(db);
+        var requesterId = Guid.NewGuid();
+        var approverId = Guid.NewGuid();
+        var employee = new Employee { TenantId = tenantId, EmployeeCode = "EMP-BORDER", FullName = "New Arrival", Status = "Active", JoiningDate = DateTime.UtcNow.Date, CountryCode = "SA", Nationality = "Indian" };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var controller = CreateController(db, tenantId, requesterId);
+
+        var result = await controller.UpdateEmployee(employee.Id, new EmployeeUpdateRequest(DateOnly.FromDateTime(DateTime.UtcNow.Date), new() { ["borderNumber"] = System.Text.Json.JsonSerializer.SerializeToElement("3012345678") }), CancellationToken.None);
+
+        Assert.IsType<AcceptedResult>(result);
+        Assert.Equal(string.Empty, (await db.Employees.FindAsync(employee.Id))!.BorderNumber);
+        Assert.True(await db.EmployeeChangeRequests.AnyAsync(x => x.EmployeeId == employee.Id && x.SensitiveFields == "borderNumber"));
+
+        var approval = await db.ApprovalRequests.SingleAsync(x => x.EntityName == nameof(EmployeeChangeRequest));
+        var decided = await new ApprovalWorkflowService(db, new AuditService(db)).DecideAsync(
+            tenantId, approval.Id,
+            new Zayra.Api.Application.Approvals.ApprovalDecisionRequest("Approve", "Verified against the entry stamp"),
+            new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "tests", approverId, tenantId, ["HR Manager"], []),
+            CancellationToken.None);
+
+        decided!.Status.Should().Be("Approved");
+        (await db.Employees.FindAsync(employee.Id))!.BorderNumber.Should().Be("3012345678");
+    }
+
     [Fact]
     public async Task ApprovalCenterDecision_AppliesSensitiveEmployeeChange()
     {

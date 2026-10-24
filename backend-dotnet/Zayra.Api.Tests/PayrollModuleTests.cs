@@ -1350,6 +1350,8 @@ public class PayrollModuleTests
             // activate, and the GOSI reference the PAY gate needs before contributions can be computed.
             // Without them every one of them is pay-blocked, for a reason none of these tests is about.
             CountryCode = "SA", IdNumber = $"10000000{i:00}", GosiReference = $"GOSI-{i:0000}",
+            // KSA also requires the Qiwa contract before payroll (pay-stage, 2026-10-24).
+            QiwaContractNumber = $"QIWA-{i:0000}",
         }).ToArray();
         db.Employees.AddRange(employees);
         await db.SaveChangesAsync();

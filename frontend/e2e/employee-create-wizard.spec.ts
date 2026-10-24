@@ -21,6 +21,8 @@ interface MockOptions {
   failFirstCreate?: boolean;
   workEmailConflict?: boolean;
   duplicate?: boolean;
+  /** Descriptors GET /api/employees/field-catalog returns (default: none, so the local fallback is used). */
+  fieldCatalog?: unknown[];
   masterData?: Record<string, Array<{
     id: string;
     typeId: string;
@@ -92,7 +94,7 @@ async function boot(page: Page, options: MockOptions = {}) {
       { id: 'structure-retired', companyId: company.id, code: 'OPS-OLD', name: 'Retired band', isActive: false },
       { id: 'structure-other', companyId: 'another-company', code: 'OTHER-CO', name: 'Another company band', isActive: true },
     ]);
-    if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: [] });
+    if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: options.fieldCatalog ?? [] });
     if (path === '/api/localization/transliterate') {
       transliterations.push(body);
       await options.transliteration?.waitFor;
@@ -854,5 +856,54 @@ test('grade benefits preview follows grade and joining date and appears in revie
   await expect(reviewedBenefits).toContainText('Starts on 2026-11-01');
   await expect(dialog.getByText('Child education: Requires 12 months service.', { exact: true })).toBeVisible();
   expect(previewRequests.some(search => search.includes('companyId=company-wizard'))).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// KSA identity step (owner, 2026-10-24): nothing is required to create the employee. The numbers a new joiner
+// holds on day one (border number, passport) lead; everything the authorities issue after joining sits in its own
+// group with no asterisk — even where the server says it is required before payroll.
+const ksaExpatCatalog = [
+  { key: 'iqamaNumber', countries: ['SA'], label: 'Iqama (residence permit) no.', section: 'identity', complianceFieldKey: 'iqama_number', entityKey: 'iqamaNumber', expiryEntityKey: 'iqamaExpiryDate', required: true, gate: 'activate', issuedAfterHire: true, pattern: '^2\\d{9}$', patternHint: 'Iqama: 10 digits starting with 2' },
+  { key: 'passportNumber', label: 'Passport number', section: 'identity', complianceFieldKey: 'passport_number', entityKey: 'passportNumber', expiryEntityKey: 'passportExpiryDate', required: false, issuedAfterHire: false },
+  { key: 'gosiReference', countries: ['SA'], label: 'GOSI reference', section: 'identity', complianceFieldKey: 'gosi_reference', entityKey: 'gosiReference', required: true, gate: 'pay', issuedAfterHire: true },
+  { key: 'borderNumber', countries: ['SA'], label: 'Border number', section: 'identity', complianceFieldKey: 'border_number', entityKey: 'borderNumber', required: false, issuedAfterHire: false, pattern: '^3\\d{9}$', patternHint: 'Border number: usually 10 digits starting with 3' },
+  { key: 'qiwaContractNumber', countries: ['SA'], label: 'Qiwa contract number', section: 'identity', complianceFieldKey: 'qiwa_contract_reference', entityKey: 'qiwaContractNumber', required: true, gate: 'pay', issuedAfterHire: true },
+];
+
+test('KSA identity step: border number and passport first, post-hire documents grouped without asterisks, create succeeds with only a border number', async ({ page }, info) => {
+  const { dialog, creates, errors } = await boot(page, { fieldCatalog: ksaExpatCatalog });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  for (const index of [1, 2, 3, 4]) await next(dialog, index);
+
+  const now = dialog.locator('fieldset').filter({ has: page.locator('legend', { hasText: 'Identity & compliance' }) });
+  const later = dialog.locator('fieldset').filter({ has: page.locator('legend', { hasText: 'Issued after joining — required before first payroll' }) });
+  await expect(later).toBeVisible();
+  // Order: border number, then passport, in the first group.
+  const nowLabels = await now.locator('label > span').allInnerTexts();
+  expect(nowLabels[0]).toContain('Border number');
+  expect(nowLabels[1]).toContain('Passport number');
+  // The post-hire documents are all in the second group, and none of them carries an asterisk.
+  for (const label of ['Iqama (residence permit) no.', 'GOSI reference', 'Qiwa contract number']) {
+    await expect(later.getByText(label, { exact: true })).toBeVisible();
+    await expect(now.getByText(label, { exact: true })).toHaveCount(0);
+  }
+  await expect(dialog.locator('[data-employee-step="4"] .text-red-500')).toHaveCount(0);
+
+  // Format is advisory: an unusual border number warns but never blocks.
+  const border = now.getByLabel('Border number', { exact: false });
+  await border.fill('12345');
+  await expect(now.getByText('Check this number — it does not look like the usual format. You can still save it.')).toBeVisible();
+  await border.fill('3012345678');
+  await expect(now.getByText('Check this number — it does not look like the usual format. You can still save it.')).toHaveCount(0);
+  await evidence(page, info, 'ksa-identity-step');
+
+  await next(dialog, 5);
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates).toHaveLength(1);
+  const records = creates[0].complianceRecords ?? [];
+  expect(records).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'border_number', fieldValue: '3012345678' })]));
+  // Nothing issued after hire is sent as "required".
+  expect(records.filter(r => ['iqama_number', 'gosi_reference', 'qiwa_contract_reference'].includes(r.fieldKey)).every(r => !r.isRequired)).toBe(true);
   expect(errors).toEqual([]);
 });

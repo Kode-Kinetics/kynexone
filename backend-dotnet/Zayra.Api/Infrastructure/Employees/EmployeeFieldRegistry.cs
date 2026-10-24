@@ -16,7 +16,13 @@ public sealed record FieldSpec(
     string FixKind,           // "field" | "document"
     string? FixTarget,        // e.g. "iqamaNumber" or "payrollProfile.iban" (field fixes)
     string? DocumentType,     // e.g. "Contract" (document fixes)
-    System.Func<EmployeeReadinessSnapshot, DateOnly, int, FieldPresence> Getter);
+    System.Func<EmployeeReadinessSnapshot, DateOnly, int, FieldPresence> Getter,
+    // The label shown when the getter answers FieldPresence.Provisional (the document is not held yet but
+    // a recognised interim substitute is) — e.g. "Iqama due — employee is on border number".
+    string? ProvisionalLabel = null,
+    // The label shown when the getter answers FieldPresence.ProvisionalLapsed (the substitute's grace window
+    // has closed, so the document itself is now required before payroll).
+    string? ProvisionalLapsedLabel = null);
 
 /// <summary>
 /// The single, code-owned catalog of resolvable readiness keys (§3.2). Employment-lifecycle
@@ -79,6 +85,13 @@ public static class EmployeeFieldRegistry
         return FieldPresence.Present;
     }
 
+    /// <summary>True while a border number may stand in for the Iqama at PAY: up to and including
+    /// <see cref="GccReadinessFloor.KsaBorderNumberGraceDays"/> days after the joining date. An unknown joining
+    /// date cannot open the window (fail closed at pay; activation is already held on the date itself).</summary>
+    private static bool WithinBorderNumberGrace(EmployeeReadinessSnapshot s, DateOnly asOf)
+        => s.JoiningDate != default
+           && asOf <= DateOnly.FromDateTime(s.JoiningDate).AddDays(GccReadinessFloor.KsaBorderNumberGraceDays);
+
     private static FieldPresence Iban(string? iban)
     {
         if (string.IsNullOrWhiteSpace(iban)) return FieldPresence.Missing;
@@ -107,8 +120,9 @@ public static class EmployeeFieldRegistry
     {
         var d = new Dictionary<string, FieldSpec>(System.StringComparer.OrdinalIgnoreCase);
         void Add(string key, string label, string category, string gate, string fixKind, string? fixTarget,
-                 System.Func<EmployeeReadinessSnapshot, DateOnly, int, FieldPresence> getter)
-            => d[key] = new FieldSpec(key, label, category, gate, fixKind, fixTarget, null, getter);
+                 System.Func<EmployeeReadinessSnapshot, DateOnly, int, FieldPresence> getter,
+                 string? provisionalLabel = null, string? provisionalLapsedLabel = null)
+            => d[key] = new FieldSpec(key, label, category, gate, fixKind, fixTarget, null, getter, provisionalLabel, provisionalLapsedLabel);
 
         // ── Personal / org scalars ───────────────────────────────────────────
         Add("EnglishName", "English name", "personal", "activate", "field", "englishName", (s, _, _) => Str(s.EnglishName));
@@ -125,7 +139,22 @@ public static class EmployeeFieldRegistry
         Add("EmploymentType", "Employment type", "contract", "activate", "field", "employmentType", (s, _, _) => Str(s.EmploymentType));
 
         // ── Identity numbers ─────────────────────────────────────────────────
-        Add("IqamaNumber", "Iqama number", "identity", "activate", "field", "iqamaNumber", (s, _, _) => Str(s.IqamaNumber));
+        // KSA: the Iqama is issued AFTER arrival. A new arrival works on the Border Number (رقم الحدود) issued at
+        // first entry, so a held border number satisfies this requirement PROVISIONALLY:
+        //   * ACTIVATION — Iqama OR border number, always (Provisional never blocks activation);
+        //   * PAY        — the border number stands in for the Iqama only for the legal issuing window
+        //                  (GccReadinessFloor.KsaBorderNumberGraceDays from the joining date). After that it is
+        //                  ProvisionalLapsed: a pay blocker, still never an activation blocker.
+        // With neither number it is Missing, as before. The OR lives in the getter (not in the floor) so every
+        // layer that names "IqamaNumber" — the code floor, the seeded tenant profile and the GCC-setting toggle —
+        // gets the same rule, and no layer can silently re-harden it.
+        Add("IqamaNumber", "Iqama or border number", "identity", "activate", "field", "iqamaNumber",
+            (s, asOf, _) => !string.IsNullOrWhiteSpace(s.IqamaNumber) ? FieldPresence.Present
+                : !string.IsNullOrWhiteSpace(s.BorderNumber)
+                    ? (WithinBorderNumberGrace(s, asOf) ? FieldPresence.Provisional : FieldPresence.ProvisionalLapsed)
+                : FieldPresence.Missing,
+            provisionalLabel: "Iqama due — employee is on border number",
+            provisionalLapsedLabel: "Iqama required before payroll — the border-number period (90 days from joining) has ended");
         Add("GosiReference", "GOSI reference", "identity", "activate", "field", "gosiReference", (s, _, _) => Str(s.GosiReference));
         Add("EmiratesId", "Emirates ID", "identity", "activate", "field", "emiratesId", (s, _, _) => Str(s.EmiratesId));
         Add("Qid", "Qatar ID (QID)", "identity", "activate", "field", "qid", (s, _, _) => Str(s.Qid));
@@ -135,6 +164,8 @@ public static class EmployeeFieldRegistry
         Add("VisaNumber", "Visa number", "identity", "activate", "field", "visaNumber", (s, _, _) => Str(s.VisaNumber));
         Add("WorkPermitNumber", "Work permit number", "identity", "activate", "field", "workPermitNumber", (s, _, _) => Str(s.WorkPermitNumber));
         Add("MuqeemNumber", "Muqeem number", "identity", "activate", "field", "muqeemNumber", (s, _, _) => Str(s.MuqeemNumber));
+        Add("VisaFileNumber", "Visa file number", "identity", "activate", "field", "visaFileNumber", (s, _, _) => Str(s.VisaFileNumber));
+        Add("SponsorName", "Sponsor name", "identity", "activate", "field", "sponsorName", (s, _, _) => Str(s.SponsorName));
         Add("LaborCardNumber", "Labour card number", "identity", "activate", "field", "laborCardNumber", (s, _, _) => Str(s.LaborCardNumber));
         Add("QiwaContractNumber", "Qiwa contract number", "identity", "activate", "field", "qiwaContractNumber", (s, _, _) => Str(s.QiwaContractNumber));
         Add("SocialInsuranceReference", "Social-insurance reference", "identity", "activate", "field", "payrollProfile.socialInsuranceReference", (s, _, _) => Str(s.SocialInsuranceReference));
@@ -143,7 +174,14 @@ public static class EmployeeFieldRegistry
         // compliance-record fallback for legacy data written before the scalars existed (§D3/Δ20). ──
         Add("PassportExpiryDate", "Passport expiry", "identity", "pay", "field", "passportExpiryDate", (s, a, w) => Expiry(s.PassportExpiryDate, a, w));
         Add("VisaExpiryDate", "Visa expiry", "identity", "pay", "field", "visaExpiryDate", (s, a, w) => Expiry(s.VisaExpiryDate, a, w));
-        Add("IqamaExpiry", "Iqama expiry", "identity", "pay", "field", "iqamaExpiry", (s, a, w) => Expiry(s.IqamaExpiryDate ?? Comp(s, "iqama_expiry"), a, w));
+        // No Iqama yet, but a border number inside its grace window: the expiry cannot exist yet, so it is due,
+        // not missing. Once the window closes (or with no border number) an absent expiry is Missing as before.
+        Add("IqamaExpiry", "Iqama expiry", "identity", "pay", "field", "iqamaExpiry",
+            (s, a, w) => (s.IqamaExpiryDate ?? Comp(s, "iqama_expiry")) is DateOnly expiry ? Expiry(expiry, a, w)
+                : string.IsNullOrWhiteSpace(s.IqamaNumber) && !string.IsNullOrWhiteSpace(s.BorderNumber) && WithinBorderNumberGrace(s, a)
+                    ? FieldPresence.Provisional
+                : FieldPresence.Missing,
+            provisionalLabel: "Iqama expiry due — employee is on border number");
         Add("EmiratesIdExpiry", "Emirates ID expiry", "identity", "pay", "field", "emiratesIdExpiry", (s, a, w) => Expiry(s.EmiratesIdExpiryDate ?? Comp(s, "emirates_id_expiry"), a, w));
         Add("QidExpiry", "QID expiry", "identity", "pay", "field", "qidExpiry", (s, a, w) => Expiry(s.QidExpiryDate ?? Comp(s, "qid_expiry"), a, w));
         Add("CivilIdExpiry", "Civil ID expiry", "identity", "pay", "field", "civilIdExpiry", (s, a, w) => Expiry(s.CivilIdExpiryDate ?? Comp(s, "civil_id_expiry"), a, w));
@@ -189,7 +227,19 @@ public static class EmployeeFieldRegistry
         FieldApplicability Applicability = FieldApplicability.All, // NATIONALITY axis (§ two-axis resolver)
         IReadOnlyDictionary<string, string>? LabelByCountry = null, // ISO-2 → local English label (KW/OM/BH CivilId, social-insurance scheme)
         string? ComplianceFieldKey = null, // snake_case mirror key (EmployeeComplianceRecord.FieldKey) for statutory rows
-        string? ExpiryKey = null);         // the PAIRED expiry descriptor key, so the modal binds value+expiry as one control
+        string? ExpiryKey = null,          // the PAIRED expiry descriptor key, so the modal binds value+expiry as one control
+        IReadOnlyList<string>? IssuedAfterHireIn = null); // ISO-2 jurisdictions where the authority issues this AFTER the hire
+
+    /// <summary>True when, in this jurisdiction, the document/reference is issued by the authority only AFTER the
+    /// person is hired or arrives (KSA: Iqama, GOSI, Qiwa contract, Muqeem, sponsor, work permit, visa file). The
+    /// create form groups these under "add when available" and never marks them as needed up front. UX only —
+    /// requiredness for activation/pay stays the policy resolver's.</summary>
+    public static bool IsIssuedAfterHire(EmployeeFieldDescriptor d, string? iso2)
+    {
+        var c = (iso2 ?? string.Empty).Trim().ToUpperInvariant();
+        return c.Length > 0 && d.IssuedAfterHireIn is not null
+            && d.IssuedAfterHireIn.Contains(c, System.StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>Resolve the local-English label for a field in a jurisdiction (per-country override wins,
     /// e.g. OM Civil ID → "Oman Resident Card"; else the base label).</summary>
@@ -345,10 +395,10 @@ public static class EmployeeFieldRegistry
                     throw new System.InvalidOperationException(
                         $"Catalog↔floor drift ({country}/{nationality}): '{k}' must be hidden for this nationality but the catalog shows it.");
         }
-        MustHide("SA", "SA", "IqamaNumber", "IqamaExpiry", "WorkPermitNumber", "VisaNumber", "VisaExpiryDate"); // a Saudi national never sees an Iqama/visa
+        MustHide("SA", "SA", "IqamaNumber", "IqamaExpiry", "BorderNumber", "WorkPermitNumber", "VisaNumber", "VisaExpiryDate"); // a Saudi national never sees an Iqama/border no./visa
         MustHide("AE", "AE", "WorkPermitNumber", "VisaNumber", "VisaExpiryDate");                               // an Emirati never needs a work permit/visa
         MustHide("QA", "SA", "WorkPermitNumber", "VisaNumber");                                                 // a GCC national (Saudi in Qatar) is work-permit exempt
-        MustHide("SA", "AE", "IqamaNumber");                                                                    // a GCC national (Emirati in KSA) holds no Iqama
+        MustHide("SA", "AE", "IqamaNumber", "BorderNumber");                                                    // a GCC national (Emirati in KSA) holds no Iqama / border no.
     }
 
     private static IReadOnlyList<EmployeeFieldDescriptor> BuildCatalog()
@@ -368,10 +418,10 @@ public static class EmployeeFieldRegistry
                bool sensitive = false, bool ar = false, IReadOnlyList<string>? countries = null, string binding = "",
                FieldApplicability applicability = FieldApplicability.All,
                IReadOnlyDictionary<string, string>? labelByCountry = null,
-               string? complianceFieldKey = null, string? expiryKey = null)
+               string? complianceFieldKey = null, string? expiryKey = null, IReadOnlyList<string>? issuedAfterHire = null)
             => list.Add(new EmployeeFieldDescriptor(key, label, section, csv, input, sensitive, ar, countries,
                 string.IsNullOrEmpty(binding) ? "emp." + key : binding,
-                applicability, labelByCountry, complianceFieldKey, expiryKey));
+                applicability, labelByCountry, complianceFieldKey, expiryKey, issuedAfterHire));
 
         // ── Identity / master ────────────────────────────────────────────────
         D("EmployeeCode", "Employee code", "identity", "EmployeeCode", "text", binding: "emp.EmployeeCode");
@@ -457,21 +507,26 @@ public static class EmployeeFieldRegistry
         D("PassportExpiryDate", "Passport expiry", "identity", "PassportExpiryDate", "date", sensitive: true, ar: true, binding: "emp.PassportExpiryDate");
         // Residence visa (non-GCC expats only — GCC common-market reciprocity).
         D("VisaNumber", "Visa number", "identity", "VisaNumber", "text", ar: true, binding: "emp.VisaNumber", applicability: Expat,
-            complianceFieldKey: "visa_number", expiryKey: "VisaExpiryDate");
+            complianceFieldKey: "visa_number", expiryKey: "VisaExpiryDate", issuedAfterHire: Sa);
         D("VisaIssueDate", "Visa issue date", "identity", "VisaIssueDate", "date", binding: "emp.VisaIssueDate", applicability: Expat);
         D("VisaExpiryDate", "Visa expiry", "identity", "VisaExpiryDate", "date", sensitive: true, ar: true, binding: "emp.VisaExpiryDate", applicability: Expat);
-        D("VisaFileNumber", "Visa file number", "identity", "VisaFileNumber", "text", binding: "emp.VisaFileNumber", applicability: Expat,
-            complianceFieldKey: "visa_file_number");
+        D("VisaFileNumber", "Visa file number", "identity", "VisaFileNumber", "text", ar: true, binding: "emp.VisaFileNumber", applicability: Expat,
+            complianceFieldKey: "visa_file_number", issuedAfterHire: Sa);
         // SA: Iqama (residence permit) is the non-GCC-expat identity; IdNumber (Hawiyya) is the host national's.
         D("IqamaNumber", "Iqama (residence permit) no.", "identity", "IqamaNumber", "text", sensitive: true, ar: true, countries: Sa,
-            binding: "emp.IqamaNumber", applicability: Expat, complianceFieldKey: "iqama_number", expiryKey: "IqamaExpiry");
-        D("IqamaExpiry", "Iqama expiry", "identity", "IqamaExpiry", "date", ar: true, countries: Sa, binding: "emp.IqamaExpiryDate", applicability: Expat);
+            binding: "emp.IqamaNumber", applicability: Expat, complianceFieldKey: "iqama_number", expiryKey: "IqamaExpiry", issuedAfterHire: Sa);
+        D("IqamaExpiry", "Iqama expiry", "identity", "IqamaExpiry", "date", ar: true, countries: Sa, binding: "emp.IqamaExpiryDate", applicability: Expat,
+            issuedAfterHire: Sa);
+        // SA: Border Number (رقم الحدود) — issued by Jawazat at first entry on a work visa, BEFORE the Iqama exists.
+        // Not a readiness key of its own: it satisfies "IqamaNumber" provisionally (see the registry spec). No expiry.
+        D("BorderNumber", "Border number", "identity", "BorderNumber", "text", sensitive: true, countries: Sa,
+            binding: "emp.BorderNumber", applicability: Expat, complianceFieldKey: "border_number");
         D("MuqeemNumber", "Muqeem number", "identity", "MuqeemNumber", "text", ar: true, countries: Sa, binding: "emp.MuqeemNumber",
-            complianceFieldKey: "muqeem_reference");
+            complianceFieldKey: "muqeem_reference", issuedAfterHire: Sa);
         D("GosiReference", "GOSI reference", "identity", "GosiReference", "text", ar: true, countries: Sa, binding: "emp.GosiReference",
-            complianceFieldKey: "gosi_reference");
+            complianceFieldKey: "gosi_reference", issuedAfterHire: Sa);
         D("QiwaContractNumber", "Qiwa contract number", "identity", "QiwaContractNumber", "text", ar: true, countries: Sa, binding: "emp.QiwaContractNumber",
-            complianceFieldKey: "qiwa_contract_reference");
+            complianceFieldKey: "qiwa_contract_reference", issuedAfterHire: Sa);
         D("EmiratesId", "Emirates ID", "identity", "EmiratesId", "text", sensitive: true, ar: true, countries: Ae, binding: "emp.EmiratesId",
             complianceFieldKey: "emirates_id", expiryKey: "EmiratesIdExpiry");
         D("EmiratesIdExpiry", "Emirates ID expiry", "identity", "EmiratesIdExpiry", "date", ar: true, countries: Ae, binding: "emp.EmiratesIdExpiryDate");
@@ -494,7 +549,7 @@ public static class EmployeeFieldRegistry
             });
         // Work permit — non-GCC expats across all GCC states (floor gates it for AE; recommended elsewhere).
         D("WorkPermitNumber", "Work permit number", "identity", "WorkPermitNumber", "text", ar: true, countries: GccAll, binding: "emp.WorkPermitNumber",
-            applicability: Expat, complianceFieldKey: "work_permit",
+            applicability: Expat, complianceFieldKey: "work_permit", issuedAfterHire: Sa,
             labelByCountry: new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
             {
                 ["AE"] = "MOHRE work permit / labour card no.", ["BH"] = "LMRA work permit no.",
@@ -505,7 +560,8 @@ public static class EmployeeFieldRegistry
         D("ResidencyIssueDate", "Residency issue date", "identity", "ResidencyIssueDate", "date", countries: KwOmBh, binding: "emp.ResidencyIssueDate", applicability: Expat);
         D("IdNumber", "National ID (Hawiyya)", "identity", "IdNumber", "text", sensitive: true, ar: true, countries: Sa, binding: "emp.IdNumber",
             applicability: HostNational, complianceFieldKey: "id_number");
-        D("SponsorName", "Sponsor name", "identity", "SponsorName", "text", binding: "emp.SponsorName", applicability: Expat, complianceFieldKey: "sponsor");
+        D("SponsorName", "Sponsor name", "identity", "SponsorName", "text", ar: true, binding: "emp.SponsorName", applicability: Expat, complianceFieldKey: "sponsor",
+            issuedAfterHire: Sa);
 
         // ── Qiwa integration block ───────────────────────────────────────────
         D("SaudiOrNonSaudi", "Saudi / non-Saudi", "qiwa", "SaudiOrNonSaudi", "select", countries: Sa, binding: "emp.SaudiOrNonSaudi");

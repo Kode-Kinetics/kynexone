@@ -858,7 +858,7 @@ public class DashboardController : ControllerBase
         ["salary"] = "salary", ["bankName"] = "bank name", ["bankIban"] = "IBAN", ["wpsBankDetails"] = "WPS bank details",
         ["passportNumber"] = "passport", ["passportIssueDate"] = "passport issue date", ["passportExpiryDate"] = "passport expiry",
         ["visaNumber"] = "visa", ["visaIssueDate"] = "visa issue date", ["visaExpiryDate"] = "visa expiry",
-        ["visaFileNumber"] = "visa file number", ["dateOfBirth"] = "date of birth", ["iqamaNumber"] = "Iqama",
+        ["visaFileNumber"] = "visa file number", ["dateOfBirth"] = "date of birth", ["iqamaNumber"] = "Iqama", ["borderNumber"] = "border number",
         ["muqeemNumber"] = "Muqeem", ["gosiReference"] = "GOSI reference", ["qiwaContractNumber"] = "Qiwa contract",
         ["emiratesId"] = "Emirates ID", ["laborCardNumber"] = "labour card", ["qid"] = "QID", ["civilId"] = "Civil ID",
         ["residencyNumber"] = "residency", ["residencyIssueDate"] = "residency issue date",

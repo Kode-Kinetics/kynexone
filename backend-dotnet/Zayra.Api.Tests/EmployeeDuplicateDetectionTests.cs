@@ -122,6 +122,7 @@ public class EmployeeDuplicateDetectionTests
     [InlineData("qid", "Qid")]
     [InlineData("civil_id", "CivilId")]
     [InlineData("id_number", "IdNumber")]
+    [InlineData("border_number", "BorderNumber")]
     public async Task Detector_ExactNationalIdMatch_IsStrong(string fieldKey, string column)
     {
         await using var db = CreateDb();
@@ -277,11 +278,11 @@ public class EmployeeDuplicateDetectionTests
 
     // ══════════════════════════ CREATE PATH ══════════════════════════
 
-    private static EmployeeCreateRequest CreateReq(string name, DateOnly? dob = null, bool ack = false,
+    private static EmployeeCreateRequest CreateReq(string name, DateOnly? dob = null, bool ack = false, string nationality = "Saudi",
         params (string key, string val)[] identity)
         => new(
             EmployeeCode: null, ManualEmployeeCode: false, EnglishName: name, ArabicName: null, PreferredName: null,
-            Gender: "Male", DateOfBirth: dob, Nationality: "Saudi", MaritalStatus: null, PersonalEmail: null,
+            Gender: "Male", DateOfBirth: dob, Nationality: nationality, MaritalStatus: null, PersonalEmail: null,
             WorkEmail: null, MobileNumber: null, ProfilePhotoUrl: null, CompanyId: null, BranchId: null,
             DepartmentId: null, DesignationId: null, GradeId: null, CostCenterId: null, JobTitle: null,
             ReportingManagerEmployeeId: null, SecondLevelManagerEmployeeId: null, EmploymentType: "Full-time",
@@ -363,6 +364,99 @@ public class EmployeeDuplicateDetectionTests
         var conflict = Assert.IsType<ConflictObjectResult>(second.Result);
         Assert.Contains("possible_duplicate", JsonSerializer.Serialize(conflict.Value));
         Assert.Equal(1, await db.Employees.CountAsync(e => e.TenantId == t));
+    }
+
+    // KSA Border Number (pre-Iqama ID): mirrored onto Employee.BorderNumber by the create path, and a repeat
+    // border number is a STRONG duplicate exactly like a repeat Iqama.
+    [Fact]
+    public async Task Create_BorderNumberMirrored_RepeatBorderNumberRefused409()
+    {
+        await using var db = CreateDb();
+        var t = await SeedTenant(db);
+        await SeedCompany(db, t, "Acme");
+
+        var first = await BuildController(db, t)
+            .CreateEmployee(CreateReq("Ravi Kumar", identity: ("border_number", "3012345678")), BuildService(db), CancellationToken.None);
+        Assert.IsType<CreatedAtActionResult>(first.Result);
+        var created = await db.Employees.Where(e => e.TenantId == t).SingleAsync();
+        Assert.Equal("3012345678", created.BorderNumber);
+        Assert.Equal(string.Empty, created.IqamaNumber); // a border number is not an Iqama
+
+        var second = await BuildController(db, t)
+            .CreateEmployee(CreateReq("Another Name", identity: ("border_number", "3012345678")), BuildService(db), CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(second.Result);
+        var body = JsonSerializer.Serialize(conflict.Value);
+        Assert.Contains("possible_duplicate", body);
+        Assert.Contains("Border number match", body);
+        Assert.Equal(1, await db.Employees.CountAsync(e => e.TenantId == t));
+    }
+
+    /// <summary>KSA: creation never waits for a document issued after hire — an expat is created with no Iqama,
+    /// GOSI, Qiwa, Muqeem, sponsor, work permit or visa, and with no identity number at all.</summary>
+    [Fact]
+    public async Task Create_SaExpat_WithNoIdentityDocumentsAtAll_Succeeds()
+    {
+        await using var db = CreateDb();
+        var t = await SeedTenant(db);
+        await SeedCompany(db, t, "Acme");
+
+        var result = await BuildController(db, t)
+            .CreateEmployee(CreateReq("Fresh Arrival", nationality: "Indian"), BuildService(db), CancellationToken.None);
+
+        Assert.IsType<CreatedAtActionResult>(result.Result);
+        var e = await db.Employees.SingleAsync(x => x.TenantId == t);
+        Assert.Equal(string.Empty, e.IqamaNumber);
+        Assert.Equal(string.Empty, e.GosiReference);
+        Assert.Equal(string.Empty, e.BorderNumber);
+    }
+
+    [Fact]
+    public async Task Import_BorderNumberColumn_IsPersisted_AndIntraFileRepeatFlagsBothRows()
+    {
+        await using var db = CreateDb();
+        var t = await SeedTenant(db);
+        await SeedCompany(db, t, "Acme");
+        var ctrl = ImportController(db, t);
+
+        var csv =
+            "EmployeeCode,FullName,BorderNumber,JoiningDate\n" +
+            "A,Person A,3011122233,2024-01-01\n" +
+            "B,Person B,3011122233,2024-01-01\n" +
+            "C,Person C,3099988877,2024-01-01\n";
+        var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
+
+        Assert.Equal(3, Prop<int>(payload, "created"));
+        Assert.Equal(2, Prop<int>(payload, "possibleDuplicates"));
+
+        var a = await db.Employees.SingleAsync(e => e.EmployeeCode == "A");
+        var b = await db.Employees.SingleAsync(e => e.EmployeeCode == "B");
+        var c = await db.Employees.SingleAsync(e => e.EmployeeCode == "C");
+        Assert.Equal("3011122233", a.BorderNumber);
+        Assert.Equal("3099988877", c.BorderNumber);
+        Assert.True(await db.EmployeeImportGaps.AnyAsync(g => g.EmployeeId == a.Id && g.GapType == "dup:strong"));
+        Assert.True(await db.EmployeeImportGaps.AnyAsync(g => g.EmployeeId == b.Id && g.GapType == "dup:strong"));
+        Assert.False(await db.EmployeeImportGaps.AnyAsync(g => g.EmployeeId == c.Id && g.GapType == "dup:strong"));
+    }
+
+    [Fact]
+    public async Task Import_BorderNumberOfExistingEmployee_IsStrongDuplicate()
+    {
+        await using var db = CreateDb();
+        var t = await SeedTenant(db);
+        await SeedCompany(db, t, "Acme");
+        var existing = await SeedEmployee(db, t, "EXIST-B", "Existing Arrival");
+        existing.BorderNumber = "3055544433";
+        await db.SaveChangesAsync();
+        var ctrl = ImportController(db, t);
+
+        var csv = "EmployeeCode,FullName,BorderNumber,JoiningDate\n" + "IMP-B,Someone Else,3055544433,2024-01-01\n";
+        var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
+
+        Assert.Equal(1, Prop<int>(payload, "created"));
+        Assert.Equal(1, Prop<int>(payload, "possibleDuplicates"));
+        var imported = await db.Employees.SingleAsync(e => e.EmployeeCode == "IMP-B");
+        Assert.True(await db.EmployeeImportGaps.AnyAsync(g => g.EmployeeId == imported.Id && g.GapType == "dup:strong"));
     }
 
     [Fact]

@@ -224,6 +224,18 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
                     present.Add(item);           // still satisfied for activation
                     expiring.Add(item);          // …but surfaced as amber
                     break;
+                case FieldPresence.Provisional:
+                    // Not held yet, but a recognised interim substitute is (KSA: no Iqama yet, on a border number).
+                    // Never blocks — activation or pay — at the gate this requirement names; it stays on the
+                    // checklist as a recommended to-do (state NeedsAttention) so HR sees the document is still due.
+                    recommended.Add(item);
+                    break;
+                case FieldPresence.ProvisionalLapsed:
+                    // The interim substitute's window has closed: the document itself is now needed to PAY. Like
+                    // Expired it never blocks activation (the substitute still identifies the person).
+                    if (req.FailClosed) payBlocking.Add(item);
+                    else recommended.Add(item);
+                    break;
                 case FieldPresence.Expired:
                     // Present-but-expired: never blocks activation; a hard pay blocker (legally undocumented for pay).
                     if (req.FailClosed) payBlocking.Add(item);
@@ -326,13 +338,17 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
     private static ReadinessItem ToItem(ReadinessRequirement req, FieldPresence presence)
     {
         var spec = EmployeeFieldRegistry.Resolve(req.Key, req.RequireVerified ?? false);
-        var label = spec?.Label ?? req.Key;
+        var label = presence == FieldPresence.Provisional && spec?.ProvisionalLabel is { } provisional ? provisional
+            : presence == FieldPresence.ProvisionalLapsed && spec?.ProvisionalLapsedLabel is { } lapsed ? lapsed
+            : spec?.Label ?? req.Key;
         var category = spec?.Category ?? req.Category;
         var fixKind = spec?.FixKind ?? "field";
         var fixTarget = spec?.FixTarget;
         var docType = spec?.DocumentType;
         var reason = presence == FieldPresence.Expired ? "expired"
             : presence == FieldPresence.Invalid ? "invalid"
+            : presence == FieldPresence.Provisional ? "provisional"
+            : presence == FieldPresence.ProvisionalLapsed ? "statutory"
             : req.FailClosed ? "statutory" : "recommended";
         return new ReadinessItem(req.Key, label, category, reason, req.Jurisdiction, req.Gate, fixKind, fixTarget, docType);
     }
@@ -405,6 +421,9 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
         PassportNumber = e.PassportNumber,
         PassportExpiryDate = e.PassportExpiryDate,
         IqamaNumber = e.IqamaNumber,
+        BorderNumber = e.BorderNumber,
+        VisaFileNumber = e.VisaFileNumber,
+        SponsorName = e.SponsorName,
         IqamaExpiryDate = e.IqamaExpiryDate,
         EmiratesIdExpiryDate = e.EmiratesIdExpiryDate,
         QidExpiryDate = e.QidExpiryDate,

@@ -101,6 +101,11 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public string VisaNumber { get; set; } = string.Empty;
     public DateOnly? VisaExpiryDate { get; set; }
     public string IqamaNumber { get; set; } = string.Empty;
+    /// <summary>KSA Border Number (رقم الحدود) — issued at first entry on a work visa, BEFORE an Iqama
+    /// exists. A new arrival works on it until the Iqama is issued, so readiness accepts it in place of
+    /// the Iqama at activation (see the "IqamaNumber" spec in EmployeeFieldRegistry). Sensitive ID; it has
+    /// no expiry. Empty string = not held — the same convention as every sibling identity column.</summary>
+    public string BorderNumber { get; set; } = string.Empty;
     // GCC-ID expiry scalars — first-class columns for query/index parity with Passport/Visa expiry and
     // so the readiness pay-gate reads them directly (Δ20). Additive/nullable; mirrored from the create
     // modal's compliance records and set by the CSV importer's *Expiry columns.

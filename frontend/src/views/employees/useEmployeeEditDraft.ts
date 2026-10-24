@@ -25,7 +25,7 @@ import {
 export const EMPLOYEE_EDIT_STEP_LABELS = ['Profile', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'] as const;
 
 const MASKED_KEYS = new Set([
-  'salary', 'bankName', 'bankIban', 'wpsBankDetails', 'passportNumber', 'iqamaNumber',
+  'salary', 'bankName', 'bankIban', 'wpsBankDetails', 'passportNumber', 'iqamaNumber', 'borderNumber',
   'medicalInformation', 'disciplinaryRecords', 'terminationReason', 'passportIssueDate',
   'passportExpiryDate', 'visaIssueDate', 'visaExpiryDate', 'residencyIssueDate',
   'workPermitIssueDate', 'visaNumber', 'visaFileNumber', 'muqeemNumber', 'gosiReference',

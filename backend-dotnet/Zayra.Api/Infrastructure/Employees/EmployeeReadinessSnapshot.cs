@@ -28,6 +28,10 @@ public sealed record EmployeeReadinessSnapshot
     public string PassportNumber { get; init; } = string.Empty;
     public DateOnly? PassportExpiryDate { get; init; }
     public string IqamaNumber { get; init; } = string.Empty;
+    /// <summary>KSA Border Number — satisfies the Iqama activation requirement for a new arrival (provisionally).</summary>
+    public string BorderNumber { get; init; } = string.Empty;
+    public string VisaFileNumber { get; init; } = string.Empty;
+    public string SponsorName { get; init; } = string.Empty;
     // GCC-ID expiry scalars (first-class columns, parity with Passport/Visa expiry — §D3/Δ20). The
     // registry expiry getters read these; a compliance-record fallback is retained for legacy data.
     public DateOnly? IqamaExpiryDate { get; init; }
@@ -87,4 +91,8 @@ public enum FieldPresence
     Invalid,        // present but structurally invalid (e.g. IBAN fails mod-97)
     Expired,        // present but expired at the as-of date
     NotEvaluable,   // registry cannot resolve the key → FAIL CLOSED
+    Provisional,    // not held yet, but a recognised interim substitute is (KSA: Iqama due, on border number) —
+                    // blocks nothing; surfaced as a recommended to-do with the spec's ProvisionalLabel
+    ProvisionalLapsed, // the substitute is held but its grace window has closed (KSA: border number > 90 days
+                       // after joining) — never blocks activation; a hard PAY blocker when the requirement is failClosed
 }
