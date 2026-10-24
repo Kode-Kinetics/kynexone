@@ -373,7 +373,8 @@ test('save draft & exit, sign out, sign in: the draft resumes at the same step w
   await next(page, t);
   await expectStep(page, t, 'Branches & locations');
   await page.getByRole('button', { name: t('Save draft & exit'), exact: true }).click();
-  await expect(page).toHaveURL(/\/setup\?tab=companies/);
+  // Save draft & exit returns to Guided setup, where drafts are resumed.
+  await expect(page).toHaveURL(/\/setup\?tab=aiSetup&path=guided/);
 
   // Persisted server-side, not in the browser.
   const owner = await tenantToken(OWNER.email);
@@ -393,7 +394,7 @@ test('save draft & exit, sign out, sign in: the draft resumes at the same step w
   await expect(card).toContainText(t('Stopped at step {step}: {title}', { step: 3, title: t('Branches & locations') }));
   await card.getByRole('link', { name: new RegExp(`${t('Resume')}.*${co.legalNameEn}`) }).click();
   await expectStep(page, t, 'Branches & locations');
-  await page.getByRole('button', { name: t('Back'), exact: true }).click();
+  await page.getByTestId('wizard-back').click();
   await expectStep(page, t, 'Company details');
   await expect(page.getByLabel(t('Legal name (English)'))).toHaveValue(co.legalNameEn);
   await expect(page.getByLabel(t('Legal name (Arabic)'))).toHaveValue(co.legalNameAr);
@@ -410,12 +411,11 @@ test('a CR number that already belongs to a company is blocked at review', async
   const before = await companiesUsed(owner);
   await openWizard(page, t);
   await fillCompany(page, t, dup);
-  for (let i = 0; i < 4; i++) await next(page, t);
-  await expectStep(page, t, 'Company super admin');
+  await nextUntil(page, t, 'Company super admin', 14);
   await reachReview(page, t);
   await expect(page.getByTestId('review-plan')).toContainText(`CR number ${EN_CO.cr} already belongs to a company in this workspace.`);
   await expect(page.getByRole('button', { name: t('Create company'), exact: true })).toBeDisabled();
-  await expect(page.getByText(t('Create is available once every conflict above is resolved.'))).toBeVisible();
+  await expect(page.getByText(t('Create is available once the items above are fixed.'))).toBeVisible();
   await shot(page, info, 'en-7-review-duplicate-cr');
   // And the server refuses the commit even if asked directly (once autosave has the duplicate on the server).
   await expect(page.getByTestId('autosave-status')).toHaveAttribute('data-state', 'saved', { timeout: 15_000 });
@@ -438,8 +438,7 @@ test('a double-click on Create makes exactly one company', async ({ page }) => {
   const before = await companiesUsed(owner);
   await openWizard(page, t);
   await fillCompany(page, t, DOUBLE_CO);
-  for (let i = 0; i < 4; i++) await next(page, t);
-  await expectStep(page, t, 'Company super admin');
+  await nextUntil(page, t, 'Company super admin', 14);
   await reachReview(page, t);
   const create = page.getByRole('button', { name: t('Create company'), exact: true });
   await expect(create).toBeEnabled();
