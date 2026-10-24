@@ -14,11 +14,13 @@ namespace Zayra.Api.Infrastructure.Finance;
 /// <param name="Available">The strictest of every evaluated limit in <paramref name="Limits"/> (including the
 /// instalment-percentage rule, expressed as principal); 0 when the grade blocks the type outright.</param>
 /// <param name="BindingLimit">The <see cref="LoanLimitKinds"/> code of the limit that sets <paramref name="Available"/>.</param>
+/// <param name="MinInstallments">The effective shortest repayment (the stricter of the type's and the policy's), in instalments.</param>
+/// <param name="MaxInstallments">The effective longest repayment, in instalments.</param>
 public record LoanEligibilityAssessment(bool Eligible, string[] Reasons, string[] Codes, decimal? MaxAvailableAmount,
     Guid? PolicyId, int? PolicyVersion, string PolicySnapshotJson, string EmploymentSnapshotJson,
     decimal MonthlySalary, decimal CommittedAmount, GradeLoanLimitResult? GradeLimit = null,
     decimal? Available = null, string? BindingLimit = null, IReadOnlyList<LoanLimitBreakdown>? Limits = null,
-    LoanArt92Check? Art92 = null);
+    LoanArt92Check? Art92 = null, int? MinInstallments = null, int? MaxInstallments = null);
 
 /// <summary>
 /// Saudi Labour Law Art. 92: an employer-loan instalment deducted from the wage may be at most 10% of the wage unless the
@@ -54,6 +56,9 @@ public static class LoanEligibilityCodes
     public const string InterestNotPermittedText = "Employee loans must be interest-free under Saudi law.";
     public const string TypeNotOffered = "LoanTypeNotOffered";
     public const string TypeNotOfferedText = "Loans of this type aren't offered by your company.";
+    /// <summary>Below the shortest repayment the type and policy allow. Hard: never exceptionable.</summary>
+    public const string MinInstallments = "MinInstallments";
+    public static string MinInstallmentsText(int minimum) => $"Repayment must be spread over at least {minimum} instalments.";
 }
 
 /// <summary>One assessment is used for preview, submission, HR approval and release of funds.
@@ -112,6 +117,7 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         policy ??= new LoanPolicy { Id = Guid.Empty, TenantId = tid, CompanyId = employee.CompanyId,
             LoanTypeId = loanType.Id, Version = 0, PolicyName = "Loan type baseline",
             MaxAmount = loanType.MaxAmount, MaxInstallments = loanType.MaxInstallments,
+            MinInstallments = Math.Max(1, loanType.MinInstallments),
             MinServiceMonths = loanType.MinServiceMonths, MaxConcurrentLoans = int.MaxValue };
         if (!hasFrozenPolicy)
         {
@@ -123,7 +129,14 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
                 policy.MaxInstallments = Math.Min(policy.MaxInstallments, loanType.MaxInstallments);
             else Refuse("PolicyInvalid", "The loan type must have a valid installment limit.");
             policy.MinServiceMonths = Math.Max(policy.MinServiceMonths, loanType.MinServiceMonths);
+            // Shortest repayment: the stricter of the type and the policy, frozen with the rest of the terms.
+            policy.MinInstallments = Math.Max(Math.Max(1, policy.MinInstallments), Math.Max(1, loanType.MinInstallments));
         }
+        // A snapshot frozen before minimums existed carries no MinInstallments and reads as 1 (no minimum), as before.
+        var minInstallments = Math.Max(1, policy.MinInstallments);
+        // Only a minimum actually set (> 1) can contradict the maximum; an invalid maximum alone is judged as before.
+        if (minInstallments > 1 && minInstallments > policy.MaxInstallments)
+            Refuse("PolicyInvalid", $"The shortest repayment ({minInstallments} instalments) is longer than the longest allowed ({policy.MaxInstallments}). HR needs to correct the loan type or policy.");
         var today = asOfDate;
         var currency = await GlAccountResolver.ResolveCurrencyAsync(db, tid, employee.CompanyId, ct);
         var salary = await SalaryAsOfAsync(tid, employee.Id, today, ct);
@@ -159,9 +172,10 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         {
             amount = 0;
             // The instalment-percentage limit is shown for the longest schedule the policy allows.
-            if (installments < 1 || installments > policy.MaxInstallments) installments = Math.Clamp(policy.MaxInstallments, 1, 600);
+            if (installments < minInstallments || installments > policy.MaxInstallments) installments = Math.Clamp(policy.MaxInstallments, 1, 600);
         }
-        if (!preview && (installments < 1 || installments > policy.MaxInstallments || installments > 600)) Refuse("Installments", $"Installments must be between 1 and {policy.MaxInstallments}.");
+        if (!preview && (installments < 1 || installments > policy.MaxInstallments || installments > 600)) Refuse("Installments", $"Installments must be between {minInstallments} and {policy.MaxInstallments}.");
+        else if (!preview && installments < minInstallments) Refuse(LoanEligibilityCodes.MinInstallments, LoanEligibilityCodes.MinInstallmentsText(minInstallments));
         if (!preview && (amount <= 0 || decimal.Round(amount, 2) != amount || amount > 999999999999.99m || amount < installments * .01m)) Refuse("InvalidAmount", "Enter a positive two-decimal amount covering every installment.");
         if (repaymentMethod == "PayrollDeduction" && repaymentFrequency != "Monthly") Refuse("RepaymentMethod", "Payroll deduction requires monthly repayments.");
         // IgnoreQueryFilters: eligibility must retain this employee's prior legal-entity debts after a transfer.
@@ -275,11 +289,12 @@ public sealed class LoanEligibilityService(ZayraDbContext db)
         return new(reasons.Count == 0, reasons.ToArray(), codes.ToArray(), maximum,
             policy.Id == Guid.Empty ? null : policy.Id, policy.Version == 0 ? null : policy.Version,
             JsonSerializer.Serialize(policy), "{}", monthlySalary, committedAmount,
-            grade, available, gradeBlocksOutright ? null : binding?.Limit, limits, art92);
+            grade, available, gradeBlocksOutright ? null : binding?.Limit, limits, art92,
+            minInstallments, policy.MaxInstallments);
     }
 
     /// <summary>The employee's salary structure in force on <paramref name="asOf"/> (latest active row), or null.</summary>
-    private Task<EmployeeSalaryStructure?> SalaryAsOfAsync(Guid tid, int employeeId, DateOnly asOf, CancellationToken ct) =>
+    public Task<EmployeeSalaryStructure?> SalaryAsOfAsync(Guid tid, int employeeId, DateOnly asOf, CancellationToken ct) =>
         db.Set<EmployeeSalaryStructure>().AsNoTracking()
             .Where(x => x.TenantId == tid && x.EmployeeId == employeeId && x.IsActive && x.EffectiveDate <= asOf)
             .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);

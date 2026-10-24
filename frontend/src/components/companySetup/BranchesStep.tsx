@@ -3,26 +3,25 @@
 import { useT } from '../../hooks/useT';
 import { msg } from '../../i18n/translations';
 import type { CompanySetupBranch, CompanySetupDraftBody, CompanySetupLocation } from '../../api/companySetup';
-import { TIME_ZONES, stepWarnings } from '../../lib/companySetupWizard';
+import { MANAGE_TAB, TIME_ZONES, stepWarnings, withOneHeadOffice } from '../../lib/companySetupWizard';
 import { RowsEditor, type RowColumn } from './RowsEditor';
 import { Notice, SectionHeader, useWizardForm } from './wizardForm';
 import { UseDefaultsButton } from './UseDefaultsButton';
+import { LocationPinPanel } from './LocationPinPanel';
 
 const PACK_TIME_ZONE: Record<string, string> = { SA: 'Asia/Riyadh', AE: 'Asia/Dubai', QA: 'Asia/Qatar', KW: 'Asia/Kuwait', BH: 'Asia/Bahrain', OM: 'Asia/Muscat', EG: 'Africa/Cairo', IN: 'Asia/Kolkata', PK: 'Asia/Karachi', GB: 'Europe/London', US: 'America/New_York' };
 
 /** Step 3: branches (exactly one head office) and, optionally, the locations people punch in at. */
 export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | null }) {
   const t = useT();
-  const { body, update, errorFor, context, readOnly } = useWizardForm();
+  const { body, update, errorFor, context, readOnly, baseline } = useWizardForm();
+  // Existing mode: "defaults" are what the company has today, so the section reset is not offered; rows the company
+  // already has are edited in place and removed only in Setup (Addendum A3).
+  const existing = !!body.existingCompanyId;
+  const manage = (key: keyof typeof MANAGE_TAB) => existing ? { href: `/setup?tab=${MANAGE_TAB[key].tab}&companyId=${encodeURIComponent(body.existingCompanyId!)}`, label: MANAGE_TAB[key].label } : undefined;
   const timeZone = defaults?.branches[0]?.timeZoneId || PACK_TIME_ZONE[body.company.countryCode] || 'Asia/Riyadh';
-  const setBranches = (branches: CompanySetupBranch[]) => update(b => {
-    // Exactly one head office: ticking one unticks the others; a lone branch is the head office.
-    const before = b.branches;
-    const ticked = branches.findIndex((row, i) => row.isHeadOffice && !before[i]?.isHeadOffice);
-    const next = ticked >= 0 ? branches.map((row, i) => ({ ...row, isHeadOffice: i === ticked })) : branches;
-    if (next.length === 1 && !next[0].isHeadOffice) next[0] = { ...next[0], isHeadOffice: true };
-    return { ...b, branches: next };
-  });
+  // Exactly one head office: ticking one unticks the others; a lone branch is the head office.
+  const setBranches = (branches: CompanySetupBranch[]) => update(b => ({ ...b, branches: withOneHeadOffice(b.branches, branches) }));
   const setLocations = (index: number, locations: CompanySetupLocation[]) =>
     update(b => ({ ...b, branches: b.branches.map((row, i) => (i === index ? { ...row, locations } : row)) }));
   const branchColumns: RowColumn<CompanySetupBranch>[] = [
@@ -37,10 +36,14 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
     { key: 'code', label: msg('Code'), required: true, width: 'w-full sm:w-28' },
     { key: 'nameEn', label: msg('Name (English)'), required: true, width: 'w-full sm:w-48' },
     { key: 'nameAr', label: msg('Name (Arabic)'), arabic: true, width: 'w-full sm:w-48' },
-    { key: 'latitude', label: msg('Latitude'), kind: 'number', inputMode: 'decimal', width: 'w-full sm:w-28' },
-    { key: 'longitude', label: msg('Longitude'), kind: 'number', inputMode: 'decimal', width: 'w-full sm:w-28' },
-    { key: 'radiusMeters', label: msg('Radius (m)'), kind: 'number', inputMode: 'numeric', width: 'w-full sm:w-24' },
   ];
+  // Latitude, longitude and radius live in the location's "Pin this location" panel.
+  // Applied to the latest draft, never to the locations this render saw: a pin can land after an await (the device's
+  // location, a short-link lookup), and a stale copy would undo whatever was typed meanwhile.
+  const editLocation = (branchIndex: number, locationIndex: number, patch: Partial<CompanySetupLocation>) =>
+    update(b => ({ ...b, branches: b.branches.map((row, i) => (i === branchIndex
+      ? { ...row, locations: row.locations.map((l, j) => (j === locationIndex ? { ...l, ...patch } : l)) }
+      : row)) }));
   const branchError = errorFor('branches');
   const warnings = stepWarnings(3, { body, context });
   return (
@@ -48,7 +51,7 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
       <SectionHeader
         title={t('Branches')}
         description={t('Every company needs one head office. Add the other branches people are assigned to.')}
-        actions={!readOnly && defaults && defaults.branches.length > 0
+        actions={!readOnly && !existing && defaults && defaults.branches.length > 0
           ? <UseDefaultsButton current={body.branches} defaults={defaults.branches} section={t('Branches')}
               onApply={() => update(b => ({ ...b, branches: defaults.branches.map(row => ({ ...row, locations: row.locations ?? [] })) }))} />
           : undefined}
@@ -59,6 +62,8 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
         rows={body.branches}
         columns={branchColumns}
         onChange={setBranches}
+        manage={manage('branches')}
+        baselineRows={baseline?.branches}
         newRow={() => ({ code: '', nameEn: '', nameAr: '', city: '', timeZoneId: timeZone, isHeadOffice: body.branches.length === 0, locations: [] })}
         addLabel={t('Add branch')}
         emptyText={t('No branches yet. Add the head office first.')}
@@ -66,17 +71,24 @@ export function BranchesStep({ defaults }: { defaults: CompanySetupDraftBody | n
         rowExtra={(row, index) => (
           <details className="mt-3 rounded-lg bg-slate-50 p-3 dark:bg-white/[0.03]" open={row.locations.length > 0}>
             <summary className="cursor-pointer text-sm font-semibold text-slate-800 dark:text-slate-200">{t('Locations for this branch ({count})', { count: row.locations.length })}</summary>
-            <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{t('Optional. A location is a site people punch in at; latitude, longitude and radius set its geofence.')}</p>
+            <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">{t('Optional. A location is a site people punch in at. Pin it on the map to set its geofence.')}</p>
             <div className="mt-2">
               <RowsEditor<CompanySetupLocation>
                 path={`branches.${index}.locations`}
                 rows={row.locations}
                 columns={locationColumns}
                 onChange={locations => setLocations(index, locations)}
+                manage={manage('locations')}
+                baselineRows={baseline?.branches.find(b => row.existingId && b.existingId === row.existingId)?.locations}
                 newRow={() => ({ code: '', nameEn: '', nameAr: '', latitude: null, longitude: null, radiusMeters: 150 })}
                 addLabel={t('Add location')}
                 emptyText={t('No locations for this branch.')}
                 rowLabel={i => t('Location {number}', { number: i + 1 })}
+                rowExtra={(location, j) => (
+                  <LocationPinPanel path={`branches.${index}.locations.${j}`} location={location} countryCode={body.company.countryCode}
+                    name={location.nameEn?.trim() || t('Location {number}', { number: j + 1 })}
+                    onChange={patch => editLocation(index, j, patch)} />
+                )}
               />
             </div>
           </details>

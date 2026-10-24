@@ -289,6 +289,9 @@ public class ReleaseAContractTests
     [InlineData("/api/ess/packages", false)]
     [InlineData("/api/compliance/contracts", false)]
     [InlineData("/api/ess/benefits", false)]
+    // Dependants are also served under /api/employees so per-plan (non-Release A) tenants can record children for claims.
+    [InlineData("/api/entitlements/employees/7/dependants", true)]
+    [InlineData("/api/employees/7/dependants", false)]
     public void OptInPrefixes_ClaimOnlyReleaseARoutes(string path, bool releaseA) =>
         (OptInFeatures.ResolveApiPath(path) == FeatureKeys.ReleaseA).Should().Be(releaseA);
 

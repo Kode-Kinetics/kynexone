@@ -28,11 +28,41 @@ export function normalizeEmail(value: string): string {
   return value.trim();
 }
 
-export function safeLocalReturnPath(value: string | null | undefined): string {
-  if (!value || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) {
-    return '/dashboard';
+/** Whitespace, ASCII control characters, and the backslash browsers read as '/'. */
+const UNSAFE_RETURN_CHARS = /[\s\u0000-\u001f\u007f\\]/;
+/** Stands in for the page origin when there is no window (server render, unit tests). */
+const FALLBACK_RETURN_ORIGIN = 'https://return-path.invalid';
+
+/**
+ * A same-origin path to send someone back to after an action, or null when the value could leave
+ * this site. A prefix check is not enough: the URL parser strips tabs and newlines and reads '\' as
+ * '/', so "/\t/evil.example" and "/\\evil.example" both resolve to https://evil.example/. Instead the
+ * value is resolved the way the browser will resolve it and must land on this origin. Its decoded
+ * path is checked too ("/%09/evil.example"), so a consumer that decodes it cannot be steered off-site.
+ */
+export function localReturnPathOrNull(value: string | null | undefined): string | null {
+  if (!value || !value.startsWith('/') || value.startsWith('//') || UNSAFE_RETURN_CHARS.test(value)) return null;
+  const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : FALLBACK_RETURN_ORIGIN;
+  let target: URL;
+  try {
+    target = new URL(value, origin);
+  } catch {
+    return null;
   }
-  return value;
+  if (target.origin !== origin || target.username || target.password) return null;
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(target.pathname);
+  } catch {
+    return null;
+  }
+  if (decodedPath.startsWith('//') || UNSAFE_RETURN_CHARS.test(decodedPath)) return null;
+  return `${target.pathname}${target.search}${target.hash}`;
+}
+
+/** {@link localReturnPathOrNull}, falling back to the dashboard. */
+export function safeLocalReturnPath(value: string | null | undefined): string {
+  return localReturnPathOrNull(value) ?? '/dashboard';
 }
 
 export function tokenFromFragment(fragment: string): string {

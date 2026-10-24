@@ -464,6 +464,66 @@ public class AccessController : ControllerBase
         <p style="font-size:12px;color:#666">KynexOne Workforce</p>
         """;
 
+    /// <summary>
+    /// Resets ANOTHER user's two-step sign-in (lost phone): their factor, sessions, open challenges, trusted browsers
+    /// and backup codes all end at once; at their next sign-in they set it up again if it is required for them.
+    ///
+    /// AUTHORIZATION: the class-level <c>security.manage</c> (the permission of every other account action here) and
+    /// the same account ceiling (<see cref="PrivilegeCeiling"/>): nobody resets a user above them. Never yourself.
+    /// 400 ERR_MFA_RESET_REASON, 403 ERR_MFA_RESET_SELF or the ceiling code, 404 unknown / another tenant / outside
+    /// your company scope, 409 ERR_MFA_NOT_ENABLED. The user is told through the tenant notification outbox.
+    /// </summary>
+    [HttpPost("users/{userId:guid}/mfa/reset")]
+    public async Task<IActionResult> ResetUserMfa(
+        Guid userId,
+        [FromBody] MfaAdminResetRequest? body,
+        [FromServices] Zayra.Api.Infrastructure.Notifications.INotificationService? notifications,
+        CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        if (tenantId is null || GetUserId() is null) return Unauthorized();
+        MfaAdminResetResult result;
+        try
+        {
+            result = await _accessManagement.ResetUserMfaAsync(tenantId.Value, userId, body?.Reason, ManagementScope(), GetContext(), cancellationToken);
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "auth.mfa.admin_reset", "User", userId.ToString()); }
+
+        switch (result.Outcome)
+        {
+            case MfaAdminResetOutcome.Reset:
+                break;
+            case MfaAdminResetOutcome.ReasonInvalid:
+                return BadRequest(new { code = MfaErrorCodes.ResetReason, message = "Give a reason of 3 to 500 characters." });
+            case MfaAdminResetOutcome.Self:
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    code = MfaErrorCodes.ResetSelf,
+                    message = "You cannot reset your own two-step sign-in. Ask another administrator.",
+                });
+            case MfaAdminResetOutcome.NotEnabled:
+                return Conflict(new { code = MfaErrorCodes.NotEnabled, message = "Two-step sign-in is already off for this person." });
+            default:
+                return NotFound();
+        }
+
+        // After commit, never inside it: the outbox writes in its own scope and a failure never undoes the reset.
+        if (notifications is not null)
+            await notifications.EnqueueAsync(new Zayra.Api.Infrastructure.Notifications.NotificationRequest
+            {
+                TenantId = tenantId.Value,
+                UserId = userId,
+                EventCode = "security.mfa_admin_reset",
+                EntityName = "User",
+                EntityId = result.ResetId?.ToString("D") ?? userId.ToString("D"),
+                Title = "Your two-step sign-in was reset",
+                Message = "An administrator reset two-step sign-in on your KynexOne account and signed you out everywhere. "
+                    + "Your trusted browsers and backup codes no longer work. Set up two-step sign-in again the next time you sign in. "
+                    + "If you did not ask for this, contact your administrator now.",
+            }, cancellationToken);
+        return NoContent();
+    }
+
     [HttpDelete("users/{userId:guid}")]
     public async Task<IActionResult> DeleteUser(Guid userId, CancellationToken cancellationToken)
     {
@@ -917,6 +977,18 @@ public class AccessController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var gate = RequireGroupEntityScope();
         if (gate is not null) return gate;
+        if (request.MfaTrustedDeviceDays is < 0 or > Models.SecuritySetting.MaxMfaTrustedDeviceDays)
+            return BadRequest(new
+            {
+                code = MfaErrorCodes.TrustDaysRange,
+                message = "Trusted browser days must be between 0 (off) and 90.",
+            });
+        if (request.SessionMaxHours is < Models.SecuritySetting.MinSessionMaxHours or > Models.SecuritySetting.MaxSessionMaxHours)
+            return BadRequest(new
+            {
+                code = SessionErrorCodes.MaxHoursRange,
+                message = "Maximum session length must be between 1 and 168 hours.",
+            });
         return Ok(await _accessManagement.UpdateSecuritySettingsAsync(tenantId.Value, request, GetContext(), cancellationToken));
     }
 

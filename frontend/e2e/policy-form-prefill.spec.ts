@@ -64,7 +64,7 @@ async function boot(page: Page, options: { group?: boolean; workspace?: boolean;
     await expect(focused.getByText('Onboarding and confirmation', { exact: true })).toBeVisible();
     return { writes, savedTasks, errors, identity, releaseCompanies, get templateReads() { return templateReads; } };
   }
-  await page.goto(options.group ? `/setup?tab=aiSetup&mode=starter&companyId=${companyId}` : '/setup?tab=aiSetup&mode=starter');
+  await page.goto(options.group ? `/setup?tab=aiSetup&path=policyStarter&companyId=${companyId}` : '/setup?tab=aiSetup&path=policyStarter');
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible({ timeout: 30_000 });
   if (!options.group) await page.getByLabel(/^Legal entity name/).fill(company.legalNameEn);
   await page.getByLabel(/^Industry/).fill('Services');
@@ -236,7 +236,7 @@ test('resumed extraction opens existing forms without another AI call despite re
     draft.profile.configuration.policyExtraction.setupSignature = JSON.stringify(reorder(JSON.parse(draft.profile.configuration.policyExtraction.setupSignature)));
     localStorage.setItem(key, JSON.stringify(draft));
   });
-  await page.goto('/setup?tab=aiSetup&mode=starter');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter');
   await page.getByRole('button', { name: 'Review policy text', exact: true }).click();
   await page.getByRole('button', { name: '2. Prepare form values', exact: true }).click();
   await page.getByRole('button', { name: 'Review prefilled forms', exact: true }).click();

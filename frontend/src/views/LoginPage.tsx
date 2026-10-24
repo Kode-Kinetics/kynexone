@@ -4,18 +4,20 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  AlertCircle, CheckCircle2, Eye, EyeOff, Lock, Mail,
+  AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail,
   ShieldCheck, Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { LocaleProvider, useLocale } from '../contexts/LocaleContext';
-import { authApi } from '../api/auth';
+import { authApi, MFA_ERRORS, normalizeBackupCode } from '../api/auth';
+import { BackupCodesStep } from '../components/account/BackupCodesStep';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
 import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
-import { isWorkspaceRequired, normalizeWorkspace, resolveWorkspaceAlias, safeLocalReturnPath } from '../lib/publicAuth';
-import { isWelcomeCode, normalizeWelcomeCode } from '../lib/welcomeCode';
+import { isWorkspaceRequired, localReturnPathOrNull, normalizeWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
+import { isWelcomeCode, normalizeWelcomeCode, toAsciiDigits } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
+import { takeSignInNotice, type SignInNotice } from '../lib/signInNotice';
 import { dateLocale } from '../lib/format';
 import { markResetNoticeSeen } from '../components/ResetCodeNotice';
 import { homePathFor } from '../lib/homePath';
@@ -23,6 +25,7 @@ import { homePathFor } from '../lib/homePath';
 /** Shapes, not words: nothing here to translate. */
 const EMAIL_PLACEHOLDER = 'name@company.com';
 const WORKSPACE_PLACEHOLDER = 'your-workspace';
+const BACKUP_CODE_PLACEHOLDER = 'XXXXX-XXXXX';
 
 /** Whole minutes for a 429's Retry-After (the API's LoginAbuseGuard thresholds round the same way). */
 function waitMinutes(retryAfterHeader: unknown): number {
@@ -60,7 +63,10 @@ const LoginAuroraScene = dynamic(
  */
 const SCENE_MIN_WIDTH = 768;
 
-type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'reset-notice';
+type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'mfa-codes' | 'reset-notice';
+
+/** A backup code is 10 characters once spaces and hyphens are dropped (printed as XXXXX-XXXXX). */
+const BACKUP_CODE_LENGTH = 10;
 
 /**
  * The sign-in surface runs outside the tenant shell, so it mounts its own LocaleProvider: the card is
@@ -83,7 +89,7 @@ function LoginCard() {
   /* An explicit, safe ?from= wins. Otherwise the landing page follows who signed in:
      self-service-only employees go to /ess, everyone else to /dashboard (lib/homePath.ts). */
   const fromParam    = searchParams?.get('from') ?? '';
-  const askedFor     = fromParam && safeLocalReturnPath(fromParam) === fromParam ? fromParam : null;
+  const askedFor     = localReturnPathOrNull(fromParam);
   const from         = askedFor ?? homePathFor(user);
 
   const [mode,         setMode]         = useState<Mode>('login');
@@ -106,8 +112,47 @@ function LoginCard() {
   const [showPw,       setShowPw]       = useState(false);
   const [forgotEmail,  setForgotEmail]  = useState('');
   const [totpCode,     setTotpCode]     = useState('');
+  /* "Trust this browser": unchecked by default, offered only when the company allows it (days > 0). */
+  const [trustBrowser, setTrustBrowser] = useState(false);
+  /* "Lost your phone?" under Verify: a backup code, or the company's administrator. */
+  const [lostPhoneOpen, setLostPhoneOpen] = useState(false);
+  /* The code step takes the app's 6 digits, or (switched by a link) one backup code. */
+  const [codeKind, setCodeKind] = useState<'app' | 'backup'>('app');
+  const [backupCode, setBackupCode] = useState('');
+  const codeFieldRef = useRef<HTMLInputElement>(null);
+  /* Bumped by the switch link: the cursor goes to the field now shown, not back to <body>. */
+  const [focusCode, setFocusCode] = useState(0);
+  useEffect(() => { if (focusCode) codeFieldRef.current?.focus(); }, [focusCode]);
+  /* The first backup codes, after the setup forced at sign-in. Held only until Done. */
+  const [enrollmentCodes, setEnrollmentCodes] = useState<string[] | null>(null);
+  const trustDays = mfaPending?.rememberDeviceDays ?? 0;
   const [enrollmentUri, setEnrollmentUri] = useState('');
   const [enrollmentSecret, setEnrollmentSecret] = useState('');
+
+  /* Sent here by Sign-in security after two-step was turned on or off, which ends every session,
+     or by the API client when the session reached the company's maximum length: say why, so the
+     sign-in page is not an unexplained sign-out. */
+  const [arrivalNotice, setArrivalNotice] = useState<SignInNotice | null>(null);
+  // Read once, on arrival.
+  useEffect(() => {
+    const notice = takeSignInNotice();
+    if (notice) setArrivalNotice(notice); // A second run (React's dev double-mount) finds none; keep the first.
+  }, []);
+  /* After a full page load (the session-ended case) the saved language is applied after this page
+     first renders, so the sentence follows the language while it is still the one shown. Once
+     something else replaced it (a sign-in attempt), a language switch does not bring it back. */
+  const arrivalNoticeShown = useRef<string | null>(null);
+  useEffect(() => {
+    if (!arrivalNotice) return;
+    const text = arrivalNotice === 'two-step-on'
+      ? t('Two-step sign-in is on, and you were signed out everywhere for your security. Sign in again with your password and a code from your authenticator app.')
+      : arrivalNotice === 'two-step-off'
+        ? t('Two-step sign-in is off, and you were signed out everywhere for your security. Sign in again with your password.')
+        : t('Your session has ended. Sign in again.');
+    const shown = arrivalNoticeShown.current;
+    setInfo((prev) => ((shown === null && prev === '') || prev === shown ? text : prev));
+    arrivalNoticeShown.current = text;
+  }, [arrivalNotice, t]);
 
   useLayoutEffect(() => {
     // Never retain a query-string bearer credential in browser history, logs, or
@@ -217,14 +262,43 @@ function LoginCard() {
     finally { setLoading(false); }
   };
 
+  const usingBackup = codeKind === 'backup';
+  const codeReady = usingBackup ? normalizeBackupCode(backupCode).length === BACKUP_CODE_LENGTH : totpCode.length === 6;
+
+  const switchCodeKind = () => {
+    setCodeKind(usingBackup ? 'app' : 'backup');
+    setError('');
+    setFocusCode((n) => n + 1);
+  };
+
   const handleMfa = async (e: React.FormEvent) => {
-    e.preventDefault(); setError(''); setLoading(true);
+    e.preventDefault(); setError('');
+    if (!codeReady) return;
+    setLoading(true);
     try {
-      await verifyMfaChallenge(totpCode);
+      // A backup code never trusts this browser, so the choice is neither shown nor sent with one.
+      if (usingBackup) await verifyMfaChallenge({ backupCode });
+      else await verifyMfaChallenge(totpCode, trustDays > 0 ? trustBrowser : undefined);
+      setBackupCode('');
       setSignedIn(true);
     }
-    catch { setError(t('Invalid or expired code. Please try again.')); }
+    catch (err: any) {
+      const code = err?.response?.data?.code ?? err?.response?.data?.error;
+      if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
+      else if (code === MFA_ERRORS.codeInvalid) {
+        setError(usingBackup
+          ? t("That backup code didn't work. Check it, or use another one. Each code works once.")
+          : t("That code didn't match. Enter the newest code from your authenticator app. Each code works only once."));
+      }
+      else if (code === MFA_ERRORS.codeRequired) setError(usingBackup ? t('Enter one of your backup codes.') : t('Enter the 6-digit code from your authenticator app.'));
+      else setError(t('Invalid or expired code. Please try again.'));
+    }
     finally { setLoading(false); }
+  };
+
+  /** Back to the password step: nothing typed on the code step survives. */
+  const leaveCodeStep = () => {
+    setMode('login'); setTotpCode(''); setBackupCode(''); setCodeKind('app'); setTrustBrowser(false); setLostPhoneOpen(false); setError('');
   };
 
   // Switch to MFA mode as soon as context signals a pending challenge.
@@ -245,16 +319,18 @@ function LoginCard() {
         const parsed = new URL(res.provisioningUri);
         setEnrollmentSecret(parsed.searchParams.get('secret') ?? '');
       })
-      .catch(() => setError(t('Two-factor setup expired. Please sign in again.')));
+      .catch(() => setError(t('Two-step sign-in setup expired. Please sign in again.')));
   }, [mfaEnrollmentPending, t]);
 
   const handleMfaEnrollment = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setLoading(true);
     try {
       if (!mfaEnrollmentPending || !enrollmentSecret) throw new Error('Missing enrollment challenge.');
-      await authApi.mfaEnrollmentVerifySetup(mfaEnrollmentPending.enrollmentToken, enrollmentSecret, totpCode);
-      setInfo(t('Two-factor authentication is on. Sign in again to continue.'));
+      const codes = await authApi.mfaEnrollmentVerifySetup(mfaEnrollmentPending.enrollmentToken, enrollmentSecret, totpCode);
       setTotpCode('');
+      // The first backup codes come once, here: save them before signing in again.
+      if (codes?.length) { setEnrollmentCodes(codes); setMode('mfa-codes'); return; }
+      setInfo(t('Two-step sign-in is on. Sign in again to continue.'));
       setMode('login');
     }
     catch { setError(t('Invalid or expired code. Please try again.')); }
@@ -486,23 +562,68 @@ function LoginCard() {
 
                 {mode === 'mfa' && (
                   <form onSubmit={handleMfa} noValidate className="lx-form">
-                    <Back onClick={() => { setMode('login'); setTotpCode(''); }} label={t('Back to sign in')} />
-                    <Head kicker={t('Security check')} title={t('Two-factor authentication')}
-                      sub={t('Enter the 6-digit code from your authenticator app.')} icon={<Smartphone />} />
-                    <Field legend={t('Authentication code')} htmlFor="mfa-code">
-                      <input id="mfa-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
-                        dir="ltr" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
-                        className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" autoFocus required />
-                    </Field>
+                    <Back onClick={leaveCodeStep} label={t('Back to sign in')} />
+                    <Head kicker={t('Security check')} title={t('Two-step sign-in')}
+                      sub={usingBackup
+                        ? t('Enter one of the backup codes you saved when you turned on two-step sign-in.')
+                        : t('Enter the 6-digit code from your authenticator app.')}
+                      icon={usingBackup ? <KeyRound /> : <Smartphone />} />
+                    {usingBackup ? (
+                      <Field legend={t('Backup code')} htmlFor="mfa-backup-code">
+                        <input id="mfa-backup-code" ref={codeFieldRef} type="text" inputMode="text" maxLength={16}
+                          dir="ltr" value={backupCode} onChange={e => setBackupCode(e.target.value)}
+                          className="lx-in lx-in-code" placeholder={BACKUP_CODE_PLACEHOLDER} autoComplete="one-time-code"
+                          autoCapitalize="characters" autoCorrect="off" spellCheck={false} required data-testid="mfa-backup-code" />
+                      </Field>
+                    ) : (
+                      <Field legend={t('6-digit code')} htmlFor="mfa-code">
+                        <input id="mfa-code" ref={codeFieldRef} type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
+                          dir="ltr" value={totpCode} onChange={e => setTotpCode(toAsciiDigits(e.target.value).replace(/\D/g, ''))}
+                          className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" autoFocus required />
+                      </Field>
+                    )}
+                    {/* Offered only when the company allows trusted browsers, and never with a backup
+                        code. Unchecked by default: trusting a browser is a choice the person makes. */}
+                    {trustDays > 0 && !usingBackup && (
+                      <div className="lx-check">
+                        <input id="mfa-trust" type="checkbox" checked={trustBrowser}
+                          onChange={e => setTrustBrowser(e.target.checked)}
+                          aria-describedby="mfa-trust-hint" data-testid="mfa-trust-browser" />
+                        <div className="lx-check-text">
+                          <label htmlFor="mfa-trust">
+                            {t('{days, plural, one {Trust this browser for # day} other {Trust this browser for # days}}', { days: trustDays })}
+                          </label>
+                          <p id="mfa-trust-hint" className="lx-hint">
+                            {t("You won't be asked for a code on this browser until then. Don't use on a shared computer.")}
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label={t('Verify')} busyLabel={t('Verifying…')} disabled={totpCode.length !== 6} />
+                    <Submit busy={busy} label={t('Verify')} busyLabel={t('Verifying…')} disabled={!codeReady} />
+                    {/* The other kind of code. After Verify in the tab order, so the field still leads
+                        straight to the trust choice and the button; switching puts the cursor in the new field. */}
+                    <button type="button" className="lx-link lx-link-row" dir="auto" onClick={switchCodeKind} data-testid="mfa-switch-code-kind">
+                      {usingBackup ? t('Use the app code instead') : t('Use a backup code instead')}
+                    </button>
+                    {/* Who can help when the phone is gone, and the backup codes that need nobody. */}
+                    <button type="button" className="lx-link lx-link-row" dir="auto" data-testid="mfa-lost-phone"
+                      aria-expanded={lostPhoneOpen} aria-controls="mfa-lost-phone-help"
+                      onClick={() => setLostPhoneOpen((v) => !v)}>
+                      {t('Lost your phone?')}
+                    </button>
+                    {lostPhoneOpen && (
+                      <p id="mfa-lost-phone-help" className="lx-hint lx-hint-block" data-testid="mfa-lost-phone-help">
+                        {t("Ask your company's administrator to reset two-step sign-in, or use one of your backup codes. After a reset, you'll set it up again the next time you sign in.")}
+                      </p>
+                    )}
                   </form>
                 )}
 
                 {mode === 'mfa-enroll' && (
                   <form onSubmit={handleMfaEnrollment} noValidate className="lx-form">
-                    <Back onClick={() => { setMode('login'); setTotpCode(''); }} label={t('Back to sign in')} />
-                    <Head kicker={t('Security check')} title={t('Set up two-factor authentication')}
+                    <Back onClick={() => { setMode('login'); setTotpCode(''); setError(''); }} label={t('Back to sign in')} />
+                    <Head kicker={t('Security check')} title={t('Set up two-step sign-in')}
                       sub={t('Add this account to your authenticator app, then enter the 6-digit code.')}
                       icon={<Smartphone />} />
                     {enrollmentSecret && (
@@ -512,14 +633,23 @@ function LoginCard() {
                       </Field>
                     )}
                     {enrollmentUri && <p className="lx-uri" dir="ltr">{enrollmentUri}</p>}
-                    <Field legend={t('Authentication code')} htmlFor="mfa-enroll-code">
+                    <Field legend={t('6-digit code')} htmlFor="mfa-enroll-code" hint={t('If you lose this phone, your administrator can reset it, or you can use one of your backup codes.')}>
                       <input id="mfa-enroll-code" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
-                        dir="ltr" value={totpCode} onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                        dir="ltr" value={totpCode} onChange={e => setTotpCode(toAsciiDigits(e.target.value).replace(/\D/g, ''))}
                         className="lx-in lx-in-code" placeholder="000000" autoComplete="one-time-code" required />
                     </Field>
                     <Feedback error={error} info={info} />
-                    <Submit busy={busy} label={t('Turn on two-factor authentication')} busyLabel={t('Turning on…')} disabled={totpCode.length !== 6 || !enrollmentSecret} />
+                    <Submit busy={busy} label={t('Turn on two-step sign-in')} busyLabel={t('Turning on…')} disabled={totpCode.length !== 6 || !enrollmentSecret} />
                   </form>
+                )}
+
+                {mode === 'mfa-codes' && enrollmentCodes && (
+                  <BackupCodesStep codes={enrollmentCodes} account={email.trim() || null} variant="login" onDone={() => {
+                    // The codes leave state here; signing in again is the next step.
+                    setEnrollmentCodes(null);
+                    setInfo(t('Two-step sign-in is on. Sign in again to continue.'));
+                    setMode('login');
+                  }} />
                 )}
 
                 {mode === 'reset-notice' && (

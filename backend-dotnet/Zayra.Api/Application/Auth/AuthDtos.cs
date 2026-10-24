@@ -216,6 +216,15 @@ public record AuthResponse(
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string? KnownDeviceToken { get; init; }
+
+    /// <summary>Raw trusted-browser token for the HttpOnly kx_mfa_trust cookie (MfaTrustedDevices), set only when the
+    /// user asked to trust this browser. Never serialised.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? MfaTrustToken { get; init; }
+
+    /// <summary>The cookie's lifetime in days, with <see cref="MfaTrustToken"/>.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int MfaTrustDays { get; init; }
 }
 
 public record CompanyAccessDto(Guid Id, string Name, string Code, string CountryCode, bool IsActive);
@@ -331,7 +340,9 @@ public record UserListDto(
     DateTime CreatedAtUtc,
     // The employee record this login is linked to, for the User Management row. Null when unlinked.
     string? EmployeeName = null,
-    string? EmployeeCode = null);
+    string? EmployeeCode = null,
+    // Two-step sign-in is on for this login (drives the admin's "Reset two-step sign-in" action).
+    bool MfaEnabled = false);
 
 public record UpdateUserRequest(
     string? FullName,
@@ -382,13 +393,16 @@ public record SecuritySettingDto(
     int RefreshTokenExpiryDays,
     bool AllowMultipleSessions,
     bool MfaRequired,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    int MfaTrustedDeviceDays = Zayra.Api.Models.SecuritySetting.DefaultMfaTrustedDeviceDays,
+    int SessionMaxHours = Zayra.Api.Models.SecuritySetting.DefaultSessionMaxHours);
 
 // ── MFA DTOs ──────────────────────────────────────────────────────────────────
 
 /// <summary>Issued after password validates when the user has MFA enabled.
-/// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.</summary>
-public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds);
+/// The client must POST this token + TOTP code to /api/auth/mfa/challenge/verify to obtain full tokens.
+/// <c>RememberDeviceDays</c>: how long "Trust this browser" would last (the tenant setting); 0 = don't offer it.</summary>
+public record MfaChallengeDto(string ChallengeToken, int ExpiresInSeconds, int RememberDeviceDays = 0);
 
 /// <summary>
 /// Mandatory-MFA standing for the signed-in principal. <c>RequiredBecause</c> is "privileged_role",
@@ -402,7 +416,13 @@ public record MfaStatusDto(
     DateTime? EnforceFromUtc,
     bool Enforced,
     bool PromptToEnroll,
-    int? RecoveryCodesRemaining = null);
+    int? RecoveryCodesRemaining = null,
+    // Tenant users only (contract API 3): enabled && !required; the tenant's trust lifetime; live trusted browsers.
+    bool CanDisable = false,
+    int RememberDeviceDays = 0,
+    int TrustedDeviceCount = 0,
+    // Tenant users only (wave 2): unused backup codes of the current factor; 0 when two-step is off.
+    int BackupCodesRemaining = 0);
 
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>
@@ -428,9 +448,82 @@ public record MfaVerifySetupRequest(
     [System.ComponentModel.DataAnnotations.Required] string TempSecret,
     [System.ComponentModel.DataAnnotations.Required] string TotpCode);
 
+/// <summary>The code step: exactly one of <c>TotpCode</c> or <c>BackupCode</c> (neither or both: 400 ERR_MFA_CODE_REQUIRED).
+/// A backup code never trusts the browser, whatever <c>RememberDevice</c> says.</summary>
 public record MfaChallengeVerifyRequest(
     [System.ComponentModel.DataAnnotations.Required] string ChallengeToken,
-    [System.ComponentModel.DataAnnotations.Required] string TotpCode);
+    string? TotpCode = null,
+    bool? RememberDevice = null,
+    string? BackupCode = null);
+
+/// <summary>POST /api/auth/mfa/backup-codes: a current app code proves the factor before the old codes are replaced.</summary>
+public record MfaRegenerateBackupCodesRequest(string? TotpCode);
+
+/// <summary>200 body of enrollment/verify-setup and backup-codes: the new codes, shown once.</summary>
+public record MfaBackupCodesResponse(IReadOnlyList<string> BackupCodes);
+
+/// <summary>
+/// 200 body of the signed-in POST /api/auth/mfa/verify-setup (Amendment 1): the new codes, plus THIS session's
+/// re-issued tokens in the login response's own fields (accessToken, refreshToken, expiresAtUtc, user), so the caller
+/// stays signed in while the codes are on screen. The session fields are null when no session could be re-issued.
+/// </summary>
+public record MfaSetupResponse(
+    IReadOnlyList<string> BackupCodes,
+    string? AccessToken = null,
+    string? RefreshToken = null,
+    DateTime? ExpiresAtUtc = null,
+    AuthUserDto? User = null);
+
+/// <summary>What signed-in setup did; <c>ConfiguredAtUtc</c> is the new factor's stamp (microsecond precision) on success.</summary>
+public sealed record MfaSetupResult(MfaSetupOutcome Outcome, IReadOnlyList<string>? BackupCodes, DateTime? ConfiguredAtUtc);
+
+/// <summary>POST /api/access/users/{userId}/mfa/reset.</summary>
+public record MfaAdminResetRequest(string? Reason);
+
+/// <summary>What regenerating backup codes did.</summary>
+public enum MfaBackupCodesOutcome { Generated, CodeInvalid, NotEnabled, Refused }
+
+/// <summary>What an administrator's two-step reset did (the ceiling refusal is a PrivilegeCeilingException).</summary>
+public enum MfaAdminResetOutcome { Reset, ReasonInvalid, Self, NotFound, NotEnabled }
+
+/// <summary>The outcome of an administrator's two-step reset; <c>ResetId</c> is its audit row's id when it happened.</summary>
+public sealed record MfaAdminResetResult(MfaAdminResetOutcome Outcome, Guid? ResetId = null);
+
+/// <summary>A wrong, used or malformed code at the code step, while the challenge itself was valid (400, not 401).</summary>
+public sealed class MfaCodeInvalidException() : UnauthorizedAccessException("That code is not right.");
+
+/// <summary>One trusted browser of the signed-in user (GET /api/auth/mfa/trusted-devices): this browser first, then
+/// lastUsedAtUtc descending (never used last), then createdAtUtc descending.</summary>
+public record MfaTrustedDeviceDto(
+    Guid Id,
+    DateTime CreatedAtUtc,
+    DateTime? LastUsedAtUtc,
+    DateTime ExpiresAtUtc,
+    /// <summary>"Firefox on macOS"; null when the User-Agent says nothing we recognise (the UI shows "Unknown browser").</summary>
+    string? Browser,
+    string? IpAddress,
+    bool Current);
+
+/// <summary>What verify-setup did (Amendment 1 maps each to a coded response).</summary>
+public enum MfaSetupOutcome { Enabled, CodeInvalid, SetupInvalid, AlreadyEnabled }
+
+/// <summary>What disable did (Amendment 1 maps each to a coded response).</summary>
+public enum MfaDisableOutcome { Disabled, CodeInvalid, NotEnabled, RequiredForRole, RequiredByWorkspace, Refused }
+
+/// <summary>The coded errors of the two-step endpoints (contract + Amendment 1).</summary>
+public static class MfaErrorCodes
+{
+    public const string CodeInvalid = "ERR_MFA_CODE_INVALID";
+    public const string SetupInvalid = "ERR_MFA_SETUP_INVALID";
+    public const string AlreadyEnabled = "ERR_MFA_ALREADY_ENABLED";
+    public const string NotEnabled = "ERR_MFA_NOT_ENABLED";
+    public const string RequiredForRole = "ERR_MFA_REQUIRED_FOR_ROLE";
+    public const string RequiredByWorkspace = "ERR_MFA_REQUIRED_BY_WORKSPACE";
+    public const string TrustDaysRange = "ERR_MFA_TRUST_DAYS_RANGE";
+    public const string CodeRequired = "ERR_MFA_CODE_REQUIRED";
+    public const string ResetReason = "ERR_MFA_RESET_REASON";
+    public const string ResetSelf = "ERR_MFA_RESET_SELF";
+}
 
 public record MfaDisableRequest(
     [System.ComponentModel.DataAnnotations.Required] string TotpCode);
@@ -485,4 +578,15 @@ public record UpdateSecuritySettingRequest(
     int? SessionTimeoutMinutes,
     int? RefreshTokenExpiryDays,
     bool? AllowMultipleSessions,
-    bool? MfaRequired = null);
+    bool? MfaRequired = null,
+    int? MfaTrustedDeviceDays = null,
+    int? SessionMaxHours = null);
+
+/// <summary>The coded errors of the session policy (security settings and refresh).</summary>
+public static class SessionErrorCodes
+{
+    /// <summary>PUT /api/access/security-settings with <c>sessionMaxHours</c> outside 1..168 (400).</summary>
+    public const string MaxHoursRange = "ERR_SESSION_MAX_HOURS_RANGE";
+    /// <summary>POST /api/auth/refresh after the session reached its maximum length (401).</summary>
+    public const string Expired = Zayra.Api.Infrastructure.Auth.SessionExpiredException.Code;
+}

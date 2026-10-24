@@ -35,7 +35,18 @@ public class LeavePolicy : ITenantOwned, ICompanyScoped
     public string EmploymentType { get; set; } = string.Empty;
     public string ContractType { get; set; } = string.Empty;
     public string Gender { get; set; } = string.Empty;
+    /// <summary>
+    /// Locals, expats or everyone (<see cref="LeaveNationalityScopes"/>), judged against the employee's company
+    /// country. Lets a tenant give locals and expats different rules (notice, days, encashment) as two policies.
+    /// </summary>
+    public string NationalityScope { get; set; } = LeaveNationalityScopes.Any;
     public bool AppliesOnProbation { get; set; }
+    /// <summary>
+    /// Months of service, counted from the joining date, before this leave can be TAKEN (0 = from joining).
+    /// The company's own rule ("annual leave after one year"); the balance still accrues from joining.
+    /// Not applied to KSA statutory event leave, whose eligibility the law sets.
+    /// </summary>
+    public int MinimumServiceMonths { get; set; }
     public decimal AnnualEntitlementDays { get; set; }
     public string AccrualMethod { get; set; } = "Yearly";
     /// <summary>
@@ -64,6 +75,19 @@ public class LeavePolicy : ITenantOwned, ICompanyScoped
     public string Status { get; set; } = "Draft";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// A leave policy's nationality scope. National = the employee's nationality is the company's country
+/// (Saudi for a KSA company); Expatriate = any other KNOWN nationality. An employee with no nationality, or one
+/// the platform cannot place, matches neither — never guessed into a group.
+/// </summary>
+public static class LeaveNationalityScopes
+{
+    public const string Any = "Any";
+    public const string National = "National";
+    public const string Expatriate = "Expatriate";
+    public static readonly string[] All = [Any, National, Expatriate];
 }
 
 public class EmployeeLeaveBalance : ITenantOwned

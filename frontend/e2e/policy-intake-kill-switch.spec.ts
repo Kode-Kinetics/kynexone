@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { setupSection } from './setupSections';
 
 // Owner decision (2026-10-20): company policy documents are not uploaded, parsed or sent to AI; only manual
 // company setup is enabled. policy_intake is an opt-in flag the real API lists in /api/features/disabled-keys
@@ -64,18 +65,22 @@ test('flag off: Setup → Onboarding is the manual editor only, with no Fill fro
   expect(state.errors).toEqual([]);
 });
 
-test('flag off: Setup Studio shows no policy library, guide or upload', async ({ page }) => {
+test('flag off: Setup shows no policy library, guide or upload', async ({ page }) => {
   const state = await boot(page, studioUrl, { policyIntake: false });
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
+  // Opens the section picker on a phone, so the absence below is checked against the full section list.
+  await expect(await setupSection(page, 'Companies')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Policy library', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Policy library', exact: true })).toHaveCount(0);
 
-  // A saved deep link to the library falls back to Setup Studio instead of opening a refused page.
+  // A saved deep link to the library falls back to All setup areas (its area is kept) instead of opening a refused page.
   await page.goto('/setup?tab=policyLibrary&area=leave&companyId=fixture-company');
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('heading', { level: 2, name: 'Policy library', exact: true })).toHaveCount(0);
 
-  // Guided Setup: manual company setup works; the policy guide, upload and library entry are gone.
-  await page.getByRole('button', { name: 'Guided Setup', exact: true }).click();
+  // Policy starter (the old studio, its own Setup section since Guided setup became the company chooser): manual
+  // setup works; the policy guide, upload and library entry are gone.
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company');
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save for later', exact: true })).toBeVisible();
@@ -96,8 +101,9 @@ test('flag on: the policy entry points come back', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Enter manually', exact: true })).toBeVisible();
   await page.goto(studioUrl);
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole('button', { name: 'Policy library', exact: true }).first()).toBeVisible();
-  await page.getByRole('button', { name: 'Guided Setup', exact: true }).click();
+  // The library is a Setup section of its own while policy intake is on (the Studio's duplicate button is gone).
+  await expect(await setupSection(page, 'Policy library')).toBeVisible();
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company');
   await expect(page.getByRole('button', { name: 'Add your HR policy', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Policy library / updates', exact: true })).toBeVisible();
 });

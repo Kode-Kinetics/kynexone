@@ -33,7 +33,15 @@ public class SecuritySetting : ITenantOwned
     public int MaxFailedLoginAttempts { get; set; } = 5;
     public int LockoutDurationMinutes { get; set; } = 30;
     // Session policy
+    // Idle timeout: a session nobody has refreshed for this long ends (measured from the last rotation).
     public int SessionTimeoutMinutes { get; set; } = 480;
+    /// <summary>The default and the bounds of <see cref="SessionMaxHours"/> (CHECK 1..168).</summary>
+    public const int DefaultSessionMaxHours = 12;
+    public const int MinSessionMaxHours = 1;
+    public const int MaxSessionMaxHours = 168;
+    // Hard limit: every session ends this many hours after its sign-in, however active (refresh_tokens.session_started_at_utc).
+    // Computed at each refresh, never stored per token, so lowering it applies to sessions already running.
+    public int SessionMaxHours { get; set; } = DefaultSessionMaxHours;
     public int RefreshTokenExpiryDays { get; set; } = 30;
     public bool AllowMultipleSessions { get; set; } = true;
     // MFA policy — when true all tenant users must complete TOTP at login
@@ -42,6 +50,12 @@ public class SecuritySetting : ITenantOwned
     // this tenant. Null = use the platform-wide date (platform_config_entries
     // 'auth.privileged_mfa_enforce_from_utc'). Set by platform Owner/Admin only.
     public DateTime? PrivilegedMfaEnforceFromUtc { get; set; }
+    /// <summary>The default and the bounds of <see cref="MfaTrustedDeviceDays"/> (CHECK 0..90).</summary>
+    public const int DefaultMfaTrustedDeviceDays = 30;
+    public const int MaxMfaTrustedDeviceDays = 90;
+    // How many days a browser stays trusted after a two-step code (mfa_trusted_devices). 0 = the tenant does not
+    // offer "Trust this browser" at all. Changing it never extends a browser already trusted.
+    public int MfaTrustedDeviceDays { get; set; } = DefaultMfaTrustedDeviceDays;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UpdatedBy { get; set; }
 }

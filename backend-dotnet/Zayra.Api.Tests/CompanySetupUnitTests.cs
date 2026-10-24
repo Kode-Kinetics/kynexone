@@ -205,4 +205,80 @@ public class CompanySetupUnitTests
         while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "backend-dotnet", "Zayra.Api"))) dir = dir.Parent;
         return dir?.FullName ?? throw new InvalidOperationException("repository root not found");
     }
+
+    // ── Addendum A: the wire shape of existing-company mode ─────────────────────────────────────────────
+
+    [Fact]
+    public void Existing_mode_fields_are_camel_case_and_a_create_mode_body_does_not_carry_them()
+    {
+        var web = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var company = new Zayra.Api.Application.CompanySetup.CompanySetupCompany("Co", null, null, "SA", "SAR", "1010000001", null, null, null, null, null, null, null, null, "2026-11");
+        var rules = new Zayra.Api.Application.CompanySetup.CompanySetupRules(new("Fri,Sat", false), new(true), new(true), new("EMP", true, false, true, true, 4, 1));
+        var admin = new Zayra.Api.Application.CompanySetup.CompanySetupCompanyAdmin("groupOnly", null, null, null, null);
+        var create = new Zayra.Api.Application.CompanySetup.CompanySetupDraftBody("defaults", null, company,
+            [new("HQ", "HQ", null, "Riyadh", "Asia/Riyadh", true, [new("L1", "Site", null, null, null, null)])], [new("CC", "Cost", null)], [], [], [], rules, admin);
+        var createJson = System.Text.Json.JsonSerializer.Serialize(create, web);
+        createJson.Should().NotContain("existingCompanyId").And.NotContain("existingId", "a new-company body is unchanged on the wire");
+
+        var id = Guid.NewGuid();
+        var existing = create with
+        {
+            ExistingCompanyId = id,
+            Branches = [new("HQ", "HQ", null, "Riyadh", "Asia/Riyadh", true, [new("L1", "Site", null, null, null, null, id)], id)],
+            CostCentres = [new("CC", "Cost", null, id)],
+            Departments = [new("HR", "HR", null, null, null, null, id)],
+            Designations = [new("D", "D", null, null, null, id)],
+            Grades = [new("G", "G", null, 1, 1, 2, 3, id)],
+        };
+        var json = System.Text.Json.JsonSerializer.Serialize(existing, web);
+        json.Should().Contain($"\"existingCompanyId\":\"{id}\"");
+        System.Text.RegularExpressions.Regex.Matches(json, "\"existingId\":").Count.Should().Be(6, "branch, location, cost centre, department, designation, grade");
+        System.Text.Json.JsonSerializer.Deserialize<Zayra.Api.Application.CompanySetup.CompanySetupDraftBody>(json, web)
+            .Should().BeEquivalentTo(existing, "a draft round-trips through its JSON body");
+
+        Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.ActionUpdate.Should().Be("update");
+        Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.ActionUnchanged.Should().Be("unchanged");
+        var context = new Zayra.Api.Application.CompanySetup.CompanySetupContext(false, null, null, "", "", 0, null, true, [], new([], [], []), null)
+        {
+            ManageableCompanies = [new(id, "Co", null, "SA", 3, 9, null)],
+        };
+        System.Text.Json.JsonSerializer.Serialize(context, web).Should()
+            .Contain("\"manageableCompanies\":[{\"id\"").And.Contain("\"legalNameAr\":null").And.Contain("\"readinessDone\":3")
+            .And.Contain("\"readinessTotal\":9").And.Contain("\"openDraftId\":null");
+    }
+
+    // ── Addendum A9: the three-way comparison ────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("A", "A", "A", CompanySetupBaseline.Outcome.TakeDatabase)]   // nobody changed it
+    [InlineData("A", "A", "B", CompanySetupBaseline.Outcome.TakeDatabase)]   // changed elsewhere only: the newer value stands
+    [InlineData("B", "A", "A", CompanySetupBaseline.Outcome.TakeDraft)]      // changed by the user only: update
+    [InlineData("B", "A", "B", CompanySetupBaseline.Outcome.TakeDatabase)]   // both, the same way: nothing to write
+    [InlineData("B", "A", "C", CompanySetupBaseline.Outcome.Conflict)]       // both, differently: the user decides
+    [InlineData(null, "A", "C", CompanySetupBaseline.Outcome.Conflict)]
+    [InlineData("B", null, null, CompanySetupBaseline.Outcome.TakeDraft)]    // nothing existed at prefill (no cutover, no rule)
+    public void Each_field_is_judged_on_draft_baseline_and_database(string? draft, string? baseline, string? database, CompanySetupBaseline.Outcome expected) =>
+        CompanySetupBaseline.Decide(draft, baseline, database).Should().Be(expected);
+
+    [Fact]
+    public void The_projection_of_an_untouched_prefill_equals_its_baseline_and_ignores_numeric_scale()
+    {
+        var row = new Zayra.Api.Models.Location { Code = "L1", NameEn = " Site ", Latitude = 21.500000m, Longitude = 39.2m, GeofenceRadiusMeters = 150.00m };
+        var fromRow = CompanySetupBaseline.Location(row);
+        CompanySetupBaseline.Location(new Zayra.Api.Application.CompanySetup.CompanySetupLocation("L1", "Site", null, 21.5m, 39.20m, 150m))
+            .Should().BeEquivalentTo(fromRow);
+        fromRow["latitude"].Should().Be("21.5");
+        CompanySetupBaseline.WorkWeek("Sat,Fri", true).Should().BeEquivalentTo(CompanySetupBaseline.WorkWeek("Fri,Sat", true));
+    }
+
+    [Fact]
+    public void A_baseline_round_trips_through_the_draft_json_unchanged()
+    {
+        var baseline = new Dictionary<string, string?> { ["nameEn"] = "Dammam", ["nameAr"] = null, ["isHeadOffice"] = "false" };
+        var branch = new Zayra.Api.Application.CompanySetup.CompanySetupBranch("DMM", "Dammam", null, "Dammam", "Asia/Riyadh", false, [], Guid.NewGuid(), baseline);
+        var json = System.Text.Json.JsonSerializer.Serialize(branch, CompanySetupService.BodyJson);
+        json.Should().Contain("\"baseline\":{\"nameEn\":\"Dammam\",\"nameAr\":null,\"isHeadOffice\":\"false\"}");
+        System.Text.Json.JsonSerializer.Deserialize<Zayra.Api.Application.CompanySetup.CompanySetupBranch>(json, CompanySetupService.BodyJson)!
+            .Baseline.Should().BeEquivalentTo(baseline);
+    }
 }

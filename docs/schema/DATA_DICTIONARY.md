@@ -880,6 +880,62 @@ the `ITenantOwned` query filter.
 ### `companies.unified_national_number` (column)
 - `varchar(20) NULL` — the establishment's Unified National Number (Saudi "700 number", 10 digits, validated for SA on write). Optional; captured by the wizard and editable on the company form. **Note:** the Saudi bank-file settings (`system_settings`, category `PayrollSaudiBankExport`) also hold a `NationalUnifiedNo` for automatic WPS upload; the two are not yet reconciled (one fact, two places — tracked as a follow-up).
 
+## V. Trusted browsers for two-step sign-in (live bridge)
+
+Not part of the 76. One table and one column shipped on the **live** EF schema (migration
+`20261022183516_AddMfaTrustedDevices`). Capability: a user who completed a two-step code can choose "Trust this
+browser for N days", so the next sign-ins from that browser skip the code (never the password, the lockout or
+enrolment), and every such trust can be listed and revoked. No existing table can hold it: `refresh_tokens` are sessions
+that rotate and end at sign-out, `mfa_challenge_tokens` are single-use five-minute credentials, and the known-device
+cookie is stateless and cannot be revoked. RLS is a target rule — the live bridge uses the `ITenantOwned` query filter.
+
+### `mfa_trusted_devices`
+- **Purpose** — one browser a tenant user trusted after a two-step code. The browser holds a 32-byte random token in the HttpOnly `kx_mfa_trust` cookie (Path `/api/auth`); the row holds only its SHA-256. Platform operators never get one.
+- **Tier** T · **Domain** Identity · **RLS** shape (a)
+- **Keys** — `user_id`, `token_hash varchar(64)` (uppercase hex SHA-256; never the token), `created_at_utc`, `expires_at_utc` (created + the tenant's days at trust time), `last_used_at_utc`, `user_agent varchar(256)` and `ip_address varchar(64)` (shown to the user as "Firefox on macOS" in the trusted-browser list), `revoked_at_utc`, `revoked_reason varchar(64)`
+- **Rel** — `tenant_id → tenants` (N:1, RESTRICT; tenant erasure sweeps it with every `ITenantOwned` table), `user_id → users` (N:1, CASCADE: a deleted login has nothing to trust)
+- **Constraint** — `ux_mfa_trusted_devices__token_hash` (UNIQUE); `ck_mfa_trusted_devices__revoked_reason` (`user_revoked`, `user_revoked_all`, `password_changed`, `password_reset`, `mfa_disabled`, `mfa_recovery_disabled`, `mfa_resetup`, `user_deactivated`, `user_deleted`, `policy_shortened`, `mfa_admin_reset` — the last added by `20261023031347_AddMfaBackupCodesAndAdminReset`); `__revoked_pair` (revoked_at ⇔ reason); `__lifetime` (`expires_at_utc > created_at_utc`).
+- **Indexes** — `ux_mfa_trusted_devices__token_hash` (the sign-in lookup by cookie hash), `ix_mfa_trusted_devices__tenant_user_active` (`tenant_id, user_id WHERE revoked_at_utc IS NULL`: the trusted-browser list, the status count and every revoke-all), `IX_mfa_trusted_devices_user_id` (EF FK index: the CASCADE on user delete).
+- **Lifecycle** — created by `POST /api/auth/mfa/challenge/verify` with `rememberDevice: true` when the tenant's days > 0 (`auth.mfa.device_trusted`); `last_used_at_utc` stamped by each sign-in it lets skip the code (`auth.mfa.trusted_device_used`). A row counts only for the same tenant and user as the password step, unrevoked, unexpired, inside the tenant's CURRENT days (lowering the setting shortens trust already given; 0 switches it off), created after the user's current factor and password, and while the user still has the factor. Revoked (never deleted by the product, `auth.mfa.trusted_device_revoked` with the reason) by the user (one or all), by a password change or reset, by turning two-step off, by platform recovery disable, by a tenant administrator's two-step reset (`mfa_admin_reset`), by a new factor, and by the login being deactivated, suspended, locked, set to NoLogin or deleted — explicitly on the password and factor paths, and by the `ZayraDbContext` save hook for every other change of those fields.
+- **Retention** `T` — a row expired or revoked more than 30 days ago is deleted (`MfaTrustedDeviceRetentionRule`, rule key `auth.mfa-trusted-device-expired`, HardDelete). Its audit rows stay.
+
+### `users.mfa_recovery_code_hashes` (column)
+- `varchar(1024) NULL`, migration `20261023031347_AddMfaBackupCodesAndAdminReset`. The tenant user's unused one-time **backup codes** for the current factor, stored as one salted set: `v1$<pbkdf2 iterations>$<salt b64>$<hash b64>,…` (PBKDF2-HMAC-SHA256, a random salt per set; `MfaBackupCodes`). Never the codes: ten 10-symbol Crockford base32 codes (`XXXXX-XXXXX`, 50 bits each) are returned once, by `verify-setup`, `enrollment/verify-setup` and `POST /api/auth/mfa/backup-codes` (which needs a current app code and replaces the whole set). A code is removed when it signs someone in (`POST /api/auth/mfa/challenge/verify` with `backupCode`, under the user-row lock, so one code gives one session); NULL when none is left. Live bridge of the target's `users.mfa_recovery_hashes jsonb`, in the same shape as the live `platform_users.mfa_recovery_code_hashes` (which stays unsalted SHA-256 because its codes carry 100 bits). A column, not a table: one small set per login, read and written only with the user row that the code step already locks.
+- **Constraint** — `ck_users__mfa_recovery_code_hashes_need_factor` (`mfa_recovery_code_hashes IS NULL OR mfa_secret_encrypted IS NOT NULL`): never codes without a factor.
+- **Lifecycle** — written by setup (`auth.mfa.backup_codes_generated`, `via` setup or enrollment) and by regeneration (`via` regenerate); one hash removed per use (`auth.mfa.backup_code_used` with `remaining`; a miss is `auth.mfa.backup_code_failed`); NULLed by the user's disable, the platform recovery disable, a tenant administrator's reset (`POST /api/access/users/{id}/mfa/reset`, `auth.mfa.admin_reset`) and, through the `ZayraDbContext` save hook, by every other save that turns the factor off or replaces its secret. A secret column (the same class as `mfa_secret_encrypted`). Retention follows the `users` row.
+
+### `security_settings.mfa_trusted_device_days` (column)
+- `integer NOT NULL DEFAULT 30`, `ck_security_settings__mfa_trusted_device_days` (`BETWEEN 0 AND 90`). How long a browser stays trusted after a two-step code; 0 = the tenant does not offer it. Read by sign-in (`rememberDeviceDays` on the challenge), `GET /api/auth/mfa/status`, and written by `PUT /api/access/security-settings` (`mfaTrustedDeviceDays`, out of range → 400 `ERR_MFA_TRUST_DAYS_RANGE`).
+
+## W. Session length and session epoch (live bridge)
+
+Not part of the 76. Four columns, no table, shipped on the **live** EF schema (migration
+`20261023134050_AddSessionMaxLengthAndEpoch`). Capability: every session ends a set number of hours after its sign-in
+however active it is, and ending every session of a login is one recorded fact rather than something each path must
+remember. No new table: both facts belong to the rows they qualify (the tenant policy, the login, the session lineage).
+
+### `security_settings.session_max_hours` (column)
+- `integer NOT NULL DEFAULT 12`, `ck_security_settings__session_max_hours` (`BETWEEN 1 AND 168`). The hard session limit. Read at every `POST /api/auth/refresh` (never copied onto a token, so lowering it applies to running sessions at their next refresh); written by `PUT /api/access/security-settings` (`sessionMaxHours`, out of range → 400 `ERR_SESSION_MAX_HOURS_RANGE`). `session_timeout_minutes` stays the idle timeout, measured from the last rotation.
+
+### `refresh_tokens.session_started_at_utc` (column)
+- `timestamptz NOT NULL DEFAULT now()`. When the sign-in that started the lineage happened: the issue time at password sign-in, trusted-browser sign-in, two-step sign-in and the session re-issued after signed-in two-step setup; copied unchanged by every rotation. A refresh at or after `session_started_at_utc + session_max_hours` revokes the family and answers 401 `ERR_SESSION_EXPIRED` (`auth.session_expired`, with `sessionMaxHours`). Backfilled with `created_at_utc`, so the deploy ends no session. The default only serves a row written by an earlier release.
+
+### `users.session_epoch` and `refresh_tokens.session_epoch` (columns)
+- `bigint NOT NULL DEFAULT 0` on both; no backfill (everything starts at 0). A refresh token carries the epoch of the user row it was issued from (locked, the same snapshot its password or factor was verified against); rotation copies it. A refresh whose token epoch differs from the user's, read under the user-row lock, revokes the family and answers the generic 401.
+- **Raised** (never set) by the `ZayraDbContext` save hook on the same change set that revokes trusted browsers — password, factor (two-step off or a new secret), active state (`is_active` off; status `Suspended`, `Deactivated` or `Locked` by an administrator; access mode `NoLogin`), deletion — and by `TenantSessionSecurity.EndAllSessions` (platform revoke-sessions). A failed-password lockout (`is_locked`/`lockout_end`), login telemetry, profile edits, role changes and two-step sign-ins do not raise it. In the same save the hook revokes the user's live refresh tokens, consumes their open two-step challenges and writes `auth.sessions_ended` with the `trigger`.
+- **Trigger** — `trg_users__session_epoch_increments` (`BEFORE UPDATE OF session_epoch`, `fn_users__session_epoch_increments`): any write of the column stores `OLD + 1`, whatever value was written, so concurrent raises from the same read never collapse into one and the epoch never goes down.
+- **Ratchet** — `SessionEpochTriggerColumnWriteRatchetTests`: no `ExecuteUpdate` or raw SQL may write `password_hash`, `mfa_secret_encrypted`, `mfa_enabled`, `status`, `is_active`, `is_deleted` or `access_mode` on `users` outside its allowlist (today only the sign-in password rehash, which keeps the same password and must not end sessions), because such a write would bypass the hook.
+
+## X. Minimum loan repayment (live bridge)
+
+Not part of the 76. Two columns on the **live** EF schema (migration `20261023155309_LoanMinInstallments`). Capability: a
+loan type or company loan policy can require a **shortest** repayment as well as a longest (e.g. a housing advance or
+car loan recovered over at least 12 instalments). Generic for every loan type and tenant.
+
+### `loan_types.min_installments` and `loan_policies.min_installments` (columns)
+- `integer NOT NULL DEFAULT 1` (1 = no minimum, the behaviour before this column). `ck_loan_types__min_installments` and `ck_loan_policies__min_installments`: `min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)` — a minimum, once set, sits within the longest repayment; 1 stays valid on a legacy row whose `max_installments` is 0 (the `loan_policies` column default). The API refuses min > max on every write.
+- The effective minimum is the stricter of the type's and the policy's, frozen into `employee_loans.policy_snapshot_json` (`MinInstallments`) at application; a snapshot frozen before this column reads as 1. Enforced at application, at approval (re-check against the frozen snapshot) and on a reschedule (instalments kept + new ones). Refusal code `MinInstallments`, never exceptionable.
+
 ---
 
 ## Views (not tables)

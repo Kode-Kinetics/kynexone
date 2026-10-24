@@ -8,7 +8,9 @@ import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { glErp } from './glErp';
+import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
+import { signInSecurity } from './signInSecurity';
 import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
@@ -20,11 +22,13 @@ import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
 import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
+import { educationClaims } from './educationClaims';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
+import { appChrome } from './appChrome';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -41,6 +45,7 @@ type Dict = Record<string, string>;
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
+  ...appChrome.en,
   ...companyWizard.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -50,6 +55,7 @@ const en: Dict = {
   ...policyBinder.en,
   ...policyForms.en,
   ...gradeBenefitDefaults.en,
+  ...educationClaims.en,
   "Joining date is not set. This preview uses {date}.": "Joining date is not set. This preview uses {date}.",
   "Starts on {date}": "Starts on {date}",
   "Ends on {date}": "Ends on {date}",
@@ -444,6 +450,21 @@ const en: Dict = {
   'Date of Birth': 'Date of Birth',
   'Joining Date': 'Joining Date',
   'Employment Type': 'Employment Type',
+  'Tick one or more, or All': 'Tick one or more, or All',
+  'Locals': 'Locals',
+  'Expats': 'Expats',
+  'Locals are employees whose nationality is the country of their company (Saudi for a Saudi company). Create one policy for locals and one for expats to give them different notice, days or encashment. An employee with no nationality on file matches only an All policy.': 'Locals are employees whose nationality is the country of their company (Saudi for a Saudi company). Create one policy for locals and one for expats to give them different notice, days or encashment. An employee with no nationality on file matches only an All policy.',
+  'Eligibility': 'Eligibility',
+  'Service required before use (months)': 'Service required before use (months)',
+  'How long an employee must have worked, from the joining date, before this leave can be taken. 0 = from the first day. 12 = after one year. Leave still accrues from joining; it just cannot be used earlier. Statutory event leave (maternity, Hajj, bereavement) follows the law instead.': 'How long an employee must have worked, from the joining date, before this leave can be taken. 0 = from the first day. 12 = after one year. Leave still accrues from joining; it just cannot be used earlier. Statutory event leave (maternity, Hajj, bereavement) follows the law instead.',
+  'Can be taken during probation': 'Can be taken during probation',
+  'Can be taken after {months} month(s) of service.': 'Can be taken after {months} month(s) of service.',
+  'Can be taken after probation ends and after {months} month(s) of service.': 'Can be taken after probation ends and after {months} month(s) of service.',
+  'Can be taken from the joining date.': 'Can be taken from the joining date.',
+  'Can be taken after probation ends.': 'Can be taken after probation ends.',
+  'Max days per encashment *': 'Max days per encashment *',
+  'The most days an employee can convert to cash in one encashment request. Paid through payroll at gross ÷ 30 per day.': 'The most days an employee can convert to cash in one encashment request. Paid through payroll at gross ÷ 30 per day.',
+  'Enter the maximum days per encashment, or untick Encashment Allowed.': 'Enter the maximum days per encashment, or untick Encashment Allowed.',
   'Contract Type': 'Contract Type',
   'Probation End Date': 'Probation End Date',
   'Notice Period': 'Notice Period',
@@ -1161,6 +1182,13 @@ const en: Dict = {
   "The maximum number of open loans would be exceeded, counting requests still waiting for approval.": "The maximum number of open loans would be exceeded, counting requests still waiting for approval.",
   "The minimum service period for this loan type hasn't been completed.": "The minimum service period for this loan type hasn't been completed.",
   "The number of instalments is outside what the policy allows.": "The number of instalments is outside what the policy allows.",
+  "Repayment must be spread over at least {min} instalments.": "Repayment must be spread over at least {min} instalments.",
+  "Repay over {min}–{max} instalments": "Repay over {min}–{max} instalments",
+  "Choose between {min} and {max} instalments.": "Choose between {min} and {max} instalments.",
+  "Shortest repayment (instalments)": "Shortest repayment (instalments)",
+  "Longest repayment (instalments)": "Longest repayment (instalments)",
+  "The fewest instalments an employee may choose. 1 = no minimum.": "The fewest instalments an employee may choose. 1 = no minimum.",
+  "The shortest repayment cannot be longer than the longest repayment.": "The shortest repayment cannot be longer than the longest repayment.",
   "This amount is above the most that can be borrowed now.": "This amount is above the most that can be borrowed now.",
   "This amount is above the per-loan maximum for this employee's grade ({perLoanCap}).": "This amount is above the per-loan maximum for this employee's grade ({perLoanCap}).",
   "This employee's grade isn't eligible for this loan type.": "This employee's grade isn't eligible for this loan type.",
@@ -1426,7 +1454,10 @@ const en: Dict = {
   ...setupExperience.en,
   ...glSetup.en,
   ...glErp.en,
+  ...statutoryRules.en,
   ...glApiKeys.en,
+  // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
+  ...signInSecurity.en,
   ...reportsAnalytics.en,
   ...approvalChanges.en,
   ...compensation.en,
@@ -1446,6 +1477,7 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...appChrome.ar,
   ...companyWizard.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
@@ -1455,6 +1487,7 @@ const ar: Dict = {
   ...policyBinder.ar,
   ...policyForms.ar,
   ...gradeBenefitDefaults.ar,
+  ...educationClaims.ar,
   "Joining date is not set. This preview uses {date}.": "لم يُحدد تاريخ الانضمام. تستخدم هذه المعاينة تاريخ {date}.",
   "Starts on {date}": "تبدأ في {date}",
   "Ends on {date}": "تنتهي في {date}",
@@ -1849,6 +1882,21 @@ const ar: Dict = {
   'Date of Birth': 'تاريخ الميلاد',
   'Joining Date': 'تاريخ الالتحاق',
   'Employment Type': 'نوع التوظيف',
+  'Tick one or more, or All': 'اختر نوعًا أو أكثر، أو الكل',
+  'Locals': 'المواطنون',
+  'Expats': 'الوافدون',
+  'Locals are employees whose nationality is the country of their company (Saudi for a Saudi company). Create one policy for locals and one for expats to give them different notice, days or encashment. An employee with no nationality on file matches only an All policy.': 'المواطنون هم الموظفون الذين تطابق جنسيتهم دولة شركتهم (سعودي لشركة سعودية). أنشئ سياسة للمواطنين وأخرى للوافدين لتحديد مدة إشعار أو أيام أو صرف نقدي مختلف لكل منهم. الموظف الذي لا توجد جنسيته في ملفه يخضع فقط لسياسة الكل.',
+  'Eligibility': 'الأهلية',
+  'Service required before use (months)': 'مدة الخدمة المطلوبة قبل الاستخدام (بالأشهر)',
+  'How long an employee must have worked, from the joining date, before this leave can be taken. 0 = from the first day. 12 = after one year. Leave still accrues from joining; it just cannot be used earlier. Statutory event leave (maternity, Hajj, bereavement) follows the law instead.': 'المدة التي يجب أن يكون الموظف قد عملها منذ تاريخ الالتحاق قبل أن يتمكن من أخذ هذه الإجازة. 0 = من اليوم الأول. 12 = بعد سنة. يستمر استحقاق الإجازة من تاريخ الالتحاق، لكن لا يمكن استخدامها قبل ذلك. إجازات المناسبات النظامية (الأمومة، الحج، الوفاة) تتبع النظام.',
+  'Can be taken during probation': 'يمكن أخذها خلال فترة التجربة',
+  'Can be taken after {months} month(s) of service.': 'يمكن أخذها بعد {months} شهر/أشهر من الخدمة.',
+  'Can be taken after probation ends and after {months} month(s) of service.': 'يمكن أخذها بعد انتهاء فترة التجربة وبعد {months} شهر/أشهر من الخدمة.',
+  'Can be taken from the joining date.': 'يمكن أخذها من تاريخ الالتحاق.',
+  'Can be taken after probation ends.': 'يمكن أخذها بعد انتهاء فترة التجربة.',
+  'Max days per encashment *': 'الحد الأقصى لأيام الصرف النقدي *',
+  'The most days an employee can convert to cash in one encashment request. Paid through payroll at gross ÷ 30 per day.': 'أقصى عدد من الأيام يمكن للموظف تحويلها إلى نقد في طلب صرف واحد. تُدفع عبر الرواتب بمعدل إجمالي الراتب ÷ 30 لليوم.',
+  'Enter the maximum days per encashment, or untick Encashment Allowed.': 'أدخل الحد الأقصى لأيام الصرف النقدي، أو ألغِ تحديد السماح بالصرف النقدي.',
   'Contract Type': 'نوع العقد',
   'Probation End Date': 'تاريخ انتهاء التجربة',
   'Notice Period': 'فترة الإشعار',
@@ -2566,6 +2614,13 @@ const ar: Dict = {
   "The maximum number of open loans would be exceeded, counting requests still waiting for approval.": "سيتم تجاوز الحد الأقصى لعدد القروض المفتوحة، بما فيها الطلبات التي تنتظر الموافقة.",
   "The minimum service period for this loan type hasn't been completed.": "لم يكتمل الحد الأدنى لمدة الخدمة لهذا النوع من القروض.",
   "The number of instalments is outside what the policy allows.": "عدد الأقساط خارج ما تسمح به السياسة.",
+  "Repayment must be spread over at least {min} instalments.": "يجب ألا يقل عدد أقساط السداد عن {min}.",
+  "Repay over {min}–{max} instalments": "عدد أقساط السداد من {min} إلى {max}",
+  "Choose between {min} and {max} instalments.": "اختر عدد أقساط من {min} إلى {max}.",
+  "Shortest repayment (instalments)": "أقصر مدة سداد (بالأقساط)",
+  "Longest repayment (instalments)": "أطول مدة سداد (بالأقساط)",
+  "The fewest instalments an employee may choose. 1 = no minimum.": "أقل عدد أقساط يمكن للموظف اختياره. 1 = بلا حد أدنى.",
+  "The shortest repayment cannot be longer than the longest repayment.": "لا يمكن أن تكون أقصر مدة سداد أطول من أطول مدة سداد.",
   "This amount is above the most that can be borrowed now.": "هذا المبلغ أعلى من الحد الأقصى المتاح للاقتراض حالياً.",
   "This amount is above the per-loan maximum for this employee's grade ({perLoanCap}).": "هذا المبلغ أعلى من الحد الأقصى للقرض الواحد لدرجة هذا الموظف ({perLoanCap}).",
   "This employee's grade isn't eligible for this loan type.": "درجة هذا الموظف غير مؤهلة لهذا النوع من القروض.",
@@ -2832,7 +2887,9 @@ const ar: Dict = {
   ...setupExperience.ar,
   ...glSetup.ar,
   ...glErp.ar,
+  ...statutoryRules.ar,
   ...glApiKeys.ar,
+  ...signInSecurity.ar,
   ...reportsAnalytics.ar,
   ...approvalChanges.ar,
   ...compensation.ar,

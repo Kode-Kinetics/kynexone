@@ -219,7 +219,7 @@ function ProvisionSection({
               : t('{count, plural, one {Show the # employee behind these figures} other {Show the # employees behind these figures}}', { count: data.employees.length })}
           </button>
           {showEmployees && (
-            <div className="mt-2 overflow-x-auto" id="eosb-employees">
+            <div className="mt-2 overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="eosb-heading" id="eosb-employees">
               <table className="w-full text-xs" data-testid="eosb-employees">
                 <thead>
                   <tr className="text-start text-slate-500">

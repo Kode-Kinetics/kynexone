@@ -53,7 +53,7 @@ async function boot(page: Page, options: { failSecondChunk?: boolean; slowSecond
     if (request.method() !== 'GET') throw new Error(`Unexpected write: ${path}`);
     return reply({ items: [], total: 0 });
   });
-  await page.goto('/setup?tab=aiSetup&mode=starter');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter');
   await expect(page.getByRole('heading', { name: 'Setup & Administration', exact: true })).toBeVisible({ timeout: 60000 });
   return { calls, previews, errors, uploads };
 }

@@ -664,47 +664,68 @@ public class AttendanceController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    // The attendance reports read a date range of day records. They need attendance.read (an employee's own attendance is
+    // on Self-Service, not here), the range is capped, and the caller's data scope is applied in the query itself.
+
+    /// <summary>The longest range, in days, an attendance report covers in one call.</summary>
+    internal const int MaxReportRangeDays = 366;
+    internal const string ReportRangeMessage = "Choose a date range of at most 366 days, with 'from' on or before 'to'.";
+
     [HttpGet("reports/daily")]
-    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportDaily([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    [HasPermission("attendance.read")]
+    public async Task<ActionResult<IReadOnlyCollection<AttendanceDailyDto>>> ReportDaily([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
     {
-        var rows = await _attendance.ReportDailyAsync(RequireTenant(), from, to, ct);
-        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+        if (ReportRangeRefusal(from, to) is { } refusal) return refusal;
+        return Ok(await _attendance.ReportDailyAsync(RequireTenant(), from, to, ct, await ReportScopeAsync(ct)));
     }
 
     [HttpGet("reports/monthly")]
-    public async Task<IReadOnlyCollection<AttendanceMonthlyDto>> ReportMonthly([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
+    [HasPermission("attendance.read")]
+    public async Task<ActionResult<IReadOnlyCollection<AttendanceMonthlyDto>>> ReportMonthly([FromQuery] int year, [FromQuery] int month, CancellationToken ct)
     {
-        var rows = await _attendance.ReportMonthlyAsync(RequireTenant(), year, month, ct);
-        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+        if (year is < 1 or > 9999 || month is < 1 or > 12)
+            return BadRequest(new { message = "Choose a month between 1 and 12 and a valid year." });
+        return Ok(await _attendance.ReportMonthlyAsync(RequireTenant(), year, month, ct, await ReportScopeAsync(ct)));
     }
 
     [HttpGet("reports/late")]
-    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportLate([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    [HasPermission("attendance.read")]
+    public async Task<ActionResult<IReadOnlyCollection<AttendanceDailyDto>>> ReportLate([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
     {
-        var rows = await _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Late", ct);
-        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+        if (ReportRangeRefusal(from, to) is { } refusal) return refusal;
+        return Ok(await _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Late", ct, await ReportScopeAsync(ct)));
     }
 
     [HttpGet("reports/absence")]
-    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportAbsence([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    [HasPermission("attendance.read")]
+    public async Task<ActionResult<IReadOnlyCollection<AttendanceDailyDto>>> ReportAbsence([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
     {
-        var rows = await _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Absent", ct);
-        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+        if (ReportRangeRefusal(from, to) is { } refusal) return refusal;
+        return Ok(await _attendance.ReportByStatusAsync(RequireTenant(), from, to, "Absent", ct, await ReportScopeAsync(ct)));
     }
 
     [HttpGet("reports/missing-punch")]
-    public async Task<IReadOnlyCollection<AttendanceDailyDto>> ReportMissingPunch([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    [HasPermission("attendance.read")]
+    public async Task<ActionResult<IReadOnlyCollection<AttendanceDailyDto>>> ReportMissingPunch([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
     {
-        var rows = await _attendance.ReportMissingPunchAsync(RequireTenant(), from, to, ct);
-        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+        if (ReportRangeRefusal(from, to) is { } refusal) return refusal;
+        return Ok(await _attendance.ReportMissingPunchAsync(RequireTenant(), from, to, ct, await ReportScopeAsync(ct)));
     }
 
     [HttpGet("reports/payroll-summary")]
-    public async Task<IReadOnlyCollection<AttendancePayrollSummaryDto>> ReportPayroll([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
+    [HasPermission("attendance.read")]
+    public async Task<ActionResult<IReadOnlyCollection<AttendancePayrollSummaryDto>>> ReportPayroll([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken ct)
     {
-        var rows = await _attendance.PayrollSummaryAsync(RequireTenant(), from, to, ct);
-        return await FilterAttendanceReportRows(rows, x => x.EmployeeId, ct);
+        if (ReportRangeRefusal(from, to) is { } refusal) return refusal;
+        return Ok(await _attendance.PayrollSummaryAsync(RequireTenant(), from, to, ct, await ReportScopeAsync(ct)));
     }
+
+    private BadRequestObjectResult? ReportRangeRefusal(DateOnly from, DateOnly to) =>
+        to < from || to.DayNumber - from.DayNumber >= MaxReportRangeDays ? BadRequest(new { message = ReportRangeMessage }) : null;
+
+    /// <summary>The caller's data scope as the report query applies it: null is org-wide, otherwise the employees they may see.</summary>
+    private async Task<IReadOnlyCollection<int>?> ReportScopeAsync(CancellationToken ct) =>
+        (await _scopeService.ResolveAsync(User, RequireTenant(), ct)).AllowedEmployeeIds;
 
     [HttpGet("reports/device-sync")]
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer,Auditor")]
@@ -783,13 +804,6 @@ public class AttendanceController : ControllerBase
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
-
-    private async Task<IReadOnlyCollection<T>> FilterAttendanceReportRows<T>(IReadOnlyCollection<T> rows, Func<T, int> employeeIdSelector, CancellationToken ct)
-    {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if (scope.IsUnrestricted) return rows;
-        return rows.Where(row => scope.AllowedEmployeeIds!.Contains(employeeIdSelector(row))).ToList();
-    }
 
     private Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
         => AnyImportRowAsync(tenantId, request, employeeId => !scope.CanAccessEmployee(employeeId), ct);

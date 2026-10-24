@@ -149,17 +149,46 @@ export async function apiLoginLive(
   });
   if (!resp.ok()) throw new Error(`Login failed: ${resp.status()} ${await resp.text()}`);
   const data = await resp.json();
-  return data.accessToken ?? data.token ?? data.access_token;
+  const token = data.accessToken ?? data.token ?? data.access_token;
+  // A 200 with no token is a two-step challenge, not a session: say so rather than send "Bearer undefined" and
+  // surface as an unexplained 401 several specs later.
+  if (!token) throw new Error(`Login for ${email} / ${slug} returned no access token (two-step challenge?): ${JSON.stringify(data).slice(0, 200)}`);
+  return token;
 }
 
-/** Reuse a setup-time persona token for API feature/workflow assertions. */
+/** Seconds left before a JWT's `exp`; Infinity when it carries none or cannot be read. */
+function secondsUntilExpiry(token: string): number {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')) as { exp?: number };
+    return typeof payload.exp === 'number' ? payload.exp - Date.now() / 1000 : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
+
+/** A persona's fresh token once its setup token has run out, so each persona signs in at most once per token life. */
+const liveTenantTokens = new Map<string, string>();
+const TOKEN_MARGIN_SECONDS = 5 * 60;
+
+/**
+ * The persona's token for API feature/workflow assertions: the setup-time token while it is still good, else a fresh
+ * sign-in AS THE SAME persona. A full Browser Pilot run now outlasts the 30-minute access token minted at setup, and
+ * every API-level spec late in the run got 401 for a token that had simply expired (main, 2026-10-23).
+ */
 export async function apiLogin(
-  _request: import('@playwright/test').APIRequestContext,
+  request: import('@playwright/test').APIRequestContext,
   email: string,
-  _password: string,
+  password: string,
   slug: string
 ): Promise<string> {
-  return (await tenantSetupSession(email, slug)).accessToken;
+  const setup = (await tenantSetupSession(email, slug)).accessToken;
+  if (secondsUntilExpiry(setup) > TOKEN_MARGIN_SECONDS) return setup;
+  const key = tenantSessionKey(email, slug);
+  const cached = liveTenantTokens.get(key);
+  if (cached && secondsUntilExpiry(cached) > TOKEN_MARGIN_SECONDS) return cached;
+  const fresh = await apiLoginLive(request, email, password, slug);
+  liveTenantTokens.set(key, fresh);
+  return fresh;
 }
 
 /** Read the one platform session created by the setup project. */
@@ -177,10 +206,17 @@ export async function platformSetupToken(): Promise<string> {
 }
 
 /** Reuse the setup project's platform session for authenticated API assertions. */
+/** A fresh platform token once the setup one has run out; one per worker, as platform login is rate-limited to 5. */
+let renewedPlatformToken: string | null = null;
+
 export async function apiPlatformLogin(
-  _request: import('@playwright/test').APIRequestContext
+  request: import('@playwright/test').APIRequestContext
 ): Promise<string> {
-  return platformSetupToken();
+  const setup = await platformSetupToken();
+  if (secondsUntilExpiry(setup) > TOKEN_MARGIN_SECONDS) return setup;
+  if (!renewedPlatformToken || secondsUntilExpiry(renewedPlatformToken) <= TOKEN_MARGIN_SECONDS)
+    renewedPlatformToken = await apiPlatformFreshLogin(request);
+  return renewedPlatformToken;
 }
 
 /** Create a new platform session only when the prior shared session is no longer needed. */

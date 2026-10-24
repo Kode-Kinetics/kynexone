@@ -376,6 +376,97 @@ public class LoanPolicyEligibilityTests
         Assert.Equal(1, JsonSerializer.SerializeToElement(report.Value).GetProperty("TotalLoans").GetInt32());
     }
 
+    [Fact]
+    public async Task MinInstallments_DefaultOneKeepsLegacy_BelowMinimumIsRefusedWithExactMessage()
+    {
+        await using var h = await Fixture.Create();
+        Assert.Equal(1, h.Type.MinInstallments);
+        var legacy = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 400, 1, "BankTransfer");
+        Assert.True(legacy.Eligible); Assert.Equal(1, legacy.MinInstallments); Assert.Equal(12, legacy.MaxInstallments);
+
+        h.Type.MinInstallments = 6; await h.Db.SaveChangesAsync();
+        var below = await h.Assess(400); // 4 instalments
+        Assert.False(below.Eligible);
+        Assert.Equal([LoanEligibilityCodes.MinInstallments], below.Codes);
+        Assert.Equal(["Repayment must be spread over at least 6 instalments."], below.Reasons);
+        Assert.True((await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 400, 6, "BankTransfer")).Eligible);
+        // A minimum is a hard rule: no policy exception can waive it.
+        Assert.DoesNotContain(LoanEligibilityCodes.MinInstallments, LoanLifecycleService.ExceptionCodes);
+    }
+
+    [Theory]
+    [InlineData(3, 8, 8)]
+    [InlineData(10, 2, 10)]
+    public async Task MinInstallments_StricterOfTypeAndPolicyWins_AndIsFrozenIntoTheSnapshot(int typeMin, int policyMin, int expected)
+    {
+        await using var h = await Fixture.Create();
+        h.Type.MinInstallments = typeMin;
+        var policy = h.Policy(1000); policy.MaxInstallments = 24; policy.MinInstallments = policyMin;
+        h.Db.Add(policy); await h.Db.SaveChangesAsync();
+        var result = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 400, expected, "BankTransfer");
+        Assert.True(result.Eligible);
+        Assert.Equal(expected, result.MinInstallments); Assert.Equal(12, result.MaxInstallments);
+        Assert.Equal(expected, JsonSerializer.Deserialize<LoanPolicy>(result.PolicySnapshotJson)!.MinInstallments);
+        var oneShort = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 400, expected - 1, "BankTransfer");
+        Assert.Contains($"Repayment must be spread over at least {expected} instalments.", oneShort.Reasons);
+
+        // Approval re-checks against the frozen snapshot: relaxing the type and policy later changes nothing.
+        h.Type.MinInstallments = 1; policy.MinInstallments = 1; await h.Db.SaveChangesAsync();
+        var frozen = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 400, expected - 1, "BankTransfer",
+            policySnapshotJson: result.PolicySnapshotJson);
+        Assert.Contains(LoanEligibilityCodes.MinInstallments, frozen.Codes);
+    }
+
+    [Fact]
+    public async Task MinInstallments_SnapshotFrozenBeforeMinimumsExisted_ReadsAsNoMinimum()
+    {
+        await using var h = await Fixture.Create();
+        var original = await h.Assess(400);
+        var legacySnapshot = System.Text.Json.Nodes.JsonNode.Parse(original.PolicySnapshotJson)!.AsObject();
+        Assert.True(legacySnapshot.Remove(nameof(LoanPolicy.MinInstallments)));
+        h.Type.MinInstallments = 6; await h.Db.SaveChangesAsync();
+        var frozen = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 400, 1, "BankTransfer",
+            policySnapshotJson: legacySnapshot.ToJsonString());
+        Assert.True(frozen.Eligible); Assert.Equal(1, frozen.MinInstallments);
+    }
+
+    [Fact]
+    public async Task MinInstallments_PreviewReportsTheRange_AndAContradictoryRangeIsRefused()
+    {
+        await using var h = await Fixture.Create();
+        h.Type.MinInstallments = 6; await h.Db.SaveChangesAsync();
+        var preview = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 0, 0, "BankTransfer", preview: true);
+        Assert.True(preview.Eligible); Assert.Equal(6, preview.MinInstallments); Assert.Equal(12, preview.MaxInstallments);
+        // A policy whose longest repayment is shorter than the type's shortest leaves nothing to choose: say so.
+        var policy = h.Policy(1000); policy.MaxInstallments = 4; h.Db.Add(policy); await h.Db.SaveChangesAsync();
+        var contradictory = await new LoanEligibilityService(h.Db).EvaluateAsync(h.Tid, h.Employee, h.Type, 0, 0, "BankTransfer", preview: true);
+        Assert.Contains("PolicyInvalid", contradictory.Codes);
+    }
+
+    [Fact]
+    public async Task MinInstallments_TypeAndPolicyWritesValidateTheRangeAndPersistIt()
+    {
+        await using var h = await Fixture.Create();
+        var controller = h.Controller("HR Manager");
+        LoanTypeRequest Type(int min) => new("HOUSING", "Housing advance", null, 50000, 60, "Monthly", true, 0, 0, true, MinInstallments: min);
+        Assert.IsType<BadRequestObjectResult>(await controller.CreateLoanType(Type(0), default));
+        Assert.IsType<BadRequestObjectResult>(await controller.CreateLoanType(Type(61), default));
+        var created = Assert.IsType<LoanType>(Assert.IsType<OkObjectResult>(await controller.CreateLoanType(Type(12), default)).Value);
+        Assert.Equal(12, created.MinInstallments);
+        // Omitted = 1, the legacy behaviour.
+        var legacy = Assert.IsType<LoanType>(Assert.IsType<OkObjectResult>(await controller.CreateLoanType(
+            new LoanTypeRequest("CAR", "Car loan", null, 50000, 48, "Monthly", true, 0, 0, true), default)).Value);
+        Assert.Equal(1, legacy.MinInstallments);
+
+        var request = new LoanPolicyRequest(h.Employee.CompanyId!.Value, h.Type.Id, "Housing policy", MaxInstallments: 24,
+            AllowedEmploymentStatuses: ["Active"], AllowedRepaymentMethods: ["BankTransfer"]);
+        Assert.IsType<BadRequestObjectResult>(await controller.CreateLoanPolicy(request with { MinInstallments = 25 }, default));
+        Assert.IsType<BadRequestObjectResult>(await controller.CreateLoanPolicy(request with { MinInstallments = 0 }, default));
+        var ok = Assert.IsType<OkObjectResult>(await controller.CreateLoanPolicy(request with { MinInstallments = 12 }, default));
+        Assert.Equal(12, JsonSerializer.SerializeToElement(ok.Value).GetProperty("MinInstallments").GetInt32());
+        Assert.Equal(12, (await h.Db.LoanPolicies.AsNoTracking().SingleAsync()).MinInstallments);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public DbContextOptions<ZayraDbContext> Options { get; } = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;

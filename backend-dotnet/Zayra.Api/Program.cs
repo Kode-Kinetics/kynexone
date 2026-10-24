@@ -423,6 +423,12 @@ builder.Services.AddScoped<IPushProvider, ExpoPushProvider>();
 // is what fires first and the outcome is classified Ambiguous rather than a bare transport failure.
 builder.Services.AddHttpClient(ExpoPushProvider.HttpClientName,
     c => c.Timeout = TimeSpan.FromSeconds(30));
+// Setup → Locations: reads the coordinates behind a pasted Google Maps short link. Redirects and cookies are off in
+// the handler; MapLinkResolver follows at most three hops itself, only to Google Maps hosts, within 5 seconds.
+builder.Services.AddHttpClient(Zayra.Api.Infrastructure.Geo.MapLinkResolver.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(Zayra.Api.Infrastructure.Geo.MapLinkResolver.CreateHandler)
+    .RemoveAllLoggers();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Geo.MapLinkResolver>();
 builder.Services.AddScoped<INotificationChannelDispatcher, EmailChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, SmsChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();
@@ -587,6 +593,7 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Za
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.ExpiredRefreshTokenRule>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.CompanySetupDraftRetentionRule>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.MfaTrustedDeviceRetentionRule>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
 
 // Approved employee changes with a FUTURE effective date (bank details included) take effect when that date
@@ -748,6 +755,18 @@ builder.Services.AddRateLimiter(o =>
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     // Same 429 shape as sign-in refusals: JSON { error, message } and a Retry-After.
     o.OnRejected = Zayra.Api.Infrastructure.Http.RateLimitRejection.WriteAsync;
+
+    // Map short-link resolving makes an outbound request per call: 20 per minute per client address.
+    o.AddPolicy(Zayra.Api.Controllers.Geo.GeoController.RateLimitPolicy, ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            RateLimitPartitionKey(ctx),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("GeoResolvePermitLimit", 20),
+                Window                   = TimeSpan.FromSeconds(60),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
 
     o.AddPolicy("auth_login", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(

@@ -28,7 +28,7 @@ export function StructureTree({ tree }: { tree: TreeNode }) {
           {Icon && <Icon className="h-3.5 w-3.5 shrink-0 text-slate-500 dark:text-slate-400" aria-hidden="true" />}
           <span className="min-w-0 truncate" dir="auto"><bdi>{nameOf(node)}</bdi>{node.code && !isGroup && <span className="ms-1 text-xs text-slate-500 dark:text-slate-400"><bdi>{node.code}</bdi></span>}</span>
           {isGroup && <span className="text-[11px] font-medium normal-case tracking-normal text-slate-500">({node.children.length})</span>}
-          {node.tag && node.kind !== 'company' && <TagPill tag={node.tag} />}
+          {node.tag && (node.kind !== 'company' || node.tag === 'existing') && <TagPill tag={node.tag} />}
         </div>
         {node.children.length > 0 && <ul className="ms-3 border-s border-slate-200 ps-3 dark:border-white/10">{node.children.map(child => render(child, depth + 1))}</ul>}
         {isGroup && node.children.length === 0 && <p className="ms-3 border-s border-slate-200 ps-3 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">{t('None yet')}</p>}

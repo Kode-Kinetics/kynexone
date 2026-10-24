@@ -27,7 +27,7 @@ export function useSetupCompanyQuery() {
   useEffect(() => {
     // The starter has an explicit invalid-target screen. Preserve that fail-closed
     // route instead of quietly substituting another company.
-    if (params?.get('mode') === 'starter' && requested && !companies.some(company => company.id === requested)) return;
+    if (params?.get('path') === 'policyStarter' && requested && !companies.some(company => company.id === requested)) return;
     if (pendingUrl.current) {
       // Resume once the URL moves (our replace landed, or a real navigation did) or the
       // selection changes; until then the URL is ours and merely stale.
@@ -90,7 +90,7 @@ export function useSetupCompanyQuery() {
       router.replace(`/setup?${next.toString()}`, { scroll: false });
       return;
     }
-    // Path canonicalisation belongs to Setup Studio (tab=aiSetup, or no tab). Other
+    // Path canonicalisation belongs to the Setup paths (tab=aiSetup, or no tab). Other
     // sections keep the Studio area in their URL only to restore it on return; reading
     // that as a legacy Studio deep link rewrote e.g. tab=policyLibrary back to Studio.
     const tab = params?.get('tab') ?? null;

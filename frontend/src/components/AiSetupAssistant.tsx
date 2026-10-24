@@ -335,7 +335,7 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
     try {
       persistencePaused.current = false;
       saveSetupDraft(localStorage, draftScope, policyProfile, step, previewToSave);
-      setSaveStatus(t('Draft and preview edits saved in this browser. Return to Setup Studio to review and continue.'));
+      setSaveStatus(t('Draft and preview edits saved in this browser. Return to the Policy starter to review and continue.'));
       return true;
     } catch {
       setSaveStatus(t('This browser could not save your draft. Your entries remain on this page. Free browser storage and retry before leaving.'));
@@ -506,7 +506,7 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
       <section className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-500/30 dark:bg-amber-500/10" role="alert">
         <h2 className="text-base font-semibold text-amber-950 dark:text-amber-100">This company is not available for setup</h2>
         <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-200">The link may point to an inactive, removed, or inaccessible company. No other company has been selected in its place.</p>
-        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup&mode=starter', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
+        {isGroupScope && <button type="button" className="btn-secondary mt-4" onClick={() => { router.replace('/setup?tab=aiSetup&path=policyStarter', { scroll: false }); setSelectedCompany(null); }}>Choose an available company</button>}
         {onReturnToWorkspace && <button type="button" className="btn-secondary mt-4" onClick={onReturnToWorkspace}>{t('Return to workspace')}</button>}
       </section>
     );
@@ -540,7 +540,7 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
             {activeCompanies.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-300 px-5 py-10 text-center dark:border-white/15">
                 <p className="text-sm font-medium text-slate-800 dark:text-slate-100">No active company is available yet.</p>
-                <p className="mt-1 text-xs text-slate-500">Create a legal entity or wait for its activation before starting Setup Studio.</p>
+                <p className="mt-1 text-xs text-slate-500">Create a legal entity or wait for its activation before starting the Policy starter.</p>
               </div>
             ) : (
               <div className="grid gap-3 md:grid-cols-2">

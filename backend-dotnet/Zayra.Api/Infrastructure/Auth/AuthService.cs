@@ -241,11 +241,28 @@ public class AuthService : IAuthService
         // is verified via POST /api/auth/mfa/challenge/verify.
         if (user.MFAEnabled && !string.IsNullOrEmpty(user.MfaSecretEncrypted))
         {
+            // Trusted browser (MfaTrustedDevices): the password is proven and a code would be asked for now. A valid
+            // kx_mfa_trust row for THIS tenant and user skips the code only; it is re-checked under the issuance lock,
+            // and if it no longer holds there the user simply gets the code challenge below.
+            if (MfaTrustedDevices.HashPresented(context.MfaTrustToken) is { } trustHash)
+            {
+                var trusted = await CompletePasswordOnlyLoginAsync(
+                    user.Id, tenantSlug, verifiedPasswordHash, context, cancellationToken,
+                    bypassLockout: bypassingLockout, trustedDeviceHash: trustHash);
+                if (trusted is not null)
+                    return new AuthLoginResult(trusted with
+                    {
+                        KnownDeviceToken = _abuse?.IssueKnownDeviceToken("tenant", tenantSlug, user.Email, user.Id,
+                            LoginAbuseGuard.CredentialVersion(verifiedPasswordHash, user.MFAEnabled, user.MfaConfiguredAtUtc),
+                            cookieDevice ?? Guid.NewGuid(), DateTime.UtcNow),
+                    }, null);
+            }
+
             var challengeToken = await _mfaService.CreateChallengeAsync(
                 user.Id, user.TenantId, context.IpAddress ?? string.Empty, cancellationToken);
             await _auditService.WriteAsync("auth.mfa_challenge_issued", "User", user.Id.ToString(),
                 context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
-            return new AuthLoginResult(null, new MfaChallengeDto(challengeToken, 300));
+            return new AuthLoginResult(null, new MfaChallengeDto(challengeToken, 300, MfaTrustedDevices.EffectiveDays(sec)));
         }
 
         // Phase 4c — tenant-mandated MFA: if the tenant policy requires MFA for all users but this
@@ -291,7 +308,8 @@ public class AuthService : IAuthService
             verifiedPasswordHash,
             context,
             cancellationToken,
-            bypassLockout: bypassingLockout);
+            bypassLockout: bypassingLockout)
+            ?? throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         return new AuthLoginResult(issued with
         {
             KnownDeviceToken = _abuse?.IssueKnownDeviceToken("tenant", tenantSlug, user.Email, user.Id,
@@ -372,8 +390,10 @@ public class AuthService : IAuthService
         var replacementHash = _tokenService.HashToken(replacementRaw);
         var replacementId = Guid.NewGuid();
         var reuseAuditId = Guid.NewGuid();
+        var expiredAuditId = Guid.NewGuid();
         var reuseDetected = false;
         var deniedAndRevoked = false;
+        var sessionExpired = false;
         var rotationCompleted = false;
         AuthResponse? preparedResponse = null;
 
@@ -383,6 +403,7 @@ public class AuthService : IAuthService
             _db.ChangeTracker.Clear();
             reuseDetected = false;
             deniedAndRevoked = false;
+            sessionExpired = false;
             rotationCompleted = false;
             preparedResponse = null;
 
@@ -459,6 +480,17 @@ public class AuthService : IAuthService
             if (token.RevokedAtUtc is not null || token.ExpiresAtUtc <= decidedAtUtc)
                 throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
+            // The user's sessions were ended after this lineage was issued (users.session_epoch moved on: a password,
+            // factor or active-state change, or an explicit end of every session). Read from the row locked above, so
+            // a concurrent raise is either visible here or waits for this commit. Refuse and end the whole lineage.
+            if (token.SessionEpoch != userAnchor.SessionEpoch)
+            {
+                await RevokeLiveFamilyAsync(token, decidedAtUtc, context.IpAddress, ct);
+                await _db.SaveChangesAsync(ct);
+                deniedAndRevoked = true;
+                return true;
+            }
+
             var policy = await LoadSecuritySettingAsync(presentedTenantId, ct);
             var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == presentedTenantId, ct);
@@ -481,6 +513,24 @@ public class AuthService : IAuthService
                 token.RevokedByIp = context.IpAddress;
                 await _db.SaveChangesAsync(ct);
                 deniedAndRevoked = true;
+                return true;
+            }
+
+            // Hard limit: however active, a session ends security_settings.session_max_hours after its sign-in. The
+            // limit is read now, not stored on the token, so lowering it applies to sessions already running.
+            if (TenantSessionSecurity.HasReachedMaxLength(token, policy, decidedAtUtc))
+            {
+                await RevokeLiveFamilyAsync(token, decidedAtUtc, context.IpAddress, ct);
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    expiredAuditId,
+                    decidedAtUtc,
+                    TenantSessionSecurity.SessionExpiredAuditAction,
+                    "RefreshToken",
+                    token.Id.ToString(),
+                    context with { UserId = token.UserId, TenantId = token.User.TenantId },
+                    $"{{\"familyId\":\"{token.FamilyId:D}\",\"sessionMaxHours\":{TenantSessionSecurity.EffectiveSessionMaxHours(policy)},\"sessionStartedAtUtc\":\"{token.SessionStartedAtUtc.ToUniversalTime():O}\"}}"));
+                await _db.SaveChangesAsync(ct);
+                sessionExpired = true;
                 return true;
             }
 
@@ -512,6 +562,9 @@ public class AuthService : IAuthService
                 TokenHash = replacementHash,
                 ExpiresAtUtc = token.ExpiresAtUtc,
                 CreatedAtUtc = decidedAtUtc,
+                // A rotation continues the same session: its start and its epoch never move.
+                SessionStartedAtUtc = token.SessionStartedAtUtc,
+                SessionEpoch = token.SessionEpoch,
                 CreatedByIp = context.IpAddress
             });
 
@@ -557,6 +610,8 @@ public class AuthService : IAuthService
             await ApplyOnceAsync(cancellationToken);
         }
 
+        if (sessionExpired)
+            throw new SessionExpiredException();
         if (reuseDetected || deniedAndRevoked)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
         if (rotationCompleted && preparedResponse is not null)
@@ -564,11 +619,17 @@ public class AuthService : IAuthService
 
         // A lost COMMIT acknowledgement is recovered only from this call's exact durable edge.
         _db.ChangeTracker.Clear();
+        // A committed refusal is answered as it was decided: replay (generic) or the hard limit (ERR_SESSION_EXPIRED).
         // IgnoreQueryFilters is intentional: commit verification of this command's own audit marker by its server-generated id; no tenant data is read (register §6).
-        if (await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
-                x.Id == reuseAuditId
-                && x.Action == "auth.refresh_reuse_detected"
-                && x.EntityId == presentedTokenId.ToString(), cancellationToken))
+        var committedRefusal = await _db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => ((x.Id == reuseAuditId && x.Action == "auth.refresh_reuse_detected")
+                    || (x.Id == expiredAuditId && x.Action == TenantSessionSecurity.SessionExpiredAuditAction))
+                && x.EntityId == presentedTokenId.ToString())
+            .Select(x => x.Action)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (committedRefusal == TenantSessionSecurity.SessionExpiredAuditAction)
+            throw new SessionExpiredException();
+        if (committedRefusal is not null)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
 
         var committedReplacement = await _db.RefreshTokens.AsNoTracking()
@@ -597,7 +658,46 @@ public class AuthService : IAuthService
                 committedPolicy,
                 DateTime.UtcNow).Allowed)
             throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        // The same two session checks as under the lock: a raise of the epoch or the hard limit reached since the
+        // commit ends the lineage instead of handing its replacement back.
+        if (committedReplacement.SessionEpoch != committedUser.SessionEpoch)
+        {
+            await RevokeLiveFamilyAfterCommitAsync(presentedFamilyId, presentedUserId, context.IpAddress, cancellationToken);
+            throw new UnauthorizedAccessException("Refresh token is invalid or expired.");
+        }
+        if (TenantSessionSecurity.HasReachedMaxLength(committedReplacement, committedPolicy, DateTime.UtcNow))
+        {
+            await RevokeLiveFamilyAfterCommitAsync(presentedFamilyId, presentedUserId, context.IpAddress, cancellationToken);
+            throw new SessionExpiredException();
+        }
         return BuildAuthResponse(committedUser, replacementRaw);
+    }
+
+    /// <summary>Stages the revocation of every live token of <paramref name="token"/>'s lineage (the caller saves).</summary>
+    private async Task RevokeLiveFamilyAsync(RefreshToken token, DateTime atUtc, string? ipAddress, CancellationToken ct)
+    {
+        var family = await _db.RefreshTokens
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.FamilyId == token.FamilyId && x.UserId == token.UserId && x.RevokedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .ToListAsync(ct);
+        if (token.RevokedAtUtc is null && !family.Contains(token)) family.Add(token);
+        foreach (var live in family)
+        {
+            live.RevokedAtUtc = atUtc;
+            live.RevokedByIp = ipAddress;
+        }
+    }
+
+    /// <summary>The lost-acknowledgement recovery's revocation: one idempotent statement, outside the finished transaction.</summary>
+    private async Task RevokeLiveFamilyAfterCommitAsync(Guid familyId, Guid userId, string? ipAddress, CancellationToken ct)
+    {
+        var atUtc = DateTime.UtcNow;
+        await _db.RefreshTokens
+            .Where(x => x.FamilyId == familyId && x.UserId == userId && x.RevokedAtUtc == null)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.RevokedAtUtc, atUtc)
+                .SetProperty(x => x.RevokedByIp, ipAddress), ct);
     }
 
     /// <summary>The exact refresh-token + user graph token issuance needs. Shared by the initial
@@ -781,7 +881,7 @@ public class AuthService : IAuthService
                 presented.UsedAtUtc = resetAtUtc;
             }
 
-            await InvalidateUserCredentialsAsync(user.Id, resetAtUtc, context.IpAddress, ct);
+            await InvalidateUserCredentialsAsync(user.Id, user.TenantId, MfaTrustRevokeReasons.PasswordReset, resetAtUtc, context, ct);
 
             user.PasswordHash = passwordHash;
             user.MustChangePassword = false;
@@ -816,8 +916,13 @@ public class AuthService : IAuthService
     /// reset links, pending MFA login challenges and every live refresh token (all families).
     /// Callers must already hold the user row FOR UPDATE; rows are locked in id order.
     /// </summary>
-    private async Task InvalidateUserCredentialsAsync(Guid userId, DateTime atUtc, string? ipAddress, CancellationToken ct)
+    private async Task InvalidateUserCredentialsAsync(Guid userId, Guid tenantId, string trustRevokeReason, DateTime atUtc,
+        RequestContext context, CancellationToken ct)
     {
+        var ipAddress = context.IpAddress;
+        // Every trusted browser was trusted for the old password (MfaTrustedDevices).
+        await MfaTrustedDevices.StageRevokeAllAsync(_db, tenantId, [userId], trustRevokeReason, atUtc,
+            context with { UserId = userId, TenantId = tenantId }, ct);
         // A completed reset or change makes any welcome code for this login moot (F3).
         foreach (var link in await _db.EmployeeUserAccounts.TagWith(RowLockingInterceptor.ForUpdateTag)
                      .Where(x => x.UserId == userId && x.WelcomeCodeHash != null && x.WelcomeCodeRedeemedAtUtc == null)
@@ -1102,12 +1207,141 @@ public class AuthService : IAuthService
         return user?.Tenant is null ? null : ToUserDto(user);
     }
 
-    public async Task<AuthResponse> CompleteMfaLoginAsync(
+    public Task<AuthResponse> CompleteMfaLoginAsync(
         string challengeToken,
         string totpCode,
         RequestContext context,
         CancellationToken cancellationToken)
+        => CompleteMfaLoginAsync(challengeToken, totpCode, context, rememberDevice: false, cancellationToken);
+
+    /// <summary>
+    /// As above; with <paramref name="rememberDevice"/> and a tenant trust lifetime above 0, the same transaction also
+    /// creates the trusted-browser row (auth.mfa.device_trusted) and the response carries its raw token for the cookie.
+    /// Two parallel verifies of DIFFERENT challenges each create their own row; the same challenge is consumed once.
+    /// </summary>
+    public Task<AuthResponse> CompleteMfaLoginAsync(
+        string challengeToken,
+        string totpCode,
+        RequestContext context,
+        bool rememberDevice,
+        CancellationToken cancellationToken)
+        => CompleteMfaLoginCoreAsync(challengeToken, totpCode, backupCode: null, context, rememberDevice, cancellationToken);
+
+    /// <summary>
+    /// The code step with a one-time backup code (MfaBackupCodes). Consumed under the same user-row lock as the session
+    /// it issues, so two concurrent uses of one code give exactly one session. Never trusts the browser.
+    /// </summary>
+    public Task<AuthResponse> CompleteMfaLoginWithBackupCodeAsync(
+        string challengeToken,
+        string backupCode,
+        RequestContext context,
+        CancellationToken cancellationToken)
+        => CompleteMfaLoginCoreAsync(challengeToken, totpCode: null, backupCode ?? string.Empty, context, rememberDevice: false, cancellationToken);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The same issuance as a sign-in (a new refresh-token family, the access token built by BuildAuthResponse, the
+    /// known-device token), under the user-row lock, after the eligibility check a session needs. Bound to the factor
+    /// the caller just configured (MfaConfiguredAtUtc must equal <paramref name="configuredAtUtc"/>) and single-use (no
+    /// refresh token may exist from that moment on), so it cannot be replayed into a second session. Audited as
+    /// <c>auth.session_reissued</c> with <c>via: mfa_setup</c>.
+    /// </remarks>
+    public async Task<AuthResponse?> IssueSessionAfterMfaSetupAsync(
+        Guid userId, Guid tenantId, DateTime configuredAtUtc, RequestContext context, CancellationToken cancellationToken)
     {
+        var issuedAtUtc = DateTime.UtcNow;
+        var refreshRaw = _tokenService.CreateSecureToken();
+        var refreshHash = _tokenService.HashToken(refreshRaw);
+        var refreshId = Guid.NewGuid();
+        var refreshFamilyId = Guid.NewGuid();
+        AuthResponse? prepared = null;
+
+        async Task<bool> IssueOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            prepared = null;
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+            var anchor = await _db.Users.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
+            if (tenant?.IsActive != true || anchor is null) return false;
+            var user = await LoadUserGraph(userId, ct);
+            if (user?.Tenant is null || user.TenantId != tenantId || !await AuthTenantGraphIntegrity.IsValidAsync(user, _db, ct))
+                return false;
+            if (!PrivilegedMfaPolicy.IsTenantUserEnrolled(user) || user.MfaConfiguredAtUtc != configuredAtUtc)
+                return false;
+            var policy = await _db.SecuritySettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
+            var identity = await _db.TenantIdentityProviderSettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
+            if (!AuthCurrentEligibility.ForSession(user, AuthCurrentEligibility.IsSsoOnly(user, identity), policy, issuedAtUtc).Allowed)
+                return false;
+            // Once: setup revoked every refresh token, so any token created since is this method's own earlier result.
+            if (await _db.RefreshTokens.AnyAsync(x => x.UserId == userId && x.CreatedAtUtc >= configuredAtUtc, ct))
+                return false;
+
+            var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
+            _db.RefreshTokens.Add(new RefreshToken
+            {
+                Id = refreshId,
+                FamilyId = refreshFamilyId,
+                UserId = user.Id,
+                TokenHash = refreshHash,
+                ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
+                CreatedAtUtc = issuedAtUtc,
+                // A new session: setup just raised the epoch (a new factor), and this one is issued AT that new epoch
+                // from the row locked above, so the caller stays signed in while every earlier session is refused.
+                SessionStartedAtUtc = issuedAtUtc,
+                SessionEpoch = anchor.SessionEpoch,
+                CreatedByIp = context.IpAddress
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                Guid.NewGuid(),
+                issuedAtUtc,
+                "auth.session_reissued",
+                "User",
+                user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId },
+                $"{{\"via\":\"mfa_setup\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{TenantSessionSecurity.StampValue(user)}\"}}"));
+            await _db.SaveChangesAsync(ct);
+            prepared = WithKnownDevice(BuildAuthResponse(user, refreshRaw), user, null);
+            return true;
+        }
+
+        Task<bool> CommittedAsync(CancellationToken ct) =>
+            _db.RefreshTokens.AsNoTracking().AnyAsync(x => x.Id == refreshId && x.TokenHash == refreshHash && x.RevokedAtUtc == null, ct);
+
+        bool ok;
+        if (_db.Database.IsRelational())
+        {
+            ok = await _db.Database.CreateExecutionStrategy().ExecuteInTransactionAsync(
+                IssueOnceAsync, CommittedAsync, IsolationLevel.ReadCommitted, cancellationToken);
+            if (!ok)
+            {
+                // ExecuteInTransactionAsync answers default(false) when COMMIT succeeded but its acknowledgement was
+                // lost: hand the tokens back only if that exact session is really there.
+                _db.ChangeTracker.Clear();
+                return prepared is not null && await CommittedAsync(cancellationToken) ? prepared : null;
+            }
+        }
+        else
+        {
+            ok = await IssueOnceAsync(cancellationToken);
+        }
+        return ok ? prepared : null;
+    }
+
+    private async Task<AuthResponse> CompleteMfaLoginCoreAsync(
+        string challengeToken,
+        string? totpCode,
+        string? backupCode,
+        RequestContext context,
+        bool rememberDevice,
+        CancellationToken cancellationToken)
+    {
+        // A backup code proves possession of a printout, not of the enrolled device: it never trusts a browser.
+        if (backupCode is not null) rememberDevice = false;
+        var trustId = Guid.NewGuid();
+        var trustToken = rememberDevice ? MfaTrustedDevices.NewToken() : default;
+        var trustDays = 0;
         if (!AuthChallengeTokenCodec.TryParse(
                 challengeToken,
                 AuthChallengeTokenCodec.TenantLoginPurpose,
@@ -1128,16 +1362,22 @@ public class AuthService : IAuthService
         // active failed-password lockout the password step already bypassed, without clearing it.
         Guid? mfaDevice = null;
         var mfaKnownDevice = false;
+        var factor = backupCode is null ? "totp" : "backup_code";
         var loginAuditMetadata =
-            $"{{\"via\":\"mfa\",\"challengeId\":\"{envelope.ChallengeId:D}\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{expectedSessionStamp}\"}}";
+            $"{{\"via\":\"mfa\",\"factor\":\"{factor}\",\"challengeId\":\"{envelope.ChallengeId:D}\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"sessionStamp\":\"{expectedSessionStamp}\"}}";
         AuthResponse? preparedResponse = null;
         var succeeded = false;
+        // The challenge was valid and the presented code was wrong, used or malformed (400, not 401).
+        var codeRejected = false;
+        (User User, int Remaining)? backupUse = null;
 
         async Task<bool> CompleteOnceAsync(CancellationToken ct)
         {
             _db.ChangeTracker.Clear();
             preparedResponse = null;
             succeeded = false;
+            codeRejected = false;
+            backupUse = null;
 
             var tenant = await _db.Tenants
                 .TagWith(RowLockingInterceptor.ForShareTag)
@@ -1238,9 +1478,23 @@ public class AuthService : IAuthService
             }
 
             var auditContext = context with { UserId = user.Id, TenantId = user.TenantId };
-            // A replayed code (its time-step already accepted) is a failed attempt.
-            var matchedStep = _totp.MatchStep(plainSecret, totpCode);
-            if (!TotpService.IsFreshStep(matchedStep, user.MfaLastTotpStep))
+            long? matchedStep = null;
+            var backupRemaining = 0;
+            bool codeAccepted;
+            if (backupCode is not null)
+            {
+                // The user row is locked FOR UPDATE above, so this read-check-remove is serialised per user: a second
+                // use of the same code (any challenge) sees it gone.
+                codeAccepted = MfaBackupCodes.TryConsume(user.MfaRecoveryCodeHashes, backupCode, out var left, out backupRemaining);
+                if (codeAccepted) user.MfaRecoveryCodeHashes = left;
+            }
+            else
+            {
+                // A replayed code (its time-step already accepted) is a failed attempt.
+                matchedStep = _totp.MatchStep(plainSecret, totpCode ?? string.Empty);
+                codeAccepted = TotpService.IsFreshStep(matchedStep, user.MfaLastTotpStep);
+            }
+            if (!codeAccepted)
             {
                 challenge.FailedAttempts++;
                 user.MfaFailedCount++;
@@ -1253,7 +1507,7 @@ public class AuthService : IAuthService
                     UserId = user.Id,
                     EmailAttempted = user.Email,
                     EventType = LoginEventTypes.LoginFailed,
-                    FailureReason = "mfa_code_mismatch",
+                    FailureReason = backupCode is null ? "mfa_code_mismatch" : "mfa_backup_code_mismatch",
                     IpAddress = context.IpAddress,
                     UserAgent = context.UserAgent,
                     OccurredAtUtc = completedAtUtc
@@ -1261,13 +1515,26 @@ public class AuthService : IAuthService
                 _db.AuditLogs.Add(AuthAuditEntry.Create(
                     auditId,
                     completedAtUtc,
-                    "auth.mfa_failed",
+                    backupCode is null ? "auth.mfa_failed" : "auth.mfa.backup_code_failed",
                     "MfaChallengeToken",
                     challenge.Id.ToString(),
                     auditContext,
                     $"{{\"failedAttempts\":{challenge.FailedAttempts}}}"));
                 await _db.SaveChangesAsync(ct);
+                codeRejected = true;
                 return false;
+            }
+            if (backupCode is not null)
+            {
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    Guid.NewGuid(),
+                    completedAtUtc,
+                    "auth.mfa.backup_code_used",
+                    "User",
+                    user.Id.ToString(),
+                    auditContext,
+                    $"{{\"challengeId\":\"{challenge.Id:D}\",\"remaining\":{backupRemaining}}}"));
+                backupUse = (user, backupRemaining);
             }
 
             await _db.RefreshTokens
@@ -1297,8 +1564,23 @@ public class AuthService : IAuthService
 
             challenge.UsedAtUtc = completedAtUtc;
             user.MfaLastVerifiedAtUtc = completedAtUtc;
-            user.MfaLastTotpStep = matchedStep;
+            if (matchedStep is not null) user.MfaLastTotpStep = matchedStep;
             user.MfaFailedCount = 0;
+            trustDays = 0;
+            if (rememberDevice && MfaTrustedDevices.EffectiveDays(policy) is var days and > 0)
+            {
+                trustDays = days;
+                _db.MfaTrustedDevices.Add(MfaTrustedDevices.NewRow(
+                    trustId, user.TenantId, user.Id, trustToken.Hash, completedAtUtc, days, context));
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    Guid.NewGuid(),
+                    completedAtUtc,
+                    MfaTrustedDevices.TrustedAuditAction,
+                    "MfaTrustedDevice",
+                    trustId.ToString(),
+                    auditContext,
+                    $"{{\"trustedDeviceId\":\"{trustId:D}\",\"days\":{days}}}"));
+            }
             if (!(mfaKnownDevice && AuthCurrentEligibility.IsFailureLockoutActive(user, completedAtUtc)))
                 user.FailedLoginCount = 0; // a bypass of an active lockout leaves the shared counter alone
             user.LastLoginAtUtc = completedAtUtc;
@@ -1311,6 +1593,9 @@ public class AuthService : IAuthService
                 TokenHash = refreshHash,
                 ExpiresAtUtc = completedAtUtc.AddDays(refreshDays),
                 CreatedAtUtc = completedAtUtc,
+                SessionStartedAtUtc = completedAtUtc,
+                // The epoch of the row locked above, the same snapshot the factor was verified against.
+                SessionEpoch = userAnchor.SessionEpoch,
                 CreatedByIp = context.IpAddress
             });
             _db.LoginActivities.Add(new LoginActivity
@@ -1333,7 +1618,7 @@ public class AuthService : IAuthService
                 auditContext,
                 loginAuditMetadata));
             await _db.SaveChangesAsync(ct);
-            preparedResponse = WithKnownDevice(BuildAuthResponse(user, refreshRaw), user, mfaDevice);
+            preparedResponse = WithTrust(WithKnownDevice(BuildAuthResponse(user, refreshRaw), user, mfaDevice), trustToken.Raw, trustDays);
             succeeded = true;
             return true;
         }
@@ -1385,8 +1670,15 @@ public class AuthService : IAuthService
                         && x.TokenHash == refreshHash, cancellationToken);
         }
 
+        if (!succeeded && codeRejected)
+            throw new MfaCodeInvalidException();
         if (!succeeded)
             throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
+        if (backupUse is { } used)
+            await NotifyAccountOwnerAsync(used.User, "security.mfa_backup_code_used", envelope.ChallengeId.ToString("D"),
+                "A backup code was used to sign in to your KynexOne account",
+                $"A one-time backup code was used to sign in to your account ({used.Remaining} left). If this was not you, tell your administrator now and ask them to reset your two-step sign-in.",
+                cancellationToken);
         if (preparedResponse is not null)
             return preparedResponse;
 
@@ -1414,6 +1706,7 @@ public class AuthService : IAuthService
             || committedRefresh.ReplacedByTokenHash is not null
             || committedRefresh.ExpiresAtUtc <= DateTime.UtcNow
             || committedUser?.Tenant is null
+            || committedRefresh.SessionEpoch != committedUser.SessionEpoch
             || committedUser.TenantId != envelope.TenantId.Value
             || !string.Equals(
                 TenantSessionSecurity.StampValue(committedUser),
@@ -1432,8 +1725,19 @@ public class AuthService : IAuthService
             || !committedUser.MFAEnabled
             || string.IsNullOrWhiteSpace(committedUser.MfaSecretEncrypted))
             throw new UnauthorizedAccessException("Invalid or expired MFA challenge.");
-        return WithKnownDevice(BuildAuthResponse(committedUser, refreshRaw), committedUser, mfaDevice);
+        // The trusted-browser row committed with the session (or was never requested); hand its cookie back only
+        // when it is really there.
+        var committedTrust = rememberDevice
+            ? await _db.MfaTrustedDevices.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == trustId && x.TokenHash == trustToken.Hash && x.RevokedAtUtc == null, cancellationToken)
+            : null;
+        return WithTrust(WithKnownDevice(BuildAuthResponse(committedUser, refreshRaw), committedUser, mfaDevice),
+            committedTrust is null ? null : trustToken.Raw,
+            committedTrust is null ? 0 : Math.Max(1, (int)Math.Ceiling((committedTrust.ExpiresAtUtc - DateTime.UtcNow).TotalDays)));
     }
+
+    private static AuthResponse WithTrust(AuthResponse response, string? trustToken, int days) =>
+        trustToken is null || days <= 0 ? response : response with { MfaTrustToken = trustToken, MfaTrustDays = days };
 
     /// <summary>
     /// Re-hashes a just-verified password at today's work factor and stores it only if the stored hash
@@ -1505,14 +1809,25 @@ public class AuthService : IAuthService
         }
     }
 
-    private async Task<AuthResponse> CompletePasswordOnlyLoginAsync(
+    /// <summary>
+    /// Issues the session of a sign-in that needs no code: a password-only user, or — when
+    /// <paramref name="trustedDeviceHash"/> is given — an enrolled user presenting a trusted browser. In trusted mode the
+    /// row is locked and re-validated (MfaTrustedDevices.IsUsable) under the same anchors as everything else, its
+    /// last_used is stamped and auth.mfa.trusted_device_used is written in the same transaction; if the row does not
+    /// hold, nothing is written and null is returned so the caller issues the code challenge instead.
+    /// </summary>
+    private async Task<AuthResponse?> CompletePasswordOnlyLoginAsync(
         Guid userId,
         string tenantSlug,
         string verifiedPasswordHash,
         RequestContext context,
         CancellationToken cancellationToken,
-        bool bypassLockout = false)
+        bool bypassLockout = false,
+        string? trustedDeviceHash = null)
     {
+        var trustedMode = trustedDeviceHash is not null;
+        var trustRejected = false;
+        var trustAuditId = Guid.NewGuid();
         var issuedAtUtc = DateTime.UtcNow;
         var refreshRaw = _tokenService.CreateSecureToken();
         var refreshHash = _tokenService.HashToken(refreshRaw);
@@ -1532,6 +1847,7 @@ public class AuthService : IAuthService
             issuedTenantId = null;
             issuedSessionStamp = null;
             loginAuditMetadata = null;
+            trustRejected = false;
 
             var tenant = await _db.Tenants
                 .TagWith(RowLockingInterceptor.ForShareTag)
@@ -1557,8 +1873,9 @@ public class AuthService : IAuthService
                 issuedAtUtc,
                 ignoreFailureLockout: bypassLockout);
             if (!eligibility.Allowed
-                || user.MFAEnabled
-                || policy?.MfaRequired == true
+                // Password-only: the user must have no factor and no rule demanding one. Trusted browser: the user
+                // must still have the factor (the row is checked below); a tenant mandate is already satisfied.
+                || (trustedMode ? !PrivilegedMfaPolicy.IsTenantUserEnrolled(user) : user.MFAEnabled || policy?.MfaRequired == true)
                 || (await PrivilegedMfaPolicy.ForTenantUserAsync(_db, _configuration, user, policy, issuedAtUtc, ct)).BlocksSession
                 // The presented password was verified against this exact stored hash before the
                 // lock. Ordinal equality under the lock proves it is still the credential — the
@@ -1567,10 +1884,39 @@ public class AuthService : IAuthService
                 || !string.Equals(user.PasswordHash, verifiedPasswordHash, StringComparison.Ordinal))
                 throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
 
+            MfaTrustedDevice? trustRow = null;
+            if (trustedMode)
+            {
+                // Looked up by hash, pinned to the tenant and user the password step resolved.
+                trustRow = await _db.MfaTrustedDevices
+                    .TagWith(RowLockingInterceptor.ForUpdateTag)
+                    .SingleOrDefaultAsync(x => x.TokenHash == trustedDeviceHash
+                        && x.TenantId == user.TenantId
+                        && x.UserId == user.Id, ct);
+                if (!MfaTrustedDevices.IsUsable(trustRow, user, MfaTrustedDevices.EffectiveDays(policy), issuedAtUtc))
+                {
+                    trustRejected = true;
+                    return false;
+                }
+            }
+
             issuedTenantId = user.TenantId;
             issuedSessionStamp = TenantSessionSecurity.StampValue(user);
-            loginAuditMetadata =
-                $"{{\"via\":\"password\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"tenantId\":\"{issuedTenantId:D}\",\"sessionStamp\":\"{issuedSessionStamp}\"}}";
+            loginAuditMetadata = trustRow is null
+                ? $"{{\"via\":\"password\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"tenantId\":\"{issuedTenantId:D}\",\"sessionStamp\":\"{issuedSessionStamp}\"}}"
+                : $"{{\"via\":\"trusted_device\",\"trustedDeviceId\":\"{trustRow.Id:D}\",\"refreshId\":\"{refreshId:D}\",\"familyId\":\"{refreshFamilyId:D}\",\"tenantId\":\"{issuedTenantId:D}\",\"sessionStamp\":\"{issuedSessionStamp}\"}}";
+            if (trustRow is not null)
+            {
+                trustRow.LastUsedAtUtc = issuedAtUtc;
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    trustAuditId,
+                    issuedAtUtc,
+                    MfaTrustedDevices.UsedAuditAction,
+                    "MfaTrustedDevice",
+                    trustRow.Id.ToString(),
+                    context with { UserId = user.Id, TenantId = user.TenantId },
+                    $"{{\"trustedDeviceId\":\"{trustRow.Id:D}\"}}"));
+            }
 
             await _db.RefreshTokens
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
@@ -1618,6 +1964,9 @@ public class AuthService : IAuthService
                 TokenHash = refreshHash,
                 ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
                 CreatedAtUtc = issuedAtUtc,
+                SessionStartedAtUtc = issuedAtUtc,
+                // The epoch of the row locked above, the same snapshot whose password hash was just compared.
+                SessionEpoch = anchor!.SessionEpoch,
                 CreatedByIp = context.IpAddress
             });
             _db.LoginActivities.Add(new LoginActivity
@@ -1674,6 +2023,7 @@ public class AuthService : IAuthService
         }
 
         if (prepared is not null) return prepared;
+        if (trustRejected) return null;
 
         // Lost COMMIT acknowledgement: reconstruct only from this request's exact durable pair.
         _db.ChangeTracker.Clear();
@@ -1700,6 +2050,7 @@ public class AuthService : IAuthService
             || committedRefresh.ExpiresAtUtc <= DateTime.UtcNow
             || !committedAudit
             || committedUser?.Tenant is null
+            || committedRefresh.SessionEpoch != committedUser.SessionEpoch
             || committedUser.TenantId != issuedTenantId.Value
             || !string.Equals(committedUser.Tenant.Slug, tenantSlug, StringComparison.Ordinal)
             || !string.Equals(
@@ -1716,8 +2067,9 @@ public class AuthService : IAuthService
                 committedPolicy,
                 DateTime.UtcNow,
                 ignoreFailureLockout: bypassLockout).Allowed
-            || committedUser.MFAEnabled
-            || committedPolicy?.MfaRequired == true
+            || (trustedMode
+                ? !PrivilegedMfaPolicy.IsTenantUserEnrolled(committedUser)
+                : committedUser.MFAEnabled || committedPolicy?.MfaRequired == true)
             || (await PrivilegedMfaPolicy.ForTenantUserAsync(
                 _db, _configuration, committedUser, committedPolicy, DateTime.UtcNow, cancellationToken)).BlocksSession)
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
@@ -1763,7 +2115,7 @@ public class AuthService : IAuthService
                 .SingleOrDefaultAsync(x => x.TenantId == route.TenantId, ct);
             ValidatePasswordAgainstPolicy(request.NewPassword, passwordPolicy);
 
-            await InvalidateUserCredentialsAsync(user.Id, changedAtUtc, context.IpAddress, ct);
+            await InvalidateUserCredentialsAsync(user.Id, user.TenantId, MfaTrustRevokeReasons.PasswordChanged, changedAtUtc, context, ct);
 
             user.PasswordHash = passwordHash;
             user.MustChangePassword = false;
@@ -1831,12 +2183,17 @@ public class AuthService : IAuthService
 
         var refreshDays = Math.Clamp(policy?.RefreshTokenExpiryDays ?? _jwtOptions.RefreshTokenDays, 1, 90);
         var refreshToken = _tokenService.CreateSecureToken();
+        var issuedAtUtc = DateTime.UtcNow;
         _db.RefreshTokens.Add(new RefreshToken
         {
             FamilyId = Guid.NewGuid(),
             UserId = user.Id,
             TokenHash = _tokenService.HashToken(refreshToken),
-            ExpiresAtUtc = DateTime.UtcNow.AddDays(refreshDays),
+            ExpiresAtUtc = issuedAtUtc.AddDays(refreshDays),
+            CreatedAtUtc = issuedAtUtc,
+            SessionStartedAtUtc = issuedAtUtc,
+            // The caller's snapshot of the user, the one its credential was verified against.
+            SessionEpoch = user.SessionEpoch,
             CreatedByIp = context.IpAddress
         });
         return refreshToken;

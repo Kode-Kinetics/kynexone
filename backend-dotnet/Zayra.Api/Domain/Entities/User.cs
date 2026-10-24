@@ -40,12 +40,25 @@ public class User : ITenantOwned
     /// <summary>Last accepted TOTP time-step; any code at or below it is refused (replay protection).</summary>
     public long? MfaLastTotpStep { get; set; }
     public int MfaFailedCount { get; set; }
+    /// <summary>
+    /// The unused one-time backup codes of the current factor, as one salted PBKDF2 set (<see cref="Zayra.Api.Infrastructure.Auth.MfaBackupCodes"/>);
+    /// never the codes. NULL when none is left or two-step is off (CHECK: never without a factor). Cleared with the factor
+    /// by every path (the ZayraDbContext save hook catches the ones that do not do it themselves).
+    /// </summary>
+    public string? MfaRecoveryCodeHashes { get; set; }
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }
     public Guid? DeletedBy { get; set; }
     public DateTime? LastLoginAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
+    /// <summary>
+    /// Every session of this login was issued at some epoch; a refresh is refused once this has moved past it. Raised
+    /// (never set) by the ZayraDbContext save hook when the password, the factor or the login's active state changes,
+    /// and by <c>TenantSessionSecurity.EndAllSessions</c>; a database trigger makes every raise exactly one step above
+    /// the stored row. Unlike <see cref="UpdatedAtUtc"/> (the access-token stamp) nothing routine moves it.
+    /// </summary>
+    public long SessionEpoch { get; set; }
     public ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
     public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
     public ICollection<PasswordResetToken> PasswordResetTokens { get; set; } = new List<PasswordResetToken>();

@@ -1,4 +1,59 @@
+import { msg } from '../i18n/translations';
 import { navigationItems } from '../routes/navigation';
+import { canListCompanies, canOpenGlAndRates } from './setupAccess';
+
+/**
+ * Setup & Administration's own settings sections, in navigation order. The one source for each section's name and
+ * description: the section navigation, the section header and the matching All setup areas destination all read
+ * the label from here, so the three never disagree. Tab ids are the stable URL contract (`/setup?tab=…`).
+ */
+export type SetupSettingId = 'companies' | 'branches' | 'locations' | 'costCenters' | 'departments'
+  | 'grades' | 'designations' | 'establishment'
+  | 'gccSettings' | 'statutoryRules' | 'fiscalYears' | 'glMapping'
+  | 'masterData' | 'numberingRules' | 'notificationTemplates' | 'emailConfig' | 'systemSettings' | 'adminAuditLogs';
+export type SetupSettingGroupId = 'companyStructure' | 'jobsHeadcount' | 'payrollCompliance' | 'workspace';
+
+export interface SetupSettingSection {
+  id: SetupSettingId;
+  label: string;
+  description: string;
+  group: SetupSettingGroupId;
+}
+
+/** The navigation's groups, in order. "Get started" holds the setup tools; the others hold the settings below. */
+export const SETUP_SECTION_GROUPS: readonly { id: 'getStarted' | SetupSettingGroupId; label: string }[] = [
+  { id: 'getStarted', label: msg('Get started') },
+  { id: 'companyStructure', label: msg('Company structure') },
+  { id: 'jobsHeadcount', label: msg('Jobs & headcount') },
+  { id: 'payrollCompliance', label: msg('Payroll & compliance') },
+  { id: 'workspace', label: msg('Workspace') },
+];
+
+export const SETUP_SETTING_SECTIONS: readonly SetupSettingSection[] = [
+  { id: 'companies', label: msg('Companies'), description: msg('Legal entities, registration details and operating currencies.'), group: 'companyStructure' },
+  { id: 'branches', label: msg('Branches'), description: msg('Company branches and their operating locations.'), group: 'companyStructure' },
+  { id: 'locations', label: msg('Locations'), description: msg('Work sites, addresses and attendance geofences.'), group: 'companyStructure' },
+  { id: 'costCenters', label: msg('Cost centres'), description: msg('Cost-centre codes used by departments, payroll and reporting.'), group: 'companyStructure' },
+  { id: 'departments', label: msg('Departments'), description: msg('Reporting departments and their cost-center ownership.'), group: 'companyStructure' },
+  { id: 'grades', label: msg('Grades'), description: msg('Career levels and the salary range for each grade.'), group: 'jobsHeadcount' },
+  { id: 'designations', label: msg('Designations'), description: msg('Standard job titles and grade eligibility.'), group: 'jobsHeadcount' },
+  { id: 'establishment', label: msg('Headcount & budget'), description: msg('Approved headcount and monthly budget for each department and level.'), group: 'jobsHeadcount' },
+  { id: 'gccSettings', label: msg('Country rules'), description: msg('Work week, Ramadan hours, WPS/SIF, end-of-service and document alerts per country.'), group: 'payrollCompliance' },
+  { id: 'statutoryRules', label: msg('Statutory rules'), description: msg('Tenant-wide effective-dated rules used by payroll and compliance.'), group: 'payrollCompliance' },
+  { id: 'fiscalYears', label: msg('Fiscal years'), description: msg('Financial-year periods used by budgets and reporting.'), group: 'payrollCompliance' },
+  { id: 'glMapping', label: msg('Payroll accounting'), description: msg('GL accounts, posting drivers, company rates, accounting periods and end-of-service provision.'), group: 'payrollCompliance' },
+  { id: 'masterData', label: msg('Drop-down lists'), description: msg('The choices people pick in forms, such as contract type or marital status.'), group: 'workspace' },
+  { id: 'numberingRules', label: msg('Record numbering'), description: msg('Prefixes and sequences for generated record numbers.'), group: 'workspace' },
+  { id: 'notificationTemplates', label: msg('Notifications'), description: msg('Messages sent for employee and payroll events.'), group: 'workspace' },
+  { id: 'emailConfig', label: msg('Email delivery'), description: msg('Outbound email delivery and connection testing.'), group: 'workspace' },
+  { id: 'systemSettings', label: msg('Workspace settings'), description: msg('Workspace-wide operational defaults.'), group: 'workspace' },
+  { id: 'adminAuditLogs', label: msg('Audit log'), description: msg('Review recorded administrative changes and actors.'), group: 'workspace' },
+];
+
+const settingLabel = (id: SetupSettingId) => SETUP_SETTING_SECTIONS.find(section => section.id === id)!.label;
+
+/** The settings a company-scoped group administrator owns: everything else is shared by the whole tenant. */
+export const COMPANY_OWNED_SETTING_IDS: ReadonlySet<string> = new Set<SetupSettingId>(['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']);
 
 export type SetupAreaId = 'organization' | 'recruitment' | 'onboarding' | 'time' | 'leave' | 'compensation' | 'payroll' | 'performance' | 'learning' | 'services' | 'offboarding' | 'compliance';
 
@@ -67,8 +122,8 @@ function destination(input: DestinationInput): SetupDestination {
   };
 }
 
-function setting(areaId: SetupAreaId, id: string, label: string, scope: SetupDestination['scope'], nav: DestinationNavigation, effectiveTargetScope?: SetupDestination['effectiveTargetScope']): SetupDestination {
-  return destination({ id, areaId, label, path: `/setup?tab=${id}`, kind: 'settings', scope, presentation: 'embedded', effectiveTargetScope, ...nav });
+function setting(areaId: SetupAreaId, id: SetupSettingId, scope: SetupDestination['scope'], nav: DestinationNavigation, effectiveTargetScope?: SetupDestination['effectiveTargetScope']): SetupDestination {
+  return destination({ id, areaId, label: settingLabel(id), path: `/setup?tab=${id}`, kind: 'settings', scope, presentation: 'embedded', effectiveTargetScope, ...nav });
 }
 
 function route(areaId: SetupAreaId, id: string, label: string, path: string, kind: SetupDestination['kind'], scope: SetupDestination['scope'], nav: DestinationNavigation): SetupDestination {
@@ -81,14 +136,14 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     id: 'organization', label: 'Organization and core HR',
     description: 'Company structure, shared reference data, employment records and contracts.',
     destinations: [
-      setting('organization', 'companies', 'Companies', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 0), 'group'),
-      setting('organization', 'branches', 'Branches', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 1)),
-      setting('organization', 'departments', 'Departments', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 2)),
-      setting('organization', 'designations', 'Designations', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 3)),
-      setting('organization', 'grades', 'Grades', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 4)),
-      setting('organization', 'costCenters', 'Cost centers', 'mixed', navigation('financial-structure', 'Financial structure', 1, 0)),
-      setting('organization', 'establishment', 'Cost centres and budget', 'mixed', navigation('financial-structure', 'Financial structure', 1, 1)),
-      setting('organization', 'masterData', 'Employee Reference Lists', 'tenant', navigation('employee-data-definitions', 'Employee data definitions', 2, 0)),
+      setting('organization', 'companies', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 0), 'group'),
+      setting('organization', 'branches', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 1)),
+      setting('organization', 'departments', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 2)),
+      setting('organization', 'designations', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 3)),
+      setting('organization', 'grades', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 4)),
+      setting('organization', 'costCenters', 'mixed', navigation('financial-structure', 'Financial structure', 1, 0)),
+      setting('organization', 'establishment', 'mixed', navigation('financial-structure', 'Financial structure', 1, 1)),
+      setting('organization', 'masterData', 'tenant', navigation('employee-data-definitions', 'Employee data definitions', 2, 0)),
       route('organization', 'people', 'Employee records and contracts', '/people', 'operations', 'company', navigation('related-operations', 'Related operations', 3, 0)),
       route('organization', 'contractRenewals', 'Contract renewals', '/contract-renewals', 'operations', 'company', navigation('related-operations', 'Related operations', 3, 1)),
     ],
@@ -107,7 +162,7 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     id: 'time', label: 'Time and attendance',
     description: 'Work locations, shifts, attendance, overtime and project timesheets.',
     destinations: [
-      setting('time', 'locations', 'Locations and geofences', 'mixed', navigation('work-configuration', 'Work configuration', 0, 0)),
+      setting('time', 'locations', 'mixed', navigation('work-configuration', 'Work configuration', 0, 0)),
       route('time', 'attendance', 'Attendance operations', '/attendance', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 0)),
       route('time', 'shifts', 'Shift definitions and policy', '/shifts', 'settings', 'mixed', navigation('work-configuration', 'Work configuration', 0, 1)),
       route('time', 'overtime', 'Overtime requests', '/overtime', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 1)),
@@ -136,8 +191,8 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     id: 'payroll', label: 'Payroll',
     description: 'Salary structures, posting accounts, rates, fiscal years and payslip layouts.',
     destinations: [
-      setting('payroll', 'glMapping', 'GL and rates', 'mixed', navigation('posting-calendars', 'Posting and calendars', 0, 0)),
-      setting('payroll', 'fiscalYears', 'Fiscal years', 'tenant', navigation('posting-calendars', 'Posting and calendars', 0, 1)),
+      setting('payroll', 'glMapping', 'mixed', navigation('posting-calendars', 'Posting and calendars', 0, 0)),
+      setting('payroll', 'fiscalYears', 'tenant', navigation('posting-calendars', 'Posting and calendars', 0, 1)),
       route('payroll', 'payroll', 'Payroll and salary structures', '/payroll', 'settings', 'mixed', navigation('payroll-configuration', 'Payroll configuration', 1, 0)),
       route('payroll', 'payslipTemplates', 'Payslip templates', '/payroll/templates', 'templates', 'tenant', navigation('payroll-configuration', 'Payroll configuration', 1, 1)),
     ],
@@ -162,7 +217,7 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
       route('services', 'hrRequests', 'Request center', '/hr-requests', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 0)),
       route('services', 'hrLetters', 'HR letters', '/hr-letters', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 1)),
       route('services', 'engagement', 'Engagement templates and privacy', '/engagement', 'templates', 'mixed', navigation('templates-communication', 'Templates and communication', 0, 0)),
-      setting('services', 'notificationTemplates', 'Notification templates', 'tenant', navigation('templates-communication', 'Templates and communication', 0, 1)),
+      setting('services', 'notificationTemplates', 'tenant', navigation('templates-communication', 'Templates and communication', 0, 1)),
     ],
   },
   {
@@ -174,14 +229,14 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     id: 'compliance', label: 'Compliance and statutory administration',
     description: 'Country rules, compliance profiles, tax policies, documentation and filings.',
     destinations: [
-      setting('compliance', 'gccSettings', 'GCC settings', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 0)),
-      setting('compliance', 'statutoryRules', 'Statutory rules', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 1)),
+      setting('compliance', 'gccSettings', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 0)),
+      setting('compliance', 'statutoryRules', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 1)),
       route('compliance', 'complianceProfiles', 'Compliance profiles', '/compliance-profiles', 'settings', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 2)),
       route('compliance', 'taxPolicies', 'Tax policies', '/tax-policies', 'settings', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 3)),
       route('compliance', 'compliance', 'Documents and renewals', '/compliance', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 0)),
       route('compliance', 'saudiCompliance', 'Saudi compliance', '/saudi-compliance', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 1)),
       route('compliance', 'gosiFiling', 'GOSI filing', '/gosi-filing', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 2)),
-      destination({ id: 'adminAuditLogs', areaId: 'compliance', label: 'Administrative audit logs', path: '/setup?tab=adminAuditLogs', kind: 'operations', scope: 'mixed', presentation: 'embedded', ...navigation('filings-evidence', 'Filings and evidence', 1, 3) }),
+      destination({ id: 'adminAuditLogs', areaId: 'compliance', label: settingLabel('adminAuditLogs'), path: '/setup?tab=adminAuditLogs', kind: 'operations', scope: 'mixed', presentation: 'embedded', ...navigation('filings-evidence', 'Filings and evidence', 1, 3) }),
     ],
   },
 ];
@@ -199,7 +254,6 @@ export interface SetupAccessContext {
   isCompanyScopedGroup: boolean;
 }
 
-const companyScopedSetupIds = new Set(['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']);
 
 export function destinationAvailability(destination: SetupDestination, context: SetupAccessContext): 'available' | 'restricted' | 'unavailable' | 'checking' | 'unknown' {
   if (destination.requiredPermissions.length > 0 && !destination.requiredPermissions.some(context.hasPermission)) return 'restricted';
@@ -207,7 +261,7 @@ export function destinationAvailability(destination: SetupDestination, context: 
   if (destination.editorPermission && !context.hasPermission(destination.editorPermission)) return 'restricted';
   if (context.isCompanyScopedGroup && (
     destination.scope === 'tenant'
-    || (destination.presentation === 'embedded' && !companyScopedSetupIds.has(destination.id))
+    || (destination.presentation === 'embedded' && !COMPANY_OWNED_SETTING_IDS.has(destination.id))
   )) return 'restricted';
   // Path ownership is server supplied even for destinations without a feature key.
   if (context.flagStatus === 'loading') return 'checking';
@@ -215,4 +269,66 @@ export function destinationAvailability(destination: SetupDestination, context: 
   if (destination.requiredFeatureKey && !context.isFeatureEnabled(destination.requiredFeatureKey)) return 'unavailable';
   if (!context.verdictForPath(destination.path.split('?')[0]).allowed) return 'unavailable';
   return 'available';
+}
+
+// ── Who sees which Setup section ──────────────────────────────────────────────────────────────────────────────────
+
+/** The setup tools at the top of the navigation ("Get started"). */
+export type SetupToolId = 'guidedSetup' | 'allSetupAreas' | 'importOrganization' | 'policyStarter' | 'policyLibrary';
+
+export const SETUP_TOOLS: Record<SetupToolId, { label: string; description: string; href: string }> = {
+  guidedSetup: { label: msg('Guided setup'), description: msg('Create a company, or finish setting one up, one screen at a time.'), href: '/setup?tab=aiSetup&path=guided' },
+  allSetupAreas: { label: msg('All setup areas'), description: msg('Every setup area, with its settings and related workspaces.'), href: '/setup?tab=aiSetup&path=configuration&area=overview' },
+  importOrganization: { label: msg('Import organization'), description: msg('Load companies, branches, departments and jobs from a file.'), href: '/setup?tab=importOrganization' },
+  policyStarter: { label: msg('Policy starter'), description: msg('Attendance, overtime, benefits and other policies.'), href: '/setup?tab=aiSetup&path=policyStarter' },
+  policyLibrary: { label: msg('Policy library'), description: msg('Policy documents your company has uploaded.'), href: '/setup?tab=policyLibrary' },
+};
+
+export interface SetupNavigationAccess {
+  hasPermission: (permission: string) => boolean;
+  hasRole: (role: string) => boolean;
+  /** A group account's administrator who is limited to some companies. */
+  isCompanyScopedGroup: boolean;
+  /** The tenant has policy intake switched on (the Policy library exists only then). */
+  policyIntake: boolean;
+}
+
+export interface SetupNavigationModel {
+  canWrite: boolean;
+  canReadCompanies: boolean;
+  canReadStatutoryRules: boolean;
+  canReadGlAndRates: boolean;
+  canManagePolicies: boolean;
+  /** "Get started" entries, in order. Empty for a reader. */
+  tools: SetupToolId[];
+  /** The settings sections this user can open, in navigation order. */
+  settings: SetupSettingSection[];
+}
+
+/**
+ * The one answer to "which Setup sections can this user open". Setup's navigation, its "Find a setting" search and
+ * the ⌘K palette's Settings group all read it, so nothing is ever offered that the navigation would not show.
+ */
+export function setupNavigationModel(access: SetupNavigationAccess): SetupNavigationModel {
+  const { hasPermission, hasRole, isCompanyScopedGroup } = access;
+  const canManagePolicies = access.policyIntake && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
+  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
+  // A reader sees Companies only when the server will list them for its role (setupAccess.ts), and GL & rates when it
+  // holds any GL or rates permission: Payroll Manager and Finance hold those, and used to get a page with no sections.
+  const canReadCompanies = canWrite || (hasPermission('organization.read') && canListCompanies({ hasPermission, hasRole }));
+  const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
+  const canReadGlAndRates = canOpenGlAndRates({ hasPermission, hasRole });
+  const writable = isCompanyScopedGroup ? SETUP_SETTING_SECTIONS.filter(section => COMPANY_OWNED_SETTING_IDS.has(section.id)) : SETUP_SETTING_SECTIONS;
+  const settings = canWrite
+    ? [...writable]
+    : SETUP_SETTING_SECTIONS.filter(section => (section.id === 'companies' && canReadCompanies)
+      || (section.id === 'statutoryRules' && canReadStatutoryRules) || (section.id === 'glMapping' && canReadGlAndRates));
+  const tools: SetupToolId[] = canWrite ? [
+    'guidedSetup',
+    'allSetupAreas',
+    ...(!isCompanyScopedGroup ? ['importOrganization' as const] : []),
+    'policyStarter',
+    ...(canManagePolicies ? ['policyLibrary' as const] : []),
+  ] : [];
+  return { canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates, canManagePolicies, tools, settings };
 }

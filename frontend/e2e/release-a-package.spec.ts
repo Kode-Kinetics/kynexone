@@ -69,7 +69,7 @@ async function open(page: Page, locale: 'en' | 'ar', view: unknown, dependants: 
     if (p === `/api/employees/${EMP_ID}/documents`) return json(documents);
     if (p === `/api/employees/${EMP_ID}/readiness`) return json({ error: 'n/a' }, 404);
     if (/\/api\/entitlements\/employees\/\d+\/package$/.test(p)) return json(view);
-    if (/\/api\/entitlements\/employees\/\d+\/dependants$/.test(p)) return json(dependants);
+    if (/\/api\/employees\/\d+\/dependants$/.test(p)) return json(dependants);
     if (/\/api\/entitlements\/employees\/\d+\/package\/propose$/.test(p) && req.method() === 'POST') {
       proposeBodies.push({ path: p, body: req.postDataJSON() });
       return json({ jobId: 'j1', status: 'Queued', deduplicated: false, statusUrl: '/api/jobs/j1' }, 202);

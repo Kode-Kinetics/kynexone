@@ -111,6 +111,9 @@ public class FinanceLoanAdvanceMakerCheckerTests
         });
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
+        // The policy caps an advance at a share of the monthly wage, so the employee needs one.
+        AddMonthlyWage(db, tenantId, employee.Id, 10_000m);
+        await db.SaveChangesAsync();
 
         var requester = MakeAdvancesController(db, tenantId, requesterId);
         var create = await requester.Create(
@@ -149,6 +152,9 @@ public class FinanceLoanAdvanceMakerCheckerTests
         });
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
+        // The policy caps an advance at a share of the monthly wage, so the employee needs one.
+        AddMonthlyWage(db, tenantId, employee.Id, 10_000m);
+        await db.SaveChangesAsync();
 
         var result = await MakeAdvancesController(db, tenantId, Guid.NewGuid()).Create(
             new CreateAdvanceRequest(employee.PublicId, employee.FullName, 1_800m, "OneTime", 1, null, null, employee.Id),
@@ -179,6 +185,14 @@ public class FinanceLoanAdvanceMakerCheckerTests
         Status = EmployeeStatuses.Active,
         JoiningDate = DateTime.UtcNow.AddYears(-2),
     };
+
+    /// <summary>A salary structure in force today, in the tenant currency (USD when no company or locale is set).</summary>
+    private static void AddMonthlyWage(ZayraDbContext db, Guid tenantId, int employeeId, decimal basic) =>
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = employeeId, SalaryStructureId = Guid.NewGuid(), BasicSalary = basic,
+            Currency = "USD", EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow.AddYears(-1)), IsActive = true,
+        });
 
     private static LoansController MakeLoansController(ZayraDbContext db, Guid tenantId, Guid userId)
     {

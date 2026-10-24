@@ -2,15 +2,24 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, Sparkles, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
-import { SetupPathSwitch } from '../components/setup/SetupPathSwitch';
+import { SetupSectionNav, SetupSectionsToggle, type SetupSectionNavGroup, type SetupSectionNavItem } from '../components/setup/SetupSectionNav';
+import { SetupSectionHeader } from '../components/setup/SetupSectionHeader';
+import { buildSetupSearchIndex, type SetupSearchEntry } from '../components/setup/setupSearch';
+import { progressCompany } from '../components/setup/setupProgress';
+import { useGuidedSetupCompanies } from '../components/setup/useSetupProgress';
+import { readinessProgress, setupLandingCompanyLink } from '../lib/companySetupWizard';
+import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useLocale } from '../contexts/LocaleContext';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
+import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChooser';
 import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
@@ -81,12 +90,13 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
-import { resolveSetupArea } from '../lib/setupAreas';
+import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSettingId, type SetupSettingSection } from '../lib/setupAreas';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
 import { useConfirm } from '../components/gl/glUi';
 import { useReleaseA } from '../lib/releaseA';
+import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
 
 // Load the existing module only when its settings are opened in the workspace.
@@ -95,39 +105,34 @@ const PoliciesTab = dynamic(() => import('./LeavePage').then(module => module.Po
 const HolidayCalendarTab = dynamic(() => import('./LeavePage').then(module => module.HolidayCalendarTab));
 const OnboardingPolicyWorkspace = dynamic(() => import('../components/setup/OnboardingPolicyWorkspace').then(module => module.OnboardingPolicyWorkspace));
 
-type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | 'establishment' | 'companies' | 'branches' | 'departments' | 'designations' | 'grades' | 'costCenters'
-  | 'masterData' | 'numberingRules' | 'systemSettings' | 'gccSettings'
-  | 'statutoryRules' | 'fiscalYears' | 'locations' | 'glMapping' | 'notificationTemplates' | 'emailConfig' | 'adminAuditLogs';
-type SettingsCategory = 'organization' | 'peoplePay' | 'system';
-type SettingsTab = Exclude<Tab, 'aiSetup' | 'importOrganization' | 'policyLibrary'>;
+type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | SetupSettingId;
+type SettingsTab = SetupSettingId;
+/** A navigation entry: a settings section, a setup tool, or one of the three Setup paths that share tab=aiSetup. */
+type SetupNavId = Exclude<Tab, 'aiSetup'> | 'guidedSetup' | 'allSetupAreas' | 'policyStarter';
 function isSettingsTab(id: string): id is SettingsTab { return tabs.some(tab => tab.id === id); }
 
-const tabs: { id: SettingsTab; label: string; description: string; icon: React.ElementType; category: SettingsCategory }[] = [
-  { id: 'companies', label: msg('Companies'), description: msg('Legal entities, registration details and operating currencies.'), icon: Building2, category: 'organization' },
-  { id: 'branches', label: msg('Branches'), description: msg('Company branches and their operating locations.'), icon: GitBranch, category: 'organization' },
-  { id: 'departments', label: msg('Departments'), description: msg('Reporting departments and their cost-center ownership.'), icon: Layers, category: 'organization' },
-  { id: 'costCenters', label: msg('Cost centers'), description: msg('Financial ownership codes used across payroll and reporting.'), icon: Landmark, category: 'organization' },
-  { id: 'establishment', label: msg('Cost Centres & Budget'), description: msg('Approved headcount, staffing levels and budget controls.'), icon: Landmark, category: 'organization' },
-  { id: 'locations', label: msg('Locations'), description: msg('Work sites, addresses and attendance geofences.'), icon: MapPin, category: 'organization' },
-  { id: 'designations', label: msg('Designations'), description: msg('Standard job titles and grade eligibility.'), icon: Tag, category: 'peoplePay' },
-  { id: 'grades', label: msg('Grades'), description: msg('Career levels and the salary range for each grade.'), icon: Award, category: 'peoplePay' },
-  { id: 'fiscalYears', label: msg('Fiscal Years'), description: msg('Financial-year periods used by budgets and reporting.'), icon: Calendar, category: 'peoplePay' },
-  { id: 'glMapping', label: msg('GL & rates'), description: msg('Payroll posting accounts, company rates and statutory rates.'), icon: Landmark, category: 'peoplePay' },
-  { id: 'gccSettings', label: msg('GCC Settings'), description: msg('Country-specific employment and statutory defaults.'), icon: Globe, category: 'peoplePay' },
-  { id: 'statutoryRules', label: msg('Statutory Rules'), description: msg('Tenant-wide effective-dated rules used by payroll and compliance.'), icon: ShieldCheck, category: 'peoplePay' },
-  { id: 'masterData', label: msg('Employee Reference Lists'), description: msg('Shared reference values used by forms and records.'), icon: Database, category: 'system' },
-  { id: 'numberingRules', label: msg('Numbering'), description: msg('Prefixes and sequences for generated record numbers.'), icon: Hash, category: 'system' },
-  { id: 'systemSettings', label: msg('System Settings'), description: msg('Workspace-wide operational defaults.'), icon: Settings, category: 'system' },
-  { id: 'notificationTemplates', label: msg('Notifications'), description: msg('Messages sent for employee and payroll events.'), icon: Bell, category: 'system' },
-  { id: 'emailConfig', label: msg('Email / SMTP'), description: msg('Outbound email delivery and connection testing.'), icon: Settings, category: 'system' },
-  { id: 'adminAuditLogs', label: msg('Audit Logs'), description: msg('Review recorded administrative changes and actors.'), icon: ClipboardList, category: 'system' },
-];
+const settingIcons: Record<SettingsTab, React.ElementType> = {
+  companies: Building2, branches: GitBranch, locations: MapPin, costCenters: Landmark, departments: Layers,
+  grades: Award, designations: Tag, establishment: Users,
+  gccSettings: Globe, statutoryRules: ShieldCheck, fiscalYears: Calendar, glMapping: BookOpen,
+  masterData: Database, numberingRules: Hash, notificationTemplates: Bell, emailConfig: Mail, systemSettings: Settings, adminAuditLogs: ClipboardList,
+};
 
-const directSettingsOrder: SettingsTab[] = [
-  'establishment', 'companies', 'branches', 'departments', 'designations', 'grades',
-  'masterData', 'numberingRules', 'systemSettings', 'gccSettings', 'statutoryRules',
-  'fiscalYears', 'locations', 'glMapping', 'notificationTemplates', 'emailConfig', 'adminAuditLogs',
-];
+// Names, descriptions and groups come from the shared catalogue (lib/setupAreas.ts), which All setup areas reads too,
+// so a section has one name in the navigation, its header and the Studio.
+const tabs: (SetupSettingSection & { icon: React.ElementType })[] = SETUP_SETTING_SECTIONS.map(section => ({ ...section, icon: settingIcons[section.id] }));
+
+/** The setup tools at the top of the navigation, keyed by their entry. */
+const toolSections: Record<Exclude<SetupNavId, SettingsTab>, { label: string; icon: React.ElementType }> = {
+  guidedSetup: { label: SETUP_TOOLS.guidedSetup.label, icon: Sparkles },
+  allSetupAreas: { label: SETUP_TOOLS.allSetupAreas.label, icon: LayoutGrid },
+  importOrganization: { label: SETUP_TOOLS.importOrganization.label, icon: Upload },
+  policyStarter: { label: SETUP_TOOLS.policyStarter.label, icon: FileText },
+  policyLibrary: { label: SETUP_TOOLS.policyLibrary.label, icon: ClipboardList },
+};
+const studioPaths: Record<'guidedSetup' | 'allSetupAreas' | 'policyStarter', SetupStudioPath> = {
+  guidedSetup: 'guided', allSetupAreas: 'configuration', policyStarter: 'policyStarter',
+};
 
 // Small read-only field for the statutory pack profile panel.
 function InfoRow({ label, value, detail }: { label: string; value: string; detail?: string }) {
@@ -336,7 +341,7 @@ function CompaniesTab() {
         addLabel={msg('Create company')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel={msg('No companies yet')}
+        emptyLabel={msg('No companies yet')} emptyHint={msg('Add your first company, or import a CSV.')}
         actions={canWrite ? (
           <ImportExportToolbar
             entityName="Companies"
@@ -603,7 +608,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
         addLabel={msg('Add Branch')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel={msg('No branches yet')}
+        emptyLabel={msg('No branches yet')} emptyHint={msg('Add your first branch, or import a CSV.')}
         filter={
           companies.length > 0 ? (
             <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="select" title={t('Filter by company')}>
@@ -756,7 +761,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         addLabel={msg('Add Department')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel={msg('No departments yet')}
+        emptyLabel={msg('No departments yet')} emptyHint={msg('Add your first department, or import a CSV.')}
         actions={
           <ImportExportToolbar
             entityName="Departments"
@@ -884,7 +889,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
         addLabel={msg('Add Designation')}
         loading={loading}
         empty={items.length === 0}
-        emptyLabel={msg('No designations yet')}
+        emptyLabel={msg('No designations yet')} emptyHint={msg('Add your first designation, or import a CSV.')}
         actions={
           <ImportExportToolbar
             entityName="Designations"
@@ -1037,7 +1042,7 @@ function GradesTab() {
 
   return (
     <>
-      <TableShell columns={[msg('Code'), msg('Name'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={items.length === 0} emptyLabel={msg('No grades yet')}
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={items.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
         actions={
           <ImportExportToolbar
             entityName="Grades"
@@ -1118,7 +1123,7 @@ function PayScaleEditor({ components, onChange }: { components: GradePayScaleCom
         <button type="button" onClick={add} className="btn-secondary h-6 px-2 text-xs">+ {t('Add component')}</button>
       </div>
       {components.length === 0 ? (
-        <p className="py-2 text-xs text-slate-400">{t('No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.')}</p>
+        <p className="py-2 text-xs text-slate-500 dark:text-slate-400">{t('No components — e.g. Basic, Housing, Transport, Ticket, Insurance, Health.')}</p>
       ) : (
         <div className="space-y-1.5">
           {components.map((c, i) => (
@@ -1189,7 +1194,7 @@ function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
 
   return (
     <>
-      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Cost Center')} loading={loading} empty={items.length === 0} emptyLabel={msg('No cost centers yet')}
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Cost Center')} loading={loading} empty={items.length === 0} emptyLabel={msg('No cost centres yet')} emptyHint={msg('Add your first cost centre, or import a CSV.')}
         actions={
           <ImportExportToolbar
             entityName="Cost Centers"
@@ -1327,6 +1332,16 @@ function MasterDataTab() {
 
   return (
     <div className="flex min-h-[400px] min-w-0 flex-col gap-4 md:flex-row">
+      {!loading && types.length === 0 ? (
+        // Nothing to pick from yet: one full-width card that explains the section and offers its first action,
+        // instead of an empty list beside an empty "select a type" panel.
+        <section aria-labelledby="drop-down-lists-empty" className="surface flex w-full flex-1 flex-col items-center justify-center px-6 py-12 text-center">
+          <Database aria-hidden="true" className="h-8 w-8 text-slate-400 dark:text-slate-500" />
+          <h3 id="drop-down-lists-empty" className="mt-3 text-base font-semibold text-slate-950 dark:text-white">{t('No drop-down lists yet')}</h3>
+          <p className="mt-1 max-w-md text-sm leading-6 text-slate-600 dark:text-slate-300">{t('Drop-down lists hold the choices people pick in forms, such as contract type or marital status.')}</p>
+          <button type="button" onClick={openNewType} className="btn-primary mt-5"><Plus className="h-4 w-4" aria-hidden="true" /> {t('New list')}</button>
+        </section>
+      ) : (<>
       {/* Types list */}
       <div className="w-full shrink-0 md:w-72">
         <div className="surface p-3">
@@ -1337,7 +1352,7 @@ function MasterDataTab() {
           {loading ? (
             <div className="flex justify-center py-8"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
           ) : types.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-400">{t('No types yet')}</p>
+            <p className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">{t('No types yet')}</p>
           ) : (
             <ul className="space-y-0.5">
               {types.map((type) => (
@@ -1371,7 +1386,7 @@ function MasterDataTab() {
       <div className="min-w-0 flex-1">
         {!selectedType ? (
           <div className="surface flex h-full items-center justify-center">
-            <p className="text-sm text-slate-400">{t('Select a type to manage values')}</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{t('Select a type to manage values')}</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -1395,7 +1410,7 @@ function MasterDataTab() {
                   {valuesLoading ? (
                     <tr><td colSpan={7} className="py-8 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
                   ) : values.length === 0 ? (
-                    <tr><td colSpan={7} className="py-8 text-center text-slate-400 text-sm">{t('No values yet')}</td></tr>
+                    <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">{t('No values yet')}</td></tr>
                   ) : values.map((v) => (
                     <tr key={v.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{v.code}</td>
@@ -1418,6 +1433,7 @@ function MasterDataTab() {
           </div>
         )}
       </div>
+      </>)}
 
       {/* Type Modal */}
       <Modal isOpen={typeModal} title={editingType ? t('Edit type') : t('New type')} onClose={() => setTypeModal(false)}
@@ -1716,7 +1732,7 @@ function GCCSettingsTab() {
           <button type="button" onClick={openNew} className="btn-primary"><Plus className="h-4 w-4" /> {t('Add Country Config')}</button>
         </div>
         {loading ? <div className="flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>
-          : items.length === 0 ? <div className="surface py-12 text-center text-sm text-slate-400">{t('No GCC settings configured')}</div>
+          : items.length === 0 ? <div className="surface py-12 text-center text-sm text-slate-500 dark:text-slate-400">{t('No country rules yet')}</div>
           : (
             <div className="grid gap-4 sm:grid-cols-2">
               {items.map((s) => (
@@ -1910,7 +1926,7 @@ function LocationsTab() {
   return (
     <>
       <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={openNew} addLabel={msg('Add Location')}
-        loading={loading} empty={items.length === 0} emptyLabel={msg('No locations')}
+        loading={loading} empty={items.length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
         actions={
           <ImportExportToolbar
             entityName="Locations"
@@ -2065,6 +2081,7 @@ function NotificationTemplatesTab() {
 // ─── Admin Audit Logs ─────────────────────────────────────────────────────────
 
 function AdminAuditLogsTab() {
+  const t = useT();
   const [items, setItems] = useState<AdminAuditLog[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -2115,7 +2132,7 @@ function AdminAuditLogsTab() {
             {loading ? (
               <tr><td colSpan={5} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
             ) : items.length === 0 ? (
-              <tr><td colSpan={5} className="py-12 text-center text-slate-400">No audit logs</td></tr>
+              <tr><td colSpan={5} className="py-12 text-center text-sm text-slate-500 dark:text-slate-400">{t('No audit log entries yet')}</td></tr>
             ) : items.map((log) => (
               <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                 <td className="px-4 py-2.5 text-slate-500 text-xs whitespace-nowrap">{new Date(log.createdAtUtc).toLocaleString()}</td>
@@ -2303,7 +2320,7 @@ function EmailConfigTab() {
 const DELETE_ROW_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
 
 function TableShell({
-  columns, onAdd, addLabel, loading, empty, emptyLabel, filter, actions, children,
+  columns, onAdd, addLabel, loading, empty, emptyLabel, emptyHint, filter, actions, children,
 }: {
   columns: string[];
   // Optional so read-only surfaces (e.g. organization.read viewers on the Companies
@@ -2314,6 +2331,8 @@ function TableShell({
   loading: boolean;
   empty: boolean;
   emptyLabel: string;
+  /** A second line for the empty table, naming the first step (e.g. "Add your first branch, or import a CSV."). Shown to writers only. */
+  emptyHint?: string;
   filter?: React.ReactNode;
   actions?: React.ReactNode;
   children: React.ReactNode;
@@ -2357,8 +2376,9 @@ function TableShell({
               )}
               {!loading && empty && (
                 <tr>
-                  <td colSpan={columns.length + 1} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">
-                    {t(emptyLabel)}
+                  <td colSpan={columns.length + 1} className="px-4 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
+                    <p className="font-medium text-slate-600 dark:text-slate-300">{t(emptyLabel)}</p>
+                    {emptyHint && onAdd && <p className="mt-1">{t(emptyHint)}</p>}
                   </td>
                 </tr>
               )}
@@ -2446,27 +2466,59 @@ const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
 
 // ─── SetupPage ───────────────────────────────────────────────────────────────
 
+/** A revalidation shorter than this freezes the page silently; a longer one explains the freeze. */
+export const AUTHORIZATION_BANNER_DELAY_MS = 800;
+
+/** Set once Setup has mounted in this document: later visits arrive by in-app navigation, not by a document load. */
+let setupDocumentLandingSeen = false;
+
+/**
+ * The address the browser's own Back/Forward last restored inside this document (popstate). In-app routes are
+ * client-side, so leaving Setup for another screen and pressing Back remounts Setup without a document load: the
+ * document's navigation timing still says "navigate", and only this tells a history restore from a followed link.
+ */
+let lastTraversedHref: string | null = null;
+if (typeof window !== 'undefined') window.addEventListener('popstate', () => { lastTraversedHref = window.location.href; });
+
+/**
+ * How this Setup visit arrived: 'back_forward' when the browser's history restored it (inside this document, or as
+ * the document's own load), 'reload' for a reloaded Setup document, otherwise (and on the server) 'navigate'.
+ */
+function setupArrivalNavigation(): string {
+  if (typeof window === 'undefined') return 'navigate';
+  if (lastTraversedHref === window.location.href) return 'back_forward';
+  if (setupDocumentLandingSeen) return 'navigate';
+  try {
+    const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (!entry || new URL(entry.name).pathname !== '/setup') return 'navigate';
+    return entry.type;
+  } catch {
+    return 'navigate';
+  }
+}
+
 export function SetupPage() {
   const router = useRouter();
   const t = useT();
   // Keep the existing tab URLs, including staffing-budget department/level links.
   const searchParams = useSearchParams();
   const { hasPermission, hasRole, authorizationRefreshStatus, retryAuthorization } = useAuth();
-  const { accountType, isGroupScope, companyVersion, companies: authorizedCompanies, setSelectedCompany } = useCompany();
+  const { accountType, isGroupScope, companyVersion, companies: authorizedCompanies, selectedCompanyId, setSelectedCompany } = useCompany();
+  const flags = useFeatureFlags();
+  const { locale } = useLocale();
   const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
   // Readers entering from /companies must only see the Companies list. Hiding a
   // mode also prevents its component from mounting or requesting restricted data.
   // The policy library exists only while the tenant has policy intake switched on (off by the owner's decision).
   const policyIntake = usePolicyIntake();
-  const canManagePolicies = policyIntake && hasPermission('organization.write') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('HR Officer'));
-  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
-  const canReadCompanies = canWrite || hasPermission('organization.read');
-  const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
-  const companyOwnedSettingIds = new Set<SettingsTab>(['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']);
-  const writableTabs = isCompanyScopedGroup ? tabs.filter(tab => companyOwnedSettingIds.has(tab.id)) : tabs;
-  const visibleTabs = canWrite ? writableTabs : tabs.filter((tab) => (tab.id === 'companies' && canReadCompanies) || (tab.id === 'statutoryRules' && canReadStatutoryRules));
+  // One model decides who sees which section: the navigation, "Find a setting" and the ⌘K palette all read it —
+  // including the readers' rules (Companies only when the server lists them for the role, GL & rates for any GL or
+  // rates permission), so Payroll Manager and Finance get their section everywhere, not only in the nav.
+  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake });
+  const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
+  const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
   const tabParam = searchParams?.get('tab');
-  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : 'companies';
+  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : canReadGlAndRates ? 'glMapping' : 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
     : visibleTabs.some((tab) => tab.id === tabParam)
@@ -2488,6 +2540,13 @@ export function SetupPage() {
     setEditorDirty(false);
     setPendingStarterFiles(false);
   }, []);
+  // A Guided setup deep link is the address this Setup visit arrived with, read once here, before the company scope is
+  // reconciled into the URL. Every later return to Guided setup (navigation, search, Back) keeps `companyId` only as
+  // the scope and opens the chooser.
+  const landingCompanyLink = useRef<string | null | undefined>(undefined);
+  if (landingCompanyLink.current === undefined) landingCompanyLink.current = setupLandingCompanyLink(new URLSearchParams(searchParams?.toString()), setupArrivalNavigation());
+  // This arrival has been read: a later visit is classified afresh (a followed link after a Back is a link again).
+  useEffect(() => { setupDocumentLandingSeen = true; lastTraversedHref = null; }, []);
   const authorizedCompany = useSetupCompanyQuery();
   const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, pendingStarterFiles, authorizedCompany);
   const setupPath = resolveSetupPath(new URLSearchParams(searchParams?.toString()), {
@@ -2531,20 +2590,29 @@ export function SetupPage() {
     return () => { active = false; window.removeEventListener('kynexone:companies-changed', refreshCompanies); };
   }, [canReadCompanies, canWrite, companyVersion, configurationScopeUnavailable]);
 
+  const tabHref = (tab: Tab) => {
+    const params = new URLSearchParams(searchParams?.toString());
+    params.set('tab', tab);
+    // Area and setting belong to All setup areas. A settings section's address does not carry them: an area left in
+    // the URL would reopen All setup areas on re-entry even after the user chose Guided setup (the path is kept).
+    if (tab === 'aiSetup') params.set('area', resolveSetupArea(params.get('area')));
+    else { params.delete('area'); params.delete('setting'); }
+    // Payroll accounting's tab request belongs to the link that made it, never to the next section's address.
+    params.delete('glTab');
+    if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
+    return `/setup?${params.toString()}`;
+  };
   const selectTab = (tab: Tab) => {
+    landingCompanyLink.current = null;
     if (tab === activeTab) return;
     if (!confirmLeave()) return;
     setActiveTab(tab);
-    const params = new URLSearchParams(searchParams?.toString());
-    params.set('tab', tab);
-    params.set('area', resolveSetupArea(params.get('area')));
-    if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
     // The tab is shown immediately, so its history entry must exist immediately too.
     // router.push only writes the entry when its server round trip commits; a second
     // tab chosen before then superseded it, and Back skipped a tab the user had seen.
     // The page is client-rendered from the query, so a native push (which Next's
     // router adopts without a fetch) is enough.
-    window.history.pushState(null, '', `/setup?${params.toString()}`);
+    window.history.pushState(null, '', tabHref(tab));
   };
 
   // Resolve permissions on every render so a permission change cannot leave a
@@ -2554,7 +2622,10 @@ export function SetupPage() {
     : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration' && !configurationScopeUnavailable;
-  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
+  // Guided setup is the company setup chooser (create, or complete an existing company — Addendum A). The old
+  // studio stays reachable only as the "Policy starter", for what has no screen of its own (A7).
+  const isGuided = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
+  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'policyStarter';
   const starterScope = authorizedCompany ?? 'group';
   const setupPathHref = (path: SetupStudioPath) => {
     const next = serializeSetupPath({ ...setupPath, path, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
@@ -2590,16 +2661,98 @@ export function SetupPage() {
     router.push(setupPathHref('configuration'), { scroll: false });
   };
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
-  const SelectedSettingIcon = selectedSetting.icon;
-  const navigationTabs = canWrite ? [
-    { id: 'aiSetup' as const, label: t('Setup Studio'), icon: Sparkles },
-    ...(!isCompanyScopedGroup ? [{ id: 'importOrganization' as const, label: t('Import organization'), icon: Upload }] : []),
-    ...directSettingsOrder.filter(id => !isCompanyScopedGroup || companyOwnedSettingIds.has(id)).map((id) => {
-      const tab = tabs.find((item) => item.id === id)!;
-      return { id: tab.id, label: t(tab.label), icon: tab.icon };
-    }),
-    ...(canManagePolicies ? [{ id: 'policyLibrary' as const, label: t('Policy library'), icon: ClipboardList }] : []),
-  ] : visibleTabs.map((tab) => ({ id: tab.id, label: t(tab.label), icon: tab.icon }));
+  // Guided setup, All setup areas and the Policy starter share tab=aiSetup and differ by path. Guided setup and All
+  // setup areas open at their start (no area or setting), which is also where a plain click on the current entry
+  // returns to. The Policy starter keeps the area on screen, so its "Return to workspace" comes back to it.
+  const studioHref = (entry: keyof typeof studioPaths) => {
+    const area = entry === 'policyStarter' ? setupPath.area : 'overview';
+    const next = serializeSetupPath({ ...setupPath, path: studioPaths[entry], area, setting: null, notice: undefined, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
+    return `/setup?${next.toString()}`;
+  };
+  const selectedNavId: SetupNavId = selectedTab === 'aiSetup'
+    ? (setupPath.path === 'guided' ? 'guidedSetup' : setupPath.path === 'policyStarter' ? 'policyStarter' : 'allSetupAreas')
+    : selectedTab;
+  const selectNavigation = (id: SetupNavId) => {
+    // An in-page move: whatever the arrival named is no longer a deep link.
+    landingCompanyLink.current = null;
+    if (id !== 'guidedSetup' && id !== 'allSetupAreas' && id !== 'policyStarter') {
+      selectTab(id);
+      return;
+    }
+    if (id === selectedNavId && (id === 'policyStarter' || (setupPath.area === 'overview' && !setupPath.setting))) return;
+    const href = studioHref(id);
+    // The tab follows the address (requestedTab), so no in-between section is shown or announced on the way.
+    confirmLeave(href, () => { router.push(href, { scroll: false }); });
+  };
+  // Guided setup's own progress (its chooser's "N of M done"), refreshed on a company change, each time Guided setup
+  // or All setup areas is opened, and on every move inside All setup areas (an area, an embedded setting and back), the
+  // same moves that re-read its checklist, so a record saved in an embedded setting counts in both at once.
+  const progressRefresh = `${companyVersion}:${selectedNavId === 'guidedSetup' ? 'guided'
+    : selectedNavId === 'allSetupAreas' ? `areas:${setupPath.area}:${setupPath.setting ?? ''}` : 'section'}`;
+  const guidedCompanies = useGuidedSetupCompanies(canWrite, progressRefresh);
+  const guidedCompany = progressCompany(guidedCompanies.companies, authorizedCompany);
+  const guidedProgress = guidedCompany ? readinessProgress(guidedCompany) : null;
+  const guidedCompanyName = guidedCompany ? ((locale === 'ar' && guidedCompany.legalNameAr?.trim()) || guidedCompany.legalNameEn) : '';
+  const toolHref = (id: Exclude<SetupNavId, SettingsTab>) => (id === 'importOrganization' || id === 'policyLibrary' ? tabHref(id) : studioHref(id));
+  const navItem = (id: Exclude<SetupNavId, SettingsTab>): SetupSectionNavItem<SetupNavId> => ({
+    id,
+    label: t(toolSections[id].label),
+    icon: toolSections[id].icon,
+    href: toolHref(id),
+    // A quiet count while the company's checklist is incomplete; nothing once it is done (or when there is none).
+    status: id === 'guidedSetup' && guidedProgress && guidedProgress.total > 0 && !guidedProgress.complete ? {
+      text: t('{done} of {total}', { done: guidedProgress.done, total: guidedProgress.total }),
+      description: t('{company}: {done} of {total} setup items done', { company: guidedCompanyName, done: guidedProgress.done, total: guidedProgress.total }),
+    } : undefined,
+  });
+  // Get started: the setup paths and tools. The Policy starter is for setup writers, like the rest of this group.
+  const setupTools: SetupSectionNavItem<SetupNavId>[] = navigationModel.tools.map(navItem);
+  const navigationSettings = visibleTabs;
+  const navigationGroups: SetupSectionNavGroup<SetupNavId>[] = SETUP_SECTION_GROUPS.map(group => ({
+    id: group.id,
+    label: t(group.label),
+    items: group.id === 'getStarted'
+      ? setupTools
+      : navigationSettings.filter(tab => tab.group === group.id).map(tab => ({ id: tab.id, label: t(tab.label), icon: tab.icon, href: tabHref(tab.id) })),
+  })).filter(group => group.items.length > 0);
+  // "Find a setting": the navigation's own sections, All setup areas' destinations and Payroll accounting's tabs, from
+  // the same model as the navigation (and the ⌘K palette), so nothing is found that this user cannot open.
+  const areaPageHref = (areaId: string, setting?: string) => {
+    const next = new URLSearchParams({ tab: 'aiSetup', path: 'configuration', area: areaId });
+    if (setting) next.set('setting', setting);
+    if (authorizedCompany) next.set('companyId', authorizedCompany);
+    return `/setup?${next.toString()}`;
+  };
+  const searchEntries = buildSetupSearchIndex({
+    model: navigationModel,
+    access: { hasPermission, hasRole, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status, isCompanyScopedGroup },
+    sectionHref: id => (id in toolSections ? toolHref(id as Exclude<SetupNavId, SettingsTab>) : tabHref(id as SettingsTab)),
+    areaHref: areaPageHref,
+    routeHref: destination => {
+      const [pathname, query] = destination.path.split('?');
+      const target = new URLSearchParams(query);
+      if (authorizedCompany) target.set('companyId', authorizedCompany);
+      target.set('setupArea', destination.areaId);
+      return `${pathname}?${target.toString()}`;
+    },
+  });
+  const openSearchResult = (entry: SetupSearchEntry) => {
+    if (entry.navId) { selectNavigation(entry.navId as SetupNavId); return; }
+    confirmLeave(entry.href, () => {
+      setEditorDirty(false);
+      router.push(entry.href, { scroll: false });
+    });
+  };
+  const currentSection = isSettings ? { label: selectedSetting.label, icon: selectedSetting.icon } : toolSections[selectedNavId as Exclude<SetupNavId, SettingsTab>];
+  const currentSectionLabel = t(currentSection.label);
+  const [sectionListOpen, setSectionListOpen] = useState(false);
+  const sectionToggle = useRef<HTMLButtonElement>(null);
+  const showNavigation = !configurationScopeUnavailable;
+  const sectionDescription = isSettings
+    ? t(selectedSetting.description)
+    : selectedNavId === 'allSetupAreas' && setupPath.area === 'overview' && !setupPath.setting
+      ? t('Choose an area to review settings, templates and related operations. You can start anywhere.')
+      : undefined;
 
   const renderExistingPanel = (id: SettingsTab): React.ReactNode => {
     if (!visibleTabs.some(tab => tab.id === id)) return null;
@@ -2622,14 +2775,24 @@ export function SetupPage() {
         // Incumbent GL subeditors have no save-state callback yet. Protect their
         // authored forms/rows conservatively, excluding the surrounding filters.
         if (!(event.target as Element).closest('[data-setup-filter]')) setEditorDirty(true);
-      }}><GlSetupPanel companies={companies} costCenters={costCenters} confirmLeave={confirmLeave} /></div>;
+      }}><GlSetupPanel companies={glCompanies(companies, authorizedCompanies, selectedCompanyId)} costCenters={costCenters} confirmLeave={confirmLeave} requestedTab={searchParams?.get('glTab')} /></div>;
       case 'notificationTemplates': return <NotificationTemplatesTab />;
       case 'emailConfig': return <EmailConfigTab />;
       case 'adminAuditLogs': return <AdminAuditLogsTab />;
     }
   };
   const renderExistingSettings = (id: SettingsTab) => <SetupEditorState.Provider value={setEditorDirty}>{renderExistingPanel(id)}</SetupEditorState.Provider>;
+  // The page is frozen (inert) for the whole check: a deliberate safety stop while access is re-read. The banner that
+  // explains it waits: /me usually answers well under a second on every focus change, and a banner flashing each
+  // time reads as an error. A slow check shows it after AUTHORIZATION_BANNER_DELAY_MS; a failure shows at once.
   const authorizationBlocked = authorizationRefreshStatus !== 'idle';
+  const [slowAuthorizationCheck, setSlowAuthorizationCheck] = useState(false);
+  useEffect(() => {
+    if (authorizationRefreshStatus !== 'checking') { setSlowAuthorizationCheck(false); return; }
+    const timer = window.setTimeout(() => setSlowAuthorizationCheck(true), AUTHORIZATION_BANNER_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [authorizationRefreshStatus]);
+  const authorizationBannerShown = authorizationRefreshStatus === 'unavailable' || (authorizationRefreshStatus === 'checking' && slowAuthorizationCheck);
   const authorizationStatusRef = useRef<HTMLElement | null>(null);
   const authorizationRetryRef = useRef<HTMLButtonElement | null>(null);
   const authorizationRestoreFocusRef = useRef<HTMLElement | null>(null);
@@ -2643,6 +2806,8 @@ export function SetupPage() {
         const active = document.activeElement;
         authorizationRestoreFocusRef.current = active instanceof HTMLElement ? active : null;
       }
+      // Focus moves to the banner only once it is shown (a quick check never shows it).
+      if (!authorizationBannerShown) return;
       const frame = window.requestAnimationFrame(() => {
         (authorizationRefreshStatus === 'unavailable' ? authorizationRetryRef.current : authorizationStatusRef.current)?.focus();
       });
@@ -2655,17 +2820,33 @@ export function SetupPage() {
       if (restore?.isConnected && !restore.closest('[inert]')) restore.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [authorizationRefreshStatus]);
+  }, [authorizationRefreshStatus, authorizationBannerShown]);
+
+  // A reader whose role opens none of the sections is told so, not shown a section heading over an empty page.
+  if (!canWrite && visibleTabs.length === 0) {
+    return (
+      <div className="setup-page space-y-4">
+        <header className="setup-page-header min-w-0">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
+        </header>
+        <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-no-sections">
+          {t('Your role has no Setup sections to open. Ask an administrator if you need one.')}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <>
-      {authorizationBlocked && <section
+      {authorizationBannerShown && typeof document !== 'undefined' && createPortal(<section
         data-testid="authorization-revalidation-status"
         role="status"
         aria-live="polite"
         tabIndex={-1}
         ref={authorizationStatusRef}
-        className="fixed inset-x-4 top-4 z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
+        // Portalled to <body>: <main> animates in with a transform, which made it the containing block of this
+        // fixed banner and slid it under the sticky top bar (60px, TopBar.tsx). Placed just below that bar.
+        className="fixed inset-x-4 top-[72px] z-[70] mx-auto max-w-2xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 shadow-lg dark:border-amber-500/40 dark:bg-amber-950 dark:text-amber-100"
       >
         <p className="font-semibold">
           {authorizationRefreshStatus === 'checking'
@@ -2678,7 +2859,7 @@ export function SetupPage() {
             : t('Your unsaved changes are preserved. Retry before continuing.')}
         </p>
         {authorizationRefreshStatus === 'unavailable' && <button ref={authorizationRetryRef} type="button" className="btn-secondary mt-3" onClick={() => void retryAuthorization()}>{t('Retry authorization')}</button>}
-      </section>}
+      </section>, document.body)}
       <div
         data-testid="setup-authorization-boundary"
         inert={authorizationBlocked ? true : undefined}
@@ -2700,56 +2881,79 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Configure every setup area directly, or use Setup Studio to prepare a reviewed starter configuration.')
+            ? t('Company structure, jobs and grades, payroll and country rules, and workspace settings.')
             : t('Review the setup areas available to your role.')}
         </p>
       </header>
 
-      {canWrite && selectedTab === 'aiSetup' && <SetupPathSwitch active={setupPath.path} onSelect={selectSetupPath} />}
-
-      {!configurationScopeUnavailable && <nav aria-label={t('Setup sections')} className="setup-page-nav flex flex-nowrap gap-1.5 overflow-x-auto border-b border-slate-200 pb-3 dark:border-white/10">
-          {navigationTabs.map(({ id, label, icon: Icon }) => {
-            const selected = selectedTab === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={selected}
-                aria-controls={id === 'aiSetup' || id === 'importOrganization' || id === 'policyLibrary' ? `setup-${id}` : 'setup-setting-content'}
-                onClick={() => selectTab(id)}
-                className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                  selected
-                    ? 'bg-sapphire text-white shadow-sm dark:bg-cyanAccent dark:text-slate-950'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-slate-950 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.10] dark:hover:text-white'
-                }`}
-              >
-                <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                {label}
-              </button>
-            );
-          })}
-      </nav>}
+      {/* One navigation for the page: the grouped section column beside the selected section from 1280px. Below that
+          (and for the Policy starter, which brings its own step rail) the list folds away under the section header's
+          "All sections" button, so the header comes first, then the list when it is open, then the section. */}
+      <div className={showNavigation && !isStarter
+        ? 'setup-page-layout grid min-w-0 xl:grid-cols-[15rem_minmax(0,1fr)] xl:grid-rows-[auto_1fr] xl:gap-x-6'
+        : 'setup-page-layout grid min-w-0'}>
+      {showNavigation && (
+        <div className={`min-w-0 ${isStarter ? '' : 'xl:col-start-1 xl:row-span-2 xl:row-start-1'}`}>
+          <SetupSectionNav
+            groups={navigationGroups}
+            selectedId={selectedNavId}
+            currentLabel={currentSectionLabel}
+            collapsed={isStarter}
+            open={sectionListOpen}
+            onOpenChange={setSectionListOpen}
+            toggleRef={sectionToggle}
+            onSelect={selectNavigation}
+            locationKey={searchParams?.toString() ?? ''}
+            search={{
+              entries: searchEntries,
+              onOpen: openSearchResult,
+              allAreas: canWrite ? { href: studioHref('allSetupAreas'), onOpen: () => selectNavigation('allSetupAreas') } : undefined,
+            }}
+          />
+        </div>
+      )}
+      <div className={`order-first min-w-0 ${showNavigation && !isStarter ? 'xl:order-none xl:col-start-2 xl:row-start-1' : ''}`}>
+        <SetupSectionHeader
+          icon={currentSection.icon}
+          title={currentSectionLabel}
+          description={sectionDescription}
+          divider={isSettings}
+          action={showNavigation ? <SetupSectionsToggle open={sectionListOpen} onToggle={() => setSectionListOpen(value => !value)} collapsed={isStarter} toggleRef={sectionToggle} /> : undefined}
+        />
+      </div>
+      <div className={`setup-page-content mt-4 min-w-0 space-y-4 ${showNavigation && !isStarter ? 'xl:col-start-2 xl:row-start-2' : ''}`}>
 
       {/* Each path owns its mounted subtree; browser drafts plus the guard preserve authored work. */}
       {canWrite && (
         <>
-          <section id="setup-aiSetup" aria-label={t('Setup Studio')} hidden={selectedTab !== 'aiSetup'}>
+          <section id="setup-aiSetup" aria-label={selectedTab === 'aiSetup' ? currentSectionLabel : t('Guided setup')} hidden={selectedTab !== 'aiSetup'}>
             {configurationScopeBlocked && <section role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-500/30 dark:bg-amber-500/10">
               <h2 className="text-lg font-semibold text-amber-950 dark:text-amber-100">{t('Company access required')}</h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-amber-800 dark:text-amber-200">{t('This link names a company you cannot access. Configuration Center has not opened and no broader company scope was substituted.')}</p>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-amber-800 dark:text-amber-200">{t('This link names a company you cannot access. All setup areas has not opened and no broader company scope was substituted.')}</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 {authorizedCompanies.map(company => <button key={company.id} type="button" className="btn-secondary" onClick={() => recoverConfigurationScope(company.id)}>{t('Use {company}', { company: company.name })}</button>)}
                 {isGroupScope && <button type="button" className="btn-secondary" onClick={() => recoverConfigurationScope(null)}>{t('Use all authorized companies')}</button>}
               </div>
             </section>}
             {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
-            {isStarter && <div onChangeCapture={event => {
+            {isGuided && <GuidedSetupChooser showHeading={false} linkedCompanyId={landingCompanyLink.current} onLinkedCompanyUsed={() => { landingCompanyLink.current = null; }} />}
+            {isStarter && <div className="flex flex-col">
+              {/* One compact line. On a phone it follows the starter, so the starter's first screen keeps its
+                  own controls (setup-experience: policy entry in the first viewport). */}
+              <p className="order-last mt-3 flex flex-wrap sm:order-first sm:mb-2 sm:mt-0 items-center gap-x-2 gap-y-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400" data-testid="policy-starter-banner">
+                <span className="font-semibold text-slate-900 dark:text-white">{t('Attendance, overtime, benefits and other policies.')}</span>
+                <span>{t('For a company’s structure, use Guided setup.')}</span>
+                <button type="button" className="font-semibold text-sapphire underline-offset-2 hover:underline dark:text-cyanAccent" onClick={() => selectSetupPath('configuration')}>{t('Back to All setup areas')}</button>
+              </p>
+              <div className="min-w-0" onChangeCapture={event => {
               setEditorDirty(true);
               const target = event.target;
               if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
-            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>}
+            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>
+            </div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
+              guidedCompanies={guidedCompanies}
               confirmLeave={confirmLeave}
               onDirtyChange={setEditorDirty}
               renderSettings={(id, onDirtyChange) => {
@@ -2764,16 +2968,6 @@ export function SetupPage() {
                 if (id === 'holidayCalendars') return <HolidayCalendarTab onDirtyChange={onDirtyChange} />;
                 return null;
               }}
-              onOpenLibrary={() => selectTab('policyLibrary')}
-              onOpenAdministration={() => selectTab(isCompanyScopedGroup ? 'companies' : 'systemSettings')}
-              onOpenLegacyDraft={() => {
-                if (!confirmLeave()) return;
-                const params = new URLSearchParams(searchParams?.toString());
-                params.set('tab', 'aiSetup'); params.set('mode', 'starter'); params.delete('path');
-                params.set('area', resolveSetupArea(params.get('area')));
-                if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
-                router.push(`/setup?${params.toString()}`, { scroll: false });
-              }}
             />}
           </section>
           {!isCompanyScopedGroup && selectedTab === 'importOrganization' && <section id="setup-importOrganization" aria-label={t('Import organization')}>
@@ -2782,23 +2976,17 @@ export function SetupPage() {
         </>
       )}
 
-      {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager onOpenSetup={canWrite ? () => selectTab('aiSetup') : undefined} /></section>}
+      {canManagePolicies && selectedTab === 'policyLibrary' && <section id="setup-policyLibrary" aria-label={t('Policy library')}><PolicyDocumentManager showHeading={false} onOpenSetup={canWrite ? () => selectTab('aiSetup') : undefined} /></section>}
 
       {isSettings && (
         <section id="setup-setting-content" aria-label={t(selectedSetting.label)} className="min-w-0 space-y-4">
-          <div className="flex items-start gap-3 border-b border-slate-200 pb-3 dark:border-white/10">
-            <SelectedSettingIcon aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
-            <div>
-              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">{t(selectedSetting.label)}</h2>
-              <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">{t(selectedSetting.description)}</p>
-            </div>
-          </div>
-
           <div className="min-w-0" key={companyVersion}>
             {isSettingsTab(selectedTab) && renderExistingSettings(selectedTab)}
           </div>
         </section>
       )}
+      </div>
+      </div>
       </div>
       </div>
     </>

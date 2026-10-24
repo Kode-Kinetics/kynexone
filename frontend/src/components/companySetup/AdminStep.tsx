@@ -14,8 +14,13 @@ import { Notice, WizardField, useWizardForm } from './wizardForm';
  */
 export function AdminStep() {
   const t = useT();
-  const { body, update, readOnly } = useWizardForm();
+  const { body, update, readOnly, context } = useWizardForm();
   const admin = body.companyAdmin;
+  // Existing mode: this step only adds an administrator (A3: none is removed here). A company super admin running it
+  // for their own company may add another company-scoped admin, never group access (A5).
+  const existing = !!body.existingCompanyId;
+  const companyScoped = existing && context?.isGroupScope === false;
+  const companyName = body.company.legalNameEn;
   const domain = (body.company.emailDomain ?? '').trim().toLowerCase();
   const set = (patch: Partial<CompanySetupAdmin>) => update(b => ({ ...b, companyAdmin: { ...b.companyAdmin, ...patch } }));
   const [users, setUsers] = useState<UserListItem[] | null>(null);
@@ -47,13 +52,16 @@ export function AdminStep() {
       <Notice tone="info">
         <p className="font-semibold">{t('Group super admin → company super admin')}</p>
         <p className="mt-1">{t('A company super admin has full administrator rights for this company only. They cannot see sister companies or give anyone group access.')}</p>
+        {companyScoped && <p className="mt-1" data-testid="company-scoped-admin-note"><bdi>{t('You can add another administrator for {company} only. Group access is given only by a group super admin.', { company: companyName })}</bdi></p>}
       </Notice>
       <fieldset className="space-y-3">
-        <legend className="text-base font-semibold text-slate-900 dark:text-white">{t('Who will run this company?')}</legend>
+        <legend className="text-base font-semibold text-slate-900 dark:text-white">{existing ? t('Add a company super admin?') : t('Who will run this company?')}</legend>
         <div className="grid gap-3 lg:grid-cols-3">
           {option('invite', t('Invite a new company super admin'), t('They receive a welcome code to sign in with their own company email. You never set their password.'))}
-          {option('existing', t('Make an existing user the company super admin'), t('Adds administrator rights for this company to someone who already signs in. Their other access stays the same.'))}
-          {option('groupOnly', t('Group super admins will manage this company'), t('No company administrator for now. The checklist will recommend adding one.'))}
+          {option('existing', existing ? t('Make an existing user a company super admin') : t('Make an existing user the company super admin'), t('Adds administrator rights for this company to someone who already signs in. Their other access stays the same.'))}
+          {existing
+            ? option('groupOnly', t('Keep the current administrators'), t('No one is added and nobody’s access changes. To remove an administrator, use User Management.'))
+            : option('groupOnly', t('Group super admins will manage this company'), t('No company administrator for now. The checklist will recommend adding one.'))}
         </div>
       </fieldset>
 
@@ -86,7 +94,7 @@ export function AdminStep() {
         </div>
       )}
 
-      {admin.mode === 'groupOnly' && <Notice tone="warning">{t('Group super admins will manage this company. You can add a company super admin later from User Management; the checklist after creation links there.')}</Notice>}
+      {admin.mode === 'groupOnly' && !existing && <Notice tone="warning">{t('Group super admins will manage this company. You can add a company super admin later from User Management; the checklist after creation links there.')}</Notice>}
     </div>
   );
 }

@@ -10,6 +10,11 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useT } from '../hooks/useT';
 import { useFormat } from '../hooks/useFormat';
 import { msg } from '../i18n/translations';
+import {
+  choiceOptions, describeStatutoryChange, formatStatutoryValue, inputHint, inputSuffix, parseInputValue,
+  statutoryRuleName, statutoryUnitFor, statutoryUnitName, toInputValue,
+  type StatutoryValueDisplay,
+} from '../lib/statutoryRuleLabels';
 import { Modal } from './Modal';
 import { useSetupEditorState } from './setup/SetupEditorState';
 
@@ -44,6 +49,24 @@ const statusFor = (rule: StatutoryRuleDto): RuleStatus => {
 
 const ruleIdentity = (row: { countryCode: string; jurisdiction: string; ruleKey: string }) =>
   `${row.countryCode}|${row.jurisdiction}|${row.ruleKey}`;
+
+/** The row that decides a rule's value on `day`: the company's value when one is in force, else the published rate. */
+const ruleInForce = (rows: StatutoryRuleDto[], identity: string, day: string, publishedOnly = false) => {
+  const live = rows
+    .filter((row) => ruleIdentity(row) === identity && row.effectiveFrom.slice(0, 10) <= day && (!row.effectiveTo || row.effectiveTo.slice(0, 10) > day))
+    .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
+  return (publishedOnly ? undefined : live.find((row) => row.isTenantOverride)) ?? live.find((row) => !row.isTenantOverride) ?? null;
+};
+
+/** A value with its unit, plus the warning that must travel with it when the unit is not known. */
+function UnitValue({ display, className = '' }: { display: StatutoryValueDisplay; className?: string }) {
+  return (
+    <span className={`inline-flex flex-wrap items-center gap-1.5 ${className}`}>
+      <bdi className="tabular-nums">{display.text}</bdi>
+      {display.flag && <span className="whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-[11px] rtl:text-[13px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{display.flag}</span>}
+    </span>
+  );
+}
 
 const isPlatformManaged = (key: string) =>
   ['gosi.', 'saned.', 'gpssa.', 'grsia.', 'dews.', 'eosb.', 'leave.', 'workhours.'].some((prefix) => key.toLowerCase().startsWith(prefix))
@@ -112,6 +135,18 @@ export function StatutoryRulesPanel() {
 
   const pendingByRule = useMemo(() => new Map(pending.map((request) => [ruleIdentity(request), request])), [pending]);
 
+  // A pending request carries no data type; the published row for the same rule does.
+  const dataTypeByRule = useMemo(() => {
+    const types = new Map<string, string>();
+    rows.forEach((row) => { if (!row.isTenantOverride || !types.has(ruleIdentity(row))) types.set(ruleIdentity(row), row.dataType); });
+    return types;
+  }, [rows]);
+  const unitOf = (row: { countryCode: string; jurisdiction: string; ruleKey: string; dataType?: string }) =>
+    statutoryUnitFor(row.ruleKey, row.dataType ?? dataTypeByRule.get(ruleIdentity(row)));
+  const show = (row: { countryCode: string; jurisdiction: string; ruleKey: string; dataType?: string }, raw: string | null | undefined) =>
+    formatStatutoryValue(t, format, unitOf(row), raw);
+  const nameOf = (ruleKey: string) => statutoryRuleName(t, ruleKey);
+
   /** A 202 means "filed, not applied": say so, and leave the table exactly as the server reports it. */
   const afterWrite = async (result: StatutoryRuleWriteResult) => {
     if (result.outcome === 'pending') setNotice(t('Sent for approval — a second administrator must approve this before payroll uses it.'));
@@ -148,8 +183,8 @@ export function StatutoryRulesPanel() {
     if (scope === 'default' && row.isTenantOverride) return false;
     if (scope === 'override' && !row.isTenantOverride) return false;
     const needle = query.trim().toLowerCase();
-    return !needle || `${row.ruleKey} ${row.description} ${row.ruleValue}`.toLowerCase().includes(needle);
-  }), [country, jurisdiction, query, rows, scope]);
+    return !needle || `${statutoryRuleName(t, row.ruleKey)} ${row.ruleKey} ${row.description} ${row.ruleValue}`.toLowerCase().includes(needle);
+  }), [country, jurisdiction, query, rows, scope, t]);
 
   const metrics = useMemo(() => ({
     defaults: rows.filter((row) => !row.isTenantOverride && statusFor(row) === 'Active').length,
@@ -171,7 +206,8 @@ export function StatutoryRulesPanel() {
     setEditing(rule);
     setForm({
       countryCode: rule.countryCode, jurisdiction: rule.jurisdiction, ruleKey: rule.ruleKey,
-      ruleValue: rule.ruleValue, dataType: rule.dataType, description: '',
+      // The form holds what the person types (a rate as a percentage); save() converts it back.
+      ruleValue: toInputValue(statutoryUnitFor(rule.ruleKey, rule.dataType), rule.ruleValue), dataType: rule.dataType, description: '',
       effectiveFrom: tomorrow(), effectiveTo: null,
     });
     setFormError('');
@@ -189,6 +225,11 @@ export function StatutoryRulesPanel() {
       setFormError(t('Choose a rule, enter its value, and provide the approved reason or source.'));
       return;
     }
+    const parsed = parseInputValue(t, statutoryUnitFor(form.ruleKey, form.dataType), form.ruleValue);
+    if (!parsed.ok) {
+      setFormError(parsed.error);
+      return;
+    }
     if (form.effectiveTo && form.effectiveTo <= form.effectiveFrom.slice(0, 10)) {
       setFormError(t('Effective until must be later than Effective from.'));
       return;
@@ -199,13 +240,13 @@ export function StatutoryRulesPanel() {
       let result: StatutoryRuleWriteResult;
       if (editing) {
         result = await statutoryRulesApi.update(editing.id, {
-          ruleValue: form.ruleValue.trim(), description: form.description.trim(),
+          ruleValue: parsed.stored, description: form.description.trim(),
           effectiveFrom: new Date(form.effectiveFrom).toISOString(),
           effectiveTo: form.effectiveTo ? new Date(form.effectiveTo).toISOString() : null,
         });
       } else {
         result = await statutoryRulesApi.create({
-          ...form, ruleValue: form.ruleValue.trim(), description: form.description.trim(),
+          ...form, ruleValue: parsed.stored, description: form.description.trim(),
           effectiveFrom: new Date(form.effectiveFrom).toISOString(),
           effectiveTo: form.effectiveTo ? new Date(form.effectiveTo).toISOString() : null,
         });
@@ -275,11 +316,39 @@ export function StatutoryRulesPanel() {
     }
   };
 
-  const describeRequest = (request: StatutoryPendingRequest) => request.kind === 'retire'
-    ? t('Retire {rule} from {date} and return to the platform value', { rule: request.ruleKey, date: dateLabel(request.effectiveFrom) })
-    : t('Change {rule} to {value} from {date}', { rule: request.ruleKey, value: request.value, date: dateLabel(request.effectiveFrom) });
+  // What the approver signs: the value payroll uses on the start date, and the value it will use after.
+  // A retirement carries the live company value in `value`; payroll then returns to the published rate.
+  const requestValues = (request: StatutoryPendingRequest) => {
+    const identity = ruleIdentity(request);
+    const day = request.effectiveFrom.slice(0, 10);
+    if (request.kind === 'retire') {
+      const published = ruleInForce(rows, identity, day, true)?.ruleValue ?? request.platformDefault;
+      return { old: show(request, request.value), next: published ? show(request, published) : null };
+    }
+    const prior = ruleInForce(rows, identity, day)?.ruleValue ?? request.platformDefault;
+    return { old: prior ? show(request, prior) : null, next: show(request, request.value) };
+  };
+  const describeRequest = (request: StatutoryPendingRequest) => {
+    const { old, next } = requestValues(request);
+    return describeStatutoryChange(t, {
+      kind: request.kind, label: nameOf(request.ruleKey), oldText: old?.text ?? null, newText: next?.text ?? null, date: dateLabel(request.effectiveFrom),
+    });
+  };
+  const requestFlags = (request: StatutoryPendingRequest) => {
+    const { old, next } = requestValues(request);
+    return [...new Set([old?.flag, next?.flag].filter((flag): flag is string => !!flag))];
+  };
+  const flagBadges = (flags: string[]) => flags.map((flag) => (
+    <span key={flag} className="ms-2 inline-block whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-[11px] rtl:text-[13px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{flag}</span>
+  ));
 
   const selectedFormRule = formCatalogue.find((row) => row.ruleKey === form.ruleKey);
+  const formUnit = statutoryUnitFor(form.ruleKey, form.dataType);
+  const formSuffix = inputSuffix(t, formUnit);
+  const formChoices = choiceOptions(t, formUnit);
+  const typedPreview = form.ruleKey && form.ruleValue.trim() ? parseInputValue(t, formUnit, form.ruleValue) : null;
+  const editingCurrent = editing ? show(editing, editing.ruleValue) : null;
+  const publishedDisplay = selectedFormRule ? show(selectedFormRule, selectedFormRule.ruleValue) : null;
 
   return (
     <div className="space-y-4">
@@ -290,7 +359,7 @@ export function StatutoryRulesPanel() {
             <div>
               <h3 className="text-sm font-semibold text-slate-950 dark:text-white">{t('Tenant-wide statutory rules')}</h3>
               <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                {t('Review platform-maintained rules and governed tenant overrides used by payroll and compliance.')} {t('Company-specific rates are managed separately.')} <Link href="/setup?tab=glMapping" className="font-semibold text-sapphire hover:underline">{t('GL & rates')}</Link>
+                {t('Review platform-maintained rules and governed tenant overrides used by payroll and compliance.')} {t('Company-specific rates are managed separately.')} <Link href="/setup?tab=glMapping" className="font-semibold text-sapphire hover:underline">{t('Payroll accounting')}</Link>
               </p>
             </div>
           </div>
@@ -304,8 +373,8 @@ export function StatutoryRulesPanel() {
 
       <div className="grid grid-cols-3 gap-2 sm:gap-3">
         {[
-          { label: msg('Platform rules'), value: metrics.defaults, icon: Scale },
-          { label: msg('Active overrides'), value: metrics.overrides, icon: ShieldCheck },
+          { label: msg('Published rates'), value: metrics.defaults, icon: Scale },
+          { label: msg("Your company's values in force"), value: metrics.overrides, icon: ShieldCheck },
           { label: msg('Scheduled changes'), value: metrics.scheduled, icon: CalendarClock },
         ].map(({ label, value, icon: Icon }) => (
           <div key={label} className="surface flex min-w-0 items-center gap-2 p-3">
@@ -330,7 +399,7 @@ export function StatutoryRulesPanel() {
             <input aria-label={t('Search statutory rules')} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('Search rule, source or value')} className="input-field ps-9" />
           </label>
           <select aria-label={t('Filter by rule scope')} value={scope} onChange={(event) => setScope(event.target.value as ScopeFilter)} className="input-field">
-            <option value="all">{t('All scopes')}</option><option value="default">{t('Platform rules')}</option><option value="override">{t('Tenant overrides')}</option>
+            <option value="all">{t('All scopes')}</option><option value="default">{t('Published rates')}</option><option value="override">{t("Your company's values")}</option>
           </select>
         </div>
       </div>
@@ -358,7 +427,7 @@ export function StatutoryRulesPanel() {
               return (
                 <li key={request.id} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0 text-xs leading-5 text-slate-700 dark:text-slate-200">
-                    <p className="font-semibold text-slate-900 dark:text-white"><span className="me-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{t('Pending approval')}</span>{describeRequest(request)}</p>
+                    <p className="font-semibold text-slate-900 dark:text-white"><span className="me-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{t('Pending approval')}</span>{describeRequest(request)}{flagBadges(requestFlags(request))}</p>
                     <p className="text-slate-500 dark:text-slate-400">{request.countryCode} · {request.jurisdiction || t('All jurisdictions')}{request.kind === 'change' && request.effectiveTo ? ` · ${t('Until {date}', { date: dateLabel(request.effectiveTo) })}` : ''}</p>
                     {request.reason && <p>{t('Reason: {reason}', { reason: request.reason })}</p>}
                     <p className="text-slate-500 dark:text-slate-400">{t('Requested by {name} on {date}', { name: request.requestedByName || t('Unknown user'), date: format.date(request.requestedAt) })}</p>
@@ -399,17 +468,29 @@ export function StatutoryRulesPanel() {
                 {visibleRows.map((rule) => {
                   const status = statusFor(rule);
                   const waiting = pendingByRule.get(ruleIdentity(rule));
+                  const unit = unitOf(rule);
                   return (
                     <tr key={rule.id} className="align-top hover:bg-slate-50/70 dark:hover:bg-white/[0.02]">
-                      <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${rule.isTenantOverride ? 'bg-amber-100 text-amber-800 dark:bg-amber-400/15 dark:text-amber-300' : 'bg-blue-100 text-blue-800 dark:bg-blue-400/15 dark:text-blue-300'}`}>{t(rule.isTenantOverride ? 'Tenant override' : 'Platform rule')}</span></td>
+                      <td className="px-3 py-3"><span className={`inline-block whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${rule.isTenantOverride ? 'bg-amber-100 text-amber-800 dark:bg-amber-400/15 dark:text-amber-300' : 'bg-blue-100 text-blue-800 dark:bg-blue-400/15 dark:text-blue-300'}`}>{rule.isTenantOverride ? t("Your company's value") : t('Published rate')}</span></td>
                       <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300"><strong className="block text-slate-800 dark:text-slate-100">{rule.countryCode}</strong>{rule.jurisdiction || t('All jurisdictions')}</td>
-                      <td className="max-w-[260px] px-3 py-3"><code className="break-all text-xs font-semibold text-slate-800 dark:text-slate-100">{rule.ruleKey}</code><p className="mt-1 text-[11px] text-slate-500">{isPlatformManaged(rule.ruleKey) && !rule.isTenantOverride ? t('{type} · Platform maintained', { type: rule.dataType }) : rule.dataType}</p></td>
-                      <td className="px-3 py-3 font-mono text-xs font-semibold text-sapphire dark:text-cyanAccent">{rule.ruleValue}</td>
+                      <td className="max-w-[280px] px-3 py-3">
+                        <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{nameOf(rule.ruleKey)}</p>
+                        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{isPlatformManaged(rule.ruleKey) && !rule.isTenantOverride ? t('{unit} · Set by the platform', { unit: statutoryUnitName(t, unit) }) : statutoryUnitName(t, unit)}</p>
+                        <details className="group mt-1 text-xs text-slate-500 rtl:text-[13px] dark:text-slate-400">
+                          <summary className="w-fit cursor-pointer select-none font-semibold text-sapphire hover:underline dark:text-cyanAccent">{t('Details')}</summary>
+                          <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
+                            <dt>{t('Rule key')}</dt><dd><code dir="ltr" className="break-all font-mono text-slate-700 dark:text-slate-200">{rule.ruleKey}</code></dd>
+                            <dt>{t('Stored value')}</dt><dd><code dir="ltr" className="font-mono text-slate-700 dark:text-slate-200">{rule.ruleValue}</code></dd>
+                            <dt>{t('Data type')}</dt><dd><code dir="ltr" className="font-mono text-slate-700 dark:text-slate-200">{rule.dataType}</code></dd>
+                          </dl>
+                        </details>
+                      </td>
+                      <td className="px-3 py-3 text-sm font-semibold text-slate-900 dark:text-white"><UnitValue display={show(rule, rule.ruleValue)} /></td>
                       <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300"><span className="block">{dateLabel(rule.effectiveFrom)}</span><span className="text-slate-400">{t('Until {date}', { date: dateLabel(rule.effectiveTo) })}</span></td>
                       <td className="max-w-[260px] px-3 py-3 text-xs leading-5 text-slate-600 dark:text-slate-300">{rule.description || t('No source recorded')}</td>
                       <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${status === 'Active' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-400/15 dark:text-emerald-300' : status === 'Scheduled' ? 'bg-violet-100 text-violet-800 dark:bg-violet-400/15 dark:text-violet-300' : 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>{t(status)}</span>{waiting && status !== 'Retired' && <span className="mt-1.5 block w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300" title={describeRequest(waiting)}>{t('Pending approval')}</span>}</td>
                       <td className="px-3 py-3">
-                        {rule.isTenantOverride && canManage && status === 'Active' && !waiting ? <div className="flex gap-2"><button type="button" onClick={() => openSupersede(rule)} className="text-xs font-semibold text-sapphire hover:underline"><PencilLine className="me-1 inline h-3.5 w-3.5" />{t('Supersede')}</button><button type="button" onClick={() => setRetiring(rule)} className="text-xs font-semibold text-red-600 hover:underline"><Archive className="me-1 inline h-3.5 w-3.5" />{t('Retire')}</button></div> : <span className="text-xs text-slate-400">{waiting && rule.isTenantOverride && status === 'Active' ? t('Pending approval') : t(status === 'Scheduled' ? 'Scheduled' : 'Read only')}</span>}
+                        {rule.isTenantOverride && canManage && status === 'Active' && !waiting ? <div className="flex flex-wrap gap-x-3 gap-y-1"><button type="button" onClick={() => openSupersede(rule)} className="whitespace-nowrap text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent"><PencilLine className="me-1 inline h-3.5 w-3.5" aria-hidden />{t('Replace from a date')}</button><button type="button" onClick={() => setRetiring(rule)} className="text-xs font-semibold text-red-600 hover:underline"><Archive className="me-1 inline h-3.5 w-3.5" aria-hidden />{t('Retire')}</button></div> : <span className="text-xs text-slate-400">{waiting && rule.isTenantOverride && status === 'Active' ? t('Pending approval') : t(status === 'Scheduled' ? 'Scheduled' : 'Read only')}</span>}
                       </td>
                     </tr>
                   );
@@ -420,7 +501,7 @@ export function StatutoryRulesPanel() {
         )}
       </div>
 
-      <Modal isOpen={formOpen} title={editing ? t('Supersede {rule}', { rule: editing.ruleKey }) : t('New statutory override')} onClose={() => setFormOpen(false)} size="lg" footer={<><button type="button" onClick={() => setFormOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={() => void save()} disabled={saving || (!editing && isPlatformManaged(form.ruleKey))} className="btn-primary disabled:opacity-50">{saving ? t('Sending…') : t('Send for approval')}</button></>}>
+      <Modal isOpen={formOpen} title={editing ? t('Replace {rule} from a date', { rule: nameOf(editing.ruleKey) }) : t('New statutory override')} onClose={() => setFormOpen(false)} size="lg" footer={<><button type="button" onClick={() => setFormOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={() => void save()} disabled={saving || (!editing && isPlatformManaged(form.ruleKey))} className="btn-primary disabled:opacity-50">{saving ? t('Sending…') : t('Send for approval')}</button></>}>
         <div className="space-y-4">
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200">
             {t('Changes are tenant-wide and effective-dated. Platform-maintained statutory families cannot be overridden. New versions start no earlier than tomorrow so completed payroll remains reproducible.')} {t('A second administrator must approve each change before payroll uses it.')}
@@ -439,17 +520,52 @@ export function StatutoryRulesPanel() {
           </div>
           <label className="block text-sm font-medium text-slate-700 dark:text-slate-200">{t('Rule')}
             <select value={form.ruleKey} disabled={!!editing || !form.jurisdiction} onChange={(event) => selectRule(event.target.value)} className="input-field mt-1">
-              <option value="">{t('Choose an approved rule')}</option>{formCatalogue.map((rule) => <option key={rule.ruleKey} value={rule.ruleKey} disabled={isPlatformManaged(rule.ruleKey)}>{isPlatformManaged(rule.ruleKey) ? t('{rule} — Platform maintained', { rule: rule.ruleKey }) : rule.ruleKey}</option>)}
+              <option value="">{t('Choose an approved rule')}</option>{formCatalogue.map((rule) => <option key={rule.ruleKey} value={rule.ruleKey} disabled={isPlatformManaged(rule.ruleKey)}>{isPlatformManaged(rule.ruleKey) ? t('{rule} — Set by the platform', { rule: nameOf(rule.ruleKey) }) : nameOf(rule.ruleKey)}</option>)}
             </select>
           </label>
-          {selectedFormRule && <div className="rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600 dark:bg-white/[0.04] dark:text-slate-300"><strong className="text-slate-800 dark:text-white">{t('Current platform value: {value}', { value: selectedFormRule.ruleValue })}</strong><span className="ms-2">{t('Unit/type: {type}', { type: selectedFormRule.dataType })}</span><p>{selectedFormRule.description}</p></div>}
+          {selectedFormRule && (
+            <div className="rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">
+              <p className="font-semibold text-slate-800 dark:text-white">{t('Published rate: {value}', { value: publishedDisplay?.text ?? '—' })}{flagBadges(publishedDisplay?.flag ? [publishedDisplay.flag] : [])}</p>
+              {editingCurrent && <p className="font-semibold text-slate-800 dark:text-white">{t("Your company's value now: {value}", { value: editingCurrent.text })}</p>}
+              <p>{selectedFormRule.description}</p>
+              <details className="mt-1 text-slate-500 dark:text-slate-400">
+                <summary className="w-fit cursor-pointer select-none font-semibold text-sapphire hover:underline dark:text-cyanAccent">{t('Details')}</summary>
+                <p className="mt-0.5">{t('Rule key')}: <code dir="ltr" className="font-mono">{selectedFormRule.ruleKey}</code> · {t('Stored value')}: <code dir="ltr" className="font-mono">{selectedFormRule.ruleValue}</code></p>
+              </details>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-sm font-medium text-slate-700 dark:text-slate-200">{t('Override value')}
-              <input value={form.ruleValue} onChange={(event) => setForm((current) => ({ ...current, ruleValue: event.target.value }))} placeholder={selectedFormRule ? t('Current: {value}', { value: selectedFormRule.ruleValue }) : t('Enter value in the stated unit')} className="input-field mt-1" />
-            </label>
-            <label className="text-sm font-medium text-slate-700 dark:text-slate-200">{t('Data type')}
-              <input value={form.dataType} readOnly className="input-field mt-1 bg-slate-50 dark:bg-white/[0.03]" />
-            </label>
+            <div className="sm:col-span-2">
+              <label htmlFor="statutory-rule-value" className="block text-sm font-medium text-slate-700 dark:text-slate-200">{t("Your company's value")}</label>
+              {formChoices.length > 0 ? (
+                <select id="statutory-rule-value" value={form.ruleValue} onChange={(event) => setForm((current) => ({ ...current, ruleValue: event.target.value }))} aria-describedby="statutory-rule-value-hint" className="input-field mt-1">
+                  <option value="">{t('Choose a value')}</option>
+                  {formChoices.map(([stored, label]) => <option key={stored} value={stored}>{label}</option>)}
+                </select>
+              ) : formUnit.kind === 'date' ? (
+                <input id="statutory-rule-value" type="date" value={form.ruleValue} onChange={(event) => setForm((current) => ({ ...current, ruleValue: event.target.value }))} aria-describedby="statutory-rule-value-hint" className="input-field mt-1" />
+              ) : (
+                <div className="relative mt-1">
+                  <input
+                    id="statutory-rule-value"
+                    value={form.ruleValue}
+                    inputMode={formUnit.kind === 'text' || formUnit.kind === 'unknown' ? undefined : 'decimal'}
+                    onChange={(event) => setForm((current) => ({ ...current, ruleValue: event.target.value }))}
+                    placeholder={selectedFormRule ? t('Published: {value}', { value: toInputValue(formUnit, selectedFormRule.ruleValue) }) : t('Choose a rule first')}
+                    aria-describedby="statutory-rule-value-hint"
+                    className={`input-field block w-full ${formSuffix ? 'pe-24' : ''}`}
+                  />
+                  {formSuffix && <span aria-hidden className="pointer-events-none absolute inset-y-0 end-3 flex items-center text-sm font-semibold text-slate-500 dark:text-slate-400">{formSuffix}</span>}
+                </div>
+              )}
+              <div id="statutory-rule-value-hint" className="mt-1 space-y-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                {form.ruleKey && <p>{t('Unit: {unit}', { unit: statutoryUnitName(t, formUnit) })}{formUnit.kind === 'unknown' ? flagBadges([t('Unit not specified')]) : null}</p>}
+                {form.ruleKey && <p>{inputHint(t, formUnit)}</p>}
+                {typedPreview && (typedPreview.ok
+                  ? <p className="font-semibold text-slate-700 dark:text-slate-200">{t('Payroll will use {value} (stored as {stored}).', { value: show({ ...form }, typedPreview.stored).text, stored: typedPreview.stored })}</p>
+                  : <p className="font-semibold text-red-700 dark:text-red-300">{typedPreview.error}</p>)}
+              </div>
+            </div>
             <label className="text-sm font-medium text-slate-700 dark:text-slate-200">{t('Effective from')}
               <input type="date" min={tomorrow()} value={form.effectiveFrom.slice(0, 10)} onChange={(event) => setForm((current) => ({ ...current, effectiveFrom: event.target.value }))} className="input-field mt-1" />
             </label>
@@ -465,7 +581,7 @@ export function StatutoryRulesPanel() {
       </Modal>
 
       <Modal isOpen={!!retiring} title={t('Retire statutory override')} onClose={() => setRetiring(null)} footer={<><button type="button" onClick={() => setRetiring(null)} className="btn-secondary">{t('Keep override')}</button><button type="button" onClick={() => void retire()} disabled={retireBusy} className="btn-danger disabled:opacity-50">{retireBusy ? t('Sending…') : t('Request retirement')}</button></>}>
-        <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{t('This closes {rule} prospectively and returns future calculations to the applicable platform value. Historical payroll keeps the version it used.', { rule: retiring?.ruleKey ?? '' })} {t('Retiring takes effect only after a second administrator approves it.')}</p>
+        <p className="text-sm leading-6 text-slate-600 dark:text-slate-300">{t("This stops your company's value for {rule} ({value}) and returns future payroll to the published rate. Payroll already run keeps the value it used.", { rule: retiring ? nameOf(retiring.ruleKey) : '', value: retiring ? show(retiring, retiring.ruleValue).text : '' })} {t('Retiring takes effect only after a second administrator approves it.')}</p>
       </Modal>
 
       <Modal
@@ -476,7 +592,25 @@ export function StatutoryRulesPanel() {
       >
         {deciding && (
           <div className="space-y-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
-            <p className="font-semibold text-slate-900 dark:text-white">{describeRequest(deciding.request)}</p>
+            <p className="font-semibold text-slate-900 dark:text-white">{describeRequest(deciding.request)}{flagBadges(requestFlags(deciding.request))}</p>
+            {(() => {
+              const { old, next } = requestValues(deciding.request);
+              const retire = deciding.request.kind === 'retire';
+              return (
+                <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-lg bg-slate-50 p-3 text-xs dark:bg-white/[0.04]">
+                  <dt className="text-slate-500 dark:text-slate-400">{t('Rule')}</dt><dd className="font-medium text-slate-800 dark:text-slate-100">{nameOf(deciding.request.ruleKey)}</dd>
+                  <dt className="text-slate-500 dark:text-slate-400">{retire ? t("Your company's value now") : t('Value now')}</dt><dd className="font-medium text-slate-800 dark:text-slate-100">{old ? <UnitValue display={old} /> : t('No previous value')}</dd>
+                  <dt className="text-slate-500 dark:text-slate-400">{retire ? t('Published rate after') : t('Value after approval')}</dt><dd className="font-medium text-slate-800 dark:text-slate-100">{next ? <UnitValue display={next} /> : '—'}</dd>
+                  <dt className="text-slate-500 dark:text-slate-400">{t('Starting')}</dt><dd className="font-medium text-slate-800 dark:text-slate-100">{dateLabel(deciding.request.effectiveFrom)}</dd>
+                  <dt className="col-span-2">
+                    <details className="text-slate-500 dark:text-slate-400">
+                      <summary className="w-fit cursor-pointer select-none font-semibold text-sapphire hover:underline dark:text-cyanAccent">{t('Details')}</summary>
+                      <p className="mt-0.5">{t('Rule key')}: <code dir="ltr" className="font-mono">{deciding.request.ruleKey}</code> · {t('Stored value')}: <code dir="ltr" className="font-mono">{deciding.request.value}</code></p>
+                    </details>
+                  </dt>
+                </dl>
+              );
+            })()}
             {deciding.request.reason && <p>{t('Reason: {reason}', { reason: deciding.request.reason })}</p>}
             <p>{deciding.action === 'approve'
               ? t('Payroll will use the new value from its start date. This is recorded in the audit log with your name.')

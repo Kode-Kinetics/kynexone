@@ -266,7 +266,7 @@ test.describe('HR Command Center: layout and interaction', () => {
 
   test('assistant opens as a drawer, labelled advisory', async ({ page }, info) => {
     await open(page);
-    const launcher = page.getByRole('button', { name: 'Open Kody the HR Assistant' });
+    const launcher = page.getByRole('button', { name: 'Open Kody, HR assistant' });
     await launcher.click();
     const drawer = page.getByRole('dialog', { name: 'Kody the HR Assistant' });
     await expect(drawer).toBeVisible();

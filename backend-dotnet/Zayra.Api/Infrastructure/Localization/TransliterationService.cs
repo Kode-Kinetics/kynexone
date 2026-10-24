@@ -14,42 +14,6 @@ public sealed class TransliterationService : ITransliterationService
 {
     private static readonly IReadOnlyDictionary<string, string> PersonNameReadings = BuildPersonNameReadings();
     private static readonly int MaximumPersonNameParts = PersonNameReadings.Keys.Max(key => key.Count(c => c == ' ') + 1);
-    private static readonly IReadOnlyDictionary<string, string> OrganizationPlaces =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Riyadh"] = "الرياض",
-            ["Jeddah"] = "جدة",
-            ["Dammam"] = "الدمام",
-            ["Khobar"] = "الخبر",
-            ["Al Khobar"] = "الخبر",
-            ["Makkah"] = "مكة المكرمة",
-            ["Mecca"] = "مكة المكرمة",
-            ["Madinah"] = "المدينة المنورة",
-            ["Medina"] = "المدينة المنورة",
-            ["Dubai"] = "دبي",
-            ["Abu Dhabi"] = "أبوظبي",
-        };
-    private static readonly IReadOnlyDictionary<string, string> OrganizationFunctions =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Operations"] = "عمليات",
-            ["Engineering"] = "الهندسة",
-            ["Human Resources"] = "الموارد البشرية",
-            ["HR"] = "الموارد البشرية",
-            ["Finance"] = "المالية",
-            ["Information Technology"] = "تقنية المعلومات",
-            ["IT"] = "تقنية المعلومات",
-            ["Sales"] = "المبيعات",
-            ["Marketing"] = "التسويق",
-            ["Procurement"] = "المشتريات",
-            ["Legal"] = "الشؤون القانونية",
-            ["Accounting"] = "المحاسبة",
-            ["Payroll"] = "الرواتب",
-            ["Customer Service"] = "خدمة العملاء",
-            ["Administration"] = "الإدارة",
-            ["Quality Assurance"] = "ضمان الجودة",
-            ["Research and Development"] = "البحث والتطوير",
-        };
 
     // Two-letter phonemes, checked before single letters.
     private static readonly (string Latin, string Arabic)[] Digraphs =
@@ -127,37 +91,8 @@ public sealed class TransliterationService : ITransliterationService
         return string.Join(' ', result);
     }
 
-    public string ToArabicOrganizationLabel(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text) || text.Length > 200) return string.Empty;
-        var normalized = Regex.Replace(text.Trim(), @"\s+", " ");
-        foreach (var (suffix, arabicLabel) in new[]
-        {
-            (" Head Office", "المكتب الرئيسي في"),
-            (" Headquarters", "المقر الرئيسي في"),
-            (" Branch", "فرع"),
-            (" Office", "مكتب"),
-        })
-        {
-            if (!normalized.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
-            var place = normalized[..^suffix.Length].Trim();
-            if (OrganizationPlaces.TryGetValue(place, out var arabicPlace))
-                return $"{arabicLabel} {arabicPlace}";
-            return string.Empty;
-        }
-        if (OrganizationFunctions.TryGetValue(normalized, out var arabicFunction))
-            return arabicFunction;
-        foreach (var (place, arabicPlace) in OrganizationPlaces)
-        {
-            var prefix = $"{place} ";
-            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
-            var function = normalized[prefix.Length..].Trim();
-            if (OrganizationFunctions.TryGetValue(function, out arabicFunction))
-                return $"{arabicFunction} {arabicPlace}";
-            return string.Empty;
-        }
-        return string.Empty;
-    }
+    /// <summary>Curated wording only (OrganizationLabelArabic); "" when any word is not covered. Never phonetic.</summary>
+    public string ToArabicOrganizationLabel(string text) => OrganizationLabelArabic.Suggest(text);
 
     private static bool IsLatinLetter(char value) => value is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
     private static bool IsArabicLetter(char value) => value is >= '\u0600' and <= '\u06ff'

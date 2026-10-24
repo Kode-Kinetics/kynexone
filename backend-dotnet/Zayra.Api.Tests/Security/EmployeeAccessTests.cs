@@ -866,6 +866,14 @@ public sealed class EmployeeAccessTests
             user.MfaSecretEncrypted = "protected-secret";
             user.MfaConfiguredAtUtc = DateTime.UtcNow;
             await db.SaveChangesAsync();
+            // Adding a factor ends the sessions issued before it (users.session_epoch), as real setup does; the person
+            // then signs in again with it. Stand that session in directly, at the new epoch, in its own save.
+            db.RefreshTokens.Add(new Zayra.Api.Domain.Entities.RefreshToken
+            {
+                UserId = userId, TokenHash = new string('S', 64), ExpiresAtUtc = DateTime.UtcNow.AddDays(1),
+                SessionEpoch = user.SessionEpoch,
+            });
+            await db.SaveChangesAsync();
         }
 
         var code = (await IssueAsync(w, w.HrManagerId, [id], canReset: true)).Issued.Single().Code!;

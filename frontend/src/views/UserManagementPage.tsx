@@ -26,9 +26,13 @@ import type {
 import type { CompanyDto } from '../api/organization';
 import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
 import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
+import { localReturnPathOrNull } from '../lib/publicAuth';
 import { useLocale } from '../contexts/LocaleContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
+import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
+import { useAuth } from '../contexts/AuthContext';
+import { useAppToast } from '../components/ui/AppToast';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -110,6 +114,8 @@ interface UsageData {
 
 function UsersTab() {
   const { t } = useLocale();
+  const { user: me, hasPermission } = useAuth();
+  const toast = useAppToast();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [users, setUsers] = useState<UserListItem[]>([]);
@@ -141,6 +147,13 @@ function UsersTab() {
   const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
   // Link a login to its employee record (opened from a row), or invite an employee (opened from the toolbar).
   const [employeeLink, setEmployeeLink] = useState<{ user: UserListItem | null } | null>(null);
+  // Reset another user's two-step sign-in (opened from a row).
+  const [resetTwoStep, setResetTwoStep] = useState<UserListItem | null>(null);
+  // The same permission as every other user action here (AccessController's security.manage), never on
+  // yourself, and only for someone who has two-step set up. The server enforces all three again.
+  const canManageUsers = hasPermission('security.manage');
+  const isMe = (u: UserListItem) => (!!me && me.id.toLowerCase() === u.id.toLowerCase()) || isSelf(ceiling, u.id);
+  const canResetTwoStep = (u: UserListItem) => canManageUsers && u.mfaEnabled === true && !isMe(u);
 
   const pageSize = 20;
 
@@ -188,8 +201,8 @@ function UsersTab() {
   const createdFromGuidedFlow = () => {
     setShowCreate(false);
     load();
-    const returnTo = searchParams?.get('returnTo');
-    if (returnTo?.startsWith('/') && !returnTo.startsWith('//')) router.push(returnTo);
+    const returnTo = localReturnPathOrNull(searchParams?.get('returnTo'));
+    if (returnTo) router.push(returnTo);
   };
 
   // Opening any action dialog starts from a clean slate: a link issued for one user must never be
@@ -316,6 +329,11 @@ function UsersTab() {
                 <td className="px-4 py-3">
                   <p className="font-medium text-slate-800 dark:text-slate-200">{u.fullName}</p>
                   <p className="text-xs text-slate-500">{u.email}</p>
+                  {u.mfaEnabled && (
+                    <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-700 rtl:text-[13px] dark:text-emerald-400" data-testid="user-two-step-on">
+                      <Shield className="h-3 w-3" aria-hidden="true" /> {t('Two-step sign-in is on')}
+                    </p>
+                  )}
                   {u.employeeId && (
                     <p className="text-xs text-violet-500">
                       {!u.employeeName
@@ -365,6 +383,16 @@ function UsersTab() {
                     <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
+                    {canResetTwoStep(u) && (
+                      <button
+                        type="button"
+                        onClick={() => setResetTwoStep(u)}
+                        className="ms-1 whitespace-nowrap rounded-lg border border-rose-200 px-2 py-1 text-xs font-medium text-rose-700 rtl:text-[13px] hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-900/30"
+                        data-testid="user-reset-two-step"
+                      >
+                        {t('Reset two-step sign-in')}
+                      </button>
+                    )}
                     {!u.employeeId && (
                       <button
                         type="button"
@@ -404,6 +432,21 @@ function UsersTab() {
       {/* Link a login to its employee record / invite an employee to Self-Service */}
       {employeeLink && (
         <LinkEmployeeLoginDialog user={employeeLink.user} onClose={() => setEmployeeLink(null)} onChanged={load} />
+      )}
+
+      {/* Reset another user's two-step sign-in */}
+      {resetTwoStep && (
+        <ResetTwoStepDialog
+          user={resetTwoStep}
+          onClose={() => setResetTwoStep(null)}
+          onReset={() => {
+            const name = resetTwoStep.fullName?.trim() || resetTwoStep.email;
+            setResetTwoStep(null);
+            toast.success(t('Two-step sign-in reset for {name}', { name }));
+            load();
+          }}
+          onStale={load}
+        />
       )}
 
       {/* Create User Modal */}
@@ -1120,7 +1163,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
 
   const submit = async () => {
     if (!email || !fullName || !password) { setErr('All fields are required.'); return; }
-    if (companyAdministratorFlow && companyId !== requestedCompanyId) { setErr(t('The new company could not be loaded. Return to Setup Studio and try again.')); return; }
+    if (companyAdministratorFlow && companyId !== requestedCompanyId) { setErr(t('The new company could not be loaded. Return to Guided setup and try again.')); return; }
     if (companyAdministratorFlow && (!createsAdministrator || requiredAdminRoleBlocked)) { setErr(t('You cannot grant the required administrator role. Ask a group administrator with sufficient authority to complete this step.')); return; }
     if (accessScope === 'company' && !companyId) { setErr(t('Choose the company this user will support.')); return; }
     if (policyLoading) return;
@@ -1161,7 +1204,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
       >
         <div>
           <h3 id={dialogTitleId} className="text-base font-semibold text-slate-800 dark:text-slate-200">{t(companyAdministratorFlow ? 'Create company administrator' : 'Create User')}</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{t(companyAdministratorFlow ? 'Add the administrator for this company, then continue to Setup Studio.' : 'Choose access before assigning roles. Company access is the safe default.')}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{t(companyAdministratorFlow ? 'Add the administrator for this company, then continue to Guided setup.' : 'Choose access before assigning roles. Company access is the safe default.')}</p>
         </div>
         <FormField label="Full Name" htmlFor={fullNameId}><input id={fullNameId} className={inp()} value={fullName} onChange={e => setFullName(e.target.value)} /></FormField>
         <FormField label="Email" htmlFor={emailId}><input id={emailId} type="email" className={inp()} value={email} onChange={e => setEmail(e.target.value)} /></FormField>
@@ -2178,7 +2221,8 @@ function SecurityTab() {
       <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-5 space-y-4">
         <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Session Policy</h4>
         <div className="grid grid-cols-2 gap-4">
-          {numField('sessionTimeoutMinutes', 'Session Timeout (minutes)', 15, 1440, 'Idle time before a signed-in user is logged out automatically.')}
+          {numField('sessionTimeoutMinutes', 'Sign out after inactivity (minutes)', 15, 1440, 'Ends a session nobody has used for this long.')}
+          {numField('sessionMaxHours', 'Maximum session length (hours)', 1, 168, 'Everyone signs in again after this long, even if they are active. Shorter is safer. Default 12.')}
           {numField('refreshTokenExpiryDays', 'Refresh Token Expiry (days)', 1, 90, 'Maximum days a login can stay remembered without re-entering the password. Lower = more secure, more frequent logins.')}
         </div>
         {boolField('allowMultipleSessions', 'Allow Multiple Concurrent Sessions')}

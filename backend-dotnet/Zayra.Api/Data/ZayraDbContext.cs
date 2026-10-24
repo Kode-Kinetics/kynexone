@@ -163,6 +163,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
         await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
+        await RevokeTrustedBrowsersOnCredentialChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
         {
             if (entry.State == EntityState.Added)
@@ -204,7 +205,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                         .All(property => property.Metadata.Name is
                             nameof(User.FailedLoginCount) or
                             nameof(User.MfaFailedCount) or
-                            nameof(User.LastLoginAtUtc));
+                            nameof(User.LastLoginAtUtc) or
+                            // Regenerating backup codes changes no identity, role or factor (as for platform
+                            // recovery codes): rotating the stamp would sign the user out of the session that
+                            // is about to show the new codes. Replay bookkeeping of the code that proved it, likewise.
+                            nameof(User.MfaRecoveryCodeHashes) or
+                            nameof(User.MfaLastTotpStep));
                 if (entry.Entity is User && !tenantLoginTelemetryOnly)
                     StampUserSecurityStampMonotonically(entry, now);
                 else if (!platformLoginTelemetryOnly && !tenantLoginTelemetryOnly)
@@ -259,6 +265,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         EnforceAuditLogAppendOnly();
         ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
+        RevokeTrustedBrowsersOnCredentialChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
         // synchronous path too — closing the gap where SaveChanges() enforced no scope at all.
         // (Audit/actor + company stamping remain async-only, a pre-existing divergence.)
@@ -899,6 +906,134 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     }
 
     /// <summary>
+    /// TRUSTED BROWSERS FOLLOW THE CREDENTIAL (mfa_trusted_devices). A browser was trusted for a login as its password,
+    /// factor and active state stood; when any of them changes, every trusted browser of that login is revoked in the
+    /// same save, so no password, factor, deactivation or deletion path can forget it (the paths that know a more
+    /// specific reason revoke explicitly first; rows already revoked are skipped). The reason is derived from what
+    /// changed. A failed-password lockout (IsLocked / LockoutEnd) and login telemetry are deliberately NOT triggers.
+    /// Runs after the welcome-code hook, whose change-tracker walk already ran DetectChanges, so this walk reads the
+    /// entries without a second detect pass and returns at once on a save that touches no login.
+    /// </summary>
+    private async Task RevokeTrustedBrowsersOnCredentialChangeAsync(CancellationToken ct, bool synchronous = false)
+    {
+        List<(Guid UserId, Guid TenantId, string Reason)>? changed = null;
+        List<(User User, string Trigger)>? ended = null;
+        var autoDetect = ChangeTracker.AutoDetectChangesEnabled;
+        ChangeTracker.AutoDetectChangesEnabled = false;
+        try
+        {
+            foreach (var e in ChangeTracker.Entries())
+            {
+                if (e.Entity is not User user || e.State != EntityState.Modified) continue;
+                var entry = Entry(user);
+                ClearBackupCodesWithTheFactor(entry);
+                var reason = TrustRevokeReason(entry);
+                if (reason is not null) (changed ??= new()).Add((user.Id, user.TenantId, reason));
+                var epoch = entry.Property(x => x.SessionEpoch);
+                var raisedExplicitly = epoch.CurrentValue != epoch.OriginalValue;
+                if (reason is not null || raisedExplicitly)
+                    (ended ??= new()).Add((user, reason ?? Infrastructure.Auth.TenantSessionSecurity.EndAllSessionsTrigger));
+            }
+        }
+        finally { ChangeTracker.AutoDetectChangesEnabled = autoDetect; }
+        if (changed is null && ended is null) return;
+
+        // A tenant request only ever revokes inside its own tenant (the write guard would refuse anything else).
+        var requestTenant = _tenantId;
+        foreach (var (userId, tenantId, reason) in changed ?? [])
+        {
+            if (requestTenant is Guid t && t != tenantId) continue;
+            await Infrastructure.Auth.MfaTrustedDevices.StageRevokeAllAsync(
+                this, tenantId, [userId], reason, DateTime.UtcNow,
+                // The actor is named only when it is a user of this tenant; a platform operator's id is not a user id.
+                new RequestContext(null, null, requestTenant is null ? null : _actorId, tenantId), ct, synchronous);
+        }
+        foreach (var (user, trigger) in ended ?? [])
+            await EndSessionsOfAsync(user, trigger, requestTenant, ct, synchronous);
+    }
+
+    /// <summary>
+    /// SESSIONS FOLLOW THE CREDENTIAL (users.session_epoch). The same changes that revoke trusted browsers — password,
+    /// factor, deactivation, suspension, admin lock, NoLogin, deletion; never a failed-password lockout or login
+    /// telemetry — and an explicit <see cref="Infrastructure.Auth.TenantSessionSecurity.EndAllSessions"/> raise the
+    /// user's epoch in this save, so every refresh token issued before it is refused at its next refresh whatever path
+    /// made the change. The epoch is raised once per save (an explicit raise in the same save is not doubled; the
+    /// trg_users__session_epoch_increments trigger makes the stored value exactly one above the row it replaces, so
+    /// two concurrent raises cannot collapse into one). In the same save it stages, idempotently, the revocation of the
+    /// user's live refresh tokens and the consumption of their open two-step challenges, and one
+    /// <c>auth.sessions_ended</c> audit row naming the trigger.
+    /// </summary>
+    private async Task EndSessionsOfAsync(User user, string trigger, Guid? requestTenant, CancellationToken ct, bool synchronous)
+    {
+        var epoch = Entry(user).Property(x => x.SessionEpoch);
+        if (epoch.CurrentValue == epoch.OriginalValue)
+            epoch.CurrentValue = epoch.OriginalValue + 1;
+        if (requestTenant is Guid t && t != user.TenantId) return;
+        var raisedTo = epoch.CurrentValue;
+        var atUtc = DateTime.UtcNow;
+
+        var tokenQuery = RefreshTokens.Where(x => x.UserId == user.Id && x.RevokedAtUtc == null);
+        var tokens = synchronous ? tokenQuery.ToList() : await tokenQuery.ToListAsync(ct);
+        // A token added earlier in this unit of work carries the epoch it was issued at; one below the new epoch is dead.
+        tokens.AddRange(ChangeTracker.Entries<RefreshToken>()
+            .Where(e => e.State == EntityState.Added && e.Entity.UserId == user.Id && e.Entity.SessionEpoch < raisedTo)
+            .Select(e => e.Entity));
+        var revoked = 0;
+        foreach (var token in tokens.Distinct().Where(x => x.RevokedAtUtc is null))
+        {
+            token.RevokedAtUtc = atUtc;
+            revoked++;
+        }
+
+        var challengeQuery = MfaChallengeTokens.Where(x => x.UserId == user.Id && x.UsedAtUtc == null);
+        var challenges = synchronous ? challengeQuery.ToList() : await challengeQuery.ToListAsync(ct);
+        var consumed = 0;
+        foreach (var challenge in challenges.Where(x => x.UsedAtUtc is null))
+        {
+            challenge.UsedAtUtc = atUtc;
+            consumed++;
+        }
+
+        AuditLogs.Add(Infrastructure.Auth.AuthAuditEntry.Create(
+            Guid.NewGuid(), atUtc, Infrastructure.Auth.TenantSessionSecurity.SessionsEndedAuditAction, "User", user.Id.ToString(),
+            // The actor is named only when it is a user of this tenant; a platform operator's id is not a user id.
+            new RequestContext(null, null, requestTenant is null ? null : _actorId, user.TenantId),
+            $"{{\"trigger\":\"{trigger}\",\"sessionEpoch\":{raisedTo},\"refreshTokensRevoked\":{revoked},\"challengesConsumed\":{consumed}}}"));
+    }
+
+    /// <summary>
+    /// BACKUP CODES FOLLOW THE FACTOR (users.mfa_recovery_code_hashes): a save that turns two-step off or replaces the
+    /// secret drops the codes of the old factor, unless the same save sets a new set itself (setup does). Every path
+    /// that clears a factor (offboarding, welcome codes, access-mode changes) gets this without knowing about codes.
+    /// </summary>
+    private static void ClearBackupCodesWithTheFactor(EntityEntry<User> e)
+    {
+        static bool Differs<T>(Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<User, T> p) =>
+            p.IsModified && !EqualityComparer<T>.Default.Equals(p.OriginalValue, p.CurrentValue);
+        var codes = e.Property(x => x.MfaRecoveryCodeHashes);
+        if (codes.IsModified || codes.CurrentValue is null) return;
+        if ((Differs(e.Property(x => x.MFAEnabled)) && !e.Entity.MFAEnabled) || Differs(e.Property(x => x.MfaSecretEncrypted)))
+            codes.CurrentValue = null;
+    }
+
+    private static string? TrustRevokeReason(EntityEntry<User> e)
+    {
+        static bool Differs<T>(Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<User, T> p) =>
+            p.IsModified && !EqualityComparer<T>.Default.Equals(p.OriginalValue, p.CurrentValue);
+        var u = e.Entity;
+        if (Differs(e.Property(x => x.IsDeleted)) && u.IsDeleted) return MfaTrustRevokeReasons.UserDeleted;
+        if ((Differs(e.Property(x => x.IsActive)) && !u.IsActive)
+            || (Differs(e.Property(x => x.Status)) && u.Status is "Suspended" or "Deactivated" or "Locked")
+            || (Differs(e.Property(x => x.AccessMode)) && u.AccessMode == AccessModes.NoLogin))
+            return MfaTrustRevokeReasons.UserDeactivated;
+        if (Differs(e.Property(x => x.MFAEnabled)) && !u.MFAEnabled) return MfaTrustRevokeReasons.MfaDisabled;
+        if (Differs(e.Property(x => x.MfaSecretEncrypted)))
+            return u.MfaSecretEncrypted is null ? MfaTrustRevokeReasons.MfaDisabled : MfaTrustRevokeReasons.MfaResetup;
+        if (Differs(e.Property(x => x.PasswordHash))) return MfaTrustRevokeReasons.PasswordChanged;
+        return null;
+    }
+
+    /// <summary>
     /// User.UpdatedAtUtc is the tenant access-token security stamp (TenantSessionSecurity), compared
     /// at microsecond precision. A plain "= now" could equal or precede the stored stamp (same
     /// microsecond, clock skew between instances, or a stamp already advanced by RotateStamp), which
@@ -1158,6 +1293,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PlatformSupportSession> PlatformSupportSessions => Set<PlatformSupportSession>();
     public DbSet<PlatformUser> PlatformUsers => Set<PlatformUser>();
     public DbSet<MfaChallengeToken> MfaChallengeTokens => Set<MfaChallengeToken>();
+    // ── Trusted browsers for two-step sign-in (mfa_trusted_devices; MfaTrustedDevices) ──
+    public DbSet<MfaTrustedDevice> MfaTrustedDevices => Set<MfaTrustedDevice>();
     public DbSet<PlatformAnnouncement> PlatformAnnouncements => Set<PlatformAnnouncement>();
     public DbSet<PlatformLead> PlatformLeads => Set<PlatformLead>();
     public DbSet<PlatformComplianceControl> PlatformComplianceControls => Set<PlatformComplianceControl>();
@@ -2345,10 +2482,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.IsActive });
         });
         modelBuilder.Entity<LeavePolicy>(entity => {
-            entity.ToTable("leave_policies");
+            entity.ToTable("leave_policies", t =>
+            {
+                t.HasCheckConstraint("ck_leave_policies__minimum_service_months", "minimum_service_months BETWEEN 0 AND 600");
+                t.HasCheckConstraint("ck_leave_policies__nationality_scope", "nationality_scope IN ('Any', 'National', 'Expatriate')");
+            });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.AnnualEntitlementDays).HasPrecision(6,2);
             entity.Property(x => x.ProratePartialMonths).HasDefaultValue(false);
+            entity.Property(x => x.MinimumServiceMonths).HasDefaultValue(0);
+            entity.Property(x => x.NationalityScope).HasMaxLength(10).HasDefaultValue(LeaveNationalityScopes.Any);
             entity.Property(x => x.CarryForwardMax).HasPrecision(6,2);
             entity.Property(x => x.EncashmentMaxDays).HasPrecision(6,2);
             entity.Property(x => x.MinimumDaysPerRequest).HasPrecision(5,2);
@@ -3117,7 +3260,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<User>(entity =>
         {
-            entity.ToTable("users");
+            // Backup codes exist only with a factor: a path that clears the secret but forgets the codes fails here
+            // rather than leaving codes that a later factor would silently inherit.
+            entity.ToTable("users", t =>
+                t.HasCheckConstraint("ck_users__mfa_recovery_code_hashes_need_factor",
+                    "mfa_recovery_code_hashes IS NULL OR mfa_secret_encrypted IS NOT NULL"));
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Email).HasMaxLength(256).IsRequired();
             entity.Property(x => x.NormalizedEmail).HasMaxLength(256).IsRequired();
@@ -3132,6 +3279,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Status).HasMaxLength(40).HasDefaultValue("Active");
             entity.Property(x => x.AccessMode).HasMaxLength(40).HasDefaultValue("FullPortal");
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
+            entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(1024);
+            // Raised by the save hook (EndSessionsOfAsync); trg_users__session_epoch_increments keeps every raise to
+            // exactly one above the stored row. 0 for every login that predates it, so the deploy ends no session.
+            entity.Property(x => x.SessionEpoch).HasDefaultValue(0L);
             entity.HasIndex(x => new { x.TenantId, x.NormalizedEmail }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
@@ -3140,9 +3291,50 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<SecuritySetting>(entity =>
         {
-            entity.ToTable("security_settings");
+            entity.ToTable("security_settings", t =>
+            {
+                t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90");
+                t.HasCheckConstraint("ck_security_settings__session_max_hours", "session_max_hours BETWEEN 1 AND 168");
+            });
             entity.HasKey(x => x.Id);
+            // The hard session limit in hours (1..168). Default 12 for every tenant, including rows that predate it.
+            // 0 is never valid, so the CLR default can stay the sentinel.
+            entity.Property(x => x.SessionMaxHours).HasDefaultValue(SecuritySetting.DefaultSessionMaxHours);
             entity.HasIndex(x => x.TenantId).IsUnique();
+            // How long a browser stays trusted after a two-step code (0 = never offer it). Default 30 (the column
+            // default serves rows that predate it). The sentinel is NOT 0: with the CLR default as sentinel EF would
+            // omit an explicit 0 on INSERT and the database would store 30, silently turning "off" into "30 days".
+            entity.Property(x => x.MfaTrustedDeviceDays)
+                .HasDefaultValue(SecuritySetting.DefaultMfaTrustedDeviceDays)
+                .HasSentinel(int.MinValue);
+        });
+
+        // Trusted browsers (MfaTrustedDevices). Tenant-owned (RLS shape a; live bridge: the ITenantOwned query filter).
+        // A credential row: only the token's SHA-256 is stored. The CHECKs hold the reason vocabulary, the revoked pair
+        // and a positive lifetime. Deleting the login deletes its trusted browsers (CASCADE); a tenant is erased by the
+        // model-driven ITenantOwned sweep, so the tenant FK is RESTRICT like every other tenant-owned table.
+        modelBuilder.Entity<MfaTrustedDevice>(entity =>
+        {
+            entity.ToTable("mfa_trusted_devices", t =>
+            {
+                t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_reason",
+                    "revoked_reason IS NULL OR revoked_reason IN ('user_revoked', 'user_revoked_all', 'password_changed', 'password_reset', 'mfa_disabled', 'mfa_recovery_disabled', 'mfa_resetup', 'user_deactivated', 'user_deleted', 'policy_shortened', 'mfa_admin_reset')");
+                t.HasCheckConstraint("ck_mfa_trusted_devices__revoked_pair", "(revoked_at_utc IS NULL) = (revoked_reason IS NULL)");
+                t.HasCheckConstraint("ck_mfa_trusted_devices__lifetime", "expires_at_utc > created_at_utc");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.UserAgent).HasMaxLength(256);
+            entity.Property(x => x.IpAddress).HasMaxLength(64);
+            entity.Property(x => x.RevokedReason).HasMaxLength(64);
+            // Serves the sign-in lookup by cookie hash (and makes a hash collision impossible).
+            entity.HasIndex(x => x.TokenHash).IsUnique().HasDatabaseName("ux_mfa_trusted_devices__token_hash");
+            // Serves GET /api/auth/mfa/trusted-devices, the status count and every revoke-all: a user's live rows.
+            entity.HasIndex(x => new { x.TenantId, x.UserId })
+                .HasFilter("revoked_at_utc IS NULL")
+                .HasDatabaseName("ix_mfa_trusted_devices__tenant_user_active");
+            entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<User>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<TenantIdentityProviderSetting>(entity =>
@@ -3258,6 +3450,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ReplacedByTokenHash).HasMaxLength(128);
             entity.Property(x => x.CreatedByIp).HasMaxLength(64);
             entity.Property(x => x.RevokedByIp).HasMaxLength(64);
+            // Both are always written by the issuing code (the CLR initializer is never the sentinel); the column
+            // defaults only serve a row written by an earlier release during a rollback.
+            entity.Property(x => x.SessionStartedAtUtc).HasDefaultValueSql("now()");
+            entity.Property(x => x.SessionEpoch).HasDefaultValue(0L);
             entity.HasIndex(x => x.TokenHash).IsUnique();
             entity.HasIndex(x => new { x.FamilyId, x.UserId, x.RevokedAtUtc });
             entity.HasOne(x => x.User).WithMany(x => x.RefreshTokens).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
@@ -4340,9 +4536,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<LoanType>(entity =>
         {
             entity.ToTable("loan_types", t =>
+            {
                 t.HasCheckConstraint("ck_loan_types__grade_limited_has_component",
-                    "NOT grade_limited OR entitlement_component_code IS NOT NULL"));
+                    "NOT grade_limited OR entitlement_component_code IS NOT NULL");
+                // Shortest repayment, within the longest once a minimum is set. 1 (= no minimum) is accepted whatever
+                // max_installments holds, so a legacy row with an invalid maximum (eligibility refuses those) can still
+                // be updated and the CHECK validates on every existing row.
+                t.HasCheckConstraint("ck_loan_types__min_installments", LoanTypeSql.MinInstallmentsCheck);
+            });
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.MinInstallments).HasDefaultValue(1);
             entity.Property(x => x.MaxAmount).HasPrecision(14, 2);
             entity.Property(x => x.InterestRate).HasPrecision(8, 4);
             entity.Property(x => x.GradeLimited).HasDefaultValue(false);
@@ -4419,8 +4622,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 // Only the offering switch records what a version copied, and a switch stub only ever says "not offered".
                 t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
                 t.HasCheckConstraint("ck_loan_policies__switch_stub_not_offered", "NOT created_by_offering_switch OR NOT is_offered");
+                // Same rule as loan_types. max_installments has a database default of 0 and was backfilled from
+                // loan_types, so a legacy row may hold 0: min 1 (no minimum) stays valid on it.
+                t.HasCheckConstraint("ck_loan_policies__min_installments", LoanTypeSql.MinInstallmentsCheck);
             });
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.MinInstallments).HasDefaultValue(1);
             entity.HasAlternateKey(x => new { x.TenantId, x.Id });
             entity.HasOne<LoanPolicy>().WithMany().HasForeignKey(x => new { x.TenantId, x.CopiedFromPolicyId })
                 .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);

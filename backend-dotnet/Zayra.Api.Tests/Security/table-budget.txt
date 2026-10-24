@@ -227,6 +227,7 @@ ManpowerRequisitions
 MasterDataTypes
 MasterDataValues
 MfaChallengeTokens
+MfaTrustedDevices
 MigrationImportBatches
 NitaqatActivities
 NitaqatBandThresholds

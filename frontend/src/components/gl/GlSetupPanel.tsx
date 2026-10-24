@@ -24,9 +24,14 @@ interface Props {
   companies: CompanyDto[];
   costCenters: CostCenterDto[];
   confirmLeave?: SetupNavigationGuard;
+  /**
+   * The tab a link asked for (Setup's `?glTab=`, e.g. from "Find a setting"). Opened when this reader may see it;
+   * otherwise the first tab they may see, as without a request.
+   */
+  requestedTab?: string | null;
 }
 
-export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
+export function GlSetupPanel({ companies, costCenters, confirmLeave, requestedTab = null }: Props) {
   const t = useT();
   const { locale, dir } = useLocale();
   const { hasPermission, hasRole } = useAuth();
@@ -85,7 +90,13 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
     [t, glRead, driversRead, ratesRead, statutoryRead, erpApiManage],
   );
 
-  const [active, setActive] = useState<SubTab>(() => tabs[0]?.id ?? 'coa');
+  const permittedRequest = (tabs as readonly { id: SubTab }[]).find((x) => x.id === requestedTab)?.id;
+  const [active, setActive] = useState<SubTab>(() => permittedRequest ?? tabs[0]?.id ?? 'coa');
+  // A new request while the panel is open (a second search result) moves to it. The link already passed Setup's
+  // unsaved-changes guard, so it is not asked again here.
+  useEffect(() => {
+    if (permittedRequest) setActive(permittedRequest);
+  }, [permittedRequest]);
   const activeTab = tabs.some((x) => x.id === active) ? active : tabs[0]?.id;
   const selectTab = (tab: SubTab, afterSelect?: () => void) => {
     if (tab === activeTab) { afterSelect?.(); return true; }
@@ -253,7 +264,7 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave }: Props) {
       )}
 
       {/* Sub-tab nav */}
-      <div role="tablist" aria-label={t('GL & rates sections')} className="flex flex-wrap gap-1.5">
+      <div role="tablist" aria-label={t('Payroll accounting sections')} className="flex flex-wrap gap-1.5">
         {tabs.map(({ id, label, icon: Icon }, index) => (
           <button
             key={id}

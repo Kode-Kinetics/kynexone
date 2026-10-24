@@ -286,6 +286,8 @@ public class BenefitsController : ControllerBase
         var limitPeriod = BenefitLimitPeriods.All.FirstOrDefault(x => string.Equals(x, req.LimitPeriod, StringComparison.OrdinalIgnoreCase));
         if (limitPeriod is null)
             return BadRequest($"Limit period must be one of: {string.Join(", ", BenefitLimitPeriods.All)}.");
+        if (limitPeriod == BenefitLimitPeriods.ContractYear && BenefitPaymentPolicies.ReadPlan(plan).Delivery is "SalaryAllowance" or "PayrollDeduction")
+            return BadRequest(BenefitPaymentPolicies.ContractYearSalaryMessage);
         if (req.MaxBenefitAmount.HasValue && (req.MaxBenefitAmount <= 0 || req.MaxBenefitAmount > 999999999999.99m || decimal.Round(req.MaxBenefitAmount.Value, 2) != req.MaxBenefitAmount.Value))
             return BadRequest("Maximum benefit amount must be a positive amount with no more than two decimal places.");
         if (req.MinimumServiceMonths is < 0 or > 600)
@@ -657,6 +659,8 @@ public class BenefitsController : ControllerBase
         if (plan is null) return NotFound("Benefit plan not found.");
         if (req.Status == "Waived" && plan.Classification == BenefitPlanClassifications.Mandatory)
             return BadRequest("Mandatory benefit coverage cannot be waived.");
+        if (req.LimitPeriod == BenefitLimitPeriods.ContractYear && BenefitPaymentPolicies.ReadSnapshot(enrollment).Delivery is "SalaryAllowance" or "PayrollDeduction")
+            return BadRequest(BenefitPaymentPolicies.ContractYearSalaryMessage);
         var currentLimitPeriod = string.IsNullOrWhiteSpace(enrollment.LimitPeriod)
             ? BenefitLimitPeriods.PerEnrollment : enrollment.LimitPeriod;
         if (plan.Classification == BenefitPlanClassifications.Mandatory && req.LimitPeriod != currentLimitPeriod)

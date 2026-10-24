@@ -153,6 +153,24 @@ textarea:focus-visible {
     box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 1px 0 rgba(255,255,255,0.60) inset;
   }
 
+  /* A destructive confirmation (turn off a protection, delete). Same shape as .btn-primary;
+     white on rose-700 is 6.2:1. Disabled is a real state, not a faded red: a grey surface, grey
+     text and no shadow, so "not yet" never reads as "pressable but dim". */
+  .btn-danger {
+    @apply inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-4
+      text-sm font-semibold text-white
+      shadow-sm transition-colors duration-150
+      hover:bg-rose-800 active:scale-[0.98]
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/60 focus-visible:ring-offset-2
+      dark:bg-rose-600 dark:hover:bg-rose-500 dark:focus-visible:ring-offset-[#0d1225]
+      disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none disabled:active:scale-100
+      dark:disabled:bg-white/[0.06] dark:disabled:text-slate-500;
+  }
+  @media (forced-colors: active) {
+    .btn-danger { border: 1px solid ButtonText; }
+    .btn-danger:disabled { border-color: GrayText; color: GrayText; }
+  }
+
   /* ─── Inputs / Selects ─────────────────────────────────── */
   .input {
     @apply h-9 rounded-lg border border-slate-200/90 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900
@@ -633,21 +651,18 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
 @media (prefers-reduced-motion: reduce) { .wg-tip { animation: none; } }
 @media (forced-colors: active) { .wg-tip { border: 1px solid CanvasText; } }
 
-/* Setup Studio is frequently used on 768-900px-high enterprise laptops with a security reminder
+/* Setup is frequently used on 768-900px-high enterprise laptops with a security reminder
  * present. Preserve every control while tightening the surrounding chrome so the current step and
- * its primary action remain visible together. Taller screens keep the more generous rhythm. */
-@media (min-width: 1024px) and (max-height: 900px) {
+ * its primary action remain visible together. Taller screens keep the more generous rhythm.
+ * Mouse and trackpad only: a short touch screen (a landscape tablet) keeps 44px rows. */
+@media (min-width: 1024px) and (max-height: 900px) and (pointer: fine) {
   .setup-page { gap: 0.5rem; }
   .setup-page-header { display: flex; align-items: baseline; gap: 1rem; }
   .setup-page-header h1 { flex: none; font-size: 1.25rem; line-height: 1.75rem; }
   .setup-page-header p { margin-top: 0; max-width: none; line-height: 1.25rem; }
-  .setup-page-nav {
-    flex-wrap: nowrap !important;
-    overflow-x: auto !important;
-    padding-bottom: 0.45rem;
-    scrollbar-width: thin;
-  }
-  .setup-page-nav button { padding-block: 0.4rem; }
+  /* The section column keeps every entry on screen at 768px high: tighter rows, never a sideways scroll. */
+  .setup-section-list li > a { min-height: 1.75rem; padding-block: 0.2rem; }
+  .setup-section-group > p { padding-top: 0.25rem; padding-bottom: 0.15rem; }
   .setup-step-rail { padding: 0.75rem !important; }
   .setup-step-rail nav button { padding-block: 0.4rem; }
   .setup-control-note { display: none !important; }

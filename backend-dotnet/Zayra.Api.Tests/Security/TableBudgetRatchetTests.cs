@@ -136,7 +136,13 @@ public class TableBudgetRatchetTests
         // survives sign-out and devices, and the commit's idempotency witness (status + result_company_id). No existing
         // table can hold it: every organisation table is a business row and a draft must never write one. Retention:
         // Open drafts idle 90 days are deleted (CompanySetupDraftRetentionRule); Submitted/Discarded kept for audit.
-        DeclaredDbSets().Should().HaveCount(374,
+        // Trusted browsers for two-step sign-in (AddMfaTrustedDevices; owner Platform/Identity). One table, 374 -> 375.
+        // MfaTrustedDevices: a server-side, revocable record per browser a user chose to trust after a code, holding only
+        // the cookie token's SHA-256, its expiry and its revocation reason. No existing table can carry it: refresh tokens
+        // are sessions that rotate and die on sign-out (a trusted browser must outlive them), mfa_challenge_tokens are
+        // single-use five-minute credentials, and the known-device cookie is a stateless lockout hint nobody can revoke.
+        // Retention: expired or revoked rows deleted after 30 days (MfaTrustedDeviceRetentionRule).
+        DeclaredDbSets().Should().HaveCount(375,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

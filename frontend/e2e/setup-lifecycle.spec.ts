@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openSetupSection } from './setupSections';
 
 // Browser contract tests only: every API response is synthetic and no tenant is changed.
 const companies = [
@@ -25,7 +26,7 @@ async function boot(page: Page) {
     if (path.includes('/features/') || path === '/api/notifications' || path.startsWith('/api/ai/policy/')) return reply([]);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
-  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=evostel');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=evostel');
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible({ timeout: 60_000 });
   return writes;
 }
@@ -44,7 +45,7 @@ test('save, reload, back and policy-library round trip preserve inputs without a
   await expect(page.getByLabel(/^Suggested head office city/)).toHaveValue('Dammam');
   await page.getByRole('button', { name: 'Policy library / updates', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Policy library', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Setup Studio', exact: true }).click();
+  await openSetupSection(page, 'Policy starter');
   await expect(page.getByLabel(/^Industry/)).toHaveValue('Services');
   await expect(page.getByLabel(/^Suggested head office city/)).toHaveValue('Dammam');
   expect(writes).toEqual([]);
@@ -75,17 +76,17 @@ test('edited generated preview survives reload and requires explicit review befo
   expect(writes).toEqual(['/api/setup-assistant/preview']);
 });
 
-test('saved previews remain isolated when another company opens Setup Studio', async ({ page }) => {
+test('saved previews remain isolated when another company opens the Policy starter', async ({ page }) => {
   await boot(page);
   await page.getByLabel(/^Industry/).fill('Services');
   for (let index = 0; index < 4; index++) await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('button', { name: 'Generate draft', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Apply 1 item(s) to Evostel LLC', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Save for later', exact: true }).click();
-  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=other');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=other');
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Other Company');
   await expect(page.getByRole('button', { name: 'Review saved preview', exact: true })).toHaveCount(0);
-  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=evostel');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=evostel');
   await expect(page.getByRole('button', { name: 'Review saved preview', exact: true })).toBeVisible();
 });
 
@@ -93,11 +94,11 @@ test('switching company isolates draft inputs and returning resumes original com
   await boot(page);
   await page.getByLabel(/^Industry/).fill('Evostel services');
   await page.getByRole('button', { name: 'Save for later', exact: true }).click();
-  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=other');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=other');
   await expect(page.getByLabel(/^Legal entity name/)).toHaveValue('Other Company');
   await expect(page.getByLabel(/^Industry/)).toHaveValue('');
   await expect(page.getByLabel(/^Country/)).toHaveValue('AE');
-  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=evostel');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=evostel');
   await expect(page.getByLabel(/^Industry/)).toHaveValue('Evostel services');
 });
 
@@ -110,7 +111,7 @@ test('cancel requires confirmation and discard removes saved inputs', async ({ p
   await expect(page.getByLabel(/^Industry/)).toHaveValue('Keep unless confirmed');
   await page.getByRole('button', { name: 'Cancel setup', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click();
-  await page.goto('/setup?tab=aiSetup&mode=starter&companyId=evostel');
+  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=evostel');
   await expect(page.getByLabel(/^Industry/)).toHaveValue('');
   expect(writes).toEqual([]);
 });

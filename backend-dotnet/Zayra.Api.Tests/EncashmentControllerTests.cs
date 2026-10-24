@@ -75,6 +75,71 @@ public class EncashmentControllerTests
     }
 
     /// <summary>
+    /// Encashment follows the employee's OWN policy. With a locals policy that allows it and an expats policy that does
+    /// not, the old "first active policy for the type" could pay an expat under the locals' rule (or refuse a local).
+    /// </summary>
+    [Theory]
+    [InlineData("Saudi", true)]
+    [InlineData("Egyptian", false)]
+    public async Task Create_UsesTheEmployeesOwnPolicy_LocalsAndExpatsAreNotMixed(string nationality, bool allowed)
+    {
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Saudi Co", CountryCode = CountryCodes.Saudi,
+            Jurisdiction = Jurisdictions.KsaMainland, DefaultCurrency = "SAR", IsActive = true
+        };
+        var leaveType = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual", IsActive = true };
+        db.AddRange(company, leaveType);
+        await db.SaveChangesAsync();
+        var employee = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "ENC-N", FullName = "Encash Employee",
+            Salary = 2600m, Status = "Active", JoiningDate = DateTime.UtcNow.AddYears(-2), Nationality = nationality,
+        };
+        db.Employees.Add(employee);
+        // The expats row is written first, so "first active row" would have picked it for everyone.
+        db.LeavePolicies.Add(new LeavePolicy
+        {
+            TenantId = tenantId, LeaveTypeId = leaveType.Id, Name = "Annual — expats", Status = "Active",
+            NationalityScope = LeaveNationalityScopes.Expatriate, EncashmentAllowed = false,
+        });
+        await db.SaveChangesAsync();
+        db.LeavePolicies.Add(new LeavePolicy
+        {
+            TenantId = tenantId, LeaveTypeId = leaveType.Id, Name = "Annual — locals", Status = "Active",
+            NationalityScope = LeaveNationalityScopes.National, EncashmentAllowed = true, EncashmentMaxDays = 10,
+        });
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = tenantId, EmployeeId = employee.Id, LeaveTypeId = leaveType.Id,
+            Year = DateTime.UtcNow.Year, Entitled = 10
+        });
+        await db.SaveChangesAsync();
+        var controller = new EncashmentController(db, new OwnScope(employee.Id), new FixedRules(26m))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim("tenant_id", tenantId.ToString()),
+                        new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString())
+                    }, "Test"))
+                }
+            }
+        };
+
+        var result = await controller.Create(new CreateEncashmentRequest(employee.Id, leaveType.Id, 2m, 9999m, "cash out", null), CancellationToken.None);
+
+        if (allowed) result.Should().BeOfType<CreatedResult>();
+        else result.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    /// <summary>
     /// <b>The expected total moved from 12 to 10, deliberately.</b> This fixture carries BOTH
     /// <c>Entitled = 20</c> and <c>Accrued = 2</c>, and <c>Available</c> used to ADD them for a granted
     /// figure of 22. Those two columns are alternative representations of ONE grant — a front-loaded

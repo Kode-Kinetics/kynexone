@@ -62,10 +62,18 @@ public class AuthController : ControllerBase
             var context = GetContext() with
             {
                 KnownDeviceToken = Zayra.Api.Infrastructure.Auth.LoginAbuseGuard.KnownDeviceCookie(Request, "tenant"),
+                // Consulted only after the password is verified, where a code would otherwise be asked for.
+                MfaTrustToken = Zayra.Api.Infrastructure.Auth.MfaTrustedDevices.ReadCookie(Request),
             };
             var result = await _authService.LoginAsync(request, context, cancellationToken);
             if (result.RequiresMfa)
-                return Ok(new { mfaRequired = true, challengeToken = result.Challenge!.ChallengeToken, expiresInSeconds = result.Challenge.ExpiresInSeconds });
+                return Ok(new
+                {
+                    mfaRequired = true,
+                    challengeToken = result.Challenge!.ChallengeToken,
+                    expiresInSeconds = result.Challenge.ExpiresInSeconds,
+                    rememberDeviceDays = result.Challenge.RememberDeviceDays,
+                });
             if (result.RequiresMfaEnrollment)
                 return Ok(new
                 {
@@ -148,6 +156,11 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<AuthResponse>> Refresh(RefreshTokenRequest request, CancellationToken cancellationToken)
     {
         try { return Ok(await _authService.RefreshAsync(request, GetContext(), cancellationToken)); }
+        // The session reached the company's maximum length: the client tells the user why they must sign in again.
+        catch (Zayra.Api.Infrastructure.Auth.SessionExpiredException ex)
+        {
+            return Unauthorized(new { code = Zayra.Api.Infrastructure.Auth.SessionExpiredException.Code, message = ex.Message });
+        }
         catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }
     }
 

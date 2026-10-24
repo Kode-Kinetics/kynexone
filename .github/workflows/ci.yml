@@ -830,8 +830,10 @@ jobs:
     name: Browser Pilot (seeded tenant, core modules)
     runs-on: ubuntu-latest
     # The production-shaped stack takes about ten minutes to build and provision before the
-    # 748-test Chromium suite starts. Keep enough headroom for the full gate and cleanup.
-    timeout-minutes: 45
+    # Chromium suite starts (about 1,040 tests since the Setup design wave; 29+ minutes on its own).
+    # 45 minutes cut that run off mid-suite with no failure, so keep enough headroom for the full gate
+    # and cleanup. A passing run still bills only the minutes it uses.
+    timeout-minutes: 60
     needs: [backend-tests, frontend-build]
     # THE E2E TARGET CONTRACT (frontend/e2e/identity/env.ts), declared ONCE for every step; see the
     # same block in chrome-security-gate. BUILD_COMMIT also reaches `docker compose --build`, which
@@ -966,6 +968,7 @@ jobs:
           set -euo pipefail
           npx playwright test -c e2e/playwright.setup-experience.config.ts --project=desktop --project=mobile --grep "$SETUP_LAYOUT_TESTS"
           npx playwright test -c e2e/playwright.setup-studio-workspace.config.ts --project=desktop --project=mobile --grep "$SETUP_LAYOUT_TESTS"
+          npx playwright test -c e2e/playwright.setup-section-navigation.config.ts
 
       # The admin identity, password and employee floor come from e2e/world.ts. The E2E_DEFAULT_* and
       # E2E_MIN_EMPLOYEES overrides this step used to pass were a second declaration of the same

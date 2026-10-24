@@ -1,16 +1,16 @@
 {
   "exceptions": [
     {
-      "ghsa": "GHSA-vfj7-8cjw-p6xm",
-      "package": "braces",
-      "expires": "2026-11-03",
-      "reason": "No patched release exists (3.0.3 is latest). Reached only via @expo/cli and metro's micromatch, build tooling that runs on developer/CI machines and is not in the device bundle. npm's suggested fix downgrades expo to 44."
-    },
-    {
       "ghsa": "GHSA-86w9-cpqp-85rv",
       "package": "node-forge",
       "expires": "2026-11-03",
       "reason": "No patched release exists (1.4.0 is latest). Reached only via @expo/cli and @expo/code-signing-certificates, build tooling that is not in the device bundle. npm's suggested fix downgrades expo to 44."
+    },
+    {
+      "ghsa": "GHSA-mrhx-c7xc-m3w5",
+      "package": "zod",
+      "expires": "2026-11-06",
+      "reason": "Patched only in zod 4.6.6; mobile is on zod 3 (no 3.x fix) and a 3->4 move is an API migration (resolvers, error options) plus an app update, not a release-train change. Not reachable: the advisory needs oversized CONSTRAINED COLLECTIONS, and mobile's only two schemas (LoginScreen, ChangePasswordScreen) validate a flat object of short strings - no z.array/z.set/z.record/z.map/z.tuple. Migrate mobile to zod >= 4.6.6 before this expires."
     }
   ]
 }

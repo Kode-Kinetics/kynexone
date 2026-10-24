@@ -110,7 +110,7 @@ export interface StatutoryRateRow {
   overriddenInCompanies?: number | null;
 }
 
-export type StatutoryDisplayUnit = 'percent' | 'multiplier' | 'days' | 'hours' | 'amount' | 'text';
+export type StatutoryDisplayUnit = 'percent' | 'multiplier' | 'days' | 'hours' | 'minutes' | 'amount' | 'text';
 
 /** What a pending request does: set a value, or retire (return to the statutory value). */
 export type StatutoryRequestKind = 'change' | 'retire';

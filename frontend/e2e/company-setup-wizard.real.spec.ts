@@ -503,8 +503,12 @@ test('a company-scoped admin is refused the wizard, on screen and by the API', a
   expect(context).toMatchObject({ canCreate: false, refusalCode: 'not_group_scope', isGroupScope: false });
   // A well-formed body (the group owner's own defaults), so the refusal is the scope gate, not model validation.
   const body = ok(await call('GET', '/api/company-setup/defaults?country=SA', { token: await tenantToken(OWNER.email) }), 'defaults');
+  // Addendum A5: a company super admin may list drafts, but only their own company's existing-mode ones; creating stays group-only.
+  const drafts = await call('GET', '/api/company-setup/drafts', { token });
+  expect(drafts.status, 'GET drafts').toBe(200);
+  expect((drafts.body as any[]).every(d => d.existingCompanyId), 'only existing-mode drafts of their own company').toBe(true);
   for (const [method, p, sent] of [
-    ['GET', '/api/company-setup/drafts', undefined], ['GET', '/api/company-setup/defaults?country=SA', undefined],
+    ['GET', '/api/company-setup/defaults?country=SA', undefined],
     ['POST', '/api/company-setup/drafts', body], ['POST', '/api/company-setup/dry-run', body],
   ] as const) {
     const res = await call(method, p, { token, body: sent });

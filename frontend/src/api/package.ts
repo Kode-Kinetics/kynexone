@@ -210,11 +210,11 @@ export const packageApi = {
     client.post<{ confirmed: number }>(`/api/entitlements/package/proposals/${batchId}/confirm`, { contractId, documentId }).then((r) => r.data),
   rejectProposal: (batchId: string, contractId: string, reason: string) =>
     client.post<{ rejected: boolean }>(`/api/entitlements/package/proposals/${batchId}/reject`, { contractId, reason }).then((r) => r.data),
-  dependants: (employeeId: number) => client.get<Dependant[]>(`/api/entitlements/employees/${employeeId}/dependants`).then((r) => r.data),
+  dependants: (employeeId: number) => client.get<Dependant[]>(`/api/employees/${employeeId}/dependants`).then((r) => r.data),
   addDependant: (employeeId: number, input: DependantInput) =>
-    client.post<Dependant>(`/api/entitlements/employees/${employeeId}/dependants`, input).then((r) => r.data),
+    client.post<Dependant>(`/api/employees/${employeeId}/dependants`, input).then((r) => r.data),
   updateDependant: (employeeId: number, id: string, input: DependantInput) =>
-    client.put<Dependant>(`/api/entitlements/employees/${employeeId}/dependants/${id}`, input).then((r) => r.data),
-  removeDependant: (employeeId: number, id: string) => client.delete(`/api/entitlements/employees/${employeeId}/dependants/${id}`),
+    client.put<Dependant>(`/api/employees/${employeeId}/dependants/${id}`, input).then((r) => r.data),
+  removeDependant: (employeeId: number, id: string) => client.delete(`/api/employees/${employeeId}/dependants/${id}`),
   mine: () => client.get<EssPackage>('/api/ess/package').then((r) => r.data),
 };

@@ -41,6 +41,8 @@ import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '.
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { describeApiError } from '../lib/apiError';
+import { useEmployeeReferenceLists } from '../hooks/useReferenceLists';
+import { referenceLabel, referenceOptions, sameReferenceValue, type ReferenceValue } from '../lib/referenceLists';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
 const leaveTypesImportExport = {
@@ -1102,7 +1104,17 @@ export function LeaveTypesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boole
 
 // ── Policies Tab ──────────────────────────────────────────────────────────────
 
-function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: LeaveType[]; existing?: LeavePolicy; onClose: () => void; onSaved: () => void }) {
+/** Offered when the tenant's Employment Type reference list cannot be loaded. */
+const EMPLOYMENT_TYPE_FALLBACK = ['Full-Time', 'Part-Time', 'Contract', 'Intern'];
+
+/** A policy's Employment Type is a list stored comma-separated (backend LeavePolicyScope); empty = every type. */
+const splitEmploymentTypes = (stored: string | null | undefined) =>
+  (stored ?? '').split(',').map(s => s.trim()).filter(Boolean);
+
+const employmentTypesLabel = (values: readonly ReferenceValue[], stored: string, locale: string) =>
+  splitEmploymentTypes(stored).map(s => referenceLabel(values, s, locale)).join(', ');
+
+function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSaved }: { leaveTypes: LeaveType[]; employmentTypeValues: readonly ReferenceValue[]; existing?: LeavePolicy; onClose: () => void; onSaved: () => void }) {
   const isEdit = !!existing;
   const [form, setForm] = useState({
     name: existing?.name ?? '',
@@ -1113,7 +1125,9 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
     employmentType: existing?.employmentType ?? '',
     contractType: existing?.contractType ?? '',
     gender: existing?.gender ?? '',
+    nationalityScope: existing?.nationalityScope ?? 'Any',
     appliesOnProbation: existing?.appliesOnProbation ?? false,
+    minimumServiceMonths: existing?.minimumServiceMonths ?? 0,
     annualEntitlementDays: existing?.annualEntitlementDays ?? 21,
     accrualMethod: existing?.accrualMethod ?? 'Monthly',
     proratePartialMonths: existing?.proratePartialMonths ?? false,
@@ -1137,7 +1151,21 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
   const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
+  // Employment Type is several ticks. The tenant's reference list is offered (code stored, label shown); a stored
+  // value the list does not offer (retired, or typed before the list) stays ticked so an edit never drops it.
+  const employmentTypes = splitEmploymentTypes(form.employmentType);
+  const employmentOptions = referenceOptions(employmentTypeValues, locale, EMPLOYMENT_TYPE_FALLBACK);
+  for (const stored of employmentTypes) {
+    if (!employmentOptions.some(o => sameReferenceValue(employmentTypeValues, o.value, stored)))
+      employmentOptions.push({ value: stored, label: referenceLabel(employmentTypeValues, stored, locale) });
+  }
+  // '' is the "All" chip: ticking it clears the list.
+  const toggleEmploymentType = (value: string, on: boolean) => {
+    if (!value) { if (on) set('employmentType', ''); return; }
+    const rest = employmentTypes.filter(s => !sameReferenceValue(employmentTypeValues, s, value));
+    set('employmentType', (on ? [...rest, value] : rest).join(','));
+  };
   // Which Saudi statutory leave the selected type is, as the server classifies it: the Hajj waiver
   // only means something on a Hajj policy, and maternity/iddah are set by law in calendar time.
   const selectedLeaveType = leaveTypes.find(lt => lt.id === form.leaveTypeId);
@@ -1147,6 +1175,7 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
 
   const save = async () => {
     if (!form.name || !form.leaveTypeId) { setError('Name and Leave Type are required.'); return; }
+    if (form.encashmentAllowed && !(form.encashmentMaxDays > 0)) { setError(t('Enter the maximum days per encashment, or untick Encashment Allowed.')); return; }
     setSaving(true); setError('');
     try {
       if (isEdit) {
@@ -1179,17 +1208,32 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
           <Field label="Department (blank=all)"><input className={inp} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} /></Field>
           <Field label="Grade (blank=all)"><input className={inp} value={form.grade} onChange={e => set('grade', e.target.value)} /></Field>
         </div>
+        <fieldset className="min-w-0">
+          <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">{t('Employment Type')} <span className="font-normal text-slate-500 dark:text-slate-400">· {t('Tick one or more, or All')}</span></legend>
+          <div className="flex flex-wrap gap-2">
+            {[{ value: '', label: t('All') }, ...employmentOptions].map(o => {
+              const checked = o.value ? employmentTypes.some(s => sameReferenceValue(employmentTypeValues, s, o.value)) : employmentTypes.length === 0;
+              return (
+                <label key={o.value || '*'} className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-sm ${checked ? 'border-sapphire bg-sapphire/10 text-slate-900 dark:text-white' : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5'}`}>
+                  <input type="checkbox" className="rounded" checked={checked} onChange={e => toggleEmploymentType(o.value, e.target.checked)} />
+                  {o.label}
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Employment Type">
-            <select className={sel} value={form.employmentType} onChange={e => set('employmentType', e.target.value)}>
-              <option value="">All</option>
-              {['Full-Time', 'Part-Time', 'Contract', 'Intern'].map(t => <option key={t}>{t}</option>)}
-            </select>
-          </Field>
           <Field label="Contract Type"><input className={inp} value={form.contractType} onChange={e => set('contractType', e.target.value)} placeholder="All" /></Field>
           <Field label="Gender">
             <select className={sel} value={form.gender} onChange={e => set('gender', e.target.value)}>
               <option value="">All</option><option>Male</option><option>Female</option>
+            </select>
+          </Field>
+          <Field label={t('Nationality')} info={t('Locals are employees whose nationality is the country of their company (Saudi for a Saudi company). Create one policy for locals and one for expats to give them different notice, days or encashment. An employee with no nationality on file matches only an All policy.')}>
+            <select className={sel} value={form.nationalityScope} onChange={e => set('nationalityScope', e.target.value)}>
+              <option value="Any">{t('All')}</option>
+              <option value="National">{t('Locals')}</option>
+              <option value="Expatriate">{t('Expats')}</option>
             </select>
           </Field>
         </div>
@@ -1214,6 +1258,25 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
         </div>
 
         <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('Eligibility')}</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t('Service required before use (months)')} info={t('How long an employee must have worked, from the joining date, before this leave can be taken. 0 = from the first day. 12 = after one year. Leave still accrues from joining; it just cannot be used earlier. Statutory event leave (maternity, Hajj, bereavement) follows the law instead.')}>
+              <input type="number" min={0} max={600} step={1} className={inp} value={form.minimumServiceMonths} onChange={e => set('minimumServiceMonths', Math.max(0, Math.trunc(Number(e.target.value) || 0)))} />
+            </Field>
+            <label className="flex items-center gap-2 self-end pb-2 text-sm text-slate-700 dark:text-slate-300">
+              <input type="checkbox" checked={form.appliesOnProbation} onChange={e => set('appliesOnProbation', e.target.checked)} className="rounded" />{t('Can be taken during probation')}
+            </label>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            {form.minimumServiceMonths > 0
+              ? (form.appliesOnProbation
+                ? t('Can be taken after {months} month(s) of service.', { months: form.minimumServiceMonths })
+                : t('Can be taken after probation ends and after {months} month(s) of service.', { months: form.minimumServiceMonths }))
+              : (form.appliesOnProbation ? t('Can be taken from the joining date.') : t('Can be taken after probation ends.'))}
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Request Rules</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label="Min Days/Request"><input type="number" step="0.5" className={inp} value={form.minimumDaysPerRequest} onChange={e => set('minimumDaysPerRequest', Number(e.target.value))} /></Field>
@@ -1221,13 +1284,20 @@ function PolicyModal({ leaveTypes, existing, onClose, onSaved }: { leaveTypes: L
             <Field label="Notice Required (days)"><input type="number" className={inp} value={form.noticeRequiredDays} onChange={e => set('noticeRequiredDays', Number(e.target.value))} /></Field>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'], ['appliesOnProbation', 'Applies on Probation'],
+            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'],
                ...(statutoryKind === 'Hajj' ? [['allowsHajjBeyondStatutoryEligibility', 'Hajj: allow before 2 years or more than once']] : [])] as [keyof typeof form, string][]).map(([k, l]) => (
               <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                 <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{l}
               </label>
             ))}
           </div>
+          {form.encashmentAllowed && (
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field label={t('Max days per encashment *')} info={t('The most days an employee can convert to cash in one encashment request. Paid through payroll at gross ÷ 30 per day.')}>
+                <input type="number" min={0.5} step={0.5} className={inp} value={form.encashmentMaxDays} onChange={e => set('encashmentMaxDays', Number(e.target.value))} />
+              </Field>
+            </div>
+          )}
           {calendarSpanOnWorkingDays && (
             <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
               {t('For employees in Saudi Arabia this leave is set by law in calendar time (maternity: 12 weeks, 84 days). Tick Count Weekends and Count Public Holidays and set at least the statutory days.')}
@@ -1277,6 +1347,8 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
   useEffect(load, [statusFilter]);
 
   const typeName = (id: string) => leaveTypes.find(t => t.id === id)?.nameEn ?? id;
+  const { locale } = useLocale();
+  const { lists: referenceLists } = useEmployeeReferenceLists();
 
   const archive = async (id: string, name: string) => {
     if (!confirm(`Archive "${name}"? It will no longer be applied to new requests.`)) return;
@@ -1310,6 +1382,7 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
                   {typeName(p.leaveTypeId)} · {p.countryCode} · {p.annualEntitlementDays}d/yr · {p.accrualMethod}
                   {p.departmentName ? ` · ${p.departmentName}` : ' · All depts'}
                   {p.grade ? ` · Grade ${p.grade}` : ''}
+                  {p.employmentType ? ` · ${employmentTypesLabel(referenceLists.employmentType, p.employmentType, locale)}` : ''}
                 </p>
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                   {p.encashmentAllowed && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Encashment ✓</span>}
@@ -1333,8 +1406,8 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
           ))}
         </div>
       )}
-      {showCreate && <PolicyModal leaveTypes={leaveTypes} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
-      {editPolicy && <PolicyModal leaveTypes={leaveTypes} existing={editPolicy} onClose={() => setEditPolicy(null)} onSaved={() => { setEditPolicy(null); load(); }} />}
+      {showCreate && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
+      {editPolicy && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} existing={editPolicy} onClose={() => setEditPolicy(null)} onSaved={() => { setEditPolicy(null); load(); }} />}
     </div>
   );
 }

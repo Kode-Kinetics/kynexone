@@ -56,6 +56,8 @@ public partial class LoansController : ControllerBase
             return BadRequest(new { error = LoanEligibilityCodes.InterestNotPermitted, message = LoanEligibilityCodes.InterestNotPermittedText });
         if (req.MaxInstallments is < 1 or > 600 || req.MinServiceMonths is < 0 or > 600 || req.MaxAmount < 0 || decimal.Round(req.MaxAmount, 2) != req.MaxAmount || req.MaxAmount > 999999999999.99m)
             return BadRequest("Set 1–600 maximum installments and a nonnegative two-decimal maximum amount.");
+        if (req.MinInstallments < 1 || req.MinInstallments > req.MaxInstallments)
+            return BadRequest(new { error = "invalid_min_installments", message = $"Set the shortest repayment between 1 and the longest repayment ({req.MaxInstallments} instalments)." });
         if (string.IsNullOrWhiteSpace(req.Code) || req.Code.Trim().Length > 50)
             return BadRequest(new { error = "invalid_code", message = "Enter a loan type code of up to 50 characters." });
         if (await _db.LoanTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
@@ -72,7 +74,7 @@ public partial class LoansController : ControllerBase
         var t = new LoanType
         {
             TenantId = tid, Code = req.Code, NameEn = req.NameEn, NameAr = req.NameAr ?? string.Empty,
-            MaxAmount = req.MaxAmount, MaxInstallments = req.MaxInstallments,
+            MaxAmount = req.MaxAmount, MaxInstallments = req.MaxInstallments, MinInstallments = req.MinInstallments,
             RepaymentFrequency = req.RepaymentFrequency, IsInterestFree = req.IsInterestFree,
             InterestRate = req.InterestRate, MinServiceMonths = req.MinServiceMonths,
             RequiresApproval = req.RequiresApproval, CreatedBy = GetUserId(),
@@ -728,7 +730,7 @@ public partial class LoansController : ControllerBase
     }
 }
 
-public record LoanTypeRequest(string Code, string NameEn, string? NameAr, decimal MaxAmount, int MaxInstallments, string RepaymentFrequency, bool IsInterestFree, decimal InterestRate, int MinServiceMonths, bool RequiresApproval);
+public record LoanTypeRequest(string Code, string NameEn, string? NameAr, decimal MaxAmount, int MaxInstallments, string RepaymentFrequency, bool IsInterestFree, decimal InterestRate, int MinServiceMonths, bool RequiresApproval, int MinInstallments = 1);
 /// <param name="ConsentDocumentId">Release A, Art. 92: the employee's signed LoanDeductionConsent document (uploaded to their file by
 /// HR), required when the instalment deducted from pay is above 10% of the wage.</param>
 public record CreateLoanRequest(Guid EmployeeId, string EmployeeName, Guid LoanTypeId, decimal RequestedAmount, int RequestedInstallments, string? Notes, int? EmployeeIntId = null, string RepaymentMethod = "BankTransfer", bool RequestPolicyException = false, Guid? ConsentDocumentId = null);

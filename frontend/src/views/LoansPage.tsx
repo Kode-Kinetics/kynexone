@@ -76,13 +76,14 @@ function StatusBadge({ status, enumName = 'LoanStatus' }: { status: string; enum
   );
 }
 
-function FormField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function FormField({ label, required, hint, children }: { label: string; required?: boolean; hint?: string; children: React.ReactNode }) {
   return (
     <div>
       <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
         {label}{required && <span className="ms-0.5 text-red-500">*</span>}
       </label>
       {children}
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
     </div>
   );
 }
@@ -169,10 +170,11 @@ function AuditTrailTable({ logs }: { logs: AuditLogEntry[] }) {
 
 function LoanTypesTab() {
   const { currencyCode } = useTenantSettings();
+  const { t: tr } = useLocale();
   const [items, setItems] = useState<LoanType[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', maxAmount: 0, maxInstallments: 12, repaymentFrequency: 'Monthly', isInterestFree: true, interestRate: 0, minServiceMonths: 6, requiresApproval: true });
+  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', maxAmount: 0, maxInstallments: 12, minInstallments: 1, repaymentFrequency: 'Monthly', isInterestFree: true, interestRate: 0, minServiceMonths: 6, requiresApproval: true });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -189,6 +191,7 @@ function LoanTypesTab() {
 
   const save = async () => {
     if (!form.code.trim() || !form.nameEn.trim()) { setError('Code and name are required'); return; }
+    if (!Number.isInteger(form.minInstallments) || form.minInstallments < 1 || form.minInstallments > form.maxInstallments) { setError(tr('The shortest repayment cannot be longer than the longest repayment.')); return; }
     setSaving(true); setError('');
     try { await loanTypesApi.create(form); setModalOpen(false); load(); }
     catch (e) { setError(apiErrorReason(e, 'Failed to save.')); }
@@ -200,7 +203,7 @@ function LoanTypesTab() {
     <>
       <div className="space-y-4">
         <div className="flex justify-end">
-          <button type="button" onClick={() => { setForm({ code: '', nameEn: '', nameAr: '', maxAmount: 0, maxInstallments: 12, repaymentFrequency: 'Monthly', isInterestFree: true, interestRate: 0, minServiceMonths: 6, requiresApproval: true }); setError(''); setModalOpen(true); }} className="btn-primary">
+          <button type="button" onClick={() => { setForm({ code: '', nameEn: '', nameAr: '', maxAmount: 0, maxInstallments: 12, minInstallments: 1, repaymentFrequency: 'Monthly', isInterestFree: true, interestRate: 0, minServiceMonths: 6, requiresApproval: true }); setError(''); setModalOpen(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> New Loan Type
           </button>
         </div>
@@ -246,7 +249,8 @@ function LoanTypesTab() {
           <FormField label="Name (EN)" required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" title="Name (EN)" /></FormField>
           <FormField label="Name (AR)"><div className="flex items-stretch gap-1.5"><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" title="Name (AR)" /><TransliterateButton source={form.nameEn} onSuggest={(s) => f('nameAr', s)} /></div></FormField>
           <FormField label={`Max Amount (${currencyCode})`} required><input type="number" value={form.maxAmount} onChange={(e) => f('maxAmount', Number(e.target.value))} className="input w-full" title="Max Amount" /></FormField>
-          <FormField label="Max Installments"><input type="number" value={form.maxInstallments} onChange={(e) => f('maxInstallments', Number(e.target.value))} className="input w-full" title="Max Installments" /></FormField>
+          <FormField label={tr('Shortest repayment (instalments)')} hint={tr('The fewest instalments an employee may choose. 1 = no minimum.')}><input type="number" min={1} max={form.maxInstallments || undefined} step={1} value={form.minInstallments} onChange={(e) => f('minInstallments', Number(e.target.value))} className="input w-full" title={tr('Shortest repayment (instalments)')} /></FormField>
+          <FormField label={tr('Longest repayment (instalments)')}><input type="number" min={1} max={600} step={1} value={form.maxInstallments} onChange={(e) => f('maxInstallments', Number(e.target.value))} className="input w-full" title={tr('Longest repayment (instalments)')} /></FormField>
           <FormField label="Repayment Frequency">
             <select value={form.repaymentFrequency} onChange={(e) => f('repaymentFrequency', e.target.value)} className="select w-full" title="Repayment Frequency">
               {['Monthly', 'Weekly', 'BiWeekly', 'Quarterly'].map((v) => <option key={v}>{v}</option>)}
@@ -354,6 +358,21 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [createModal, createForm.loanTypeId, applicantId, staff, mine, previewKey]);
   const currentPreview = preview?.key === previewKey ? preview.result : null;
+  // The repayment range for this applicant and type (the stricter of type and policy). The preview knows it as soon as
+  // a type is chosen; an older API without it falls back to the type's own limits.
+  const rangeSource = checkedEligibility ?? currentPreview;
+  const selectedType = loanTypes.find(type => type.id === createForm.loanTypeId);
+  const minInstallments = Math.max(1, rangeSource?.minInstallments ?? selectedType?.minInstallments ?? 1);
+  const maxInstallments = rangeSource?.maxInstallments ?? selectedType?.maxInstallments ?? null;
+  const rangeKnown = !!createForm.loanTypeId && maxInstallments != null && maxInstallments >= minInstallments;
+  useEffect(() => {
+    // Keep the chosen count inside the allowed range once it is known (a new type can only narrow or move it).
+    if (!rangeKnown || maxInstallments == null) return;
+    setCreateForm(x => {
+      const clamped = Math.min(Math.max(x.requestedInstallments, minInstallments), maxInstallments);
+      return clamped === x.requestedInstallments ? x : { ...x, requestedInstallments: clamped };
+    });
+  }, [rangeKnown, minInstallments, maxInstallments]);
   const notOffered = isLoanTypeNotOffered(checkedEligibility) || isLoanTypeNotOffered(currentPreview);
   // Grade limits are hard: no policy exception can lift them.
   const gradeBlocked = isGradeBlocked(checkedEligibility);
@@ -365,7 +384,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
   // reason is shown from its CODE, in the UI language — never the server's English sentence or the raw code.
   const otherReasons = checkedEligibility
     ? Array.from(new Set((checkedEligibility.codes ?? []).filter(code => !code.startsWith('Grade') && code !== 'LoanTypeNotOffered')
-      .map(code => t(reasonKeyFor(code, self)))))
+      .map(code => t(reasonKeyFor(code, self), { min: checkedEligibility.minInstallments ?? minInstallments }))))
     : [];
   const notOfferedText = t(self ? "Loans of this type aren't offered by your company." : "Loans of this type aren't offered by this employee's company.");
   const checkEligibility = async () => {
@@ -393,6 +412,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     if ((!applicantId && staff && !mine) || !createForm.loanTypeId) { setError(t('Select an employee and loan type')); return; }
     if (!canSubmit || !eligibility) { setError(notOffered || gradeBlocked ? t('This request cannot be submitted. The reason is shown under Check Eligibility.') : t('Check eligibility for the current request before submitting.')); return; }
     if (createForm.requestedAmount <= 0 || !Number.isInteger(createForm.requestedInstallments) || createForm.requestedInstallments < 1) { setError(t('Enter a positive amount and a whole number of installments.')); return; }
+    if (rangeKnown && maxInstallments != null && (createForm.requestedInstallments < minInstallments || createForm.requestedInstallments > maxInstallments)) { setError(t('Choose between {min} and {max} instalments.', { min: minInstallments, max: maxInstallments })); return; }
     setSaving(true); setError('');
     try {
       await loansApi.create({
@@ -523,8 +543,8 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <FormField label={t('Amount (employee company currency)')} required>
               <input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title={t('Requested amount')} min="1" />
             </FormField>
-            <FormField label={t('Installments')}>
-              <input type="number" value={createForm.requestedInstallments} onChange={(e) => setCreateForm(x => ({ ...x, requestedInstallments: Number(e.target.value) }))} className="input w-full" title={t('Requested installments')} min="1" />
+            <FormField label={t('Installments')} hint={rangeKnown && maxInstallments != null ? t('Repay over {min}–{max} instalments', { min: minInstallments, max: maxInstallments }) : undefined}>
+              <input type="number" value={createForm.requestedInstallments} onChange={(e) => setCreateForm(x => ({ ...x, requestedInstallments: Number(e.target.value) }))} className="input w-full" title={t('Requested installments')} min={minInstallments} max={rangeKnown && maxInstallments != null ? maxInstallments : undefined} step={1} />
             </FormField>
             <FormField label={t('Repayment method')} required>
               <select title={t('Repayment method')} className="select w-full" value={createForm.repaymentMethod} onChange={e => setCreateForm(x => ({ ...x, repaymentMethod: e.target.value as LoanRepaymentMethod }))}>
@@ -729,8 +749,9 @@ function AdvancePolicyTab() {
           <FormField label="Cooldown (months)"><input type="number" value={form.cooldownMonths ?? 3} onChange={(e) => f('cooldownMonths', Number(e.target.value))} className="input w-full" title="Cooldown (months)" /></FormField>
           <div className="flex gap-6">
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.allowInstallments ?? false} onChange={(e) => f('allowInstallments', e.target.checked)} className="h-4 w-4 accent-sapphire" title="Allow Installments" /> Allow Installments</label>
-            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input type="checkbox" checked={form.requiresApproval ?? false} onChange={(e) => f('requiresApproval', e.target.checked)} className="h-4 w-4 accent-sapphire" title="Requires Approval" /> Requires Approval</label>
           </div>
+          {/* Not a setting: every advance waits for a second person, whatever the policy's stored flag says. */}
+          <p className="text-xs text-slate-600 dark:text-slate-300">Every advance is approved by someone other than the requester and the employee before it is paid.</p>
           {form.allowInstallments && (
             <FormField label="Max Installments"><input type="number" value={form.maxInstallments ?? 3} onChange={(e) => f('maxInstallments', Number(e.target.value))} className="input w-full" title="Max Installments" /></FormField>
           )}

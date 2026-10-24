@@ -12,10 +12,22 @@ test('ai_setup_defaults_to_guided', () => {
   });
 });
 
-test('mode_starter_remains_guided', () => {
+test('legacy_mode_starter_opens_the_guided_chooser_and_is_rewritten', () => {
+  // Addendum A7: the old studio's address now lands on Guided setup (the company setup chooser), canonicalised.
   expect(resolveSetupPath(new URLSearchParams('tab=aiSetup&mode=starter&area=leave&setting=leavePolicies&companyId=fixture-company'), context)).toEqual({
-    path: 'guided', area: 'leave', setting: 'leavePolicies', companyId: 'fixture-company', needsReplace: false,
+    path: 'guided', area: 'leave', setting: 'leavePolicies', companyId: 'fixture-company', needsReplace: true,
   });
+  const next = serializeSetupPath(resolveSetupPath(new URLSearchParams('tab=aiSetup&mode=starter&companyId=fixture-company'), context), new URLSearchParams());
+  expect(next.get('path')).toBe('guided');
+  expect(next.get('mode')).toBeNull();
+  expect(next.get('companyId')).toBe('fixture-company');
+});
+
+test('path_policy_starter_opens_the_old_studio_under_configuration_center', () => {
+  expect(resolveSetupPath(new URLSearchParams('tab=aiSetup&path=policyStarter&companyId=fixture-company'), context)).toEqual({
+    path: 'policyStarter', area: 'overview', setting: null, companyId: 'fixture-company', needsReplace: false,
+  });
+  expect(serializeSetupPath(resolveSetupPath(new URLSearchParams('tab=aiSetup&path=policyStarter'), context), new URLSearchParams()).get('path')).toBe('policyStarter');
 });
 
 test('path_configuration_opens_configuration', () => {

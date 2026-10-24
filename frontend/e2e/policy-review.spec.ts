@@ -61,7 +61,7 @@ async function boot(page: Page, options: { repeatedCoverage?: boolean; noProposa
     if (request.method() !== 'GET') return reply({ message: `Unexpected write ${path}` }, 500);
     return reply({ items: [], total: 0 });
   });
-  await page.goto(options.singleCompany ? '/setup?tab=aiSetup&mode=starter' : `/setup?tab=aiSetup&mode=starter&companyId=${companyId}`);
+  await page.goto(options.singleCompany ? '/setup?tab=aiSetup&path=policyStarter' : `/setup?tab=aiSetup&path=policyStarter&companyId=${companyId}`);
   await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible({ timeout: 30_000 });
   await page.getByLabel(/^Industry/).fill('Services');
   return { writes, reviewSaves, history, previews, pageErrors };

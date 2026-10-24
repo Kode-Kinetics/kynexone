@@ -1,6 +1,10 @@
 import { SETUP_AREAS, type SetupAreaId } from './setupAreas';
 
-export type SetupStudioPath = 'guided' | 'configuration';
+/**
+ * guided = the company setup chooser (create, or complete an existing company); configuration = All setup areas;
+ * policyStarter = the old studio ("Policy starter"), kept for what has no screen of its own (A7).
+ */
+export type SetupStudioPath = 'guided' | 'configuration' | 'policyStarter';
 
 export type SetupPathResolution = {
   path: SetupStudioPath;
@@ -24,7 +28,7 @@ export function resolveSetupPath(params: URLSearchParams, context: SetupPathCont
   const requestedArea = params.get('area');
   const requestedSetting = params.get('setting');
   const requestedCompany = params.get('companyId');
-  let needsReplace = requestedPath !== null && requestedPath !== 'guided' && requestedPath !== 'configuration';
+  let needsReplace = requestedPath !== null && requestedPath !== 'guided' && requestedPath !== 'configuration' && requestedPath !== 'policyStarter';
   let notice: SetupPathResolution['notice'];
 
   let companyId: string | null;
@@ -42,16 +46,22 @@ export function resolveSetupPath(params: URLSearchParams, context: SetupPathCont
   }
 
   const hasLegacyConfigurationTarget = requestedArea !== null || requestedSetting !== null;
+  // The old studio's own address (`mode=starter`) is a legacy link: it opens Guided setup, which is now the
+  // company setup chooser (Addendum A7), and is rewritten to the canonical path.
+  const legacyStarter = params.get('mode') === 'starter';
   const path: SetupStudioPath = requestedPath === 'configuration'
     ? 'configuration'
     : requestedPath === 'guided'
       ? 'guided'
-      : params.get('mode') === 'starter'
-        ? 'guided'
-        : hasLegacyConfigurationTarget
-          ? 'configuration'
-          : 'guided';
-  if (requestedPath === null && hasLegacyConfigurationTarget && params.get('mode') !== 'starter') needsReplace = true;
+      : requestedPath === 'policyStarter'
+        ? 'policyStarter'
+        : legacyStarter
+          ? 'guided'
+          : hasLegacyConfigurationTarget
+            ? 'configuration'
+            : 'guided';
+  if (requestedPath === null && hasLegacyConfigurationTarget && !legacyStarter) needsReplace = true;
+  if (legacyStarter) needsReplace = true;
 
   let area: SetupAreaId | 'overview' = requestedArea && areaIds.has(requestedArea as SetupAreaId)
     ? requestedArea as SetupAreaId

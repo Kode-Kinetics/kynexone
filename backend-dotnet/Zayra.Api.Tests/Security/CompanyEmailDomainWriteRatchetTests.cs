@@ -20,6 +20,9 @@ public sealed class CompanyEmailDomainWriteRatchetTests
         ["Controllers/PlatformController.cs"] = 1,
         // CompanyRequest / CompanyDto parameter defaults, not writes.
         ["Application/Organization/OrganizationDtos.cs"] = 2,
+        // The A9 three-way merge picks the draft's or the stored value into the in-memory draft record (`co with { … }`),
+        // not the entity. The company row is then written only through UpdateCompanyAsync, which calls EnsureCallerMaySetAsync.
+        ["Infrastructure/CompanySetup/CompanySetupPlanner.cs"] = 1,
     };
 
     private static readonly Regex Assignment = new(@"\bEmailDomain\s*=(?!=)", RegexOptions.Compiled);

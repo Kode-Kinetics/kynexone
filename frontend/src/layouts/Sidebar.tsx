@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, ChevronDown, LogOut, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, LogOut, ShieldCheck, X } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
 import { Logo } from '../components/Logo';
@@ -235,7 +235,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     }`}
                   >
                     <span
-                      className={`text-[10px] font-bold uppercase tracking-[0.14em] transition-colors duration-150 ${
+                      className={`text-[10px] font-bold uppercase tracking-[0.14em] transition-colors duration-150 rtl:text-[13px] rtl:normal-case rtl:tracking-normal ${
                         hasActiveItem
                           ? 'text-sapphire dark:text-[#7AABFF]'
                           : 'text-slate-400 group-hover/hdr:text-slate-600 dark:text-slate-600 dark:group-hover/hdr:text-slate-400'
@@ -259,7 +259,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     aria-expanded={isExpanded}
                     aria-controls={groupId}
                     onClick={() => toggleGroup(group.label)}
-                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-[9px] font-bold uppercase tracking-wider transition ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-[#7AABFF]' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
+                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-[9px] font-bold uppercase tracking-wider transition rtl:normal-case rtl:tracking-normal ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-[#7AABFF]' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
                   >
                     {group.label.split(/\s+/).map((word) => word[0]).join('').slice(0, 2)}
                   </button>
@@ -352,6 +352,16 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
             </div>
           ) : (
             <div className="p-2">
+              {/* The person's own sign-in settings, in words: the top bar's user menu is hidden on phones. */}
+              <button
+                type="button"
+                onClick={(event) => handleNav('/account/security', event.currentTarget)}
+                aria-current={pathname === '/account/security' ? 'page' : undefined}
+                className="mb-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-2 text-start text-[13px] font-medium text-slate-600 transition hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-100"
+                data-testid="sidebar-sign-in-security"
+              >
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden /> {t('Sign-in security')}
+              </button>
               <div className="flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-1.5 transition hover:border-slate-200/70 hover:bg-white/70 dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05]">
                 <Avatar name={user?.fullName ?? 'User'} size="sm" />
                 <div className="min-w-0 flex-1 text-start">

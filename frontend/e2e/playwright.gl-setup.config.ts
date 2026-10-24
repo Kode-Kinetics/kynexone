@@ -18,5 +18,10 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     viewport: { width: 1440, height: 1000 },
   },
-  projects: [{ name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } }],
+  projects: [
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } },
+    // CI's Browser Pilot runs this spec at Desktop Chrome's default size, where Setup's section column leaves
+    // the GL tables narrower than their minimum width; the accessibility check must hold there too.
+    { name: 'laptop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } } },
+  ],
 });

@@ -74,11 +74,43 @@ public static class SsrfGuard
     }
 
     /// <summary>
-    /// An HttpClientHandler that does NOT auto-follow redirects — mandatory for guarded outbound calls
-    /// so a validated host cannot 3xx-redirect the request to an internal address post-validation.
+    /// A handler for guarded outbound calls:
+    ///   - it does NOT auto-follow redirects, so a validated host cannot 3xx-redirect the request to an internal address;
+    ///   - it re-resolves the host at CONNECT time and refuses to open a socket to any blocked address, then connects to
+    ///     exactly the addresses it checked. <see cref="ValidateOutboundUrlAsync"/> runs earlier, so without this a DNS
+    ///     name that answered with a public address for the check and a private one for the connect (DNS rebinding)
+    ///     would reach an internal service;
+    ///   - it uses no proxy, so the address that is checked is the address that is connected to.
     /// </summary>
-    public static HttpClientHandler CreateGuardedClientHandler() =>
-        new() { AllowAutoRedirect = false };
+    public static SocketsHttpHandler CreateGuardedClientHandler() => new()
+    {
+        AllowAutoRedirect = false,
+        UseProxy = false,
+        ConnectCallback = ConnectToAllowedAddressAsync,
+    };
+
+    /// <summary>Raised when a connect-time resolution of a guarded host lands on a blocked address.</summary>
+    public sealed class BlockedAddressException(string host) : IOException($"Connection to '{host}' was refused: it resolves to a disallowed address.");
+
+    private static async ValueTask<Stream> ConnectToAllowedAddressAsync(SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var host = context.DnsEndPoint.Host;
+        IPAddress[] addresses = IPAddress.TryParse(host, out var literal) ? [literal] : await Dns.GetHostAddressesAsync(host, ct);
+        if (addresses.Length == 0 || addresses.Any(IsBlockedAddress))
+            throw new BlockedAddressException(host);
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(addresses, context.DnsEndPoint.Port, ct);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
 
     private static bool IsBlockedAddress(IPAddress ip)
     {
