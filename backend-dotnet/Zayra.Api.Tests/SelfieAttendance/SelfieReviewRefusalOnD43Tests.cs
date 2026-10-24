@@ -116,36 +116,19 @@ public class SelfieReviewRefusalOnD43Tests : PlatformTestBase
         }
     }
 
-    // ── Item 7: only a platform Owner enables, and the sign-off must be real ────────────────────────────────
-
-    [Fact]
-    public async Task Item7_APlatformAdmin_CannotEnableSelfieAttendance_ButCanSwitchItOff()
-    {
-        await using var db = CreateDb();
-        var tenantId = await TenantAsync(db);
-        var admin = CreateController(db, platformRole: PlatformRoles.Admin);
-
-        var enable = await admin.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, SelfieWorld.SignedOffConfig()), default);
-
-        Assert.IsNotType<OkObjectResult>(enable);
-        Assert.False(await db.TenantFeatureFlags.AnyAsync(f => f.FeatureKey == SelfieWorld.SelfieKey && f.IsEnabled));
-        // Positive control: the kill switch stays with Admin.
-        Assert.IsType<OkObjectResult>(await admin.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(false, null), default));
-    }
+    // ── Item 7: the sign-off must be real ──────────────────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("someone", "x", "now")]                    // signer not a platform user id, reference not DPIA-YYYY-NNN
+    [InlineData("someone", "x", "now")]                    // signer not a user id, reference not DPIA-YYYY-NNN
     [InlineData("guid", "DPIA-2026-007", "future")]         // signed off in the future
     [InlineData("guid", "DPIA-2026-007", "2019-06-01T00:00:00Z")] // before 2026-01-01
-    [InlineData("unknown-guid", "DPIA-2026-007", "now")]    // a well-formed id that is no platform user
-    public async Task Item7_JunkSignOffs_AreRefused_EvenFromANamedOwner(string signer, string reference, string signedAt)
+    [InlineData("unknown-guid", "DPIA-2026-007", "now")]    // a well-formed id that is no user of the organisation
+    public async Task Item7_JunkSignOffs_AreRefused_EvenFromTheAdministrator(string signer, string reference, string signedAt)
     {
         await using var db = CreateDb();
         var tenantId = await TenantAsync(db);
         var ownerId = Guid.NewGuid();
-        db.PlatformUsers.Add(new PlatformUser { Id = ownerId, Email = "owner@p.test", FullName = "Owner", PasswordHash = "x", Role = PlatformRoles.Owner });
-        await db.SaveChangesAsync();
-        var owner = AsNamedOwner(CreateController(db), ownerId);
+        var owner = await SelfieWorld.OrganisationAdminAsync(db, tenantId, ownerId);
         var now = DateTime.UtcNow;
         var config = JsonSerializer.Serialize(new
         {
@@ -158,7 +141,7 @@ public class SelfieReviewRefusalOnD43Tests : PlatformTestBase
             dataResidency = new { region = "KSA", confirmedBy = "someone", confirmedAtUtc = now.AddMinutes(-5).ToString("O") },
         });
 
-        var result = await owner.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, config), default);
+        var result = await owner.SetFeature(SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, config), default);
 
         Assert.IsNotType<OkObjectResult>(result);
         Assert.False(await db.TenantFeatureFlags.AnyAsync(f => f.FeatureKey == SelfieWorld.SelfieKey && f.IsEnabled));
@@ -270,24 +253,6 @@ public class SelfieReviewRefusalOnD43Tests : PlatformTestBase
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "T", Slug = $"t-{tenantId:N}" });
         await db.SaveChangesAsync();
         return tenantId;
-    }
-
-    /// <summary>A platform Owner as a real platform token carries it: the subject is the platform user's id.</summary>
-    private static PlatformController AsNamedOwner(PlatformController controller, Guid ownerId)
-    {
-        controller.ControllerContext = new ControllerContext
-        {
-            HttpContext = new DefaultHttpContext
-            {
-                User = new ClaimsPrincipal(new ClaimsIdentity(
-                [
-                    new Claim("sub", ownerId.ToString()), new Claim(ClaimTypes.NameIdentifier, ownerId.ToString()),
-                    new Claim(ClaimTypes.Role, "PlatformAdmin"), new Claim("is_platform_admin", "true"),
-                    new Claim("platform_role", PlatformRoles.Owner),
-                ], "Test")),
-            },
-        };
-        return controller;
     }
 
     /// <summary>

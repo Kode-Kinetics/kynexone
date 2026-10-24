@@ -32,8 +32,7 @@ public class LoginActivityTests : PlatformTestBase
         var jwt = Options.Create(new JwtOptions
         {
             Issuer           = "Zayra.Tests",
-            TenantAudience   = "kynexone-tenant-test",
-            PlatformAudience = "kynexone-platform-test",
+            Audience   = "kynexone-tenant-test",
             SigningKey        = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
             AccessTokenMinutes = 30,
             RefreshTokenDays   = 7
@@ -191,76 +190,62 @@ public class LoginActivityTests : PlatformTestBase
         activity.Should().NotBeNull("forgot-password must create a password_reset_requested activity");
     }
 
-    // ── Platform admin filter by tenant ──────────────────────────────────────
+    // ── The organisation's administrators read the record ────────────────────
+
+    private static TenantAdminController Admin(Zayra.Api.Data.ZayraDbContext db, Guid tenantId) => new(db)
+    {
+        ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
+        {
+            HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+            {
+                User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+                    [new System.Security.Claims.Claim("tenant_id", tenantId.ToString())], "Test")),
+            },
+        },
+    };
+
+    private static int Total(IActionResult result)
+    {
+        var ok = result.Should().BeOfType<OkObjectResult>().Subject;
+        using var doc = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(ok.Value));
+        return doc.RootElement.GetProperty("total").GetInt32();
+    }
 
     [Fact]
-    public async Task PlatformAdmin_CanFilterLoginActivity_ByTenant()
+    public async Task Administrator_SeesOnlyTheOrganisationsOwnLoginActivity()
     {
         await using var db = CreateDb();
-        var tenantA = Guid.NewGuid();
-        var tenantB = Guid.NewGuid();
+        var organisation = Guid.NewGuid();
 
         db.LoginActivities.AddRange(
-            new LoginActivity { TenantId = tenantA, EventType = LoginEventTypes.LoginSuccess,  OccurredAtUtc = DateTime.UtcNow },
-            new LoginActivity { TenantId = tenantA, EventType = LoginEventTypes.LoginFailed,   OccurredAtUtc = DateTime.UtcNow },
-            new LoginActivity { TenantId = tenantB, EventType = LoginEventTypes.LoginSuccess,  OccurredAtUtc = DateTime.UtcNow }
+            new LoginActivity { TenantId = organisation, EventType = LoginEventTypes.LoginSuccess, OccurredAtUtc = DateTime.UtcNow },
+            new LoginActivity { TenantId = organisation, EventType = LoginEventTypes.LoginFailed,  OccurredAtUtc = DateTime.UtcNow },
+            new LoginActivity { TenantId = Guid.NewGuid(), EventType = LoginEventTypes.LoginSuccess, OccurredAtUtc = DateTime.UtcNow },
+            new LoginActivity { TenantId = null, EventType = LoginEventTypes.LoginFailed, OccurredAtUtc = DateTime.UtcNow }
         );
         await db.SaveChangesAsync();
 
-        var controller = CreateController(db);
-        var result = await controller.ListLoginActivity(tenantA, null, null, null, null, 1, 50, CancellationToken.None);
+        var result = await Admin(db, organisation).ListLoginActivity(null, null, null, null, 1, 50, CancellationToken.None);
 
-        var ok   = result.Should().BeOfType<OkObjectResult>().Subject;
-        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
-        var doc  = System.Text.Json.JsonDocument.Parse(json);
-        var total = doc.RootElement.GetProperty("total").GetInt32();
-
-        total.Should().Be(2, "filtering by tenantA must return only tenantA rows");
+        Total(result).Should().Be(2, "rows with another or no organisation are never shown");
     }
-
-    // ── Cross-tenant isolation ────────────────────────────────────────────────
-
-    [Fact]
-    public async Task LoginActivity_TenantA_NotReturnedForTenantBFilter()
-    {
-        await using var db = CreateDb();
-        var tenantA = Guid.NewGuid();
-        var tenantB = Guid.NewGuid();
-
-        db.LoginActivities.Add(new LoginActivity { TenantId = tenantA, EventType = LoginEventTypes.LoginSuccess });
-        await db.SaveChangesAsync();
-
-        var controller = CreateController(db);
-        var result = await controller.ListLoginActivity(tenantB, null, null, null, null, 1, 50, CancellationToken.None);
-
-        var ok   = result.Should().BeOfType<OkObjectResult>().Subject;
-        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
-        var doc  = System.Text.Json.JsonDocument.Parse(json);
-        doc.RootElement.GetProperty("total").GetInt32().Should().Be(0, "tenantB filter must not expose tenantA data");
-    }
-
-    // ── Filter by eventType ───────────────────────────────────────────────────
 
     [Fact]
     public async Task LoginActivity_FilterByEventType_ReturnsOnlyMatchingRows()
     {
         await using var db = CreateDb();
-        var tenant = Guid.NewGuid();
+        var organisation = Guid.NewGuid();
 
         db.LoginActivities.AddRange(
-            new LoginActivity { TenantId = tenant, EventType = LoginEventTypes.LoginSuccess },
-            new LoginActivity { TenantId = tenant, EventType = LoginEventTypes.LoginFailed  },
-            new LoginActivity { TenantId = tenant, EventType = LoginEventTypes.LoginFailed  }
+            new LoginActivity { TenantId = organisation, EventType = LoginEventTypes.LoginSuccess },
+            new LoginActivity { TenantId = organisation, EventType = LoginEventTypes.LoginFailed  },
+            new LoginActivity { TenantId = organisation, EventType = LoginEventTypes.LoginFailed  }
         );
         await db.SaveChangesAsync();
 
-        var controller = CreateController(db);
-        var result = await controller.ListLoginActivity(tenant, null, LoginEventTypes.LoginFailed, null, null, 1, 50, CancellationToken.None);
+        var result = await Admin(db, organisation).ListLoginActivity(null, LoginEventTypes.LoginFailed, null, null, 1, 50, CancellationToken.None);
 
-        var ok   = result.Should().BeOfType<OkObjectResult>().Subject;
-        var json = System.Text.Json.JsonSerializer.Serialize(ok.Value);
-        var doc  = System.Text.Json.JsonDocument.Parse(json);
-        doc.RootElement.GetProperty("total").GetInt32().Should().Be(2);
+        Total(result).Should().Be(2);
     }
 }
 
@@ -285,10 +270,4 @@ internal sealed class NullMfaService : IMfaService
     public Task<User?> VerifyChallengeAsync(string token, string code, CancellationToken c) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid u, Guid t, string code, CancellationToken c) => throw new NotImplementedException();
     public Task<bool> AdminDisableAsync(Guid u, Guid t, RequestContext context, CancellationToken c) => throw new NotImplementedException();
-    public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken c) => throw new NotImplementedException();
-    public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest r, CancellationToken c) => throw new NotImplementedException();
-    public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken c) => throw new NotImplementedException();
-    public Task<PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken c) => throw new NotImplementedException();
-    public Task<PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken c) => throw new NotImplementedException();
-    public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken c) => throw new NotImplementedException();
 }

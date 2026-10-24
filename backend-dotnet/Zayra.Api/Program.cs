@@ -135,34 +135,28 @@ builder.Services.Configure<HostOptions>(options =>
 
 // ── P3: JWT audience prod fail-fast ──────────────────────────────────────────
 // Dev defaults are intentionally left in appsettings.json for zero-config local dev.
-// In Production they MUST be overridden via environment variables (Jwt__TenantAudience,
-// Jwt__PlatformAudience). A forgotten env var in prod becomes a failed deploy, not silent drift.
+// In Production they MUST be overridden via environment variables (Jwt__Audience, Jwt__SigningKey),
+// unique per installation. A forgotten env var in prod becomes a failed deploy, not silent drift.
 {
-    const string DevTenantAudience   = "kynexone-tenant";
-    const string DevPlatformAudience = "kynexone-platform";
+    const string DevAudience         = JwtOptions.DevAudience;
     const int    MinSigningKeyLength = 64;
 
-    // Enforce in EVERY non-Development environment (Production, Staging, QA…). A non-prod slot that
+    // Enforce in EVERY non-Development environment (Production, Staging, QA…). An installation that
     // holds real data must not silently run on the committed placeholder key, which would let anyone
     // with the source forge admin JWTs.
     if (!builder.Environment.IsDevelopment())
     {
         var jwtSection     = builder.Configuration.GetSection("Jwt");
-        var prodTenantAud  = jwtSection["TenantAudience"];
-        var prodPlatformAud = jwtSection["PlatformAudience"];
+        var prodAudience   = jwtSection["Audience"];
         var prodSigningKey = jwtSection["SigningKey"];
         var prodErrors     = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(prodTenantAud) || prodTenantAud == DevTenantAudience)
-            prodErrors.Add($"Jwt:TenantAudience is null, empty, or still the dev default ('{DevTenantAudience}'). Set Jwt__TenantAudience env var.");
-        if (string.IsNullOrWhiteSpace(prodPlatformAud) || prodPlatformAud == DevPlatformAudience)
-            prodErrors.Add($"Jwt:PlatformAudience is null, empty, or still the dev default ('{DevPlatformAudience}'). Set Jwt__PlatformAudience env var.");
+        if (string.IsNullOrWhiteSpace(prodAudience) || prodAudience == DevAudience)
+            prodErrors.Add($"Jwt:Audience is null, empty, or still the dev default ('{DevAudience}'). Set Jwt__Audience env var to a value unique to this installation.");
         if (string.IsNullOrWhiteSpace(prodSigningKey) || prodSigningKey.StartsWith("CHANGE_ME"))
             prodErrors.Add("Jwt:SigningKey is null, empty, or still the placeholder value. Set Jwt__SigningKey env var to a ≥64-char random secret.");
         else if (prodSigningKey.Length < MinSigningKeyLength)
             prodErrors.Add($"Jwt:SigningKey is too short ({prodSigningKey.Length} chars). Use a ≥{MinSigningKeyLength}-char random secret so the HMAC key has adequate entropy.");
-        if (prodTenantAud is not null && prodTenantAud == prodPlatformAud)
-            prodErrors.Add("Jwt:TenantAudience and Jwt:PlatformAudience must differ — identical audiences collapse the tenant/platform token boundary.");
 
         if (prodErrors.Count > 0)
             throw new InvalidOperationException(
@@ -179,9 +173,9 @@ builder.WebHost.UseUrls(listenUrl);
 
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Jwt"));
 
-// There is no tenant bootstrap admin: AuthSeeder creates no tenant or user. The only boot-time
-// account is the one-time platform owner (PlatformOwnerBootstrap, gated further down), and every
-// tenant/user is then created through the platform-admin API. See docs/DATA_ENTRY_PATHS.md.
+// There is no bootstrap admin: AuthSeeder creates no organisation or user. The organisation and its
+// first administrator are created once by `--setup-organisation` (OrganisationSetupCommand); every
+// other user is created by that organisation's administrators. See docs/DATA_ENTRY_PATHS.md.
 
 builder.Services.Configure<EntityScopeOptions>(builder.Configuration.GetSection("EntityScope"));
 builder.Services.PostConfigure<EntityScopeOptions>(options =>
@@ -273,7 +267,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
             ValidIssuer = jwtOptions.Issuer,
-            ValidAudiences = new[] { jwtOptions.TenantAudience, jwtOptions.PlatformAudience },
+            ValidAudience = jwtOptions.Audience,
             IssuerSigningKey = signingKey,
             ClockSkew = Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.JwtClockSkew
         };
@@ -282,12 +276,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             OnTokenValidated = async context =>
             {
                 var db = context.HttpContext.RequestServices.GetRequiredService<ZayraDbContext>();
-                if (!await PlatformSessionSecurity.IsCurrentAsync(
-                        context.Principal!, db, context.HttpContext.RequestAborted))
-                {
-                    context.Fail("Platform session is revoked or its authorization is stale.");
-                }
-                else if (!await TenantSessionSecurity.IsCurrentAsync(
+                if (!await TenantSessionSecurity.IsCurrentAsync(
                              context.Principal!, db, context.HttpContext.RequestAborted))
                 {
                     context.Fail("Tenant session is revoked or its authorization is stale.");
@@ -303,25 +292,18 @@ builder.Services.AddSingleton<ErpApiKeyValidator>();
 builder.Services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ErpApiKeyScopeAuthorizationHandler>();
 builder.Services.AddAuthorization(options =>
 {
-    // PlatformAdmin: must carry both the platform-admin claim AND the platform audience.
-    // This means a tenant-audience token is rejected even if it somehow carried
-    // is_platform_admin (defence-in-depth beyond the claim-only check that existed before).
-    options.AddPolicy("PlatformAdmin", policy => policy
-        .RequireClaim("is_platform_admin", "true")
-        .RequireClaim("aud", jwtOptions.PlatformAudience));
-
     // DEFAULT-DENY: any endpoint that does NOT carry an explicit [Authorize]/[AllowAnonymous] now
     // requires an authenticated user. This makes a forgotten authorization attribute fail CLOSED (401)
     // instead of silently exposing the endpoint. Truly public endpoints are explicitly [AllowAnonymous]
-    // (AuthController, MfaController challenge-verify, PricingController, /health, tenant localization),
-    // which overrides this fallback.
+    // (AuthController, MfaController challenge-verify, /health, localization), which overrides this
+    // fallback.
     options.FallbackPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
 });
 
 // [HasPermission] mechanism: a policy provider that synthesizes "perm:<key|key>" policies on
-// demand (delegating every other policy — PlatformAdmin, the default-deny fallback — to the
+// demand (delegating every other policy — the default-deny fallback — to the
 // framework default) plus the handler that enforces them against the JWT `permission` claim.
 // This is what lets a client-created CUSTOM role actually be granted access: the attribute
 // checks effective permissions, not role names. Server-side only; fail-closed.
@@ -388,6 +370,9 @@ builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
 builder.Services.AddScoped<Zayra.Api.Application.Timesheets.ITimesheetService, Zayra.Api.Infrastructure.Timesheets.TimesheetService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
+// The one door through which the installation's organisation is created (--setup-organisation).
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Provisioning.IOrganisationProvisioningService,
+                           Zayra.Api.Infrastructure.Provisioning.OrganisationProvisioningService>();
 // P0-5: config-selected durable storage with a Production fail-fast (Render dyno disk is
 // ephemeral on plan:free — LocalDocumentStorage would lose compliance documents on restart).
 builder.Services.AddDocumentStorage(builder.Configuration, builder.Environment.IsDevelopment());
@@ -545,15 +530,6 @@ builder.Services.AddHostedService<AiInsightEngine>();
 builder.Services.AddHostedService<NotificationDeliveryWorker>();
 builder.Services.AddHostedService<ComplianceReminderWorker>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Finance.LoanLifecycleWorker>();
-// Public pricing-quote requests are announced to sales off the request thread: a bounded queue,
-// a global send budget, a fixed recipient from platform config, and the platform relay only.
-builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationQueue>();
-builder.Services.AddSingleton<Zayra.Api.Infrastructure.Pricing.QuoteNotificationBudget>();
-builder.Services.AddScoped<Zayra.Api.Infrastructure.Pricing.QuoteNotificationSender>();
-builder.Services.AddHostedService<Zayra.Api.Infrastructure.Pricing.QuoteNotificationWorker>();
-// Platform operators' security notices (no tenant outbox for them): sign-in enqueues, this sends.
-builder.Services.AddSingleton<Zayra.Api.Infrastructure.Auth.PlatformSecurityNoticeQueue>();
-builder.Services.AddHostedService<Zayra.Api.Infrastructure.Auth.PlatformSecurityNoticeWorker>();
 
 // F3 — durable background jobs (job store + per-item checkpoints + leased, fenced worker). Runs on
 // every instance: claims are FOR UPDATE SKIP LOCKED with a lease token, so old and new instances share
@@ -613,7 +589,7 @@ builder.Services.AddHostedService<Zayra.Api.Infrastructure.Attendance.SelfieEvid
 
 // Release A (grade entitlements, contract-year package, contract renewals, deductions statement). Every service
 // is registered in one extension owned by the integration owner, so the slices never edit this file. Each Release A
-// surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless the platform enables it.
+// surface is also gated per tenant by the release_a opt-in flag (OptInFeatures): off unless enabled for the organisation.
 Zayra.Api.Infrastructure.ReleaseA.ReleaseAServiceCollectionExtensions.AddReleaseA(builder.Services);
 // CMP — merit planning, pay benchmarks, pay equity (opt-in feature 'compensation').
 Zayra.Api.Infrastructure.Compensation.CompensationServiceCollectionExtensions.AddCompensation(builder.Services);
@@ -625,7 +601,7 @@ Zayra.Api.Infrastructure.Learning.LearningServiceCollectionExtensions.AddLearnin
 Zayra.Api.Infrastructure.Succession.SuccessionServiceCollectionExtensions.AddSuccession(builder.Services, builder.Configuration);
 
 // ENG — engagement surveys (services, the survey worker and the comment retention rule). Gated per tenant by the
-// opt-in `engagement` flag (OptInFeatures): off unless the platform enables it.
+// opt-in `engagement` flag (OptInFeatures): off unless enabled for the organisation.
 Zayra.Api.Infrastructure.Engagement.EngagementServiceCollectionExtensions.AddEngagement(builder.Services);
 
 // HttpClient's default timeout is 100s. Left unset, a slow or wedged model call blocked a
@@ -733,7 +709,7 @@ builder.Services.AddScoped<Zayra.Api.Application.CountryPack.ICountryPackResolve
 
 // Rate limiting — brute-force protection on auth endpoints.
 // Limits are configurable via RateLimit:* in appsettings / env vars.
-// Default policy: login 10 req/60s per IP, refresh 30 req/60s per IP, platform login 5 req/60s per IP.
+// Default policy: login 10 req/60s per IP, refresh 30 req/60s per IP.
 var rl = builder.Configuration.GetSection("RateLimit");
 // Partition key: the proxy-asserted client IP when Proxy:ClientIpSecret is configured and presented,
 // otherwise RemoteIpAddress exactly as before (ClientIpResolver).
@@ -792,32 +768,6 @@ builder.Services.AddRateLimiter(o =>
                 QueueLimit               = 0,
             }));
 
-    o.AddPolicy("platform_login", ctx =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            RateLimitPartitionKey(ctx),
-            _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit              = rl.GetValue("PlatformLoginPermitLimit", 5),
-                Window                   = TimeSpan.FromSeconds(rl.GetValue("PlatformLoginWindowSeconds", 60)),
-                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
-                QueueLimit               = 0,
-            }));
-
-    // Platform challenge verification has its own window. Sharing the five-request password
-    // window meant issuing a challenge consumed permit #1 and a deterministic five-client
-    // exactly-once verification race was forced to return one 429 before application security
-    // could account for the attempt. The credential itself still has an exact five-attempt cap.
-    o.AddPolicy("platform_mfa_verify", ctx =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            RateLimitPartitionKey(ctx),
-            _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit              = rl.GetValue("PlatformMfaVerifyPermitLimit", 10),
-                Window                   = TimeSpan.FromSeconds(rl.GetValue("PlatformMfaVerifyWindowSeconds", 60)),
-                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
-                QueueLimit               = 0,
-            }));
-
     // ERP API keys: a budget per presented key (partitioned by the key's hash, never its non-secret
     // prefix, so knowing a prefix does not let anyone drain another tenant's budget). Requests without a
     // key — people using the same endpoints — are not limited by this policy.
@@ -834,18 +784,6 @@ builder.Services.AddRateLimiter(o =>
                 })
             : RateLimitPartition.GetNoLimiter("erp:none"));
 
-    // Public (unauthenticated) marketing writes — quote/estimate submissions. Throttle per-IP to
-    // prevent spam / storage-exhaustion since these insert rows without any auth.
-    o.AddPolicy("public_write", ctx =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            RateLimitPartitionKey(ctx),
-            _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit              = rl.GetValue("PublicWritePermitLimit", 5),
-                Window                   = TimeSpan.FromSeconds(rl.GetValue("PublicWriteWindowSeconds", 60)),
-                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
-                QueueLimit               = 0,
-            }));
 });
 
 builder.Services.AddEndpointsApiExplorer();
@@ -949,13 +887,6 @@ if (app.Environment.IsDevelopment())
 }
 app.UseAuthentication();
 app.UseTenantLogScope();
-// Per-route audience segregation (defence-in-depth): reject platform-audience tokens on tenant
-// /api/* routes so a platform token can never exercise the cross-tenant read bypass on tenant data.
-// Placed AFTER UseAuthentication (User is populated) and BEFORE UseAuthorization (runs first).
-// Platform-admin cross-tenant endpoints all live under /api/platform (allowlisted); impersonation
-// and break-glass carry the tenant audience and are never matched.
-app.Use((context, next) =>
-    Zayra.Api.Infrastructure.Http.AudienceRouteGuard.InvokeAsync(context, next, jwtOptions.PlatformAudience));
 app.UseAuthorization();
 // Lock 3: an API-key principal never reaches an action that has not opted in.
 app.Use(ErpApiKeyRequestGuard.AfterAuthorization);
@@ -974,8 +905,8 @@ app.MapGet("/health/live", () => Results.Ok(new
 
 // /health/ready is Render's healthCheckPath, so it must stay anonymous — but anonymous means the
 // whole internet. It answers status + pendingMigrations and nothing else (PublicReadiness); the full
-// evidence (tenant counts, worker names, SMTP/Qiwa modes, queues) is at /health/ready/details for
-// platform operators only. Both compute the status with the same rule, so they cannot disagree.
+// evidence (worker names, SMTP/Qiwa modes, queues) is at /health/ready/details for the organisation's
+// administrators only. Both compute the status with the same rule, so they cannot disagree.
 app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, ShutdownDrain drain, CancellationToken ct) =>
 {
     // Shutting down: tell the balancer to stop routing here before the server stops accepting.
@@ -995,7 +926,7 @@ app.MapGet("/health/ready/details", async (ZayraDbContext db, IConfiguration con
     if (evidence.Status == "ready") return Results.Ok(evidence);
     LogReadinessRefusal(evidence, lf);
     return Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
-}).RequireAuthorization("PlatformAdmin");
+}).RequireAuthorization(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute.PolicyPrefix + "security.manage");
 
 app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config, ILoggerFactory loggerFactory, CancellationToken ct) =>
 {
@@ -1018,10 +949,10 @@ app.MapGet("/health/telemetry", async (ZayraDbContext db, IConfiguration config,
             utc = DateTime.UtcNow,
         }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
-    // Platform operators only. Its queue counters are cross-tenant aggregates (BuildQueueHealthAsync
-    // runs under SystemScopeContext), so "any signed-in user" let one customer's employee read
-    // platform-wide delivery and queue volumes.
-}).RequireAuthorization("PlatformAdmin");
+    // Administrators only (the User Management gate). Its queue counters are installation-wide
+    // aggregates (BuildQueueHealthAsync runs under SystemScopeContext), so "any signed-in user" would
+    // let an employee read every company's delivery and queue volumes.
+}).RequireAuthorization(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute.PolicyPrefix + "security.manage");
 
 app.MapGet("/health", async (ZayraDbContext db, ILoggerFactory loggerFactory) =>
 {
@@ -1140,70 +1071,9 @@ using (var scope = app.Services.CreateScope())
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
 
-    // A dedicated deployment is Production OR anything flagged DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT.
-    // It gates the one-time platform-owner bootstrap below.
-    var dedicatedDeployment =
-        app.Environment.IsProduction()
-        || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
-
-    // ── WAVE 1 B3: bootstrap the FIRST platform operator, independently of demo data ──────────────
-    // Every tenant, tenant user, test and demo account is created by this operator through the
-    // platform-admin API — no seeder, fixture or demo runner may create them (docs/DATA_ENTRY_PATHS.md).
-    //
-    // It is inert unless PLATFORM_ADMIN_PASSWORD is explicitly supplied, and it no-ops once ANY platform
-    // user exists, so it can only ever create the first. On Production it additionally requires
-    // PLATFORM_ADMIN_BOOTSTRAP=true, so a password left in the environment cannot silently mint an
-    // operator on a live system.
-    var platformBootstrapRequested =
-        !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
-    // Uses the dedicatedDeployment predicate above, not a bare
-    // IsProduction(). A client-hosted slot commonly runs as Staging with CLIENT_DEPLOYMENT=true, and
-    // IsProduction() alone would let PLATFORM_ADMIN_PASSWORD mint a platform OWNER — the omnipotent
-    // cross-tenant actor — on that deployment with no explicit bootstrap flag.
-    var platformBootstrapPermitted =
-        !dedicatedDeployment
-        || string.Equals(Environment.GetEnvironmentVariable("PLATFORM_ADMIN_BOOTSTRAP"), "true",
-                         StringComparison.OrdinalIgnoreCase);
-
-    // The password is the only thing standing between an env var and a cross-tenant superuser, so it is
-    // held to a real bar, while docker-compose and CI both ship well-known defaults.
-    //
-    // A weak password SKIPS the bootstrap; it does not stop the service. The distinction cost an
-    // outage on 2026-09-23: this check threw, so setting PLATFORM_ADMIN_BOOTSTRAP with a short
-    // password took production down — including on a deployment whose platform owner already existed
-    // and for which the bootstrap would have been a no-op anyway. The security property is unchanged:
-    // no owner is ever created with a weak password. What changes is the blast radius of getting the
-    // password wrong: one refused seed, loudly logged, instead of a dead API.
-    var platformBootstrapWeakPassword = false;
-    if (platformBootstrapRequested && platformBootstrapPermitted && dedicatedDeployment)
-    {
-        platformBootstrapWeakPassword = PlatformOwnerBootstrap.IsWeakBootstrapPassword(
-            Environment.GetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD"));
-        if (platformBootstrapWeakPassword)
-            logger.LogError(
-                "Platform owner bootstrap REFUSED — PLATFORM_ADMIN_PASSWORD is weak or a known default "
-                + "(needs 16+ characters and must not contain ChangeMe/YourPassword/PlatformAdmin123). "
-                + "No platform operator was created; this account would have cross-tenant reach over "
-                + "every customer's payroll data. The service is running: set a strong password and "
-                + "redeploy to create the first operator.");
-    }
-
-    if (platformBootstrapRequested && platformBootstrapPermitted && !platformBootstrapWeakPassword)
-        await TrySeedAsync("PlatformOwnerBootstrap", () => PlatformOwnerBootstrap.RunAsync(
-            dbContext, scope.ServiceProvider.GetRequiredService<IPasswordHasher>(), logger), logger);
-    else if (platformBootstrapRequested)
-        logger.LogWarning(
-            "Platform owner bootstrap REQUESTED but REFUSED — this is a Production environment and "
-            + "PLATFORM_ADMIN_BOOTSTRAP is not 'true'. No platform operator was created.");
-
     await TrySeedAsync("GosiRuleSeeder",      () => GosiRuleSeeder.SeedDefaultsAsync(dbContext, logger), logger);
     await TrySeedAsync("StatutoryRuleSeeder", () => Zayra.Api.Infrastructure.Seed.StatutoryRuleSeeder.SeedAsync(dbContext, logger), logger);
     await TrySeedAsync("NitaqatReferenceSeeder", () => Zayra.Api.Infrastructure.Seed.NitaqatReferenceSeeder.SeedAsync(dbContext, logger), logger);
-
-    // Pricing config + module catalog (reference data) — otherwise the platform-admin pricing/CPQ
-    // console is empty. Idempotent (skips when present).
-    await TrySeedAsync("PricingConfigSeeder", () => PricingConfigSeeder.SeedAsync(dbContext, logger, CancellationToken.None), logger);
 
     // ── Tenant defaults backfill (runs LAST, and for EVERY tenant) ─────────────────────────────
     // HR letter templates and the timesheet approval route are installed only on the NEW-TENANT
@@ -1236,6 +1106,15 @@ using (var scope = app.Services.CreateScope())
     }
 
 }
+
+// ── One-time organisation setup ───────────────────────────────────────────────────────────────
+// `dotnet Zayra.Api.dll --setup-organisation [setup.json]` creates the organisation, first company and
+// administrator, then exits without serving traffic. It runs here — after the boot sequence and its
+// global reference-data seeders, before the server starts — so the organisation is provisioned against
+// the same reference data a running API sees. See OrganisationSetupCommand.
+if (Zayra.Api.Infrastructure.Provisioning.OrganisationSetupCommand.ShouldHandle(args))
+    return await Zayra.Api.Infrastructure.Provisioning.OrganisationSetupCommand.RunAsync(
+        app.Services, args, Console.Out, Console.Error);
 
 app.Run();
 

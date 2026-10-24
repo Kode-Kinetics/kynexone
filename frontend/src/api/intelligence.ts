@@ -144,34 +144,6 @@ export interface TenantBranding {
   faviconUrl: string;
 }
 
-export interface TenantSubscription {
-  id?: string;
-  plan: string;
-  status: string;
-  maxEmployees: number;
-  maxUsers: number;
-  billingEmail: string;
-  billingCycle: string;
-  monthlyAmount: number;
-  currencyCode: string;
-  startedAtUtc: string;
-  expiresAtUtc?: string;
-}
-
-export interface TenantInvoiceSummary {
-  id: string;
-  invoiceNumber: string;
-  amount: number;
-  currencyCode: string;
-  status: 'Draft' | 'Sent' | 'Paid' | 'Overdue' | 'Cancelled';
-  paymentMethod: string | null;
-  periodDescription: string | null;
-  invoiceDate: string;
-  dueDate: string;
-  paidDate: string | null;
-  createdAtUtc: string;
-}
-
 export interface TenantAiUsageSummary {
   plan: string;
   yearMonth: number;
@@ -266,14 +238,12 @@ export const hrRequestApi = {
 // ── Tenant Admin API ──────────────────────────────────────────────────────────
 
 export const tenantAdminApi = {
-  getSubscription: () =>
-    client.get<TenantSubscription | null>('/api/tenant-admin/subscription').then(r => r.data),
-
   listFeatureFlags: () =>
     client.get<TenantFeatureFlag[]>('/api/tenant-admin/feature-flags').then(r => r.data),
 
-  setFeatureFlag: (featureKey: string, isEnabled: boolean, configJson?: string) =>
-    client.put<TenantFeatureFlag>(`/api/tenant-admin/feature-flags/${featureKey}`, { isEnabled, configJson }).then(r => r.data),
+  /** Switches an opt-in feature on or off (and saves its configuration) for the organisation. */
+  setFeature: (featureKey: string, isEnabled: boolean, configJson?: string) =>
+    client.put<TenantFeatureFlag>(`/api/tenant-admin/features/${featureKey}`, { isEnabled, configJson }).then(r => r.data),
 
   getLocalization: () =>
     client.get<TenantLocalizationSetting>('/api/tenant-admin/localization').then(r => r.data),
@@ -286,9 +256,6 @@ export const tenantAdminApi = {
 
   upsertBranding: (body: Partial<TenantBranding>) =>
     client.put<TenantBranding>('/api/tenant-admin/branding', body).then(r => r.data),
-
-  listInvoices: () =>
-    client.get<TenantInvoiceSummary[]>('/api/tenant-admin/invoices').then(r => r.data),
 
   getAiUsage: (yearMonth?: number) =>
     client.get<TenantAiUsageSummary>('/api/tenant-admin/ai-usage', { params: yearMonth ? { yearMonth } : {} }).then(r => r.data),

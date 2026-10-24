@@ -403,7 +403,7 @@ public sealed class AccessPrivilegeCeilingTests
         await using var db = _fixture.CreateRetryingDb();
         var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService());
 
-        // PlatformController calls with UserId: null behind RequirePlatformRole.
+        // A system caller (no acting user) is outside any user's privilege ceiling.
         await service.UnlockUserAsync(w.TenantId, w.AdminId, EntityScopeContext.GroupLevel,
             new RequestContext("127.0.0.1", "platform", null, w.TenantId), CancellationToken.None);
     }

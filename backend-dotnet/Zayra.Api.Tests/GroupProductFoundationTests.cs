@@ -86,17 +86,6 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         var dto = (Application.Organization.CompanyDto)((CreatedAtActionResult)created.Result!).Value!;
         dto.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
         dto.IsActive.Should().BeFalse("drafts await platform approval");
-
-        // Platform approval (draft -> active) is deliberately fail-closed pending atomic
-        // authorization invalidation: 409 with a stable code and the draft left untouched.
-        var platform = CreateController(db);
-        var approval = await platform.ApproveCompany(tenantId, dto.Id, CancellationToken.None);
-        System.Text.Json.JsonSerializer.Serialize(approval.Should().BeOfType<ConflictObjectResult>().Subject.Value)
-            .Should().Contain("company_activation_disabled");
-        db.ChangeTracker.Clear();
-        var stillDraft = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == dto.Id);
-        stillDraft.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
-        stillDraft.IsActive.Should().BeFalse();
     }
 
     [Fact]

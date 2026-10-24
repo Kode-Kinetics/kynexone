@@ -743,8 +743,7 @@ public class LeaverLifecycleS2Tests
         var jwt = Microsoft.Extensions.Options.Options.Create(new Zayra.Api.Application.Auth.JwtOptions
         {
             Issuer = "Zayra.Tests",
-            TenantAudience = "kynexone-tenant-test",
-            PlatformAudience = "kynexone-platform-test",
+            Audience = "kynexone-tenant-test",
             SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_LEAVER_LIFECYCLE",
             AccessTokenMinutes = 30,
             RefreshTokenDays = 7,
@@ -986,10 +985,4 @@ file sealed class NullLeaverMfaService : Zayra.Api.Application.Auth.IMfaService
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, Zayra.Api.Application.Auth.RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-    public Task<Zayra.Api.Application.Auth.MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
-    public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid id, Zayra.Api.Application.Auth.MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
-    public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
-    public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
-    public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, Zayra.Api.Application.Auth.RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-    public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
 }

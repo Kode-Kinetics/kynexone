@@ -405,7 +405,7 @@ public sealed class PrivilegedMfaEnforcementTests
     }
 
     [Fact]
-    public async Task LostDevice_PlatformResetOfATenantFactor_LeadsToReEnrolment_NotLockout()
+    public async Task LostDevice_AdminResetOfAFactor_LeadsToReEnrolment_NotLockout()
     {
         await using var kit = await AuthHardeningTestKit.CreateAsync();
         await kit.SetPlatformEnforcementDateAsync(Past);
@@ -426,135 +426,6 @@ public sealed class PrivilegedMfaEnforcementTests
         var after = await LoginAsync(kit, "admin@hardening.local");
         after.RequiresMfaEnrollment.Should().BeTrue("the user re-enrols a new device at the next sign-in");
         after.EnrollmentChallenge.Should().NotBeNull();
-    }
-
-    // ── Platform operators ────────────────────────────────────────────────────────────────────
-
-    private static async Task<Guid> SeedOperatorAsync(AuthHardeningTestKit kit, string email, string role = PlatformRoles.Owner)
-    {
-        await using var db = kit.NewDb();
-        var pu = new PlatformUser
-        {
-            Email = email, FullName = email, Role = role, IsActive = true,
-            PasswordHash = new Pbkdf2PasswordHasher().Hash(Password),
-        };
-        db.PlatformUsers.Add(pu);
-        await db.SaveChangesAsync();
-        return pu.Id;
-    }
-
-    private static PlatformController Platform(AuthHardeningTestKit kit, Zayra.Api.Data.ZayraDbContext db, Guid? actingAs = null,
-        string role = PlatformRoles.Owner)
-    {
-        var jwt = AuthHardeningTestKit.Jwt;
-        var hasher = new Pbkdf2PasswordHasher();
-        var tokens = new JwtTokenService(jwt);
-        var config = new ConfigurationBuilder().Build();
-        var controller = new PlatformController(
-            db, jwt, hasher, new FakeAuthSeeder(db, hasher), tokens, new FakePlatformEmailService(), config,
-            kit.Mfa(db),
-            new AccessManagementService(db, hasher, new AuditService(db), tokens, config),
-            NullLogger<PlatformController>.Instance,
-            new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()));
-        var claims = new List<Claim>
-        {
-            new("is_platform_admin", "true"), new("platform_role", role),
-        };
-        if (actingAs is { } id) claims.Add(new Claim(ClaimTypes.NameIdentifier, id.ToString()));
-        controller.ControllerContext = new ControllerContext
-        {
-            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) },
-        };
-        return controller;
-    }
-
-    private static JsonElement Body(IActionResult result)
-        => JsonSerializer.SerializeToElement(((ObjectResult)result).Value);
-
-    [Fact]
-    public async Task PlatformOperator_BeforeTheDate_GetsASession()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        await kit.SetPlatformEnforcementDateAsync(Future);
-        await SeedOperatorAsync(kit, "owner@platform.test");
-
-        await using var db = kit.NewDb();
-        var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("owner@platform.test", Password), CancellationToken.None));
-        body.TryGetProperty("token", out _).Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task PlatformOperator_FromTheDate_MustEnrol_ThenIsChallenged()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        await kit.SetPlatformEnforcementDateAsync(Past);
-        var id = await SeedOperatorAsync(kit, "owner@platform.test", PlatformRoles.Marketing);
-
-        string enrollmentToken;
-        await using (var db = kit.NewDb())
-        {
-            var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("owner@platform.test", Password), CancellationToken.None));
-            body.TryGetProperty("token", out _).Should().BeFalse("no session before a factor exists");
-            body.GetProperty("mfaEnrollmentRequired").GetBoolean().Should().BeTrue();
-            enrollmentToken = body.GetProperty("enrollmentToken").GetString()!;
-            enrollmentToken.Should().StartWith(AuthChallengeTokenCodec.PlatformEnrollmentPurpose + ".");
-        }
-
-        await using (var db = kit.NewDb())
-        {
-            var mfa = kit.Mfa(db);
-            (await mfa.CompletePlatformChallengeAsync(enrollmentToken, "000000", AuthHardeningTestKit.Ctx, CancellationToken.None))
-                .Should().BeNull("an enrolment token is never accepted as a sign-in challenge");
-            var setup = await mfa.InitiatePlatformEnrollmentSetupAsync(enrollmentToken, CancellationToken.None);
-            setup.Should().NotBeNull();
-            (await mfa.VerifyPlatformEnrollmentSetupAsync(enrollmentToken, new MfaVerifySetupRequest(setup!.TempSecret, "000000"), CancellationToken.None))
-                .Should().BeNull("a wrong code does not enable the factor");
-            (await mfa.VerifyPlatformEnrollmentSetupAsync(enrollmentToken,
-                new MfaVerifySetupRequest(setup.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None))
-                .Should().HaveCount(10, "enrolment hands out the one-time recovery codes");
-            (await mfa.InitiatePlatformEnrollmentSetupAsync(enrollmentToken, CancellationToken.None))
-                .Should().BeNull("the enrolment token is single-use");
-        }
-
-        await using (var db = kit.NewDb())
-        {
-            (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaEnabled.Should().BeTrue();
-            var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("owner@platform.test", Password), CancellationToken.None));
-            body.GetProperty("mfaRequired").GetBoolean().Should().BeTrue();
-        }
-    }
-
-    [Fact]
-    public async Task OwnerReset_ClearsAnotherOperatorsFactor_ButNeverTheirOwn()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        await kit.SetPlatformEnforcementDateAsync(Past);
-        var owner = await SeedOperatorAsync(kit, "owner@platform.test");
-        var lost = await SeedOperatorAsync(kit, "lost@platform.test", PlatformRoles.Support);
-        await using (var db = kit.NewDb())
-        {
-            foreach (var pu in await db.PlatformUsers.ToListAsync())
-            {
-                pu.MfaEnabled = true;
-                pu.MfaSecretEncrypted = kit.Totp.EncryptSecret(kit.Totp.GenerateBase32Secret());
-            }
-            await db.SaveChangesAsync();
-        }
-
-        await using (var db = kit.NewDb())
-            (await Platform(kit, db, actingAs: owner).ResetTeamMemberMfa(owner, CancellationToken.None))
-                .Should().BeOfType<BadRequestObjectResult>();
-        await using (var db = kit.NewDb())
-            (await Platform(kit, db, actingAs: owner).ResetTeamMemberMfa(lost, CancellationToken.None))
-                .Should().BeOfType<OkObjectResult>();
-
-        await using (var db = kit.NewDb())
-        {
-            (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == owner)).MfaEnabled.Should().BeTrue();
-            (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == lost)).MfaEnabled.Should().BeFalse();
-            var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("lost@platform.test", Password), CancellationToken.None));
-            body.GetProperty("mfaEnrollmentRequired").GetBoolean().Should().BeTrue("the operator re-enrols; they are not locked out");
-        }
     }
 
     // ── Date input and break-glass visibility ─────────────────────────────────────────────────
@@ -594,32 +465,6 @@ public sealed class PrivilegedMfaEnforcementTests
         }
     }
 
-    [Fact]
-    public async Task TenantEnforcementDate_RejectsOffsetlessAndFarFutureDates_AndAcceptsUtc()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var owner = await SeedOperatorAsync(kit, "owner@platform.test");
-        const string reason = "customer onboarding their HR team";
-
-        async Task<IActionResult> Set(string? date)
-        {
-            await using var db = kit.NewDb();
-            return await Platform(kit, db, actingAs: owner).SetTenantPrivilegedMfaEnforcement(
-                kit.TenantId, new PrivilegedMfaEnforcementRequest(date, reason), CancellationToken.None);
-        }
-
-        (await Set(Now.AddDays(30).ToString("yyyy-MM-ddTHH:mm:ss"))).Should().BeOfType<BadRequestObjectResult>("offset-less");
-        (await Set(PrivilegedMfaPolicy.FormatDate(Now.AddDays(120)))).Should().BeOfType<BadRequestObjectResult>("beyond 90 days");
-        (await Set(PrivilegedMfaPolicy.FormatDate(Now.AddDays(30)))).Should().BeOfType<OkObjectResult>();
-        await using (var db = kit.NewDb())
-            (await db.SecuritySettings.AsNoTracking().SingleAsync(x => x.TenantId == kit.TenantId))
-                .PrivilegedMfaEnforceFromUtc.Should().BeCloseTo(Now.AddDays(30), TimeSpan.FromSeconds(5));
-        (await Set(null)).Should().BeOfType<OkObjectResult>("null returns the tenant to the platform date");
-        await using (var db = kit.NewDb())
-            (await db.SecuritySettings.AsNoTracking().SingleAsync(x => x.TenantId == kit.TenantId))
-                .PrivilegedMfaEnforceFromUtc.Should().BeNull();
-    }
-
     // ── Enrolment notices ─────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -648,215 +493,7 @@ public sealed class PrivilegedMfaEnforcementTests
         email.Sent[0].Subject.Should().Contain("Two-step sign-in was turned on");
     }
 
-    [Fact]
-    public async Task PlatformEnrolmentThroughAToken_EmailsTheOperator()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
-        var email = new RecordingEmail();
-        await using var db = kit.NewDb();
-        var mfa = kit.Mfa(db, email);
-        var token = await mfa.CreatePlatformEnrollmentChallengeAsync(id, "127.0.0.1", CancellationToken.None);
-        var setup = await mfa.InitiatePlatformEnrollmentSetupAsync(token, CancellationToken.None);
-        (await mfa.VerifyPlatformEnrollmentSetupAsync(token,
-            new MfaVerifySetupRequest(setup!.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None)).Should().NotBeNull();
-
-        email.Sent.Should().ContainSingle().Which.To.Should().Be("owner@platform.test");
-    }
-
-    [Fact]
-    public async Task TenantPostponement_NeedsAnOwner_IsCappedAt30Days_AndShortNoticeNeedsAnOwner()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var platformDate = Now.AddDays(14);
-        await kit.SetPlatformEnforcementDateAsync(platformDate);
-        var owner = await SeedOperatorAsync(kit, "owner@platform.test");
-        var admin = await SeedOperatorAsync(kit, "admin@platform.test", PlatformRoles.Admin);
-        const string reason = "customer onboarding their HR team";
-
-        async Task<IActionResult> Set(Guid actor, string role, DateTime? date)
-        {
-            await using var db = kit.NewDb();
-            return await Platform(kit, db, actingAs: actor, role: role).SetTenantPrivilegedMfaEnforcement(
-                kit.TenantId, new PrivilegedMfaEnforcementRequest(date is null ? null : PrivilegedMfaPolicy.FormatDate(date.Value), reason),
-                CancellationToken.None);
-        }
-        static int? Status(IActionResult r) => (r as ObjectResult)?.StatusCode ?? (r as StatusCodeResult)?.StatusCode;
-
-        Status(await Set(admin, PlatformRoles.Admin, platformDate.AddDays(10))).Should().Be(403, "postponing past the platform date is an Owner call");
-        Status(await Set(owner, PlatformRoles.Owner, platformDate.AddDays(31))).Should().Be(400, "never more than 30 days behind the platform");
-        (await Set(owner, PlatformRoles.Owner, platformDate.AddDays(30))).Should().BeOfType<OkObjectResult>();
-        Status(await Set(admin, PlatformRoles.Admin, Now.AddDays(3))).Should().Be(403, "under 7 days' notice is an Owner call");
-        (await Set(owner, PlatformRoles.Owner, Now.AddDays(3))).Should().BeOfType<OkObjectResult>();
-        (await Set(admin, PlatformRoles.Admin, Now.AddDays(10))).Should().BeOfType<OkObjectResult>(
-            "an Admin may bring a tenant forward, with at least a week's notice");
-        (await Set(admin, PlatformRoles.Admin, null)).Should().BeOfType<OkObjectResult>("returning to the platform date");
-
-        await using var verify = kit.NewDb();
-        var audits = await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
-            .Where(a => a.Action == "platform.security_policy.privileged_mfa_enforcement_changed")
-            .OrderBy(a => a.CreatedAtUtc).ToListAsync();
-        audits.Should().HaveCount(4, "every applied change is audited; refused ones change nothing");
-        audits.Should().AllSatisfy(a => a.Metadata.Should().Contain("\"previous\"").And.Contain("\"next\""));
-    }
-
-    // ── Platform recovery codes ───────────────────────────────────────────────────────────────
-
-    /// <summary>Enrols an operator through the real enrolment flow; returns the TOTP secret and codes.</summary>
-    private static async Task<(string Secret, IReadOnlyList<string> Codes)> EnrolOperatorAsync(AuthHardeningTestKit kit, Guid id)
-    {
-        await using var db = kit.NewDb();
-        var mfa = kit.Mfa(db);
-        var token = await mfa.CreatePlatformEnrollmentChallengeAsync(id, "127.0.0.1", CancellationToken.None);
-        var setup = await mfa.InitiatePlatformEnrollmentSetupAsync(token, CancellationToken.None);
-        var codes = await mfa.VerifyPlatformEnrollmentSetupAsync(token,
-            new MfaVerifySetupRequest(setup!.TempSecret, Totp.Now(setup.TempSecret)), CancellationToken.None);
-        return (setup.TempSecret, codes!);
-    }
-
-    private static async Task<string> PasswordStepChallengeAsync(AuthHardeningTestKit kit, string email)
-    {
-        await using var db = kit.NewDb();
-        var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest(email, Password), CancellationToken.None));
-        body.GetProperty("mfaRequired").GetBoolean().Should().BeTrue();
-        return body.GetProperty("challengeToken").GetString()!;
-    }
-
-    [Fact]
-    public async Task RecoveryCodes_AreIssuedOnce_StoredOnlyAsHashes()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
-        var (_, codes) = await EnrolOperatorAsync(kit, id);
-
-        codes.Should().HaveCount(10).And.OnlyHaveUniqueItems();
-        codes.Should().AllSatisfy(c => c.Should().MatchRegex("^[A-HJ-NP-Z2-9]{4}(-[A-HJ-NP-Z2-9]{4}){4}$",
-            "20 symbols from the 32-letter alphabet (100 bits), grouped 4-4-4-4-4"));
-        await using var db = kit.NewDb();
-        var stored = (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaRecoveryCodeHashes!;
-        foreach (var code in codes)
-        {
-            stored.Should().NotContain(code);
-            stored.Should().NotContain(code.Replace("-", ""));
-        }
-    }
-
-    [Fact]
-    public async Task RecoveryCode_SignsInOnce_ThenIsSpent_AndTheUseIsAudited()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
-        var (_, codes) = await EnrolOperatorAsync(kit, id);
-
-        var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
-        await using (var db = kit.NewDb())
-        {
-            var result = await Platform(kit, db).PlatformMfaRecoveryVerify(
-                new PlatformRecoveryCodeRequest(challenge, " " + codes[3].ToLowerInvariant().Replace("-", " ") + " "), CancellationToken.None);
-            Body(result).TryGetProperty("token", out _).Should().BeTrue("a recovery code replaces the authenticator code");
-        }
-
-        var again = await PasswordStepChallengeAsync(kit, "owner@platform.test");
-        await using (var db = kit.NewDb())
-        {
-            (await Platform(kit, db).PlatformMfaRecoveryVerify(new PlatformRecoveryCodeRequest(again, codes[3]), CancellationToken.None))
-                .Should().BeOfType<UnauthorizedObjectResult>("each code works once");
-            (await Platform(kit, db).PlatformMfaRecoveryVerify(new PlatformRecoveryCodeRequest(again, codes[4]), CancellationToken.None))
-                .Should().BeOfType<OkObjectResult>("the remaining codes still work, and a miss only costs an attempt");
-        }
-
-        await using (var db = kit.NewDb())
-        {
-            (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.Action == "platform.auth.mfa_recovery_code_used")).Should().Be(2);
-            (await db.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.Action == "platform.auth.mfa_recovery_code_failed")).Should().Be(1);
-            MfaService.RecoveryCodesRemaining(await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).Should().Be(8);
-        }
-    }
-
-    [Fact]
-    public async Task RecoveryCode_IsRejectedWithoutTheSignInChallenge_AndWithTheEnrolmentToken()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
-        var (_, codes) = await EnrolOperatorAsync(kit, id);
-        await using var db = kit.NewDb();
-        var mfa = kit.Mfa(db);
-        var enrolment = await mfa.CreatePlatformEnrollmentChallengeAsync(id, "127.0.0.1", CancellationToken.None);
-
-        (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync("pm1.forged", codes[0], AuthHardeningTestKit.Ctx, CancellationToken.None)).Should().BeNull();
-        (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync(enrolment, codes[0], AuthHardeningTestKit.Ctx, CancellationToken.None)).Should().BeNull(
-            "a recovery code is a second factor; it never replaces the password step");
-    }
-
-    [Fact]
-    public async Task RegeneratingRecoveryCodes_RequiresTotp_AndRetiresTheOldCodes()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
-        var (secret, oldCodes) = await EnrolOperatorAsync(kit, id);
-
-        IReadOnlyList<string>? fresh;
-        await using (var db = kit.NewDb())
-        {
-            var mfa = kit.Mfa(db);
-            (await mfa.RegeneratePlatformRecoveryCodesAsync(id, "000000", CancellationToken.None)).Should().BeNull();
-            // The enrolment code's time-step is spent (replay protection); the next one is accepted.
-            fresh = await mfa.RegeneratePlatformRecoveryCodesAsync(id, Totp.At(secret, 1), CancellationToken.None);
-        }
-        fresh.Should().HaveCount(10).And.NotIntersectWith(oldCodes);
-
-        var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
-        await using (var db = kit.NewDb())
-        {
-            var mfa = kit.Mfa(db);
-            (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync(challenge, oldCodes[0], AuthHardeningTestKit.Ctx, CancellationToken.None))
-                .Should().BeNull("regeneration retires every earlier code");
-            (await mfa.CompletePlatformChallengeWithRecoveryCodeAsync(challenge, fresh![0], AuthHardeningTestKit.Ctx, CancellationToken.None))
-                .Should().NotBeNull();
-        }
-    }
-
-    [Fact]
-    public async Task OwnerReset_AlsoClearsRecoveryCodes()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var owner = await SeedOperatorAsync(kit, "owner@platform.test");
-        var lost = await SeedOperatorAsync(kit, "lost@platform.test", PlatformRoles.Support);
-        await EnrolOperatorAsync(kit, lost);
-
-        await using (var db = kit.NewDb())
-            (await kit.Mfa(db).AdminResetPlatformFactorAsync(lost, owner, AuthHardeningTestKit.Ctx, CancellationToken.None)).Should().BeTrue();
-        await using (var db = kit.NewDb())
-            (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == lost)).MfaRecoveryCodeHashes.Should().BeNull();
-    }
-
     // ── TOTP replay, notices and no-store ─────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task PlatformTotp_ACodeIsAcceptedOnce_AndNeverAtOrBelowTheLastAcceptedStep()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
-        var (secret, _) = await EnrolOperatorAsync(kit, id);
-
-        async Task<PlatformUser?> SignIn(string code)
-        {
-            var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
-            await using var db = kit.NewDb();
-            return await kit.Mfa(db).CompletePlatformChallengeAsync(challenge, code, AuthHardeningTestKit.Ctx, CancellationToken.None);
-        }
-
-        long enrolled;
-        await using (var db = kit.NewDb())
-            enrolled = (await db.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaLastTotpStep!.Value;
-
-        (await SignIn(Totp.ForStep(secret, enrolled))).Should().BeNull("the enrolment code's step is already spent");
-        (await SignIn(Totp.ForStep(secret, enrolled + 1))).Should().NotBeNull();
-        (await SignIn(Totp.ForStep(secret, enrolled + 1))).Should().BeNull("a replayed code is refused");
-        (await SignIn(Totp.ForStep(secret, enrolled))).Should().BeNull("an older step than the last accepted one is refused");
-        await using var verify = kit.NewDb();
-        (await verify.PlatformUsers.AsNoTracking().SingleAsync(p => p.Id == id)).MfaLastTotpStep.Should().Be(enrolled + 1);
-    }
 
     [Fact]
     public async Task TenantTotp_AReplayedCodeIsRefused()
@@ -896,36 +533,6 @@ public sealed class PrivilegedMfaEnforcementTests
         (await Complete(Totp.ForStep(secret, enrolled + 1))).Should().BeFalse("replay");
     }
 
-    [Fact]
-    public async Task RecoveryCodeUse_Regeneration_AndInSessionSetup_EachEmailTheOperator()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
-        var email = new RecordingEmail();
-
-        string secret;
-        IReadOnlyList<string> codes;
-        await using (var db = kit.NewDb())
-        {
-            var mfa = kit.Mfa(db, email);
-            var setup = await mfa.InitiatePlatformSetupAsync(id, CancellationToken.None);
-            secret = setup.TempSecret;
-            codes = (await mfa.VerifyPlatformSetupAsync(id, new MfaVerifySetupRequest(secret, Totp.Now(secret)), CancellationToken.None))!;
-        }
-        email.Sent.Should().ContainSingle(m => m.Subject.Contains("turned on"), "in-session setup also notifies");
-
-        var challenge = await PasswordStepChallengeAsync(kit, "owner@platform.test");
-        await using (var db = kit.NewDb())
-            (await kit.Mfa(db, email).CompletePlatformChallengeWithRecoveryCodeAsync(challenge, codes[0], AuthHardeningTestKit.Ctx, CancellationToken.None))
-                .Should().NotBeNull();
-        email.Sent.Should().ContainSingle(m => m.Subject.Contains("recovery code was used"));
-
-        await using (var db = kit.NewDb())
-            (await kit.Mfa(db, email).RegeneratePlatformRecoveryCodesAsync(id, Totp.At(secret, 1), CancellationToken.None)).Should().NotBeNull();
-        email.Sent.Should().ContainSingle(m => m.Subject.Contains("New recovery codes"));
-        email.Sent.Should().OnlyContain(m => m.To == "owner@platform.test");
-    }
-
     [Theory]
     [InlineData(typeof(MfaController), nameof(MfaController.InitiateSetup))]
     [InlineData(typeof(MfaController), nameof(MfaController.InitiateEnrollmentSetup))]
@@ -933,15 +540,6 @@ public sealed class PrivilegedMfaEnforcementTests
     [InlineData(typeof(MfaController), nameof(MfaController.VerifyChallenge))]
     [InlineData(typeof(AuthController), nameof(AuthController.Login))]
     [InlineData(typeof(AuthController), nameof(AuthController.Refresh))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.Login))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaSetup))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaVerifySetup))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaEnrollmentStart))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaEnrollmentSetup))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaEnrollmentVerifySetup))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaChallengeVerify))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaRecoveryVerify))]
-    [InlineData(typeof(PlatformController), nameof(PlatformController.PlatformMfaRegenerateRecoveryCodes))]
     public void ResponsesCarryingSecretsOrCodes_AreNeverCached(Type controller, string action)
     {
         var method = controller.GetMethods().Single(m => m.Name == action && m.DeclaringType == controller);
@@ -960,14 +558,14 @@ public sealed class PrivilegedMfaEnforcementTests
     public async Task AuthenticatorApps_ShowTheProductName()
     {
         await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var id = await SeedOperatorAsync(kit, "owner@platform.test");
+        var id = await kit.SeedUserAsync("admin@hardening.local", new Pbkdf2PasswordHasher().Hash(Password), "Admin");
         await using var db = kit.NewDb();
-        var setup = await kit.Mfa(db).InitiatePlatformSetupAsync(id, CancellationToken.None);
+        var setup = await kit.Mfa(db).InitiateSetupAsync(id, kit.TenantId, CancellationToken.None);
 
         setup.ProvisioningUri.Should().Contain("issuer=KynexOne").And.NotContain("Zayra");
     }
 
-    // ── Grace-period platform sessions ────────────────────────────────────────────────────────
+    // ── Grace-period sessions ────────────────────────────────────────────────────────
 
     [Fact]
     public void GraceSessions_EndNoLaterThanTheEnforcementDate_OrTheBreakGlassWindow()
@@ -991,22 +589,6 @@ public sealed class PrivilegedMfaEnforcementTests
             .Should().BeCloseTo(glassEnds - PrivilegedMfaPolicy.JwtClockSkew, TimeSpan.FromSeconds(1));
         PrivilegedMfaPolicy.SessionExpiry(PrivilegedMfaPolicy.Evaluate(true, false, Now.AddSeconds(30), null, Now), null, Now, eight)
             .Should().Be(Now, "a cap closer than the skew issues an already-expired token, never one that outlives it");
-    }
-
-    [Fact]
-    public async Task AnUnenrolledOperatorsToken_ExpiresAtTheEnforcementDate()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        var enforceFrom = DateTime.UtcNow.AddHours(1);
-        await kit.SetPlatformEnforcementDateAsync(enforceFrom);
-        await SeedOperatorAsync(kit, "owner@platform.test");
-
-        await using var db = kit.NewDb();
-        var body = Body(await Platform(kit, db).Login(new PlatformLoginRequest("owner@platform.test", Password), CancellationToken.None));
-        var expiresAt = body.GetProperty("expiresAt").GetDateTime().ToUniversalTime();
-        expiresAt.Should().BeCloseTo(enforceFrom - PrivilegedMfaPolicy.JwtClockSkew, TimeSpan.FromSeconds(5),
-            "a grace-period session must not outlive the grace period, even with validation's clock skew");
-        (expiresAt + PrivilegedMfaPolicy.JwtClockSkew).Should().BeOnOrBefore(enforceFrom.AddSeconds(1));
     }
 
     // ── TOTP for tests ────────────────────────────────────────────────────────────────────────

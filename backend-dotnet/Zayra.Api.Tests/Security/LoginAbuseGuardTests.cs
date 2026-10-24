@@ -315,46 +315,4 @@ public sealed class LoginAbuseGuardTests
         (await TenantLogin(kit, guard, "owner@hardening.local", Password, Http("198.51.100.60", cookie))).Result
             .Should().BeOfType<OkObjectResult>();
     }
-
-    [Fact]
-    public async Task PlatformLogin_AccountLimit_RefusesBeforeHashing()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        await using (var seed = kit.NewDb())
-        {
-            seed.PlatformUsers.Add(new PlatformUser
-            {
-                Email = "owner@platform.test", FullName = "Owner", Role = PlatformRoles.Owner, IsActive = true,
-                PasswordHash = new Pbkdf2PasswordHasher().Hash(Password),
-            });
-            await seed.SaveChangesAsync();
-        }
-        using var guard = Guard(accountIp: 1);
-
-        async Task<(IActionResult Result, int Hashing)> Attempt()
-        {
-            var hasher = new CountingHasher();
-            await using var db = kit.NewDb();
-            var jwt = AuthHardeningTestKit.Jwt;
-            var tokens = new JwtTokenService(jwt);
-            var config = new ConfigurationBuilder().Build();
-            var controller = new PlatformController(
-                db, jwt, hasher, new FakeAuthSeeder(db, hasher), tokens, new FakePlatformEmailService(), config,
-                kit.Mfa(db), new AccessManagementService(db, hasher, new AuditService(db), tokens, config),
-                NullLogger<PlatformController>.Instance,
-                new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
-                passwordGate: null, loginAbuse: guard)
-            {
-                ControllerContext = new ControllerContext { HttpContext = Http("198.51.100.20") },
-            };
-            var result = await controller.Login(new PlatformLoginRequest("owner@platform.test", "wrong"), CancellationToken.None);
-            return (result, hasher.Calls);
-        }
-
-        (await Attempt()).Result.Should().BeOfType<UnauthorizedObjectResult>();
-        var refused = await Attempt();
-        refused.Result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(429);
-        ErrorCode(refused.Result).Should().Be("account_rate_limited");
-        refused.Hashing.Should().Be(0);
-    }
 }

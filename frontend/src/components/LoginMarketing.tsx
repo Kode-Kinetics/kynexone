@@ -1060,10 +1060,6 @@ export function VendorFooter() {
   return (
     <div className="lx-vendor lx-plate">
       <p className="lx-vendor-copy">{`© ${new Date().getFullYear()} Kode Kinetics`}</p>
-      {/* No /pricing link here. The one route to pricing on this page sits
-          directly under the sign-in button, where someone who is not a
-          customer yet actually hesitates — not in the quietest row on the
-          screen, and not twice. */}
       <nav className="lx-vendor-nav" aria-label="Legal and security">
         <a href="/security">Security</a>
         <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy</a>

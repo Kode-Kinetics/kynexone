@@ -4,12 +4,6 @@ internal static class AuthChallengeTokenCodec
 {
     public const string TenantLoginPurpose = "tm1";
     public const string TenantEnrollmentPurpose = "te1";
-    public const string PlatformLoginPurpose = "pm1";
-    /// <summary>Setup-only token for a platform operator who must enrol MFA before any session.</summary>
-    public const string PlatformEnrollmentPurpose = "pe1";
-
-    private static bool IsPlatformPurpose(string purpose)
-        => purpose is PlatformLoginPurpose or PlatformEnrollmentPurpose;
 
     public static string CreateTenant(
         string purpose,
@@ -25,26 +19,6 @@ internal static class AuthChallengeTokenCodec
             tenantId.ToString("N"), sessionStamp, nonce);
     }
 
-    public static string CreatePlatform(
-        Guid challengeId,
-        Guid platformUserId,
-        string sessionStamp,
-        string nonce) =>
-        CreatePlatform(PlatformLoginPurpose, challengeId, platformUserId, sessionStamp, nonce);
-
-    public static string CreatePlatform(
-        string purpose,
-        Guid challengeId,
-        Guid platformUserId,
-        string sessionStamp,
-        string nonce)
-    {
-        if (!IsPlatformPurpose(purpose))
-            throw new ArgumentOutOfRangeException(nameof(purpose));
-        return string.Join('.', purpose, challengeId.ToString("N"),
-            platformUserId.ToString("N"), "platform", sessionStamp, nonce);
-    }
-
     public static bool TryParse(string rawToken, string expectedPurpose, out AuthChallengeEnvelope envelope)
     {
         envelope = default;
@@ -58,19 +32,8 @@ internal static class AuthChallengeTokenCodec
             || string.IsNullOrWhiteSpace(parts[5]))
             return false;
 
-        Guid? tenantId = null;
-        if (IsPlatformPurpose(expectedPurpose))
-        {
-            if (!string.Equals(parts[3], "platform", StringComparison.Ordinal)) return false;
-        }
-        else if (!Guid.TryParseExact(parts[3], "N", out var parsedTenantId))
-        {
+        if (!Guid.TryParseExact(parts[3], "N", out var tenantId))
             return false;
-        }
-        else
-        {
-            tenantId = parsedTenantId;
-        }
 
         envelope = new AuthChallengeEnvelope(
             expectedPurpose,

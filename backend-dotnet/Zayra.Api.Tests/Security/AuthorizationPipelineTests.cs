@@ -16,7 +16,8 @@ namespace Zayra.Api.Tests.Security;
 ///
 /// Every test here was watched FAIL against the specific mutation it exists to catch. The audit
 /// that produced this file found six controls that could each be deleted or inverted with all 1817
-/// existing tests still green:
+/// existing tests still green (two of them, #5 and #6, guarded the retired platform console and went
+/// with it):
 ///
 ///   #1 Program.cs:693      app.UseAuthentication()                        → every 2xx and every 403 below (but see the note)
 ///   #2 Program.cs:275-278  Validate{Issuer,Audience,Lifetime}             → one test per flag, one flag changed per token
@@ -24,8 +25,6 @@ namespace Zayra.Api.Tests.Security;
 ///                                                                           flag turns out NOT to be the control it looks like
 ///   #3 Program.cs:316-318  default-deny FallbackPolicy                    → the attribute-less probe endpoint + the policy assertion
 ///   #4 PermissionAuthorizationHandler:20-23                               → the 403 (not 401, not 200) permission test
-///   #5 Program.cs:307-309  PlatformAdmin .RequireClaim("aud", …)          → platform claims on a TENANT-audience token
-///   #6 RequirePlatformRoleAttribute:35 403 branch                         → platform token whose role is not in the allow-list
 ///
 /// NOTE ON #1 — measured, not assumed. Deleting <c>app.UseAuthentication()</c> from this app does
 /// NOT disable authentication and CANNOT be caught by any test, because minimal hosting puts it
@@ -58,9 +57,9 @@ public sealed class AuthorizationPipelineTests
     /// <summary>NotificationsController.Deliveries — [HasPermission("notifications.manage")].</summary>
     private const string PermissionGated = "/api/notifications/deliveries";
 
-    /// <summary>PlatformController.Health — [Authorize(Policy="PlatformAdmin")] on the controller
-    /// plus [RequirePlatformRole(Owner, Admin, Support, Auditor)] on the action.</summary>
-    private const string PlatformRoleGated = "/api/platform/health";
+    /// <summary>The operator readiness evidence — RequireAuthorization("perm:security.manage"), the
+    /// organisation administrator's gate.</summary>
+    private const string AdministratorGated = "/health/ready/details";
 
     private async Task<HttpResponseMessage> GetAsync(string path, string? bearerToken = null)
     {
@@ -78,7 +77,7 @@ public sealed class AuthorizationPipelineTests
     ///
     /// The endpoint is pinned by name: <c>GET /api/test-harness/no-authorization-attribute</c>
     /// (<see cref="AuthorizationFallbackProbeController.NoAuthorizationAttribute"/>). It carries no
-    /// [Authorize], no [AllowAnonymous], no [HasPermission] and no [RequirePlatformRole], so the
+    /// [Authorize], no [AllowAnonymous] and no [HasPermission], so the
     /// default-deny fallback is the ONLY thing standing in front of it — which is the entire reason
     /// that fallback exists.
     /// </summary>
@@ -109,8 +108,6 @@ public sealed class AuthorizationPipelineTests
 
         attributes.Should().NotContain(a => a is IAuthorizeData,
             "the FallbackPolicy probe must carry no [Authorize]/[HasPermission]/[AllowAnonymous]");
-        attributes.Should().NotContain(a => a is RequirePlatformRoleAttribute,
-            "the FallbackPolicy probe must carry no [RequirePlatformRole] either");
     }
 
     /// <summary>
@@ -150,9 +147,9 @@ public sealed class AuthorizationPipelineTests
     }
 
     [Fact]
-    public async Task AnonymousRequest_ToPlatformEndpoint_Is401()
+    public async Task AnonymousRequest_ToAnAdministratorEndpoint_Is401()
     {
-        var response = await GetAsync(PlatformRoleGated);
+        var response = await GetAsync(AdministratorGated);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
@@ -295,51 +292,12 @@ public sealed class AuthorizationPipelineTests
     }
 
     /// <summary>
-    /// MUTATION #5 — dropping <c>.RequireClaim("aud", jwtOptions.PlatformAudience)</c> from the
-    /// PlatformAdmin policy (Program.cs:307-309). Watched RED (200 instead of 403).
-    ///
-    /// The token carries a REAL platform Owner's claims — <c>is_platform_admin=true</c>, a live
-    /// <c>platform_role=Owner</c>, and a session stamp that satisfies
-    /// <c>PlatformSessionSecurity.IsCurrentAsync</c> — but on the TENANT audience. The claim check
-    /// alone would wave it through; only the audience requirement stops it. Owner is deliberately
-    /// inside the endpoint's allow-list so that <c>RequirePlatformRoleAttribute</c> cannot mask the
-    /// result: if the audience requirement goes, this request succeeds.
+    /// A valid token without <c>security.manage</c> must not reach an administrator endpoint.
     /// </summary>
     [Fact]
-    public async Task PlatformAdminClaimsOnATenantAudienceToken_AreRejectedWith403()
+    public async Task TokenWithoutSecurityManage_OnAnAdministratorEndpoint_Is403()
     {
-        var response = await GetAsync(PlatformRoleGated, _fixture.PlatformOwnerTokenOnTenantAudience);
-
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden,
-            "the PlatformAdmin policy is dual-gated: is_platform_admin AND the platform audience. "
-            + "A tenant-audience token must never reach a platform route even carrying the claim");
-    }
-
-    /// <summary>
-    /// MUTATION #6 — turning <c>RequirePlatformRoleAttribute</c>'s 403 branch into <c>if (false)</c>
-    /// (RequirePlatformRoleAttribute.cs:35). Watched RED (200 instead of 403).
-    ///
-    /// This token is fully valid for the PlatformAdmin policy (correct platform audience, live
-    /// platform user, matching stamp) so the request reaches the action filter. Its role is
-    /// Marketing, which is NOT in <c>[RequirePlatformRole(Owner, Admin, Support, Auditor)]</c>. The
-    /// role branch is the only thing left that can deny it.
-    /// </summary>
-    [Fact]
-    public async Task PlatformTokenWhoseRoleIsNotInTheAllowList_Is403()
-    {
-        var response = await GetAsync(PlatformRoleGated, _fixture.PlatformMarketingToken);
-
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden,
-            "[RequirePlatformRole] must deny a platform operator whose role is outside the allow-list");
-    }
-
-    /// <summary>
-    /// A plain tenant token — no platform claims at all — must not reach a platform route either.
-    /// </summary>
-    [Fact]
-    public async Task OrdinaryTenantToken_OnAPlatformRoute_Is403()
-    {
-        var response = await GetAsync(PlatformRoleGated, _fixture.TenantTokenWithPermission);
+        var response = await GetAsync(AdministratorGated, _fixture.TenantTokenWithPermission);
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -365,17 +323,16 @@ public sealed class AuthorizationPipelineTests
     }
 
     /// <summary>
-    /// MUTATION #1 — watched RED (401 instead of 200) when the authentication middleware is genuinely
-    /// absent. Also the positive half of MUTATIONS #5/#6: the same platform identity, on the right
-    /// audience, with an allow-listed role, succeeds.
+    /// The positive half of the administrator gate: the organisation administrator is let through.
+    /// The readiness evidence itself may say 503 on this harness's database; it must never be 401/403.
     /// </summary>
     [Fact]
-    public async Task ValidPlatformOwnerToken_OnAPlatformRoleGatedEndpoint_Is2xx()
+    public async Task AdministratorToken_OnAnAdministratorEndpoint_IsAuthorized()
     {
-        var response = await GetAsync(PlatformRoleGated, _fixture.PlatformOwnerToken);
+        var response = await GetAsync(AdministratorGated, _fixture.AdministratorToken);
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK,
-            "a platform Owner on the platform audience is exactly who this endpoint is for");
+        response.StatusCode.Should().BeOneOf(new[] { HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable },
+            "the organisation administrator is exactly who the operator evidence is for");
     }
 
     /// <summary>

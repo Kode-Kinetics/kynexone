@@ -302,7 +302,7 @@ public class GlobalPayrollRemediationTests
         });
         await db.SaveChangesAsync();
 
-        // Query orphan tenants (same query as /api/platform/payroll/orphan-tenants)
+        // Query orphan tenants (the query the retired orphan-tenants report ran)
         var orphanTenants = await db.Employees
             .AsNoTracking()
             .Where(e => e.Status == "Active"

@@ -271,19 +271,16 @@ public class FeatureFlagGuardTests
         ctx.Result.Should().BeNull($"'{path}' is always-allowed and must not be blocked");
     }
 
-    // ── Platform admin (no tenant_id claim) bypasses guard ───────────────────
+    // ── A principal with no tenant_id claim bypasses the guard ───────────────
 
     [Fact]
-    public async Task PlatformAdminRequest_WithoutTenantId_BypassesGuard()
+    public async Task RequestWithoutTenantId_BypassesGuard()
     {
         await using var db = CreateDb();
 
         var httpCtx = new DefaultHttpContext();
         httpCtx.Request.Path = "/api/ai-assistant/chat";
-        httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
-        {
-            new Claim("is_platform_admin", "true"),
-        }, "Test"));
+        httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(Array.Empty<Claim>(), "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
         var ctx = new ResourceExecutingContext(actionCtx, [], []);
@@ -292,7 +289,7 @@ public class FeatureFlagGuardTests
         await filter.OnResourceExecutionAsync(ctx, () =>
             Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
-        ctx.Result.Should().BeNull("platform admin has no tenant_id claim and must bypass the guard");
+        ctx.Result.Should().BeNull("with no tenant_id claim there is no organisation module state to enforce");
     }
 
     // ── Cross-tenant flag isolation ───────────────────────────────────────────

@@ -36,20 +36,4 @@ public sealed class MfaStatusHttpTests
         body.GetProperty("promptToEnroll").GetBoolean().Should().BeFalse();
         body.GetProperty("enforced").GetBoolean().Should().BeFalse();
     }
-
-    [Fact]
-    public async Task PlatformStatus_PromptsAnUnenrolledOperator_WithoutBlocking()
-    {
-        (await SendAsync(HttpMethod.Get, "/api/platform/auth/mfa/status")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        (await SendAsync(HttpMethod.Get, "/api/platform/auth/mfa/status", _fixture.TenantTokenWithPermission))
-            .StatusCode.Should().Be(HttpStatusCode.Forbidden);
-
-        var response = await SendAsync(HttpMethod.Get, "/api/platform/auth/mfa/status", _fixture.PlatformMarketingToken);
-        response.StatusCode.Should().Be(HttpStatusCode.OK, "every platform role, not only Owner/Admin, must be able to see and act on it");
-        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
-        body.GetProperty("required").GetBoolean().Should().BeTrue();
-        body.GetProperty("enabled").GetBoolean().Should().BeFalse();
-        body.GetProperty("enforced").GetBoolean().Should().BeFalse("no enforcement date row exists in this database");
-        body.GetProperty("promptToEnroll").GetBoolean().Should().BeTrue();
-    }
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -154,18 +154,7 @@ function LoginCard() {
     arrivalNoticeShown.current = text;
   }, [arrivalNotice, t]);
 
-  useLayoutEffect(() => {
-    // Never retain a query-string bearer credential in browser history, logs, or
-    // copied URLs. Issuance is contained server-side; this is a second boundary.
-    const url = new URL(window.location.href);
-    if (!url.searchParams.has('impersonate')) return;
-    url.searchParams.delete('impersonate');
-    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
-  }, []);
-
   useEffect(() => {
-    // Query-string bearer credentials are deliberately rejected. Support and
-    // impersonation are contained until their revocation ledger is proven.
     const wsParam = searchParams ? resolveWorkspaceAlias(searchParams) : '';
     if (wsParam) { setTenantSlug(wsParam); setTenantLocked(true); setShowWorkspace(true); return; }
     if (typeof window === 'undefined') return;
@@ -667,17 +656,6 @@ function LoginCard() {
                   </div>
                 )}
 
-                {/* ONE line under the button. It used to be three: a
-                    tenant-isolation / audit-trails / MFA strip, this link, and
-                    a sentence explaining the pricing flow. The security strip
-                    went because /security says it properly and this is not
-                    where a returning user is reading; the explanatory sentence
-                    went because it described a page instead of getting anyone
-                    to it. What is left is the only line here that changes what
-                    someone does next. */}
-                <div className="lx-card-foot">
-                  <a className="lx-secondary" href="/pricing">{t('Get a proposal for your headcount')}</a>
-                </div>
               </div>
             </div>
           </div>

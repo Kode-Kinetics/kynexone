@@ -24,7 +24,6 @@ namespace Zayra.Api.Tests;
 ///   - Setup flow: initiate → verify with valid code → MFA enabled
 ///   - Setup flow: initiate → verify with wrong code → MFA NOT enabled
 ///   - Disable flow: valid code → MFA cleared; wrong code → MFA kept
-///   - Platform user MFA challenge happy path
 ///   - SecuritySetting.MfaRequired flag persisted correctly
 ///   - MfaFailedCount increments on wrong TOTP; cleared on success
 ///   - TotpService: verify accepts current step
@@ -68,18 +67,6 @@ public class MfaTests
             NormalizedEmail = Guid.NewGuid().ToString(),
             PasswordHash = "hash",
             MFAEnabled = mfaEnabled,
-            MfaSecretEncrypted = encryptedSecret,
-            IsActive = true
-        };
-
-    private static PlatformUser MakePlatformUser(bool mfaEnabled = false, string? encryptedSecret = null) =>
-        new()
-        {
-            Id = Guid.NewGuid(),
-            Email = $"platform-{Guid.NewGuid():N}@test.com",
-            FullName = "Test",
-            PasswordHash = "hash",
-            MfaEnabled = mfaEnabled,
             MfaSecretEncrypted = encryptedSecret,
             IsActive = true
         };
@@ -378,43 +365,6 @@ public class MfaTests
         Assert.False(result);
         var stored = await db.Users.FirstAsync(x => x.Id == user.Id);
         Assert.True(stored.MFAEnabled);
-    }
-
-    // ── Platform user MFA ─────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task PlatformUser_MfaChallenge_HappyPath()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var pu     = MakePlatformUser(mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        db.PlatformUsers.Add(pu);
-        await db.SaveChangesAsync();
-
-        var raw  = await svc.CreatePlatformChallengeAsync(pu.Id, "127.0.0.1", CancellationToken.None);
-        var code = ComputeTotpDirectly(secret, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30).ToString("D6");
-
-        var result = await svc.VerifyPlatformChallengeAsync(raw, code, CancellationToken.None);
-
-        Assert.NotNull(result);
-        Assert.Equal(pu.Id, result!.Id);
-    }
-
-    [Fact]
-    public async Task PlatformUser_MfaChallenge_WrongCode_ReturnsNull()
-    {
-        var (db, totp, tokens) = MakeServices();
-        var svc    = MakeMfaService(db, totp, tokens);
-        var secret = totp.GenerateBase32Secret();
-        var pu     = MakePlatformUser(mfaEnabled: true, encryptedSecret: totp.EncryptSecret(secret));
-        db.PlatformUsers.Add(pu);
-        await db.SaveChangesAsync();
-
-        var raw    = await svc.CreatePlatformChallengeAsync(pu.Id, "127.0.0.1", CancellationToken.None);
-        var result = await svc.VerifyPlatformChallengeAsync(raw, "000000", CancellationToken.None);
-
-        Assert.Null(result);
     }
 
     // ── SecuritySetting.MfaRequired ───────────────────────────────────────────

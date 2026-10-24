@@ -1,19 +1,7 @@
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Text;
-using FluentAssertions;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.Tokens;
 using Zayra.Api.Application.Auth;
-using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
-using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
@@ -21,19 +9,14 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Tests.Platform;
 
 /// <summary>
-/// Shared helpers for all platform controller tests.
-/// Uses InMemory EF so no MySQL/Docker is needed.
+/// Shared helpers: an isolated InMemory database per call and the test JWT options. Uses InMemory EF so
+/// no Docker is needed. (It carried the platform controller factory until the platform was removed.)
 /// </summary>
 public abstract class PlatformTestBase
 {
-    // Credentials matching the .env file
-    protected const string AdminEmail    = "admin@platform.local";
-    protected const string AdminPassword = "YourPassword123!";
-
-    protected const string JwtSigningKey       = "TEST_PLATFORM_SIGNING_KEY_MUST_BE_64_CHARS_FOR_TESTS___PADDED";
-    protected const string JwtIssuer           = "Zayra.Tests";
-    protected const string JwtTenantAudience   = "kynexone-tenant-test";
-    protected const string JwtPlatformAudience = "kynexone-platform-test";
+    protected const string JwtSigningKey = "TEST_PLATFORM_SIGNING_KEY_MUST_BE_64_CHARS_FOR_TESTS___PADDED";
+    protected const string JwtIssuer     = "Zayra.Tests";
+    protected const string JwtAudience   = "kynexone-test";
 
     // ── DB ─────────────────────────────────────────────────────────────────────
 
@@ -49,86 +32,12 @@ public abstract class PlatformTestBase
 
     protected static JwtOptions GetJwtOptions() => new()
     {
-        Issuer           = JwtIssuer,
-        TenantAudience   = JwtTenantAudience,
-        PlatformAudience = JwtPlatformAudience,
-        SigningKey        = JwtSigningKey,
+        Issuer             = JwtIssuer,
+        Audience           = JwtAudience,
+        SigningKey         = JwtSigningKey,
         AccessTokenMinutes = 30,
         RefreshTokenDays   = 7
     };
-
-    /// <summary>
-    /// Builds a platform-admin JWT that passes the [Authorize(Policy="PlatformAdmin")] check
-    /// AND the RequirePlatformRole filter for Owner.
-    /// </summary>
-    protected static string BuildPlatformToken(string role = PlatformRoles.Owner)
-    {
-        var key         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSigningKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var claims = new[]
-        {
-            new Claim(JwtRegisteredClaimNames.Sub,   "platform-admin"),
-            new Claim(JwtRegisteredClaimNames.Email, AdminEmail),
-            new Claim(ClaimTypes.Role,               "PlatformAdmin"),
-            new Claim("is_platform_admin",           "true"),
-            new Claim("platform_role",               role),
-            new Claim(JwtRegisteredClaimNames.Jti,   Guid.NewGuid().ToString()),
-        };
-        var token = new JwtSecurityToken(JwtIssuer, JwtPlatformAudience, claims,
-            expires: DateTime.UtcNow.AddHours(1), signingCredentials: credentials);
-        return new JwtSecurityTokenHandler().WriteToken(token);
-    }
-
-    // ── Controller factory ─────────────────────────────────────────────────────
-
-    protected static PlatformController CreateController(
-        ZayraDbContext db,
-        string platformRole = PlatformRoles.Owner,
-        IAuthSeeder? authSeeder = null,
-        IMfaService? mfaService = null,
-        IAccessManagementService? accessManagement = null,
-        IEmailService? emailService = null,
-        IConfiguration? configuration = null)
-    {
-        var jwt    = Options.Create(GetJwtOptions());
-        var hasher = new Pbkdf2PasswordHasher();
-        var tokenSvc = new JwtTokenService(jwt);
-        var config = configuration ?? new ConfigurationBuilder().Build();
-        var email  = emailService ?? new FakePlatformEmailService();
-        var seeder = authSeeder ?? new FakeAuthSeeder(db, hasher);
-        var access = accessManagement
-            ?? new AccessManagementService(db, hasher, new AuditService(db), tokenSvc, config);
-
-        var controller = new PlatformController(
-            db, jwt, hasher, seeder, tokenSvc, email, config,
-            mfaService ?? new NullPlatformMfaService(),
-            access,
-            NullLogger<PlatformController>.Instance,
-            new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()));
-
-        // Wire up a ClaimsPrincipal that passes the PlatformAdmin policy
-        var claims = new[]
-        {
-            new Claim(JwtRegisteredClaimNames.Sub,   "platform-admin"),
-            new Claim(JwtRegisteredClaimNames.Email, AdminEmail),
-            new Claim(ClaimTypes.Role,               "PlatformAdmin"),
-            new Claim("is_platform_admin",           "true"),
-            new Claim("platform_role",               platformRole),
-        };
-        var identity  = new ClaimsIdentity(claims, "Test");
-        var principal = new ClaimsPrincipal(identity);
-
-        controller.ControllerContext = new ControllerContext
-        {
-            HttpContext = new DefaultHttpContext { User = principal }
-        };
-
-        // Set env-vars so login fallback works
-        Environment.SetEnvironmentVariable("PLATFORM_ADMIN_EMAIL",    AdminEmail);
-        Environment.SetEnvironmentVariable("PLATFORM_ADMIN_PASSWORD", AdminPassword);
-
-        return controller;
-    }
 }
 
 // ── Fakes ──────────────────────────────────────────────────────────────────────
@@ -154,12 +63,6 @@ internal sealed class NullPlatformMfaService : IMfaService
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-    public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
-    public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
-    public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
-    public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
-    public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-    public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
 }
 
 internal sealed class FakeAuthSeeder : IAuthSeeder

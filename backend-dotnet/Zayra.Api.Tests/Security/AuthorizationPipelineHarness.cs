@@ -30,9 +30,8 @@ namespace Zayra.Api.Tests.Security;
 /// A mutation audit proved that <c>grep -rn "WebApplicationFactory" Zayra.Api.Tests</c> returned
 /// ZERO hits: every controller test hand-constructed a controller with a fabricated
 /// <c>ControllerContext</c>, so <c>Program.cs</c>'s composition — <c>UseAuthentication()</c>, the JWT
-/// <see cref="TokenValidationParameters"/>, the default-deny <c>FallbackPolicy</c>, the
-/// <c>PlatformAdmin</c> policy, and every <c>[Authorize]</c> / <c>[HasPermission]</c> /
-/// <c>[RequirePlatformRole]</c> attribute — never executed. Authentication could be DELETED
+/// <see cref="TokenValidationParameters"/>, the default-deny <c>FallbackPolicy</c>, and every
+/// <c>[Authorize]</c> / <c>[HasPermission]</c> attribute — never executed. Authentication could be DELETED
 /// outright and all 1817 tests stayed green.
 ///
 /// This factory boots the real <c>Program.cs</c> in-process over <c>TestServer</c>. It changes
@@ -176,8 +175,7 @@ public sealed class AuthorizationPipelineHost : WebApplicationFactory<Program>
 /// PINNED BY NAME: <c>GET /api/test-harness/no-authorization-attribute</c> —
 /// <see cref="AuthorizationFallbackProbeController.NoAuthorizationAttribute"/>.
 ///
-/// It carries NO <c>[Authorize]</c>, NO <c>[AllowAnonymous]</c>, NO <c>[HasPermission]</c> and NO
-/// <c>[RequirePlatformRole]</c>. Nothing but the FallbackPolicy stands between an anonymous caller
+/// It carries NO <c>[Authorize]</c>, NO <c>[AllowAnonymous]</c> and NO <c>[HasPermission]</c>. Nothing but the FallbackPolicy stands between an anonymous caller
 /// and its body. Delete the FallbackPolicy and this endpoint answers 200 to the whole internet.
 ///
 /// Why it lives in the TEST assembly rather than pointing at a shipped route: a scan of all 102
@@ -200,9 +198,8 @@ public sealed class AuthorizationFallbackProbeController : ControllerBase
 /// <summary>
 /// Boots the host once, seeds the identities the authorization tests need, and mints the tokens.
 ///
-/// Every token below is produced by the APPLICATION's own issuing code — <see cref="ITokenService"/>
-/// for tenant tokens, and a byte-for-byte mirror of <c>PlatformController.CreatePlatformToken</c>
-/// for platform tokens — so a token that is supposed to be valid really is valid all the way through
+/// Every token below is produced by the APPLICATION's own issuing code (<see cref="ITokenService"/>),
+/// so a token that is supposed to be valid really is valid all the way through
 /// <c>JwtBearerEvents.OnTokenValidated</c>, which re-checks the session stamp, roles and effective
 /// permissions against the database on EVERY request.
 /// </summary>
@@ -223,16 +220,9 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
     /// <c>notifications.manage</c> (they hold only <c>employees.read</c>).</summary>
     public string TenantTokenWithoutPermission { get; private set; } = null!;
 
-    /// <summary>Platform Owner, correct platform audience — the platform positive control.</summary>
-    public string PlatformOwnerToken { get; private set; } = null!;
-
-    /// <summary>The SAME platform Owner claims carried on a TENANT-audience token. Rejected only by
-    /// the PlatformAdmin policy's <c>.RequireClaim("aud", jwtOptions.PlatformAudience)</c>.</summary>
-    public string PlatformOwnerTokenOnTenantAudience { get; private set; } = null!;
-
-    /// <summary>Platform Marketing operator, correct platform audience. Passes the PlatformAdmin
-    /// policy and is rejected only by <c>RequirePlatformRoleAttribute</c>'s 403 branch.</summary>
-    public string PlatformMarketingToken { get; private set; } = null!;
+    /// <summary>Organisation administrator: holds <c>security.manage</c>, the gate of the operator
+    /// endpoints (<c>/health/ready/details</c>, <c>/health/telemetry</c>) and of User Management.</summary>
+    public string AdministratorToken { get; private set; } = null!;
 
     public async Task InitializeAsync()
     {
@@ -260,7 +250,7 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
 
         // Re-read every identity from the database in a FRESH scope before minting. The session
         // stamps in the tokens are derived from the persisted UpdatedAtUtc values, and
-        // Platform/TenantSessionSecurity re-derive them from a fresh read on every request — minting
+        // TenantSessionSecurity re-derives them from a fresh read on every request — minting
         // from the same materialised values is what makes the two agree.
         using (var scope = Host.Services.CreateScope())
         {
@@ -269,13 +259,7 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
 
             TenantTokenWithPermission = await MintTenantTokenAsync(db, tokenService, PermittedUserEmail);
             TenantTokenWithoutPermission = await MintTenantTokenAsync(db, tokenService, UnpermittedUserEmail);
-
-            var owner = await ReadPlatformUserAsync(db, OwnerEmail);
-            var marketing = await ReadPlatformUserAsync(db, MarketingEmail);
-
-            PlatformOwnerToken = MintPlatformToken(owner, Jwt, Jwt.PlatformAudience);
-            PlatformOwnerTokenOnTenantAudience = MintPlatformToken(owner, Jwt, Jwt.TenantAudience);
-            PlatformMarketingToken = MintPlatformToken(marketing, Jwt, Jwt.PlatformAudience);
+            AdministratorToken = await MintTenantTokenAsync(db, tokenService, AdministratorEmail);
         }
     }
 
@@ -291,8 +275,7 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
     private const string TenantSlug = "authz-pipeline-harness";
     private const string PermittedUserEmail = "notifications.manager@authz-harness.local";
     private const string UnpermittedUserEmail = "employee.reader@authz-harness.local";
-    private const string OwnerEmail = "owner@authz-harness.platform";
-    private const string MarketingEmail = "marketing@authz-harness.platform";
+    private const string AdministratorEmail = "administrator@authz-harness.local";
 
     /// <summary>The permission gating <c>GET /api/notifications/deliveries</c>.</summary>
     public const string GatedPermission = "notifications.manage";
@@ -310,10 +293,12 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
         // therefore the only thing the 403 test can be measuring — is one permission claim.
         db.Users.Add(BuildUser(tenant.Id, PermittedUserEmail, "Harness Notifications Manager"));
         db.Users.Add(BuildUser(tenant.Id, UnpermittedUserEmail, "Harness Employee Reader"));
+        db.Users.Add(BuildUser(tenant.Id, AdministratorEmail, "Harness Administrator"));
         await db.SaveChangesAsync();
 
         var permitted = await db.Users.FirstAsync(x => x.Email == PermittedUserEmail);
         var unpermitted = await db.Users.FirstAsync(x => x.Email == UnpermittedUserEmail);
+        var administrator = await db.Users.FirstAsync(x => x.Email == AdministratorEmail);
 
         db.Set<UserPermissionOverride>().AddRange(
             new UserPermissionOverride
@@ -325,11 +310,12 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
             {
                 TenantId = tenant.Id, UserId = unpermitted.Id, PermissionKey = "employees.read",
                 Effect = "Allow", IsActive = true, Reason = "authenticated but not permitted",
+            },
+            new UserPermissionOverride
+            {
+                TenantId = tenant.Id, UserId = administrator.Id, PermissionKey = "security.manage",
+                Effect = "Allow", IsActive = true, Reason = "organisation administrator",
             });
-
-        db.PlatformUsers.AddRange(
-            BuildPlatformUser(OwnerEmail, "Harness Platform Owner", PlatformRoles.Owner),
-            BuildPlatformUser(MarketingEmail, "Harness Platform Marketing", PlatformRoles.Marketing));
 
         await db.SaveChangesAsync();
     }
@@ -348,15 +334,6 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
         IsActive = true,
         IsEmailConfirmed = true,
         IsGroupScope = true,
-    };
-
-    private static PlatformUser BuildPlatformUser(string email, string fullName, string role) => new()
-    {
-        Email = email,
-        FullName = fullName,
-        PasswordHash = "no-login-path-in-this-harness",
-        Role = role,
-        IsActive = true,
     };
 
     // ── Token minting ────────────────────────────────────────────────────────────────────────
@@ -378,32 +355,6 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
         var entityScope = EntityScopeClaims.Resolve(user.IsGroupScope, grants, Array.Empty<Guid>());
         return tokenService.CreateAccessToken(
             user, Array.Empty<string>(), permissions, user.Tenant!, grants, entityScope, out _);
-    }
-
-    private static async Task<PlatformUser> ReadPlatformUserAsync(ZayraDbContext db, string email)
-        => await db.PlatformUsers.AsNoTracking().FirstAsync(x => x.Email == email);
-
-    /// <summary>
-    /// Byte-for-byte mirror of <c>PlatformController.CreatePlatformToken</c>, with the audience
-    /// left as a parameter so the platform-audience requirement can be isolated.
-    /// </summary>
-    private static string MintPlatformToken(PlatformUser user, JwtOptions jwt, string audience)
-    {
-        var stampSource = user.UpdatedAtUtc
-            ?? throw new InvalidOperationException("Platform user session stamp was not initialised.");
-
-        var claims = new List<Claim>
-        {
-            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(ClaimTypes.Role, "PlatformAdmin"),
-            new("is_platform_admin", "true"),
-            new("platform_role", user.Role),
-            new(PlatformSessionSecurity.SessionStampClaim, PlatformSessionSecurity.StampValue(stampSource)),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-        };
-
-        return Sign(claims, jwt.Issuer, audience, jwt.SigningKey, DateTime.UtcNow.AddHours(8));
     }
 
     // ── One-flag-at-a-time token forgery ─────────────────────────────────────────────────────

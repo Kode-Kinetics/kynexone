@@ -37,12 +37,11 @@ public class RequestEntityScopeResolverTests
     private static readonly Guid Tenant = Guid.NewGuid();
     private static readonly Guid CompanyA = Guid.NewGuid();
     private static readonly Guid CompanyB = Guid.NewGuid();
-    private const string PlatformAudience = "kynexone-platform";
 
     private static RequestEntityScopeResolver Resolver(bool strictMode = false, IHttpContextAccessor? http = null) =>
         new(http,
             Options.Create(new EntityScopeOptions { StrictMode = strictMode }),
-            Options.Create(new JwtOptions { PlatformAudience = PlatformAudience }));
+            Options.Create(new JwtOptions()));
 
     private static ClaimsPrincipal Principal(params Claim[] claims)
     {
@@ -262,22 +261,16 @@ public class RequestEntityScopeResolverTests
     }
 
     [Fact]
-    public void PlatformAdmin_RequiresBothTheClaimAndThePlatformAudience()
+    public void TheRetiredPlatformClaims_NeverGrantSystemScope()
     {
+        // There is no platform administrator any more. A token still carrying the old claims, on any
+        // audience, is an ordinary principal: it never reaches the system-scope (unfiltered) branch.
         var claimOnly = Principal(new Claim("is_platform_admin", "true"));
-        var withWrongAudience = Principal(
-            new Claim("is_platform_admin", "true"), new Claim("aud", "kynexone-tenant"));
-        var proper = Principal(
-            new Claim("is_platform_admin", "true"), new Claim("aud", PlatformAudience));
+        var withAudience = Principal(
+            new Claim("is_platform_admin", "true"), new Claim("aud", "kynexone-platform"));
 
-        Resolver().ResolveFor(claimOnly, null).IsSystemScope
-            .Should().BeFalse("the claim alone is not a platform session");
-        Resolver().ResolveFor(withWrongAudience, null).IsSystemScope
-            .Should().BeFalse("a tenant-audience token carrying the claim is not a platform session");
-
-        var admin = Resolver().ResolveFor(proper, null);
-        admin.IsSystemScope.Should().BeTrue();
-        admin.Source.Should().Be(ScopeResolutionSource.PlatformAdministrator);
+        Resolver().ResolveFor(claimOnly, null).IsSystemScope.Should().BeFalse();
+        Resolver().ResolveFor(withAudience, null).IsSystemScope.Should().BeFalse();
     }
 
     [Fact]

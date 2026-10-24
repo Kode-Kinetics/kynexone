@@ -81,19 +81,19 @@ public class SelfieAttendanceTests : PlatformTestBase
         Assert.Null(await RunGuardAsync(modules, user, "/api/ess/biometric-consent/withdraw"));
     }
 
-    // ── Platform flag: sign-offs, audit, bulk ─────────────────────────────────────────────────
+    // ── Organisation flag: sign-offs, audit ──────────────────────────────────────────────────
 
     [Fact]
-    public async Task Platform_WithBothSignOffs_EnablesSelfieAttendance_AndAuditsTheSignOffs()
+    public async Task Organisation_WithBothSignOffs_EnablesSelfieAttendance_AndAuditsTheSignOffs()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "T", Slug = $"t-{tenantId:N}" });
         await db.SaveChangesAsync();
         var ownerId = Guid.NewGuid();
-        var controller = await SelfieWorld.AsPlatformOwnerAsync(CreateController(db), db, ownerId);
+        var controller = await SelfieWorld.OrganisationAdminAsync(db, tenantId, ownerId);
 
-        var result = await controller.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, SelfieWorld.EnableRequestConfig(ownerId)), default);
+        var result = await controller.SetFeature(FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, SelfieWorld.EnableRequestConfig(ownerId)), default);
 
         Assert.IsType<OkObjectResult>(result);
         var enabled = await db.TenantFeatureFlags.SingleAsync(f => f.FeatureKey == FeatureKeys.SelfieAttendance);
@@ -108,7 +108,7 @@ public class SelfieAttendanceTests : PlatformTestBase
         Assert.Contains("\"region\":\"KSA\"", audit.NewValuesJson);
 
         // Disabling is always allowed, keeps the recorded sign-offs, and is audited with them.
-        Assert.IsType<OkObjectResult>(await controller.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(false, null), default));
+        Assert.IsType<OkObjectResult>(await controller.SetFeature(FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(false, null), default));
         var flag = await db.TenantFeatureFlags.SingleAsync(f => f.FeatureKey == FeatureKeys.SelfieAttendance);
         Assert.False(flag.IsEnabled);
         Assert.Contains("DPIA-2026-007", flag.ConfigJson);
@@ -116,33 +116,18 @@ public class SelfieAttendanceTests : PlatformTestBase
     }
 
     [Fact]
-    public async Task Platform_BulkEnable_OfSelfieAttendance_IsRefused()
-    {
-        await using var db = CreateDb();
-        var tenantId = Guid.NewGuid();
-        db.Tenants.Add(new Tenant { Id = tenantId, Name = "T", Slug = $"t-{tenantId:N}", IsActive = true });
-        await db.SaveChangesAsync();
-        var controller = CreateController(db);
-
-        var result = await controller.BulkSetFeatureFlag(new BulkFeatureFlagRequest([tenantId], false, FeatureKeys.SelfieAttendance, true, SelfieWorld.SignedOffConfig()), default);
-
-        Assert.Equal("selfie_bulk_enable_refused", SelfieWorld.CodeOf(Assert.IsType<UnprocessableEntityObjectResult>(result)));
-        Assert.Empty(db.TenantFeatureFlags);
-    }
-
-    [Fact]
-    public async Task Platform_GeofenceConfig_IsValidated()
+    public async Task Organisation_GeofenceConfig_IsValidated()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "T", Slug = $"t-{tenantId:N}" });
         await db.SaveChangesAsync();
-        var controller = CreateController(db);
+        var controller = await SelfieWorld.OrganisationAdminAsync(db, tenantId, Guid.NewGuid());
 
-        Assert.IsType<BadRequestObjectResult>(await controller.SetFeatureFlag(tenantId, FeatureKeys.PunchGeofence,
+        Assert.IsType<BadRequestObjectResult>(await controller.SetFeature(FeatureKeys.PunchGeofence,
             new SetFeatureFlagRequest(true, "{\"maxAccuracyMeters\":0}"), default));
         // The geofence is not biometric: no sign-offs needed.
-        Assert.IsType<OkObjectResult>(await controller.SetFeatureFlag(tenantId, FeatureKeys.PunchGeofence,
+        Assert.IsType<OkObjectResult>(await controller.SetFeature(FeatureKeys.PunchGeofence,
             new SetFeatureFlagRequest(true, "{\"maxAccuracyMeters\":50}"), default));
     }
 

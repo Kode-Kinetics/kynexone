@@ -1186,9 +1186,9 @@ public sealed class EmployeeAccessTests
     }
 
     [Fact]
-    public async Task UnderAPlatformPrincipal_TheHookReadsNoTenantsLinks()
+    public async Task UnderATenantlessPrincipal_TheHookReadsNoTenantsLinks()
     {
-        // A tenantless authenticated principal (the platform super-admin) never makes the hook read another tenant's
+        // A tenantless authenticated principal never makes the hook read another tenant's
         // rows. Its own tracked links would still be cleared; untracked ones are left to the redeem, which re-checks
         // the login's privilege and lifecycle under lock.
         var w = await SeedAsync();
@@ -1205,7 +1205,7 @@ public sealed class EmployeeAccessTests
                          .UseNpgsql(_fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
                          .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, recorder)
                          .Options,
-                         Accessor(new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim("is_platform_admin", "true"))))
+                         Accessor(new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()))))
         {
             db.UserRoles.Add(new UserRole { UserId = userId, RoleId = roleId });
             await db.SaveChangesAsync();
@@ -1397,7 +1397,7 @@ public sealed class EmployeeAccessTests
 
     private static readonly IOptions<JwtOptions> Jwt = Options.Create(new JwtOptions
     {
-        Issuer = "Zayra.Tests", TenantAudience = "kynexone-tenant-test", PlatformAudience = "kynexone-platform-test",
+        Issuer = "Zayra.Tests", Audience = "kynexone-tenant-test",
         SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_EMPLOYEE_ACCESS_TESTS_0123456789", AccessTokenMinutes = 30, RefreshTokenDays = 7,
     });
 

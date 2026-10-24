@@ -10,8 +10,6 @@ public enum ScopeResolutionSource
     NoHttpContext,
     /// <summary>An explicit <see cref="Zayra.Api.Infrastructure.Scope.SystemScopeContext"/> block.</summary>
     ExplicitSystemScope,
-    /// <summary>Authenticated platform administrator holding the platform audience.</summary>
-    PlatformAdministrator,
     /// <summary>The v2 <c>entity_scope</c> claim — the only format new tokens carry.</summary>
     ClaimV2,
     /// <summary>Pre-cutover token: <c>entity_access</c> rows and/or <c>is_group_scope</c>.</summary>

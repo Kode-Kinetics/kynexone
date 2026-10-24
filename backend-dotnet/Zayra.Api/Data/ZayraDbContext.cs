@@ -45,19 +45,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     }
 
     /// <summary>
-    /// True when the current context may LEGITIMATELY bypass the tenant read filter. Exactly three
+    /// True when the current context may LEGITIMATELY bypass the tenant read filter. Exactly two
     /// bypass-eligible sources; every OTHER authenticated principal enforces its own tenant:
     ///   (1) an explicit <see cref="SystemScopeContext"/> ambient flag — system work under a principal;
     ///   (2) no authenticated principal at all — seeders, boot, background workers, and pre-auth
-    ///       login/refresh (the documented, historical bypass, now stated positively);
-    ///   (3) the platform super-admin — is_platform_admin + the platform audience — the by-design
-    ///       omnipotent cross-tenant actor that PlatformController depends on. This is dual-gated
-    ///       exactly like the PlatformAdmin authorization policy.
+    ///       login/refresh (the documented, historical bypass, now stated positively).
     ///
-    /// A normal tenant/impersonation token (always carries tenant_id) is NOT system scope and is
-    /// filtered to its own tenant. A tenantless NON-platform authenticated principal (the "trap for
-    /// the next endpoint") is likewise NOT system scope: with no tenant_id it matches ZERO rows —
-    /// failing CLOSED — rather than the old fail-OPEN "see everything".
+    /// A normal token (always carries tenant_id) is NOT system scope and is filtered to its own
+    /// tenant. A tenantless authenticated principal (the "trap for the next endpoint") is likewise
+    /// NOT system scope: with no tenant_id it matches ZERO rows — failing CLOSED — rather than the
+    /// old fail-OPEN "see everything".
     /// </summary>
     private bool _isSystemScope
     {
@@ -65,12 +62,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             if (SystemScopeContext.IsActive) return true;
             var user = _httpContextAccessor?.HttpContext?.User;
-            if (user?.Identity?.IsAuthenticated != true) return true; // pre-HTTP / system context
-            // Platform super-admin: short-circuit the is_platform_admin claim BEFORE dereferencing
-            // _jwtOptions so the many test contexts constructed without IOptions<JwtOptions> never NRE.
-            return user.HasClaim("is_platform_admin", "true")
-                && _jwtOptions?.Value.PlatformAudience is { } platformAudience
-                && user.HasClaim("aud", platformAudience);
+            return user?.Identity?.IsAuthenticated != true; // pre-HTTP / system context
         }
     }
 

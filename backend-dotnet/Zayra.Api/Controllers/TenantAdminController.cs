@@ -11,7 +11,7 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/tenant-admin")]
-// Tenant/platform config (subscription, feature flags, branding, localization, country rules) was
+// Organisation configuration (feature flags, branding, localization, country rules) was
 // Admin-only. security.manage is Admin-exclusive among seeded roles → exact preservation. The
 // [AllowAnonymous] on GetLocalization still overrides this and stays public.
 [HasPermission("security.manage")]
@@ -20,86 +20,6 @@ public class TenantAdminController : ControllerBase
     private readonly ZayraDbContext _db;
 
     public TenantAdminController(ZayraDbContext db) => _db = db;
-
-    // ── Subscription ────────────────────────────────────────────────────────
-
-    [HttpGet("subscription")]
-    public async Task<IActionResult> GetSubscription(CancellationToken ct)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-
-        var sub = await _db.TenantSubscriptions
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-
-        return Ok(sub);
-    }
-
-    [HttpGet("subscription/usage")]
-    public async Task<IActionResult> GetSubscriptionUsage(CancellationToken ct)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-
-        var sub = await _db.TenantSubscriptions.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-
-        var activeEmployees = await _db.Employees.AsNoTracking()
-            .CountAsync(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted, ct);
-
-        var totalUsers = await _db.Users.AsNoTracking()
-            .CountAsync(u => u.TenantId == tenantId && u.IsActive, ct);
-
-        var totalCompanies = await _db.Companies.AsNoTracking()
-            .CountAsync(c => c.TenantId == tenantId, ct);
-
-        var featureFlags = await _db.TenantFeatureFlags.AsNoTracking()
-            .Where(f => f.TenantId == tenantId)
-            .Select(f => new { f.FeatureKey, f.IsEnabled })
-            .ToListAsync(ct);
-
-        // AI usage this month
-        var yearMonth = int.Parse(DateTime.UtcNow.ToString("yyyyMM"));
-        var aiUsage = await _db.TenantAiUsages.AsNoTracking()
-            .FirstOrDefaultAsync(a => a.TenantId == tenantId && a.YearMonth == yearMonth, ct);
-
-        return Ok(new
-        {
-            plan           = sub?.Plan ?? "Trial",
-            status         = sub?.Status ?? "Active",
-            billingCycle   = sub?.BillingCycle ?? "Monthly",
-            monthlyAmount  = sub?.MonthlyAmount ?? 0,
-            currencyCode   = sub?.CurrencyCode ?? "USD",
-            expiresAtUtc   = sub?.ExpiresAtUtc,
-            limits = new
-            {
-                maxEmployees  = sub?.MaxEmployees ?? 50,
-                maxUsers      = sub?.MaxUsers ?? 10,
-                maxCompanies  = sub?.MaxCompanies ?? 1,
-                maxAdminUsers = sub?.MaxAdminUsers ?? 10,
-            },
-            usage = new
-            {
-                activeEmployees,
-                totalUsers,
-                totalCompanies,
-                aiTokensThisMonth = aiUsage?.TokensUsed ?? 0,
-            },
-            featureFlags = featureFlags.ToDictionary(f => f.FeatureKey, f => f.IsEnabled),
-        });
-    }
-
-    [HttpPut("subscription")]
-    public IActionResult UpsertSubscription()
-    {
-        // Subscription plan, status, and seat limits are controlled exclusively by the
-        // platform administrator. A company admin cannot self-upgrade or change limits.
-        return StatusCode(StatusCodes.Status403Forbidden, new
-        {
-            error = "not_permitted",
-            message = "Subscription changes are managed by KynexOne platform administrators. Please contact support."
-        });
-    }
 
     // ── Feature Flags ───────────────────────────────────────────────────────
 
@@ -179,7 +99,7 @@ public class TenantAdminController : ControllerBase
     /// row — every tenant created before <c>PlatformController</c> started writing one.
     ///
     /// <para><b>Why this is not just <c>new TenantLocalizationSetting()</c>.</b> The entity defaults
-    /// <c>DefaultTimezone</c> to <c>America/New_York</c> (Models/SaasPlatform.cs), so the old
+    /// <c>DefaultTimezone</c> to <c>America/New_York</c> (Models/Organisation/TenantLocalizationSetting.cs), so the old
     /// fallback served a FABRICATED US Eastern zone to GCC tenants as though it were their stated
     /// setting. The HR Command Center header renders its clock in that zone, which put the first
     /// screen of the product 7 hours behind Riyadh — showing the WRONG DAY — while panels that use
@@ -428,35 +348,43 @@ public class TenantAdminController : ControllerBase
         return Ok(new { deleted = rules.Count, countryCode = code });
     }
 
-    // ── Invoices (read-only) ──────────────────────────────────────────────────
+    // ── Login Activity (read-only) ────────────────────────────────────────────
 
-    [HttpGet("invoices")]
-    public async Task<IActionResult> ListInvoices(CancellationToken ct)
+    /// <summary>
+    /// The organisation's sign-in record: successes, failures, lockouts and reset requests, newest first.
+    /// It used to be readable only from the platform console; the organisation's administrators now
+    /// run their own installation, so it is theirs.
+    /// </summary>
+    [HttpGet("login-activity")]
+    public async Task<IActionResult> ListLoginActivity(
+        [FromQuery] Guid? userId,
+        [FromQuery] string? eventType,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken ct = default)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var invoices = await _db.TenantInvoices
-            .AsNoTracking()
-            .Where(i => i.TenantId == tenantId)
-            .OrderByDescending(i => i.InvoiceDate)
-            .Select(i => new
-            {
-                i.Id,
-                i.InvoiceNumber,
-                i.Amount,
-                i.CurrencyCode,
-                i.Status,
-                i.PaymentMethod,
-                i.PeriodDescription,
-                i.InvoiceDate,
-                i.DueDate,
-                i.PaidDate,
-                i.CreatedAtUtc
-            })
+        pageSize = Math.Clamp(pageSize, 1, 200);
+        page     = Math.Max(1, page);
+
+        var q = _db.LoginActivities.AsNoTracking().Where(a => a.TenantId == tenantId);
+        if (userId.HasValue) q = q.Where(a => a.UserId == userId.Value);
+        if (!string.IsNullOrWhiteSpace(eventType)) q = q.Where(a => a.EventType == eventType);
+        if (from.HasValue) q = q.Where(a => a.OccurredAtUtc >= from.Value);
+        if (to.HasValue)   q = q.Where(a => a.OccurredAtUtc <= to.Value);
+
+        var total = await q.CountAsync(ct);
+        var items = await q
+            .OrderByDescending(a => a.OccurredAtUtc)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync(ct);
 
-        return Ok(invoices);
+        return Ok(new { total, page, pageSize, items });
     }
 
     // ── AI Usage (read-only) ──────────────────────────────────────────────────
@@ -491,12 +419,6 @@ public class TenantAdminController : ControllerBase
         });
     }
 }
-
-public record UpsertSubscriptionRequest(
-    string Plan, string Status, int MaxEmployees, int MaxUsers,
-    int MaxCompanies, int MaxAdminUsers,
-    string BillingEmail, string BillingCycle,
-    decimal MonthlyAmount, string CurrencyCode, DateTime? ExpiresAtUtc);
 
 public record SetFeatureFlagRequest(bool IsEnabled, string? ConfigJson);
 

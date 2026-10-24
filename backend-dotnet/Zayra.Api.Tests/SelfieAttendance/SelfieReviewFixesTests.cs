@@ -81,9 +81,9 @@ public class SelfieReviewFixesTests : PlatformTestBase
         await using var db = CreateDb();
         var tenantId = await TenantAsync(db);
         var ownerId = Guid.NewGuid();
-        var owner = await SelfieWorld.AsPlatformOwnerAsync(CreateController(db), db, ownerId, StorageResidency.Unconfigured);
+        var owner = await SelfieWorld.OrganisationAdminAsync(db, tenantId, ownerId, StorageResidency.Unconfigured);
 
-        var result = await owner.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, SelfieWorld.EnableRequestConfig(ownerId)), default);
+        var result = await owner.SetFeature(FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, SelfieWorld.EnableRequestConfig(ownerId)), default);
 
         var refused = Assert.IsType<UnprocessableEntityObjectResult>(result);
         Assert.Equal("selfie_residency_unverified", SelfieWorld.CodeOf(refused));
@@ -91,7 +91,7 @@ public class SelfieReviewFixesTests : PlatformTestBase
         Assert.False(await db.TenantFeatureFlags.AnyAsync(f => f.IsEnabled));
     }
 
-    // ── Item 7: Owner only, server-stamped ──────────────────────────────────────────────────────────────────
+    // ── Item 7: server-stamped ──────────────────────────────────────────────────────────────────
 
     [Fact]
     public async Task Item7_TheServerStampsActorTimeAndStorage_OverWhateverTheRequestSent()
@@ -99,7 +99,7 @@ public class SelfieReviewFixesTests : PlatformTestBase
         await using var db = CreateDb();
         var tenantId = await TenantAsync(db);
         var ownerId = Guid.NewGuid();
-        var owner = await SelfieWorld.AsPlatformOwnerAsync(CreateController(db), db, ownerId);
+        var owner = await SelfieWorld.OrganisationAdminAsync(db, tenantId, ownerId);
         var forged = JsonSerializer.Serialize(new
         {
             dpia = new { signedOffBy = ownerId.ToString(), signedOffAtUtc = "2026-09-30T08:00:00Z", reference = "DPIA-2026-019" },
@@ -108,7 +108,7 @@ public class SelfieReviewFixesTests : PlatformTestBase
         });
         var before = DateTime.UtcNow.AddSeconds(-1);
 
-        Assert.IsType<OkObjectResult>(await owner.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, forged), default));
+        Assert.IsType<OkObjectResult>(await owner.SetFeature(FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, forged), default));
 
         var stored = JsonDocument.Parse((await db.TenantFeatureFlags.SingleAsync()).ConfigJson!).RootElement;
         Assert.Equal(ownerId.ToString(), stored.GetProperty("dataResidency").GetProperty("confirmedBy").GetString());
@@ -119,19 +119,13 @@ public class SelfieReviewFixesTests : PlatformTestBase
     }
 
     [Fact]
-    public async Task Item7_AnAdmin_IsRefusedWithAPlainCode_AndTheRefusalsNameTheBadFields()
+    public async Task Item7_TheRefusalsNameTheBadFields()
     {
         await using var db = CreateDb();
         var tenantId = await TenantAsync(db);
-        var adminId = Guid.NewGuid();
-        var admin = await SelfieWorld.AsPlatformOwnerAsync(CreateController(db), db, adminId, role: PlatformRoles.Admin);
-        var refused = await admin.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance, new SetFeatureFlagRequest(true, SelfieWorld.EnableRequestConfig(adminId)), default);
-        Assert.Equal(403, Assert.IsAssignableFrom<ObjectResult>(refused).StatusCode);
-        Assert.Equal("selfie_owner_only", SelfieWorld.CodeOf(refused));
-
         var ownerId = Guid.NewGuid();
-        var owner = await SelfieWorld.AsPlatformOwnerAsync(CreateController(db), db, ownerId);
-        var junk = await owner.SetFeatureFlag(tenantId, FeatureKeys.SelfieAttendance,
+        var owner = await SelfieWorld.OrganisationAdminAsync(db, tenantId, ownerId);
+        var junk = await owner.SetFeature(FeatureKeys.SelfieAttendance,
             new SetFeatureFlagRequest(true, SelfieWorld.EnableRequestConfig(Guid.NewGuid(), reference: "DPIA-7", signedOffAtUtc: "2025-12-31T23:59:00Z")), default);
         var body = JsonSerializer.SerializeToElement(Assert.IsType<UnprocessableEntityObjectResult>(junk).Value);
         var missing = body.GetProperty("missing").EnumerateArray().Select(x => x.GetString()).ToList();

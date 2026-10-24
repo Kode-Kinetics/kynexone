@@ -63,7 +63,7 @@ internal sealed class SelfieWorld
         Provider = "s3", Bucket = "b", Endpoint = KsaEndpoint, Region = "auto",
         ResidencyAllowList = new(StringComparer.OrdinalIgnoreCase) { ["KSA"] = ["s3.ksa-region.example.test", KsaBucketRegion] },
     }, _ => Task.FromResult<string?>(KsaBucketRegion));
-    /// <summary>What the platform endpoint stamps for <see cref="ResidentKsa"/> (endpoint, bucket and the bucket's region).</summary>
+    /// <summary>What the feature endpoint stamps for <see cref="ResidentKsa"/> (endpoint, bucket and the bucket's region).</summary>
     public static readonly string LocalLocation = StorageResidency.Canonical("local", "", "local");
     public static readonly string ResidentKsaLocation = StorageResidency.Canonical("s3.ksa-region.example.test", "b", KsaBucketRegion);
 
@@ -190,7 +190,7 @@ internal sealed class SelfieWorld
 
     public static readonly Guid SigningOwnerId = Guid.Parse("0b1d0b1d-0000-4000-8000-000000000001");
 
-    /// <summary>Both owner sign-offs as the platform endpoint STORES them (the residency block server-stamped).</summary>
+    /// <summary>Both owner sign-offs as the feature endpoint STORES them (the residency block server-stamped).</summary>
     public static string SignedOffConfig(bool requireSelfieForConsented = false, string? storageLocation = null) => JsonSerializer.Serialize(new
     {
         dpia = new { signedOffBy = SigningOwnerId.ToString(), signedOffAtUtc = "2026-10-01T09:00:00Z", reference = "DPIA-2026-007" },
@@ -210,33 +210,38 @@ internal sealed class SelfieWorld
         });
 
     /// <summary>
-    /// Makes <paramref name="controller"/> act as a named platform Owner (a Guid subject, as real platform tokens carry)
-    /// on a deploy with <paramref name="residency"/>, and records that Owner as a platform user.
+    /// An <see cref="OrganisationFeaturesController"/> acting as the organisation administrator
+    /// <paramref name="adminId"/> of <paramref name="tenantId"/>, on an installation with <paramref name="residency"/>.
+    /// Records the administrator as a user of the organisation, so a DPIA signed off by them is recognised.
     /// </summary>
-    public static async Task<T> AsPlatformOwnerAsync<T>(T controller, ZayraDbContext db, Guid ownerId, StorageResidency? residency = null,
-        string role = PlatformRoles.Owner) where T : ControllerBase
+    public static async Task<OrganisationFeaturesController> OrganisationAdminAsync(
+        ZayraDbContext db, Guid tenantId, Guid adminId, StorageResidency? residency = null)
     {
-        if (!await db.PlatformUsers.AnyAsync(u => u.Id == ownerId))
+        if (!await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Id == adminId))
         {
-            db.PlatformUsers.Add(new PlatformUser { Id = ownerId, Email = $"{ownerId:N}@platform.test", FullName = "Platform person", PasswordHash = "x", Role = role, IsActive = true });
+            db.Users.Add(new User
+            {
+                Id = adminId, TenantId = tenantId, Email = $"{adminId:N}@org.test", NormalizedEmail = $"{adminId:N}@ORG.TEST",
+                FullName = "Organisation admin", PasswordHash = "x", IsActive = true,
+            });
             await db.SaveChangesAsync();
         }
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
         services.AddSingletonResidency(residency ?? ResidentKsa);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
         [
-            new Claim("sub", ownerId.ToString()),
-            new Claim(ClaimTypes.NameIdentifier, ownerId.ToString()),
-            new Claim(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Email, $"{ownerId:N}@platform.test"),
-            new Claim(ClaimTypes.Role, "PlatformAdmin"),
-            new Claim("is_platform_admin", "true"),
-            new Claim("platform_role", role),
+            new Claim("sub", adminId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, adminId.ToString()),
+            new Claim("tenant_id", tenantId.ToString()),
         ], "Test"));
-        controller.ControllerContext = new ControllerContext
+        var cache = new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
+        return new OrganisationFeaturesController(db, cache, new Zayra.Api.Infrastructure.Modules.TenantModuleService(db, cache))
         {
-            HttpContext = new DefaultHttpContext { User = principal, RequestServices = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services) },
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext { User = principal, RequestServices = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services) },
+            },
         };
-        return controller;
     }
 
     /// <summary>The permissions each seeded role really holds, read once from AuthSeeder.</summary>

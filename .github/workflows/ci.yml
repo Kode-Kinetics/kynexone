@@ -6,15 +6,9 @@ on:
   pull_request:
     branches: [main]
 
-# A run parked on the `production` environment reviewer counts as IN PROGRESS for concurrency, so
-# the previous `cancel-in-progress: true` on a branch-wide group cancelled pending approvals. Four
-# of six consecutive merges to main died exactly that way — migrate-backend showed `cancelled`,
-# which reads like `skipped`, while Render's autoDeploy shipped the code anyway. Production ran new
-# code against an old schema until /health/ready returned 42P01 for a table a migration creates.
-#
 # PRs keep the cheap behaviour: one run per PR, superseded runs cancelled.
-# Pushes to main get a group unique per run, so no main run can cancel another and no pending
-# approval is ever destroyed by a later merge.
+# Pushes to main get a group unique per run, so no main run can cancel another (each one builds a
+# release candidate image).
 concurrency:
   group: >-
     ci-${{ github.workflow }}-${{
@@ -67,31 +61,6 @@ jobs:
         with:
           name: backend-test-results
           path: backend-dotnet/Zayra.Api.Tests/TestResults/test-results.trx
-
-  # ── Deploy preflight: the env-var gate's own tests ────────────────────────────
-  # Runs on every push and PR, needs no secret and no network. It proves the gate still CATCHES
-  # the historical input — render.yaml's `sync: false` list diffed against the real key list the
-  # Render service had during the 2026-09-21 outage, with Proxy__KnownNetworks absent. The live
-  # comparison happens in migrate-backend, where the credential lives; this is the half that
-  # guarantees the check still works before anyone relies on it.
-  #
-  # A gate that has never been seen to fail is not a gate. This repo has already shipped a lint
-  # that passed vacuously and a health check that always returned zero.
-  deploy-preflight:
-    name: Deploy Preflight (required env vars — gate self-test)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Self-test the required-env-var gate
-        run: ./scripts/check_render_env.py --self-test
-
-      # The migration-target gate proves CI migrates the database the SERVICE connects to. Its
-      # self-test replays the 2026-09-23 incident (CI on neondb, app on kynexone_clean) and asserts
-      # the gate REFUSES it — so the gate is known to FAIL, not merely known to pass.
-      - name: Self-test the migration-target gate
-        run: ./scripts/check_migration_target.py --self-test
-
-  # ── Frontend: typecheck ───────────────────────────────────────────────────────
   frontend-typecheck:
     name: Frontend Typecheck
     runs-on: ubuntu-latest
@@ -337,8 +306,7 @@ jobs:
         env:
           ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra;Username=postgres;Password=ci'
           Jwt__Issuer: 'Zayra.Api'
-          Jwt__TenantAudience: 'kynexone-tenant'
-          Jwt__PlatformAudience: 'kynexone-platform'
+          Jwt__Audience: 'kynexone'
           Jwt__SigningKey: 'CI_ONLY_EPHEMERAL_SIGNING_KEY_NOT_A_PRODUCTION_SECRET_0123456789'
           # Safe test delivery (F09): CI never sends email. Messages are captured in-process and as
           # .eml files, so no gate can reach a real person whatever relay a fixture saves.
@@ -998,116 +966,13 @@ jobs:
       - name: Remove isolated CI stack
         if: always()
         run: docker compose -p zayra-browser-ci down -v
-
-  # ── Migrate: apply EF Core migrations to the production DB BEFORE the deploy hook (P0-4) ──
-  # render.yaml sets autoDeploy:false, so the deploy hook is the sole trigger and this job gates
-  # it: schema is always applied ahead of the new code, preventing 42703/42P01 tenant-wide. Uses
-  # only the connection-string secret (env stays Development so no JWT/SeedAdmin prod fail-fast).
-  migrate-backend:
-    name: Apply DB Migrations (deploy gate)
-    runs-on: ubuntu-latest
-    # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
-    # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
-    # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
-    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate, deploy-preflight]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # WAVE 1 A4 — this job writes to the PRODUCTION DATABASE. It now runs only inside the protected
-    # `production` GitHub environment, which requires a named reviewer's approval and is restricted to
-    # protected branches. Before this, a merge to main migrated production with no human in the loop.
-    # NOTE: environment approval gates the JOB, not the SECRET. PROD_DATABASE_URL and
-    # RENDER_DEPLOY_HOOK_URL are currently REPOSITORY secrets (verified: the Production environment
-    # holds zero secrets), so any job in any workflow on any branch can reference them without
-    # approval. Move them to this environment to make the boundary real; until then this comment
-    # describes an intent, not a control.
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-
-      # Main runs no longer cancel each other (see the concurrency block), so two approvals can be
-      # outstanding at once and approved out of order. Render builds from BRANCH HEAD, so approving
-      # the older run would ship newer code than that run believes it is shipping. Refuse.
-      - name: Refuse to migrate a superseded commit
-        run: |
-          set -euo pipefail
-          git fetch --quiet --depth=1 origin main
-          head=$(git rev-parse origin/main)
-          if [ "$head" != "${{ github.sha }}" ]; then
-            echo "::error::main moved to $head since this run started (${{ github.sha }}). The later run carries these migrations plus newer ones — approve that run instead."
-            exit 1
-          fi
-          echo "This run is main HEAD ($head)."
-
-      # Verify the target service actually HAS every key render.yaml marks `sync: false`, before
-      # migrating or deploying. `sync: false` means "a human set this in the dashboard" — Render
-      # does not enforce it and, until this step existed, nothing did. Proxy__KnownNetworks was
-      # declared required, was never set, and the app's proxy guard then killed the pre-deploy
-      # migration job ~10s in, twice, before it reached the database: the backend could neither
-      # ship nor roll back over one unset dashboard field.
-      #
-      # FAILS CLOSED. No RENDER_API_KEY, an API error, or an empty key list all block the deploy
-      # rather than skipping the check — a gate that turns itself off when its credential is
-      # missing is a gate that is off, and nobody notices which.
-      #
-      # REQUIRES: a RENDER_API_KEY secret on the `production` GitHub environment (a Render API key
-      # with read access to srv-d8slkb77f7vs73d2k92g). Putting it on the environment rather than
-      # the repository means the approval gate protects the credential too — which is NOT true of
-      # PROD_DATABASE_URL or RENDER_DEPLOY_HOOK_URL today; both are repository-wide.
-      - name: Gate — required env vars are set on the Render service
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-        run: ./scripts/check_render_env.py --service-id srv-d8slkb77f7vs73d2k92g
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Restore local tools (dotnet-ef)
-        run: dotnet tool restore   # manifest (dotnet-tools.json) is at the repo root
-
-      # Prove we are about to migrate the database the SERVICE connects to — BEFORE writing to it.
-      #
-      # PROD_DATABASE_URL (a repository secret) and the service's ConnectionStrings__Default (set
-      # only in the Render dashboard, `sync: false`) are two separately-maintained copies of the same
-      # fact, and until this step nothing compared them. check_render_env.py verifies that key
-      # EXISTS; it never reads the value.
-      #
-      # On 2026-09-23 that gap cost three deploys and ~47 minutes of 502: production had just been
-      # cut over to `kynexone_clean` with `neondb` kept as the rollback, CI migrated one and printed
-      # "Done.", the service connected to the other, and /health/ready returned 503 until Render
-      # timed out and reverted — with every CI signal green. A migration that succeeds against the
-      # wrong database is worse than one that fails: it leaves no evidence anywhere.
-      #
-      # Compares host + database only, normalising Neon's -pooler suffix (pooled and direct address
-      # the same database; migrations need the direct one). Never logs a user or password.
-      - name: Gate — CI migrates the database the service actually uses
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-        run: ./scripts/check_migration_target.py --service-id srv-d8slkb77f7vs73d2k92g
-
-      - name: Apply EF Core migrations (fail-closed)
-        run: |
-          if [ -z "$ConnectionStrings__Default" ]; then
-            echo "::error::PROD_DATABASE_URL secret is not set — cannot gate the deploy on DB migrations. Deploy blocked (fail-closed)."
-            exit 1
-          fi
-          echo "Applying EF Core migrations to the production database…"
-          dotnet ef database update --project backend-dotnet/Zayra.Api/Zayra.Api.csproj --context ZayraDbContext
-        env:
-          ConnectionStrings__Default: ${{ secrets.PROD_DATABASE_URL }}
-
-  # ── Build the runtime image in CI, so Render never builds it ──────────────────
-  # Render's free-tier builder OOMs (>8GB) compiling the app, so no deploy ever completes even
-  # though the image builds in ~30s locally under an 8GB ceiling. GitHub's runner has ample memory:
-  # build the exact runtime image here and push it to GHCR. Render is then pointed at this pre-built
-  # image (runtime: image) and only PULLS it — removing Render's builder from the deploy path for good.
   build-image:
     name: Build & push backend image (GHCR)
     runs-on: ubuntu-latest
     # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
     # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
     # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
-    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate, deploy-preflight]
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read
@@ -1175,173 +1040,3 @@ jobs:
           name: release-manifest-${{ github.sha }}
           path: release-manifest.json
           retention-days: 90
-
-  # ── Deploy: trigger Render redeploy after tests + security gates + migrations pass (main only) ──
-  deploy-backend:
-    name: Deploy Backend (Render)
-    runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-typecheck, secret-scan, dependency-scan, migrate-backend]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # WAVE 1 A4 — protected environment: production deploys require explicit approval.
-    environment: production
-    steps:
-      # This job used to run without a checkout: it only POSTed a webhook and polled a URL. The
-      # parity gate at the end of the job needs the repository — for the script itself, and for the
-      # history. fetch-depth:0 is deliberate: with a shallow clone, `git merge-base --is-ancestor`
-      # cannot tell which tier is ahead, and the gate would have to report "distance unknown" in
-      # exactly the situation it exists to describe.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Rollback anchor. Captured BEFORE the new release goes out, because after it lands the
-      # question "what was running a minute ago?" has no answer anywhere else — Render builds from
-      # the branch, so there is no image digest to roll back to on its side.
-      - name: Record currently-deployed commit (rollback anchor)
-        env:
-          BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-        run: |
-          set -uo pipefail
-          if [ -z "${BASE_URL:-}" ]; then
-            echo "::error::vars.PRODUCTION_BASE_URL is not set — deploy verification is impossible."
-            exit 1
-          fi
-          prev=$(curl -sf -m 60 "$BASE_URL/health/live" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit","unknown"))' 2>/dev/null || echo "unreachable")
-          echo "PREVIOUS_COMMIT=$prev" >> "$GITHUB_ENV"
-          echo "Previously deployed commit: $prev"
-          {
-            echo "### Deployment"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| Previous commit (rollback target) | \`$prev\` |"
-            echo "| New commit | \`${{ github.sha }}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Trigger Render deploy hook
-        run: |
-          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
-            # -sf so an HTTP error is a non-zero exit rather than a body we ignore. The response
-            # body carries a deploy id but no status; the verify step below is what proves anything.
-            curl -sf -X POST "$RENDER_DEPLOY_HOOK_URL" >/dev/null
-            echo "Render deploy triggered."
-          else
-            # autoDeploy is OFF (render.yaml), so a missing hook means NOTHING deploys.
-            # Fail loudly rather than silently no-op.
-            echo "::error::RENDER_DEPLOY_HOOK_URL secret is not set and autoDeploy is false — no deploy will occur. Set the hook secret."
-            exit 1
-          fi
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-
-      # THE FIX FOR THE REAL DEFECT. Until now this job POSTed a webhook and exited 0 — so a green
-      # "Deploy Backend" meant only "Render accepted the request", never "the new code is serving
-      # traffic". A failed build, a crash loop, or a deploy that never started all reported success.
-      # Wave 1 A1 caught exactly this: main was green while production still ran older code.
-      - name: Verify the deployed commit is actually serving traffic
-        env:
-          BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          EXPECTED: ${{ github.sha }}
-        run: |
-          set -uo pipefail
-          deadline=$(( $(date +%s) + 900 ))   # 15 min: a Render free-tier Docker build is slow
-          attempt=0
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            attempt=$((attempt + 1))
-            live=$(curl -sf -m 30 "$BASE_URL/health/live" 2>/dev/null || echo '{}')
-            got=$(echo "$live" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || echo "")
-            if [ "$got" = "$EXPECTED" ]; then
-              echo "Deployed commit verified: $got (attempt $attempt)"
-              # Render swaps instances with no overlap (~40 s of 502 on a good deploy), so the new commit can
-              # answer /health/live while the switchover still 502s /health/ready. Retry for up to 2 minutes
-              # before calling it "not serving" — on 2026-10-11 a healthy #228 deploy was marked failed this way.
-              ready=000
-              for r in $(seq 1 8); do
-                ready=$(curl -s -m 60 -o /tmp/ready.json -w '%{http_code}' "$BASE_URL/health/ready" || echo 000)
-                [ "$ready" = "200" ] && break
-                echo "readiness attempt $r: $ready — retrying in 15 s"
-                sleep 15
-              done
-              if [ "$ready" != "200" ]; then
-                echo "::error::Commit $EXPECTED is live but /health/ready returned $ready — not serving."
-                python3 -c 'import json;d=json.load(open("/tmp/ready.json"));print("pendingMigrations:",d.get("pendingMigrations"))' 2>/dev/null || true
-                exit 1
-              fi
-              echo "/health/ready is 200."
-              exit 0
-            fi
-            echo "attempt $attempt: live commit='$got' expected='$EXPECTED' — waiting"
-            sleep 20
-          done
-          echo "::error::Timed out after 15m. Production is NOT running $EXPECTED (last seen: '${got:-unreachable}'). Previous commit was ${PREVIOUS_COMMIT:-unknown}. See docs/DEPLOY_ROLLBACK_RUNBOOK.md."
-          exit 1
-
-      # ── F11: the two tiers must be ONE candidate, not two ─────────────────────────────────
-      # The step above proves the BACKEND is this commit. It says nothing about the UI in front of
-      # it, and the UI deploys by different rules: Vercel auto-deploys every push to main while
-      # Render waits for a reviewer. A merge therefore puts new UI in front of the older API,
-      # silently, with every signal green — the 2026-09-23 split-brain. Nothing compared them until
-      # this step, so no deploy has ever been able to state which pair of builds a customer got.
-      #
-      # It runs AFTER the backend is verified, with a wait: at this moment Vercel may still be
-      # building the same sha, and a tier mid-build is not a mismatch yet. After the wait it is.
-      #
-      # FAILS CLOSED on a missing URL. A parity check that looks at one tier is not a parity check,
-      # and a gate that turns itself off when its configuration is absent is a gate that is off.
-      - name: Gate — the deployed tiers are one candidate (F11 parity)
-        env:
-          API_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          FRONTEND_URL: ${{ vars.PRODUCTION_FRONTEND_URL }}
-        run: |
-          set -euo pipefail
-          ./scripts/check_deployment_parity.py --self-test
-          if [ -z "${FRONTEND_URL:-}" ]; then
-            echo "::error::vars.PRODUCTION_FRONTEND_URL is not set, so frontend/backend parity cannot be"
-            echo "::error::proved and this deploy cannot be shown to be one candidate. Set it once:"
-            echo "::error::  gh variable set PRODUCTION_FRONTEND_URL --body https://<the production frontend>"
-            exit 1
-          fi
-          ./scripts/check_deployment_parity.py \
-            --frontend "$FRONTEND_URL" \
-            --api "$API_URL" \
-            --candidate "${{ github.sha }}" \
-            --wait-seconds 300 \
-            --json parity.json
-          {
-            echo ""
-            echo "### Deployment parity (F11)"
-            echo ""
-            echo '```'
-            python3 -c 'import json;print(json.load(open("parity.json"))["report"])'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload the parity result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-parity-${{ github.sha }}
-          path: parity.json
-          retention-days: 90
-          if-no-files-found: ignore
-
-  # The human half of the 2026-08-26 incident: migrate-backend showed `cancelled`, which reads like
-  # `skipped`, so four consecutive merges silently failed to ship and nobody noticed. A merge that
-  # does not reach production is now a red run, deliberately — a benign-looking terminal state is
-  # what hid this.
-  release-outcome:
-    name: Release outcome (main)
-    runs-on: ubuntu-latest
-    needs: [migrate-backend, deploy-backend]
-    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
-    steps:
-      - name: Fail if main merged but production did not ship
-        run: |
-          m='${{ needs.migrate-backend.result }}'
-          d='${{ needs.deploy-backend.result }}'
-          echo "migrate-backend=$m  deploy-backend=$d"
-          if [ "$m" != "success" ] || [ "$d" != "success" ]; then
-            echo "::error::main merged but production did NOT ship (migrate=$m, deploy=$d). Production is now BEHIND main — and Vercel has already published this commit's frontend, so the two tiers are now a split-brain until the backend catches up or the frontend alias is rolled back. deploy-backend also fails when its F11 parity gate finds the tiers on different commits; read that job's log to tell the two apart. See docs/DEPLOY_ROLLBACK_RUNBOOK.md and docs/RELEASE_CANDIDATE_AND_PARITY.md."
-            exit 1
-          fi
-          echo "Production is running this commit."

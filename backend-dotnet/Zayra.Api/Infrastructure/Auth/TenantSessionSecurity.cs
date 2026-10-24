@@ -60,9 +60,8 @@ public static class TenantSessionSecurity
 
     public static async Task<bool> IsCurrentAsync(ClaimsPrincipal principal, ZayraDbContext db, CancellationToken ct)
     {
-        if (principal.HasClaim("is_platform_admin", "true")) return true;
-        // Privileged tenant impersonation/support issuance is contained until its revocation
-        // ledger is authoritative. Reject both legacy and newly crafted variants server-side.
+        // Impersonation and support sessions no longer exist. A token still carrying the marker was
+        // minted by a retired code path and is rejected server-side.
         if (principal.HasClaim(c => c.Type == "impersonated_by")) return false;
         var subject = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? principal.FindFirstValue(JwtRegisteredClaimNames.Sub);
         var tenantClaim = principal.FindFirstValue("tenant_id");

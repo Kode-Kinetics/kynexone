@@ -48,8 +48,7 @@ public sealed class AuthCredentialConcurrencyPostgresTests
     private static readonly IOptions<JwtOptions> Jwt = Options.Create(new JwtOptions
     {
         Issuer = "Zayra.G2.Postgres.Tests",
-        TenantAudience = "kynexone-tenant-g2-tests",
-        PlatformAudience = "kynexone-platform-g2-tests",
+        Audience = "kynexone-tenant-g2-tests",
         SigningKey = "G2_TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS_2026",
         AccessTokenMinutes = 30,
         RefreshTokenDays = 7
@@ -259,82 +258,6 @@ public sealed class AuthCredentialConcurrencyPostgresTests
                 .CountAsync(x => x.TenantId == seed.TenantId
                     && x.UserId == seed.UserId
                     && x.Action == "auth.mfa_failed"));
-        }
-    }
-
-    [Fact]
-    public async Task AuthC02Pg03_PlatformValidCode_FiveClients_HasOneWinner_ForTwentyCycles()
-    {
-        for (var cycle = 0; cycle < AcceptanceCycles; cycle++)
-        {
-            var seed = await SeedPlatformMfaAsync(cycle);
-
-            var outcomes = await RaceFiveAsync(db => BuildMfaService(db).CompletePlatformChallengeAsync(
-                seed.RawChallenge,
-                CurrentCode(seed.Secret),
-                Request,
-                CancellationToken.None));
-
-            Assert.Single(outcomes, x => x.Succeeded && x.Value is not null);
-            Assert.Equal(ConcurrentClients - 1, outcomes.Count(x => x.Succeeded && x.Value is null));
-            Assert.DoesNotContain(outcomes, x => !x.Succeeded);
-
-            await using var verify = _fixture.CreateRetryingDb();
-            var challenge = await verify.MfaChallengeTokens.IgnoreQueryFilters().AsNoTracking()
-                .SingleAsync(x => x.Id == seed.ChallengeId);
-            Assert.NotNull(challenge.UsedAtUtc);
-            Assert.Equal(0, challenge.FailedAttempts);
-            Assert.Single(await verify.LoginActivities.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.UserId == seed.PlatformUserId
-                    && x.EventType == LoginEventTypes.PlatformLoginSuccess).ToListAsync());
-            Assert.Single(await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.TenantId == null
-                    && x.Action == "platform.auth.mfa_login"
-                    && x.EntityId == seed.PlatformUserId.ToString()).ToListAsync());
-        }
-    }
-
-    [Fact]
-    public async Task AuthC02Pg04_PlatformWrongCodes_FiveClients_ReachExactCapAndKillChallenge_ForTwentyCycles()
-    {
-        for (var cycle = 0; cycle < AcceptanceCycles; cycle++)
-        {
-            var seed = await SeedPlatformMfaAsync(cycle);
-            var wrongCode = DefinitelyWrongCode(seed.Secret);
-
-            var outcomes = await RaceFiveAsync(db => BuildMfaService(db).CompletePlatformChallengeAsync(
-                seed.RawChallenge,
-                wrongCode,
-                Request,
-                CancellationToken.None));
-
-            Assert.Equal(ConcurrentClients, outcomes.Count(x => x.Succeeded && x.Value is null));
-            Assert.DoesNotContain(outcomes, x => !x.Succeeded);
-
-            await using (var replayDb = _fixture.CreateRetryingDb())
-            {
-                var replay = await BuildMfaService(replayDb).CompletePlatformChallengeAsync(
-                    seed.RawChallenge,
-                    CurrentCode(seed.Secret),
-                    Request,
-                    CancellationToken.None);
-                Assert.Null(replay);
-            }
-
-            await using var verify = _fixture.CreateRetryingDb();
-            var challenge = await verify.MfaChallengeTokens.IgnoreQueryFilters().AsNoTracking()
-                .SingleAsync(x => x.Id == seed.ChallengeId);
-            Assert.Equal(MfaChallengeToken.MaxAttempts, challenge.FailedAttempts);
-            Assert.NotNull(challenge.UsedAtUtc);
-            Assert.Equal(MfaChallengeToken.MaxAttempts, await verify.LoginActivities.IgnoreQueryFilters().AsNoTracking()
-                .CountAsync(x => x.UserId == seed.PlatformUserId
-                    && x.EventType == LoginEventTypes.PlatformLoginFailed
-                    && x.FailureReason == "mfa_code_mismatch"));
-            Assert.Equal(MfaChallengeToken.MaxAttempts, await verify.AuditLogs.IgnoreQueryFilters().AsNoTracking()
-                .CountAsync(x => x.TenantId == null
-                    && x.Action == "platform.auth.mfa_failed"
-                    && x.EntityName == "MfaChallengeToken"
-                    && x.EntityId == seed.ChallengeId.ToString()));
         }
     }
 
@@ -755,37 +678,6 @@ public sealed class AuthCredentialConcurrencyPostgresTests
             new[] { first.RawChallenge, secondRawChallenge });
     }
 
-    private async Task<PlatformMfaSeed> SeedPlatformMfaAsync(int cycle)
-    {
-        await using var db = _fixture.CreateRetryingDb();
-        var suffix = $"{cycle}-{Guid.NewGuid():N}";
-        var secret = _totp.GenerateBase32Secret();
-        var user = new PlatformUser
-        {
-            Email = $"g2-platform-{suffix}@example.test",
-            FullName = "G2 Platform MFA User",
-            PasswordHash = new Pbkdf2PasswordHasher().Hash("PlatformPassword1!"),
-            Role = PlatformRoles.Admin,
-            IsActive = true,
-            MfaEnabled = true,
-            MfaSecretEncrypted = _totp.EncryptSecret(secret),
-            MfaConfiguredAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow
-        };
-        db.PlatformUsers.Add(user);
-        await db.SaveChangesAsync();
-
-        var rawChallenge = await BuildMfaService(db).CreatePlatformChallengeAsync(
-            user.Id,
-            Request.IpAddress!,
-            CancellationToken.None);
-        var challengeId = await db.MfaChallengeTokens.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.PlatformUserId == user.Id)
-            .Select(x => x.Id)
-            .SingleAsync();
-        return new PlatformMfaSeed(user.Id, challengeId, rawChallenge, secret);
-    }
-
     private Task<IReadOnlyList<RaceOutcome<T>>> RaceFiveAsync<T>(
         Func<ZayraDbContext, Task<T>> operation) =>
         RaceFiveAsync((_, db) => operation(db));
@@ -1024,12 +916,6 @@ DROP FUNCTION IF EXISTS auth_g2_fail_invitation_audit();");
     private sealed record TenantMfaSeed(
         Guid TenantId,
         Guid UserId,
-        Guid ChallengeId,
-        string RawChallenge,
-        string Secret);
-
-    private sealed record PlatformMfaSeed(
-        Guid PlatformUserId,
         Guid ChallengeId,
         string RawChallenge,
         string Secret);

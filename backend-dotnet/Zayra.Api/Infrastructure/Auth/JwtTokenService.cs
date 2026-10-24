@@ -51,7 +51,7 @@ public class JwtTokenService : ITokenService
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SigningKey));
         var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var token = new JwtSecurityToken(_options.Issuer, _options.TenantAudience, claims, expires: expiresAtUtc, signingCredentials: credentials);
+        var token = new JwtSecurityToken(_options.Issuer, _options.Audience, claims, expires: expiresAtUtc, signingCredentials: credentials);
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 

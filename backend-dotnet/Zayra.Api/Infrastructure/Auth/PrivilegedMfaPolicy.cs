@@ -225,9 +225,6 @@ public static class PrivilegedMfaPolicy
     public static bool IsTenantUserEnrolled(User user)
         => user.MFAEnabled && !string.IsNullOrWhiteSpace(user.MfaSecretEncrypted);
 
-    public static bool IsPlatformUserEnrolled(PlatformUser user)
-        => user.MfaEnabled && !string.IsNullOrWhiteSpace(user.MfaSecretEncrypted);
-
     /// <summary>The live break-glass deadline, or null when unset, past, unreadable or beyond the cap.</summary>
     public static DateTime? ActiveBreakGlassUntil(IConfiguration? config, DateTime nowUtc)
     {
@@ -373,10 +370,4 @@ public static class PrivilegedMfaPolicy
         var enforceFrom = policy?.PrivilegedMfaEnforceFromUtc ?? await LoadPlatformEnforceFromAsync(db, ct);
         return Evaluate(true, IsTenantUserEnrolled(user), enforceFrom, ActiveBreakGlassUntil(config, nowUtc), nowUtc);
     }
-
-    /// <summary>Every platform operator is privileged: each can act across tenants.</summary>
-    public static async Task<PrivilegedMfaState> ForPlatformUserAsync(
-        ZayraDbContext db, IConfiguration? config, PlatformUser user, DateTime nowUtc, CancellationToken ct)
-        => Evaluate(true, IsPlatformUserEnrolled(user), await LoadPlatformEnforceFromAsync(db, ct),
-            ActiveBreakGlassUntil(config, nowUtc), nowUtc);
 }

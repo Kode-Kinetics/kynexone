@@ -16,8 +16,6 @@ public sealed class CompanyEmailDomainWriteRatchetTests
     {
         // Apply(company, request): reached only from Create/UpdateCompanyAsync, both of which call EnsureCallerMaySetAsync.
         ["Infrastructure/Organization/OrganizationSetupService.cs"] = 1,
-        // POST platform/tenants/{id}/companies: platform Owner/Admin only (RequirePlatformRole), plus EnsureClaimableAsync.
-        ["Controllers/PlatformController.cs"] = 1,
         // CompanyRequest / CompanyDto parameter defaults, not writes.
         ["Application/Organization/OrganizationDtos.cs"] = 2,
         // The A9 three-way merge picks the draft's or the stored value into the in-memory draft record (`co with { … }`),

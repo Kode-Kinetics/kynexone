@@ -41,8 +41,6 @@ public class QueryFilterBypassRatchetTests
         ["Controllers/GosiController.cs"] = 2,
         ["Controllers/OrganizationStructureImportController.cs"] = 6,
         ["Controllers/PayrollController.cs"] = 8,
-        // Auth-recovery candidate (+12, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
-        ["Controllers/PlatformController.cs"] = 15,
         ["Controllers/RatesController.cs"] = 8, // 11 -> 8: the statutory override queue reads through ScopedBypass.TenantWide
         ["Controllers/StatutoryRulesController.cs"] = 1,
         ["Data/ZayraDbContext.cs"] = 3,

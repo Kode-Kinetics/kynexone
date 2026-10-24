@@ -43,7 +43,6 @@ public sealed class OrgWriteDoorParityRatchetTests
         ["BranchesController.ImportPreview"] = "Row-level rule in RunImportAsync (asserted below).",
         ["CostCentersController.Import"] = "Row-level rule in RunImportAsync (asserted below).",
         ["CostCentersController.ImportPreview"] = "Row-level rule in RunImportAsync (asserted below).",
-        ["PlatformController.CreatePlatformCompany"] = "Platform-operator route (RequirePlatformRole); acts on a named tenant by design, not a tenant user's company scope.",
     };
 
     /// <summary>Private helpers that carry the rule for the actions listed as delegating to them.</summary>

@@ -58,7 +58,7 @@ export function reportRunStatusTone(status: string): DeliveryTone {
   return 'neutral';
 }
 
-/** The email transport the server reports in /platform/health `components.email.status`. */
+/** The email transport the server reports as `components.email.status`. */
 export function emailModeLabel(mode: string | null | undefined): string {
   switch (mode) {
     case 'configured': return 'Relay configured';

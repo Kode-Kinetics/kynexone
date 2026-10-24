@@ -38,7 +38,6 @@ public enum LoginRefusal
 public sealed class LoginAbuseGuard : IDisposable
 {
     public const string TenantKnownDeviceCookie = "kx_known_device";
-    public const string PlatformKnownDeviceCookie = "kx_platform_known_device";
     public static readonly TimeSpan KnownDeviceLifetime = TimeSpan.FromDays(90);
     private const string KnownDevicePurpose = "KynexOne.Auth.KnownDevice.v1";
 
@@ -209,7 +208,7 @@ public sealed class LoginAbuseGuard : IDisposable
 
     /// <summary>The token's raw cookie value for <paramref name="scope"/>, if the request carries one.</summary>
     public static string? KnownDeviceCookie(HttpRequest request, string scope)
-        => request.Cookies[scope == "platform" ? PlatformKnownDeviceCookie : TenantKnownDeviceCookie];
+        => request.Cookies[TenantKnownDeviceCookie];
 
     /// <summary>
     /// Sets the known-device cookie after a successful sign-in: HttpOnly, Secure, SameSite=Strict,
@@ -219,13 +218,12 @@ public sealed class LoginAbuseGuard : IDisposable
     public static void AppendKnownDeviceCookie(HttpResponse response, string scope, string? token)
     {
         if (string.IsNullOrEmpty(token)) return;
-        var platform = scope == "platform";
-        response.Cookies.Append(platform ? PlatformKnownDeviceCookie : TenantKnownDeviceCookie, token, new CookieOptions
+        response.Cookies.Append(TenantKnownDeviceCookie, token, new CookieOptions
         {
             HttpOnly = true,
             Secure = true,
             SameSite = SameSiteMode.Strict,
-            Path = platform ? "/api/platform/auth" : "/api/auth",
+            Path = "/api/auth",
             MaxAge = KnownDeviceLifetime,
             IsEssential = true,
         });

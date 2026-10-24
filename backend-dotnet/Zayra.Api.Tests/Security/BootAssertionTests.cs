@@ -133,17 +133,14 @@ public class BootAssertionTests
     // ── JWT Audience Fail-Fast ────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData(null, "kynexone-platform")]
-    [InlineData("", "kynexone-platform")]
-    [InlineData("kynexone-tenant", null)]
-    [InlineData("kynexone-tenant", "")]
-    [InlineData("kynexone-tenant", "kynexone-platform")]
-    [InlineData(null, null)]
-    public void JwtAudience_ProductionThrowsForMissingOrDevDefaultAudience(
-        string? tenantAud, string? platformAud)
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("kynexone")]
+    public void JwtAudience_ProductionThrowsForMissingOrDevDefaultAudience(string? audience)
     {
         var act = () => JwtAudienceGuard.AssertProductionSafe(
-            tenantAud, platformAud, signingKey: "STRONG-64-CHAR-PRODUCTION-KEY-THAT-IS-NOT-DEFAULT-0000000000000");
+            audience, signingKey: "STRONG-64-CHAR-PRODUCTION-KEY-THAT-IS-NOT-DEFAULT-0000000000000");
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*Production JWT*");
     }
@@ -152,8 +149,7 @@ public class BootAssertionTests
     public void JwtAudience_ProductionPassesForCustomAudiences()
     {
         var act = () => JwtAudienceGuard.AssertProductionSafe(
-            tenantAudience: "prod-tenant-audience",
-            platformAudience: "prod-platform-audience",
+            audience: "prod-installation-audience",
             signingKey: "STRONG-64-CHAR-PRODUCTION-KEY-THAT-IS-NOT-DEFAULT-0000000000000");
         act.Should().NotThrow();
     }
@@ -168,7 +164,7 @@ public class BootAssertionTests
         Action act = () =>
         {
             if (isProduction)
-                JwtAudienceGuard.AssertProductionSafe("kynexone-tenant", "kynexone-platform",
+                JwtAudienceGuard.AssertProductionSafe("kynexone",
                     signingKey: "CHANGE_ME_...");
         };
         act.Should().NotThrow();
@@ -246,18 +242,14 @@ internal class GoodEntityController : ControllerBase
 /// </summary>
 internal static class JwtAudienceGuard
 {
-    private const string DevTenantAud   = "kynexone-tenant";
-    private const string DevPlatformAud = "kynexone-platform";
+    private const string DevAudience = Zayra.Api.Application.Auth.JwtOptions.DevAudience;
 
-    internal static void AssertProductionSafe(
-        string? tenantAudience, string? platformAudience, string? signingKey)
+    internal static void AssertProductionSafe(string? audience, string? signingKey)
     {
         var errors = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(tenantAudience) || tenantAudience == DevTenantAud)
-            errors.Add($"Jwt:TenantAudience is null, empty, or still the dev default ('{DevTenantAud}').");
-        if (string.IsNullOrWhiteSpace(platformAudience) || platformAudience == DevPlatformAud)
-            errors.Add($"Jwt:PlatformAudience is null, empty, or still the dev default ('{DevPlatformAud}').");
+        if (string.IsNullOrWhiteSpace(audience) || audience == DevAudience)
+            errors.Add($"Jwt:Audience is null, empty, or still the dev default ('{DevAudience}').");
         if (string.IsNullOrWhiteSpace(signingKey) || signingKey.StartsWith("CHANGE_ME"))
             errors.Add("Jwt:SigningKey is null, empty, or still the placeholder value.");
 

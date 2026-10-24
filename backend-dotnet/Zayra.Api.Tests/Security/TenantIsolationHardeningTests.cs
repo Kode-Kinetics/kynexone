@@ -26,9 +26,6 @@ namespace Zayra.Api.Tests.Security;
 [Collection("Integration")]
 public class TenantIsolationHardeningTests
 {
-    private const string PlatformAudience = "kynexone-platform";
-    private const string TenantAudience   = "kynexone-tenant";
-
     private readonly PostgresFixture _fx;
     public TenantIsolationHardeningTests(PostgresFixture fx) => _fx = fx;
 
@@ -85,10 +82,10 @@ public class TenantIsolationHardeningTests
             "a tenantless non-platform principal must see neither owned nor null-TenantId orphan employees");
     }
 
-    // ── #1a: platform super-admin bypass PRESERVED (PlatformController depends on it) ──
+    // ── #1a: the retired platform super-admin claims bypass NOTHING ──
 
     [Fact]
-    public async Task Read_PlatformSuperAdmin_SeesAllTenants()
+    public async Task Read_RetiredPlatformClaims_SeeNoTenantsRows()
     {
         var tenantA = Guid.NewGuid();
         var tenantB = Guid.NewGuid();
@@ -99,14 +96,13 @@ public class TenantIsolationHardeningTests
             await seed.SaveChangesAsync();
         }
 
-        // Platform token: is_platform_admin + platform audience + IOptions<JwtOptions> so the
-        // DbContext can evaluate the platform-bypass branch.
-        await using var db = _fx.CreateDbWithAccessor(Accessor(PlatformPrincipal()), JwtOpts());
+        // The old platform token shape: is_platform_admin + platform audience, no tenant_id. There is no
+        // platform super-admin any more, so this is just a tenantless principal and must see nothing.
+        await using var db = _fx.CreateDbWithAccessor(Accessor(RetiredPlatformPrincipal()), JwtOpts());
         var mine = await db.GosiContributionRules.AsNoTracking()
             .Where(r => r.TenantId == tenantA || r.TenantId == tenantB).ToListAsync();
 
-        mine.Select(r => r.TenantId).Should().Contain(tenantA).And.Contain(tenantB,
-            "the platform super-admin is the by-design omnipotent cross-tenant reader PlatformController relies on");
+        mine.Should().BeEmpty("the cross-tenant platform reader no longer exists");
     }
 
     // ── #1a: no regression — no-accessor system context still bypasses (seed/boot/worker) ──
@@ -321,16 +317,16 @@ public class TenantIsolationHardeningTests
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
         }, authenticationType: "Test"));
 
-    private static ClaimsPrincipal PlatformPrincipal() =>
+    private static ClaimsPrincipal RetiredPlatformPrincipal() =>
         new(new ClaimsIdentity(new[]
         {
             new Claim("is_platform_admin", "true"),
-            new Claim("aud", PlatformAudience),
+            new Claim("aud", "kynexone-platform"),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
         }, authenticationType: "Test")); // platform token: no tenant_id
 
     private static IOptions<JwtOptions> JwtOpts() =>
-        Options.Create(new JwtOptions { PlatformAudience = PlatformAudience, TenantAudience = TenantAudience });
+        Options.Create(new JwtOptions());
 
     private static IHttpContextAccessor Accessor(ClaimsPrincipal principal) =>
         new FixedAccessor { HttpContext = new DefaultHttpContext { User = principal } };

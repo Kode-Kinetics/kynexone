@@ -1751,8 +1751,7 @@ public sealed class EmployeeLoginLinkTests
     private static readonly IOptions<JwtOptions> Jwt = Options.Create(new JwtOptions
     {
         Issuer = "Zayra.Tests",
-        TenantAudience = "kynexone-tenant-test",
-        PlatformAudience = "kynexone-platform-test",
+        Audience = "kynexone-tenant-test",
         SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_EMPLOYEE_LINK_TESTS",
         AccessTokenMinutes = 30,
         RefreshTokenDays = 7,

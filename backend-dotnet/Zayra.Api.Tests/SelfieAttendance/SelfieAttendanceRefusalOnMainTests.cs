@@ -132,21 +132,19 @@ public class SelfieAttendanceRefusalOnMainTests : PlatformTestBase
     }
 
     [Fact]
-    public async Task Platform_EnablingSelfieAttendance_WithoutTheSignOffs_IsRefused()
+    public async Task Organisation_EnablingSelfieAttendance_WithoutTheSignOffs_IsRefused()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "T", Slug = $"t-{tenantId:N}" });
         await db.SaveChangesAsync();
-        var controller = CreateController(db);
-
-        await SelfieWorld.AsPlatformOwnerAsync(controller, db, SelfieWorld.SigningOwnerId);
-        var none = await controller.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, null), default);
-        var dpiaOnly = await controller.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, JsonSerializer.Serialize(new
+        var controller = await SelfieWorld.OrganisationAdminAsync(db, tenantId, SelfieWorld.SigningOwnerId);
+        var none = await controller.SetFeature(SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, null), default);
+        var dpiaOnly = await controller.SetFeature(SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, JsonSerializer.Serialize(new
         {
             dpia = new { signedOffBy = "owner", signedOffAtUtc = "2026-10-08T09:00:00Z", reference = "DPIA-1" },
         })), default);
-        var wrongRegion = await controller.SetFeatureFlag(tenantId, SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, JsonSerializer.Serialize(new
+        var wrongRegion = await controller.SetFeature(SelfieWorld.SelfieKey, new SetFeatureFlagRequest(true, JsonSerializer.Serialize(new
         {
             dpia = new { signedOffBy = "owner", signedOffAtUtc = "2026-10-08T09:00:00Z", reference = "DPIA-1" },
             dataResidency = new { region = "EU", confirmedBy = "owner", confirmedAtUtc = "2026-10-08T09:00:00Z" },

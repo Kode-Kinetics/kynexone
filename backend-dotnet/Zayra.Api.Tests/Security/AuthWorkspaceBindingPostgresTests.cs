@@ -449,119 +449,6 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
         Assert.Empty(await actionDb.RefreshTokens.AsNoTracking().Where(x => x.UserId == seed.UserId).ToListAsync());
     }
 
-    [Fact]
-    public async Task SupportEnd_ConcurrentPostgresCalls_Return200AndWriteOneAudit()
-    {
-        var session = new PlatformSupportSession
-        {
-            TenantId = Guid.NewGuid(),
-            TargetUserId = Guid.NewGuid(),
-            TargetUserEmail = $"concurrent-{Guid.NewGuid():N}@example.test",
-            Reason = "concurrent containment proof",
-            StartedByEmail = "support@example.test",
-            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(30),
-            TokenHash = $"contained-{Guid.NewGuid():N}"
-        };
-        await using (var seedDb = _fixture.CreateRetryingDb())
-        {
-            seedDb.PlatformSupportSessions.Add(session);
-            await seedDb.SaveChangesAsync();
-        }
-
-        // Hold the target row while both real controller calls reach their conditional UPDATE.
-        // pg_stat_activity confirms both are waiting on the lock before it is released, making
-        // this a deterministic collision rather than two merely adjacent calls.
-        await using var lockConnection = new NpgsqlConnection(_fixture.ConnectionString);
-        await lockConnection.OpenAsync();
-        await using var lockTransaction = await lockConnection.BeginTransactionAsync();
-        await using (var lockCommand = new NpgsqlCommand(
-            "SELECT 1 FROM platform_support_sessions WHERE id = @id FOR UPDATE",
-            lockConnection,
-            lockTransaction))
-        {
-            lockCommand.Parameters.AddWithValue("id", session.Id);
-            await lockCommand.ExecuteScalarAsync();
-        }
-
-        await using var firstDb = _fixture.CreateRetryingDb();
-        await using var secondDb = _fixture.CreateRetryingDb();
-        var firstCall = CreateController(firstDb).EndSupportAccess(
-            new EndSupportAccessRequest(session.Id.ToString()), CancellationToken.None);
-        var secondCall = CreateController(secondDb).EndSupportAccess(
-            new EndSupportAccessRequest(session.Id.ToString()), CancellationToken.None);
-
-        await using var observer = new NpgsqlConnection(_fixture.ConnectionString);
-        await observer.OpenAsync();
-        var waiting = 0L;
-        for (var attempt = 0; attempt < 100 && waiting < 2; attempt++)
-        {
-            await using var waitCommand = new NpgsqlCommand("""
-                SELECT count(*)
-                FROM pg_stat_activity
-                WHERE pid <> pg_backend_pid()
-                  AND datname = current_database()
-                  AND wait_event_type = 'Lock'
-                  AND query ILIKE '%platform_support_sessions%'
-                """, observer);
-            waiting = (long)(await waitCommand.ExecuteScalarAsync() ?? 0L);
-            if (waiting < 2) await Task.Delay(25);
-        }
-        await lockTransaction.CommitAsync();
-        var results = await Task.WhenAll(firstCall, secondCall);
-        Assert.Equal(2L, waiting);
-        Assert.All(results, result => Assert.IsType<OkObjectResult>(result));
-
-        await using var verify = _fixture.CreateRetryingDb();
-        Assert.NotNull((await verify.PlatformSupportSessions.AsNoTracking()
-            .SingleAsync(x => x.Id == session.Id)).EndedAtUtc);
-        Assert.Single(await verify.AdminAuditLogs.AsNoTracking().Where(x =>
-            x.Action == "SupportAccessEnded" && x.EntityId == session.Id.ToString()).ToListAsync());
-    }
-
-    [Fact]
-    public async Task SupportEnd_TransientRetry_DiscardsAbandonedAuditAndWritesOneAudit()
-    {
-        var session = new PlatformSupportSession
-        {
-            TenantId = Guid.NewGuid(),
-            TargetUserId = Guid.NewGuid(),
-            TargetUserEmail = $"retry-{Guid.NewGuid():N}@example.test",
-            Reason = "retry containment proof",
-            StartedByEmail = "support@example.test",
-            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(30),
-            TokenHash = $"contained-{Guid.NewGuid():N}"
-        };
-        await using (var seedDb = _fixture.CreateRetryingDb())
-        {
-            seedDb.PlatformSupportSessions.Add(session);
-            await seedDb.SaveChangesAsync();
-        }
-
-        var fault = new ThrowOnceWhenSupportEndAuditIsPending();
-        var options = new DbContextOptionsBuilder<ZayraDbContext>()
-            .UseNpgsql(_fixture.ConnectionString, provider => provider.EnableRetryOnFailure(
-                maxRetryCount: 5,
-                maxRetryDelay: TimeSpan.FromSeconds(5),
-                errorCodesToAdd: null))
-            .AddInterceptors(
-                Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance,
-                fault)
-            .Options;
-        await using (var actionDb = new ZayraDbContext(options))
-        {
-            var result = await CreateController(actionDb).EndSupportAccess(
-                new EndSupportAccessRequest(session.Id.ToString()), CancellationToken.None);
-            Assert.IsType<OkObjectResult>(result);
-        }
-        Assert.Equal(1, fault.Injections);
-
-        await using var verify = _fixture.CreateRetryingDb();
-        Assert.NotNull((await verify.PlatformSupportSessions.AsNoTracking()
-            .SingleAsync(x => x.Id == session.Id)).EndedAtUtc);
-        Assert.Single(await verify.AdminAuditLogs.AsNoTracking().Where(x =>
-            x.Action == "SupportAccessEnded" && x.EntityId == session.Id.ToString()).ToListAsync());
-    }
-
     private async Task<DuplicateSeed> SeedDuplicateEmailUsersAsync(bool insertTenantBFirst)
     {
         await using var db = _fixture.CreateRetryingDb();
@@ -707,8 +594,7 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
         var jwt = Options.Create(new JwtOptions
         {
             Issuer = "Zayra.Tests",
-            TenantAudience = "kynexone-tenant-test",
-            PlatformAudience = "kynexone-platform-test",
+            Audience = "kynexone-tenant-test",
             SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
             AccessTokenMinutes = 30,
             RefreshTokenDays = 7
@@ -822,11 +708,5 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
         public Task<User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
         public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
         public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-        public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
-        public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
-        public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
-        public Task<PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
-        public Task<PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-        public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
     }
 }

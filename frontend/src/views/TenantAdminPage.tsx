@@ -7,8 +7,6 @@ import {
   type TenantModuleList,
   type TenantLocalizationSetting,
   type TenantBranding,
-  type TenantSubscription,
-  type TenantInvoiceSummary,
   type TenantAiUsageSummary,
 } from '../api/intelligence';
 import client from '../api/client';
@@ -18,7 +16,7 @@ import { useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useLocale } from '../contexts/LocaleContext';
 
-type Tab = 'subscription' | 'modules' | 'invoices' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
+type Tab = 'usage' | 'modules' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
 
 // The module list is no longer hard-coded here. It used to be an eight-key array that named
 // mostly sub-features with no runtime reader (resume_screening, risk_scores, payroll_ai_validation,
@@ -26,6 +24,23 @@ type Tab = 'subscription' | 'modules' | 'invoices' | 'localization' | 'branding'
 // and wrote to an endpoint that returned 403 unconditionally — so none of the toggles did
 // anything. The list now comes from the backend catalog, which is the same source the API guard,
 // the navigation and the route guard enforce.
+
+/**
+ * Opt-in features: OFF until the organisation switches them on (an absent flag means off). Selfie
+ * attendance and the punch geofence also need a configuration — the server refuses to switch them on
+ * without one and says what is missing.
+ */
+const OPT_IN_FEATURES: { key: string; label: string }[] = [
+  { key: 'learning', label: 'Learning' },
+  { key: 'succession', label: 'Succession & development' },
+  { key: 'succession_candidate_visibility', label: 'Succession: employees see their pools' },
+  { key: 'engagement', label: 'Engagement surveys' },
+  { key: 'compensation', label: 'Merit planning & pay equity' },
+  { key: 'release_a', label: 'Entitlements & renewals' },
+  { key: 'selfie_attendance', label: 'Selfie attendance (needs DPIA sign-off and KSA storage)' },
+  { key: 'attendance_geofence', label: 'Punch geofence (needs a geofence configuration)' },
+  { key: 'policy_intake', label: 'Policy intake (upload & parse)' },
+];
 
 const GCC_COUNTRIES = [
   { code: 'AE', name: 'United Arab Emirates' },
@@ -46,18 +61,6 @@ interface UsageData {
   activeUsers: number;
   maxUsers: number;
   storageUsedMb: number;
-}
-
-interface SubscriptionUsage {
-  plan: string;
-  status: string;
-  billingCycle: string;
-  monthlyAmount: number;
-  currencyCode: string;
-  expiresAtUtc?: string;
-  limits: { maxEmployees: number; maxUsers: number; maxCompanies: number; maxAdminUsers: number };
-  usage: { activeEmployees: number; totalUsers: number; totalCompanies: number; aiTokensThisMonth: number };
-  featureFlags: Record<string, boolean>;
 }
 
 interface SecuritySettings {
@@ -114,33 +117,6 @@ function UsageProgressBar({ pct, label }: { pct: number; label: string }) {
 }
 
 // Upgrade request button with toast feedback
-function UpgradeButton() {
-  const [sent, setSent] = useState(false);
-
-  const handleClick = () => {
-    setSent(true);
-    setTimeout(() => setSent(false), 4000);
-  };
-
-  return (
-    <div className="flex flex-col items-start gap-2">
-      <button
-        type="button"
-        onClick={handleClick}
-        disabled={sent}
-        className="px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-60 hover:bg-indigo-700 transition-colors"
-      >
-        {sent ? 'Request Sent!' : 'Request Upgrade'}
-      </button>
-      {sent && (
-        <p className="text-xs text-green-600 font-medium">
-          Upgrade request sent! Our team will contact you shortly.
-        </p>
-      )}
-    </div>
-  );
-}
-
 // Simple toggle switch with accessible label
 function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -314,9 +290,10 @@ export default function TenantAdminPage() {
   // Global providers loaded once on mount — re-sync them after a save so the rest of the
   // app (sidebar nav, currency formatting, etc.) reflects the change without a full reload.
   const { reload: reloadTenantSettings } = useTenantSettingsContext();
-  const { refresh: refreshFeatureFlags } = useFeatureFlags();
-  const [tab, setTab] = useState<Tab>('subscription');
-  const [subscription, setSubscription] = useState<TenantSubscription | null>(null);
+  const { refresh: refreshFeatureFlags, isFeatureEnabled } = useFeatureFlags();
+  const [featureBusy, setFeatureBusy] = useState<string | null>(null);
+  const [featureError, setFeatureError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('usage');
   const [modules, setModules] = useState<TenantModuleList | null>(null);
   const [modulesLoading, setModulesLoading] = useState(false);
   const [modulesError, setModulesError] = useState<string | null>(null);
@@ -328,11 +305,6 @@ export default function TenantAdminPage() {
 
   // Usage
   const [usage, setUsage] = useState<UsageData | null>(null);
-  const [subscriptionUsage, setSubscriptionUsage] = useState<SubscriptionUsage | null>(null);
-
-  // Invoices
-  const [invoices, setInvoices] = useState<TenantInvoiceSummary[]>([]);
-  const [invoicesLoading, setInvoicesLoading] = useState(false);
 
   // AI Usage
   const [aiUsage, setAiUsage] = useState<TenantAiUsageSummary | null>(null);
@@ -351,9 +323,8 @@ export default function TenantAdminPage() {
   const [showAddRule, setShowAddRule] = useState(false);
 
   useEffect(() => {
-    if (tab === 'subscription') { loadSubscription(); loadUsage(); loadAiUsage(); loadSubscriptionUsage(); }
+    if (tab === 'usage') { loadUsage(); loadAiUsage(); }
     if (tab === 'modules') loadModules();
-    if (tab === 'invoices') loadInvoices();
     if (tab === 'localization') loadLocalization();
     if (tab === 'branding') loadBranding();
     if (tab === 'security') loadSecurity();
@@ -361,27 +332,11 @@ export default function TenantAdminPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  async function loadSubscription() {
-    try { setSubscription(await tenantAdminApi.getSubscription()); } catch {}
-  }
-
   async function loadUsage() {
     try {
       const data = await client.get<UsageData>('/api/tenant-admin/usage').then(r => r.data);
       setUsage(data);
     } catch {}
-  }
-
-  async function loadSubscriptionUsage() {
-    try {
-      const data = await client.get<SubscriptionUsage>('/api/tenant-admin/subscription/usage').then(r => r.data);
-      setSubscriptionUsage(data);
-    } catch {}
-  }
-
-  async function loadInvoices() {
-    setInvoicesLoading(true);
-    try { setInvoices(await tenantAdminApi.listInvoices()); } catch {} finally { setInvoicesLoading(false); }
   }
 
   async function loadAiUsage() {
@@ -447,6 +402,21 @@ export default function TenantAdminPage() {
       try { setModules(await tenantModulesApi.list()); } catch {}
     } finally {
       setModuleBusy(null);
+    }
+  }
+
+  async function toggleFeature(key: string, current: boolean) {
+    setFeatureBusy(key);
+    setFeatureError(null);
+    try {
+      await tenantAdminApi.setFeature(key, !current);
+      await refreshFeatureFlags();
+    } catch (err: unknown) {
+      // The API refuses deliberately and says why (e.g. a missing DPIA sign-off); surface that.
+      const detail = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setFeatureError(detail ?? 'Could not change that feature. Please try again.');
+    } finally {
+      setFeatureBusy(null);
     }
   }
 
@@ -529,9 +499,8 @@ export default function TenantAdminPage() {
   }, {});
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'subscription', label: 'Subscription' },
+    { id: 'usage', label: 'Usage' },
     { id: 'modules', label: 'Modules' },
-    { id: 'invoices', label: 'Invoices' },
     { id: 'localization', label: 'Localization' },
     { id: 'branding', label: 'Branding' },
     { id: 'security', label: 'Security' },
@@ -544,23 +513,8 @@ export default function TenantAdminPage() {
     <div className="p-6 max-w-4xl mx-auto space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Tenant Administration</h1>
-        <p className="text-sm text-gray-500">Manage subscription, modules, localization, and branding</p>
+        <p className="text-sm text-gray-500">Manage usage, modules, localization, and branding</p>
       </div>
-
-      {/* PastDue warning banner */}
-      {subscription?.status === 'PastDue' && (
-        <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
-          <svg className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-          </svg>
-          <div>
-            <p className="text-sm font-semibold text-amber-800">Payment overdue — please settle your account</p>
-            <p className="text-xs text-amber-700 mt-0.5">
-              Your subscription has an outstanding balance. All features remain active for now, but continued non-payment may result in suspension. Contact your account manager or check the Invoices tab.
-            </p>
-          </div>
-        </div>
-      )}
 
       <div className="flex gap-1 border-b border-gray-200 flex-wrap">
         {tabs.map(t => (
@@ -577,86 +531,9 @@ export default function TenantAdminPage() {
         ))}
       </div>
 
-      {/* Subscription */}
-      {tab === 'subscription' && (
+      {/* Usage */}
+      {tab === 'usage' && (
         <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Current Subscription</h2>
-            {!subscription ? (
-              <p className="text-sm text-gray-500">No subscription found. Contact your account manager or support team.</p>
-            ) : (
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
-                {[
-                  { label: 'Plan', value: subscription.plan },
-                  { label: 'Monthly Amount', value: `${subscription.currencyCode} ${subscription.monthlyAmount}` },
-                  { label: 'Status', value: subscription.status },
-                  { label: 'Billing Email', value: subscription.billingEmail },
-                  { label: 'Max Employees', value: subscription.maxEmployees === 0 ? 'Unlimited' : subscription.maxEmployees },
-                  { label: 'Max Companies', value: (subscription as { maxCompanies?: number }).maxCompanies === 0 ? 'Unlimited' : ((subscription as { maxCompanies?: number }).maxCompanies ?? 1) },
-                  { label: 'Max Admin Users', value: (subscription as { maxAdminUsers?: number }).maxAdminUsers === 0 ? 'Unlimited' : ((subscription as { maxAdminUsers?: number }).maxAdminUsers ?? 10) },
-                  { label: 'Started', value: new Date(subscription.startedAtUtc).toLocaleDateString() },
-                  { label: 'Billing Cycle', value: subscription.billingCycle },
-                  { label: 'Expires', value: subscription.expiresAtUtc ? new Date(subscription.expiresAtUtc).toLocaleDateString() : 'Never' },
-                ].map(item => (
-                  <div key={item.label}>
-                    <dt className="text-xs font-medium text-gray-500">{item.label}</dt>
-                    <dd className="text-sm font-semibold text-gray-900 mt-0.5">{String(item.value)}</dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-          </div>
-
-          {/* Comprehensive usage from new endpoint */}
-          {subscriptionUsage && (
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Plan Limits & Usage</h2>
-              <div className="space-y-4">
-                {[
-                  { label: 'Active Employees', current: subscriptionUsage.usage.activeEmployees, max: subscriptionUsage.limits.maxEmployees },
-                  { label: 'Total Users',      current: subscriptionUsage.usage.totalUsers,      max: subscriptionUsage.limits.maxUsers },
-                  { label: 'Legal Companies',  current: subscriptionUsage.usage.totalCompanies,  max: subscriptionUsage.limits.maxCompanies },
-                  { label: 'Admin Users',      current: subscriptionUsage.usage.totalUsers,      max: subscriptionUsage.limits.maxAdminUsers },
-                ].map(({ label, current, max }) => {
-                  const isUnlimited = max === 0;
-                  const pct = isUnlimited ? 0 : Math.min(100, (current / max) * 100);
-                  const isAtLimit = !isUnlimited && current >= max;
-                  const isWarn = !isUnlimited && pct >= 80;
-                  return (
-                    <div key={label}>
-                      <div className="flex items-center justify-between mb-1.5 text-sm">
-                        <span className="font-medium text-gray-700">{label}</span>
-                        <span className={isAtLimit ? 'text-red-600 font-semibold' : isWarn ? 'text-orange-500' : 'text-gray-500'}>
-                          {current.toLocaleString()} / {isUnlimited ? '∞' : max.toLocaleString()}
-                          {isAtLimit && ' — limit reached!'}
-                        </span>
-                      </div>
-                      {!isUnlimited && (
-                        <UsageProgressBar label={label} pct={pct} />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="mt-4 pt-4 border-t border-gray-100">
-                <p className="text-xs font-medium text-gray-500 mb-2">Enabled Modules</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {Object.entries(subscriptionUsage.featureFlags)
-                    .filter(([, v]) => v)
-                    .map(([k]) => (
-                      <span key={k} className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">{k}</span>
-                    ))}
-                  {Object.entries(subscriptionUsage.featureFlags).every(([, v]) => !v) && (
-                    <span className="text-xs text-gray-400">No optional modules enabled</span>
-                  )}
-                </div>
-              </div>
-              <div className="mt-3">
-                <UpgradeButton />
-              </div>
-            </div>
-          )}
-
           {/* Usage section */}
           {usage && (
             <div className="bg-white rounded-xl border border-gray-200 p-6">
@@ -713,8 +590,6 @@ export default function TenantAdminPage() {
                   <dd className="text-xl font-bold text-gray-900 mt-0.5">{usage.storageUsedMb} MB</dd>
                 </dl>
 
-                {/* Request Upgrade button */}
-                <UpgradeButton />
               </div>
             </div>
           )}
@@ -756,11 +631,6 @@ export default function TenantAdminPage() {
                     <dd className="text-lg font-bold text-gray-900">{aiUsage.plan}</dd>
                   </div>
                 </dl>
-                {!aiUsage.isUnlimited && aiUsage.usagePct > 90 && (
-                  <div className="pt-1">
-                    <UpgradeButton />
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -873,58 +743,35 @@ export default function TenantAdminPage() {
               );
             })
           )}
-        </div>
-      )}
 
-      {/* Invoices (read-only) */}
-      {tab === 'invoices' && (
-        <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-1">Invoices</h2>
-            <p className="text-xs text-gray-500 mb-4">Invoice records are managed by your account team. Contact support to request changes.</p>
-            {invoicesLoading ? (
-              <p className="text-sm text-gray-400 py-6 text-center">Loading invoices…</p>
-            ) : invoices.length === 0 ? (
-              <p className="text-sm text-gray-400 py-6 text-center">No invoice records found. Contact your account manager if you believe this is an error.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-100 text-xs text-gray-500">
-                      <th className="py-2 text-start font-medium">Invoice #</th>
-                      <th className="py-2 text-start font-medium">Period</th>
-                      <th className="py-2 text-end font-medium">Amount</th>
-                      <th className="py-2 text-start font-medium">Status</th>
-                      <th className="py-2 text-start font-medium">Due</th>
-                      <th className="py-2 text-start font-medium">Paid</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {invoices.map(inv => (
-                      <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
-                        <td className="py-2.5 font-mono text-xs text-gray-700">{inv.invoiceNumber}</td>
-                        <td className="py-2.5 text-gray-600">{inv.periodDescription ?? '—'}</td>
-                        <td className="py-2.5 text-end font-medium text-gray-900">
-                          {inv.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {inv.currencyCode}
-                        </td>
-                        <td className="py-2.5">
-                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                            inv.status === 'Paid' ? 'bg-green-100 text-green-700' :
-                            inv.status === 'Overdue' ? 'bg-red-100 text-red-700' :
-                            inv.status === 'Sent' ? 'bg-blue-100 text-blue-700' :
-                            inv.status === 'Cancelled' ? 'bg-gray-100 text-gray-500' :
-                            'bg-amber-100 text-amber-700'
-                          }`}>{inv.status}</span>
-                        </td>
-                        <td className="py-2.5 text-xs text-gray-500">{inv.dueDate}</td>
-                        <td className="py-2.5 text-xs text-gray-500">{inv.paidDate ?? '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          <section>
+            <div className="mb-2 px-1">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Optional features</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Off until you switch them on.</p>
+            </div>
+            {featureError && (
+              <div
+                role="alert"
+                className="mb-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+              >
+                {featureError}
               </div>
             )}
-          </div>
+            <div className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white dark:divide-gray-800 dark:border-gray-700 dark:bg-gray-900">
+              {OPT_IN_FEATURES.map(f => {
+                const enabled = isFeatureEnabled(f.key);
+                return (
+                  <div key={f.key} className="flex items-center justify-between gap-3 px-5 py-4">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{f.label}</p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {featureBusy === f.key && <span className="text-xs text-gray-400">Saving…</span>}
+                      <Toggle id={`feature-${f.key}`} checked={enabled} onChange={() => toggleFeature(f.key, enabled)} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         </div>
       )}
 

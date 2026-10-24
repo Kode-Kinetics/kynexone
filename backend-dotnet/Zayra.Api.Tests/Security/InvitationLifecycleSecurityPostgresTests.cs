@@ -53,8 +53,7 @@ public sealed class InvitationLifecycleSecurityPostgresTests
     private static readonly IOptions<JwtOptions> Jwt = Options.Create(new JwtOptions
     {
         Issuer = "Zayra.Invitation.Lifecycle.Tests",
-        TenantAudience = "kynexone-tenant-invitation-tests",
-        PlatformAudience = "kynexone-platform-invitation-tests",
+        Audience = "kynexone-tenant-invitation-tests",
         SigningKey = "INVITATION_LIFECYCLE_TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_2026",
         AccessTokenMinutes = 30,
         RefreshTokenDays = 7

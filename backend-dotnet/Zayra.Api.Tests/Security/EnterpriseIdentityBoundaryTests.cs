@@ -162,8 +162,7 @@ public class EnterpriseIdentityBoundaryTests
         var jwt = Options.Create(new JwtOptions
         {
             Issuer = "Zayra.Tests",
-            TenantAudience = "tenant",
-            PlatformAudience = "platform",
+            Audience = "tenant",
             SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
             AccessTokenMinutes = 30,
             RefreshTokenDays = 7
@@ -231,11 +230,5 @@ public class EnterpriseIdentityBoundaryTests
         public Task<User?> VerifyChallengeAsync(string challengeToken, string totpCode, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task<bool> DisableAsync(Guid userId, Guid tenantId, string totpCode, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken cancellationToken) => throw new NotImplementedException();
-        public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid platformUserId, CancellationToken cancellationToken) => throw new NotImplementedException();
-        public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid platformUserId, MfaVerifySetupRequest request, CancellationToken cancellationToken) => throw new NotImplementedException();
-        public Task<string> CreatePlatformChallengeAsync(Guid platformUserId, string ip, CancellationToken cancellationToken) => throw new NotImplementedException();
-        public Task<PlatformUser?> VerifyPlatformChallengeAsync(string challengeToken, string totpCode, CancellationToken cancellationToken) => throw new NotImplementedException();
-        public Task<PlatformUser?> CompletePlatformChallengeAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken) => throw new NotImplementedException();
-        public Task<bool> DisablePlatformAsync(Guid platformUserId, string totpCode, CancellationToken cancellationToken) => throw new NotImplementedException();
     }
 }

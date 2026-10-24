@@ -35,8 +35,7 @@ public class AuthServiceTests
         var jwt = Options.Create(new JwtOptions
         {
             Issuer           = "Zayra.Tests",
-            TenantAudience   = "kynexone-tenant-test",
-            PlatformAudience = "kynexone-platform-test",
+            Audience   = "kynexone-tenant-test",
             SigningKey        = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
             AccessTokenMinutes = 30,
             RefreshTokenDays   = 7
@@ -981,8 +980,7 @@ public sealed class AuthRefreshTokenSecurityTests
         var jwt = Options.Create(new JwtOptions
         {
             Issuer = "Zayra.Tests",
-            TenantAudience = "kynexone-tenant-test",
-            PlatformAudience = "kynexone-platform-test",
+            Audience = "kynexone-tenant-test",
             SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
             AccessTokenMinutes = 30,
             RefreshTokenDays = 7
@@ -1322,8 +1320,7 @@ public sealed class AuthRetryingExecutionStrategyTests
         var jwt = Options.Create(new JwtOptions
         {
             Issuer = "Zayra.Tests",
-            TenantAudience = "kynexone-tenant-test",
-            PlatformAudience = "kynexone-platform-test",
+            Audience = "kynexone-tenant-test",
             SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS",
             AccessTokenMinutes = 30,
             RefreshTokenDays = 7
@@ -1374,12 +1371,6 @@ file sealed class NullMfaService : IMfaService
     public Task<Zayra.Api.Domain.Entities.User?> VerifyChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> DisableAsync(Guid userId, Guid tenantId, string code, CancellationToken ct) => throw new NotImplementedException();
     public Task<bool> AdminDisableAsync(Guid userId, Guid tenantId, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-    public Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid id, CancellationToken ct) => throw new NotImplementedException();
-    public Task<IReadOnlyList<string>?> VerifyPlatformSetupAsync(Guid id, MfaVerifySetupRequest req, CancellationToken ct) => throw new NotImplementedException();
-    public Task<string> CreatePlatformChallengeAsync(Guid id, string ip, CancellationToken ct) => throw new NotImplementedException();
-    public Task<Zayra.Api.Models.PlatformUser?> VerifyPlatformChallengeAsync(string token, string code, CancellationToken ct) => throw new NotImplementedException();
-    public Task<Zayra.Api.Models.PlatformUser?> CompletePlatformChallengeAsync(string token, string code, RequestContext context, CancellationToken ct) => throw new NotImplementedException();
-    public Task<bool> DisablePlatformAsync(Guid id, string code, CancellationToken ct) => throw new NotImplementedException();
 }
 
 file sealed class FakeEmailService : IEmailService

@@ -18,7 +18,7 @@ namespace Zayra.Api.Tests.Platform;
 /// clock in the zone this endpoint returns. For a tenant with no <c>TenantLocalizationSetting</c>
 /// row (every tenant created before provisioning started writing one) the endpoint answered with a
 /// bare <c>new TenantLocalizationSetting()</c>, whose <c>DefaultTimezone</c> property default is
-/// <b>America/New_York</b> (Models/SaasPlatform.cs). Observed live at 06:28 Riyadh on Thu 24 Sept
+/// <b>America/New_York</b> (Models/Organisation/TenantLocalizationSetting.cs). Observed live at 06:28 Riyadh on Thu 24 Sept
 /// 2026, the header read "Wed, 23 Sept 2026, 23:28" — seven hours behind and the WRONG DAY — while
 /// the Saudi Compliance panel on the same page, which formats in the viewer's own zone, read
 /// 24/09/2026 06:29. Two clocks on one screen, disagreeing by seven hours.</para>

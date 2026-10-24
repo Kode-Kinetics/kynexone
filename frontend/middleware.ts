@@ -41,15 +41,9 @@ function forwardClientIp(request: NextRequest): NextResponse {
 }
 
 export function middleware(request: NextRequest) {
-  if (request.nextUrl.pathname.startsWith('/api/')) return forwardClientIp(request);
-
-  const url = request.nextUrl.clone();
-  if (!url.searchParams.has('impersonate')) return NextResponse.next();
-
-  url.searchParams.delete('impersonate');
-  return NextResponse.redirect(url, 307);
+  return forwardClientIp(request);
 }
 
 export const config = {
-  matcher: ['/login', '/api/:path*'],
+  matcher: ['/api/:path*'],
 };

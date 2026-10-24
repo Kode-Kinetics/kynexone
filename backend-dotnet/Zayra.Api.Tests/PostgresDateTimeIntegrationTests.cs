@@ -172,9 +172,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         accessor);
 
     /// <summary>
-    /// Overload that also supplies IOptions&lt;JwtOptions&gt; so the DbContext can evaluate the
-    /// platform super-admin bypass branch (is_platform_admin + platform audience) — the branch that
-    /// PlatformController relies on and that the no-accessor PlatformTestBase path cannot exercise.
+    /// Overload that also supplies IOptions&lt;JwtOptions&gt;, as the application's DbContext receives it.
     /// </summary>
     public ZayraDbContext CreateDbWithAccessor(IHttpContextAccessor accessor, IOptions<JwtOptions> jwtOptions) => new(
         new DbContextOptionsBuilder<ZayraDbContext>()

@@ -98,14 +98,6 @@ public sealed class RequestEntityScopeResolver : IRequestEntityScopeResolver
 
         var tenantId = ParseGuid(user.FindFirstValue("tenant_id"));
 
-        // Platform administration is a DUAL gate: the claim alone is not enough, the token must also
-        // carry the platform audience. A tenant-audience token that somehow acquired the claim is not
-        // a platform administrator, which is what keeps impersonation tokens out of this branch.
-        if (user.HasClaim("is_platform_admin", "true")
-            && _jwtOptions?.Value.PlatformAudience is { Length: > 0 } platformAudience
-            && user.HasClaim("aud", platformAudience))
-            return RequestEntityScope.System(ScopeResolutionSource.PlatformAdministrator) with { TenantId = tenantId };
-
         // Strict is the global cutover flag OR the per-token marker stamped on impersonation and
         // break-glass tokens. Invariant 14: those are ALWAYS strict, whatever the global flag says.
         // HasClaim compares the VALUE ordinally, so "True" would not match "true" — and this is the one
@@ -117,7 +109,7 @@ public sealed class RequestEntityScopeResolver : IRequestEntityScopeResolver
                             string.Equals(c.Type, EntityScopeContext.StrictScopeClaim, StringComparison.OrdinalIgnoreCase)
                          && string.Equals(c.Value, "true", StringComparison.OrdinalIgnoreCase));
 
-        // Authenticated but tenantless, and not a platform admin. Invariant 12: sees nothing. The old
+        // Authenticated but tenantless. Invariant 12: sees nothing. The old
         // behaviour — falling through to a filter that matched null/Guid.Empty tenants — was a leak.
         if (tenantId is null)
             return RequestEntityScope.Denied(null, strict, ScopeDenialReason.NoTenantOnPrincipal);

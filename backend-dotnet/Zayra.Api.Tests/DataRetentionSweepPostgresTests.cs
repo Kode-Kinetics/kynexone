@@ -427,7 +427,7 @@ public sealed class DataRetentionSweepPostgresTests
         return (tenant, user.Id);
     }
 
-    /// <summary>Reproduces exactly what <c>PlatformController.DeleteTenant</c> leaves behind.</summary>
+    /// <summary>Reproduces exactly what the retired tenant soft-delete left behind.</summary>
     private async Task SoftDeleteTenantAsync(Guid tenantId, DateTime? deletedAtUtc)
     {
         await using var db = _fx.CreateDb();

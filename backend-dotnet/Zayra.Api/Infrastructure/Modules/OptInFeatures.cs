@@ -8,9 +8,9 @@ namespace Zayra.Api.Infrastructure.Modules;
 ///
 /// <para><b>Why a separate list.</b> A module defaults on so a forgotten row never locks a paying tenant out of
 /// what they bought. A feature still being rolled out must default the other way: a live tenant (Evostel) must
-/// not see Release A screens or reach its APIs until the platform team switches it on. Keys here are refused by
-/// the tenant-facing module API (they are in <see cref="ModuleCatalog.NonModuleKeys"/>), so only the platform
-/// flag endpoint can enable them.</para>
+/// not see Release A screens or reach its APIs until the organisation switches it on. Keys here are refused by
+/// the module API (they are in <see cref="ModuleCatalog.NonModuleKeys"/>); they are switched, with their
+/// configuration and its rules, at <c>PUT /api/tenant-admin/features/{key}</c> (OrganisationFeaturesController).</para>
 ///
 /// <para><b>Enforcement.</b> <see cref="TenantModuleService"/> reports an opt-in key as disabled unless enabled,
 /// so the frontend's <c>isFeatureEnabled</c> and every server check read one answer.

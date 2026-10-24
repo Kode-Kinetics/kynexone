@@ -96,10 +96,10 @@ public static class MigrateOnlyEntryPoint
             + (manifestIds.IsEmpty
                 ? "No build-time migration manifest was found either."
                 : $"The build-time manifest records {manifestIds.Length} migration(s) that were "
-                  + "stripped from this image (./Dockerfile `rm -rf Migrations`, which keeps the "
-                  + "Render builder under its memory limit).")
-            + " Apply migrations from a full source checkout instead: the CI `migrate-backend` job, "
-            + "or `dotnet ef database update --project backend-dotnet/Zayra.Api/Zayra.Api.csproj`.";
+                  + "stripped from this image (./Dockerfile `rm -rf Migrations`).")
+            + " Run --migrate from an image built with its migrations compiled in (the deployment kit's "
+            + "`migrate` service), or apply them from a full source checkout with "
+            + "`dotnet ef database update --project backend-dotnet/Zayra.Api/Zayra.Api.csproj`.";
     }
 
     /// <summary>Builds options for a migration-only context: the provider, and nothing else.</summary>

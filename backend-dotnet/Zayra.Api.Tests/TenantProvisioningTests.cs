@@ -33,7 +33,7 @@ public class TenantProvisioningTests
     {
         await using var db = _fx.CreateDb();
 
-        // Simulate what PlatformController.CreateTenant does (without the HTTP stack)
+        // A hand-built tenant with one owner (organisation setup is covered by OrganisationProvisioningTests)
         var tenant = new Tenant { Name = "Acme Corp", Slug = $"acme-{Guid.NewGuid():N}" };
         db.Tenants.Add(tenant);
         await db.SaveChangesAsync();

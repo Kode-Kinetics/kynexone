@@ -88,46 +88,6 @@ public sealed class PasswordVerificationGateTests
         unknown.Should().Be(1).And.Be(wrong, "an unknown email must cost exactly what a wrong password costs");
     }
 
-    [Fact]
-    public async Task PlatformLogin_UnknownEmailDoesTheSamePbkdf2WorkAsAWrongPassword()
-    {
-        await using var kit = await AuthHardeningTestKit.CreateAsync();
-        await using (var seed = kit.NewDb())
-        {
-            seed.PlatformUsers.Add(new PlatformUser
-            {
-                Email = "owner@platform.test", FullName = "Owner", Role = PlatformRoles.Owner, IsActive = true,
-                PasswordHash = new Pbkdf2PasswordHasher().Hash(Password),
-            });
-            await seed.SaveChangesAsync();
-        }
-
-        async Task<(int Verifies, IActionResult Result)> Attempt(string email)
-        {
-            var counting = new CountingHasher();
-            await using var db = kit.NewDb();
-            var jwt = AuthHardeningTestKit.Jwt;
-            var tokens = new JwtTokenService(jwt);
-            var config = new ConfigurationBuilder().Build();
-            var controller = new PlatformController(
-                db, jwt, counting, new FakeAuthSeeder(db, counting), tokens, new FakePlatformEmailService(), config,
-                kit.Mfa(db), new AccessManagementService(db, counting, new AuditService(db), tokens, config),
-                NullLogger<PlatformController>.Instance,
-                new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))
-            {
-                ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
-            };
-            var result = await controller.Login(new PlatformLoginRequest(email, "wrong-password"), CancellationToken.None);
-            return (counting.Verifies, result);
-        }
-
-        var unknown = await Attempt("nobody@platform.test");
-        var wrong = await Attempt("owner@platform.test");
-        unknown.Result.Should().BeOfType<UnauthorizedObjectResult>();
-        wrong.Result.Should().BeOfType<UnauthorizedObjectResult>();
-        unknown.Verifies.Should().Be(1).And.Be(wrong.Verifies);
-    }
-
     private sealed class CountingHasher : IPasswordHasher
     {
         private readonly Pbkdf2PasswordHasher _inner = new();

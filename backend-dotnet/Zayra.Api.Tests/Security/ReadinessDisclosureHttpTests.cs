@@ -70,24 +70,17 @@ public sealed class ReadinessDisclosureHttpTests
     }
 
     [Fact]
-    public async Task ReadinessDetails_RejectsTenantUsers()
+    public async Task ReadinessDetails_RejectsUsersWhoAreNotAdministrators()
     {
         var response = await GetAsync("/health/ready/details", _fixture.TenantTokenWithPermission);
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden,
-            "a tenant user is authenticated but is not a platform operator");
+            "the user is authenticated but does not hold security.manage");
     }
 
     [Fact]
-    public async Task ReadinessDetails_RejectsPlatformClaimsOnTenantAudience()
+    public async Task ReadinessDetails_GivesAdministratorsTheFullEvidence()
     {
-        var response = await GetAsync("/health/ready/details", _fixture.PlatformOwnerTokenOnTenantAudience);
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-    }
-
-    [Fact]
-    public async Task ReadinessDetails_GivesPlatformOperatorsTheFullEvidence()
-    {
-        var response = await GetAsync("/health/ready/details", _fixture.PlatformOwnerToken);
+        var response = await GetAsync("/health/ready/details", _fixture.AdministratorToken);
 
         response.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable);
         var body = await JsonAsync(response);
@@ -101,12 +94,12 @@ public sealed class ReadinessDisclosureHttpTests
     }
 
     [Fact]
-    public async Task Telemetry_IsPlatformOperatorsOnly()
+    public async Task Telemetry_IsAdministratorsOnly()
     {
         (await GetAsync("/health/telemetry")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await GetAsync("/health/telemetry", _fixture.TenantTokenWithPermission)).StatusCode
-            .Should().Be(HttpStatusCode.Forbidden, "its queue counters are cross-tenant aggregates");
-        (await GetAsync("/health/telemetry", _fixture.PlatformOwnerToken)).StatusCode
+            .Should().Be(HttpStatusCode.Forbidden, "its queue counters are installation-wide aggregates");
+        (await GetAsync("/health/telemetry", _fixture.AdministratorToken)).StatusCode
             .Should().NotBe(HttpStatusCode.Unauthorized).And.NotBe(HttpStatusCode.Forbidden);
     }
 }

@@ -131,7 +131,7 @@ public class PayComponentCatalogTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
-        // PlatformController.CreateTenantCore order: seeder (no save) → bundle (which seeds + saves).
+        // OrganisationProvisioningService order: seeder (no save) → bundle (which seeds + saves).
         await PayComponentSeeder.SeedTenantDefaultsAsync(db, tenantId, CancellationToken.None);
         var first = await TenantProvisioningBundle.ProvisionAsync(db, tenantId, "SA", CancellationToken.None);
         var again = await TenantProvisioningBundle.ProvisionAsync(db, tenantId, "SA", CancellationToken.None);

@@ -323,7 +323,7 @@ public sealed class WorkEmailLoginTakeoverTests
     {
         var jwt = Options.Create(new JwtOptions
         {
-            Issuer = "Zayra.Tests", TenantAudience = "kynexone-tenant-test", PlatformAudience = "kynexone-platform-test",
+            Issuer = "Zayra.Tests", Audience = "kynexone-tenant-test",
             SigningKey = "TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_WORK_EMAIL_TAKEOVER", AccessTokenMinutes = 30, RefreshTokenDays = 7,
         });
         var auth = new AuthService(db, new Pbkdf2PasswordHasher(), new JwtTokenService(jwt), new AuditService(db), new FakeEmailService(), jwt,

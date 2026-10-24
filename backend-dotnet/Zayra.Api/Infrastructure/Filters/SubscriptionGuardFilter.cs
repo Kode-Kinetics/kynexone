@@ -19,7 +19,6 @@ public class SubscriptionGuardFilter : IAsyncResourceFilter
     private static readonly string[] SkippedPrefixes =
     {
         "/api/auth",
-        "/api/platform",
         "/api/tenant-admin/localization",
         "/api/health",
         "/api/version",

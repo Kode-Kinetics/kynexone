@@ -43,7 +43,7 @@ export const viewport: Viewport = {
  *
  * LocaleProvider sets document.documentElement.dir in an effect, which only runs after
  * hydration and only inside AppLayout. That left two holes: every Arabic page rendered
- * one LTR frame before flipping, and routes outside the tenant shell (/login, /platform)
+ * one LTR frame before flipping, and routes outside the tenant shell (/login)
  * never flipped at all — so an Arabic user's sign-in screen was always left-to-right.
  * LOCALE_BOOT (src/i18n/localeBoot.ts) reads the same localStorage keys the provider owns,
  * in a blocking script, which closes both: the user's own choice

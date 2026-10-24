@@ -72,36 +72,6 @@ public sealed class SelfieReviewFixesPostgresTests : PlatformTestBase
     }
 
     [Fact]
-    public async Task Item4_TheOwnersManualPurge_DeletesEverySelfieFile_AndStopsBeforeErasingWhenItCannot()
-    {
-        var storage = new MemoryDocumentStorage();
-        var (tenantId, employeeId) = await SeedEmployeeAsync();
-        string key;
-        await using (var db = _fx.CreateDb()) key = await AddEvidenceAsync(db, storage, tenantId, employeeId, "Active");
-        await SoftDeleteTenantAsync(tenantId, DateTime.UtcNow.AddDays(-1));
-
-        // Storage down: refused, and nothing is erased.
-        storage.FailDeletes = true;
-        await using (var db = _fx.CreateDb())
-        {
-            var blocked = await Owner(db, storage).PurgeTenant(tenantId, "PURGE", default);
-            Assert.IsNotType<OkObjectResult>(blocked);
-        }
-        await using (var verify = _fx.CreateDb())
-            Assert.Equal(1, await verify.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId));
-        Assert.True(storage.Objects.ContainsKey(key));
-
-        storage.FailDeletes = false;
-        await using (var db = _fx.CreateDb())
-            Assert.IsType<OkObjectResult>(await Owner(db, storage).PurgeTenant(tenantId, "PURGE", default));
-        Assert.False(storage.Objects.ContainsKey(key), "the manual purge orphaned the selfie file");
-        await using var after = _fx.CreateDb();
-        Assert.Equal(0, await after.AttendanceEvidence.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId));
-    }
-
-    // ── Item 11: one tenant's backlog cannot delay another's purge ──────────────────────────────────────────
-
-    [Fact]
     public async Task Item11_TheScheduler_EnqueuesEveryTenantWithDueRows_HoweverLargeOneTenantsBacklog()
     {
         var (busy, busyEmployee) = await SeedEmployeeAsync();
@@ -182,15 +152,6 @@ public sealed class SelfieReviewFixesPostgresTests : PlatformTestBase
             Interlocked.Increment(ref Count);
             return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
         }
-    }
-
-    private PlatformController Owner(ZayraDbContext db, IDocumentStorage storage)
-    {
-        var controller = CreateController(db);
-        var services = new ServiceCollection();
-        services.AddSingleton(storage);
-        controller.ControllerContext.HttpContext.RequestServices = services.BuildServiceProvider();
-        return controller;
     }
 
     private async Task<(Guid TenantId, int EmployeeId)> SeedEmployeeAsync()

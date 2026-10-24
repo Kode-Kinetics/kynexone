@@ -25,7 +25,7 @@ namespace Zayra.Api.Tests.SelfieAttendance;
 
 /// <summary>
 /// Review 1, item 12: selfie attendance through the REAL Program.cs pipeline (authentication, the opt-in feature guard,
-/// request limits, model binding, the platform role filter), over <see cref="AuthorizationPipelineHost"/>. Every token
+/// request limits, model binding, the permission gate), over <see cref="AuthorizationPipelineHost"/>. Every token
 /// is minted by the application's own token service from seeded rows, so the per-request session re-check passes.
 /// Speaks HTTP only, so it also runs against the reviewed backend (d43b3943) — where the refusals here fail.
 /// </summary>
@@ -104,13 +104,13 @@ public sealed class SelfieHttpPipelineTests : IClassFixture<SelfieHttpPipelineFi
     }
 
     [Fact]
-    public async Task APlatformAdmin_CannotEnableSelfieAttendance_ButAnOwnerCan()
+    public async Task AnEmployee_CannotEnableSelfieAttendance_ButTheAdministratorCan()
     {
-        var admin = await _fx.SetSelfieFlagAsync(_fx.PlatformAdminToken, _fx.EnableTenantId, _fx.EnableConfig(_fx.PlatformOwnerId));
-        Assert.Equal(HttpStatusCode.Forbidden, admin.StatusCode);
+        var employee = await _fx.SetSelfieFlagAsync(_fx.EnableTenantEmployeeToken, _fx.EnableConfig(_fx.AdministratorId));
+        Assert.Equal(HttpStatusCode.Forbidden, employee.StatusCode);
 
-        var owner = await _fx.SetSelfieFlagAsync(_fx.PlatformOwnerToken, _fx.EnableTenantId, _fx.EnableConfig(_fx.PlatformOwnerId));
-        Assert.True(owner.StatusCode == HttpStatusCode.OK, await owner.Content.ReadAsStringAsync());
+        var administrator = await _fx.SetSelfieFlagAsync(_fx.AdministratorToken, _fx.EnableConfig(_fx.AdministratorId));
+        Assert.True(administrator.StatusCode == HttpStatusCode.OK, await administrator.Content.ReadAsStringAsync());
     }
 }
 
@@ -157,7 +157,7 @@ internal static class SelfieReviewFixesTestsPng
 /// <summary>
 /// Boots Program.cs once (SQLite, Development, the KSA residency allow-list naming this deploy's local storage, document
 /// storage swapped for memory) and seeds: an employee with selfie attendance on and consent (the uploader), one already at
-/// ten attempts this hour, an employee of a tenant without the flag, a tenant to enable it on, and a platform Owner and Admin.
+/// ten attempts this hour, an employee of a tenant without the flag, a tenant to enable it on, with its administrator and an employee.
 /// </summary>
 public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
 {
@@ -170,9 +170,9 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
     public string UploaderToken { get; private set; } = null!;
     public string RateLimitedToken { get; private set; } = null!;
     public string FlagOffEmployeeToken { get; private set; } = null!;
-    public string PlatformOwnerToken { get; private set; } = null!;
-    public string PlatformAdminToken { get; private set; } = null!;
-    public Guid PlatformOwnerId { get; private set; }
+    public string AdministratorToken { get; private set; } = null!;
+    public string EnableTenantEmployeeToken { get; private set; } = null!;
+    public Guid AdministratorId { get; private set; }
     public Guid EnableTenantId { get; private set; }
 
     public async Task InitializeAsync()
@@ -211,15 +211,12 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
                 });
             }
             EnableTenantId = await SeedTenantAsync(db, "selfie-enable", selfieOn: false);
-            var owner = new PlatformUser { Email = "owner@selfie-http.platform", FullName = "Owner", PasswordHash = "no-login", Role = PlatformRoles.Owner, IsActive = true };
-            var admin = new PlatformUser { Email = "admin@selfie-http.platform", FullName = "Admin", PasswordHash = "no-login", Role = PlatformRoles.Admin, IsActive = true };
-            db.PlatformUsers.AddRange(owner, admin);
-            await db.SaveChangesAsync();
-            PlatformOwnerId = owner.Id;
+            AdministratorId = await SeedAdministratorAsync(db, EnableTenantId);
+            var enableEmployee = await SeedEmployeeUserAsync(db, EnableTenantId, "enableemp");
+            _enableEmployeeUserId = enableEmployee.UserId;
             _uploaderUserId = uploader.UserId;
             _limitedUserId = limited.UserId;
             _flagOffUserId = flagOff.UserId;
-            _adminId = admin.Id;
         }
 
         using (var scope = Host.Services.CreateScope())
@@ -230,12 +227,12 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
             UploaderToken = await MintAsync(db, tokens, _uploaderUserId);
             RateLimitedToken = await MintAsync(db, tokens, _limitedUserId);
             FlagOffEmployeeToken = await MintAsync(db, tokens, _flagOffUserId);
-            PlatformOwnerToken = MintPlatform(await db.PlatformUsers.AsNoTracking().SingleAsync(u => u.Id == PlatformOwnerId), jwt);
-            PlatformAdminToken = MintPlatform(await db.PlatformUsers.AsNoTracking().SingleAsync(u => u.Id == _adminId), jwt);
+            AdministratorToken = await MintAsync(db, tokens, AdministratorId);
+            EnableTenantEmployeeToken = await MintAsync(db, tokens, _enableEmployeeUserId);
         }
     }
 
-    private Guid _uploaderUserId, _limitedUserId, _flagOffUserId, _adminId;
+    private Guid _uploaderUserId, _limitedUserId, _flagOffUserId, _enableEmployeeUserId;
 
     public async Task DisposeAsync()
     {
@@ -255,17 +252,17 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
         return await Client.SendAsync(request);
     }
 
-    public async Task<HttpResponseMessage> SetSelfieFlagAsync(string platformToken, Guid tenantId, string configJson)
+    public async Task<HttpResponseMessage> SetSelfieFlagAsync(string token, string configJson)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Put, $"/api/platform/tenants/{tenantId}/features/selfie_attendance")
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/api/tenant-admin/features/selfie_attendance")
         {
             Content = JsonContent.Create(new { isEnabled = true, configJson }),
         };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", platformToken);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return await Client.SendAsync(request);
     }
 
-    /// <summary>What an Owner sends: the DPIA block (signed by a real platform user) and the region.</summary>
+    /// <summary>What the administrator sends: the DPIA block (signed by a user of the organisation) and the region.</summary>
     public string EnableConfig(Guid signedOffBy) => JsonSerializer.Serialize(new
     {
         dpia = new { signedOffBy = signedOffBy.ToString(), signedOffAtUtc = "2026-10-01T09:00:00Z", reference = "DPIA-2026-007" },
@@ -284,6 +281,23 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
             await db.SaveChangesAsync();
         }
         return tenant.Id;
+    }
+
+    /// <summary>The organisation's administrator: a group-scoped full-portal user holding the seeded Admin role.</summary>
+    private static async Task<Guid> SeedAdministratorAsync(ZayraDbContext db, Guid tenantId)
+    {
+        var email = $"admin-{Guid.NewGuid():N}@selfie-http.local";
+        var user = new User
+        {
+            TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = "Administrator", PasswordHash = "no-login",
+            Status = "Active", AccessMode = "FullPortal", IsActive = true, IsEmailConfirmed = true, IsGroupScope = true,
+        };
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        var role = await db.Roles.SingleAsync(r => r.TenantId == tenantId && r.Name == "Admin");
+        db.Set<UserRole>().Add(new UserRole { UserId = user.Id, RoleId = role.Id });
+        await db.SaveChangesAsync();
+        return user.Id;
     }
 
     internal static async Task<(Guid UserId, int EmployeeId)> SeedEmployeeUserAsync(ZayraDbContext db, Guid tenantId, string name)
@@ -329,24 +343,5 @@ public sealed class SelfieHttpPipelineFixture : IAsyncLifetime
         var grants = Array.Empty<EntityAccessGrant>();
         var scope = EntityScopeClaims.Resolve(user.IsGroupScope, grants, Array.Empty<Guid>());
         return tokens.CreateAccessToken(user, AuthService.GetRoles(user), AuthService.GetPermissions(user), user.Tenant!, grants, scope, out _);
-    }
-
-    /// <summary>Mirror of PlatformController.CreatePlatformToken (as in AuthorizationPipelineFixture).</summary>
-    private static string MintPlatform(PlatformUser user, JwtOptions jwt)
-    {
-        var stamp = user.UpdatedAtUtc ?? throw new InvalidOperationException("Platform user session stamp was not initialised.");
-        var claims = new List<Claim>
-        {
-            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(ClaimTypes.Role, "PlatformAdmin"),
-            new("is_platform_admin", "true"),
-            new("platform_role", user.Role),
-            new(PlatformSessionSecurity.SessionStampClaim, PlatformSessionSecurity.StampValue(stamp)),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-        };
-        var credentials = new SigningCredentials(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.SigningKey)), SecurityAlgorithms.HmacSha256);
-        return new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(jwt.Issuer, jwt.PlatformAudience, claims,
-            expires: DateTime.UtcNow.AddHours(1), signingCredentials: credentials));
     }
 }

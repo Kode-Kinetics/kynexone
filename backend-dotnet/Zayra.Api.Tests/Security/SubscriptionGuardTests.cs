@@ -23,7 +23,7 @@ namespace Zayra.Api.Tests.Security;
 ///   4. PastDue (not yet expired) → passes through + X-Subscription-Status header
 ///   5. Active with no expiry → passes through
 ///   6. ManualContract → always passes through (no expiry enforcement)
-///   7. /api/auth/*, /api/platform/*, /api/health, /api/version bypass the guard
+///   7. /api/auth/*, /api/health, /api/version bypass the guard
 /// </summary>
 public class SubscriptionGuardTests
 {
@@ -224,7 +224,6 @@ public class SubscriptionGuardTests
 
     [Theory]
     [InlineData("/api/auth/login")]
-    [InlineData("/api/platform/stats")]
     [InlineData("/api/tenant-admin/localization")]
     [InlineData("/api/health")]
     [InlineData("/api/version")]
@@ -298,7 +297,7 @@ public class SubscriptionGuardTests
         result.Should().BeNull("missing subscription row must not block (fail open)");
     }
 
-    // ── No tenant claim (platform admin) ─────────────────────────────────────
+    // ── No tenant claim ─────────────────────────────────────
 
     [Fact]
     public async Task NoTenantIdClaim_BypassesGuard()
@@ -306,10 +305,7 @@ public class SubscriptionGuardTests
         await using var db = CreateDb();
         var httpCtx = new DefaultHttpContext();
         httpCtx.Request.Path = "/api/employees";
-        httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
-        {
-            new Claim("is_platform_admin", "true")
-        }, "Test"));
+        httpCtx.User = new ClaimsPrincipal(new ClaimsIdentity(Array.Empty<Claim>(), "Test"));
 
         var actionCtx = new ActionContext(httpCtx, new RouteData(), new ActionDescriptor());
         var ctx = new ResourceExecutingContext(actionCtx, [], []);
@@ -318,6 +314,6 @@ public class SubscriptionGuardTests
         await filter.OnResourceExecutionAsync(ctx, () =>
             Task.FromResult(new ResourceExecutedContext(actionCtx, [])));
 
-        ctx.Result.Should().BeNull("no tenant_id claim = platform admin; must bypass");
+        ctx.Result.Should().BeNull("with no tenant_id claim there is no subscription to enforce");
     }
 }

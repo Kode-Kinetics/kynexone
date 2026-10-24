@@ -14,7 +14,7 @@ namespace Zayra.Api.Tests;
 ///
 /// <para>Three independent checks each claimed a protection none of them provided:</para>
 /// <list type="number">
-/// <item>render.yaml declared fourteen keys <c>sync: false</c> — "set this in the dashboard" —
+/// <item>The hosted blueprint declared fourteen keys <c>sync: false</c> — "set this in the dashboard" —
 /// and nothing verified any of them. <c>Proxy__KnownNetworks</c> was unset, the app's proxy guard
 /// threw, and the pre-deploy migration job died ~10s in, twice, before reaching the database.</item>
 /// <item>Three migrations from 2026-07-13 were hand-written without <c>[Migration]</c>, so EF
@@ -26,7 +26,7 @@ namespace Zayra.Api.Tests;
 /// </list>
 ///
 /// <para>Each test below fails on the historical input. The shell gates
-/// (<c>scripts/check-migration-visibility.sh</c>, <c>scripts/check_render_env.py</c>) cover the
+/// (<c>scripts/check-migration-visibility.sh</c>) cover the
 /// same ground in CI; these are the in-suite half, so a developer who never runs CI still trips
 /// over them.</para>
 /// </summary>
@@ -401,7 +401,7 @@ public class DeployHardeningTests
     }
 
     /// <summary>
-    /// THE FOURTH NO-OP, found while fixing the first three. render.yaml's preDeployCommand is
+    /// THE FOURTH NO-OP, found while fixing the first three. The hosted pre-deploy command was
     /// <c>dotnet Zayra.Api.dll --migrate</c>, which runs INSIDE the published image — and that
     /// image has had Migrations/ deleted before <c>dotnet publish</c>, so the classes were never
     /// compiled in. MigrateAsync() against an assembly with zero migrations applies nothing and
@@ -420,7 +420,7 @@ public class DeployHardeningTests
         Assert.Contains("2 migration(s)", stripped, StringComparison.Ordinal);
         Assert.Contains("Nothing was changed", stripped, StringComparison.Ordinal);
         // It must point at a path that actually works, not just refuse.
-        Assert.Contains("migrate-backend", stripped, StringComparison.Ordinal);
+        Assert.Contains("dotnet ef database update", stripped, StringComparison.Ordinal);
 
         // No manifest either: still fail, still explain.
         var blind = MigrateOnlyEntryPoint.DescribeStrippedBuildFailure(
@@ -433,85 +433,7 @@ public class DeployHardeningTests
             new[] { "20260101000000_A" }, ImmutableArray<string>.Empty));
     }
 
-    // ── A. Required env vars, and F. comments that must stay true ────────────────
-
-    /// <summary>
-    /// The env-var gate parses render.yaml for <c>sync: false</c>. If the blueprint stops
-    /// declaring the key that caused the outage, the gate quietly stops checking for it.
-    /// </summary>
-    [Fact]
-    public void RenderYaml_StillDeclaresTheKeyThatCausedTheOutage()
-    {
-        var renderYaml = ResolveRepoFile("render.yaml");
-        Assert.True(renderYaml is not null, "Could not locate render.yaml.");
-        var required = ParseSyncFalseKeys(File.ReadAllText(renderYaml!));
-
-        Assert.Contains("Proxy__KnownNetworks", required);
-        Assert.True(required.Count >= 14,
-            $"render.yaml declares only {required.Count} `sync: false` keys; the gate had 14. "
-            + "A key that stops being declared stops being verified.");
-    }
-
-    /// <summary>
-    /// F. THE DISPROVEN CLAIM. render.yaml asserted that a migration-bearing image deployed
-    /// against an un-migrated DB is "NEVER promoted". The strip made that false, and a release
-    /// shipped on the strength of it. The words must not come back without the mechanism.
-    /// </summary>
-    [Fact]
-    public void RenderYaml_DoesNotRepeatTheDisprovenPromotionGuarantee()
-    {
-        var renderYaml = ResolveRepoFile("render.yaml");
-        Assert.True(renderYaml is not null);
-        var text = File.ReadAllText(renderYaml!);
-
-        Assert.DoesNotContain("is NEVER promoted", text, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// The pre-deploy comment used to list the seed-admin and JWT guards as the preconditions of
-    /// `--migrate` and omit the proxy guard, which fires first and is the one that actually broke
-    /// it. The migrate path no longer runs any of them; the comment must not reintroduce the list.
-    /// </summary>
-    [Fact]
-    public void RenderYaml_DoesNotClaimMigrateRunsTheBuilderTimeGuards()
-    {
-        var renderYaml = ResolveRepoFile("render.yaml");
-        Assert.True(renderYaml is not null);
-        var text = File.ReadAllText(renderYaml!);
-
-        Assert.DoesNotContain("the builder-time seed-admin/JWT fail-fast guards", text, StringComparison.Ordinal);
-    }
-
     // ── helpers ──────────────────────────────────────────────────────────────────
-
-    /// <summary>Mirrors scripts/check_render_env.py's parse_required_keys, incl. inline comments.</summary>
-    private static List<string> ParseSyncFalseKeys(string yaml)
-    {
-        var required = new List<string>();
-        string? pending = null;
-        foreach (var raw in yaml.Split('\n'))
-        {
-            var line = raw.Trim();
-            if (line.Length == 0 || line.StartsWith('#')) continue;
-            line = Regex.Replace(line, @"\s+#.*$", string.Empty).Trim();
-            if (line.Length == 0) continue;
-
-            var keyMatch = Regex.Match(line, @"^-?\s*key:\s*(\S+)$");
-            if (keyMatch.Success) { pending = keyMatch.Groups[1].Value.Trim('"', '\''); continue; }
-            if (pending is null) continue;
-
-            if (Regex.IsMatch(line, @"^sync:\s*false$"))
-            {
-                if (!required.Contains(pending)) required.Add(pending);
-                pending = null;
-            }
-            else if (Regex.IsMatch(line, @"^(value|fromService|fromGroup|fromDatabase|generateValue):"))
-            {
-                pending = null;
-            }
-        }
-        return required;
-    }
 
     /// <summary>Walk up from the test binary to the repo root. Returns null rather than passing vacuously.</summary>
     private static string? ResolveRepoFile(string relativePath)

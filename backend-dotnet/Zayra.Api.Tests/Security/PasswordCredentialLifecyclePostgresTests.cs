@@ -37,8 +37,7 @@ public sealed class PasswordCredentialLifecyclePostgresTests
     private static readonly IOptions<JwtOptions> Jwt = Options.Create(new JwtOptions
     {
         Issuer = "Zayra.C04.Postgres.Tests",
-        TenantAudience = "kynexone-tenant-c04-tests",
-        PlatformAudience = "kynexone-platform-c04-tests",
+        Audience = "kynexone-tenant-c04-tests",
         SigningKey = "C04_TEST_SIGNING_KEY_WITH_MORE_THAN_64_CHARACTERS_FOR_AUTH_TESTS_2026",
         AccessTokenMinutes = 30,
         RefreshTokenDays = 7
