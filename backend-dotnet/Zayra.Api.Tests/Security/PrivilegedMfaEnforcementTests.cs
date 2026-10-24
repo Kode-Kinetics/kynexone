@@ -562,13 +562,16 @@ public sealed class PrivilegedMfaEnforcementTests
     }
 
     [Fact]
-    public void TestingSwitch_IsReportedInReadiness_OnlyWhenOn()
+    public void TestingSwitch_IsReportedOnlyInTheGatedReadinessDetails()
     {
-        var off = JsonSerializer.SerializeToElement(new Zayra.Api.Infrastructure.Operations.PublicReadiness("ready", Now, 0));
-        off.TryGetProperty("mfaDisabledForTesting", out _).Should().BeFalse("default output is unchanged");
-        var on = JsonSerializer.SerializeToElement(new Zayra.Api.Infrastructure.Operations.PublicReadiness("ready", Now, 0, true),
-            new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        on.GetProperty("mfaDisabledForTesting").GetBoolean().Should().BeTrue();
+        var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var details = new Zayra.Api.Infrastructure.Operations.ReadinessEvidence("ready", Now, null!, 0, 0, 0, null!, true);
+        // The anonymous /health/ready body must never say tenant MFA is off.
+        JsonSerializer.SerializeToElement(Zayra.Api.Infrastructure.Operations.PublicReadiness.From(details), web)
+            .TryGetProperty("mfaDisabledForTesting", out _).Should().BeFalse("an anonymous caller must not learn MFA is off");
+        JsonSerializer.SerializeToElement(details, web).GetProperty("mfaDisabledForTesting").GetBoolean().Should().BeTrue();
+        JsonSerializer.SerializeToElement(details with { MfaDisabledForTesting = null }, web)
+            .TryGetProperty("mfaDisabledForTesting", out _).Should().BeFalse("default details output is unchanged");
         PrivilegedMfaPolicy.IsDisabledForTesting(MfaOff()).Should().BeTrue();
         PrivilegedMfaPolicy.IsDisabledForTesting(new ConfigurationBuilder().Build()).Should().BeFalse();
     }

@@ -176,7 +176,8 @@ enrolment prompt and /account/security shows a notice); ERP API keys and the sel
 deleted, so unsetting the variable restores everything as it was. **Platform-operator MFA is unaffected.**
 
 It has no expiry (unlike break-glass), so it is loud: a boot warning, a `[MFA-DISABLED-FOR-TESTING]` warning on
-every tenant sign-in, `"mfaDisabledForTesting": true` in `/health/ready` (omitted when off), and a non-failing
+every tenant sign-in, `"mfaDisabledForTesting": true` in the PlatformAdmin-only `/health/ready/details` (omitted
+when off; never in the anonymous `/health/ready`, which must not tell outsiders MFA is off), and a non-failing
 CI warning when the key exists on the Render service.
 
 **`Auth__Mfa__DisabledForTesting` must be unset before the first customer goes live.**

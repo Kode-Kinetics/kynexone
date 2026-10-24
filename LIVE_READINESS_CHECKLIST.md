@@ -51,7 +51,7 @@ negative cross-tenant test) should be closed before unsupervised production at s
 
 ## Known issues / pre-production hardening (priority order)
 
-- **Go-live blocker:** `Auth__Mfa__DisabledForTesting` must be unset before the first customer goes live (it switches tenant two-step sign-in off; see docs/MFA_ENFORCEMENT.md). `/health/ready` shows `mfaDisabledForTesting: true` while it is on.
+- **Go-live blocker:** `Auth__Mfa__DisabledForTesting` must be unset before the first customer goes live (it switches tenant two-step sign-in off; see docs/MFA_ENFORCEMENT.md). `/health/ready/details` (platform admins only) shows `mfaDisabledForTesting: true` while it is on.
 
 | # | Item | Severity | Owner action |
 |---|------|----------|--------------|

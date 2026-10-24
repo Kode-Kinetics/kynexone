@@ -415,13 +415,12 @@ public sealed record ReadinessEvidence(
 /// told an anonymous caller how many customers we have and how outbound mail is wired, so it moved
 /// behind the PlatformAdmin policy at <c>/health/ready/details</c>.
 /// </summary>
-public sealed record PublicReadiness(
-    string Status, DateTime Utc, int PendingMigrations,
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    bool? MfaDisabledForTesting = null)
+public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations)
 {
+    // MfaDisabledForTesting is deliberately NOT here: telling an anonymous caller that tenant MFA is off
+    // is reconnaissance. It is reported only at the PlatformAdmin-gated /health/ready/details.
     public static PublicReadiness From(ReadinessEvidence evidence)
-        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations, evidence.MfaDisabledForTesting);
+        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations);
 }
 
 public sealed record ReadinessDependencies(
