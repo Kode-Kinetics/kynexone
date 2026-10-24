@@ -37,7 +37,6 @@ using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Application.AI;
 using Zayra.Api.Infrastructure.AI;
 using Zayra.Api.Infrastructure.Boot;
-using Zayra.Api.Infrastructure.Deployment;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Filters;
@@ -60,15 +59,6 @@ if (MigrateOnlyEntryPoint.ShouldHandle(args))
     return await MigrateOnlyEntryPoint.RunAsync(args);
 
 var builder = WebApplication.CreateBuilder(args);
-
-// ── Deployment mode: Saas (hosted service) or Client (installed at one client) ─────────────────
-// Resolved after the --migrate short-circuit, so a migration job still needs only a connection
-// string. Production must state the mode; Development defaults to Saas. See DeploymentModeResolver.
-var deploymentMode = DeploymentModeResolver.Resolve(
-    builder.Configuration, builder.Environment.IsDevelopment());
-DeploymentModeResolver.AssertSafeForMode(deploymentMode, builder.Configuration);
-var deploymentContext = new DeploymentContext(deploymentMode);
-builder.Services.AddSingleton<IDeploymentContext>(deploymentContext);
 
 // JSON console logs (traceId + tenantId via scopes) outside Development; OpenTelemetry OTLP export
 // only when OTEL_EXPORTER_OTLP_ENDPOINT is set — otherwise nothing is registered. See Observability.
@@ -1076,7 +1066,6 @@ var runMigrationsOnStartup = app.Configuration.GetValue<bool>("Database:RunMigra
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-    logger.LogInformation("[Deployment] Running in {DeploymentMode} mode.", deploymentContext.Mode);
     var dbContext = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
 
     // Boot assertions — model-level only, no DB I/O
@@ -1151,10 +1140,12 @@ using (var scope = app.Services.CreateScope())
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
 
-    // A dedicated deployment is Production OR Client mode (which the legacy DEDICATED_DEPLOYMENT /
-    // CLIENT_DEPLOYMENT flags resolve to — see DeploymentModeResolver). It gates the one-time
-    // platform-owner bootstrap below.
-    var dedicatedDeployment = deploymentContext.IsClient || app.Environment.IsProduction();
+    // A dedicated deployment is Production OR anything flagged DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT.
+    // It gates the one-time platform-owner bootstrap below.
+    var dedicatedDeployment =
+        app.Environment.IsProduction()
+        || string.Equals(Environment.GetEnvironmentVariable("DEDICATED_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Environment.GetEnvironmentVariable("CLIENT_DEPLOYMENT"), "true", StringComparison.OrdinalIgnoreCase);
 
     // ── WAVE 1 B3: bootstrap the FIRST platform operator, independently of demo data ──────────────
     // Every tenant, tenant user, test and demo account is created by this operator through the
