@@ -1,5 +1,6 @@
 using System.Globalization;
 using Zayra.Api.Application.CompanySetup;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Organization;
@@ -91,8 +92,64 @@ public static class CompanySetupBaseline
             ["radiusMeters"] = Number(radius),
         };
 
-    public static Dictionary<string, string?> CostCentre(CostCenter c) => new(StringComparer.Ordinal) { ["nameEn"] = Text(c.Name) };
-    public static Dictionary<string, string?> CostCentre(CompanySetupCostCentre c) => new(StringComparer.Ordinal) { ["nameEn"] = Text(c.NameEn) };
+    public static Dictionary<string, string?> CostCentre(CostCenter c) => new(StringComparer.Ordinal) { ["nameEn"] = Text(c.Name), ["nameAr"] = Text(c.NameAr) };
+    public static Dictionary<string, string?> CostCentre(CompanySetupCostCentre c) => new(StringComparer.Ordinal) { ["nameEn"] = Text(c.NameEn), ["nameAr"] = Text(c.NameAr) };
+
+    /// <summary>Keys a baseline may lack because the value did not exist when it was taken: the cost centre's Arabic name
+    /// (stored only since Addendum B — before it the column did not exist, so the value read then was empty).</summary>
+    public static bool AbsentMeansEmpty(string area, string key) => area == "costCentre" && key == "nameAr";
+
+    // ── Departments, designations, grades (step 4; Addendum B: owned by one company) ─────────────────
+
+    /// <summary>A link as the baseline holds it: the linked row's normalized code, null when there is none.</summary>
+    public static string? Code(string? code) => string.IsNullOrWhiteSpace(code) ? null : OrgCodes.Normalize(code);
+    private static string? Code(Guid? id, IReadOnlyDictionary<Guid, string> codes) => id is Guid x && codes.TryGetValue(x, out var c) ? c : null;
+
+    public static Dictionary<string, string?> Department(Department d, IReadOnlyDictionary<Guid, string> departmentCodes,
+        IReadOnlyDictionary<Guid, string> branchCodes, IReadOnlyDictionary<Guid, string> costCentreCodes) =>
+        DepartmentFields(d.NameEn, d.NameAr, Code(d.ParentDepartmentId, departmentCodes), Code(d.BranchId, branchCodes), Code(d.CostCenterId, costCentreCodes));
+
+    public static Dictionary<string, string?> Department(CompanySetupDepartment d) =>
+        DepartmentFields(d.NameEn, d.NameAr, Code(d.ParentCode), Code(d.BranchCode), Code(d.CostCentreCode));
+
+    private static Dictionary<string, string?> DepartmentFields(string? nameEn, string? nameAr, string? parent, string? branch, string? costCentre) =>
+        new(StringComparer.Ordinal)
+        {
+            ["nameEn"] = Text(nameEn),
+            ["nameAr"] = Text(nameAr),
+            ["parentCode"] = parent,
+            ["branchCode"] = branch,
+            ["costCentreCode"] = costCentre,
+        };
+
+    public static Dictionary<string, string?> Designation(Designation d, IReadOnlyDictionary<Guid, string> departmentCodes, IReadOnlyDictionary<Guid, string> gradeCodes) =>
+        DesignationFields(d.TitleEn, d.TitleAr, Code(d.DepartmentId, departmentCodes), Code(d.GradeId, gradeCodes));
+
+    public static Dictionary<string, string?> Designation(CompanySetupDesignation d) =>
+        DesignationFields(d.TitleEn, d.TitleAr, Code(d.DepartmentCode), Code(d.GradeCode));
+
+    private static Dictionary<string, string?> DesignationFields(string? titleEn, string? titleAr, string? department, string? grade) =>
+        new(StringComparer.Ordinal)
+        {
+            ["titleEn"] = Text(titleEn),
+            ["titleAr"] = Text(titleAr),
+            ["departmentCode"] = department,
+            ["gradeCode"] = grade,
+        };
+
+    public static Dictionary<string, string?> Grade(Grade g) => GradeFields(g.Name, g.NameAr, g.Level, g.MinSalary, g.MidSalary, g.MaxSalary);
+    public static Dictionary<string, string?> Grade(CompanySetupGrade g) => GradeFields(g.NameEn, g.NameAr, g.Level, g.MinSalary, g.MidSalary, g.MaxSalary);
+
+    private static Dictionary<string, string?> GradeFields(string? nameEn, string? nameAr, int level, decimal min, decimal mid, decimal max) =>
+        new(StringComparer.Ordinal)
+        {
+            ["nameEn"] = Text(nameEn),
+            ["nameAr"] = Text(nameAr),
+            ["level"] = Whole(level),
+            ["minSalary"] = Number(min),
+            ["midSalary"] = Number(mid),
+            ["maxSalary"] = Number(max),
+        };
 
     // ── Work and pay rules (step 5) ─────────────────────────────────────────────────────────────────
 
@@ -178,6 +235,17 @@ public static class CompanySetupBaseline
         "nextSequence" => ("next employee number", "رقم الموظف التالي"),
         "weekendDays" => ("weekend", "العطلة الأسبوعية"),
         "override" => ("own working week", "أسبوع العمل الخاص"),
+        "parentCode" => ("parent department", "القسم الأعلى"),
+        "branchCode" => ("branch", "الفرع"),
+        "costCentreCode" => ("cost centre", "مركز التكلفة"),
+        "titleEn" => ("title (English)", "المسمى (بالإنجليزية)"),
+        "titleAr" => ("title (Arabic)", "المسمى (بالعربية)"),
+        "departmentCode" => ("department", "القسم"),
+        "gradeCode" => ("grade", "الدرجة"),
+        "level" => ("level", "المستوى"),
+        "minSalary" => ("minimum salary", "الحد الأدنى للراتب"),
+        "midSalary" => ("midpoint salary", "منتصف نطاق الراتب"),
+        "maxSalary" => ("maximum salary", "الحد الأقصى للراتب"),
         _ => (key, key),
     };
 }

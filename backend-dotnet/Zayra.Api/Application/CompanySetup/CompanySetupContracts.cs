@@ -46,6 +46,26 @@ public static class CompanySetupVocabulary
         public const string WorkWeek = "workWeek";
         public const string CompanyAdmin = "companyAdmin";
     }
+
+    /// <summary>Addendum B2/B3: the Organisation sections, in dependency order (each references only earlier ones).</summary>
+    public static class Sections
+    {
+        public const string CostCentres = "costCentres";
+        public const string Departments = "departments";
+        public const string Grades = "grades";
+        public const string Designations = "designations";
+        public static readonly IReadOnlyList<string> All = [CostCentres, Departments, Grades, Designations];
+        public static bool IsValid(string? section) => section is not null && All.Contains(section, StringComparer.Ordinal);
+        /// <summary>The plan area of a section's rows.</summary>
+        public static string AreaOf(string section) => section switch
+        {
+            CostCentres => Areas.CostCentre,
+            Departments => Areas.Department,
+            Grades => Areas.Grade,
+            Designations => Areas.Designation,
+            _ => throw new ArgumentOutOfRangeException(nameof(section), section, "Not an Organisation section."),
+        };
+    }
 }
 
 public sealed record CompanySetupContext(
@@ -58,7 +78,9 @@ public sealed record CompanySetupContext(
     int? CompaniesAllowed,
     bool IsGroupScope,
     IReadOnlyList<CompanySetupSisterCompany> SisterCompanies,
-    CompanySetupSharedCatalog SharedCatalog,
+    /// <summary>Withdrawn by Addendum B (departments, designations and grades are owned by one company): always null.</summary>
+    CompanySetupSharedCatalog? SharedCatalog,
+    /// <summary>Withdrawn by Addendum B (grade bands are in each company's own currency): always null.</summary>
     string? GradesCurrency,
     /// <summary>Whether this caller may make someone a company super admin — the same role ceiling User
     /// Management applies (group scope + the Admin role + Admin assignable + security.manage).</summary>
@@ -182,7 +204,11 @@ public sealed record CompanySetupDepartment(
     string? CostCentreCode,
     /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Guid? ExistingId = null);
+    Guid? ExistingId = null,
+    /// <summary>Addendum A9 / B2: the field values the existing-mode prefill (or a live section save) read this from (opaque;
+    /// carried back unchanged). The planner compares draft, baseline and database per field.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupDesignation(
     string Code,
@@ -192,7 +218,11 @@ public sealed record CompanySetupDesignation(
     string? GradeCode,
     /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Guid? ExistingId = null);
+    Guid? ExistingId = null,
+    /// <summary>Addendum A9 / B2: the field values the existing-mode prefill (or a live section save) read this from (opaque;
+    /// carried back unchanged). The planner compares draft, baseline and database per field.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupGrade(
     string Code,
@@ -204,7 +234,11 @@ public sealed record CompanySetupGrade(
     decimal MaxSalary,
     /// <summary>Addendum A2: the id of the existing row this entry edits (prefilled). Null = a new row.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Guid? ExistingId = null);
+    Guid? ExistingId = null,
+    /// <summary>Addendum A9 / B2: the field values the existing-mode prefill (or a live section save) read this from (opaque;
+    /// carried back unchanged). The planner compares draft, baseline and database per field.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<string, string?>? Baseline = null);
 
 public sealed record CompanySetupRules(
     CompanySetupWorkWeek WorkWeek,
@@ -267,6 +301,27 @@ public sealed record CompanySetupDraftSummary(
 /// <summary>PUT /drafts/{id} body.</summary>
 public sealed record CompanySetupDraftUpdate(int Version, int Step, CompanySetupDraftBody Body);
 
+/// <summary>Addendum B2: <c>POST /drafts/{id}/sections/{section}</c> body.</summary>
+public sealed record CompanySetupSectionApplyRequest(int Version);
+
+/// <summary>Addendum B2: a live section save. <see cref="Draft"/> is the rebased draft (version + 1, step 4): the section's
+/// rows now carry their <c>existingId</c> and a fresh baseline. The counts are the section's body rows by action.</summary>
+public sealed record SectionApplyResult(CompanySetupDraft Draft, string Section, int Created, int Updated, int Unchanged, bool Replayed);
+
+/// <summary>Addendum B3: one section's active rows of a sister company, shaped as NEW draft rows (no existingId, no
+/// baseline). Only the list of <see cref="Section"/> is set; the others are omitted.</summary>
+public sealed record CopyRows(
+    string Section,
+    Guid FromCompanyId,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    List<CompanySetupCostCentre>? CostCentres = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    List<CompanySetupDepartment>? Departments = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    List<CompanySetupGrade>? Grades = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    List<CompanySetupDesignation>? Designations = null);
+
 /// <summary>POST / body (the commit). The Idempotency-Key header must equal <see cref="DraftId"/>.</summary>
 public sealed record CompanySetupCommitRequest(Guid DraftId, int Version);
 
@@ -276,7 +331,11 @@ public sealed record CompanySetupPlan(
     IReadOnlyList<Problem> Problems,
     IReadOnlyList<Problem> Warnings);
 
-public sealed record PlanItem(string Area, string Code, string Label, string Action, string? Reason, string? LabelAr = null);
+public sealed record PlanItem(string Area, string Code, string Label, string Action, string? Reason, string? LabelAr = null)
+{
+    /// <summary>The Arabic of <see cref="Reason"/>, for the Arabic review; null exactly when there is no reason.</summary>
+    public string? ReasonAr { get; init; }
+}
 
 /// <summary><see cref="Field"/> is a dotted lower-camel path with numeric indexes, e.g. <c>company.registrationNumber</c>,
 /// <c>branches.0.code</c>, <c>departments.2.costCentreCode</c>.</summary>

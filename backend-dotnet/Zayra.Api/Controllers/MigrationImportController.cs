@@ -501,7 +501,7 @@ public sealed partial class MigrationImportController : ControllerBase
                     ? "updated" : "created";
             case "leaveBalances":
                 var employee = await Employee(row, tenantId, ct);
-                var leave = await LeaveType(row, tenantId, ct);
+                var leave = await LeaveType(row, tenantId, employee.CompanyId, ct);
                 var leaveYear = Int(row, "Year");
                 return await _db.EmployeeLeaveBalances.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.LeaveTypeId == leave.Id && x.Year == leaveYear, ct)
                     ? "updated" : "created";
@@ -666,7 +666,7 @@ public sealed partial class MigrationImportController : ControllerBase
 
     private async Task<string> UpsertLeaveBalanceAsync(Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, CancellationToken ct)
     {
-        var employee = await Employee(row, tenantId, ct); var leave = await LeaveType(row, tenantId, ct); var year = IntRequired(row, "Year");
+        var employee = await Employee(row, tenantId, ct); var leave = await LeaveType(row, tenantId, employee.CompanyId, ct); var year = IntRequired(row, "Year");
         var cutoverDate = ResolveCutoverFor(employee, cutover, mandatory: false);
         var item = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.LeaveTypeId == leave.Id && x.Year == year, ct);
         var created = item is null; item ??= new EmployeeLeaveBalance { TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, LeaveTypeId = leave.Id, LeaveTypeName = leave.NameEn, Year = year };
@@ -1087,7 +1087,15 @@ public sealed partial class MigrationImportController : ControllerBase
     }
 
     private async Task<Employee> Employee(Dictionary<string, string> row, Guid tenantId, CancellationToken ct) { var code = Require(row, "EmployeeCode"); var e = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeCode == code && !x.IsDeleted, ct); return e ?? throw new InvalidOperationException($"Employee '{code}' was not found."); }
-    private async Task<LeaveType> LeaveType(Dictionary<string, string> row, Guid tenantId, CancellationToken ct) { var code = Require(row, "LeaveTypeCode"); var l = await _db.LeaveTypes.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code == code, ct); return l ?? throw new InvalidOperationException($"Leave type '{code}' was not found."); }
+    /// <summary>The leave type of this code that the employee's company uses: its own, else an unassigned legacy row
+    /// (leave types are per company since 2026-10-23, so a code can repeat across a group).</summary>
+    private async Task<LeaveType> LeaveType(Dictionary<string, string> row, Guid tenantId, Guid? employeeCompanyId, CancellationToken ct)
+    {
+        var code = Require(row, "LeaveTypeCode");
+        var l = await Zayra.Api.Infrastructure.Leave.LeaveCompanyScope.UsableBy(_db, tenantId, employeeCompanyId)
+            .Where(x => x.Code == code).OrderBy(x => x.CompanyId == null).ThenBy(x => x.Id).FirstOrDefaultAsync(ct);
+        return l ?? throw new InvalidOperationException($"Leave type '{code}' was not found for the employee's company.");
+    }
     private static string Require(Dictionary<string, string> row, string key) => string.IsNullOrWhiteSpace(Val(row, key)) ? throw new InvalidOperationException($"{key} is required.") : Val(row, key);
     private static string Val(Dictionary<string, string> row, string key, string fallback = "") => row.TryGetValue(key, out var value) ? value : fallback;
 

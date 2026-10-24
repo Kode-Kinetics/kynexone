@@ -486,9 +486,10 @@ public class BranchCompanyScopeTests
     {
         await using var db = Db();
         var w = await Seed(db);
-        var dept = new DepartmentRequest(null, null, null, "OPS", "Operations", null, null);
-        var desig = new DesignationRequest(null, "MGR", "Manager", null, null, null, null, null);
-        var grade = new GradeRequest("G1", "Grade 1", null, 1);
+        // Addendum B: each names its company, as the Setup form does.
+        var dept = new DepartmentRequest(null, null, null, "OPS", "Operations", null, null, CompanyId: w.A.Id);
+        var desig = new DesignationRequest(null, "MGR", "Manager", null, null, null, null, null, CompanyId: w.A.Id);
+        var grade = new GradeRequest("G1", "Grade 1", null, 1, CompanyId: w.A.Id);
 
         var scoped = Organization(db, Caller(w.TenantId, null, w.A.Id));
         (await scoped.CreateDepartment(dept, CancellationToken.None)).Result.Should().BeOfType<ForbidResult>();
@@ -590,12 +591,15 @@ public class BranchCompanyScopeTests
 
         var result = (ImportCommitResult)((OkObjectResult)await CostCenters(db, Caller(w.TenantId, null, w.A.Id))
             .Import(new CostCenterImportRequest(csv), CancellationToken.None)).Value!;
+        // Cost-centre codes are per company (owner decision 2026-10-23): a company-scoped caller imports into their
+        // own company. CC-A is A's and is updated; CC-B and CC-NEW become A's own cost centres; B's CC-B is untouched.
         result.Updated.Should().Be(1);
-        result.Created.Should().Be(0);
-        result.Rows.Where(r => r.Status == ImportRowStatus.Error).Select(r => r.EntityCode).Should().BeEquivalentTo(new[] { "CC-B", "CC-NEW" });
+        result.Created.Should().Be(2);
+        result.Rows.Where(r => r.Status == ImportRowStatus.Error).Should().BeEmpty();
         db.ChangeTracker.Clear();
         (await db.CostCenters.SingleAsync(c => c.Id == cc.B.Id)).Name.Should().Be("Beta ops");
-        (await db.CostCenters.AnyAsync(c => c.Code == "CC-NEW")).Should().BeFalse();
+        (await db.CostCenters.Where(c => c.Code == "CC-B").Select(c => c.CompanyId).ToListAsync()).Should().BeEquivalentTo(new Guid?[] { w.B.Id, w.A.Id });
+        (await db.CostCenters.SingleAsync(c => c.Code == "CC-NEW")).CompanyId.Should().Be(w.A.Id);
     }
 
     // ── Refusals do not confirm which sibling companies exist ─────────────────────────────────

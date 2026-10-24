@@ -357,6 +357,14 @@ public class OrganizationStructureImportController : ControllerBase
             }
         }
 
+        // Addendum B: departments, designations and grades belong to one company. A new row takes the company its
+        // own columns imply (department: company / branch / cost centre; designation: its department), else the
+        // tenant's only company; in a multi-company tenant with nothing to go on it stays unassigned and Setup asks.
+        var orgCompanyIds = (await _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Id).ToListAsync(ct))
+            .Concat(_db.ChangeTracker.Entries<Company>().Where(e => e.State == EntityState.Added).Select(e => e.Entity.Id))
+            .Distinct().ToList();
+        Guid? onlyCompanyId = orgCompanyIds.Count == 1 ? orgCompanyIds[0] : null;
+
         var branches = (await _db.Branches.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct))
             .GroupBy(x => (x.CompanyId, Code: x.Code.ToUpperInvariant()))
             .ToDictionary(g => g.Key, g => g.First());
@@ -406,14 +414,27 @@ public class OrganizationStructureImportController : ControllerBase
             }
         }
 
-        var costCenters = SavedIndex.Of(await _db.CostCenters.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.Code, "cost center");
+        // Cost centres are per company (owner decision 2026-10-23): a code is qualified by its company, like a
+        // branch code. A row updates its own company's cost centre and never moves another company's.
+        var costCenters = (await _db.CostCenters.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct))
+            .GroupBy(x => (x.CompanyId, Code: x.Code.Trim().ToUpperInvariant()))
+            .ToDictionary(g => g.Key, g => g.First());
+        CostCenter CostCenterFor(Guid? companyId, string code)
+        {
+            var key = code.Trim().ToUpperInvariant();
+            if (companyId is not null && costCenters.TryGetValue((companyId, key), out var own)) return own;
+            var matches = costCenters.Where(kv => kv.Key.Code == key && (companyId is null || kv.Key.CompanyId is null)).Select(kv => kv.Value).ToList();
+            if (matches.Count == 1) return matches[0];
+            throw new InvalidOperationException(matches.Count == 0
+                ? $"No saved cost center matches '{code}' in this company."
+                : $"Cost center '{code}' exists in more than one company. Name the company on the row.");
+        }
         foreach (var row in parsed.CostCenters)
         {
             var code = Val(row, "Code");
             var company = companies[Val(row, "CompanyLegalName").ToUpperInvariant()];
-            if (costCenters.TryGetValue(code.ToUpperInvariant(), out var cc))
+            if (costCenters.TryGetValue(((Guid?)company.Id, code.Trim().ToUpperInvariant()), out var cc))
             {
-                cc.CompanyId = company.Id;
                 cc.Name = Val(row, "Name");
                 cc.IsActive = Bool(row, "IsActive", true);
                 cc.UpdatedAtUtc = DateTime.UtcNow;
@@ -424,7 +445,7 @@ public class OrganizationStructureImportController : ControllerBase
                 cc = new CostCenter { TenantId = tenantId, CompanyId = company.Id, Code = OrgCodes.Normalize(code), Name = Val(row, "Name"), IsActive = Bool(row, "IsActive", true), CreatedBy = GetUserId() };
                 _db.CostCenters.Add(cc);
                 Audit("organization.cost_center_created", nameof(CostCenter), cc.Id, code);
-                costCenters[code.ToUpperInvariant()] = cc;
+                costCenters[((Guid?)company.Id, code.Trim().ToUpperInvariant())] = cc;
                 Bump("costCenters");
             }
         }
@@ -435,7 +456,9 @@ public class OrganizationStructureImportController : ControllerBase
             var code = Val(row, "Code");
             if (!grades.TryGetValue(code.ToUpperInvariant(), out var grade))
             {
-                grade = new Grade { TenantId = tenantId, Code = OrgCodes.Normalize(code), CreatedBy = GetUserId() };
+                var gradeCompanyName = Val(row, "CompanyLegalName");
+                var gradeCompanyId = string.IsNullOrWhiteSpace(gradeCompanyName) ? onlyCompanyId : companies[gradeCompanyName.ToUpperInvariant()].Id;
+                grade = new Grade { TenantId = tenantId, CompanyId = gradeCompanyId, Code = OrgCodes.Normalize(code), CreatedBy = GetUserId() };
                 _db.Grades.Add(grade);
                 Audit("organization.grade_created", nameof(Grade), grade.Id, code);
                 grades[code.ToUpperInvariant()] = grade;
@@ -473,11 +496,17 @@ public class OrganizationStructureImportController : ControllerBase
             var departmentBranch = string.IsNullOrWhiteSpace(departmentBranchCode) ? null
                 : departmentCompany is not null ? branches[(departmentCompany.Id, departmentBranchCode)]
                 : branches.Values.Single(x => string.Equals(x.Code, departmentBranchCode, StringComparison.OrdinalIgnoreCase));
-            var departmentCostCenter = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : costCenters[Val(row, "CostCenterCode").ToUpperInvariant()];
+            var departmentCostCenter = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null
+                : CostCenterFor(department.CompanyId ?? departmentCompany?.Id ?? departmentBranch?.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode"));
             if (departmentCompany is not null && departmentBranch is not null && departmentBranch.CompanyId != departmentCompany.Id)
                 throw new InvalidOperationException($"Department '{code}' branch does not belong to '{departmentCompany.LegalNameEn}'.");
             if (departmentCompany is not null && departmentCostCenter is not null && departmentCostCenter.CompanyId != departmentCompany.Id)
                 throw new InvalidOperationException($"Department '{code}' cost center does not belong to '{departmentCompany.LegalNameEn}'.");
+            department.CompanyId ??= departmentCompany?.Id ?? departmentBranch?.CompanyId ?? departmentCostCenter?.CompanyId ?? onlyCompanyId;
+            if (department.CompanyId is Guid owner
+                && ((departmentBranch is not null && departmentBranch.CompanyId != owner)
+                    || (departmentCostCenter is not null && departmentCostCenter.CompanyId != owner)))
+                throw new InvalidOperationException($"Department '{code}' links a branch or cost center of another company.");
             department.BranchId = departmentBranch?.Id;
             department.CostCenterId = departmentCostCenter?.Id;
             department.ManagerEmployeeId = string.IsNullOrWhiteSpace(Val(row, "ManagerEmployeeCode")) ? null : employeesByCode[Val(row, "ManagerEmployeeCode").ToUpperInvariant()].Id;
@@ -538,7 +567,9 @@ public class OrganizationStructureImportController : ControllerBase
             }
             designation.TitleEn = Val(row, "TitleEn");
             designation.TitleAr = Val(row, "TitleAr");
-            designation.DepartmentId = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
+            var designationDepartment = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()];
+            designation.DepartmentId = designationDepartment?.Id;
+            designation.CompanyId ??= designationDepartment?.CompanyId ?? onlyCompanyId;
             var gradeCode = Val(row, "GradeCode", Val(row, "JobGrade"));
             designation.GradeId = string.IsNullOrWhiteSpace(gradeCode) ? null : grades[gradeCode.ToUpperInvariant()].Id;
             designation.JobGrade = gradeCode;
@@ -572,7 +603,7 @@ public class OrganizationStructureImportController : ControllerBase
                 : position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
                 : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
             position.DepartmentId = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
-            position.CostCenterId = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : costCenters[Val(row, "CostCenterCode").ToUpperInvariant()].Id;
+            position.CostCenterId = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode")).Id;
             position.DesignationId = string.IsNullOrWhiteSpace(Val(row, "DesignationCode")) ? null : designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
             position.GradeId = string.IsNullOrWhiteSpace(Val(row, "GradeCode")) ? null : grades[Val(row, "GradeCode").ToUpperInvariant()].Id;
             position.Fte = Dec(row, "Fte", 1m);
@@ -634,8 +665,12 @@ public class OrganizationStructureImportController : ControllerBase
             .Select(x => new { x.Code, x.CompanyId })
             .ToListAsync(ct);
         var costCenterCodes = costCenterRows.Select(x => x.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Per company (owner decision 2026-10-23): the same code in two companies is not ambiguous; a code names a
+        // company only when exactly one company uses it.
         var costCenterCompanyByCode = costCenterRows.GroupBy(x => x.Code, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => (Guid?)g.First().CompanyId, StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(g => g.Key,
+                g => g.Select(x => x.CompanyId).Distinct().Count() == 1 ? g.First().CompanyId : null,
+                StringComparer.OrdinalIgnoreCase);
         var savedDepartmentCodes = await _db.Departments.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .Select(x => x.Code)
@@ -654,7 +689,10 @@ public class OrganizationStructureImportController : ControllerBase
         // A branch code is qualified by CompanyId. Seeing HQ in two legal entities is expected,
         // not an ambiguous saved identifier.
         var ambiguousBranches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var ambiguousCostCenters = Ambiguous(costCenterRows.Select(x => x.Code));
+        // Ambiguous only when ONE company holds two codes that differ in case.
+        var ambiguousCostCenters = costCenterRows.GroupBy(x => x.CompanyId)
+            .SelectMany(g => Ambiguous(g.Select(x => x.Code)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var ambiguousDepartments = Ambiguous(savedDepartmentCodes);
         var ambiguousGrades = Ambiguous(savedGradeCodes);
         var ambiguousEmployees = Ambiguous(savedEmployeeCodes);

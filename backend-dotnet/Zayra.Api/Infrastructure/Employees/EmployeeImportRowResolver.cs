@@ -29,11 +29,14 @@ public sealed class ImportLookups
     public required IReadOnlyDictionary<(Guid CompanyId, string Code), Branch> BranchesByCode { get; init; }
     public required IReadOnlyDictionary<Guid, List<Branch>> BranchesByCompany { get; init; }
     public required IReadOnlyDictionary<(Guid? CompanyId, string Code), CostCenter> CostCentersByCode { get; init; }
-    public required IReadOnlyDictionary<string, Guid> DeptByCode { get; init; }   // CODE (upper) -> id
-    public required IReadOnlyDictionary<string, Guid> DeptByName { get; init; }   // name (lower) -> id
-    public required IReadOnlyDictionary<string, DesignationRef> DesigByTitle { get; init; } // title (lower)
-    public required IReadOnlyDictionary<string, Grade> GradeByCode { get; init; } // CODE (upper)
-    public required IReadOnlyDictionary<string, Grade> GradeByName { get; init; } // name (lower)
+    // Addendum B: departments, designations and grades belong to one company, so every key below is
+    // OrgKey(companyId, value) — a row resolves only within the employee's own company (an employee without a
+    // company resolves only against unassigned rows).
+    public required IReadOnlyDictionary<string, Guid> DeptByCode { get; init; }   // OrgKey(company, CODE upper) -> id
+    public required IReadOnlyDictionary<string, Guid> DeptByName { get; init; }   // OrgKey(company, name lower) -> id
+    public required IReadOnlyDictionary<string, DesignationRef> DesigByTitle { get; init; } // OrgKey(company, title lower)
+    public required IReadOnlyDictionary<string, Grade> GradeByCode { get; init; } // OrgKey(company, CODE upper)
+    public required IReadOnlyDictionary<string, Grade> GradeByName { get; init; } // OrgKey(company, name lower)
     public required IReadOnlyDictionary<Guid, Grade> GradeById { get; init; }
     public required IReadOnlyDictionary<string, Position> PositionsByCode { get; init; } // CODE (upper)
 
@@ -60,6 +63,9 @@ public sealed class ImportLookups
         new Dictionary<string, IReadOnlyList<DesignationRef>>();
 
     /// <summary>The colliding stored values when <paramref name="key"/> of <paramref name="kind"/> is ambiguous.</summary>
+    /// <summary>The per-company key of the organisation lookups.</summary>
+    public static string OrgKey(Guid? companyId, string value) => $"{companyId?.ToString("D") ?? "-"}|{value}";
+
     public IReadOnlyList<string>? AmbiguousValues(string kind, string key) =>
         Ambiguous.TryGetValue(ImportLookupBuilder.AmbiguityKey(kind, key), out var values) ? values : null;
 }
@@ -167,34 +173,34 @@ public static class EmployeeImportRowResolver
         // Departments/Designations/Grades: !IsDeleted (matches the authoritative commit filter — parity).
         var departments = await db.Departments.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .Select(d => new { d.Id, d.Code, d.NameEn, d.BranchId })
+            .Select(d => new { d.Id, d.Code, d.NameEn, d.BranchId, d.CompanyId })
             .ToListAsync(ct);
-        var deptByCode = ImportLookupBuilder.Build(departments, d => d.Code.Trim().ToUpperInvariant(), d => d.Id,
+        var deptByCode = ImportLookupBuilder.Build(departments, d => ImportLookups.OrgKey(d.CompanyId, d.Code.Trim().ToUpperInvariant()), d => d.Id,
             d => d.Id, d => d.Code, "department-code", k => k, ambiguous);
-        var deptByName = ImportLookupBuilder.Build(departments, d => d.NameEn.Trim().ToLowerInvariant(), d => d.Id,
+        var deptByName = ImportLookupBuilder.Build(departments, d => ImportLookups.OrgKey(d.CompanyId, d.NameEn.Trim().ToLowerInvariant()), d => d.Id,
             d => d.Id, d => d.NameEn, "department-name", k => k, ambiguous);
         var deptNameCandidates = departments
-            .GroupBy(d => d.NameEn.Trim().ToLowerInvariant())
+            .GroupBy(d => ImportLookups.OrgKey(d.CompanyId, d.NameEn.Trim().ToLowerInvariant()))
             .Where(g => g.Count() > 1)
             .ToDictionary(g => g.Key, g => (IReadOnlyList<DepartmentRef>)g.Select(d => new DepartmentRef(d.Id, d.BranchId)).ToList());
 
         var designations = await db.Designations.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .Select(d => new DesignationRef(d.Id, d.GradeId, d.TitleEn, d.DepartmentId, d.IsActive))
+            .Select(d => new { Ref = new DesignationRef(d.Id, d.GradeId, d.TitleEn, d.DepartmentId, d.IsActive), d.CompanyId })
             .ToListAsync(ct);
-        var desigByTitle = ImportLookupBuilder.Build(designations, d => d.TitleEn.Trim().ToLowerInvariant(), d => d,
-            d => d.Id, d => d.TitleEn, "designation", k => k, ambiguous);
+        var desigByTitle = ImportLookupBuilder.Build(designations, d => ImportLookups.OrgKey(d.CompanyId, d.Ref.TitleEn.Trim().ToLowerInvariant()), d => d.Ref,
+            d => d.Ref.Id, d => d.Ref.TitleEn, "designation", k => k, ambiguous);
         var desigTitleCandidates = designations
-            .GroupBy(d => d.TitleEn.Trim().ToLowerInvariant())
+            .GroupBy(d => ImportLookups.OrgKey(d.CompanyId, d.Ref.TitleEn.Trim().ToLowerInvariant()))
             .Where(g => g.Count() > 1)
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<DesignationRef>)g.ToList());
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<DesignationRef>)g.Select(x => x.Ref).ToList());
 
         var grades = await db.Grades.AsNoTracking()
             .Where(g => g.TenantId == tenantId && !g.IsDeleted)
             .ToListAsync(ct);
-        var gradeByCode = ImportLookupBuilder.Build(grades, g => g.Code.Trim().ToUpperInvariant(), g => g,
+        var gradeByCode = ImportLookupBuilder.Build(grades, g => ImportLookups.OrgKey(g.CompanyId, g.Code.Trim().ToUpperInvariant()), g => g,
             g => g.Id, g => g.Code, "grade-code", k => k, ambiguous);
-        var gradeByName = ImportLookupBuilder.Build(grades, g => g.Name.Trim().ToLowerInvariant(), g => g,
+        var gradeByName = ImportLookupBuilder.Build(grades, g => ImportLookups.OrgKey(g.CompanyId, g.Name.Trim().ToLowerInvariant()), g => g,
             g => g.Id, g => g.Name, "grade-name", k => k, ambiguous);
         var gradeById = grades.GroupBy(g => g.Id).ToDictionary(g => g.Key, g => g.First());
 
@@ -391,9 +397,22 @@ public static class EmployeeImportRowResolver
         var deptCodeRaw = V("DepartmentCode").ToUpperInvariant();
         Guid? deptId = null;
         IReadOnlyList<string>? deptClash = null;
-        var deptNameKey = deptNameRaw.ToLowerInvariant();
-        if (!string.IsNullOrEmpty(deptCodeRaw) && lk.DeptByCode.TryGetValue(deptCodeRaw, out var d1)) deptId = d1;
-        else if (!string.IsNullOrEmpty(deptCodeRaw) && lk.AmbiguousValues("department-code", deptCodeRaw) is { } codeClash) deptClash = codeClash;
+        // Addendum B: the employee's company first; a legacy row no company owns yet is the fallback, and the row
+        // says so (Setup still lists that row as "Unassigned — choose the company").
+        var unassignedLinks = new List<string>();
+        string OrgKeyFor<T>(IReadOnlyDictionary<string, T> map, string kind, string label, string value)
+        {
+            var own = ImportLookups.OrgKey(r.CompanyId, value);
+            if (r.CompanyId is null || string.IsNullOrEmpty(value) || map.ContainsKey(own) || lk.AmbiguousValues(kind, own) is not null) return own;
+            var legacy = ImportLookups.OrgKey(null, value);
+            if (!map.ContainsKey(legacy) && lk.AmbiguousValues(kind, legacy) is null) return own;
+            if (!unassignedLinks.Contains(label)) unassignedLinks.Add(label);
+            return legacy;
+        }
+        var deptCodeKey = OrgKeyFor(lk.DeptByCode, "department-code", "department", deptCodeRaw);
+        var deptNameKey = OrgKeyFor(lk.DeptByName, "department-name", "department", deptNameRaw.ToLowerInvariant());
+        if (!string.IsNullOrEmpty(deptCodeRaw) && lk.DeptByCode.TryGetValue(deptCodeKey, out var d1)) deptId = d1;
+        else if (!string.IsNullOrEmpty(deptCodeRaw) && lk.AmbiguousValues("department-code", deptCodeKey) is { } codeClash) deptClash = codeClash;
         else if (!string.IsNullOrEmpty(deptNameRaw) && lk.DeptByName.TryGetValue(deptNameKey, out var d2)) deptId = d2;
         else if (!string.IsNullOrEmpty(deptNameRaw) && lk.AmbiguousValues("department-name", deptNameKey) is { } nameClash)
         {
@@ -422,7 +441,7 @@ public static class EmployeeImportRowResolver
         var desigTitleRaw = V("Designation");
         Guid? desigId = null;
         Guid? designationGradeId = null;
-        var desigKey = desigTitleRaw.ToLowerInvariant();
+        var desigKey = OrgKeyFor(lk.DesigByTitle, "designation", "designation", desigTitleRaw.ToLowerInvariant());
         DesignationRef? desig = null;
         IReadOnlyList<string>? desigClash = null;
         if (!string.IsNullOrEmpty(desigTitleRaw) && lk.DesigByTitle.TryGetValue(desigKey, out var byTitle)) desig = byTitle;
@@ -462,11 +481,13 @@ public static class EmployeeImportRowResolver
         Grade? resolvedGrade = null;
         if (!string.IsNullOrWhiteSpace(gradeRaw))
         {
-            var gradeClash = lk.AmbiguousValues("grade-code", gradeRaw.ToUpperInvariant());
-            if (gradeClash is null && !lk.GradeByCode.TryGetValue(gradeRaw.ToUpperInvariant(), out resolvedGrade))
+            var gradeCodeKey = OrgKeyFor(lk.GradeByCode, "grade-code", "grade", gradeRaw.ToUpperInvariant());
+            var gradeNameKey = OrgKeyFor(lk.GradeByName, "grade-name", "grade", gradeRaw.ToLowerInvariant());
+            var gradeClash = lk.AmbiguousValues("grade-code", gradeCodeKey);
+            if (gradeClash is null && !lk.GradeByCode.TryGetValue(gradeCodeKey, out resolvedGrade))
             {
-                gradeClash = lk.AmbiguousValues("grade-name", gradeRaw.ToLowerInvariant());
-                if (gradeClash is null) lk.GradeByName.TryGetValue(gradeRaw.ToLowerInvariant(), out resolvedGrade);
+                gradeClash = lk.AmbiguousValues("grade-name", gradeNameKey);
+                if (gradeClash is null) lk.GradeByName.TryGetValue(gradeNameKey, out resolvedGrade);
             }
             if (resolvedGrade is not null && !resolvedGrade.IsActive)
             {
@@ -486,6 +507,9 @@ public static class EmployeeImportRowResolver
                 r.Warnings.Add($"Grade '{gradeRaw}' not found — imported without a grade.");
             }
         }
+
+        foreach (var label in unassignedLinks)
+            r.Warnings.Add($"Linked to a {label} that has no company yet — choose its company in Organization setup.");
 
         // ── Designation/grade conflict (Leak #3): keep the explicit grade, drop the weaker designation link.
         if (designationGradeId is not null && resolvedGrade is not null && designationGradeId != resolvedGrade.Id)

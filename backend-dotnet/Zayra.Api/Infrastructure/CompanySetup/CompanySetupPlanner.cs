@@ -38,6 +38,11 @@ public sealed record PlannedBranch(CompanySetupBranch Body, Branch? Existing, bo
 public sealed record PlannedLocation(CompanySetupLocation Body, Location? Existing, bool Changed);
 /// <summary>A cost-centre row of the plan: new, or an existing row of this company, changed or not.</summary>
 public sealed record PlannedCostCentre(CompanySetupCostCentre Body, CostCenter? Existing, bool Changed);
+/// <summary>A department of the plan (Addendum B: this company's own): new, or an existing row, changed or not. Codes and
+/// links are normalized; a null link is "none".</summary>
+public sealed record PlannedDepartment(CompanySetupDepartment Body, Department? Existing, bool Changed);
+public sealed record PlannedDesignation(CompanySetupDesignation Body, Designation? Existing, bool Changed);
+public sealed record PlannedGrade(CompanySetupGrade Body, Grade? Existing, bool Changed);
 
 /// <summary>What the commit will do, resolved by the planner. The commit executes exactly this, nothing more.</summary>
 public sealed class CompanySetupPlanModel
@@ -55,13 +60,13 @@ public sealed class CompanySetupPlanModel
     public Dictionary<string, Guid> ExistingBranchIds { get; init; } = new(StringComparer.Ordinal);
     public required List<PlannedCostCentre> CostCentres { get; init; }
     public Dictionary<string, Guid> ExistingCostCentreIds { get; init; } = new(StringComparer.Ordinal);
-    /// <summary>New departments only, parents before children.</summary>
-    public required List<CompanySetupDepartment> NewDepartments { get; init; }
+    /// <summary>Every department the commit touches or creates: new ones parents first, then edits of existing ones.</summary>
+    public required List<PlannedDepartment> Departments { get; init; }
+    /// <summary>The company's own departments by code (removed ones excluded), for links.</summary>
     public required Dictionary<string, Guid> ExistingDepartmentIds { get; init; }
-    public required List<CompanySetupDesignation> NewDesignations { get; init; }
-    public required List<CompanySetupGrade> NewGrades { get; init; }
+    public required List<PlannedDesignation> Designations { get; init; }
+    public required List<PlannedGrade> Grades { get; init; }
     public required Dictionary<string, Guid> ExistingGradeIds { get; init; }
-    public required string GradeCurrency { get; init; }
     public required DraftEmployeeIdRule EmployeeIdRule { get; init; }
     /// <summary>create | update | unchanged.</summary>
     public string EmployeeIdRuleAction { get; init; } = V.ActionCreate;
@@ -90,7 +95,8 @@ public sealed class CompanySetupPlanModel
 ///
 /// <para>One planner, both modes (Addendum A). With <c>existingCompanyId</c> it plans the completion of that company:
 /// existing rows are <c>update</c> (changed fields in <c>reason</c>) or <c>unchanged</c>, new rows <c>create</c>,
-/// shared-catalog rows <c>reuse</c>; nothing is ever deleted, and the country and currency are locked.</para>
+/// workspace-wide rows (country settings, default leave) <c>reuse</c>; nothing is ever deleted, and the country and
+/// currency are locked. Departments, designations and grades are the company's own (Addendum B), like cost centres.</para>
 ///
 /// <para>It is deterministic and model-free (Decision 1): it reads the tenant's own rows and the country pack,
 /// and nothing else. Every tenant-wide read goes through <see cref="ScopedBypass.TenantWide{T}"/> on purpose:
@@ -119,8 +125,10 @@ public sealed class CompanySetupPlanner
         public readonly List<PlanItem> Items = [];
         public readonly List<Problem> Problems = [];
         public readonly List<Problem> Warnings = [];
-        public void Item(string area, string code, string label, string action, string? reason = null, string? labelAr = null) =>
-            Items.Add(new(area, code, label, action, reason, Blank(labelAr)));
+        /// <summary>A plan row. Its reason always carries Arabic too: <paramref name="reasonAr"/>, or the Arabic of the
+        /// planner's own English (<see cref="CompanySetupReasons"/>).</summary>
+        public void Item(string area, string code, string label, string action, string? reason = null, string? labelAr = null, string? reasonAr = null) =>
+            Items.Add(new(area, code, label, action, reason, Blank(labelAr)) { ReasonAr = reason is null ? null : reasonAr ?? CompanySetupReasons.Arabic(reason) });
         public void Problem(int step, string field, string code, string message, string? ar = null) => Problems.Add(new(step, Path(step, field), code, message, ar));
         /// <summary>A9: a field changed both here and elsewhere since the draft started; carries the value there now.</summary>
         public void Changed(int step, string field, string message, string ar, string? current) =>
@@ -129,7 +137,7 @@ public sealed class CompanySetupPlanner
         /// <summary>A conflict is both a plan row and a field problem, so the review and the step both show it.</summary>
         public void Conflict(string area, string itemCode, string label, int step, string field, string code, string message, string? ar = null, string? labelAr = null)
         {
-            Items.Add(new(area, itemCode, label, V.ActionConflict, message, Blank(labelAr)));
+            Items.Add(new(area, itemCode, label, V.ActionConflict, message, Blank(labelAr)) { ReasonAr = ar ?? CompanySetupReasons.Arabic(message) });
             Problems.Add(new(step, Path(step, field), code, message, ar));
         }
         private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -201,6 +209,10 @@ public sealed class CompanySetupPlanner
         public required HashSet<string> AllBranchCodes { get; init; }
         public required List<Location> Locations { get; init; }
         public required List<CostCenter> CostCentres { get; init; }
+        /// <summary>Addendum B: the company's own organisation rows (removed ones included: they still hold their code).</summary>
+        public required CompanySetupRows.CompanyRows Org { get; init; }
+        /// <summary>Id → code of everything a department or designation can link to (A9 projects links as codes).</summary>
+        public required CompanySetupRows.CodeMaps Maps { get; init; }
         public EmployeeIdRule? Rule { get; init; }
         public CompanyCutover? Cutover { get; init; }
         /// <summary>The working week as the prefill shows it today (A9's database side of the work-week block).</summary>
@@ -225,8 +237,11 @@ public sealed class CompanySetupPlanner
             .Where(b => b.CompanyId == companyId).OrderByDescending(b => b.IsHeadOffice).ThenBy(b => b.Code).ToListAsync(ct);
         var branchIds = allBranches.Where(b => !b.IsDeleted).Select(b => (Guid?)b.Id).ToList();
         var country = CountryCodeStandard.NormalizeToIso2(company.CountryCode) ?? Clean(company.CountryCode).ToUpperInvariant();
+        var org = await CompanySetupRows.CompanyRowsAsync(_db, tenantId, companyId, ct);
         return new ExistingCompany
         {
+            Org = org,
+            Maps = await CompanySetupRows.CodeMapsAsync(_db, tenantId, ct),
             Company = company,
             WorkWeek = await CurrentWorkWeekAsync(tenantId, companyId, country, ct),
             PackTimeZone = HomeJurisdiction.TimeZoneFor(country),
@@ -234,8 +249,7 @@ public sealed class CompanySetupPlanner
             AllBranchCodes = allBranches.Select(b => OrgCodes.Normalize(b.Code)).ToHashSet(StringComparer.Ordinal),
             Locations = await ScopedBypass.TenantWide(_db.Locations, tenantId, Why).AsNoTracking()
                 .Where(l => !l.IsDeleted && branchIds.Contains(l.BranchId)).OrderBy(l => l.Code).ToListAsync(ct),
-            CostCentres = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking()
-                .Where(x => x.CompanyId == companyId && !x.IsDeleted).OrderBy(x => x.Code).ToListAsync(ct),
+            CostCentres = org.CostCentres.Where(x => !x.IsDeleted).ToList(),
             Rule = await ScopedBypass.TenantWide(_db.EmployeeIdRules, tenantId, Why).AsNoTracking()
                 .FirstOrDefaultAsync(r => r.CompanyId == companyId && !r.IsDeleted, ct),
             Cutover = await ScopedBypass.TenantWide(_db.CompanyCutovers, tenantId, Why).AsNoTracking()
@@ -246,15 +260,19 @@ public sealed class CompanySetupPlanner
     private static string Clean(string? value) => value?.Trim() ?? string.Empty;
     private static bool Differs(string? a, string? b) => !string.Equals(Clean(a), Clean(b), StringComparison.Ordinal);
 
+    /// <param name="focus">Addendum B2, a live section save: one of <see cref="V.Sections"/>. Only problems in that section
+    /// and the step-1 gates block, and a link into another section must already be saved (<c>reference_not_saved</c>).
+    /// The plan still lists every row and problem, so the screen shows them; the model is returned when the section
+    /// may be written. Null = the whole commit.</param>
     public async Task<(CompanySetupPlan Plan, CompanySetupPlanModel? Model)> PlanAsync(
-        CompanySetupCaller caller, CompanySetupDraftBody? body, CancellationToken ct)
+        CompanySetupCaller caller, CompanySetupDraftBody? body, CancellationToken ct, string? focus = null)
     {
         var c = new Collector();
         var tenantId = caller.TenantId;
         if (body is null || body.Company is null)
         {
             c.Problem(2, "company", "body_required", "The company details are missing.", "بيانات الشركة مفقودة.");
-            return (Finish(c), null);
+            return (Finish(c, focus), null);
         }
 
         // The caller's effective permissions, read the way the writers read them (database, not claims).
@@ -268,12 +286,12 @@ public sealed class CompanySetupPlanner
             if (await AuthorizeExistingAsync(caller, existingId, ceiling, ct) is { } refused)
             {
                 c.Problem(1, "existingCompanyId", refused.Code, refused.Message, refused.MessageAr);
-                return (Finish(c), null);
+                return (Finish(c, focus), null);
             }
             ex = await LoadExistingAsync(tenantId, existingId, ct);
             // A9: draft vs baseline vs database, field by field, before anything else reads the body.
             var reconciled = Reconcile(c, body, ex);
-            if (reconciled is null) return (Finish(c), null);
+            if (reconciled is null) return (Finish(c, focus), null);
             body = reconciled;
         }
         else
@@ -317,18 +335,30 @@ public sealed class CompanySetupPlanner
         }
         var isSa = country == "SA";
         var legalNameEn = (co.LegalNameEn ?? string.Empty).Trim();
-        var registration = (co.RegistrationNumber ?? string.Empty).Trim();
-        var mol = (co.MolEstablishmentNumber ?? string.Empty).Trim();
-        var unified = (co.UnifiedNationalNumber ?? string.Empty).Trim();
+        // Data entry: Arabic-Indic / Persian digits read as digits, and spaces (and dashes, where the format has none)
+        // dropped, before anything is validated or compared (CompanySetupDataEntry).
+        var registration = CompanySetupDataEntry.DigitsOnlyNumber(co.RegistrationNumber);
+        var mol = CompanySetupDataEntry.EstablishmentId(co.MolEstablishmentNumber);
+        var unified = CompanySetupDataEntry.DigitsOnlyNumber(co.UnifiedNationalNumber);
+        var tax = CompanySetupDataEntry.DigitsOnlyNumber(co.TaxNumber);
         var emailDomain = CompanyEmailDomainRules.Normalize(co.EmailDomain);
         var erp = string.IsNullOrWhiteSpace(co.ErpCompanyCode) ? null : co.ErpCompanyCode.Trim();
 
         // Existing mode: a field is validated as on create when it CHANGES. A value saved before today's rules and left
-        // as it is stays allowed (the company form's own rule), shown as a warning so nothing is guessed silently.
+        // as it is stays allowed (the company form's own rule), shown as a warning so nothing is guessed silently. A value
+        // that differs from the stored one only in how it was typed is NOT a change: the stored text is kept as it is.
         bool nameArChanged = stored is null || Differs(co.LegalNameAr, stored.LegalNameAr);
-        bool crChanged = stored is null || Differs(registration, stored.RegistrationNumber);
-        bool molChanged = stored is null || Differs(mol, stored.WpsEmployerId);
-        bool unifiedChanged = stored is null || Differs(unified, stored.UnifiedNationalNumber);
+        bool crChanged = stored is null || Differs(registration, CompanySetupDataEntry.DigitsOnlyNumber(stored.RegistrationNumber));
+        bool molChanged = stored is null || Differs(mol, CompanySetupDataEntry.EstablishmentId(stored.WpsEmployerId));
+        bool unifiedChanged = stored is null || Differs(unified, CompanySetupDataEntry.DigitsOnlyNumber(stored.UnifiedNationalNumber));
+        bool taxChanged = stored is null || Differs(tax, CompanySetupDataEntry.DigitsOnlyNumber(stored.TaxNumber));
+        if (stored is not null)
+        {
+            if (!crChanged) registration = Clean(stored.RegistrationNumber);
+            if (!molChanged) mol = Clean(stored.WpsEmployerId);
+            if (!unifiedChanged) unified = Clean(stored.UnifiedNationalNumber);
+            if (!taxChanged) tax = Clean(stored.TaxNumber);
+        }
         bool domainChanged = stored is null || !string.Equals(emailDomain, CompanyEmailDomainRules.Normalize(stored.EmailDomain), StringComparison.Ordinal);
         bool erpChanged = stored is null || Differs(erp, stored.ErpCompanyCode);
         void Check(bool changed, string field, string code, string message, string? ar = null)
@@ -341,7 +371,7 @@ public sealed class CompanySetupPlanner
         if (isSa && string.IsNullOrWhiteSpace(co.LegalNameAr)) Check(nameArChanged, "legalNameAr", "required", "Enter the legal name in Arabic.", "أدخل الاسم القانوني بالعربية.");
         if (stored is null)
         {
-            if (country.Length == 0) c.Problem(2, "countryCode", "country_invalid", $"Choose the company's country (ISO code). '{co.CountryCode}' is not recognised.");
+            if (country.Length == 0) c.Problem(2, "countryCode", "country_invalid", CompanySetupDataEntry.CountryInvalidMessage, CompanySetupDataEntry.CountryInvalidMessageAr);
             if (currency.Length != 3 || !currency.All(char.IsAsciiLetter)) c.Problem(2, "currency", "currency_invalid", "Choose the company's currency (a 3-letter code).");
             else if (isSa && currency != "SAR") c.Problem(2, "currency", "currency_must_be_sar", "A Saudi company pays in SAR.", "الشركة السعودية تدفع بالريال السعودي.");
         }
@@ -352,13 +382,15 @@ public sealed class CompanySetupPlanner
         {
             var issues = new List<SaudiBankExportIssueDto>();
             KsaWageFileRules.ValidateEstablishmentId(mol.Length == 0 ? null : mol, issues);
-            foreach (var issue in issues) Check(molChanged, "molEstablishmentNumber", issue.Code, issue.Message);
+            foreach (var issue in issues) Check(molChanged, "molEstablishmentNumber", issue.Code, issue.Message, CompanySetupDataEntry.ArabicFor(issue.Code));
             if (unified.Length > 0)
             {
                 issues.Clear();
                 KsaWageFileRules.ValidateNationalUnifiedNo(unified, required: false, issues);
-                foreach (var issue in issues) Check(unifiedChanged, "unifiedNationalNumber", issue.Code, issue.Message);
+                foreach (var issue in issues) Check(unifiedChanged, "unifiedNationalNumber", issue.Code, issue.Message, CompanySetupDataEntry.ArabicFor(issue.Code));
             }
+            if (tax.Length > 0 && !CompanySetupDataEntry.IsSaudiVatNumber(tax))
+                Check(taxChanged, "taxNumber", CompanySetupDataEntry.VatInvalidCode, CompanySetupDataEntry.VatInvalidMessage, CompanySetupDataEntry.VatInvalidMessageAr);
         }
         if (!OrganizationSetupService.IsValidEmailDomainOrEmpty(emailDomain))
             Check(domainChanged, "emailDomain", "email_domain_invalid", $"'{co.EmailDomain}' is not a valid email domain (for example acme.sa).");
@@ -407,7 +439,8 @@ public sealed class CompanySetupPlanner
         {
             companyConflict = true;
             c.Conflict(Areas.Company, erp, label, 2, "erpCompanyCode", "erp_company_code_taken",
-                $"ERP company code {erp} is already used by another company. Each company needs its own code.");
+                $"ERP company code {erp} is already used by another company. Each company needs its own code.",
+                $"رمز الشركة في نظام تخطيط الموارد {erp} مستخدم لدى شركة أخرى. لكل شركة رمزها الخاص.");
         }
         var companyChanges = new List<string>();
         if (stored is not null)
@@ -420,7 +453,7 @@ public sealed class CompanySetupPlanner
             Track("MOL establishment number", mol, stored.WpsEmployerId);
             Track("GOSI number", co.GosiEmployerId, stored.GosiEmployerId);
             Track("Unified National Number", unified, stored.UnifiedNationalNumber);
-            Track("VAT number", co.TaxNumber, stored.TaxNumber);
+            Track("VAT number", tax, stored.TaxNumber);
             Track("Qiwa establishment id", co.QiwaEstablishmentId, stored.QiwaEstablishmentId);
             Track("email domain", emailDomain, CompanyEmailDomainRules.Normalize(stored.EmailDomain));
             Track("work-email pattern", WorkEmailPatterns.Normalize(co.WorkEmailPattern), WorkEmailPatterns.Normalize(stored.WorkEmailPattern));
@@ -490,7 +523,8 @@ public sealed class CompanySetupPlanner
             {
                 if (ex is not null && ex.AllBranchCodes.Contains(code))
                     c.Conflict(Areas.Branch, code, name, 3, $"{f}.code", "branch_code_taken",
-                        $"Branch code {code} is already used by this company (perhaps by a removed branch). Choose a different code.", labelAr: b.NameAr);
+                        $"Branch code {code} is already used by this company (perhaps by a removed branch). Choose a different code.",
+                        $"رمز الفرع {code} مستخدم لدى هذه الشركة (ربما لفرع محذوف). اختر رمزاً مختلفاً.", b.NameAr);
                 else c.Item(Areas.Branch, code, name, V.ActionCreate, labelAr: b.NameAr);
                 headOfficeChanged |= b.IsHeadOffice;
             }
@@ -531,6 +565,14 @@ public sealed class CompanySetupPlanner
                 if (lcode.Length == 0) { c.Problem(3, $"{lf}.code", "required", "Enter the location code."); continue; }
                 if (!bodyLocationCodes.Add(lcode)) { c.Problem(3, $"{lf}.code", "duplicate_code", $"Location code {lcode} appears twice."); continue; }
                 if (string.IsNullOrWhiteSpace(l.NameEn)) c.Problem(3, $"{lf}.nameEn", "required", "Enter the location name in English.");
+                if (CompanySetupDataEntry.IsZeroPoint(l.Latitude, l.Longitude))
+                {
+                    // 0,0 is a form left at zero, not a work site: the location is kept without a geofence, never fenced at 0,0.
+                    c.Warn(3, $"{lf}.latitude", CompanySetupDataEntry.CoordinatesMissingCode,
+                        $"Location {lcode} has no coordinates yet (0,0 is not a work site), so no geofence is set. Add its latitude and longitude.",
+                        $"لا توجد إحداثيات للموقع {lcode} بعد (0,0 ليس موقع عمل)، لذا لن يُضبط سياج جغرافي. أضف خط العرض وخط الطول.");
+                    l = l with { Latitude = null, Longitude = null };
+                }
                 if (l.Latitude is < -90 or > 90) c.Problem(3, $"{lf}.latitude", "latitude_invalid", "Latitude must be between -90 and 90.");
                 if (l.Longitude is < -180 or > 180) c.Problem(3, $"{lf}.longitude", "longitude_invalid", "Longitude must be between -180 and 180.");
                 if (l.RadiusMeters is <= 0 or > 100_000) c.Problem(3, $"{lf}.radiusMeters", "radius_invalid", "The geofence radius must be between 1 and 100,000 metres.");
@@ -541,7 +583,8 @@ public sealed class CompanySetupPlanner
                 {
                     if (existingLocationCodes.Contains(lcode))
                         c.Conflict(Areas.Location, lcode, lname, 3, $"{lf}.code", "location_code_taken",
-                            $"Location code {lcode} is already used in this workspace. Location codes are unique across all companies.", labelAr: l.NameAr);
+                            $"Location code {lcode} is already used in this workspace. Location codes are unique across all companies.",
+                            $"رمز الموقع {lcode} مستخدم في مساحة العمل. رموز المواقع فريدة في جميع الشركات.", l.NameAr);
                     else c.Item(Areas.Location, lcode, lname, V.ActionCreate, labelAr: l.NameAr);
                 }
                 else
@@ -549,7 +592,7 @@ public sealed class CompanySetupPlanner
                     var changes = new List<string>();
                     if (Differs(l.NameEn, lrow.NameEn)) changes.Add("name (English)");
                     if (Differs(l.NameAr, lrow.NameAr)) changes.Add("name (Arabic)");
-                    if (l.Latitude != lrow.Latitude || l.Longitude != lrow.Longitude) changes.Add("coordinates");
+                    if ((l.Latitude, l.Longitude) != CompanySetupDataEntry.Coordinates(lrow.Latitude, lrow.Longitude)) changes.Add("coordinates");
                     if (l.RadiusMeters != lrow.GeofenceRadiusMeters) changes.Add("geofence radius");
                     locationChanged = changes.Count > 0;
                     c.Item(Areas.Location, lcode, lname, locationChanged ? V.ActionUpdate : V.ActionUnchanged,
@@ -595,9 +638,22 @@ public sealed class CompanySetupPlanner
             }
         }
 
-        // ── Step 4: cost centres (per company), shared catalog (tenant-wide) ──────────────────────────────
-        var existingCostCentres = (await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking()
-            .Select(x => x.Code).ToListAsync(ct)).Select(OrgCodes.Normalize).ToHashSet(StringComparer.Ordinal);
+        // ── Step 4: the organisation (Addendum B: every row is this company's) ─────────────────────────────
+        // Every organisation code — cost centre, department, designation, grade — is unique within the company only
+        // (owner decision 2026-10-23: cost centres too). An existing row (existingId, of THIS company) is update or unchanged; a new
+        // row is create; a link resolves to this company's rows or rows new in the same draft. Nothing is deleted.
+        var org = ex?.Org ?? new CompanySetupRows.CompanyRows([], [], [], []);
+        var maps = ex?.Maps;
+        string? CurrentLink(Guid? id, Func<CompanySetupRows.CodeMaps, IReadOnlyDictionary<Guid, string>> pick) =>
+            id is Guid x && maps is not null && pick(maps).TryGetValue(x, out var code) ? code : null;
+        string? NormalLink(string? code) => string.IsNullOrWhiteSpace(code) ? null : OrgCodes.Normalize(code);
+        // B2: a live section save writes only its own section, so a link into another section must already be saved.
+        void NotSaved(string section, string field, string what, string whatAr, string code) =>
+            c.Problem(4, field, "reference_not_saved",
+                $"Save {what} first: {code} is not saved yet.", $"احفظ {whatAr} أولاً: {code} غير محفوظ بعد.");
+
+        // The company's own cost-centre codes, removed ones included (a removed row still holds its code).
+        var existingCostCentres = org.CostCentres.Select(x => OrgCodes.Normalize(x.Code)).ToHashSet(StringComparer.Ordinal);
         var costCentres = new List<PlannedCostCentre>();
         var bodyCostCentreCodes = new HashSet<string>(StringComparer.Ordinal);
         var costCentreById = (ex?.CostCentres ?? []).ToDictionary(x => x.Id);
@@ -622,21 +678,25 @@ public sealed class CompanySetupPlanner
                 code = storedCode;
             }
             if (code.Length == 0) { c.Problem(4, $"{f}.code", "required", "Enter the cost centre code."); continue; }
+            if (code.Length > 40) c.Problem(4, $"{f}.code", "too_long", "A cost centre code is at most 40 characters.");
             if (!bodyCostCentreCodes.Add(code)) { c.Problem(4, $"{f}.code", "duplicate_code", $"Cost centre code {code} appears twice."); continue; }
             if (string.IsNullOrWhiteSpace(cc.NameEn)) c.Problem(4, $"{f}.nameEn", "required", "Enter the cost centre name in English.");
             var name = (cc.NameEn ?? string.Empty).Trim();
             var changed = false;
             if (row is not null)
             {
-                changed = Differs(cc.NameEn, row.Name);
-                c.Item(Areas.CostCentre, code, name, changed ? V.ActionUpdate : V.ActionUnchanged, changed ? "Changes: name." : null, cc.NameAr);
+                var changes = new List<string>();
+                if (Differs(cc.NameEn, row.Name)) changes.Add("name (English)");
+                if (Differs(cc.NameAr, row.NameAr)) changes.Add("name (Arabic)");
+                changed = changes.Count > 0;
+                c.Item(Areas.CostCentre, code, name, changed ? V.ActionUpdate : V.ActionUnchanged, changed ? $"Changes: {string.Join(", ", changes)}." : null, cc.NameAr);
             }
-            // Decision 7: cost-centre codes are unique across the tenant; a clash is a conflict, never a reuse —
-            // reusing would hand this company another company's cost centre.
+            // A clash with one of the company's own codes is a conflict, never a reuse: an existing row is edited through
+            // its existingId only.
             else if (existingCostCentres.Contains(code))
                 c.Conflict(Areas.CostCentre, code, name, 4, $"{f}.code", "cost_centre_code_taken",
-                    $"Cost centre code {code} is already used by another company in this workspace. Choose a different code.",
-                    $"رمز مركز التكلفة {code} مستخدم لدى شركة أخرى. اختر رمزاً مختلفاً.", cc.NameAr);
+                    $"Cost centre code {code} is already used by this company (perhaps by a removed cost centre). Choose a different code, or restore that cost centre in Setup → Cost centres.",
+                    $"رمز مركز التكلفة {code} مستخدم لدى هذه الشركة. اختر رمزاً مختلفاً.", cc.NameAr);
             else c.Item(Areas.CostCentre, code, name, V.ActionCreate, labelAr: cc.NameAr);
             costCentres.Add(new PlannedCostCentre(cc with { Code = code }, row, changed));
         }
@@ -647,196 +707,272 @@ public sealed class CompanySetupPlanner
             {
                 var keptCode = OrgCodes.Normalize(kept.Code);
                 if (!bodyCostCentreCodes.Add(keptCode)) continue;
-                c.Item(Areas.CostCentre, keptCode, kept.Name, V.ActionUnchanged, KeptReason);
+                c.Item(Areas.CostCentre, keptCode, kept.Name, V.ActionUnchanged, KeptReason, Blank(kept.NameAr));
             }
             foreach (var kept in ex.CostCentres) existingCostCentreIds.TryAdd(OrgCodes.Normalize(kept.Code), kept.Id);
         }
+        // A link may name any of the company's cost centres still on file, or one new in this draft.
+        var knownCostCentreCodes = bodyCostCentreCodes.Concat(existingCostCentreIds.Keys).ToHashSet(StringComparer.Ordinal);
 
-        var departments = await ScopedBypass.TenantWide(_db.Departments, tenantId, Why).AsNoTracking()
-            .Select(x => new { x.Id, x.Code, x.IsDeleted, x.NameAr, x.NameEn, x.BranchId, x.CostCenterId, x.ParentDepartmentId }).ToListAsync(ct);
-        var deptByCode = departments.GroupBy(x => OrgCodes.Normalize(x.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        var grades = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking()
-            .Select(x => new { x.Id, x.Code, x.IsDeleted, x.IsActive, x.Currency, x.NameAr }).ToListAsync(ct);
-        var gradeByCode = grades.GroupBy(x => OrgCodes.Normalize(x.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        var designations = await ScopedBypass.TenantWide(_db.Designations, tenantId, Why).AsNoTracking()
-            .Select(x => new { x.Code, x.IsDeleted, x.TitleAr }).ToListAsync(ct);
-        var designationByCode = designations.GroupBy(x => OrgCodes.Normalize(x.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        // Existing mode compares a shared department's links by code: the codes of the rows it points at today.
-        Dictionary<Guid, string> branchCodeById = new(), costCentreCodeById = new();
-        var deptCodeById = departments.ToDictionary(x => x.Id, x => OrgCodes.Normalize(x.Code));
-        if (ex is not null)
-        {
-            branchCodeById = (await ScopedBypass.TenantWide(_db.Branches, tenantId, Why).AsNoTracking().Select(x => new { x.Id, x.Code }).ToListAsync(ct))
-                .ToDictionary(x => x.Id, x => OrgCodes.Normalize(x.Code));
-            costCentreCodeById = (await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking().Select(x => new { x.Id, x.Code }).ToListAsync(ct))
-                .ToDictionary(x => x.Id, x => OrgCodes.Normalize(x.Code));
-        }
-
-        void SharedAdd(string area, string code, string itemLabel, int index, string listName, string? itemLabelAr)
-        {
-            // Decision 6: a new shared-catalog code changes every company of the group, so only group scope adds one.
-            if (!caller.IsGroupScope)
-                c.Conflict(area, code, itemLabel, 4, $"{listName}[{index}].code", "shared_catalog_needs_group_scope",
-                    $"{code} would be added to the shared group catalog, which only a group administrator can change.",
-                    $"إضافة {code} إلى الدليل المشترك للمجموعة تتطلب مسؤول المجموعة.", itemLabelAr);
-            else c.Item(area, code, itemLabel, V.ActionCreate, labelAr: itemLabelAr);
-        }
-
-        // Grades: one currency per tenant (Decision 13).
-        var activeGradeCurrencies = grades.Where(g => !g.IsDeleted && g.IsActive)
-            .GroupBy(g => (g.Currency ?? string.Empty).Trim().ToUpperInvariant())
-            .OrderByDescending(g => g.Count()).Select(g => g.Key).Where(k => k.Length > 0).ToList();
-        var gradeCurrency = activeGradeCurrencies.FirstOrDefault() ?? currency;
-        if (activeGradeCurrencies.Count > 0 && currency.Length == 3 && !string.Equals(gradeCurrency, currency, StringComparison.Ordinal))
-            c.Warn(4, "grades", "grades_currency_differs",
-                $"Grade salary bands in this workspace are in {gradeCurrency}, and this company pays in {currency}. Bands are one currency per workspace; new grades are created in {gradeCurrency}.",
-                $"نطاقات رواتب الدرجات بعملة {gradeCurrency} وهذه الشركة تدفع بعملة {currency}.");
-        var newGrades = new List<CompanySetupGrade>();
+        // Grades: in the company's own currency (Addendum B withdrew one currency per workspace).
+        var gradeById = org.Grades.Where(g => !g.IsDeleted).ToDictionary(g => g.Id);
+        var takenGradeCodes = org.Grades.Select(g => OrgCodes.Normalize(g.Code)).ToHashSet(StringComparer.Ordinal);
+        var plannedGrades = new List<PlannedGrade>();
         var bodyGradeCodes = new HashSet<string>(StringComparer.Ordinal);
-        var existingGradeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+        var seenGrades = new HashSet<Guid>();
         foreach (var (g, i) in (body.Grades ?? []).Select((x, i) => (x, i)))
         {
             var code = OrgCodes.Normalize(g.Code);
             var f = $"grades[{i}]";
+            Grade? row = null;
+            if (g.ExistingId is Guid gradeId)
+            {
+                if (!gradeById.TryGetValue(gradeId, out row) || !seenGrades.Add(gradeId))
+                {
+                    c.Problem(4, $"{f}.existingId", "existing_row_unknown", $"Grade {code} is not one of this company's grades. Reload the company's setup.");
+                    continue;
+                }
+                var storedCode = OrgCodes.Normalize(row.Code);
+                if (code != storedCode)
+                    c.Problem(4, $"{f}.code", "existing_code_locked",
+                        $"A grade code cannot be changed here ({storedCode}). Change it in Setup → Grades.", "لا يمكن تغيير رمز الدرجة هنا.");
+                code = storedCode;
+            }
             if (code.Length == 0) { c.Problem(4, $"{f}.code", "required", "Enter the grade code."); continue; }
+            if (code.Length > 40) c.Problem(4, $"{f}.code", "too_long", "A grade code is at most 40 characters.");
             if (!bodyGradeCodes.Add(code)) { c.Problem(4, $"{f}.code", "duplicate_code", $"Grade code {code} appears twice."); continue; }
             var name = (g.NameEn ?? string.Empty).Trim();
-            if (gradeByCode.TryGetValue(code, out var existing))
-            {
-                if (existing.IsDeleted)
-                    c.Conflict(Areas.Grade, code, name, 4, $"{f}.code", "grade_code_deleted",
-                        $"Grade code {code} belongs to a deleted grade. Restore it in Setup, or choose a different code.");
-                else
-                {
-                    existingGradeIds[code] = existing.Id;
-                    c.Item(Areas.Grade, code, name, V.ActionReuse, "Existing shared grade; it is used as it is (read-only here).", existing.NameAr ?? g.NameAr);
-                }
-                continue;
-            }
             if (name.Length == 0) c.Problem(4, $"{f}.nameEn", "required", "Enter the grade name in English.");
             if (g.Level is < 0 or > 100) c.Problem(4, $"{f}.level", "level_invalid", "The grade level must be between 0 and 100.");
             if (g.MinSalary < 0 || g.MidSalary < 0 || g.MaxSalary < 0 || g.MinSalary > g.MidSalary || g.MidSalary > g.MaxSalary)
                 c.Problem(4, $"{f}.minSalary", "salary_band_invalid", "A salary band must be ordered minimum ≤ midpoint ≤ maximum.",
                     "يجب أن يكون نطاق الراتب: الحد الأدنى ≤ المنتصف ≤ الحد الأقصى.");
-            SharedAdd(Areas.Grade, code, name, i, "grades", g.NameAr);
-            newGrades.Add(g with { Code = code });
+            var changed = false;
+            if (row is null)
+            {
+                if (takenGradeCodes.Contains(code))
+                    c.Conflict(Areas.Grade, code, name, 4, $"{f}.code", "grade_code_taken",
+                        $"Grade code {code} is already used by this company (perhaps by a removed grade). Choose a different code, or restore that grade in Setup → Grades.",
+                        $"رمز الدرجة {code} مستخدم لدى هذه الشركة. اختر رمزاً مختلفاً.", g.NameAr);
+                else c.Item(Areas.Grade, code, name, V.ActionCreate, labelAr: g.NameAr);
+            }
+            else
+            {
+                var changes = new List<string>();
+                if (Differs(g.NameEn, row.Name)) changes.Add("name (English)");
+                if (Differs(g.NameAr, row.NameAr)) changes.Add("name (Arabic)");
+                if (g.Level != row.Level) changes.Add("level");
+                if (g.MinSalary != row.MinSalary || g.MidSalary != row.MidSalary || g.MaxSalary != row.MaxSalary) changes.Add("salary band");
+                changed = changes.Count > 0;
+                c.Item(Areas.Grade, code, name, changed ? V.ActionUpdate : V.ActionUnchanged, changed ? $"Changes: {string.Join(", ", changes)}." : null, g.NameAr);
+            }
+            plannedGrades.Add(new PlannedGrade(g with { Code = code }, row, changed));
         }
+        foreach (var kept in gradeById.Values.Where(x => x.IsActive && !seenGrades.Contains(x.Id)).OrderBy(x => x.Level).ThenBy(x => x.Code))
+        {
+            var keptCode = OrgCodes.Normalize(kept.Code);
+            if (!bodyGradeCodes.Add(keptCode)) continue;
+            c.Item(Areas.Grade, keptCode, kept.Name, V.ActionUnchanged, KeptReason, Blank(kept.NameAr));
+        }
+        var existingGradeIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+        foreach (var kept in gradeById.Values) existingGradeIds.TryAdd(OrgCodes.Normalize(kept.Code), kept.Id);
+        var knownGradeCodes = bodyGradeCodes.Concat(existingGradeIds.Keys).ToHashSet(StringComparer.Ordinal);
 
-        // Departments: existing codes are reused and NEVER re-linked (Decision 7).
-        var newDepartments = new List<CompanySetupDepartment>();
+        // Departments: this company's own, links and all (Decision 7's "never re-link" applied to shared rows; there are none now).
+        var deptById = org.Departments.Where(d => !d.IsDeleted).ToDictionary(d => d.Id);
+        var takenDeptCodes = org.Departments.Select(d => OrgCodes.Normalize(d.Code)).ToHashSet(StringComparer.Ordinal);
         var existingDepartmentIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+        foreach (var d in deptById.Values) existingDepartmentIds.TryAdd(OrgCodes.Normalize(d.Code), d.Id);
+        var plannedDepartments = new List<(PlannedDepartment Row, int Index)>();
         var bodyDepartmentCodes = new HashSet<string>(StringComparer.Ordinal);
-        var departmentRows = (body.Departments ?? []).ToList();
-        foreach (var (d, i) in departmentRows.Select((x, i) => (x, i)))
+        var seenDepartments = new HashSet<Guid>();
+        foreach (var (d, i) in (body.Departments ?? []).Select((x, i) => (x, i)))
         {
             var code = OrgCodes.Normalize(d.Code);
             var f = $"departments[{i}]";
+            Department? row = null;
+            if (d.ExistingId is Guid departmentId)
+            {
+                if (!deptById.TryGetValue(departmentId, out row) || !seenDepartments.Add(departmentId))
+                {
+                    c.Problem(4, $"{f}.existingId", "existing_row_unknown", $"Department {code} is not one of this company's departments. Reload the company's setup.");
+                    continue;
+                }
+                var storedCode = OrgCodes.Normalize(row.Code);
+                if (code != storedCode)
+                    c.Problem(4, $"{f}.code", "existing_code_locked",
+                        $"A department code cannot be changed here ({storedCode}); employee numbers and reports use it. Change it in Setup → Departments.",
+                        "لا يمكن تغيير رمز القسم هنا.");
+                code = storedCode;
+            }
             if (code.Length == 0) { c.Problem(4, $"{f}.code", "required", "Enter the department code."); continue; }
+            if (code.Length > 40) c.Problem(4, $"{f}.code", "too_long", "A department code is at most 40 characters.");
             if (!bodyDepartmentCodes.Add(code)) { c.Problem(4, $"{f}.code", "duplicate_code", $"Department code {code} appears twice."); continue; }
             var name = (d.NameEn ?? string.Empty).Trim();
-            if (deptByCode.TryGetValue(code, out var existing))
-            {
-                if (existing.IsDeleted)
-                    c.Conflict(Areas.Department, code, name, 4, $"{f}.code", "department_code_deleted",
-                        $"Department code {code} belongs to a deleted department. Restore it in Setup, or choose a different code.");
-                else
-                {
-                    existingDepartmentIds[code] = existing.Id;
-                    bool relinks;
-                    if (ex is null)
-                        relinks = !string.IsNullOrWhiteSpace(d.BranchCode) || !string.IsNullOrWhiteSpace(d.CostCentreCode) || !string.IsNullOrWhiteSpace(d.ParentCode);
-                    else
-                    {
-                        // Existing mode: the prefill carries the department's current links; only a DIFFERENT link is one
-                        // the wizard would ignore, so only that warns.
-                        static bool Other(string? requested, Guid? currentId, Dictionary<Guid, string> codes) =>
-                            !string.IsNullOrWhiteSpace(requested)
-                            && !string.Equals(OrgCodes.Normalize(requested), currentId is Guid id && codes.TryGetValue(id, out var cur) ? cur : null, StringComparison.Ordinal);
-                        relinks = Other(d.BranchCode, existing.BranchId, branchCodeById) || Other(d.CostCentreCode, existing.CostCenterId, costCentreCodeById)
-                                  || Other(d.ParentCode, existing.ParentDepartmentId, deptCodeById);
-                        if (Differs(d.NameEn, existing.NameEn) || (d.NameAr is not null && Differs(d.NameAr, existing.NameAr)))
-                            c.Warn(4, $"{f}.nameEn", "shared_row_not_edited",
-                                $"{code} is a shared department; its name is not changed here. Edit it in Setup → Departments.",
-                                $"القسم {code} مشترك؛ لا يتم تعديل اسمه هنا.");
-                    }
-                    c.Item(Areas.Department, code, name, V.ActionReuse,
-                        "Existing shared department; it keeps its current branch, cost centre and parent.", string.IsNullOrEmpty(existing.NameAr) ? d.NameAr : existing.NameAr);
-                    if (relinks)
-                        c.Warn(4, $"{f}.code", "existing_department_not_relinked",
-                            $"{code} already exists in the shared catalog, so the branch, cost centre and parent entered here are not applied to it.",
-                            $"القسم {code} موجود مسبقاً، لذا لن يتم تغيير فرعه أو مركز تكلفته.");
-                }
-                continue;
-            }
             if (name.Length == 0) c.Problem(4, $"{f}.nameEn", "required", "Enter the department name in English.");
-            var branchCode = OrgCodes.Normalize(d.BranchCode);
-            if (branchCode.Length > 0 && !branchCodes.Contains(branchCode))
+            var branchCode = NormalLink(d.BranchCode);
+            var ccCode = NormalLink(d.CostCentreCode);
+            var parentCode = NormalLink(d.ParentCode);
+            var curBranch = row is null ? null : CurrentLink(row.BranchId, m => m.Branches);
+            var curCc = row is null ? null : CurrentLink(row.CostCenterId, m => m.CostCentres);
+            var curParent = row is null ? null : CurrentLink(row.ParentDepartmentId, m => m.Departments);
+            // A link is judged when it is written: on a new row, or when it changes. A link left as it is stays as it is.
+            var branchWritten = branchCode is not null && (row is null || branchCode != curBranch);
+            var ccWritten = ccCode is not null && (row is null || ccCode != curCc);
+            if (branchWritten && !branchCodes.Contains(branchCode!))
                 c.Problem(4, $"{f}.branchCode", "branch_unknown", $"Branch {branchCode} is not one of this company's branches.");
-            var ccCode = OrgCodes.Normalize(d.CostCentreCode);
-            if (ccCode.Length > 0 && !bodyCostCentreCodes.Contains(ccCode))
+            else if (branchWritten && focus == V.Sections.Departments && !existingBranchIds.ContainsKey(branchCode!))
+                c.Problem(4, $"{f}.branchCode", "reference_not_saved",
+                    $"Branch {branchCode} is not saved yet. It is created when you finish; link it to this department then.",
+                    $"الفرع {branchCode} غير محفوظ بعد. يتم إنشاؤه عند الإنهاء؛ اربطه بهذا القسم حينها.");
+            if (ccWritten && !knownCostCentreCodes.Contains(ccCode!))
                 c.Problem(4, $"{f}.costCentreCode", "cost_centre_unknown", $"Cost centre {ccCode} is not one of this company's cost centres.");
-            SharedAdd(Areas.Department, code, name, i, "departments", d.NameAr);
-            newDepartments.Add(d with { Code = code, BranchCode = branchCode.Length == 0 ? null : branchCode, CostCentreCode = ccCode.Length == 0 ? null : ccCode,
-                ParentCode = string.IsNullOrWhiteSpace(d.ParentCode) ? null : OrgCodes.Normalize(d.ParentCode) });
+            else if (ccWritten && focus == V.Sections.Departments && !existingCostCentreIds.ContainsKey(ccCode!))
+                NotSaved(V.Sections.CostCentres, $"{f}.costCentreCode", "Cost centres", "مراكز التكلفة", ccCode!);
+            var changed = false;
+            if (row is null)
+            {
+                if (takenDeptCodes.Contains(code))
+                    c.Conflict(Areas.Department, code, name, 4, $"{f}.code", "department_code_taken",
+                        $"Department code {code} is already used by this company (perhaps by a removed department). Choose a different code, or restore that department in Setup → Departments.",
+                        $"رمز القسم {code} مستخدم لدى هذه الشركة. اختر رمزاً مختلفاً.", d.NameAr);
+                else c.Item(Areas.Department, code, name, V.ActionCreate, labelAr: d.NameAr);
+            }
+            else
+            {
+                var changes = new List<string>();
+                if (Differs(d.NameEn, row.NameEn)) changes.Add("name (English)");
+                if (Differs(d.NameAr, row.NameAr)) changes.Add("name (Arabic)");
+                if (parentCode != curParent) changes.Add("parent department");
+                if (branchCode != curBranch) changes.Add("branch");
+                if (ccCode != curCc) changes.Add("cost centre");
+                changed = changes.Count > 0;
+                c.Item(Areas.Department, code, name, changed ? V.ActionUpdate : V.ActionUnchanged, changed ? $"Changes: {string.Join(", ", changes)}." : null, d.NameAr);
+            }
+            plannedDepartments.Add((new PlannedDepartment(d with { Code = code, BranchCode = branchCode, CostCentreCode = ccCode, ParentCode = parentCode }, row, changed), i));
         }
-        // Parents: an existing department, or a new one created earlier in the same commit. No cycles.
-        var orderedDepartments = new List<CompanySetupDepartment>();
+        foreach (var kept in deptById.Values.Where(x => x.IsActive && !seenDepartments.Contains(x.Id)).OrderBy(x => x.Code))
         {
-            var pending = newDepartments.ToDictionary(d => d.Code, StringComparer.Ordinal);
-            var placed = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var d in newDepartments)
-                if (d.ParentCode is { } p && !pending.ContainsKey(p) && !existingDepartmentIds.ContainsKey(p) && !(deptByCode.TryGetValue(p, out var exd) && !exd.IsDeleted))
-                    c.Problem(4, "departments", "parent_unknown", $"Department {d.Code}'s parent {p} does not exist.");
+            var keptCode = OrgCodes.Normalize(kept.Code);
+            if (!bodyDepartmentCodes.Add(keptCode)) continue;
+            c.Item(Areas.Department, keptCode, kept.NameEn, V.ActionUnchanged, KeptReason, Blank(kept.NameAr));
+        }
+        var knownDepartmentCodes = bodyDepartmentCodes.Concat(existingDepartmentIds.Keys).ToHashSet(StringComparer.Ordinal);
+
+        // Parents: one of the company's departments, or one new in this draft (a parent may be new in the same
+        // section). No cycles — judged on the whole tree as it will be, existing rows' moves included.
+        var parentOf = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var d in deptById.Values) parentOf[OrgCodes.Normalize(d.Code)] = CurrentLink(d.ParentDepartmentId, m => m.Departments);
+        foreach (var (p, i) in plannedDepartments)
+        {
+            parentOf[p.Body.Code] = p.Body.ParentCode;
+            var curParent = p.Existing is null ? null : CurrentLink(p.Existing.ParentDepartmentId, m => m.Departments);
+            if (p.Body.ParentCode is { } parent && (p.Existing is null || parent != curParent) && !knownDepartmentCodes.Contains(parent))
+                c.Problem(4, $"departments[{i}].parentCode", "parent_unknown", $"Department {p.Body.Code}'s parent {parent} does not exist.",
+                    $"القسم الأعلى {parent} للقسم {p.Body.Code} غير موجود.");
+        }
+        var inCycle = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var (p, _) in plannedDepartments)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal) { p.Body.Code };
+            for (var at = parentOf.GetValueOrDefault(p.Body.Code); at is not null; at = parentOf.GetValueOrDefault(at))
+            {
+                if (at == p.Body.Code) { inCycle.Add(p.Body.Code); break; }
+                if (!seen.Add(at)) break;
+            }
+        }
+        if (inCycle.Count > 0)
+            c.Problem(4, "departments", "parent_cycle", $"Departments {string.Join(", ", inCycle)} are each other's parents. Break the loop.",
+                "هذه الأقسام أقسام عليا لبعضها. أزل الحلقة.");
+        // Write order: new departments parents-first, then edits of existing ones (whose new parent may be new).
+        var orderedDepartments = new List<PlannedDepartment>();
+        {
+            var pending = plannedDepartments.Select(x => x.Row).Where(p => p.Existing is null).ToDictionary(p => p.Body.Code, StringComparer.Ordinal);
             var progress = true;
             while (pending.Count > 0 && progress)
             {
                 progress = false;
-                foreach (var d in pending.Values.ToList())
+                foreach (var p in pending.Values.ToList())
                 {
-                    if (d.ParentCode is { } p && pending.ContainsKey(p) && !placed.Contains(p)) continue;
-                    orderedDepartments.Add(d);
-                    placed.Add(d.Code);
-                    pending.Remove(d.Code);
+                    if (p.Body.ParentCode is { } parent && pending.ContainsKey(parent)) continue;
+                    orderedDepartments.Add(p);
+                    pending.Remove(p.Body.Code);
                     progress = true;
                 }
             }
-            if (pending.Count > 0)
-                c.Problem(4, "departments", "parent_cycle", $"Departments {string.Join(", ", pending.Keys)} are each other's parents. Break the loop.");
+            orderedDepartments.AddRange(pending.Values);
+            orderedDepartments.AddRange(plannedDepartments.Select(x => x.Row).Where(p => p.Existing is not null));
         }
 
-        var newDesignations = new List<CompanySetupDesignation>();
+        var designationById = org.Designations.Where(d => !d.IsDeleted).ToDictionary(d => d.Id);
+        var takenDesignationCodes = org.Designations.Select(d => OrgCodes.Normalize(d.Code)).ToHashSet(StringComparer.Ordinal);
+        var plannedDesignations = new List<PlannedDesignation>();
         var bodyDesignationCodes = new HashSet<string>(StringComparer.Ordinal);
+        var seenDesignations = new HashSet<Guid>();
         foreach (var (ds, i) in (body.Designations ?? []).Select((x, i) => (x, i)))
         {
             var code = OrgCodes.Normalize(ds.Code);
             var f = $"designations[{i}]";
+            Designation? row = null;
+            if (ds.ExistingId is Guid designationId)
+            {
+                if (!designationById.TryGetValue(designationId, out row) || !seenDesignations.Add(designationId))
+                {
+                    c.Problem(4, $"{f}.existingId", "existing_row_unknown", $"Designation {code} is not one of this company's designations. Reload the company's setup.");
+                    continue;
+                }
+                var storedCode = OrgCodes.Normalize(row.Code);
+                if (code != storedCode)
+                    c.Problem(4, $"{f}.code", "existing_code_locked",
+                        $"A designation code cannot be changed here ({storedCode}). Change it in Setup → Designations.", "لا يمكن تغيير رمز المسمى الوظيفي هنا.");
+                code = storedCode;
+            }
             if (code.Length == 0) { c.Problem(4, $"{f}.code", "required", "Enter the designation code."); continue; }
+            if (code.Length > 40) c.Problem(4, $"{f}.code", "too_long", "A designation code is at most 40 characters.");
             if (!bodyDesignationCodes.Add(code)) { c.Problem(4, $"{f}.code", "duplicate_code", $"Designation code {code} appears twice."); continue; }
             var title = (ds.TitleEn ?? string.Empty).Trim();
-            if (designationByCode.TryGetValue(code, out var existing))
-            {
-                if (existing.IsDeleted)
-                    c.Conflict(Areas.Designation, code, title, 4, $"{f}.code", "designation_code_deleted",
-                        $"Designation code {code} belongs to a deleted designation. Restore it in Setup, or choose a different code.");
-                else c.Item(Areas.Designation, code, title, V.ActionReuse, "Existing shared designation; it is used as it is (read-only here).",
-                    string.IsNullOrEmpty(existing.TitleAr) ? ds.TitleAr : existing.TitleAr);
-                continue;
-            }
             if (title.Length == 0) c.Problem(4, $"{f}.titleEn", "required", "Enter the designation title in English.");
-            var deptCode = OrgCodes.Normalize(ds.DepartmentCode);
-            if (deptCode.Length > 0 && !bodyDepartmentCodes.Contains(deptCode) && !(deptByCode.TryGetValue(deptCode, out var dx) && !dx.IsDeleted))
-                c.Problem(4, $"{f}.departmentCode", "department_unknown", $"Department {deptCode} does not exist.");
-            var gradeCode = OrgCodes.Normalize(ds.GradeCode);
-            if (gradeCode.Length > 0 && !bodyGradeCodes.Contains(gradeCode) && !(gradeByCode.TryGetValue(gradeCode, out var gx) && !gx.IsDeleted))
-                c.Problem(4, $"{f}.gradeCode", "grade_unknown", $"Grade {gradeCode} does not exist.");
-            SharedAdd(Areas.Designation, code, title, i, "designations", ds.TitleAr);
-            newDesignations.Add(ds with { Code = code, DepartmentCode = deptCode.Length == 0 ? null : deptCode, GradeCode = gradeCode.Length == 0 ? null : gradeCode });
+            var deptCode = NormalLink(ds.DepartmentCode);
+            var gradeCode = NormalLink(ds.GradeCode);
+            var curDept = row is null ? null : CurrentLink(row.DepartmentId, m => m.Departments);
+            var curGrade = row is null ? null : CurrentLink(row.GradeId, m => m.Grades);
+            var deptWritten = deptCode is not null && (row is null || deptCode != curDept);
+            var gradeWritten = gradeCode is not null && (row is null || gradeCode != curGrade);
+            if (deptWritten && !knownDepartmentCodes.Contains(deptCode!))
+                c.Problem(4, $"{f}.departmentCode", "department_unknown", $"Department {deptCode} is not one of this company's departments.");
+            else if (deptWritten && focus == V.Sections.Designations && !existingDepartmentIds.ContainsKey(deptCode!))
+                NotSaved(V.Sections.Departments, $"{f}.departmentCode", "Departments", "الأقسام", deptCode!);
+            if (gradeWritten && !knownGradeCodes.Contains(gradeCode!))
+                c.Problem(4, $"{f}.gradeCode", "grade_unknown", $"Grade {gradeCode} is not one of this company's grades.");
+            else if (gradeWritten && focus == V.Sections.Designations && !existingGradeIds.ContainsKey(gradeCode!))
+                NotSaved(V.Sections.Grades, $"{f}.gradeCode", "Grades", "الدرجات", gradeCode!);
+            var changed = false;
+            if (row is null)
+            {
+                if (takenDesignationCodes.Contains(code))
+                    c.Conflict(Areas.Designation, code, title, 4, $"{f}.code", "designation_code_taken",
+                        $"Designation code {code} is already used by this company (perhaps by a removed designation). Choose a different code, or restore that designation in Setup → Designations.",
+                        $"رمز المسمى الوظيفي {code} مستخدم لدى هذه الشركة. اختر رمزاً مختلفاً.", ds.TitleAr);
+                else c.Item(Areas.Designation, code, title, V.ActionCreate, labelAr: ds.TitleAr);
+            }
+            else
+            {
+                var changes = new List<string>();
+                if (Differs(ds.TitleEn, row.TitleEn)) changes.Add("title (English)");
+                if (Differs(ds.TitleAr, row.TitleAr)) changes.Add("title (Arabic)");
+                if (deptCode != curDept) changes.Add("department");
+                if (gradeCode != curGrade) changes.Add("grade");
+                changed = changes.Count > 0;
+                c.Item(Areas.Designation, code, title, changed ? V.ActionUpdate : V.ActionUnchanged, changed ? $"Changes: {string.Join(", ", changes)}." : null, ds.TitleAr);
+            }
+            plannedDesignations.Add(new PlannedDesignation(ds with { Code = code, DepartmentCode = deptCode, GradeCode = gradeCode }, row, changed));
         }
-        // An existing department reused by name only still resolves for designations below.
-        foreach (var (code, row) in deptByCode)
-            if (!row.IsDeleted) existingDepartmentIds.TryAdd(code, row.Id);
-        foreach (var (code, row) in gradeByCode)
-            if (!row.IsDeleted) existingGradeIds.TryAdd(code, row.Id);
+        foreach (var kept in designationById.Values.Where(x => x.IsActive && !seenDesignations.Contains(x.Id)).OrderBy(x => x.Code))
+        {
+            var keptCode = OrgCodes.Normalize(kept.Code);
+            if (!bodyDesignationCodes.Add(keptCode)) continue;
+            c.Item(Areas.Designation, keptCode, kept.TitleEn, V.ActionUnchanged, KeptReason, Blank(kept.TitleAr));
+        }
 
         // ── Step 5: work and pay rules ───────────────────────────────────────────────────────────────────
         var rules = body.Rules;
@@ -925,29 +1061,25 @@ public sealed class CompanySetupPlanner
             }
         }
 
+        // Statutory leave (owner decision 2026-10-23: leave types and policies are per company). "Use the country pack" is
+        // judged for THIS company: a new company has none, so every pack policy is created for it; an existing company
+        // reuses the ones it has and gets only the missing ones. They are the company's rows, so a company super admin
+        // adds them like a group admin.
         IReadOnlySet<string> missingLeave = new HashSet<string>();
         if (rules?.LeavePolicies?.UsePack == true && country.Length > 0)
         {
-            missingLeave = await TenantProvisioningBundle.MissingDefaultLeavePoliciesAsync(_db, tenantId, country, ct);
-            if (missingLeave.Count > 0 && !caller.IsGroupScope)
-            {
-                // Workspace-wide rows: like the shared catalog, only group scope adds them (a company super admin's
-                // request may not write a row that is not their company's). Said, not silently skipped.
-                c.Warn(5, "rules.leavePolicies", "workspace_defaults_need_group_scope",
-                    $"The workspace has no statutory default leave policies for {country} ({string.Join(", ", missingLeave.Order(StringComparer.Ordinal))}). They apply to every {country} company, so a group administrator must add them.",
-                    "سياسات الإجازة الافتراضية للدولة تنطبق على جميع الشركات، ويضيفها مسؤول المجموعة.");
-                var missingTypes = missingLeave;
-                missingLeave = new HashSet<string>();
-                foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes.Where(t => !missingTypes.Contains(t.TypeCode)))
-                    c.Item(Areas.LeavePolicy, typeCode, $"Default {typeLabel} — {country}", V.ActionReuse,
-                        $"The workspace's {country} default already applies to this company.", $"سياسة الإجازة النظامية الافتراضية ({typeCode}) — {country}");
-            }
-            else foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes)
+            // The installer's own read-only plan, so the review names exactly what the commit installs (an unassigned
+            // legacy policy of the same type and country counts as present in both). A company not created yet has
+            // nothing of its own: only unassigned legacy rows can cover it.
+            missingLeave = ex is null
+                ? await TenantProvisioningBundle.MissingDefaultLeavePoliciesAsync(_db, tenantId, companyId: null, country, ct)
+                : await TenantProvisioningBundle.MissingDefaultLeaveForCountryAsync(_db, tenantId, ex.Company.Id, country, ct);
+            foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes)
                 c.Item(Areas.LeavePolicy, typeCode, $"Default {typeLabel} — {country}",
                     missingLeave.Contains(typeCode) ? V.ActionCreate : V.ActionReuse,
                     missingLeave.Contains(typeCode)
-                        ? $"Workspace-wide statutory default for {country}; applies to every {country} company."
-                        : $"The workspace's {country} default already applies to this company.",
+                        ? $"Statutory default for {country}, created for this company."
+                        : $"This company already has its {country} default; it is kept as it is.",
                     labelAr: $"سياسة الإجازة النظامية الافتراضية ({typeCode}) — {country}");
         }
 
@@ -1033,7 +1165,7 @@ public sealed class CompanySetupPlanner
         var admin = body.CompanyAdmin ?? new CompanySetupCompanyAdmin(V.AdminGroupOnly, null, null, null, null);
         var adminAction = await PlanCompanyAdminAsync(c, caller, admin, emailDomain, ceiling, ex?.Company.Id, ct);
 
-        var plan = Finish(c);
+        var plan = Finish(c, focus);
         if (!plan.Ok) return (plan, null);
 
         var request = stored is null
@@ -1044,7 +1176,7 @@ public sealed class CompanySetupPlanner
                 CountryCode: country,
                 Jurisdiction: null,
                 RegistrationNumber: registration,
-                TaxNumber: co.TaxNumber?.Trim(),
+                TaxNumber: tax.Length == 0 ? null : tax,
                 WpsEmployerId: mol,
                 GosiEmployerId: co.GosiEmployerId?.Trim(),
                 // Decision: the Qiwa establishment id defaults to the MOL establishment number.
@@ -1063,7 +1195,7 @@ public sealed class CompanySetupPlanner
                 CountryCode: stored.CountryCode,
                 Jurisdiction: stored.Jurisdiction,
                 RegistrationNumber: registration,
-                TaxNumber: co.TaxNumber?.Trim(),
+                TaxNumber: tax.Length == 0 ? null : tax,
                 WpsEmployerId: mol,
                 GosiEmployerId: co.GosiEmployerId?.Trim(),
                 QiwaEstablishmentId: co.QiwaEstablishmentId?.Trim(),
@@ -1086,14 +1218,16 @@ public sealed class CompanySetupPlanner
             ExistingBranchIds = existingBranchIds,
             CostCentres = costCentres,
             ExistingCostCentreIds = existingCostCentreIds,
-            NewDepartments = orderedDepartments,
+            Departments = orderedDepartments,
             ExistingDepartmentIds = existingDepartmentIds,
-            NewDesignations = newDesignations,
-            NewGrades = newGrades,
+            Designations = plannedDesignations,
+            Grades = plannedGrades,
             ExistingGradeIds = existingGradeIds,
-            GradeCurrency = gradeCurrency,
-            EmployeeIdRule = new DraftEmployeeIdRule(prefix, numbering!.UseCountryPrefix, numbering.UseBranchPrefix, numbering.UseDepartmentPrefix,
-                numbering.UseYear, numbering.PaddingLength, numbering.NextSequence, AllowManualOverride: ex?.Rule?.AllowManualOverride ?? false),
+            // A section save (focus) may go ahead while step 5 still has problems; its model never writes the rule.
+            EmployeeIdRule = numbering is null
+                ? new DraftEmployeeIdRule(prefix, false, false, false, false, 1, 1, AllowManualOverride: false)
+                : new DraftEmployeeIdRule(prefix, numbering.UseCountryPrefix, numbering.UseBranchPrefix, numbering.UseDepartmentPrefix,
+                    numbering.UseYear, numbering.PaddingLength, numbering.NextSequence, AllowManualOverride: ex?.Rule?.AllowManualOverride ?? false),
             EmployeeIdRuleAction = ruleAction,
             CutoverDate = cutoverDate,
             CutoverAction = cutoverAction,
@@ -1120,13 +1254,14 @@ public sealed class CompanySetupPlanner
     {
         var refresh = false;
         HashSet<string> Merge(int step, string path, string what, string whatAr, Dictionary<string, string?>? baseline,
-            Dictionary<string, string?> draft, Dictionary<string, string?> database)
+            Dictionary<string, string?> draft, Dictionary<string, string?> database, string area = "")
         {
             var takeDatabase = new HashSet<string>(StringComparer.Ordinal);
             if (baseline is null) { refresh = true; return takeDatabase; }
             foreach (var (key, now) in database)
             {
-                if (!baseline.TryGetValue(key, out var before)) { refresh = true; continue; }
+                string? before = null;
+                if (!baseline.TryGetValue(key, out before) && !CompanySetupBaseline.AbsentMeansEmpty(area, key)) { refresh = true; continue; }
                 var mine = draft.GetValueOrDefault(key);
                 switch (CompanySetupBaseline.Decide(mine, before, now))
                 {
@@ -1209,8 +1344,59 @@ public sealed class CompanySetupPlanner
         {
             if (cc.ExistingId is not Guid id || !costCentreById.TryGetValue(id, out var row)) return cc;
             var t = Merge(4, $"costCentres[{i}]", $"Cost centre {OrgCodes.Normalize(row.Code)}", $"مركز التكلفة {OrgCodes.Normalize(row.Code)}", cc.Baseline,
-                CompanySetupBaseline.CostCentre(cc), CompanySetupBaseline.CostCentre(row));
-            return cc with { NameEn = t.Contains("nameEn") ? row.Name : cc.NameEn };
+                CompanySetupBaseline.CostCentre(cc), CompanySetupBaseline.CostCentre(row), Areas.CostCentre);
+            return cc with { NameEn = t.Contains("nameEn") ? row.Name : cc.NameEn, NameAr = t.Contains("nameAr") ? row.NameAr : cc.NameAr };
+        }).ToList();
+
+        // Departments, designations and grades (step 4; Addendum B: the company's own rows, same decision table).
+        var maps = ex.Maps;
+        string? LinkNow(Guid? id, IReadOnlyDictionary<Guid, string> codes) => id is Guid x && codes.TryGetValue(x, out var code) ? code : null;
+        var departmentById = ex.Org.Departments.Where(d => !d.IsDeleted).ToDictionary(d => d.Id);
+        var departments = (body.Departments ?? []).Select((d, i) =>
+        {
+            if (d.ExistingId is not Guid id || !departmentById.TryGetValue(id, out var row)) return d;
+            var code = OrgCodes.Normalize(row.Code);
+            var t = Merge(4, $"departments[{i}]", $"Department {code}", $"القسم {code}", d.Baseline,
+                CompanySetupBaseline.Department(d), CompanySetupBaseline.Department(row, maps.Departments, maps.Branches, maps.CostCentres));
+            return d with
+            {
+                NameEn = t.Contains("nameEn") ? row.NameEn : d.NameEn,
+                NameAr = t.Contains("nameAr") ? row.NameAr : d.NameAr,
+                ParentCode = t.Contains("parentCode") ? LinkNow(row.ParentDepartmentId, maps.Departments) : d.ParentCode,
+                BranchCode = t.Contains("branchCode") ? LinkNow(row.BranchId, maps.Branches) : d.BranchCode,
+                CostCentreCode = t.Contains("costCentreCode") ? LinkNow(row.CostCenterId, maps.CostCentres) : d.CostCentreCode,
+            };
+        }).ToList();
+        var designationById = ex.Org.Designations.Where(d => !d.IsDeleted).ToDictionary(d => d.Id);
+        var designations = (body.Designations ?? []).Select((d, i) =>
+        {
+            if (d.ExistingId is not Guid id || !designationById.TryGetValue(id, out var row)) return d;
+            var code = OrgCodes.Normalize(row.Code);
+            var t = Merge(4, $"designations[{i}]", $"Designation {code}", $"المسمى الوظيفي {code}", d.Baseline,
+                CompanySetupBaseline.Designation(d), CompanySetupBaseline.Designation(row, maps.Departments, maps.Grades));
+            return d with
+            {
+                TitleEn = t.Contains("titleEn") ? row.TitleEn : d.TitleEn,
+                TitleAr = t.Contains("titleAr") ? row.TitleAr : d.TitleAr,
+                DepartmentCode = t.Contains("departmentCode") ? LinkNow(row.DepartmentId, maps.Departments) : d.DepartmentCode,
+                GradeCode = t.Contains("gradeCode") ? LinkNow(row.GradeId, maps.Grades) : d.GradeCode,
+            };
+        }).ToList();
+        var gradeById = ex.Org.Grades.Where(g => !g.IsDeleted).ToDictionary(g => g.Id);
+        var grades = (body.Grades ?? []).Select((g, i) =>
+        {
+            if (g.ExistingId is not Guid id || !gradeById.TryGetValue(id, out var row)) return g;
+            var code = OrgCodes.Normalize(row.Code);
+            var t = Merge(4, $"grades[{i}]", $"Grade {code}", $"الدرجة {code}", g.Baseline, CompanySetupBaseline.Grade(g), CompanySetupBaseline.Grade(row));
+            return g with
+            {
+                NameEn = t.Contains("nameEn") ? row.Name : g.NameEn,
+                NameAr = t.Contains("nameAr") ? row.NameAr : g.NameAr,
+                Level = t.Contains("level") ? row.Level : g.Level,
+                MinSalary = t.Contains("minSalary") ? row.MinSalary : g.MinSalary,
+                MidSalary = t.Contains("midSalary") ? row.MidSalary : g.MidSalary,
+                MaxSalary = t.Contains("maxSalary") ? row.MaxSalary : g.MaxSalary,
+            };
         }).ToList();
 
         // Employee numbering and the working week (step 5).
@@ -1257,10 +1443,14 @@ public sealed class CompanySetupPlanner
                 "حُفظت هذه المسودة قبل أن يسجّل النظام بيانات الشركة عند بدئها، لذا لا يمكن التمييز بين تعديلاتك والتغييرات التي تمت في مكان آخر. أعد تحميل إعداد الشركة الحالي ثم أجرِ تعديلاتك مرة أخرى. لم يتم تغيير أي شيء.");
             return null;
         }
-        return body with { Company = co, Branches = branches, CostCentres = costCentres, Rules = rules! };
+        return body with
+        {
+            Company = co, Branches = branches, CostCentres = costCentres, Departments = departments, Designations = designations, Grades = grades,
+            Rules = rules!,
+        };
     }
 
-    private const string KeptReason = "Kept as it is: the wizard adds and edits, it never removes.";
+    private const string KeptReason = CompanySetupReasons.Kept;
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     /// <summary>
@@ -1361,7 +1551,8 @@ public sealed class CompanySetupPlanner
                 return V.ActionReuse;
             }
             c.Conflict(Areas.CompanyAdmin, user.Id.ToString(), user.FullName, 6, "companyAdmin.existingUserId", "existing_user_group_scope_not_admin",
-                $"{user.FullName} has group-wide access without the Admin role. Making them Admin would make them a GROUP super admin, not this company's. Invite a company super admin instead.");
+                $"{user.FullName} has group-wide access without the Admin role. Making them Admin would make them a GROUP super admin, not this company's. Invite a company super admin instead.",
+                $"لدى {user.FullName} صلاحية على مستوى المجموعة دون دور المسؤول. منحه دور المسؤول يجعله مسؤولاً أعلى للمجموعة لا لهذه الشركة. ادعُ مسؤولاً أعلى للشركة بدلاً من ذلك.");
             return V.ActionConflict;
         }
         if (!holdsAdmin)
@@ -1401,8 +1592,15 @@ public sealed class CompanySetupPlanner
         && ceiling.Roles.Any(r => string.Equals(r.Name, "Admin", StringComparison.OrdinalIgnoreCase) && r.CanAssign)
         && ceiling.HeldPermissions.Contains("security.manage", StringComparer.Ordinal);
 
-    private static CompanySetupPlan Finish(Collector c) =>
-        new(c.Problems.Count == 0 && c.Items.All(i => i.Action != V.ActionConflict), c.Items, c.Problems, c.Warnings);
+    private static CompanySetupPlan Finish(Collector c, string? focus = null) =>
+        new(focus is null
+                ? c.Problems.Count == 0 && c.Items.All(i => i.Action != V.ActionConflict)
+                : !c.Problems.Any(p => Blocks(p, focus)) && c.Items.All(i => i.Action != V.ActionConflict || i.Area != V.Sections.AreaOf(focus)),
+            c.Items, c.Problems, c.Warnings);
+
+    /// <summary>B2: whether a problem blocks a live save of <paramref name="section"/>: the step-1 gates, and that section's own fields.</summary>
+    public static bool Blocks(Problem p, string section) =>
+        p.Step == 1 || p.Field == section || p.Field.StartsWith(section + ".", StringComparison.Ordinal);
 
     internal static bool TryParseMonth(string? value, out DateOnly firstDay)
     {

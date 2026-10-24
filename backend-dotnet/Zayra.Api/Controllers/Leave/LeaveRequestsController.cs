@@ -672,12 +672,22 @@ public class LeaveRequestsController : ControllerBase
 
         var employees = await employeeQuery
             .ToDictionaryAsync(e => e.EmployeeCode.ToUpperInvariant(), ct);
-        var leaveTypesByCode = await _db.LeaveTypes
+        // Leave types are per company (2026-10-23): codes and names repeat across a group, so each row resolves within
+        // its employee's company (an unassigned legacy type is the fallback).
+        var activeTypes = await _db.LeaveTypes
             .Where(t => t.TenantId == tenantId && t.IsActive)
-            .ToDictionaryAsync(t => t.Code.ToUpperInvariant(), ct);
-        var leaveTypesByName = await _db.LeaveTypes
-            .Where(t => t.TenantId == tenantId && t.IsActive)
-            .ToDictionaryAsync(t => t.NameEn.ToUpperInvariant(), ct);
+            .ToListAsync(ct);
+        var typesByCompany = new Dictionary<Guid, (Dictionary<string, LeaveType> ByCode, Dictionary<string, LeaveType> ByName)>();
+        (Dictionary<string, LeaveType> ByCode, Dictionary<string, LeaveType> ByName) TypesFor(Guid? company)
+        {
+            var key = company ?? Guid.Empty;
+            if (typesByCompany.TryGetValue(key, out var found)) return found;
+            var byCode = Infrastructure.Leave.LeaveCompanyScope.ByCodeFor(activeTypes, company);
+            var byName = new Dictionary<string, LeaveType>(StringComparer.Ordinal);
+            foreach (var t in byCode.Values.OrderBy(t => t.CompanyId == null).ThenBy(t => t.Id))
+                byName.TryAdd(t.NameEn.ToUpperInvariant(), t);
+            return typesByCompany[key] = (byCode, byName);
+        }
 
         int created = 0, skipped = 0;
         var errors = new List<string>();
@@ -693,6 +703,7 @@ public class LeaveRequestsController : ControllerBase
             { skipped++; errors.Add($"Row {rowNum}: EmployeeCode '{employeeCode}' not found or out of scope."); continue; }
 
             LeaveType? leaveType = null;
+            var (leaveTypesByCode, leaveTypesByName) = TypesFor(employee.CompanyId);
             if (!string.IsNullOrWhiteSpace(leaveTypeCode))
                 leaveTypesByCode.TryGetValue(leaveTypeCode.ToUpperInvariant(), out leaveType);
             if (leaveType is null && !string.IsNullOrWhiteSpace(leaveTypeName))

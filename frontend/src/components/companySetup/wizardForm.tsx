@@ -65,19 +65,20 @@ export function WizardField({ field, label, required, help, className = '', chil
       </label>
       {help && <p id={helpId} className="mb-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{help}</p>}
       {children({ id, 'data-field': field, ...(error ? { 'aria-invalid': true as const } : {}), ...(describedBy ? { 'aria-describedby': describedBy } : {}), ...(required ? { 'aria-required': true as const } : {}) })}
-      {error && <p id={errorId} className="mt-1 text-xs font-medium leading-5 text-rose-700 dark:text-rose-300">{error}</p>}
+      {/* One line is always reserved under the field, so a message appearing never moves the form. */}
+      <p id={errorId} className="mt-1 min-h-[1.25rem] text-xs font-medium leading-5 text-rose-700 dark:text-rose-300">{error ?? ''}</p>
     </div>
   );
 }
 
 /**
- * A small status pill. Reused rows already exist in the shared group catalog and stay as they are; existing rows are
- * this company's own records (existing mode); changed marks an existing row edited in this draft.
+ * A small status pill: existing rows are this company's own records (existing mode); changed marks an existing row
+ * edited in this draft; saved marks a section written to the company by Save & next (Addendum B2).
  */
-export function TagPill({ tag }: { tag: 'new' | 'reused' | 'existing' | 'changed' }) {
+export function TagPill({ tag, label }: { tag: 'new' | 'existing' | 'changed' | 'saved'; label?: string }) {
   const t = useT();
-  const base = 'inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-semibold';
-  if (tag === 'reused') return <span className={`${base} bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200`}>{t('Reused')}</span>;
+  const base = 'inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px] font-semibold leading-none rtl:text-xs';
+  if (tag === 'saved') return <span className={`${base} bg-emerald-50 text-emerald-800 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/15 dark:text-emerald-200`}>{label ?? t('Saved')}</span>;
   if (tag === 'existing') return <span className={`${base} bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-300 dark:bg-white/10 dark:text-slate-200 dark:ring-white/20`}>{t('Existing')}</span>;
   if (tag === 'changed') return <span className={`${base} bg-sky-50 text-sky-800 dark:bg-sky-500/15 dark:text-sky-200`}>{t('Changed')}</span>;
   return <span className={`${base} bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200`}>{t('New')}</span>;

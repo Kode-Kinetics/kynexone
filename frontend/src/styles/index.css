@@ -133,7 +133,8 @@ textarea:focus-visible {
       transition-all duration-150
       hover:-translate-y-px hover:bg-blue-600 hover:shadow-md hover:shadow-sapphire/25
       active:translate-y-0 active:scale-[0.98]
-      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire/50;
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2
+      dark:focus-visible:ring-blue-300 dark:focus-visible:ring-offset-[#0d1225];
     /* Glass inner highlight */
     box-shadow: 0 1px 0 rgba(255,255,255,0.15) inset, 0 2px 8px rgba(47,107,255,0.25);
   }

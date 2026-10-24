@@ -28,8 +28,10 @@ public sealed class EmployeeImportPilotSafetyPostgresTests
         await using var seed = _fixture.CreateDb();
         var tenant = await PostgresFixture.SeedMinimalTenant(seed);
         seed.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenant, Plan = "Enterprise", Status = "Active", MaxEmployees = 300 });
-        seed.Companies.Add(Company(tenant, "Pilot Demo"));
-        seed.Grades.Add(new Grade { TenantId = tenant, Code = "G1", Name = "Demo grade", Currency = "SAR", MinSalary = 1, MaxSalary = 50000, IsActive = true });
+        var company = Company(tenant, "Pilot Demo");
+        seed.Companies.Add(company);
+        // Addendum B: a grade belongs to its company.
+        seed.Grades.Add(new Grade { TenantId = tenant, CompanyId = company.Id, Code = "G1", Name = "Demo grade", Currency = "SAR", MinSalary = 1, MaxSalary = 50000, IsActive = true });
         await seed.SaveChangesAsync();
         return tenant;
     }

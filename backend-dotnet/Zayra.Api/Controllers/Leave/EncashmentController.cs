@@ -93,6 +93,8 @@ public class EncashmentController : ControllerBase
             .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
         if (leaveType is null)
             return BadRequest(new { message = "Leave type not found." });
+        if (!await Zayra.Api.Infrastructure.Leave.LeaveCompanyScope.IsUsableByAsync(_db, leaveType, employee.CompanyId, ct))
+            return BadRequest(new { message = Zayra.Api.Infrastructure.Leave.LeaveCompanyScope.NotThisCompanysType });
 
         // The employee's own policy, resolved exactly as a leave request resolves it — not the first active row for the
         // type, which with a locals/expats or employment-type split would pay one group under the other's rules.

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
@@ -27,6 +28,8 @@ public class LeavePoliciesController : ControllerBase
     public async Task<IActionResult> List(
         [FromQuery] string? countryCode,
         [FromQuery] string? status,
+        [FromQuery] string? companyId = null,
+        [FromQuery] bool? includeUnassigned = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
         CancellationToken ct = default)
@@ -43,6 +46,18 @@ public class LeavePoliciesController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(status))
             query = query.Where(p => p.Status == status);
+
+        // A company id gives that company's policies (plus, with includeUnassigned, legacy rows no company owns yet);
+        // "unassigned" gives only those legacy rows.
+        if (string.Equals(companyId, "unassigned", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(p => p.CompanyId == null);
+        else if (!string.IsNullOrWhiteSpace(companyId))
+        {
+            if (!Guid.TryParse(companyId, out var company)) return BadRequest(new { message = "companyId must be a company id or 'unassigned'." });
+            query = includeUnassigned == true
+                ? query.Where(p => p.CompanyId == company || p.CompanyId == null)
+                : query.Where(p => p.CompanyId == company);
+        }
 
         var total = await query.CountAsync(ct);
         var items = await query
@@ -84,13 +99,23 @@ public class LeavePoliciesController : ControllerBase
         if (RefuseEligibilityOrEncashment(req.MinimumServiceMonths, req.EncashmentAllowed, req.EncashmentMaxDays, req.NationalityScope ?? LeaveNationalityScopes.Any) is { } ruleRefusal)
             return ruleRefusal;
 
+        // A policy belongs to one company (owner decision 2026-10-23): the one named, else the switcher's, else the
+        // only one. Its leave type and branch must be that company's (an unassigned legacy type still matches).
+        Guid companyId;
+        try
+        {
+            companyId = await LeaveCompanyScope.ResolveOwningCompanyAsync(_db, tenantId.Value, req.CompanyId, ct);
+            await EnsureSameCompanyAsync(tenantId.Value, companyId, leaveType, req.BranchId, ct);
+        }
+        catch (OrganizationRuleException ex) { return BadRequest(ex.ToPayload()); }
+
         var policy = new LeavePolicy
         {
             TenantId = tenantId.Value,
             Name = req.Name,
             LeaveTypeId = req.LeaveTypeId,
             CountryCode = req.CountryCode ?? string.Empty,
-            CompanyId = req.CompanyId,
+            CompanyId = companyId,
             BranchId = req.BranchId,
             DepartmentName = req.DepartmentName ?? string.Empty,
             Grade = req.Grade ?? string.Empty,
@@ -285,11 +310,34 @@ public class LeavePoliciesController : ControllerBase
         if (RefuseCarryForward(req.CarryForwardMax, req.CarryForwardExpiry) is { } carryForwardRefusal)
             return carryForwardRefusal;
 
+        // The company is fixed once set; an unassigned legacy policy takes the company the request names, and its leave
+        // type follows (the company's own type of the same code when the legacy type belongs elsewhere).
+        var companyBefore = policy.CompanyId;
+        try
+        {
+            policy.CompanyId = await LeaveCompanyScope.ResolveCompanyOnUpdateAsync(_db, tenantId.Value, policy.CompanyId, req.CompanyId, ct);
+            if (policy.CompanyId is Guid owner)
+            {
+                var currentType = await _db.LeaveTypes.AsNoTracking()
+                    .FirstOrDefaultAsync(t => t.Id == policy.LeaveTypeId && t.TenantId == tenantId, ct);
+                if (companyBefore is null && currentType is not null && !await LeaveCompanyScope.IsUsableByAsync(_db, currentType, owner, ct))
+                {
+                    var code = currentType.Code.ToUpper();
+                    var own = await _db.LeaveTypes.AsNoTracking()
+                        .FirstOrDefaultAsync(t => t.TenantId == tenantId && t.CompanyId == owner && t.Code.ToUpper() == code, ct)
+                        ?? throw new OrganizationRuleException(OrganizationRuleException.CompanyMismatch,
+                            "The policy's leave type belongs to another company, and this company has no leave type with that code.");
+                    policy.LeaveTypeId = own.Id;
+                }
+                await EnsureSameCompanyAsync(tenantId.Value, owner, null, req.BranchId, ct);
+            }
+        }
+        catch (OrganizationRuleException ex) { return BadRequest(ex.ToPayload()); }
+
         var waiverBefore = policy.AllowsHajjBeyondStatutoryEligibility;
         var prorationBefore = policy.ProratePartialMonths;
         if (!string.IsNullOrWhiteSpace(req.Name)) policy.Name = req.Name;
         if (req.CountryCode is not null) policy.CountryCode = req.CountryCode;
-        if (req.CompanyId.HasValue) policy.CompanyId = req.CompanyId;
         if (req.BranchId.HasValue) policy.BranchId = req.BranchId;
         if (req.DepartmentName is not null) policy.DepartmentName = req.DepartmentName;
         if (req.Grade is not null) policy.Grade = req.Grade;
@@ -332,12 +380,35 @@ public class LeavePoliciesController : ControllerBase
         await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
             "Updated", string.Empty, policy.Name, "Leave policy updated",
             User.Identity?.Name ?? "Admin", ct);
+        if (companyBefore != policy.CompanyId)
+            await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
+                "CompanyAssigned", "company_id=", $"company_id={policy.CompanyId}", "Unassigned leave policy assigned to its company",
+                User.Identity?.Name ?? "Admin", ct);
         if (leaveType is not null)
             await AuditStatutoryChoicesAsync(tenantId.Value, leaveType, policy, waiverBefore, ct);
         if (prorationBefore != policy.ProratePartialMonths)
             await AuditProrationChoiceAsync(tenantId.Value, policy, prorationBefore, ct);
 
         return Ok(policy);
+    }
+
+    /// <summary>
+    /// A policy's leave type and branch must belong to the policy's company. An unassigned legacy leave type still
+    /// matches a company that has no type of the same code (the fallback rule).
+    /// </summary>
+    private async Task EnsureSameCompanyAsync(Guid tenantId, Guid companyId, LeaveType? leaveType, Guid? branchId, CancellationToken ct)
+    {
+        if (leaveType is not null && !await LeaveCompanyScope.IsUsableByAsync(_db, leaveType, companyId, ct))
+            throw new OrganizationRuleException(OrganizationRuleException.CompanyMismatch,
+                "This leave type belongs to another company. Choose a leave type of the policy's company.");
+        if (branchId is Guid branch)
+        {
+            var branchCompany = await _db.Branches.AsNoTracking()
+                .Where(b => b.TenantId == tenantId && b.Id == branch).Select(b => (Guid?)b.CompanyId).FirstOrDefaultAsync(ct);
+            if (branchCompany is Guid owner && owner != companyId)
+                throw new OrganizationRuleException(OrganizationRuleException.CompanyMismatch,
+                    "This branch belongs to another company. Choose a branch of the policy's company.");
+        }
     }
 
     [HttpDelete("{id:guid}")]

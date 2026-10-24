@@ -153,6 +153,15 @@ public class KsaStatutorySpecialLeaveTests
         WeekendsIncluded: calendar, PublicHolidaysIncluded: calendar, PayrollImpact: payrollImpact,
         ApprovalWorkflowId: null, Status: "Active");
 
+    /// <summary>Leave policies belong to one company now; a tenant with none cannot create one (company_required).</summary>
+    private static async Task<Company> AddCompanyAsync(ZayraDbContext db, Guid tenantId, string country = "SA")
+    {
+        var c = new Company { TenantId = tenantId, LegalNameEn = $"{country} Co", CountryCode = country };
+        db.Companies.Add(c);
+        await db.SaveChangesAsync();
+        return c;
+    }
+
     private static async Task<LeaveType> AddMaternityTypeAsync(ZayraDbContext db, Guid tenantId, int maxConsecutive = 0)
     {
         var t = new LeaveType
@@ -177,6 +186,7 @@ public class KsaStatutorySpecialLeaveTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
         var mat = await AddMaternityTypeAsync(db, tenantId);
         var controller = PoliciesController(db, tenantId);
 
@@ -199,6 +209,7 @@ public class KsaStatutorySpecialLeaveTests
         Guid id;
         await using (var db = Open())
         {
+            await AddCompanyAsync(db, tenantId);
             var mat = await AddMaternityTypeAsync(db, tenantId);
             var created = (CreatedResult)await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m), default);
             id = ((LeavePolicy)created.Value!).Id;
@@ -258,6 +269,7 @@ public class KsaStatutorySpecialLeaveTests
             RuleKey = KsaSpecialLeaveRuleKeys.MaternityDays, RuleValue = "98", DataType = "decimal",
             EffectiveFrom = new DateTime(2025, 2, 19, 0, 0, 0, DateTimeKind.Utc), Description = "test",
         });
+        await AddCompanyAsync(db, tenantId);
         var mat = await AddMaternityTypeAsync(db, tenantId);
 
         AssertFloorRefusal(await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m), default));
@@ -269,6 +281,7 @@ public class KsaStatutorySpecialLeaveTests
         // 70 working days cannot be judged against the law's 12 weeks; the refusal spells out the fix.
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
         var mat = await AddMaternityTypeAsync(db, tenantId);
 
         var refused = await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 70m, calendar: false), default);
@@ -286,6 +299,7 @@ public class KsaStatutorySpecialLeaveTests
         // HR is not stranded: it saves, and a StatutoryReviewNeeded row asks for calendar counting.
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
         var mat = await AddMaternityTypeAsync(db, tenantId);
 
         var saved = await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m, calendar: false), default);
@@ -301,6 +315,7 @@ public class KsaStatutorySpecialLeaveTests
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
         var mat = await AddMaternityTypeAsync(db, tenantId);
         var controller = PoliciesController(db, tenantId);
         var id = ((LeavePolicy)((CreatedResult)await controller.Create(Policy(mat.Id, days: 84m, calendar: false), default)).Value!).Id;
@@ -350,6 +365,7 @@ public class KsaStatutorySpecialLeaveTests
         var hajj = new LeaveType { TenantId = tenantId, Code = "HAJJ", NameEn = "Hajj Leave", Category = "Religious", IsPaid = true, IsActive = true };
         db.LeaveTypes.Add(hajj);
         await db.SaveChangesAsync();
+        await AddCompanyAsync(db, tenantId);
         var controller = PoliciesController(db, tenantId);
 
         var created = (CreatedResult)await controller.Create(
@@ -372,26 +388,24 @@ public class KsaStatutorySpecialLeaveTests
     }
 
     [Fact]
-    public async Task MixedTenant_NeutralMaternityPolicy_IsNotForcedToTheSaudiFigure_ButNeedsASaudiPolicy()
+    public async Task MixedTenant_NeutralMaternityPolicy_IsHeldToTheFloorOnlyForItsOwnSaudiCompany()
     {
-        // A no-country, no-company policy in a tenant with Saudi AND UAE companies governs both. The
-        // Saudi 84 must not be forced onto the UAE staff; the admin is told to add a Saudi policy.
+        // Policies are per company now, so a neutral (no-country) policy never spans companies: the Saudi 84
+        // is forced only onto the Saudi company's policy, never onto the UAE company's.
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "KSA Co", CountryCode = "SA" });
-        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "UAE Co", CountryCode = "AE" });
+        var ksa = await AddCompanyAsync(db, tenantId, "SA");
+        var uae = await AddCompanyAsync(db, tenantId, "AE");
         var mat = await AddMaternityTypeAsync(db, tenantId);
         var controller = PoliciesController(db, tenantId);
 
-        var refused = await controller.Create(Policy(mat.Id, days: 60m, country: null, calendar: false), default);
-        AssertFloorRefusal(refused);
-        ((string)((BadRequestObjectResult)refused).Value!.GetType().GetProperty("message")!
-                .GetValue(((BadRequestObjectResult)refused).Value)!)
-            .Should().Contain("create a separate Saudi policy (country SA)");
+        AssertFloorRefusal(await controller.Create(
+            Policy(mat.Id, days: 60m, country: null, companyId: ksa.Id, calendar: false), default));
 
-        (await controller.Create(Policy(mat.Id, days: 84m, country: "SA"), default)).Should().BeOfType<CreatedResult>();
-        (await controller.Create(Policy(mat.Id, days: 60m, country: null, calendar: false), default))
-            .Should().BeOfType<CreatedResult>("Saudi employees now resolve the Saudi policy, which outranks this one");
+        (await controller.Create(Policy(mat.Id, days: 60m, country: null, companyId: uae.Id, calendar: false), default))
+            .Should().BeOfType<CreatedResult>("the UAE company's neutral policy is not held to the Saudi figure");
+        (await controller.Create(Policy(mat.Id, days: 84m, country: "SA", companyId: ksa.Id), default))
+            .Should().BeOfType<CreatedResult>();
     }
 
     // ── Setup apply: a reviewed draft edited below the floor is refused whole ──────────────

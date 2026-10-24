@@ -301,3 +301,94 @@ A9 (Postgres): for a branch, a company field and a cost centre — draft opened,
 then commits the edit; a counter moved by hiring is not written back; a draft without baselines →
 `draft_needs_refresh`, nothing written; prefill and draft reads carry `cutoverStatus`. Unit: the decision table,
 scale-free projection, baseline JSON round trip; client: baselines survive every form edit + JSON round trip.
+
+## Addendum B — per-company organisation, live section saves, policies in the wizard (decided 2026-10-23)
+
+The owner decided: separate companies in a group means separate everything. **Departments, designations and
+grades are owned by one company**, like cost centres. There is no shared group catalog. Decision 6's
+"shared group catalog" and Decision 13 (one grade currency per tenant) are **withdrawn**. Group convenience is
+**copy by value** from a sister company (B3), never a live link.
+
+### B1. Data model (one migration, owned by the schema builder)
+- `departments`, `designations`, `grades` gain `company_id uuid null FK companies`, and the entities implement
+  `ICompanyScoped` (the config-tier filter: the company switcher and company-scoped users see only their
+  company's rows).
+- Code uniqueness moves from (tenant, code) to (tenant, company_id, code) with `NULLS NOT DISTINCT`.
+- `cost_centers` gains `name_ar varchar(160) null`. The wizard's cost-centre Arabic name is stored, no longer
+  dropped.
+- `grades.currency` defaults to the owning company's `DefaultCurrency`.
+- Backfill (inside the migration, deterministic, idempotent; an audit row per moved or copied row):
+  1. A row used by exactly one company is assigned to it. "Used by" means referenced by that company's
+     employees, branches or cost centres, or by a department or designation that is itself used by it.
+  2. A row used by several companies keeps its id for the company with the most employees on it (ties go to the
+     oldest company). Every other user company gets a **copy** with the same code and values. That company's
+     references are re-pointed to its copy, in every FK column to the table: employees, positions, grade
+     entitlements, loan limits, approval rules, benefits, learning and the rest. Child config (e.g. grade pay
+     scale components, grade entitlements) is copied too.
+  3. A row used by nobody goes to the only company when the tenant has one. Otherwise it stays `company_id null`
+     and Setup lists it as "Unassigned — choose the company".
+- A read-only precheck SQL (`docs/runbooks/org-per-company-precheck.sql`) counts, per tenant, the rows each
+  rule touches and the references that would move. The owner runs it on production before deploy.
+
+### B2. Live section save (existing mode only)
+`POST /api/company-setup/drafts/{id}/sections/{section}`, body `{ version }`, where section is one of
+`costCentres | departments | grades | designations`.
+- Same caller rules as the commit (A5).
+- Same tenant setup lock and one transaction.
+- Refused with 409 `section_apply_needs_company` for a create-mode draft. Create mode keeps rows in the draft
+  until Create.
+- The planner runs with the section in focus. Only problems whose field is in that section, plus the step-1
+  gates, block.
+- A reference to another section must already exist in the database:
+  - a department's cost centre or parent (a parent may be new in the same section),
+  - a designation's department or grade.
+  Otherwise it is problem `reference_not_saved` ("Save Cost centres first: CC_X is not saved yet.").
+- Rows are written through `IOrganizationSetupService`, so every row keeps its own validation and audit. The
+  section gets one marker audit `company.setup_section_applied` with { draftId, section, fromVersion, counts }.
+- The draft is rebased **in place**:
+  - each row of the section gets `existingId` and a fresh A9 `baseline`;
+  - order and other sections are untouched;
+  - version + 1 and step 4.
+- Response: `SectionApplyResult { draft, section, created, updated, unchanged, replayed }`.
+- Retry: a request whose version is one behind, with a marker for (draft, section, fromVersion), returns the
+  current draft with `replayed: true`. A blind retry never writes twice.
+- A9 baselines now cover departments, designations and grades too (same decision table). The final
+  `Update company` sees saved sections as unchanged.
+- No deletes (A3 unchanged). An existing row is deactivated in its Setup tab.
+
+### B3. Copy from a sister company
+`GET /api/company-setup/copy-rows?fromCompanyId=&section=` returns that company's active rows of the section as
+NEW draft rows: no existingId, no baseline, links kept by code.
+- Group scope only, and the source must be an active company in the tenant.
+- The client appends rows whose code is not already in the draft and says how many it skipped.
+- Nothing is linked afterwards.
+
+### B4. Wizard parts (frontend contract)
+`PartId = 'costCentres' | 'departments' | 'grades' | 'designations' | 'workRules' | 'leave' | 'endOfService' | 'moreSettings'`.
+
+| Step | Parts |
+|---|---|
+| 4 | costCentres, departments, grades, designations |
+| 5 | workRules, leave, endOfService, moreSettings |
+
+- The rail nests the parts under their step. The URL carries `&part=`.
+- Back on a step's first part goes to the previous step's last part.
+- Step 4 parts:
+  - Existing mode: "Save & next" flushes the draft, then calls B2, adopts the returned draft and advances.
+  - Create mode: "Save & next" validates the part, flushes the draft and advances.
+- Step 5 parts:
+  - `workRules` (working week, employee numbering) stays draft data applied at Update or Create.
+  - `leave` embeds the existing Leave types, Leave policies and Holiday calendar editors, which save live.
+  - `endOfService` embeds the existing Country rules (GCC settings) editor.
+  - `moreSettings` lists the other settings. Embeddable ones open in place; the rest open their page with a
+    "Back to company setup" bar.
+- `RulesStep({ defaults, preview, previewState, part })` renders one part.
+- No new draft step number (the DB CHECK stays 1–7). The part is UI state plus the URL.
+
+### B5. Motion and responsiveness
+Restrained motion: part and step transitions (150–200 ms fade/slide), rows animating in and out, a saved-state
+tick, and rail progress.
+- Only `transform` and `opacity` are animated, never layout.
+- Everything is off under `prefers-reduced-motion`.
+- No horizontal page scroll at phone width. Editable rows are a compact table when the column is at least 640px
+  wide, and a stacked list below that.

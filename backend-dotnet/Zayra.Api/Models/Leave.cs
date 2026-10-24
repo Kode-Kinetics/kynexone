@@ -1,10 +1,17 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class LeaveType : ITenantOwned
+public class LeaveType : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>
+    /// The company (legal entity) that owns this leave type. Owner decision 2026-10-23: companies in a group are separate
+    /// legal entities, so a sister company has its own copy, never a shared row. NULL only for a legacy row the
+    /// per-company backfill could not attribute — Setup lists it as "Unassigned — choose the company", and lookups treat
+    /// it as a fallback match for any company that has no type of the same code.
+    /// </summary>
+    public Guid? CompanyId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string NameEn { get; set; } = string.Empty;
     public string NameAr { get; set; } = string.Empty;
@@ -72,6 +79,13 @@ public class LeavePolicy : ITenantOwned, ICompanyScoped
     /// Read only for a Hajj leave type; it never shortens or lowers anything.
     /// </summary>
     public bool AllowsHajjBeyondStatutoryEligibility { get; set; }
+    /// <summary>
+    /// True only on a policy that was tenant-wide (no company) before the per-company leave backfill, and on the copies
+    /// that backfill made of it for each sister company. It keeps the policy's old precedence: a company-specific policy
+    /// used to outrank a tenant-wide default (<c>LeaveService.PolicySpecificity</c>), and assigning the default to a
+    /// company must not silently flip which policy an employee resolves. Never set by a new write.
+    /// </summary>
+    public bool LegacyGroupDefault { get; set; }
     public string Status { get; set; } = "Draft";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;

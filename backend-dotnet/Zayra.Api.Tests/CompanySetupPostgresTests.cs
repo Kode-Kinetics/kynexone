@@ -83,9 +83,10 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         db.Branches.Add(sisterBranch);
         var sisterCc = new CostCenter { TenantId = tenantId, CompanyId = sister.Id, Code = "CC_HR", Name = "HR cost centre" };
         db.CostCenters.Add(sisterCc);
-        var hr = new Department { TenantId = tenantId, Code = "HR", NameEn = "Human Resources", BranchId = sisterBranch.Id, CostCenterId = sisterCc.Id };
+        // Addendum B: departments, designations and grades are owned by one company — these are the sister's.
+        var hr = new Department { TenantId = tenantId, CompanyId = sister.Id, Code = "HR", NameEn = "Human Resources", BranchId = sisterBranch.Id, CostCenterId = sisterCc.Id };
         db.Departments.Add(hr);
-        db.Grades.Add(new Grade { TenantId = tenantId, Code = "G1", Name = "Grade 1", Level = 1, MinSalary = 3000, MidSalary = 4500, MaxSalary = 6000, Currency = "SAR" });
+        db.Grades.Add(new Grade { TenantId = tenantId, CompanyId = sister.Id, Code = "G1", Name = "Grade 1", Level = 1, MinSalary = 3000, MidSalary = 4500, MaxSalary = 6000, Currency = "SAR" });
         if (withSaGcc)
             db.GCCComplianceSettings.Add(new GCCComplianceSetting
             {
@@ -147,7 +148,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
             costCentres ?? [new CompanySetupCostCentre($"CC_OPS_{cr[^4..]}", "Operations cost centre", null)],
             departments ?? [new CompanySetupDepartment($"OPS{cr[^4..]}", "Operations", null, null, "JED", $"CC_OPS_{cr[^4..]}")],
             [new CompanySetupDesignation($"OPS_OFF{cr[^4..]}", "Operations Officer", null, $"OPS{cr[^4..]}", "G1")],
-            grades ?? [],
+            // The company's own G1 (Addendum B): the sister's G1 is the sister's, never linked.
+            grades ?? [new CompanySetupGrade("G1", "Grade 1", "الدرجة 1", 1, 3000, 4500, 6000)],
             new CompanySetupRules(new CompanySetupWorkWeek("Fri,Sat", false), new CompanySetupPackChoice(true), new CompanySetupPackChoice(true),
                 new CompanySetupEmployeeNumbering("NGC", true, false, true, true, 4, 1)),
             admin ?? new CompanySetupCompanyAdmin(V.AdminGroupOnly, null, null, null, null));
@@ -200,7 +202,13 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         (await db.CostCenters.SingleAsync(c => c.Code == "CC_OPS_0099" && c.TenantId == w.TenantId)).CompanyId.Should().Be(company.Id);
         var ops = await db.Departments.SingleAsync(d => d.TenantId == w.TenantId && d.Code == "OPS0099");
         ops.CostCenterId.Should().NotBeNull();
-        (await db.Designations.SingleAsync(d => d.TenantId == w.TenantId && d.Code == "OPS_OFF0099")).GradeId.Should().NotBeNull("G1 is reused");
+        ops.CompanyId.Should().Be(company.Id, "Addendum B: the department is the new company's own");
+        var ownG1 = await db.Grades.SingleAsync(g => g.TenantId == w.TenantId && g.Code == "G1" && g.CompanyId == company.Id);
+        ownG1.Currency.Should().Be("SAR", "a grade band is in its company's currency");
+        var officer = await db.Designations.SingleAsync(d => d.TenantId == w.TenantId && d.Code == "OPS_OFF0099");
+        officer.CompanyId.Should().Be(company.Id);
+        officer.GradeId.Should().Be(ownG1.Id, "the designation links to this company's G1, never the sister's");
+        (await db.Grades.CountAsync(g => g.TenantId == w.TenantId && g.Code == "G1")).Should().Be(2, "one G1 per company");
         (await db.EmployeeIdRules.SingleAsync(r => r.TenantId == w.TenantId && r.CompanyId == company.Id)).CompanyPrefix.Should().Be("NGC");
         var cutover = await db.CompanyCutovers.SingleAsync(c => c.TenantId == w.TenantId && c.CompanyId == company.Id);
         cutover.CutoverDate.Should().Be(new DateOnly(2026, 11, 1));
@@ -211,7 +219,9 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         gcc.EosbYears1To5Rate.Should().Be(15m, "Art. 84's half month per year, in the days-per-year unit the calculator reads");
         gcc.EosbYearsAbove5Rate.Should().Be(30m);
         gcc.WeekendDays.Should().Be("Fri,Sat");
-        (await db.LeavePolicies.CountAsync(p => p.TenantId == w.TenantId && p.CompanyId == null && p.CountryCode == "SA")).Should().Be(2);
+        // Statutory leave is per company (owner decision 2026-10-23): installed FOR the new company, nothing workspace-wide.
+        (await db.LeavePolicies.IgnoreQueryFilters().CountAsync(p => p.TenantId == w.TenantId && p.CompanyId == company.Id && p.CountryCode == "SA")).Should().Be(2);
+        (await db.LeavePolicies.IgnoreQueryFilters().CountAsync(p => p.TenantId == w.TenantId && p.CompanyId == null)).Should().Be(0);
 
         var draftRow = await db.CompanySetupDrafts.SingleAsync(d => d.Id == draft.Id);
         draftRow.Status.Should().Be(CompanySetupDraftStatuses.Submitted);
@@ -227,6 +237,7 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         result.Readiness.Should().OnlyContain(r => r.Href.StartsWith("/"));
         result.Readiness.Single(r => r.Key == "glMapping").Href.Should().Be($"/setup?tab=glMapping&companyId={company.Id}");
         result.Readiness.Single(r => r.Key == "companyAdmin").Status.Should().Be(V.ReadinessRecommended, "group admins manage it");
+        result.Readiness.Single(r => r.Key == "leavePolicies").Status.Should().Be(V.ReadinessDone, "the company's own statutory leave policies exist");
     }
 
     [Fact]
@@ -347,52 +358,77 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task A_cost_centre_code_clash_blocks_the_commit()
+    public async Task A_cost_centre_code_of_a_sister_company_is_this_company_s_own_new_row()
+    {
+        // Owner decision 2026-10-23: cost-centre codes are unique per company, like the other organisation rows.
+        var w = await SeedAsync();
+        var body = Body(costCentres: [new CompanySetupCostCentre("cc_hr", "HR costs", "تكاليف الموارد البشرية")], departments: []) with { Designations = [] };
+        await using (var db = fixture.CreateDb())
+        {
+            var plan = await Service(db).DryRunAsync(Caller(w), body, default);
+            plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
+            plan.Items.Should().Contain(i => i.Area == "costCentre" && i.Code == "CC_HR" && i.Action == V.ActionCreate);
+        }
+        var outcome = await CommitAsync(w, await NewDraftAsync(w, body));
+        outcome.Status.Should().Be(201, JsonSerializer.Serialize(outcome.Error));
+        await using var verify = fixture.CreateDb();
+        var rows = await verify.CostCenters.IgnoreQueryFilters().Where(c => c.TenantId == w.TenantId && c.Code == "CC_HR").ToListAsync();
+        rows.Select(r => r.CompanyId).Should().BeEquivalentTo(new Guid?[] { w.SisterId, outcome.Value!.CompanyId });
+        rows.Single(r => r.CompanyId == outcome.Value.CompanyId).NameAr.Should().Be("تكاليف الموارد البشرية");
+    }
+
+    [Fact]
+    public async Task A_cost_centre_code_twice_in_one_draft_blocks_the_commit()
     {
         var w = await SeedAsync();
-        var body = Body(costCentres: [new CompanySetupCostCentre("cc_hr", "Clashing", null)], departments: []);
+        var body = Body(costCentres: [new CompanySetupCostCentre("CC_X", "One", null), new CompanySetupCostCentre("cc_x", "Two", null)], departments: [])
+            with { Designations = [] };
         await using (var db = fixture.CreateDb())
         {
             var plan = await Service(db).DryRunAsync(Caller(w), body, default);
             plan.Ok.Should().BeFalse();
-            plan.Items.Should().Contain(i => i.Area == "costCentre" && i.Code == "CC_HR" && i.Action == V.ActionConflict);
-            plan.Problems.Should().Contain(p => p.Code == "cost_centre_code_taken" && p.Field == "costCentres.0.code");
+            plan.Problems.Should().Contain(p => p.Code == "duplicate_code" && p.Field == "costCentres.1.code");
         }
-        var draft = await NewDraftAsync(w, body with { Designations = [] });
-        (await CommitAsync(w, draft)).Status.Should().Be(409);
+        (await CommitAsync(w, await NewDraftAsync(w, body))).Status.Should().Be(422);
         await AssertNothingCreatedAsync(w);
     }
 
     [Fact]
-    public async Task An_existing_department_is_reused_and_never_relinked()
+    public async Task The_same_department_code_in_two_companies_is_two_rows_and_the_sister_s_row_is_never_touched()
     {
+        // Addendum B: codes are unique within a company only. The sister's HR is not reused, not re-linked, not edited.
         var w = await SeedAsync();
-        var body = Body(departments: [new CompanySetupDepartment("HR", "Human Resources", null, null, "JED", "CC_OPS_0099")]) with { Designations = [] };
+        var body = Body(departments: [new CompanySetupDepartment("HR", "People", null, null, "JED", "CC_OPS_0099")]) with { Designations = [] };
         await using (var db = fixture.CreateDb())
         {
             var plan = await Service(db).DryRunAsync(Caller(w), body, default);
-            plan.Items.Should().Contain(i => i.Area == "department" && i.Code == "HR" && i.Action == V.ActionReuse);
-            plan.Warnings.Should().Contain(p => p.Code == "existing_department_not_relinked");
+            plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
+            plan.Items.Should().Contain(i => i.Area == "department" && i.Code == "HR" && i.Action == V.ActionCreate);
+            plan.Items.Should().NotContain(i => i.Action == V.ActionReuse && (i.Area == "department" || i.Area == "designation" || i.Area == "grade"));
+            plan.Warnings.Should().NotContain(p => p.Code == "existing_department_not_relinked" || p.Code == "grades_currency_differs");
         }
         var draft = await NewDraftAsync(w, body);
-        (await CommitAsync(w, draft)).Status.Should().Be(201);
+        var outcome = await CommitAsync(w, draft);
+        outcome.Status.Should().Be(201, JsonSerializer.Serialize(outcome.Error));
         await using var verify = fixture.CreateDb();
-        var hr = await verify.Departments.AsNoTracking().SingleAsync(d => d.Id == w.SisterDepartmentId);
-        hr.BranchId.Should().Be(w.SisterBranchId);
-        hr.CostCenterId.Should().Be((await verify.CostCenters.SingleAsync(c => c.TenantId == w.TenantId && c.Code == "CC_HR")).Id);
+        var sisterHr = await verify.Departments.AsNoTracking().SingleAsync(d => d.Id == w.SisterDepartmentId);
+        sisterHr.NameEn.Should().Be("Human Resources");
+        sisterHr.BranchId.Should().Be(w.SisterBranchId);
+        sisterHr.CompanyId.Should().Be(w.SisterId);
+        var ownHr = await verify.Departments.AsNoTracking().SingleAsync(d => d.TenantId == w.TenantId && d.Code == "HR" && d.CompanyId == outcome.Value!.CompanyId);
+        ownHr.NameEn.Should().Be("People");
+        ownHr.CostCenterId.Should().Be((await verify.CostCenters.SingleAsync(c => c.TenantId == w.TenantId && c.Code == "CC_OPS_0099")).Id);
     }
 
     [Fact]
-    public async Task A_company_scoped_user_cannot_add_shared_catalog_codes()
+    public async Task A_company_scoped_user_cannot_create_a_company_and_no_shared_catalog_rule_remains()
     {
         var w = await SeedAsync();
         await using var db = fixture.CreateDb();
         var plan = await Service(db).DryRunAsync(Caller(w, group: false), Body(grades: [new CompanySetupGrade("G9", "Grade 9", null, 9, 1, 2, 3)]), default);
         plan.Ok.Should().BeFalse();
         plan.Problems.Should().Contain(p => p.Code == CompanySetupGates.GroupScopeRequiredCode);
-        plan.Items.Where(i => i.Area is "department" or "designation" or "grade" && i.Action != V.ActionReuse)
-            .Should().NotBeEmpty().And.OnlyContain(i => i.Action == V.ActionConflict);
-        plan.Problems.Should().Contain(p => p.Code == "shared_catalog_needs_group_scope");
+        plan.Problems.Should().NotContain(p => p.Code == "shared_catalog_needs_group_scope", "Addendum B withdrew the shared catalog");
     }
 
     [Fact]
@@ -417,7 +453,7 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         var draft = await NewDraftAsync(w, Body());
         await using (var db = fixture.CreateDb())
             (await Service(db).GetContextAsync(Caller(w), default)).Should().Match<CompanySetupContext>(c =>
-                c.CanCreate && c.CompaniesUsed == 1 && c.CompaniesAllowed == 2 && c.CanGrantCompanyAdmin && c.GradesCurrency == "SAR");
+                c.CanCreate && c.CompaniesUsed == 1 && c.CompaniesAllowed == 2 && c.CanGrantCompanyAdmin && c.GradesCurrency == null && c.SharedCatalog == null);
         // The last seat is taken by another door after the draft was started.
         await using (var db = fixture.CreateDb())
         {
@@ -462,6 +498,9 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         plan.Items.Where(i => i.Area is not ("branch" or "location" or "costCentre" or "department" or "designation" or "grade" or "companyAdmin"))
             .Where(i => string.IsNullOrWhiteSpace(i.LabelAr))
             .Select(i => $"{i.Area}:{i.Label}").Should().BeEmpty("fixed-text plan rows are written by the planner and must name themselves in Arabic too");
+        plan.Items.Where(i => i.Reason != null && string.IsNullOrWhiteSpace(i.ReasonAr))
+            .Select(i => $"{i.Area}:{i.Reason}").Should().BeEmpty("every reason the review shows has Arabic too");
+        plan.Items.Where(i => i.Reason == null).Should().OnlyContain(i => i.ReasonAr == null);
     }
 
     [Fact]
@@ -699,14 +738,21 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         JsonSerializer.Serialize(a).Should().Be(JsonSerializer.Serialize(b), "deterministic: no model call");
         a.Company.Currency.Should().Be("SAR");
         a.Rules.WorkWeek.WeekendDays.Should().Be("Fri,Sat");
-        a.CostCentres!.Select(c => c.Code).Should().NotContain("CC_HR", "a template cost centre never clashes with a sister's code");
-        a.Departments!.Single(d => d.Code == "HR").CostCentreCode.Should().BeNull("an existing department is reused, not re-linked");
+        a.Departments!.Should().OnlyContain(d => d.ExistingId == null, "a new company has no rows yet");
+        a.Departments!.Where(d => d.CostCentreCode != null).Should().NotBeEmpty("the pack's departments are linked to the pack's cost centres");
 
         var copy = (await service.GetDefaultsAsync(Caller(w), null, w.SisterId, default)).Value!;
         copy.StartFrom.Should().Be(V.StartFromCopy);
         copy.Company.CountryCode.Should().Be("SA");
         copy.Branches!.Should().ContainSingle().Which.Code.Should().Be("HQ-2");
-        copy.CostCentres!.Should().ContainSingle().Which.Code.Should().Be("CC_HR-2");
+        copy.CostCentres!.Should().ContainSingle().Which.Code.Should().Be("CC_HR", "cost-centre codes are per company: copied as they are");
+        // Addendum B3 by value: the sister's own departments and grades come along, links kept by code.
+        var copiedHr = copy.Departments!.Should().ContainSingle().Which;
+        copiedHr.Code.Should().Be("HR");
+        copiedHr.BranchCode.Should().Be("HQ-2");
+        copiedHr.CostCentreCode.Should().Be("CC_HR");
+        copiedHr.ExistingId.Should().BeNull();
+        copy.Grades!.Should().ContainSingle().Which.Code.Should().Be("G1");
         (await service.GetDefaultsAsync(Caller(w, group: false), null, w.SisterId, default)).Status.Should().Be(404);
     }
 

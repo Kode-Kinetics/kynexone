@@ -1,153 +1,230 @@
 'use client';
 
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { Copy, Languages } from 'lucide-react';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useFormat } from '../../hooks/useFormat';
 import { msg } from '../../i18n/translations';
-import type {
-  CodeName, CompanySetupCostCentre, CompanySetupDepartment, CompanySetupDesignation, CompanySetupDraftBody, CompanySetupGrade,
+import {
+  companySetupApi, type CompanySetupCostCentre, type CompanySetupDepartment, type CompanySetupDesignation, type CompanySetupDraftBody,
+  type CompanySetupGrade, type OrgSection,
 } from '../../api/companySetup';
-import { MANAGE_TAB, inCatalog, stepWarnings } from '../../lib/companySetupWizard';
-import { RowsEditor, type RowColumn } from './RowsEditor';
-import { Notice, SectionHeader, useWizardForm } from './wizardForm';
+import {
+  PART_COPY, appendCopiedRows, arabicProgress, gradeWarnings, sortedGradeIndexes, suggestCostCentre, suggestedMidpoint,
+} from '../../lib/companySetupWizard';
+import { OrgRowsEditor, type OrgDetailField } from './OrgRowsEditor';
+import { useWizardForm } from './wizardForm';
 import { UseDefaultsButton } from './UseDefaultsButton';
-import { SectionSaveBar, SectionSavedStatus, sectionHeadingId } from './sectionSave';
 
-type ListKey = 'costCentres' | 'departments' | 'designations' | 'grades';
+/** A suggestion button keeps focus where it is on press: leaving a field can show its message and move the button. */
+const keepFocus = (event: React.MouseEvent) => event.preventDefault();
+
+const ADD_LABEL: Record<OrgSection, string> = {
+  costCentres: msg('Add cost centre'), departments: msg('Add department'), grades: msg('Add grade'), designations: msg('Add designation'),
+};
+const ROW_LABEL: Record<OrgSection, string> = {
+  costCentres: msg('Cost centre {number}'), departments: msg('Department {number}'), grades: msg('Grade {number}'), designations: msg('Designation {number}'),
+};
+const EMPTY_TEXT: Record<OrgSection, string> = {
+  costCentres: msg('No cost centres yet. They are optional: add them if finance reports by cost centre.'),
+  departments: msg('No departments yet. Add the teams people belong to.'),
+  grades: msg('No grades yet. Add the pay levels this company uses.'),
+  designations: msg('No designations yet. Add the job titles people hold.'),
+};
 
 /**
- * Step 4. Cost centres belong to this company. Departments, designations and grades are the group's
- * shared catalog: a code the group already has is reused as it is (never renamed or re-linked), a new
- * code is created for the whole group.
+ * Step 4, one part at a time (Addendum B4): cost centres, departments, grades, designations — all this company's
+ * own (B). Group convenience is "Copy from" a sister company, by value (B3); the country pack is "Use defaults".
+ * Everything the screen suggests is deterministic and shown for the reader to confirm, never applied silently.
  */
-export function OrganisationStep({ defaults }: { defaults: CompanySetupDraftBody | null }) {
+export function OrganisationStep({ defaults, part }: { defaults: CompanySetupDraftBody | null; part: OrgSection }) {
   const { t, locale } = useLocale();
+  const fmt = useFormat();
   const { body, update, context, readOnly, baseline } = useWizardForm();
-  const catalog = context?.sharedCatalog;
-  // New shared codes need group scope (A5): a company super admin picks from the catalog only.
-  const canAddShared = !!context?.isGroupScope;
   const existing = !!body.existingCompanyId;
-  // Existing mode: a shared row the company already uses always plans as reuse (the server only warns
-  // shared_row_not_edited on a rename), so it is shown read-only even if the catalog list missed it.
-  const sharedExisting = (row: { existingId?: string | null }, nameEn: string, nameAr?: string) =>
-    existing && row.existingId ? { nameEn, nameAr: nameAr ?? null } : undefined;
-  const manage = (key: keyof typeof MANAGE_TAB) => existing ? { href: `/setup?tab=${MANAGE_TAB[key].tab}&companyId=${encodeURIComponent(body.existingCompanyId!)}`, label: MANAGE_TAB[key].label } : undefined;
-  const set = <K extends ListKey>(key: K, rows: CompanySetupDraftBody[K]) => update(b => ({ ...b, [key]: rows }));
-  const name = (c: CodeName) => (locale === 'ar' ? c.nameAr || c.nameEn : c.nameEn);
-  const SECTION: Record<ListKey, string> = { costCentres: t('Cost centres'), departments: t('Departments'), designations: t('Designations'), grades: t('Grades') };
-  const defaultsButton = (key: ListKey) => defaults && defaults[key].length > 0 && !readOnly && !existing && (key === 'costCentres' || canAddShared)
-    ? <UseDefaultsButton current={body[key] as unknown[]} defaults={defaults[key] as unknown[]} section={SECTION[key]} onApply={() => set(key, defaults[key] as never)} />
-    : undefined;
+  const set = useCallback(<K extends OrgSection>(key: K, rows: CompanySetupDraftBody[K]) => update(b => ({ ...b, [key]: rows })), [update]);
 
-  const codeOptions = (rows: { code: string; nameEn?: string; titleEn?: string }[], shared: readonly CodeName[] = []) => {
+  // ── Copy from a sister company (group scope) ──
+  const sisters = (context?.isGroupScope ? context.sisterCompanies : []).filter(c => c.id !== body.existingCompanyId);
+  const [copyFrom, setCopyFrom] = useState(sisters[0]?.id ?? '');
+  const [copyState, setCopyState] = useState<{ busy: boolean; text: string; tone: 'ok' | 'error' } | null>(null);
+  const copy = async () => {
+    const source = sisters.find(c => c.id === copyFrom) ?? sisters[0];
+    if (!source) return;
+    setCopyState({ busy: true, text: t('Copying from {company}…', { company: source.legalNameEn }), tone: 'ok' });
+    try {
+      const result = await companySetupApi.copyRows(source.id, part);
+      const copied = (result[part] ?? []) as CompanySetupDraftBody[typeof part];
+      // Counts from what is on screen now; the merge itself runs on the latest rows.
+      const { added, skipped } = appendCopiedRows(body[part] as { code: string }[], copied as { code: string }[]);
+      update(b => ({ ...b, [part]: appendCopiedRows(b[part] as { code: string }[], copied as { code: string }[]).rows }));
+      setCopyState({ busy: false, tone: 'ok', text: copied.length === 0
+        ? t('{company} has no {section} to copy.', { company: source.legalNameEn, section: t(PART_COPY[part].title) })
+        : skipped > 0
+          ? t('{added, plural, one {Copied # row} other {Copied # rows}} from {company}. {skipped, plural, one {# was skipped because its code is already here.} other {# were skipped because their codes are already here.}}', { added, skipped, company: source.legalNameEn })
+          : t('{added, plural, one {Copied # row} other {Copied # rows}} from {company}. Check them, then save.', { added, company: source.legalNameEn }) });
+    } catch {
+      setCopyState({ busy: false, tone: 'error', text: t('Nothing was copied. Check your connection and try again.') });
+    }
+  };
+
+  // ── Arabic names: meter + walk through the empty cells ──
+  const arKey = part === 'designations' ? 'titleAr' : 'nameAr';
+  const rowsOfPart = body[part] as { nameAr?: string; titleAr?: string }[];
+  const arabic = arabicProgress(rowsOfPart, r => (part === 'designations' ? r.titleAr : r.nameAr));
+  const walker = useRef<(() => boolean) | null>(null);
+  const registerWalker = useCallback((walk: () => boolean) => { walker.current = walk; }, []);
+
+  // ── Designations: only those with no grade ──
+  const [onlyNoGrade, setOnlyNoGrade] = useState(false);
+  const noGrade = body.designations.filter(d => !(d.gradeCode ?? '').trim()).length;
+
+  // ── Grades: in level order, kept while the reader types (re-sorted when a row is added or removed) ──
+  const gradeOrder = useMemo(() => sortedGradeIndexes(body.grades),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [body.grades.length]);
+  const warnings = useMemo(() => new Map(gradeWarnings(body.grades).map(w => [w.field, w])), [body.grades]);
+
+  const codeOptions = (rows: { code: string; nameEn?: string; titleEn?: string; nameAr?: string; titleAr?: string }[]) => {
     const seen = new Set<string>();
     const out: { value: string; label: string }[] = [];
-    for (const r of [...rows.map(r => ({ code: r.code, nameEn: r.nameEn ?? r.titleEn ?? '' })), ...shared]) {
+    for (const r of rows) {
       const code = r.code.trim();
       if (!code || seen.has(code.toUpperCase())) continue;
       seen.add(code.toUpperCase());
-      out.push({ value: code, label: r.nameEn ? `${code} · ${r.nameEn}` : code });
+      const name = (locale === 'ar' ? r.nameAr || r.titleAr : '') || r.nameEn || r.titleEn || '';
+      out.push({ value: code, label: name ? `${code} · ${name}` : code });
     }
     return out;
   };
 
-  const costCentreCols: RowColumn<CompanySetupCostCentre>[] = [
-    { key: 'code', label: msg('Code'), required: true, width: 'w-full sm:w-28' },
-    { key: 'nameEn', label: msg('Name (English)'), required: true, width: 'w-full sm:w-56' },
-    { key: 'nameAr', label: msg('Name (Arabic)'), arabic: true, width: 'w-full sm:w-56' },
-  ];
-  const departmentCols: RowColumn<CompanySetupDepartment>[] = [
-    { key: 'code', label: msg('Code'), required: true, width: 'w-full sm:w-28' },
-    { key: 'nameEn', label: msg('Name (English)'), required: true, width: 'w-full sm:w-48' },
-    { key: 'nameAr', label: msg('Name (Arabic)'), arabic: true, width: 'w-full sm:w-48' },
-    { key: 'parentCode', label: msg('Parent department'), kind: 'select', options: codeOptions(body.departments, catalog?.departments), width: 'w-full sm:w-44' },
-    { key: 'branchCode', label: msg('Branch'), kind: 'select', options: codeOptions(body.branches), width: 'w-full sm:w-40' },
-    { key: 'costCentreCode', label: msg('Cost centre'), kind: 'select', options: codeOptions(body.costCentres), width: 'w-full sm:w-40' },
-  ];
-  const designationCols: RowColumn<CompanySetupDesignation>[] = [
-    { key: 'code', label: msg('Code'), required: true, width: 'w-full sm:w-28' },
-    { key: 'titleEn', label: msg('Title (English)'), required: true, width: 'w-full sm:w-48' },
-    { key: 'titleAr', label: msg('Title (Arabic)'), arabic: true, width: 'w-full sm:w-48' },
-    { key: 'departmentCode', label: msg('Department'), kind: 'select', options: codeOptions(body.departments, catalog?.departments), width: 'w-full sm:w-44' },
-    { key: 'gradeCode', label: msg('Grade'), kind: 'select', options: codeOptions(body.grades, catalog?.grades), width: 'w-full sm:w-36' },
-  ];
-  const gradeCols: RowColumn<CompanySetupGrade>[] = [
-    { key: 'code', label: msg('Code'), required: true, width: 'w-full sm:w-24' },
-    { key: 'nameEn', label: msg('Name (English)'), required: true, width: 'w-full sm:w-44' },
-    { key: 'nameAr', label: msg('Name (Arabic)'), arabic: true, width: 'w-full sm:w-44' },
-    { key: 'level', label: msg('Level'), kind: 'number', inputMode: 'numeric', width: 'w-[calc(50%-0.375rem)] sm:w-20' },
-    { key: 'minSalary', label: msg('Minimum salary'), kind: 'number', inputMode: 'decimal', width: 'w-[calc(50%-0.375rem)] sm:w-32' },
-    { key: 'midSalary', label: msg('Midpoint salary'), kind: 'number', inputMode: 'decimal', width: 'w-[calc(50%-0.375rem)] sm:w-32' },
-    { key: 'maxSalary', label: msg('Maximum salary'), kind: 'number', inputMode: 'decimal', width: 'w-[calc(50%-0.375rem)] sm:w-32' },
-  ];
+  const defaultsButton = defaults && defaults[part].length > 0 && !readOnly && !existing
+    ? <UseDefaultsButton current={body[part] as unknown[]} defaults={defaults[part] as unknown[]} section={t(PART_COPY[part].title)} onApply={() => set(part, defaults[part] as never)} />
+    : null;
 
-  /** Shared codes not yet in this draft, offered as one-click reuse. */
-  const reuseChips = (key: 'departments' | 'designations' | 'grades', shared: readonly CodeName[] | undefined, make: (c: CodeName) => never) => {
-    const rows = body[key] as { code: string }[];
-    const available = (shared ?? []).filter(c => !rows.some(r => r.code.trim().toUpperCase() === c.code.toUpperCase()));
-    if (available.length === 0) return null;
-    return (
-      <div className="mb-3 rounded-lg bg-slate-50 p-3 dark:bg-white/[0.03]">
-        <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{t('Already in the shared group catalog ({count}). Choose any to use them as they are.', { count: available.length })}</p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {available.map(c => (
-            <button key={c.code} type="button" disabled={readOnly} className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:border-sapphire hover:text-sapphire dark:border-white/15 dark:bg-transparent dark:text-slate-200"
-              onClick={() => set(key, [...(body[key] as never[]), make(c)] as never)}>
-              {t('Use {code} · {name}', { code: c.code, name: name(c) })}
-            </button>
-          ))}
-        </div>
+  const toolbar = (
+    <div className="mb-3 flex min-w-0 flex-wrap items-center justify-between gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
+        {arabic.total > 0 && <>
+          <span className="inline-flex items-center gap-1.5 tabular-nums" data-testid="arabic-meter">
+            <Languages className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+            {t('Arabic names: {filled} of {total}', { filled: arabic.filled, total: arabic.total })}
+          </span>
+          {arabic.filled < arabic.total && !readOnly && (
+            <button type="button" className="rounded-md px-1.5 py-0.5 font-semibold text-blue-700 transition-colors duration-150 hover:bg-sapphire/[0.06] dark:text-[#7AABFF]"
+              onClick={() => walker.current?.()}>{t('Fill Arabic names')}</button>
+          )}
+        </>}
+        {part === 'designations' && noGrade > 0 && (
+          <button type="button" aria-pressed={onlyNoGrade} onClick={() => setOnlyNoGrade(v => !v)} data-testid="no-grade-filter"
+            className={`rounded-full border px-2.5 py-0.5 font-medium transition-colors duration-150 ${onlyNoGrade ? 'border-amber-400 bg-amber-50 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100' : 'border-amber-300 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:hover:bg-amber-500/10'}`}>
+            {onlyNoGrade ? t('Show all designations') : t('{count, plural, one {# designation has no grade.} other {# designations have no grade.}} Show only these', { count: noGrade })}
+          </button>
+        )}
       </div>
-    );
+      {!readOnly && (sisters.length > 0 || defaultsButton) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {sisters.length > 1 && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
+              <span>{t('Copy from')}</span>
+              <select className="select h-8 max-w-[12rem] py-0 text-xs" value={copyFrom} onChange={e => setCopyFrom(e.target.value)}>
+                {sisters.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}
+              </select>
+            </label>
+          )}
+          {sisters.length > 0 && (
+            <button type="button" className="btn-secondary" disabled={copyState?.busy} onClick={() => void copy()} data-testid="copy-from-sister">
+              <Copy className="h-4 w-4" aria-hidden="true" />
+              {sisters.length > 1 ? t('Copy') : t('Copy from {company}', { company: sisters[0].legalNameEn })}
+            </button>
+          )}
+          {defaultsButton}
+        </div>
+      )}
+    </div>
+  );
+
+  const copyLine = (
+    <p role="status" data-testid="copy-status" className={`min-h-[1.25rem] text-xs ${copyState?.tone === 'error' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-600 dark:text-slate-400'}`}>
+      {copyState?.text ?? ''}
+    </p>
+  );
+
+  const rowLabel = (i: number) => t(ROW_LABEL[part], { number: i + 1 });
+  const shared = {
+    addLabel: t(ADD_LABEL[part]), emptyText: t(EMPTY_TEXT[part]), rowLabel, onWalkArabic: registerWalker,
   };
 
-  const warnings = stepWarnings(4, { body, context });
-  const sharedNotice = !canAddShared && <Notice tone="info">{t('Only a group administrator can add new shared codes. You can use the ones the group already has.')}</Notice>;
+  let editor: React.ReactNode = null;
+  if (part === 'costCentres') {
+    editor = <OrgRowsEditor<CompanySetupCostCentre> key="costCentres" section="costCentres" rows={body.costCentres} onChange={rows => set('costCentres', rows)}
+      nameKey="nameEn" arKey="nameAr" codePrefix="CC_" newRow={() => ({ code: '', nameEn: '', nameAr: '' })}
+      baselineRows={existing ? baseline?.costCentres ?? [] : undefined} {...shared} />;
+  } else if (part === 'departments') {
+    const details: OrgDetailField<CompanySetupDepartment>[] = [
+      { key: 'costCentreCode', label: msg('Cost centre'), kind: 'select', options: codeOptions(body.costCentres), wanted: body.costCentres.length > 0, emptyLabel: msg('No cost centre') },
+      { key: 'parentCode', label: msg('Parent department'), kind: 'select', options: codeOptions(body.departments), emptyLabel: msg('None') },
+      { key: 'branchCode', label: msg('Branch'), kind: 'select', options: codeOptions(body.branches), emptyLabel: msg('Any branch') },
+    ];
+    editor = <OrgRowsEditor<CompanySetupDepartment> key="departments" section="departments" rows={body.departments} onChange={rows => set('departments', rows)}
+      nameKey="nameEn" arKey="nameAr" details={details} newRow={() => ({ code: '', nameEn: '', nameAr: '' })}
+      baselineRows={existing ? baseline?.departments ?? [] : undefined}
+      detailNote={(row, index) => {
+        if ((row.costCentreCode ?? '').trim() || readOnly) return null;
+        const code = suggestCostCentre(row.nameEn, body.costCentres);
+        if (!code) return null;
+        const centre = body.costCentres.find(c => c.code.trim() === code);
+        return (
+          <p className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-400" data-testid="cost-centre-suggestion">
+            <span><bdi>{t('Suggested: {code} · {name}', { code, name: centre?.nameEn ?? '' })}</bdi> <span className="text-slate-500">{t('(names match)')}</span></span>
+            <button type="button" onMouseDown={keepFocus} className="font-semibold text-blue-700 hover:underline dark:text-[#7AABFF]"
+              onClick={() => set('departments', body.departments.map((d, i) => (i === index ? { ...d, costCentreCode: code } : d)))}>
+              {t('Use this cost centre')}<span className="sr-only"> {rowLabel(index)}</span>
+            </button>
+          </p>
+        );
+      }}
+      {...shared} />;
+  } else if (part === 'grades') {
+    const details: OrgDetailField<CompanySetupGrade>[] = [
+      { key: 'level', label: msg('Level'), kind: 'number', inputMode: 'numeric' },
+      { key: 'minSalary', label: msg('Minimum'), kind: 'number', inputMode: 'decimal', amount: true, wanted: true },
+      { key: 'midSalary', label: msg('Midpoint'), kind: 'number', inputMode: 'decimal', amount: true },
+      { key: 'maxSalary', label: msg('Maximum'), kind: 'number', inputMode: 'decimal', amount: true, wanted: true },
+    ];
+    editor = <OrgRowsEditor<CompanySetupGrade> key="grades" section="grades" rows={body.grades} onChange={rows => set('grades', rows)}
+      nameKey="nameEn" arKey="nameAr" details={details} order={gradeOrder} rowWarnings={warnings}
+      newRow={() => ({ code: '', nameEn: '', nameAr: '', level: Math.max(0, ...body.grades.map(g => g.level || 0)) + 1, minSalary: 0, midSalary: 0, maxSalary: 0 })}
+      baselineRows={existing ? baseline?.grades ?? [] : undefined}
+      detailNote={(row, index) => {
+        const middle = suggestedMidpoint(row);
+        if (middle === null || readOnly) return null;
+        return (
+          <button type="button" onMouseDown={keepFocus} className="text-xs font-semibold text-blue-700 hover:underline dark:text-[#7AABFF]" data-testid="use-middle"
+            onClick={() => set('grades', body.grades.map((g, i) => (i === index ? { ...g, midSalary: middle } : g)))}>
+            <bdi className="tabular-nums">{t('Use the middle: {amount}', { amount: fmt.plain.integer(middle) })}</bdi><span className="sr-only"> {rowLabel(index)}</span>
+          </button>
+        );
+      }}
+      {...shared} />;
+  } else {
+    const details: OrgDetailField<CompanySetupDesignation>[] = [
+      { key: 'departmentCode', label: msg('Department'), kind: 'select', options: codeOptions(body.departments), wanted: true, emptyLabel: msg('No department') },
+      { key: 'gradeCode', label: msg('Grade'), kind: 'select', options: codeOptions(body.grades), wanted: true, emptyLabel: msg('No grade') },
+    ];
+    editor = <OrgRowsEditor<CompanySetupDesignation> key="designations" section="designations" rows={body.designations} onChange={rows => set('designations', rows)}
+      nameKey="titleEn" arKey="titleAr" details={details} newRow={() => ({ code: '', titleEn: '', titleAr: '' })}
+      baselineRows={existing ? baseline?.designations ?? [] : undefined}
+      visible={onlyNoGrade ? row => !(row.gradeCode ?? '').trim() : undefined}
+      {...shared} />;
+  }
+
   return (
-    <div className="space-y-8">
-      <section>
-        <SectionHeader id={sectionHeadingId('costCentres')} status={<SectionSavedStatus section="costCentres" />} title={t('Cost centres')} description={t('Belong to this company only. Departments below can be charged to one of them.')} actions={defaultsButton('costCentres')} />
-        <RowsEditor<CompanySetupCostCentre> path="costCentres" rows={body.costCentres} columns={costCentreCols} onChange={rows => set('costCentres', rows)}
-          newRow={() => ({ code: '', nameEn: '', nameAr: '' })} addLabel={t('Add cost centre')} emptyText={t('No cost centres yet. Optional; add them if finance reports by cost centre.')}
-          rowLabel={i => t('Cost centre {number}', { number: i + 1 })} manage={manage('costCentres')} baselineRows={baseline?.costCentres} />
-        <SectionSaveBar section="costCentres" />
-      </section>
-
-      <div className="rounded-xl border border-dashed border-slate-300 p-4 dark:border-white/15">
-        <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Shared group catalog')}</p>
-        <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">{t('Departments, designations and grades are shared by every company in the group. Codes the group already has are reused as they are; new codes are added for everyone.')}</p>
-      </div>
-      {sharedNotice}
-
-      <section>
-        <SectionHeader id={sectionHeadingId('departments')} status={<SectionSavedStatus section="departments" />} title={t('Departments')} actions={defaultsButton('departments')} />
-        {reuseChips('departments', catalog?.departments, c => ({ code: c.code, nameEn: c.nameEn, nameAr: c.nameAr ?? '' }) as never)}
-        <RowsEditor<CompanySetupDepartment> path="departments" rows={body.departments} columns={departmentCols} onChange={rows => set('departments', rows)}
-          newRow={() => ({ code: '', nameEn: '', nameAr: '' })} addLabel={t('Add department')} emptyText={t('No departments yet.')}
-          rowLabel={i => t('Department {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.departments, row.code) ?? sharedExisting(row, row.nameEn, row.nameAr)}
-          manage={manage('departments')} baselineRows={baseline?.departments} canAdd={canAddShared}
-          footer={!canAddShared ? <span className="text-xs text-slate-600 dark:text-slate-400">{t('New codes need a group administrator.')}</span> : undefined} />
-        <SectionSaveBar section="departments" />
-      </section>
-
-      <section>
-        <SectionHeader id={sectionHeadingId('designations')} status={<SectionSavedStatus section="designations" />} title={t('Designations')} actions={defaultsButton('designations')} />
-        {reuseChips('designations', catalog?.designations, c => ({ code: c.code, titleEn: c.nameEn, titleAr: c.nameAr ?? '' }) as never)}
-        <RowsEditor<CompanySetupDesignation> path="designations" rows={body.designations} columns={designationCols} onChange={rows => set('designations', rows)}
-          newRow={() => ({ code: '', titleEn: '', titleAr: '' })} addLabel={t('Add designation')} emptyText={t('No designations yet.')}
-          rowLabel={i => t('Designation {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.designations, row.code) ?? sharedExisting(row, row.titleEn, row.titleAr)}
-          manage={manage('designations')} baselineRows={baseline?.designations} canAdd={canAddShared} />
-        <SectionSaveBar section="designations" />
-      </section>
-
-      <section>
-        <SectionHeader id={sectionHeadingId('grades')} status={<SectionSavedStatus section="grades" />} title={t('Grades')} description={context?.gradesCurrency ? t('Salary bands are in {currency}, the group’s grade currency.', { currency: context.gradesCurrency }) : t('Salary bands are in {currency}.', { currency: body.company.currency || '—' })} actions={defaultsButton('grades')} />
-        {reuseChips('grades', catalog?.grades, c => ({ code: c.code, nameEn: c.nameEn, nameAr: c.nameAr ?? '', level: 1, minSalary: 0, midSalary: 0, maxSalary: 0 }) as never)}
-        <RowsEditor<CompanySetupGrade> path="grades" rows={body.grades} columns={gradeCols} onChange={rows => set('grades', rows)}
-          newRow={() => ({ code: '', nameEn: '', nameAr: '', level: body.grades.length + 1, minSalary: 0, midSalary: 0, maxSalary: 0 })} addLabel={t('Add grade')} emptyText={t('No grades yet.')}
-          rowLabel={i => t('Grade {number}', { number: i + 1 })} reused={row => inCatalog(catalog?.grades, row.code) ?? sharedExisting(row, row.nameEn, row.nameAr)}
-          manage={manage('grades')} baselineRows={baseline?.grades} canAdd={canAddShared} />
-        {warnings.map(w => <div key={w.field} className="mt-3"><Notice tone="warning" role="status">{t(w.message, w.params)}</Notice></div>)}
-        <SectionSaveBar section="grades" />
-      </section>
+    <div className="min-w-0" data-testid={`org-part-${part}`} data-arabic-key={arKey}>
+      {toolbar}
+      {part === 'grades' && <p className="mb-3 text-xs text-slate-600 dark:text-slate-400">{t('Salary bands are in {currency}, this company’s currency.', { currency: body.company.currency || '—' })}</p>}
+      {editor}
+      {copyLine}
     </div>
   );
 }

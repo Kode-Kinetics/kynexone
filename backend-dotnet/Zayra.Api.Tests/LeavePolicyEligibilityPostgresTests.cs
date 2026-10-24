@@ -99,24 +99,37 @@ public sealed class LeavePolicyEligibilityPostgresTests
         await migrator.MigrateAsync(migrationId);
 
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
-        var type = new LeaveType { TenantId = tenantId, Code = "ANNUAL", NameEn = "Annual Leave", Category = "Annual", IsActive = true, IsPaid = true };
-        db.LeaveTypes.Add(type);
-        var policy = new LeavePolicy { TenantId = tenantId, LeaveTypeId = type.Id, Name = "Expats", Status = "Active", MinimumServiceMonths = 12, NationalityScope = LeaveNationalityScopes.Expatriate };
-        db.LeavePolicies.Add(policy);
-        await db.SaveChangesAsync();
+        // Raw SQL, not db.LeavePolicies: the current model selects columns (company_id, legacy_group_default, ...)
+        // that later migrations add and this migration point does not have yet.
+        var policyId = Guid.NewGuid();
+        var typeId = Guid.NewGuid();
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO leave_policies
+                (id, tenant_id, name, leave_type_id, country_code, department_name, grade, employment_type,
+                 contract_type, gender, applies_on_probation, annual_entitlement_days, accrual_method,
+                 carry_forward_max, carry_forward_expiry, encashment_allowed, encashment_max_days,
+                 minimum_days_per_request, maximum_days_per_request, notice_required_days,
+                 weekends_included, public_holidays_included, payroll_impact,
+                 allows_hajj_beyond_statutory_eligibility, status, minimum_service_months, nationality_scope,
+                 created_at_utc, updated_at_utc)
+            VALUES
+                ({policyId}, {tenantId}, 'Expats', {typeId}, '', '', '', '', '', '',
+                 false, 24, 'Monthly', 0, 0, false, 0, 1, 30, 0, false, false, 'Full', false,
+                 'Active', 12, {LeaveNationalityScopes.Expatriate}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """);
 
         var refused = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => migrator.MigrateAsync(previous));
         refused.SqlState.Should().Be(Npgsql.PostgresErrorCodes.RaiseException);
 
-        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE leave_policies SET minimum_service_months = 0, nationality_scope = 'Any' WHERE id = {policy.Id}");
+        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE leave_policies SET minimum_service_months = 0, nationality_scope = 'Any' WHERE id = {policyId}");
         await migrator.MigrateAsync(previous);
         await migrator.MigrateAsync(migrationId);
         await migrator.MigrateAsync(migrationId); // replay is a no-op
 
-        (await db.Database.SqlQuery<int>($"SELECT minimum_service_months AS \"Value\" FROM leave_policies WHERE id = {policy.Id}").SingleAsync()).Should().Be(0);
-        (await db.Database.SqlQuery<string>($"SELECT nationality_scope AS \"Value\" FROM leave_policies WHERE id = {policy.Id}").SingleAsync()).Should().Be("Any");
+        (await db.Database.SqlQuery<int>($"SELECT minimum_service_months AS \"Value\" FROM leave_policies WHERE id = {policyId}").SingleAsync()).Should().Be(0);
+        (await db.Database.SqlQuery<string>($"SELECT nationality_scope AS \"Value\" FROM leave_policies WHERE id = {policyId}").SingleAsync()).Should().Be("Any");
         var badScope = await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
-            db.Database.ExecuteSqlInterpolatedAsync($"UPDATE leave_policies SET nationality_scope = 'Saudi' WHERE id = {policy.Id}"));
+            db.Database.ExecuteSqlInterpolatedAsync($"UPDATE leave_policies SET nationality_scope = 'Saudi' WHERE id = {policyId}"));
         badScope.SqlState.Should().Be(Npgsql.PostgresErrorCodes.CheckViolation);
     }
 

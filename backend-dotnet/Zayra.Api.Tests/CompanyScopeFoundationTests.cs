@@ -192,11 +192,13 @@ public class CompanyScopeFoundationTests
         await using var seedDb = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(seedDb);
         var a = MakeCompany(tenantId, "1B Cfg A");
-        seedDb.Companies.Add(a);
-        // Tenant-wide policy template (CompanyId null) + company-specific one.
+        var other = MakeCompany(tenantId, "1B Cfg Other");
+        seedDb.Companies.AddRange(a, other);
+        // Tenant-wide policy template (CompanyId null) + a policy of ANOTHER (real) company; the composite
+        // (tenant_id, company_id) FK means the other company must exist.
         seedDb.LeavePolicies.AddRange(
             new LeavePolicy { TenantId = tenantId, CompanyId = null, LeaveTypeId = Guid.NewGuid(), Name = "Tenant-wide annual" },
-            new LeavePolicy { TenantId = tenantId, CompanyId = Guid.NewGuid(), LeaveTypeId = Guid.NewGuid(), Name = "Other company policy" });
+            new LeavePolicy { TenantId = tenantId, CompanyId = other.Id, LeaveTypeId = Guid.NewGuid(), Name = "Other company policy" });
         await seedDb.SaveChangesAsync();
 
         var accessor = new FixedAccessor { HttpContext = ScopedContext(tenantId, a.Id) };

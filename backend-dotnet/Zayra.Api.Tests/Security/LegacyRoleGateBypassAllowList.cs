@@ -713,8 +713,10 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("DELETE ScorecardTemplates.Delete", "HR Director", SeniorHr),
         ("PUT ScorecardTemplates.Update", "HR Director", SeniorHr),
         // The create-company wizard, gated on organization.setup.apply like Setup Studio: HR Director holds it.
+        ("POST CompanySetup.ApplySection", "HR Director", SeniorHr),
         ("POST CompanySetup.Commit", "HR Director", SeniorHr),
         ("GET CompanySetup.Context", "HR Director", SeniorHr),
+        ("GET CompanySetup.CopyRows", "HR Director", SeniorHr),
         ("POST CompanySetup.CreateDraft", "HR Director", SeniorHr),
         ("GET CompanySetup.Defaults", "HR Director", SeniorHr),
         ("DELETE CompanySetup.DiscardDraft", "HR Director", SeniorHr),

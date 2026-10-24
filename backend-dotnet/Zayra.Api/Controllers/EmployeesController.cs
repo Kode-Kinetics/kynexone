@@ -4155,6 +4155,7 @@ public class EmployeesController : ControllerBase
         if (term.Length == 0) { employee.GradeId = null; return; }
         var candidates = await _db.Grades.AsNoTracking()
             .Where(x => x.TenantId == employee.TenantId && x.IsActive && !x.IsDeleted
+                && (x.CompanyId == employee.CompanyId || x.CompanyId == null) // Addendum B: the employee's company's grades
                 && (x.Code.ToLower() == term.ToLower() || x.Name.ToLower() == term.ToLower()))
             .Take(2).ToListAsync(ct);
         if (candidates.Count != 1)
@@ -5163,15 +5164,22 @@ public class EmployeesController : ControllerBase
         // string-only write path that manufactured uncountable employees is gone.
         try
         {
-            var newDeptId = transfer.NewDepartmentId; var newDeptName = transfer.NewDepartment;
-            if (newDeptId is null && !string.IsNullOrWhiteSpace(transfer.NewDepartment))
-                (newDeptId, newDeptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, transfer.NewDepartment, cancellationToken);
             var newBranchId = transfer.NewBranchId; var newBranchName = transfer.NewBranch;
             if (newBranchId is null && !string.IsNullOrWhiteSpace(transfer.NewBranch))
                 (newBranchId, newBranchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, transfer.NewBranch, cancellationToken);
+            // Addendum B: names resolve within the company the employee lands in — the new branch's, else their own.
+            var landingCompanyId = employee.CompanyId;
+            if (newBranchId is Guid landingBranch)
+                landingCompanyId = await ScopedBypass.TenantWide(_db.Branches, tenantId,
+                        "Transfer apply: the legal entity of the new branch decides which company's departments a name resolves in.")
+                    .AsNoTracking().Where(b => b.Id == landingBranch).Select(b => (Guid?)b.CompanyId)
+                    .FirstOrDefaultAsync(cancellationToken) ?? employee.CompanyId;
+            var newDeptId = transfer.NewDepartmentId; var newDeptName = transfer.NewDepartment;
+            if (newDeptId is null && !string.IsNullOrWhiteSpace(transfer.NewDepartment))
+                (newDeptId, newDeptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, transfer.NewDepartment, cancellationToken, landingCompanyId);
             var newDesigId = transfer.NewDesignationId; var newDesigTitle = transfer.NewDesignation;
             if (newDesigId is null && !string.IsNullOrWhiteSpace(transfer.NewDesignation))
-                (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken);
+                (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken, landingCompanyId);
 
             if (newDeptId is not null) { employee.DepartmentId = newDeptId; employee.Department = newDeptName; }
             if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
@@ -5851,17 +5859,26 @@ public class EmployeesController : ControllerBase
             }
         }
 
-        await ResolveOne("department", "Department", draft.Department,
-            async () => (deptId, deptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, draft.Department, ct));
-        await ResolveOne("designation", "Designation", draft.Designation,
-            async () => (desigId, desigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, draft.Designation, ct));
+        // Addendum B: the branch (else the accepted offer's company) names the company that the department and
+        // designation names resolve within, so a name shared by sister companies picks this company's row.
         await ResolveOne("branch", "Branch", draft.Branch,
             async () => (branchId, branchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, draft.Branch, ct));
+        Guid? orgCompanyHint = draft.AcceptedOfferCompanyId;
+        if (branchId is Guid hintBranch)
+            orgCompanyHint = await ScopedBypass.TenantWide(_db.Branches, tenantId,
+                    "Draft placement: the branch's legal entity decides which company's departments a name resolves in (register section 6).")
+                .AsNoTracking().Where(b => b.Id == hintBranch).Select(b => (Guid?)b.CompanyId).FirstOrDefaultAsync(ct) ?? orgCompanyHint;
+        await ResolveOne("department", "Department", draft.Department,
+            async () => (deptId, deptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, draft.Department, ct, orgCompanyHint));
+        await ResolveOne("designation", "Designation", draft.Designation,
+            async () => (desigId, desigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, draft.Designation, ct, orgCompanyHint));
 
         // Older drafts store a grade as text. Resolve the stable ID before provisioning benefits,
         // retaining unrecognised legacy text rather than guessing at an entitlement-bearing grade.
+        // Addendum B: grades belong to one company — only the placement company's (or unassigned) grades match.
         var activeGrades = await _db.Grades.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)
+            .Where(x => orgCompanyHint == null || x.CompanyId == orgCompanyHint || x.CompanyId == null)
             .Select(x => new { x.Id, x.Code, x.Name }).ToListAsync(ct);
         var gradeText = draft.Grade?.Trim() ?? string.Empty;
         var gradeMatches = activeGrades.Where(x => string.Equals(x.Code, gradeText, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -5890,18 +5907,20 @@ public class EmployeesController : ControllerBase
         }
         if (deptId.HasValue)
         {
-            var departmentBranchId = await ScopedBypass.TenantWide(_db.Departments, tenantId,
+            var departmentPlacement = await ScopedBypass.TenantWide(_db.Departments, tenantId,
                     "Draft placement: the branch of the department the draft resolved to (register section 6).")
                 .AsNoTracking()
                 .Where(x => x.Id == deptId.Value && !x.IsDeleted)
-                .Select(x => x.BranchId)
+                .Select(x => new { x.BranchId, x.CompanyId })
                 .SingleAsync(ct);
-            if (departmentBranchId.HasValue)
+            var departmentBranchId = departmentPlacement.BranchId;
+            if (departmentPlacement.CompanyId.HasValue || departmentBranchId.HasValue)
             {
-                var departmentCompanyId = await ScopedBypass.TenantWide(_db.Branches, tenantId,
+                // Addendum B: a department names its own company; the branch is the fallback for an unassigned row.
+                var departmentCompanyId = departmentPlacement.CompanyId ?? await ScopedBypass.TenantWide(_db.Branches, tenantId,
                         "Draft placement: the legal entity of the department's branch (register section 6).")
                     .AsNoTracking()
-                    .Where(x => x.Id == departmentBranchId.Value && !x.IsDeleted)
+                    .Where(x => x.Id == departmentBranchId!.Value && !x.IsDeleted)
                     .Select(x => x.CompanyId)
                     .SingleAsync(ct);
                 if (departmentCompanyId != Guid.Empty)

@@ -7,6 +7,7 @@ import type { CompanySetupDraftBody, ManageableCompany } from '../../api/company
 import { readinessProgress } from '../../lib/companySetupWizard';
 import { useCountryName } from './CountryOptions';
 import { Notice } from './wizardForm';
+import { ReadinessDrilldown } from './CompanyReadinessList';
 
 /**
  * Existing mode, step 1 (Addendum A): instead of "Start from", what this company has today, how far its setup is,
@@ -60,6 +61,7 @@ export function CompanySummaryStep({ body, company, draft, onDiscard }: {
             <div className={`h-full rounded-full ${progress.complete ? 'bg-emerald-600' : 'bg-sapphire'}`} style={{ width: `${progress.percent}%` }} />
           </div>
         )}
+        {progress.total > 0 && <ReadinessDrilldown companyId={company.id} complete={progress.complete} testId="summary-readiness-details" />}
         <p className="text-sm text-slate-600 dark:text-slate-400" data-testid="summary-counts">
           {t('Already set up — branches: {branches}, locations: {locations}, cost centres: {costCentres}.', { branches: own(body.branches), locations: own(locations), costCentres: own(body.costCentres) })}
           {added > 0 && <>{' '}{t('Suggested from the country pack: {count}. You review each one.', { count: added })}</>}
@@ -69,7 +71,7 @@ export function CompanySummaryStep({ body, company, draft, onDiscard }: {
       <Notice tone="info">
         <p className="font-semibold">{t('What this does')}</p>
         <ul className="mt-1 list-disc space-y-0.5 ps-5">
-          <li>{t('Adds what is missing and updates what you edit. You see every change before anything is saved.')}</li>
+          <li>{t('Adds what is missing and updates what you edit. Organisation sections are saved to the company when you press Save & next; everything else is applied when you press Save all changes.')}</li>
           <li>{t('Never removes anything. To remove a branch, cost centre, location or administrator, use its own Setup tab.')}</li>
           <li>{t('The country and salary currency stay as they are.')}</li>
         </ul>

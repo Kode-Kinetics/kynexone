@@ -109,10 +109,15 @@ public class LeaveBalancesController : ControllerBase
         var userId = this.GetUserId();
         var performedByName = User.Identity?.Name ?? userId?.ToString() ?? "HR";
 
-        var leaveTypeExists = await _db.LeaveTypes
-            .AnyAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
-        if (!leaveTypeExists)
+        var leaveType = await _db.LeaveTypes
+            .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
+        if (leaveType is null)
             return BadRequest(new { message = "Leave type not found." });
+        // A balance is only ever adjusted on a leave type of the employee's own company.
+        var employeeCompany = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.Id == req.EmployeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        if (!await Zayra.Api.Infrastructure.Leave.LeaveCompanyScope.IsUsableByAsync(_db, leaveType, employeeCompany, ct))
+            return BadRequest(new { message = Zayra.Api.Infrastructure.Leave.LeaveCompanyScope.NotThisCompanysType });
 
         var year = req.Year ?? DateTime.UtcNow.Year;
 

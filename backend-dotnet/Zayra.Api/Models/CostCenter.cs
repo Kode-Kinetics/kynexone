@@ -7,6 +7,8 @@ public class CostCenter : ITenantOwned, ICompanyScoped
     public Guid TenantId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    /// <summary>Optional Arabic name. Readers fall back to <see cref="Name"/> when it is empty.</summary>
+    public string? NameAr { get; set; }
     public Guid? CompanyId { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
