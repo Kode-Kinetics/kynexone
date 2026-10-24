@@ -73,6 +73,12 @@ services:
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
+      # SAAS DEPLOYMENT ONLY. This blueprint is the vendor's hosted service. Production refuses to
+      # boot without an explicit mode, and the explicit key must win over DEDICATED_DEPLOYMENT below,
+      # which on its own would resolve to Client mode (no platform console). Client installations use
+      # deploy/client, never this file. See DeploymentModeResolver.
+      - key: Deployment__Mode
+        value: Saas
       - key: ASPNETCORE_URLS
         value: http://0.0.0.0:8080
       - key: PORT
