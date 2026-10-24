@@ -226,7 +226,7 @@ public class BorderNumberTests
             await SaPolicyAsync(db, Guid.NewGuid(), "Indian"));
 
         r.PayBlocking.Should().Contain(i => i.Key == "IqamaNumber"
-            && i.Label == "Iqama required before payroll — the border-number period (90 days from joining) has ended");
+            && i.Label == "Iqama required before payroll — the border-number period has ended");
         r.PayBlocking.Should().Contain(i => i.Key == "IqamaExpiry");
         r.IsBlocked.Should().BeFalse("the border number still identifies the person — activation is not reversed");
         r.Recommended.Should().NotContain(i => i.Key == "IqamaNumber");

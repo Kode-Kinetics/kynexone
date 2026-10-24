@@ -82,11 +82,11 @@ public partial class PayrollController : ControllerBase
     /// than being SILENTLY dropped from a run (§6.6 — a silent exclusion could miss a mandated salary).
     /// </summary>
     private async Task<(HashSet<int> HardBlocked, HashSet<int> DriftWarn)> ComputePayReadinessAsync(
-        Guid tenantId, IReadOnlyList<Employee> employees, CancellationToken ct)
+        Guid tenantId, IReadOnlyList<Employee> employees, CancellationToken ct, DateOnly? periodEnd = null)
     {
         var hard = new HashSet<int>();
         var drift = new HashSet<int>();
-        foreach (var finding in await EvaluatePayReadinessAsync(tenantId, employees, ct))
+        foreach (var finding in await EvaluatePayReadinessAsync(tenantId, employees, ct, periodEnd))
             (finding.IsActive ? drift : hard).Add(finding.EmployeeId);
         return (hard, drift);
     }
@@ -98,13 +98,13 @@ public partial class PayrollController : ControllerBase
     /// <summary>The per-employee detail behind <see cref="ComputePayReadinessAsync"/> — the same evaluator, the
     /// same policy cache, the same split rule (Active ⇒ drift, otherwise hard).</summary>
     private async Task<IReadOnlyList<PayReadinessFinding>> EvaluatePayReadinessAsync(
-        Guid tenantId, IReadOnlyList<Employee> employees, CancellationToken ct)
+        Guid tenantId, IReadOnlyList<Employee> employees, CancellationToken ct, DateOnly? periodEnd = null)
     {
         var findings = new List<PayReadinessFinding>();
         if (employees.Count == 0) return findings;
         // Batch-load snapshots (3 bulk queries), resolve policy per distinct (company, country, nationality).
         var snapshots = await new Zayra.Api.Infrastructure.Employees.EmployeeReadinessEvaluator(_db)
-            .LoadSnapshotsAsync(tenantId, employees.Select(e => e.Id).Distinct().ToList(), ct);
+            .LoadSnapshotsAsync(tenantId, employees.Select(e => e.Id).Distinct().ToList(), ct, periodEnd);
         var policyCache = new Dictionary<string, Zayra.Api.Infrastructure.Employees.ResolvedReadinessPolicy>();
         foreach (var emp in employees.GroupBy(e => e.Id).Select(g => g.First()))
         {
@@ -115,12 +115,32 @@ public partial class PayrollController : ControllerBase
                 policy = await _activationGuard.ResolvePolicyAsync(tenantId, emp.CompanyId, emp.CountryCode, emp.Nationality, ct);
                 policyCache[key] = policy;
             }
-            var readiness = _activationGuard.Evaluate(snap, policy);
+            // Measured at the pay period's END (a run or wage file is for a period, not for the day it is asked).
+            var readiness = _activationGuard.Evaluate(snap, policy, periodEnd);
             if (readiness.PayBlocking.Count == 0 && !readiness.IsBlocked) continue;
             findings.Add(new PayReadinessFinding(
                 emp.Id,
                 string.Equals(emp.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase),
                 readiness.PayBlocking.Concat(readiness.Blocking).ToList()));
+        }
+
+        // The Saudi wage file needs an ID for a border-number employee inside the window. When the company has
+        // turned "use the Border Number as the employee ID" OFF, that employee is held exactly like any other
+        // pay-blocked one (non-Active ⇒ hard, Active ⇒ drift needing acknowledgement).
+        var borderIds = await Zayra.Api.Infrastructure.Employees.BorderNumberRule.ResolveWageFileIdsAsync(
+            _db, tenantId, employees, periodEnd ?? DateOnly.FromDateTime(DateTime.UtcNow.Date), ct, _ruleReader);
+        foreach (var emp in employees.GroupBy(e => e.Id).Select(g => g.First()))
+        {
+            if (!borderIds.TryGetValue(emp.Id, out var border) || border.Allowed) continue;
+            var item = new Zayra.Api.Infrastructure.Employees.ReadinessItem(
+                "IqamaNumber", "Iqama (this company does not use the Border Number as the wage-file employee ID)",
+                "identity", "statutory", "SA", "pay", "field", "iqamaNumber", null);
+            var existing = findings.FindIndex(f => f.EmployeeId == emp.Id);
+            if (existing >= 0)
+                findings[existing] = findings[existing] with { Items = findings[existing].Items.Concat(new[] { item }).ToList() };
+            else
+                findings.Add(new PayReadinessFinding(emp.Id,
+                    string.Equals(emp.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase), new[] { item }));
         }
         return findings;
     }
@@ -133,11 +153,11 @@ public partial class PayrollController : ControllerBase
     /// an Active one (§6.6 — a mandated salary is never silently withheld). Approve/Lock are not affected.
     /// </summary>
     private async Task<List<PayrollValidationResult>> ReadinessPayValidationFindingsAsync(
-        Guid tenantId, Guid runId, IReadOnlyList<Employee> employees, CancellationToken ct)
+        Guid tenantId, Guid runId, IReadOnlyList<Employee> employees, DateOnly periodEnd, CancellationToken ct)
     {
         var byId = employees.GroupBy(e => e.Id).ToDictionary(g => g.Key, g => g.First());
         var results = new List<PayrollValidationResult>();
-        foreach (var f in await EvaluatePayReadinessAsync(tenantId, employees, ct))
+        foreach (var f in await EvaluatePayReadinessAsync(tenantId, employees, ct, periodEnd))
         {
             var emp = byId[f.EmployeeId];
             var name = string.IsNullOrWhiteSpace(emp.FullName) ? emp.EnglishName : emp.FullName;
@@ -3286,7 +3306,7 @@ public partial class PayrollController : ControllerBase
             });
         foreach (var (code, empId, msg) in c3Warnings) C3Warn(code, empId, msg);
         // The pay interlock, named per employee and document (Warning — visibility only; see the helper).
-        foreach (var finding in await ReadinessPayValidationFindingsAsync(tenantId, id, employees, cancellationToken))
+        foreach (var finding in await ReadinessPayValidationFindingsAsync(tenantId, id, employees, Zayra.Api.Infrastructure.Employees.BorderNumberRule.PeriodEnd(run.Year, run.Month), cancellationToken))
             _db.PayrollValidationResults.Add(finding);
         // POD-C3 (MF-2) — the shortfall, NAMED. Error severity, so it blocks Approve/Lock exactly as the
         // pre-existing ZERO_NET_WITH_GROSS does; what it adds is the AMOUNT and the most likely cause,
@@ -4282,7 +4302,7 @@ public partial class PayrollController : ControllerBase
         };
         var results = PayrollValidationEngine.Run(ctx);
         // Same finding Process writes — /validate replaces the stored results wholesale, so it must re-add it.
-        results.AddRange(await ReadinessPayValidationFindingsAsync(tenantId, id, employees, cancellationToken));
+        results.AddRange(await ReadinessPayValidationFindingsAsync(tenantId, id, employees, Zayra.Api.Infrastructure.Employees.BorderNumberRule.PeriodEnd(run.Year, run.Month), cancellationToken));
 
         // Replace stored results with fresh engine output.
         await _db.PayrollValidationResults
@@ -5557,6 +5577,16 @@ public partial class PayrollController : ControllerBase
         });
     }
 
+    /// <summary>The employee ID the Saudi wage file carries: the government ID, else (inside the border-number window,
+    /// company setting ON) the Border Number. Empty when neither applies — the validator has already refused it.</summary>
+    private static string KsaWageFileEmployeeId(
+        Employee? emp, IReadOnlyDictionary<int, Zayra.Api.Infrastructure.Employees.BorderNumberRule.WageFileBorderId> borderIds)
+    {
+        if (emp is null) return string.Empty;
+        if (!string.IsNullOrWhiteSpace(emp.IdNumber)) return emp.IdNumber;
+        return borderIds.TryGetValue(emp.Id, out var b) && b.Allowed ? b.BorderNumber : string.Empty;
+    }
+
     /// <summary>
     /// Pre-export WPS validation using the WpsSifValidator.
     /// Returns blocking errors and warnings. The same checks are re-enforced inside
@@ -5577,8 +5607,11 @@ public partial class PayrollController : ControllerBase
         var empIds   = slips.Select(s => s.EmployeeId).Distinct().ToList();
         var employees = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && empIds.Contains(e.Id)).ToListAsync(cancellationToken);
 
-        var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken);
-        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked);
+        var wpsPeriodEnd = Zayra.Api.Infrastructure.Employees.BorderNumberRule.PeriodEnd(run.Year, run.Month);
+        var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken, wpsPeriodEnd);
+        var borderIds = await Zayra.Api.Infrastructure.Employees.BorderNumberRule.ResolveWageFileIdsAsync(
+            _db, tenantId, employees, wpsPeriodEnd, cancellationToken, _ruleReader);
+        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked, borderIds);
 
         return Ok(new
         {
@@ -5741,8 +5774,11 @@ public partial class PayrollController : ControllerBase
             Id = run.Id, TenantId = run.TenantId, CompanyId = run.CompanyId, Year = run.Year, Month = run.Month,
             Status = run.Status, TotalNetSalary = run.TotalNetSalary - wpsExclusions.Sum(x => x.Amount),
         };
-        var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken);
-        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(runForFile, fileSlips, profiles, employees, hardBlocked);
+        var wpsPeriodEnd = Zayra.Api.Infrastructure.Employees.BorderNumberRule.PeriodEnd(run.Year, run.Month);
+        var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken, wpsPeriodEnd);
+        var borderIds = await Zayra.Api.Infrastructure.Employees.BorderNumberRule.ResolveWageFileIdsAsync(
+            _db, tenantId, employees, wpsPeriodEnd, cancellationToken, _ruleReader);
+        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(runForFile, fileSlips, profiles, employees, hardBlocked, borderIds);
         if (!validation.CanExport)
             return BadRequest(new
             {
@@ -5800,7 +5836,7 @@ public partial class PayrollController : ControllerBase
                 FullNameAr:     string.Empty,
                 Nationality:    emp?.Nationality ?? string.Empty,
                 // KSA: the employee's own government ID (MOL-ID), never the profile's free-text MolId.
-                NationalId:     isKsaRegister ? (emp?.IdNumber ?? string.Empty) : (ppf?.MolId ?? string.Empty),
+                NationalId:     isKsaRegister ? KsaWageFileEmployeeId(emp, borderIds) : (ppf?.MolId ?? string.Empty),
                 IbanOrAccount:  record.Iban,
                 BankCode:       ppf?.BankRoutingCode ?? string.Empty,
                 Salary: new SalaryBreakdown(
@@ -5861,7 +5897,7 @@ public partial class PayrollController : ControllerBase
                 Iban           = record.Iban,
                 NetPay         = record.Amount,
                 MolId          = isKsaRegister
-                                    ? (employees.FirstOrDefault(e => e.Id == record.EmployeeId)?.IdNumber ?? string.Empty)
+                                    ? KsaWageFileEmployeeId(employees.FirstOrDefault(e => e.Id == record.EmployeeId), borderIds)
                                     : (ppf?.MolId ?? string.Empty),
                 RoutingCode    = ppf?.BankRoutingCode ?? string.Empty,
             };
@@ -11341,7 +11377,7 @@ public partial class PayrollController : ControllerBase
             .ToListAsync(ct);
 
         // The ONE readiness evaluator's pay-block verdict — the same one the bank file refuses on.
-        var (hardBlocked, driftBlocked) = await ComputePayReadinessAsync(tenantId, employees, ct);
+        var (hardBlocked, driftBlocked) = await ComputePayReadinessAsync(tenantId, employees, ct, periodEnd);
         var payBlocked = hardBlocked.Concat(driftBlocked).ToHashSet();
 
         // Attendance is only evidence once the period has begun; before that its absence means nothing.

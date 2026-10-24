@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -27,15 +29,19 @@ public sealed record EmployeeReadiness(
 public interface IEmployeeReadinessEvaluator
 {
     /// <summary>Pure, never throws — the primitive. Used by import, list recompute, detail, gate-precheck.</summary>
-    EmployeeReadiness Evaluate(EmployeeReadinessSnapshot emp, ResolvedReadinessPolicy policy);
+    /// <param name="asOf">The date the "as of" checks (expiry, the border-number window) are measured against.
+    /// Null = today (profile views). A payroll run or wage file passes the pay period's END date, so a verdict on a
+    /// past or future period does not depend on the day it is asked.</param>
+    EmployeeReadiness Evaluate(EmployeeReadinessSnapshot emp, ResolvedReadinessPolicy policy, DateOnly? asOf = null);
 
     /// <summary>Throws EmployeeActivationBlockedException when Blocking.Any(); else returns the readiness.</summary>
     Task<EmployeeReadiness> EnsureActivatableAsync(
         EmployeeReadinessSnapshot emp, ResolvedReadinessPolicy policy, RequestContext ctx, CancellationToken ct);
 
     /// <summary>Batch snapshot loader (3 bulk queries, diff in memory) for policy fan-out + nightly sweep + list.</summary>
+    /// <param name="asOf">The date the company's border-number window setting is read on (null = today).</param>
     Task<IReadOnlyDictionary<int, EmployeeReadinessSnapshot>> LoadSnapshotsAsync(
-        Guid tenantId, IReadOnlyCollection<int> employeeIds, CancellationToken ct);
+        Guid tenantId, IReadOnlyCollection<int> employeeIds, CancellationToken ct, DateOnly? asOf = null);
 }
 
 public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
@@ -196,14 +202,14 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
         return new[] { ToItem(req, FieldPresence.Missing) };
     }
 
-    public EmployeeReadiness Evaluate(EmployeeReadinessSnapshot emp, ResolvedReadinessPolicy policy)
+    public EmployeeReadiness Evaluate(EmployeeReadinessSnapshot emp, ResolvedReadinessPolicy policy, DateOnly? asOf = null)
     {
         var integrity = IntegrityBlockers(emp, policy);
         var payIntegrity = PayIntegrityBlockers(emp, policy);
         // Nothing to evaluate against: say so honestly (see NoPolicy) — never Ready/100, never a new block.
         if (policy.Items.Count == 0) return NoPolicy(policy, integrity, payIntegrity);
 
-        var asOf = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var asOfDate = asOf ?? DateOnly.FromDateTime(DateTime.UtcNow.Date);
         var blocking = new List<ReadinessItem>();
         var payBlocking = new List<ReadinessItem>();
         var recommended = new List<ReadinessItem>();
@@ -212,7 +218,7 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
 
         foreach (var req in policy.Items)
         {
-            var presence = EmployeeFieldRegistry.Presence(emp, req.Key, asOf, DefaultAlertDays, req.RequireVerified ?? false);
+            var presence = EmployeeFieldRegistry.Presence(emp, req.Key, asOfDate, DefaultAlertDays, req.RequireVerified ?? false);
             var item = ToItem(req, presence);
 
             switch (presence)
@@ -355,7 +361,7 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
 
     // ── Batch snapshot loader (MissingDocumentsAsync shape: 3 bulk queries, diff in memory) ──
     public async Task<IReadOnlyDictionary<int, EmployeeReadinessSnapshot>> LoadSnapshotsAsync(
-        Guid tenantId, IReadOnlyCollection<int> employeeIds, CancellationToken ct)
+        Guid tenantId, IReadOnlyCollection<int> employeeIds, CancellationToken ct, DateOnly? asOf = null)
     {
         var result = new Dictionary<int, EmployeeReadinessSnapshot>();
         if (employeeIds.Count == 0) return result;
@@ -383,6 +389,18 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             .Where(x => x.TenantId == tenantId && x.IsActive && ids.Contains(x.EmployeeId))
             .Select(x => x.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
 
+        // The border-number window is a per-company setting: resolve it once per distinct KSA company.
+        var graceByCompany = new Dictionary<Guid, int>();
+        var settingsDate = asOf ?? DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        IStatutoryRuleReader? ruleReader = null;
+        var rateResolver = new Zayra.Api.Infrastructure.Payroll.CompanyRatePolicyResolver(_db);
+        foreach (var companyId in employees.Where(x => x.CompanyId.HasValue && IsKsa(x.CountryCode))
+                     .Select(x => x.CompanyId!.Value).Distinct())
+        {
+            ruleReader ??= new Zayra.Api.Infrastructure.CountryPack.StatutoryRuleReader(_db);
+            graceByCompany[companyId] = (await BorderNumberRule.ResolveAsync(rateResolver, ruleReader, tenantId, companyId, settingsDate, ct)).GraceDays;
+        }
+
         foreach (var e in employees)
         {
             profiles.TryGetValue(e.Id, out var pf);
@@ -394,10 +412,14 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
                 foreach (var c in cl) expiries[c.FieldKey] = c.ExpiryDate;
             result[e.Id] = BuildFromEmployee(e, pf, docList, expiries,
                 hasSalary: salaryEmpIds.Contains(e.Id) || (e.Salary ?? 0m) > 0m,
-                bankRoutingCodeRequired: routingClearedIds.Contains(e.Id));
+                bankRoutingCodeRequired: routingClearedIds.Contains(e.Id))
+                with { BorderNumberGraceDays = e.CompanyId is { } cid && graceByCompany.TryGetValue(cid, out var g) ? g : BorderNumberRule.DefaultGraceDays };
         }
         return result;
     }
+
+    private static bool IsKsa(string? countryCode)
+        => string.Equals(CountryCodeStandard.NormalizeToIso2(countryCode) ?? countryCode, "SA", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Assemble a snapshot from a persisted Employee (+ optional payroll/docs/expiries).</summary>
     public static EmployeeReadinessSnapshot BuildFromEmployee(

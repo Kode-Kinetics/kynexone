@@ -10,6 +10,7 @@ using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 using Xunit;
+using Zayra.Api.Infrastructure.Employees;
 
 namespace Zayra.Api.Tests;
 
@@ -29,6 +30,8 @@ public class CompanyRateAppliedByPayrollTests
         ProrationRateKeys.ArrearsMaxLookback, ProrationRateKeys.ProratedComponents,
         // POD-C2 — read at every payroll Lock (PayrollController.BuildEosbProvisionAsync).
         EosbProvisioningRateKeys.Mode,
+        // Read by readiness (the pay-stage Iqama window) and by the Saudi wage / bank file (the employee ID).
+        BorderNumberRule.GraceDaysRateKey, BorderNumberRule.UseAsWageFileIdRateKey,
     };
 
     public static readonly TheoryData<string, string> RecordedOnly = new()
@@ -94,7 +97,7 @@ public class CompanyRateAppliedByPayrollTests
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var ok = (await Rates(db, Guid.NewGuid()).ListRateRegistry(default)).Should().BeOfType<OkObjectResult>().Subject;
         var items = Items(ok.Value!);
-        items.Should().HaveCount(14);
+        items.Should().HaveCount(16);
         foreach (var i in items)
         {
             var key = (string)Prop(i, "RateKey")!;

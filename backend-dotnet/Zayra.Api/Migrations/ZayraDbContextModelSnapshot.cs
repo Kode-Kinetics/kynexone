@@ -11080,6 +11080,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("bank_name");
 
+                    b.Property<string>("BorderNumber")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("border_number");
+
                     b.Property<string>("Branch")
                         .IsRequired()
                         .HasColumnType("text")

@@ -495,7 +495,7 @@ const en: Dict = {
   'These are issued after the employee joins, through the labour ministry and Jawazat. None is needed to create or activate the employee; each one is required before their first payroll. Add them to the profile as they are issued.': 'These are issued after the employee joins, through the labour ministry and Jawazat. None is needed to create or activate the employee; each one is required before their first payroll. Add them to the profile as they are issued.',
   'Required before payroll': 'Required before payroll',
   'Iqama expiry due — employee is on border number': 'Iqama expiry due — employee is on border number',
-  'Iqama required before payroll — the border-number period (90 days from joining) has ended': 'Iqama required before payroll — the border-number period (90 days from joining) has ended',
+  'Iqama required before payroll — the border-number period has ended': 'Iqama required before payroll — the border-number period has ended',
   'Check this number — it does not look like the usual format. You can still save it.': 'Check this number — it does not look like the usual format. You can still save it.',
   'Basic Salary': 'Basic Salary',
   'No employees found': 'No employees found',

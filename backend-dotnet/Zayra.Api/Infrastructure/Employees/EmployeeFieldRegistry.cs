@@ -85,12 +85,11 @@ public static class EmployeeFieldRegistry
         return FieldPresence.Present;
     }
 
-    /// <summary>True while a border number may stand in for the Iqama at PAY: up to and including
-    /// <see cref="GccReadinessFloor.KsaBorderNumberGraceDays"/> days after the joining date. An unknown joining
-    /// date cannot open the window (fail closed at pay; activation is already held on the date itself).</summary>
+    /// <summary>True while a border number may stand in for the Iqama at PAY: up to and including the company's
+    /// configured number of days after the joining date (<see cref="BorderNumberRule"/>; 0 = never). An unknown
+    /// joining date cannot open the window (fail closed at pay; activation is already held on the date itself).</summary>
     private static bool WithinBorderNumberGrace(EmployeeReadinessSnapshot s, DateOnly asOf)
-        => s.JoiningDate != default
-           && asOf <= DateOnly.FromDateTime(s.JoiningDate).AddDays(GccReadinessFloor.KsaBorderNumberGraceDays);
+        => BorderNumberRule.IsWithinWindow(s.JoiningDate, s.BorderNumberGraceDays, asOf);
 
     private static FieldPresence Iban(string? iban)
     {
@@ -143,7 +142,7 @@ public static class EmployeeFieldRegistry
         // first entry, so a held border number satisfies this requirement PROVISIONALLY:
         //   * ACTIVATION — Iqama OR border number, always (Provisional never blocks activation);
         //   * PAY        — the border number stands in for the Iqama only for the legal issuing window
-        //                  (GccReadinessFloor.KsaBorderNumberGraceDays from the joining date). After that it is
+        //                  (the company's configured days from the joining date). After that it is
         //                  ProvisionalLapsed: a pay blocker, still never an activation blocker.
         // With neither number it is Missing, as before. The OR lives in the getter (not in the floor) so every
         // layer that names "IqamaNumber" — the code floor, the seeded tenant profile and the GCC-setting toggle —
@@ -154,7 +153,7 @@ public static class EmployeeFieldRegistry
                     ? (WithinBorderNumberGrace(s, asOf) ? FieldPresence.Provisional : FieldPresence.ProvisionalLapsed)
                 : FieldPresence.Missing,
             provisionalLabel: "Iqama due — employee is on border number",
-            provisionalLapsedLabel: "Iqama required before payroll — the border-number period (90 days from joining) has ended");
+            provisionalLapsedLabel: "Iqama required before payroll — the border-number period has ended");
         Add("GosiReference", "GOSI reference", "identity", "activate", "field", "gosiReference", (s, _, _) => Str(s.GosiReference));
         Add("EmiratesId", "Emirates ID", "identity", "activate", "field", "emiratesId", (s, _, _) => Str(s.EmiratesId));
         Add("Qid", "Qatar ID (QID)", "identity", "activate", "field", "qid", (s, _, _) => Str(s.Qid));
