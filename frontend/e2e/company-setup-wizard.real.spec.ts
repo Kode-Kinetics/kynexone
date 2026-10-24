@@ -321,11 +321,14 @@ test('AR: the same journey in Arabic, with an existing company admin as the supe
   await fillCompany(page, t, AR_CO);
   await expect(page.getByLabel(t('Legal name (Arabic)'))).toHaveAttribute('dir', 'rtl');
   await expect(page.getByTestId('structure-tree')).toContainText(AR_CO.legalNameAr);
-  // A long English row name in the Arabic tree is clipped at its END, so its start stays readable.
+  // A long English row name in the Arabic tree is clipped at its END, so its start stays readable. The tree's groups
+  // are collapsed with counts now, so names may not be long enough to clip here: every row name is a truncating span
+  // with dir="auto" (English resolves to ltr), and any name that does clip, clips at its end.
+  const rowNames = page.getByTestId('structure-tree').locator('span.truncate[dir="auto"]');
+  expect(await rowNames.count(), 'row names are truncating, direction-aware spans').toBeGreaterThan(0);
   const clipped = await page.getByTestId('structure-tree').locator('span.truncate').evaluateAll(spans => spans
     .filter(s => s.scrollWidth > s.clientWidth && /^[A-Za-z]/.test(s.textContent ?? ''))
     .map(s => getComputedStyle(s).direction));
-  expect(clipped.length, 'the country defaults include cost centre names long enough to clip').toBeGreaterThan(0);
   expect(clipped.every(d => d === 'ltr'), `clipped English names must clip at their end: ${clipped}`).toBe(true);
   await shot(page, info, 'ar-2-company');
   await fillMiddleSteps(page, t, info, 'ar', 'A');
