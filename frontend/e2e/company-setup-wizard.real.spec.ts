@@ -151,7 +151,20 @@ async function expectStep(page: Page, t: ReturnType<typeof T>, heading: string) 
   await expect(page.getByRole('heading', { level: 2, name: t(heading), exact: true })).toBeVisible({ timeout: 20_000 });
 }
 
-const next = (page: Page, t: ReturnType<typeof T>) => page.getByRole('button', { name: t('Next'), exact: true }).click();
+/** The footer's primary action: "Next", "Next: Departments", "Save cost centres & next"… */
+const next = (page: Page, _t?: ReturnType<typeof T>) => page.getByTestId('wizard-next').click();
+
+/** Click the primary action until the given h2 (a step heading or a part name) is on screen. */
+async function nextUntil(page: Page, t: ReturnType<typeof T>, heading: string, max = 10) {
+  const target = page.getByRole('heading', { level: 2, name: t(heading), exact: true });
+  for (let i = 0; i < max; i++) {
+    if (await target.isVisible()) return;
+    const position = await page.getByTestId('wizard-position').getAttribute('data-position');
+    await next(page, t);
+    await expect(page.getByTestId('wizard-position')).not.toHaveAttribute('data-position', position ?? '', { timeout: 15_000 }).catch(() => undefined);
+  }
+  await expect(target).toBeVisible({ timeout: 20_000 });
+}
 
 async function openWizard(page: Page, t: ReturnType<typeof T>) {
   await page.goto('/setup?tab=companies');
@@ -184,25 +197,28 @@ async function fillMiddleSteps(page: Page, t: ReturnType<typeof T>, info: TestIn
   await shot(page, info, `${locale}-3-branches`);
   await next(page, t);
 
-  await expectStep(page, t, 'Organisation');
+  // Step 4 goes one part at a time (Addendum B4): cost centres, then departments, grades, designations.
+  await expectStep(page, t, 'Cost centres');
   await page.getByRole('button', { name: t('Add cost centre'), exact: true }).click();
   const cc = page.getByTestId('costCentres-row').last();
   await cc.getByLabel(t('Code')).fill(`CC${tag}`);
   await cc.getByLabel(t('Name (English)')).fill('Administration');
+  await next(page, t);
+  await expectStep(page, t, 'Departments');
   await page.getByRole('button', { name: t('Add department'), exact: true }).click();
   const dept = page.getByTestId('departments-row').last();
   await dept.getByLabel(t('Code')).fill(`OPS${tag}`);
   await dept.getByLabel(t('Name (English)')).fill('Operations');
-  await dept.getByLabel(t('Cost centre')).selectOption(`CC${tag}`);
+  // Its links sit on the row's second line, behind "Edit details".
+  const index = (await page.getByTestId('departments-row').count()) - 1;
+  await page.getByRole('button', { name: new RegExp(`^${t('Edit details')}`) }).last().click();
+  await page.locator(`#ccw-departments-${index}-costCentreCode`).selectOption(`CC${tag}`);
   await shot(page, info, `${locale}-4-organisation`);
-  await next(page, t);
-
-  await expectStep(page, t, 'Work & pay rules');
+  await nextUntil(page, t, 'Work rules');
   await page.getByLabel(t('Prefix')).fill(`W${tag}`);
   await expect(page.getByTestId('numbering-preview')).toContainText(`W${tag}-`);
   await shot(page, info, `${locale}-5-rules`);
-  await next(page, t);
-  await expectStep(page, t, 'Company super admin');
+  await nextUntil(page, t, 'Company super admin');
 }
 
 async function reachReview(page: Page, t: ReturnType<typeof T>) {
@@ -305,11 +321,14 @@ test('AR: the same journey in Arabic, with an existing company admin as the supe
   await fillCompany(page, t, AR_CO);
   await expect(page.getByLabel(t('Legal name (Arabic)'))).toHaveAttribute('dir', 'rtl');
   await expect(page.getByTestId('structure-tree')).toContainText(AR_CO.legalNameAr);
-  // A long English row name in the Arabic tree is clipped at its END, so its start stays readable.
+  // A long English row name in the Arabic tree is clipped at its END, so its start stays readable. The tree's groups
+  // are collapsed with counts now, so names may not be long enough to clip here: every row name is a truncating span
+  // with dir="auto" (English resolves to ltr), and any name that does clip, clips at its end.
+  const rowNames = page.getByTestId('structure-tree').locator('span.truncate[dir="auto"]');
+  expect(await rowNames.count(), 'row names are truncating, direction-aware spans').toBeGreaterThan(0);
   const clipped = await page.getByTestId('structure-tree').locator('span.truncate').evaluateAll(spans => spans
     .filter(s => s.scrollWidth > s.clientWidth && /^[A-Za-z]/.test(s.textContent ?? ''))
     .map(s => getComputedStyle(s).direction));
-  expect(clipped.length, 'the country defaults include cost centre names long enough to clip').toBeGreaterThan(0);
   expect(clipped.every(d => d === 'ltr'), `clipped English names must clip at their end: ${clipped}`).toBe(true);
   await shot(page, info, 'ar-2-company');
   await fillMiddleSteps(page, t, info, 'ar', 'A');

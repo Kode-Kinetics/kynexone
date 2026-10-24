@@ -92,7 +92,8 @@ public record DepartmentDto(
     string NameEn,
     string NameAr,
     int? ManagerEmployeeId,
-    bool IsActive);
+    bool IsActive,
+    Guid? CompanyId = null);
 
 public record DepartmentRequest(
     Guid? BranchId,
@@ -102,7 +103,8 @@ public record DepartmentRequest(
     [Required, MaxLength(180)] string NameEn,
     [MaxLength(180)] string? NameAr,
     int? ManagerEmployeeId,
-    bool IsActive = true);
+    bool IsActive = true,
+    Guid? CompanyId = null);
 
 public record DesignationDto(
     Guid Id,
@@ -115,7 +117,8 @@ public record DesignationDto(
     string JobLevel,
     string JobDescription,
     bool IsManagerRole,
-    bool IsActive);
+    bool IsActive,
+    Guid? CompanyId = null);
 
 public record DesignationRequest(
     Guid? DepartmentId,
@@ -127,12 +130,13 @@ public record DesignationRequest(
     [MaxLength(80)] string? JobLevel,
     [MaxLength(2000)] string? JobDescription,
     bool IsManagerRole = false,
-    bool IsActive = true);
+    bool IsActive = true,
+    Guid? CompanyId = null);
 
 public record GradeDto(
     Guid Id, string Code, string Name, string Band, int Level,
     decimal MinSalary, decimal MidSalary, decimal MaxSalary, string Currency,
-    bool IsActive, string? NameAr = null);
+    bool IsActive, string? NameAr = null, Guid? CompanyId = null);
 
 public record GradeRequest(
     [Required, MaxLength(40)] string Code,
@@ -144,7 +148,8 @@ public record GradeRequest(
     [Range(0, 100_000_000)] decimal MaxSalary = 0,
     [MaxLength(8)] string? Currency = "SAR",
     bool IsActive = true,
-    [MaxLength(120)] string? NameAr = null);
+    [MaxLength(120)] string? NameAr = null,
+    Guid? CompanyId = null);
 
 public record GradePayScaleComponentDto(
     Guid Id, string ComponentCode, string ComponentName, string ComponentType,
@@ -163,13 +168,14 @@ public record GradePayScaleComponentRequest(
     int SortOrder = 0,
     bool IsActive = true);
 
-public record CostCenterDto(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive);
+public record CostCenterDto(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive, string? NameAr = null);
 
 public record CostCenterRequest(
     Guid? CompanyId,
     [Required, MaxLength(40)] string Code,
     [Required, MaxLength(160)] string Name,
-    bool IsActive = true);
+    bool IsActive = true,
+    [MaxLength(160)] string? NameAr = null);
 
 public static class OrganizationMappings
 {
@@ -217,7 +223,8 @@ public static class OrganizationMappings
         department.NameEn,
         department.NameAr,
         department.ManagerEmployeeId,
-        department.IsActive);
+        department.IsActive,
+        department.CompanyId);
 
     public static DesignationDto ToDto(this Designation designation) => new(
         designation.Id,
@@ -230,16 +237,17 @@ public static class OrganizationMappings
         designation.JobLevel,
         designation.JobDescription,
         designation.IsManagerRole,
-        designation.IsActive);
+        designation.IsActive,
+        designation.CompanyId);
 
     public static GradeDto ToDto(this Grade grade) => new(
         grade.Id, grade.Code, grade.Name, grade.Band, grade.Level,
         grade.MinSalary, grade.MidSalary, grade.MaxSalary, grade.Currency,
-        grade.IsActive, grade.NameAr);
+        grade.IsActive, grade.NameAr, grade.CompanyId);
 
     public static GradePayScaleComponentDto ToDto(this GradePayScaleComponent c) => new(
         c.Id, c.ComponentCode, c.ComponentName, c.ComponentType, c.CalculationType,
         c.Amount, c.Percentage, c.IsTaxable, c.Frequency, c.SortOrder, c.IsActive);
 
-    public static CostCenterDto ToDto(this CostCenter costCenter) => new(costCenter.Id, costCenter.CompanyId, costCenter.Code, costCenter.Name, costCenter.IsActive);
+    public static CostCenterDto ToDto(this CostCenter costCenter) => new(costCenter.Id, costCenter.CompanyId, costCenter.Code, costCenter.Name, costCenter.IsActive, costCenter.NameAr);
 }

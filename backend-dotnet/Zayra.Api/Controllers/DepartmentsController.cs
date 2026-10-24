@@ -63,7 +63,7 @@ public class DepartmentsController : ControllerBase
             var department = await _organization.CreateDepartmentAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = department.Id }, department);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
     }
 
     [HttpPut("{id:guid}")]
@@ -78,7 +78,7 @@ public class DepartmentsController : ControllerBase
             var department = await _organization.UpdateDepartmentAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return department is null ? NotFound() : Ok(department);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
     }
 
     [HttpDelete("{id:guid}")]
@@ -149,7 +149,10 @@ public class DepartmentsController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunPreviewAsync(tenantId.Value, req.Csv, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunPreviewAsync(tenantId.Value, companyId, req.Csv, ct);
     }
 
     // ── Import Commit ─────────────────────────────────────────────────────────
@@ -161,7 +164,10 @@ public class DepartmentsController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunCommitAsync(tenantId.Value, req.Csv, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunCommitAsync(tenantId.Value, companyId, req.Csv, ct);
     }
 
     // ── Shared logic ──────────────────────────────────────────────────────────
@@ -176,15 +182,18 @@ public class DepartmentsController : ControllerBase
                         Dictionary<string, Department> Existing,
                         Dictionary<string, Guid> CostCenters,
                         Dictionary<string, int> Employees)>
-        LoadLookupsAsync(Guid tenantId, CancellationToken ct)
+        LoadLookupsAsync(Guid tenantId, Guid companyId, CancellationToken ct)
     {
-        var departments = await _db.Departments.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && !d.IsDeleted).ToListAsync(ct);
+        // Addendum B: the target company's rows, plus legacy rows no company owns yet whose code the company does not
+        // already use — an import into the company adopts such a row (the update assigns it the company).
+        var departments = OrgCodes.WithinCompany(await _db.Departments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && (d.CompanyId == companyId || d.CompanyId == null) && !d.IsDeleted).ToListAsync(ct),
+            d => d.CompanyId, d => d.Code);
         if (!OrgCodes.TryBuildLookup(departments, d => d.Code, out var existing, out var clash))
             return (Conflict(OrgCodeCollision.Payload("department", "Code", clash)), new(), new(), new());
 
         var costCenters = await _db.CostCenters.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted).ToListAsync(ct);
+            .Where(c => c.TenantId == tenantId && c.CompanyId == companyId && !c.IsDeleted).ToListAsync(ct);
         if (!OrgCodes.TryBuildLookup(costCenters, c => c.Code, out var costCenterRows, out var ccClash))
             return (Conflict(OrgCodeCollision.Payload("cost centre", "Code", ccClash)), new(), new(), new());
 
@@ -198,9 +207,9 @@ public class DepartmentsController : ControllerBase
             employeeRows.ToDictionary(x => x.Key, x => x.Value.Id, StringComparer.Ordinal));
     }
 
-    private async Task<IActionResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
+    private async Task<IActionResult> RunPreviewAsync(Guid tenantId, Guid companyId, string csv, CancellationToken ct)
     {
-        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, ct);
+        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, companyId, ct);
         if (refusal is not null) return refusal;
 
         var rows = Csv.Parse(csv);
@@ -217,9 +226,9 @@ public class DepartmentsController : ControllerBase
         return Ok(new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, ToRowResults(importRows)));
     }
 
-    private async Task<IActionResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
+    private async Task<IActionResult> RunCommitAsync(Guid tenantId, Guid companyId, string csv, CancellationToken ct)
     {
-        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, ct);
+        var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, companyId, ct);
         if (refusal is not null) return refusal;
 
         var rows = Csv.Parse(csv);
@@ -250,13 +259,13 @@ public class DepartmentsController : ControllerBase
             {
                 if (existing is not null)
                 {
-                    await _organization.UpdateDepartmentAsync(tenantId, existing.Id, BuildRequest(row, existing, parentId, costCentersByCode, empByCode), context, ct);
+                    await _organization.UpdateDepartmentAsync(tenantId, existing.Id, BuildRequest(row, existing, parentId, companyId, costCentersByCode, empByCode), context, ct);
                     idByCode[key] = existing.Id;
                     updated++;
                 }
                 else
                 {
-                    var dto = await _organization.CreateDepartmentAsync(tenantId, BuildRequest(row, null, parentId, costCentersByCode, empByCode), context, ct);
+                    var dto = await _organization.CreateDepartmentAsync(tenantId, BuildRequest(row, null, parentId, companyId, costCentersByCode, empByCode), context, ct);
                     idByCode[key] = dto.Id;
                     created++;
                 }
@@ -286,7 +295,7 @@ public class DepartmentsController : ControllerBase
             existingByCode.TryGetValue(key, out var existing);
             try
             {
-                await _organization.UpdateDepartmentAsync(tenantId, id, BuildRequest(row, existing, parentId, costCentersByCode, empByCode), context, ct);
+                await _organization.UpdateDepartmentAsync(tenantId, id, BuildRequest(row, existing, parentId, companyId, costCentersByCode, empByCode), context, ct);
             }
             catch (InvalidOperationException ex) { row.Errors.Add(ex.Message); }
         }
@@ -304,6 +313,7 @@ public class DepartmentsController : ControllerBase
         DeptImportRow row,
         Department? existing,
         Guid? parentId,
+        Guid companyId,
         IReadOnlyDictionary<string, Guid> costCentersByCode,
         IReadOnlyDictionary<string, int> empByCode) =>
         new(BranchId: existing?.BranchId,
@@ -313,7 +323,8 @@ public class DepartmentsController : ControllerBase
             NameEn: row.NameEn,
             NameAr: row.NameAr,
             ManagerEmployeeId: string.IsNullOrWhiteSpace(row.ManagerCode) ? null : empByCode[OrgCodes.Normalize(row.ManagerCode)],
-            IsActive: row.IsActive);
+            IsActive: row.IsActive,
+            CompanyId: companyId);
 
     private static List<DeptImportRow> ValidateRows(
         IReadOnlyList<Dictionary<string, string>> rows,
@@ -445,4 +456,5 @@ public class DepartmentsController : ControllerBase
     }
 }
 
-public record DeptImportRequest(string Csv);
+/// <summary>CompanyId: the company the file's departments belong to (Addendum B). Optional only when the tenant has one company.</summary>
+public record DeptImportRequest(string Csv, Guid? CompanyId = null);

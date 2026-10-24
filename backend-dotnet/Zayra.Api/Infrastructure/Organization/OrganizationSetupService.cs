@@ -8,6 +8,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
@@ -329,10 +330,10 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<DepartmentDto> CreateDepartmentAsync(Guid tenantId, DepartmentRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        await EnsureBranchExists(tenantId, request.BranchId, cancellationToken);
-        await EnsureDepartmentExists(tenantId, request.ParentDepartmentId, cancellationToken);
-        await EnsureDepartmentCodeUnique(tenantId, request.Code, null, cancellationToken);
-        var department = new Department { TenantId = tenantId, CreatedBy = context.UserId };
+        var companyId = await ResolveOwningCompanyAsync(tenantId, request.CompanyId, cancellationToken);
+        await EnsureDepartmentLinksAsync(tenantId, companyId, null, request, cancellationToken);
+        await EnsureDepartmentCodeUnique(tenantId, companyId, request.Code, null, cancellationToken);
+        var department = new Department { TenantId = tenantId, CompanyId = companyId, CreatedBy = context.UserId };
         Apply(department, request);
         _db.Departments.Add(department);
         await _db.SaveChangesAsync(cancellationToken);
@@ -344,9 +345,10 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var department = await _db.Departments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (department is null) return null;
-        await EnsureBranchExists(tenantId, request.BranchId, cancellationToken);
-        await EnsureDepartmentExists(tenantId, request.ParentDepartmentId, cancellationToken);
-        await EnsureDepartmentCodeUnique(tenantId, request.Code, id, cancellationToken);
+        var companyId = await ResolveCompanyOnUpdateAsync(tenantId, department.CompanyId, request.CompanyId, cancellationToken);
+        await EnsureDepartmentLinksAsync(tenantId, companyId, id, request, cancellationToken);
+        await EnsureDepartmentCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
+        department.CompanyId = companyId;
         Apply(department, request);
         department.UpdatedAtUtc = DateTime.UtcNow;
         department.UpdatedBy = context.UserId;
@@ -375,9 +377,10 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<DesignationDto> CreateDesignationAsync(Guid tenantId, DesignationRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        await EnsureDepartmentExists(tenantId, request.DepartmentId, cancellationToken);
-        await EnsureDesignationCodeUnique(tenantId, request.Code, null, cancellationToken);
-        var designation = new Designation { TenantId = tenantId, CreatedBy = context.UserId };
+        var companyId = await ResolveOwningCompanyAsync(tenantId, request.CompanyId, cancellationToken);
+        await EnsureDesignationLinksAsync(tenantId, companyId, request, cancellationToken);
+        await EnsureDesignationCodeUnique(tenantId, companyId, request.Code, null, cancellationToken);
+        var designation = new Designation { TenantId = tenantId, CompanyId = companyId, CreatedBy = context.UserId };
         Apply(designation, request);
         _db.Designations.Add(designation);
         await _db.SaveChangesAsync(cancellationToken);
@@ -389,8 +392,10 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var designation = await _db.Designations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (designation is null) return null;
-        await EnsureDepartmentExists(tenantId, request.DepartmentId, cancellationToken);
-        await EnsureDesignationCodeUnique(tenantId, request.Code, id, cancellationToken);
+        var companyId = await ResolveCompanyOnUpdateAsync(tenantId, designation.CompanyId, request.CompanyId, cancellationToken);
+        await EnsureDesignationLinksAsync(tenantId, companyId, request, cancellationToken);
+        await EnsureDesignationCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
+        designation.CompanyId = companyId;
         Apply(designation, request);
         designation.UpdatedAtUtc = DateTime.UtcNow;
         designation.UpdatedBy = context.UserId;
@@ -417,9 +422,12 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<GradeDto> CreateGradeAsync(Guid tenantId, GradeRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        await EnsureGradeCodeUnique(tenantId, request.Code, null, cancellationToken);
-        var grade = new Grade { TenantId = tenantId, CreatedBy = context.UserId };
+        var companyId = await ResolveOwningCompanyAsync(tenantId, request.CompanyId, cancellationToken);
+        await EnsureGradeCodeUnique(tenantId, companyId, request.Code, null, cancellationToken);
+        var grade = new Grade { TenantId = tenantId, CompanyId = companyId, CreatedBy = context.UserId };
         Apply(grade, request);
+        // Addendum B: a grade's currency defaults to its company's, not to a tenant-wide one.
+        if (string.IsNullOrWhiteSpace(request.Currency)) grade.Currency = await CompanyCurrencyAsync(tenantId, companyId, cancellationToken) ?? grade.Currency;
         _db.Grades.Add(grade);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.grade_created", nameof(Grade), grade.Id.ToString(), context, null, cancellationToken);
@@ -430,8 +438,12 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var grade = await _db.Grades.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (grade is null) return null;
-        await EnsureGradeCodeUnique(tenantId, request.Code, id, cancellationToken);
+        var companyId = await ResolveCompanyOnUpdateAsync(tenantId, grade.CompanyId, request.CompanyId, cancellationToken);
+        await EnsureGradeCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
+        grade.CompanyId = companyId;
+        var previousCurrency = grade.Currency;
         Apply(grade, request);
+        if (string.IsNullOrWhiteSpace(request.Currency)) grade.Currency = previousCurrency;
         grade.UpdatedAtUtc = DateTime.UtcNow;
         grade.UpdatedBy = context.UserId;
         await _db.SaveChangesAsync(cancellationToken);
@@ -459,7 +471,7 @@ public class OrganizationSetupService : IOrganizationSetupService
 
     public async Task<CostCenterDto> CreateCostCenterAsync(Guid tenantId, CostCenterRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        await EnsureCostCenterCodeUnique(tenantId, request.Code, null, cancellationToken);
+        await EnsureCostCenterCodeUnique(tenantId, request.CompanyId, request.Code, null, cancellationToken);
         var costCenter = new CostCenter { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(costCenter, request);
         _db.CostCenters.Add(costCenter);
@@ -472,7 +484,7 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var costCenter = await _db.CostCenters.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (costCenter is null) return null;
-        await EnsureCostCenterCodeUnique(tenantId, request.Code, id, cancellationToken);
+        await EnsureCostCenterCodeUnique(tenantId, request.CompanyId, request.Code, id, cancellationToken);
         Apply(costCenter, request);
         costCenter.UpdatedAtUtc = DateTime.UtcNow;
         costCenter.UpdatedBy = context.UserId;
@@ -655,6 +667,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         costCenter.CompanyId = request.CompanyId;
         costCenter.Code = OrgCodes.Normalize(request.Code);
         costCenter.Name = Clean(request.Name);
+        costCenter.NameAr = string.IsNullOrWhiteSpace(request.NameAr) ? null : request.NameAr.Trim();
         costCenter.IsActive = request.IsActive;
     }
 
@@ -901,44 +914,53 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (exists) throw new InvalidOperationException("Branch code already exists for this company.");
     }
 
-    private async Task EnsureDepartmentCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
+    private async Task EnsureDepartmentCodeUnique(Guid tenantId, Guid? companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
         var clean = OrgCodes.Normalize(code);
         // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
         // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
         // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
-        var exists = await _db.Departments.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Department code already exists in this tenant.");
+        // Per company (Addendum B): the same code may exist in a sister company. Tenant-wide read so a row of a
+        // company the caller cannot see still counts — the unique index would refuse it anyway.
+        var exists = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification).AnyAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
+        if (exists) throw new InvalidOperationException("Department code already exists in this company.");
     }
 
-    private async Task EnsureDesignationCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
+    private async Task EnsureDesignationCodeUnique(Guid tenantId, Guid? companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
         var clean = OrgCodes.Normalize(code);
         // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
         // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
         // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
-        var exists = await _db.Designations.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Designation code already exists in this tenant.");
+        // Per company (Addendum B): the same code may exist in a sister company. Tenant-wide read so a row of a
+        // company the caller cannot see still counts — the unique index would refuse it anyway.
+        var exists = await ScopedBypass.TenantWide(_db.Designations, tenantId, OrgScopeJustification).AnyAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
+        if (exists) throw new InvalidOperationException("Designation code already exists in this company.");
     }
 
-    private async Task EnsureGradeCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
+    private async Task EnsureGradeCodeUnique(Guid tenantId, Guid? companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
         var clean = OrgCodes.Normalize(code);
         // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
         // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
         // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
-        var exists = await _db.Grades.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Grade code already exists in this tenant.");
+        // Per company (Addendum B): the same code may exist in a sister company. Tenant-wide read so a row of a
+        // company the caller cannot see still counts — the unique index would refuse it anyway.
+        var exists = await ScopedBypass.TenantWide(_db.Grades, tenantId, OrgScopeJustification).AnyAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
+        if (exists) throw new InvalidOperationException("Grade code already exists in this company.");
     }
 
-    private async Task EnsureCostCenterCodeUnique(Guid tenantId, string code, Guid? excludedId, CancellationToken cancellationToken)
+    private async Task EnsureCostCenterCodeUnique(Guid tenantId, Guid? companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
     {
         var clean = OrgCodes.Normalize(code);
         // Compared case-INSENSITIVELY on purpose. The column is normalised on write now, but a
         // tenant onboarded before that still holds rows the old importer stored verbatim; an exact
         // match would let "OPS" be created beside a legacy "ops" and re-open the collision.
-        var exists = await _db.CostCenters.AnyAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
-        if (exists) throw new InvalidOperationException("Cost center code already exists in this tenant.");
+        // Per company (owner decision 2026-10-23): the same code may exist in a sister company. Tenant-wide read so a
+        // row of a company the caller cannot see still counts — the unique index would refuse it anyway.
+        var exists = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, OrgScopeJustification)
+            .AnyAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
+        if (exists) throw new InvalidOperationException("Cost center code already exists in this company.");
     }
 
     private async Task EnsureCompanyExists(Guid tenantId, Guid companyId, CancellationToken cancellationToken)
@@ -949,23 +971,117 @@ public class OrganizationSetupService : IOrganizationSetupService
         }
     }
 
-    private async Task EnsureBranchExists(Guid tenantId, Guid? branchId, CancellationToken cancellationToken)
-    {
-        if (branchId.HasValue && !await _db.Branches.AnyAsync(x => x.TenantId == tenantId && x.Id == branchId.Value && !x.IsDeleted, cancellationToken))
-        {
-            throw new InvalidOperationException("Branch not found in this tenant.");
-        }
-    }
-
-    private async Task EnsureDepartmentExists(Guid tenantId, Guid? departmentId, CancellationToken cancellationToken)
-    {
-        if (departmentId.HasValue && !await _db.Departments.AnyAsync(x => x.TenantId == tenantId && x.Id == departmentId.Value && !x.IsDeleted, cancellationToken))
-        {
-            throw new InvalidOperationException("Department not found in this tenant.");
-        }
-    }
-
     private static string Clean(string? value) => value?.Trim() ?? string.Empty;
+
+    // ── Addendum B: per-company organisation rows ────────────────────────────────────────────────────────
+
+    private const string OrgScopeJustification =
+        "Organisation setup checks a row of any company of the tenant: codes are unique per company and links must stay inside one company, whatever the caller's company switcher shows.";
+
+    /// <summary>The company that owns a new department, designation or grade: the one the request names (it must be a
+    /// live company of the tenant), else the company the request is narrowed to (the switcher), else the tenant's only company. A tenant with several companies must say which —
+    /// <see cref="OrganizationRuleException.CompanyRequired"/>.</summary>
+    public async Task<Guid> ResolveOwningCompanyAsync(Guid tenantId, Guid? requested, CancellationToken cancellationToken)
+    {
+        if (requested is Guid id)
+        {
+            await EnsureCompanyExists(tenantId, id, cancellationToken);
+            return id;
+        }
+        // The company switcher's selection (or a caller holding one company) is the next best answer.
+        if (_db.SingleScopedCompanyId is Guid selected
+            && await ScopedBypass.TenantWide(_db.Companies, tenantId, OrgScopeJustification).AnyAsync(x => x.Id == selected && !x.IsDeleted, cancellationToken))
+            return selected;
+        var companies = await ScopedBypass.TenantWide(_db.Companies, tenantId, OrgScopeJustification)
+                .Where(x => !x.IsDeleted)
+            .Select(x => x.Id).Take(2).ToListAsync(cancellationToken);
+        if (companies.Count == 1) return companies[0];
+        throw new OrganizationRuleException(OrganizationRuleException.CompanyRequired,
+            companies.Count == 0
+                ? "Create a company first: departments, designations and grades belong to a company."
+                : "Choose the company this belongs to.");
+    }
+
+    /// <summary>On edit the company is fixed once set. An unassigned legacy row (company NULL) takes the company the
+    /// request names — that is how Setup assigns it.</summary>
+    private async Task<Guid?> ResolveCompanyOnUpdateAsync(Guid tenantId, Guid? current, Guid? requested, CancellationToken cancellationToken)
+    {
+        if (current is Guid fixedCompany)
+        {
+            if (requested is Guid other && other != fixedCompany)
+                throw new OrganizationRuleException(OrganizationRuleException.CompanyLocked,
+                    "The company of this row can't be changed. Copy it to the other company instead.");
+            return fixedCompany;
+        }
+        if (requested is Guid assign)
+        {
+            await EnsureCompanyExists(tenantId, assign, cancellationToken);
+            return assign;
+        }
+        return null;
+    }
+
+    private async Task<string?> CompanyCurrencyAsync(Guid tenantId, Guid companyId, CancellationToken cancellationToken)
+    {
+        var currency = await ScopedBypass.TenantWide(_db.Companies, tenantId, OrgScopeJustification)
+                .Where(x => x.Id == companyId)
+            .Select(x => x.DefaultCurrency).FirstOrDefaultAsync(cancellationToken);
+        return string.IsNullOrWhiteSpace(currency) ? null : currency.Trim().ToUpperInvariant();
+    }
+
+    private static OrganizationRuleException Mismatch(string what) =>
+        new(OrganizationRuleException.CompanyMismatch, $"The {what} belongs to another company. Choose one of this company's.");
+
+    /// <summary>A department's branch, parent and cost centre must belong to the department's own company.</summary>
+    private async Task EnsureDepartmentLinksAsync(Guid tenantId, Guid? companyId, Guid? selfId, DepartmentRequest request, CancellationToken cancellationToken)
+    {
+        if (request.BranchId is Guid branchId)
+        {
+            var branchCompany = await ScopedBypass.TenantWide(_db.Branches, tenantId, OrgScopeJustification)
+                .Where(x => x.Id == branchId && !x.IsDeleted)
+                .Select(x => (Guid?)x.CompanyId).FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Branch not found in this tenant.");
+            if (branchCompany != companyId) throw Mismatch("branch");
+        }
+        if (request.ParentDepartmentId is Guid parentId)
+        {
+            if (parentId == selfId) throw new InvalidOperationException("A department cannot be its own parent.");
+            var parent = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification)
+                .Where(x => x.Id == parentId && !x.IsDeleted)
+                .Select(x => new { x.CompanyId }).FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Department not found in this tenant.");
+            if (parent.CompanyId != companyId) throw Mismatch("parent department");
+        }
+        if (request.CostCenterId is Guid costCenterId)
+        {
+            var costCenter = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, OrgScopeJustification)
+                .Where(x => x.Id == costCenterId && !x.IsDeleted)
+                .Select(x => new { x.CompanyId }).FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Cost center not found in this tenant.");
+            if (costCenter.CompanyId != companyId) throw Mismatch("cost centre");
+        }
+    }
+
+    /// <summary>A designation's department and grade must belong to the designation's own company.</summary>
+    private async Task EnsureDesignationLinksAsync(Guid tenantId, Guid? companyId, DesignationRequest request, CancellationToken cancellationToken)
+    {
+        if (request.DepartmentId is Guid departmentId)
+        {
+            var department = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification)
+                .Where(x => x.Id == departmentId && !x.IsDeleted)
+                .Select(x => new { x.CompanyId }).FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Department not found in this tenant.");
+            if (department.CompanyId != companyId) throw Mismatch("department");
+        }
+        if (request.GradeId is Guid gradeId)
+        {
+            var grade = await ScopedBypass.TenantWide(_db.Grades, tenantId, OrgScopeJustification)
+                .Where(x => x.Id == gradeId && !x.IsDeleted)
+                .Select(x => new { x.CompanyId }).FirstOrDefaultAsync(cancellationToken)
+                ?? throw new InvalidOperationException("Grade not found in this tenant.");
+            if (grade.CompanyId != companyId) throw Mismatch("grade");
+        }
+    }
 
     private async Task<bool> SoftDelete<T>(DbSet<T> set, Guid tenantId, Guid id, string action, RequestContext context, CancellationToken cancellationToken) where T : class
     {

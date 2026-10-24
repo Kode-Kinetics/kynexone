@@ -103,6 +103,24 @@ public class CompanySetupController : ControllerBase
         return outcome.Error is null ? NoContent() : StatusCode(outcome.Status, outcome.Error);
     }
 
+    /// <summary>Addendum B2: save one Organisation section of an existing-company draft now. Same caller rules as the commit
+    /// (a company super admin for their own company only; the service checks the draft's company).</summary>
+    [HttpPost("drafts/{id:guid}/sections/{section}")]
+    public async Task<ActionResult<SectionApplyResult>> ApplySection(Guid id, string section, [FromBody] CompanySetupSectionApplyRequest? request,
+        CancellationToken ct)
+    {
+        if (Gate(write: true, companyScoped: true) is { } refused) return refused;
+        return Map(await _setup.ApplySectionAsync(Caller()!, id, section, request, ct));
+    }
+
+    /// <summary>Addendum B3: a sister company's rows of one section, as new draft rows to copy by value. Group scope only.</summary>
+    [HttpGet("copy-rows")]
+    public async Task<ActionResult<CopyRows>> CopyRows([FromQuery] Guid? fromCompanyId, [FromQuery] string? section, CancellationToken ct)
+    {
+        if (Gate(write: false) is { } refused) return refused;
+        return Map(await _setup.CopyRowsAsync(Caller()!, fromCompanyId, section, ct));
+    }
+
     [HttpPost("dry-run")]
     public async Task<ActionResult<CompanySetupPlan>> DryRun([FromBody] CompanySetupDraftBody? body, CancellationToken ct)
     {

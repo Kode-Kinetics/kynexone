@@ -26,6 +26,19 @@ public static class OrgCodes
     public static string Normalize(string? code) => (code ?? string.Empty).Trim().ToUpperInvariant();
 
     /// <summary>
+    /// Addendum B: the rows an import into one company matches by code — the company's own rows (loaded with a
+    /// non-null company), plus legacy rows no company owns yet (null company) whose code the company does not
+    /// already use. Callers load both sets; this drops the legacy rows a company row shadows.
+    /// </summary>
+    public static List<T> WithinCompany<T>(IReadOnlyCollection<T> rows, Func<T, Guid?> company, Func<T, string> code)
+    {
+        var owned = rows.Where(r => company(r) is not null).ToList();
+        var ownedCodes = owned.Select(r => Normalize(code(r))).ToHashSet(StringComparer.Ordinal);
+        owned.AddRange(rows.Where(r => company(r) is null && !ownedCodes.Contains(Normalize(code(r)))));
+        return owned;
+    }
+
+    /// <summary>
     /// Build a by-code lookup without ever throwing on a duplicate key. Returns false, and fills
     /// <paramref name="collisions"/> with the raw codes that share a normalised form, when the
     /// tenant already holds rows that differ only in case.

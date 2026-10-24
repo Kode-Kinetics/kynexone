@@ -28,6 +28,10 @@ import { payrollAttendance } from './payrollAttendance';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
+import { companyWizardRules } from './companyWizardRules';
+import { setupDataEntry } from './setupDataEntry';
+import { setupGuidedEntry } from './setupGuidedEntry';
+import { setupReview } from './setupReview';
 import { appChrome } from './appChrome';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
@@ -47,6 +51,10 @@ const en: Dict = {
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...appChrome.en,
   ...companyWizard.en,
+  ...companyWizardRules.en,
+  ...setupDataEntry.en,
+  ...setupGuidedEntry.en,
+  ...setupReview.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
   "Cost center": "Cost center",
@@ -1479,6 +1487,10 @@ const en: Dict = {
 const ar: Dict = {
   ...appChrome.ar,
   ...companyWizard.ar,
+  ...companyWizardRules.ar,
+  ...setupDataEntry.ar,
+  ...setupGuidedEntry.ar,
+  ...setupReview.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
   "Cost center": "مركز التكلفة",

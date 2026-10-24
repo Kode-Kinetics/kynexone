@@ -34,8 +34,17 @@ public class ImportExportEngineTests
         return (ctrl, db, tenantId);
     }
 
+    /// <summary>Addendum B: departments, designations and grades belong to a company — the tenant's only one by default.</summary>
+    private static void EnsureCompany(ZayraDbContext db, Guid tenantId)
+    {
+        if (db.Companies.Any(c => c.TenantId == tenantId)) return;
+        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "Import Engine Co", RegistrationNumber = $"IE-{tenantId:N}", DefaultCurrency = "SAR", IsActive = true });
+        db.SaveChanges();
+    }
+
     private static DepartmentsController MakeDeptController(ZayraDbContext db, Guid tenantId)
     {
+        EnsureCompany(db, tenantId);
         // We need IOrganizationSetupService — use a stub via CreateDb's Moq-free approach
         // by constructing with a real service backed by the same in-memory db.
         var svc = new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
@@ -348,11 +357,14 @@ public class ImportExportEngineTests
     {
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
-        var dept = new Department { TenantId = tenantId, Code = "DEPT-HR", NameEn = "HR", IsActive = true };
+        EnsureCompany(db, tenantId);
+        // Addendum B: the department belongs to the company the designations are imported into.
+        var dept = new Department { TenantId = tenantId, CompanyId = db.Companies.Single(c => c.TenantId == tenantId).Id, Code = "DEPT-HR", NameEn = "HR", IsActive = true };
         db.Departments.Add(dept);
         await db.SaveChangesAsync();
 
         var svc = new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
+        EnsureCompany(db, tenantId);
         var ctrl = new DesignationsController(svc, db);
         ctrl.ControllerContext = MakeContext(tenantId);
 
@@ -375,6 +387,7 @@ public class ImportExportEngineTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var svc = new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
+        EnsureCompany(db, tenantId);
         var ctrl = new GradesController(svc, db);
         ctrl.ControllerContext = MakeContext(tenantId);
 
@@ -395,6 +408,7 @@ public class ImportExportEngineTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var svc = new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new Zayra.Api.Infrastructure.Audit.AuditService(db));
+        EnsureCompany(db, tenantId);
         var ctrl = new CostCentersController(svc, db);
         ctrl.ControllerContext = MakeContext(tenantId);
 

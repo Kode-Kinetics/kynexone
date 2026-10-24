@@ -12,17 +12,18 @@ import type { StepId } from '../../lib/companySetupWizard';
  * Explicit per-section Save on top of the draft's background autosave. A section's Save checks that section only,
  * saves the draft now (autosave.flush: same version and 409 handling), and records what was saved, so the section,
  * its header and the step rail can say "Saved at {time}" or "Unsaved changes". It never applies anything to the
- * company: the review's final button is still the one commit.
+ * company. Organisation (Step 4) has no section Save here: each part has its own "Save {part} & next", which
+ * writes to an existing company at once.
  */
-export type SectionId = 'company' | 'branches' | 'costCentres' | 'departments' | 'designations' | 'grades' | 'rules' | 'companyAdmin';
+export type SectionId = 'company' | 'branches' | 'rules' | 'companyAdmin';
 
 export const STEP_SECTIONS: Record<StepId, SectionId[]> = {
-  1: [], 2: ['company'], 3: ['branches'], 4: ['costCentres', 'departments', 'designations', 'grades'], 5: ['rules'], 6: ['companyAdmin'], 7: [],
+  1: [], 2: ['company'], 3: ['branches'], 4: [], 5: ['rules'], 6: ['companyAdmin'], 7: [],
 };
 
 export const SECTION_TITLE: Record<SectionId, string> = {
-  company: msg('Company details'), branches: msg('Branches & locations'), costCentres: msg('Cost centres'), departments: msg('Departments'),
-  designations: msg('Designations'), grades: msg('Grades'), rules: msg('Work & pay rules'), companyAdmin: msg('Company super admin'),
+  company: msg('Company details'), branches: msg('Branches & locations'),
+  rules: msg('Work & pay rules'), companyAdmin: msg('Company super admin'),
 };
 
 export const sectionHeadingId = (id: SectionId) => `ccw-section-${id}`;
@@ -31,8 +32,6 @@ export const sectionHeadingId = (id: SectionId) => `ccw-section-${id}`;
 export function sectionOfField(field: string): SectionId | null {
   if (field.startsWith('company.')) return 'company';
   if (field.startsWith('branches') || field === 'locations') return 'branches';
-  const list = /^(costCentres|departments|designations|grades)\b/.exec(field);
-  if (list) return list[1] as SectionId;
   if (field.startsWith('rules')) return 'rules';
   if (field.startsWith('companyAdmin')) return 'companyAdmin';
   return null;
@@ -40,7 +39,9 @@ export function sectionOfField(field: string): SectionId | null {
 
 /** The part of the draft a section owns, as a comparable string. */
 export function sectionSnapshot(body: CompanySetupDraftBody, id: SectionId): string {
-  const slice = id === 'company' ? body.company : id === 'rules' ? body.rules : id === 'companyAdmin' ? body.companyAdmin : body[id];
+  // Rules: the Work rules part only (week and employee numbers); the leave part's choices are not this section's.
+  const slice = id === 'company' ? body.company : id === 'rules' ? { workWeek: body.rules.workWeek, employeeNumbering: body.rules.employeeNumbering }
+    : id === 'companyAdmin' ? body.companyAdmin : body[id];
   return JSON.stringify(slice ?? null);
 }
 

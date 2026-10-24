@@ -203,15 +203,16 @@ schema names a column but not its type, the type is inferred from `CONVENTIONS.m
 ### `departments`
 - **Purpose** — an org unit in a hierarchy, carrying its default cost centre.
 - **Tier** C · **Domain** Organisation
-- **Keys** — `name`, `parent_id`, `cost_center_id` (**optional**)
-- **Rel** — `company_id → companies`, `parent_id → departments` (self, N:1, RESTRICT), `cost_center_id → cost_centers` (N:1, SET NULL — optional)
+- **Keys** — `code` with `UNIQUE (tenant_id, company_id, code) NULLS NOT DISTINCT`, `name`, `parent_id`, `cost_center_id` (**optional**)
+- **Rel** — `company_id → companies` (N:1, RESTRICT; NULL only for a legacy row the per-company backfill could not attribute — Setup lists it as "Unassigned — choose the company"), `parent_id → departments` (self, N:1, RESTRICT, same company), `cost_center_id → cost_centers` (N:1, SET NULL — optional, same company)
+- **Scope** — owned by one company (Addendum B, 2026-10-23). Never shared across a group; a sister company gets a copy by value.
 - **Lifecycle** — created in setup; restructured by editing `parent_id`; historical placement lives in `employee_assignments`, not here.
 - **Retention** `C`
 
 ### `cost_centers`
 - **Purpose** — the costing dimension GL, timesheets and payroll all key on.
 - **Tier** C · **Domain** Organisation
-- **Keys** — `code` (unique per company), `name`, `parent_id`, `gl_segment`, `is_active`
+- **Keys** — `code` (unique per company), `name`, `name_ar` (optional Arabic name; readers fall back to `name`), `parent_id`, `gl_segment`, `is_active`
 - **Rel** — `company_id → companies`, `parent_id → cost_centers` (self); referenced by `departments`, `employee_assignments`, `timesheet_entries`, `payroll_inputs`, `payroll_slip_lines`, `gl_journal_lines`, `gl_mappings`.
 - **Lifecycle** — created in setup; retired by `is_active=false`, never deleted (GL history points at it).
 - **Retention** `S` — a posted journal line references it forever.
@@ -219,17 +220,19 @@ schema names a column but not its type, the type is inferred from `CONVENTIONS.m
 
 ### `designations`
 - **Purpose** — a job title, with the MHRSD/GOSI occupation code that Saudization-restricted jobs need.
-- **Tier** T · **Domain** Organisation
-- **Keys** — `title_en`/`title_ar`, `occupation_code`
-- **Rel** — `tenant_id → tenants`; referenced by `employee_assignments`.
+- **Tier** C · **Domain** Organisation
+- **Keys** — `code` with `UNIQUE (tenant_id, company_id, code) NULLS NOT DISTINCT`, `title_en`/`title_ar`, `occupation_code`
+- **Rel** — `company_id → companies` (N:1, RESTRICT; NULL only for an unattributed legacy row), `department_id → departments` and `grade_id → grades` (same company); referenced by `employee_assignments`.
+- **Scope** — owned by one company (Addendum B); a sister company gets a copy by value.
 - **Lifecycle** — created in setup; retired rather than deleted.
 - **Retention** `C`
 
 ### `grades`
 - **Purpose** — a grade and its pay band.
-- **Tier** T · **Domain** Organisation
-- **Keys** — `code` with `UNIQUE (tenant_id, code)`, `name`, `min_basic`, `max_basic`, `pay_scale jsonb`
-- **Rel** — `tenant_id → tenants`; referenced by `employee_assignments`.
+- **Tier** C · **Domain** Organisation
+- **Keys** — `code` with `UNIQUE (tenant_id, company_id, code) NULLS NOT DISTINCT`, `name`, `min_basic`, `max_basic`, `currency` (defaults to the owning company's `default_currency`), `pay_scale jsonb`
+- **Rel** — `company_id → companies` (N:1, RESTRICT; NULL only for an unattributed legacy row); referenced by `employee_assignments`, `grade_entitlements`.
+- **Scope** — owned by one company (Addendum B; withdraws decision 13's one-currency-per-tenant). A sister company gets a copy by value, never a live link.
 - **Lifecycle** — created in setup; `pay_scale` revised in place (history of what an employee was actually paid lives in `employee_salaries`).
 - **Retention** `C`
 
@@ -479,9 +482,11 @@ schema names a column but not its type, the type is inferred from `CONVENTIONS.m
 
 ### `leave_types`
 - **Purpose** — a leave type and the whole policy that governs it.
-- **Tier** T · **Domain** Leave
-- **Keys** — `code`, `name_en`/`name_ar`, `is_statutory`, `pay_rule_key` (resolves to `statutory_rules` + bands for tiered sick pay), `policy jsonb` (entitlement by service years, accrual, carry-forward, eligibility, gender, once-in-service)
-- **Rel** — `tenant_id → tenants`; referenced by `leave_requests`, `leave_ledger`.
+- **Tier** C · **Domain** Leave
+- **Keys** — `code` with `UNIQUE (tenant_id, company_id, code) NULLS NOT DISTINCT`, `name_en`/`name_ar`, `is_statutory`, `pay_rule_key` (resolves to `statutory_rules` + bands for tiered sick pay), `policy jsonb` (entitlement by service years, accrual, carry-forward, eligibility, gender, once-in-service)
+- **Rel** — `company_id → companies` (N:1, RESTRICT; NULL only for a legacy row the per-company backfill could not attribute — Setup lists it as "Unassigned — choose the company", and lookups treat it as a fallback for a company with no type of that code); referenced by `leave_requests`, `leave_ledger`.
+- **Scope** — owned by one company (owner decision 2026-10-23, "separate everything"). A sister company gets its own copy, never a shared row; an employee's balances, ledger, requests and encashments always name a type of the employee's company.
+- **Today** — the policy still lives in its own table, `leave_policies` (`company_id → companies`, RESTRICT, same company as its type; `legacy_group_default` marks a policy that was tenant-wide before the 2026-10-23 backfill and keeps its precedence below company-specific policies). Its child rows `leave_policy_eligibilities` and `leave_accrual_rules` belong to the policy and are copied with it.
 - **Lifecycle** — KSA set seeded at provisioning (Annual 21/30, Sick, Maternity, Paternity, Marriage, Bereavement, Hajj, Exam, Iddah, Unpaid, CompOff); tenants add types; statutory types cannot be deleted.
 - **Note** — **`policy` stays JSON deliberately** (§13.5): the statutory floor is `statutory_rule_bands` (platform reference), the tenant's contractual ladder is this column (tenant data), and the engine takes `max(statutory, contractual)`. Tenant rows in a reference table would break the no-tenant-overrides rule.
 - **Retention** `C`

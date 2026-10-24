@@ -58,7 +58,7 @@ public class GradesController : ControllerBase
             var grade = await _organization.CreateGradeAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = grade.Id }, grade);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
     }
 
     [HttpPut("{id:guid}")]
@@ -73,7 +73,7 @@ public class GradesController : ControllerBase
             var grade = await _organization.UpdateGradeAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return grade is null ? NotFound() : Ok(grade);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
     }
 
     [HttpDelete("{id:guid}")]
@@ -109,7 +109,10 @@ public class GradesController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunImportAsync(tenantId.Value, req.Csv, commit: false, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunImportAsync(tenantId.Value, companyId, req.Csv, commit: false, ct);
     }
 
     [HttpPost("import")]
@@ -119,7 +122,10 @@ public class GradesController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await RunImportAsync(tenantId.Value, req.Csv, commit: true, ct);
+        Guid companyId;
+        try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+        return await RunImportAsync(tenantId.Value, companyId, req.Csv, commit: true, ct);
     }
 
     /// <remarks>
@@ -167,10 +173,13 @@ public class GradesController : ControllerBase
     /// service is called. They used to apply different rules — the Min &gt; Max check ran on commit
     /// only, so a preview could report a clean file that the commit then rejected row by row.
     /// </summary>
-    private async Task<IActionResult> RunImportAsync(Guid tenantId, string csv, bool commit, CancellationToken ct)
+    private async Task<IActionResult> RunImportAsync(Guid tenantId, Guid companyId, string csv, bool commit, CancellationToken ct)
     {
-        var grades = await _db.Grades.AsNoTracking()
-            .Where(g => g.TenantId == tenantId && !g.IsDeleted).ToListAsync(ct);
+        // Addendum B: the target company's rows, plus legacy rows no company owns yet whose code the company does not
+        // already use — an import into the company adopts such a row (the update assigns it the company).
+        var grades = OrgCodes.WithinCompany(await _db.Grades.AsNoTracking()
+            .Where(g => g.TenantId == tenantId && (g.CompanyId == companyId || g.CompanyId == null) && !g.IsDeleted).ToListAsync(ct),
+            g => g.CompanyId, g => g.Code);
         if (!OrgCodes.TryBuildLookup(grades, g => g.Code, out var existingByCode, out var codeClash))
             return Conflict(OrgCodeCollision.Payload("grade", "Code", codeClash));
 
@@ -205,8 +214,11 @@ public class GradesController : ControllerBase
                     MinSalary: minSal ?? existing?.MinSalary ?? 0,
                     MidSalary: existing?.MidSalary ?? 0,
                     MaxSalary: maxSal ?? existing?.MaxSalary ?? 0,
-                    Currency: existing?.Currency ?? "SAR",
-                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+                    // A new grade takes its company's default currency (the service fills a blank one).
+                    Currency: existing?.Currency,
+                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase),
+                    NameAr: existing?.NameAr,
+                    CompanyId: companyId);
 
                 try
                 {
@@ -303,4 +315,5 @@ public class GradesController : ControllerBase
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 }
 
-public record GradeImportRequest(string Csv);
+/// <summary>CompanyId: the company the file's grades belong to (Addendum B). Optional only when the tenant has one company.</summary>
+public record GradeImportRequest(string Csv, Guid? CompanyId = null);

@@ -1,10 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { useFormat } from '../../hooks/useFormat';
 import { useLocale } from '../../contexts/LocaleContext';
 import type { CompanySetupContext, CompanySetupDraftSummary, StartFrom } from '../../api/companySetup';
-import { planUsage, stepCopy, type StepId } from '../../lib/companySetupWizard';
+import { planUsage } from '../../lib/companySetupWizard';
+import { DraftMeta } from './CompanyDraftsCard';
 import { Notice, WizardField } from './wizardForm';
 import { CountryOptions } from './CountryOptions';
 
@@ -26,7 +26,6 @@ export function StartStep({ context, drafts, currentDraftId, choice, onChoice, o
   started: boolean;
 }) {
   const { t } = useLocale();
-  const fmt = useFormat();
   const usage = planUsage(context);
   const others = drafts.filter(d => d.id !== currentDraftId);
   const sisters = context.sisterCompanies;
@@ -64,14 +63,11 @@ export function StartStep({ context, drafts, currentDraftId, choice, onChoice, o
               <li key={d.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-slate-900 dark:text-white"><bdi>{d.legalNameEn || t('Untitled company')}</bdi></p>
-                  <p className="text-xs text-slate-600 dark:text-slate-400">
-                    {t('Stopped at step {step}: {title}', { step: d.step, title: t(stepCopy((Math.min(Math.max(d.step, 1), 7)) as StepId, d.existingCompanyId ? 'existing' : 'create').title) })}
-                    {' · '}{t('Saved {when} by {name}', { when: fmt.dateTime(d.updatedAtUtc), name: d.createdByName })}
-                  </p>
+                  <DraftMeta draft={d} />
                 </div>
                 <div className="flex gap-2">
-                  <button type="button" className="btn-secondary" onClick={() => onDiscard(d)}>{t('Discard')}<span className="sr-only"> {d.legalNameEn}</span></button>
-                  <button type="button" className="btn-primary" onClick={() => onResume(d.id)}>{t('Resume')}<span className="sr-only"> {d.legalNameEn}</span></button>
+                  <button type="button" className="btn-secondary text-rose-700 dark:text-rose-300" onClick={() => onDiscard(d)}>{t('Discard')}<span className="sr-only"> {d.legalNameEn}</span></button>
+                  <button type="button" className="btn-secondary" onClick={() => onResume(d.id)}>{t('Resume')}<span className="sr-only"> {d.legalNameEn}</span></button>
                 </div>
               </li>
             ))}
@@ -122,7 +118,8 @@ export function StartStep({ context, drafts, currentDraftId, choice, onChoice, o
   );
 }
 
-function refusalNextStep(code: string | null | undefined, t: (key: string) => string): string {
+/** What to do about a refusal to create a company, by the server's code. Shared with the Guided setup chooser. */
+export function refusalNextStep(code: string | null | undefined, t: (key: string) => string): string {
   switch (code) {
     case 'company_limit_reached': return t('To add another company, ask your account manager to raise the company limit on your plan.');
     case 'account_type_single_company': return t('This is a single-company account. Ask your account manager to switch it to a group account to add companies.');

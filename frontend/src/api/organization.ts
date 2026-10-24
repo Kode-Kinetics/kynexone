@@ -191,6 +191,8 @@ export interface DepartmentDto {
   nameAr: string;
   managerEmployeeId?: number;
   isActive: boolean;
+  /** The company that owns the row (Addendum B). Null only for a legacy row not yet assigned to a company. */
+  companyId?: string | null;
 }
 
 export interface DepartmentRequest {
@@ -202,6 +204,8 @@ export interface DepartmentRequest {
   nameAr?: string;
   managerEmployeeId?: number;
   isActive: boolean;
+  /** Required when the tenant has more than one company; fixed once set (only an unassigned row may take one). */
+  companyId?: string;
 }
 
 export const departmentsApi = {
@@ -217,7 +221,8 @@ export const departmentsApi = {
   remove: (id: string) => client.delete(`/api/departments/${id}`),
   export: () => client.get<string>('/api/departments/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/departments/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<RawImportCommit>('/api/departments/import', { csv }).then((r) => toImportResult(r.data)),
+  /** companyId: the company the file's rows belong to (required when the tenant has several). */
+  import: (csv: string, companyId?: string) => client.post<RawImportCommit>('/api/departments/import', { csv, companyId }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Designation ─────────────────────────────────────────────────────────────
@@ -234,6 +239,8 @@ export interface DesignationDto {
   jobDescription: string;
   isManagerRole: boolean;
   isActive: boolean;
+  /** The company that owns the row (Addendum B). Null only for a legacy row not yet assigned to a company. */
+  companyId?: string | null;
 }
 
 export interface DesignationRequest {
@@ -247,6 +254,8 @@ export interface DesignationRequest {
   jobDescription?: string;
   isManagerRole: boolean;
   isActive: boolean;
+  /** Required when the tenant has more than one company; fixed once set (only an unassigned row may take one). */
+  companyId?: string;
 }
 
 export const designationsApi = {
@@ -262,7 +271,8 @@ export const designationsApi = {
   remove: (id: string) => client.delete(`/api/designations/${id}`),
   export: () => client.get<string>('/api/designations/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/designations/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<RawImportCommit>('/api/designations/import', { csv }).then((r) => toImportResult(r.data)),
+  /** companyId: the company the file's rows belong to (required when the tenant has several). */
+  import: (csv: string, companyId?: string) => client.post<RawImportCommit>('/api/designations/import', { csv, companyId }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Grade ──────────────────────────────────────────────────────────────────
@@ -280,6 +290,8 @@ export interface GradeDto {
   isActive: boolean;
   /** Optional Arabic display name; the UI falls back to name. */
   nameAr?: string | null;
+  /** The company that owns the row (Addendum B). Null only for a legacy row not yet assigned to a company. */
+  companyId?: string | null;
 }
 
 export interface GradeRequest {
@@ -291,8 +303,11 @@ export interface GradeRequest {
   minSalary?: number;
   midSalary?: number;
   maxSalary?: number;
+  /** Blank = the owning company's default currency. */
   currency?: string;
   isActive: boolean;
+  /** Required when the tenant has more than one company; fixed once set (only an unassigned row may take one). */
+  companyId?: string;
 }
 
 export interface GradePayScaleComponentDto {
@@ -328,7 +343,8 @@ export const gradesApi = {
     client.put<{ count: number }>(`/api/grades/${id}/pay-scale`, components).then((r) => r.data),
   export: () => client.get<string>('/api/grades/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/grades/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<RawImportCommit>('/api/grades/import', { csv }).then((r) => toImportResult(r.data)),
+  /** companyId: the company the file's rows belong to (required when the tenant has several). */
+  import: (csv: string, companyId?: string) => client.post<RawImportCommit>('/api/grades/import', { csv, companyId }).then((r) => toImportResult(r.data)),
 };
 
 // ─── Cost Center ────────────────────────────────────────────────────────────
@@ -338,6 +354,8 @@ export interface CostCenterDto {
   companyId?: string;
   code: string;
   name: string;
+  /** Optional Arabic name; readers fall back to name. */
+  nameAr?: string | null;
   isActive: boolean;
 }
 
@@ -345,6 +363,7 @@ export interface CostCenterRequest {
   companyId?: string;
   code: string;
   name: string;
+  nameAr?: string | null;
   isActive: boolean;
 }
 
@@ -361,5 +380,6 @@ export const costCentersApi = {
   remove: (id: string) => client.delete(`/api/cost-centers/${id}`),
   export: () => client.get<string>('/api/cost-centers/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/cost-centers/import-template', { responseType: 'text' }).then((r) => r.data),
-  import: (csv: string) => client.post<RawImportCommit>('/api/cost-centers/import', { csv }).then((r) => toImportResult(r.data)),
+  /** companyId: the company the file's cost centres belong to (cost-centre codes are per company). */
+  import: (csv: string, companyId?: string) => client.post<RawImportCommit>('/api/cost-centers/import', { csv, companyId }).then((r) => toImportResult(r.data)),
 };

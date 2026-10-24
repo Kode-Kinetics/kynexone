@@ -421,6 +421,8 @@ public class ConfigurationConsumerTests
         var tenantId = Guid.NewGuid();
         var leaveType = new LeaveType { TenantId = tenantId, Code = "AL", NameEn = "Annual", IsActive = true };
         db.LeaveTypes.Add(leaveType);
+        // Policies belong to a company now; a tenant with none gets company_required.
+        db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "Test Co", CountryCode = "AE" });
         await db.SaveChangesAsync();
 
         var controller = WithTenant(new LeavePoliciesController(db, new LeaveService(db, new ApprovalRouter(db))), tenantId);

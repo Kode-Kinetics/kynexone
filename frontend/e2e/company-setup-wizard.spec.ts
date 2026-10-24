@@ -45,6 +45,8 @@ interface BootOptions {
   badArabic?: boolean;
   /** Existing mode: the location has coordinates but no geofence radius (attendance verification skips it). */
   locationWithoutRadius?: boolean;
+  /** Addendum B2: how the next section save fails, once. */
+  sectionFailure?: 'network' | 'problem' | 'lost';
 }
 
 /**
@@ -64,6 +66,18 @@ const SHORT_LINK_AT = { latitude: 21.5433, longitude: 39.1728 };
 /** A 1×1 transparent PNG for OpenStreetMap tiles, so the map is offline and deterministic (WIZARD_REAL_TILES=1 for real ones). */
 const BLANK_TILE = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 
+type OrgRows = Pick<CompanySetupDraftBody, 'costCentres' | 'departments' | 'designations' | 'grades'>;
+const SECTIONS = ['costCentres', 'departments', 'grades', 'designations'] as const;
+type Section = typeof SECTIONS[number];
+
+/** What the sister company has, offered by GET /copy-rows as new rows (B3). */
+const SISTER_ROWS: OrgRows = {
+  costCentres: [{ code: 'ADM', nameEn: 'Administration' }, { code: 'CC_OPS', nameEn: 'Operations Cost Centre', nameAr: 'مركز تكلفة العمليات' }],
+  departments: [{ code: 'HR', nameEn: 'Human Resources' }, { code: 'OPS', nameEn: 'Operations', costCentreCode: 'CC_OPS' }],
+  grades: [{ code: 'G2', nameEn: 'Grade 2', level: 2, minSalary: 6000, midSalary: 8000, maxSalary: 10000 }],
+  designations: [{ code: 'OPS_MGR', titleEn: 'Operations Manager', departmentCode: 'OPS', gradeCode: 'G2' }],
+};
+
 const sister = { id: 'sister-1', legalNameEn: 'Sister Trading KSA', countryCode: 'SA' };
 /** An active company to complete (Addendum A). */
 const EVOSTEL = { id: 'co-evostel', legalNameEn: 'Evostel LLC', legalNameAr: 'شركة إيفوستل', countryCode: 'SA' };
@@ -77,6 +91,12 @@ class ContractServer {
   commits: { key: string | undefined; draftId: string; version: number }[] = [];
   dryRuns: CompanySetupDraftBody[] = [];
   results = new Map<string, CompanySetupResult>();
+  /** B2 section saves, in order, and the markers that make a retry replay instead of writing twice. */
+  sectionApplies: { section: string; version: number; replayed: boolean }[] = [];
+  sectionMarkers = new Set<string>();
+  copyCalls: { fromCompanyId: string; section: string }[] = [];
+  /** Evostel's Organisation rows as the database holds them; section saves write here. */
+  orgDb: OrgRows | null = null;
   resetLinks: string[] = [];
   errors: string[] = [];
   /** Every batch of labels sent to the Arabic suggester. */
@@ -96,12 +116,6 @@ class ContractServer {
       creationMode: 'GroupSelfServiceWithinLimit', accountType: 'Group',
       companiesUsed: 2, companiesAllowed: 5, isGroupScope: this.scopeGroup,
       sisterCompanies: [sister],
-      sharedCatalog: {
-        departments: [{ code: 'HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية' }, { code: 'FIN', nameEn: 'Finance', nameAr: 'المالية' }],
-        designations: [{ code: 'ACC', nameEn: 'Accountant', nameAr: 'محاسب' }],
-        grades: [{ code: 'G1', nameEn: 'Grade 1', nameAr: 'الدرجة 1', currency: 'SAR' }],
-      },
-      gradesCurrency: 'SAR',
       // A5: a group admin may complete any active company; a company super admin only their own.
       manageableCompanies: [
         { ...EVOSTEL, readinessDone: 5, readinessTotal: 9, openDraftId: this.openDraftFor(EVOSTEL.id) },
@@ -128,10 +142,7 @@ class ContractServer {
         baseline: { nameEn: 'Head Office', nameAr: this.options.badArabic ? OLD_LETTER_BY_LETTER : 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'true' },
         locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: this.options.locationWithoutRadius ? null : 150,
           baseline: { nameEn: 'Main gate', nameAr: null, latitude: '24.7', longitude: '46.7', radiusMeters: this.options.locationWithoutRadius ? null : '150' } }] }],
-      costCentres: [{ existingId: 'cc-adm', code: 'ADM', nameEn: 'Administration', nameAr: 'الإدارة', baseline: { nameEn: 'Administration' } }],
-      departments: [{ existingId: 'dep-hr', code: 'HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية' }],
-      designations: [{ existingId: 'des-acc', code: 'ACC', titleEn: 'Accountant', titleAr: 'محاسب' }],
-      grades: [{ existingId: 'gr-g1', code: 'G1', nameEn: 'Grade 1', nameAr: 'الدرجة 1', level: 1, minSalary: 3000, midSalary: 5000, maxSalary: 7000 }],
+      ...structuredClone(this.org()),
       rules: {
         workWeek: { weekendDays: 'Fri,Sat', override: false, baseline: { weekendDays: 'Fri,Sat', override: 'false' } }, holidayCalendar: { usePack: true }, leavePolicies: { usePack: true },
         employeeNumbering: { prefix: 'EVO', useCountryPrefix: false, useBranchPrefix: false, useDepartmentPrefix: false, useYear: false, paddingLength: 4, nextSequence: 42,
@@ -139,6 +150,17 @@ class ContractServer {
       },
       companyAdmin: { mode: 'groupOnly' },
     };
+  }
+
+  /** Evostel's Organisation rows today: each one this company's own (Addendum B), with its id and baseline. */
+  org(): OrgRows {
+    this.orgDb ??= {
+      costCentres: [{ existingId: 'cc-adm', code: 'ADM', nameEn: 'Administration', nameAr: 'الإدارة', baseline: { nameEn: 'Administration' } }],
+      departments: [{ existingId: 'dep-hr', code: 'HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية', baseline: { nameEn: 'Human Resources' } }],
+      designations: [{ existingId: 'des-acc', code: 'ACC', titleEn: 'Accountant', titleAr: 'محاسب', baseline: { titleEn: 'Accountant' } }],
+      grades: [{ existingId: 'gr-g1', code: 'G1', nameEn: 'Grade 1', nameAr: 'الدرجة 1', level: 1, minSalary: 3000, midSalary: 5000, maxSalary: 7000, baseline: { nameEn: 'Grade 1' } }],
+    };
+    return this.orgDb;
   }
 
   /** A3: the same planner for existing mode — update / unchanged by existingId, create for new rows, never a delete. */
@@ -182,8 +204,6 @@ class ContractServer {
       warnings.push({ step: 2, field: 'company.molEstablishmentNumber', code: 'mol_required', message: 'Enter the MOL establishment number shown in Qiwa. (saved before; not changed here)' });
     if (!this.scopeGroup)
       warnings.push({ step: 5, field: 'rules.leavePolicies', code: 'workspace_defaults_need_group_scope', message: 'The workspace has no statutory default leave policies for SA (MATERNITY). They apply to every SA company, so a group administrator must add them.' });
-    const catalog = this.context().sharedCatalog;
-    const has = (list: { code: string }[], code: string) => list.some(c => c.code.toUpperCase() === code.toUpperCase());
     const companyChanged = diff(body.company, before.company, ['legalNameEn', 'legalNameAr', 'tradeName', 'registrationNumber', 'molEstablishmentNumber', 'gosiEmployerId', 'taxNumber', 'qiwaEstablishmentId', 'emailDomain', 'workEmailPattern', 'erpCompanyCode', 'firstPayrollMonth']);
     const numberingChanged = diff(body.rules.employeeNumbering, before.rules.employeeNumbering, ['prefix', 'paddingLength', 'nextSequence', 'useCountryPrefix', 'useBranchPrefix', 'useDepartmentPrefix', 'useYear']);
     const items: PlanItem[] = [
@@ -193,9 +213,9 @@ class ContractServer {
       ...own('branch', body.branches, before.branches, ['nameEn', 'nameAr', 'city', 'timeZoneId', 'isHeadOffice'], b => b.nameEn),
       ...body.branches.flatMap(b => own('location', b.locations, before.branches.find(w => w.existingId && w.existingId === b.existingId)?.locations ?? [], ['nameEn', 'nameAr', 'latitude', 'longitude', 'radiusMeters'], l => l.nameEn)),
       ...own('costCentre', body.costCentres, before.costCentres, ['nameEn', 'nameAr'], c => c.nameEn),
-      ...body.departments.map(d => ({ area: 'department' as const, code: d.code, label: d.nameEn, action: has(catalog.departments, d.code) ? 'reuse' as const : 'create' as const })),
-      ...body.designations.map(d => ({ area: 'designation' as const, code: d.code, label: d.titleEn, action: has(catalog.designations, d.code) ? 'reuse' as const : 'create' as const })),
-      ...body.grades.map(g => ({ area: 'grade' as const, code: g.code, label: g.nameEn, action: has(catalog.grades, g.code) ? 'reuse' as const : 'create' as const })),
+      ...own('department', body.departments, before.departments, ['nameEn', 'nameAr', 'parentCode', 'branchCode', 'costCentreCode'], d => d.nameEn),
+      ...own('designation', body.designations, before.designations, ['titleEn', 'titleAr', 'departmentCode', 'gradeCode'], d => d.titleEn),
+      ...own('grade', body.grades, before.grades, ['nameEn', 'nameAr', 'level', 'minSalary', 'midSalary', 'maxSalary'], g => g.nameEn),
       { area: 'workWeek', code: body.rules.workWeek.weekendDays, label: 'Working week', action: 'unchanged' },
       { area: 'gccSetting', code: 'SA', label: 'End-of-service (Saudi Labour Law)', labelAr: 'مكافأة نهاية الخدمة (نظام العمل السعودي)', action: 'unchanged' },
       { area: 'holidayCalendar', code: 'SA-2026', label: 'Saudi public holidays 2026', action: 'reuse' },
@@ -222,8 +242,6 @@ class ContractServer {
   }
 
   plan(body: CompanySetupDraftBody): CompanySetupPlan {
-    const catalog = this.context().sharedCatalog;
-    const has = (list: { code: string }[], code: string) => list.some(c => c.code.toUpperCase() === code.toUpperCase());
     const items: PlanItem[] = [
       { area: 'company', code: body.company.registrationNumber, label: body.company.legalNameEn, action: 'create' },
       { area: 'cutover', code: body.company.firstPayrollMonth, label: body.company.firstPayrollMonth, action: 'create' },
@@ -234,9 +252,9 @@ class ContractServer {
       ...body.costCentres.map(c => (this.options.clashingCostCentres ?? []).includes(c.code)
         ? { area: 'costCentre' as const, code: c.code, label: c.nameEn, action: 'conflict' as const, reason: `Cost centre ${c.code} is already used by ${sister.legalNameEn}. Use another code.` }
         : { area: 'costCentre' as const, code: c.code, label: c.nameEn, action: 'create' as const }),
-      ...body.departments.map(d => ({ area: 'department' as const, code: d.code, label: d.nameEn, action: has(catalog.departments, d.code) ? 'reuse' as const : 'create' as const })),
-      ...body.designations.map(d => ({ area: 'designation' as const, code: d.code, label: d.titleEn, action: has(catalog.designations, d.code) ? 'reuse' as const : 'create' as const })),
-      ...body.grades.map(g => ({ area: 'grade' as const, code: g.code, label: g.nameEn, action: has(catalog.grades, g.code) ? 'reuse' as const : 'create' as const })),
+      ...body.departments.map(d => ({ area: 'department' as const, code: d.code, label: d.nameEn, action: 'create' as const })),
+      ...body.designations.map(d => ({ area: 'designation' as const, code: d.code, label: d.titleEn, action: 'create' as const })),
+      ...body.grades.map(g => ({ area: 'grade' as const, code: g.code, label: g.nameEn, action: 'create' as const })),
       { area: 'workWeek', code: body.rules.workWeek.weekendDays, label: 'Working week', action: body.rules.workWeek.override ? 'create' : 'reuse' },
       { area: 'gccSetting', code: body.company.countryCode, label: 'End-of-service (Saudi Labour Law)', labelAr: 'مكافأة نهاية الخدمة (نظام العمل السعودي)', action: 'create' },
       ...(body.rules.holidayCalendar.usePack ? [{ area: 'holidayCalendar' as const, code: 'SA-2026', label: 'Saudi public holidays 2026', action: 'reuse' as const }] : []),
@@ -302,6 +320,54 @@ class ContractServer {
         return reply(saved);
       }
     }
+    if (rest === '/copy-rows' && method === 'GET') {
+      const section = url.searchParams.get('section') as Section;
+      const fromCompanyId = url.searchParams.get('fromCompanyId') ?? '';
+      this.copyCalls.push({ fromCompanyId, section });
+      if (!this.scopeGroup || fromCompanyId !== sister.id) return reply({ code: 'copy_source_not_allowed', message: 'Not a sister company.' }, 403);
+      return reply({ section, fromCompanyId, [section]: structuredClone(SISTER_ROWS[section]) });
+    }
+    const sectionMatch = rest.match(/^\/drafts\/([^/]+)\/sections\/([a-zA-Z]+)$/);
+    if (sectionMatch && method === 'POST') {
+      const draft = this.drafts.get(sectionMatch[1]);
+      const section = sectionMatch[2] as Section;
+      const { version } = req.postDataJSON() as { version: number };
+      if (!draft) return reply({ message: 'Not found' }, 404);
+      if (!draft.body.existingCompanyId) return reply({ code: 'section_apply_needs_company', message: 'Create mode keeps rows until Create.' }, 409);
+      const marker = `${draft.id}:${section}:${version}`;
+      if (version === draft.version - 1 && this.sectionMarkers.has(marker)) {
+        this.sectionApplies.push({ section, version, replayed: true });
+        return reply({ draft, section, created: 0, updated: 0, unchanged: 0, replayed: true });
+      }
+      if (version !== draft.version) return reply({ code: 'draft_version_stale', message: 'This draft was saved somewhere else.', field: 'version' }, 409);
+      const failure = this.options.sectionFailure;
+      if (failure && failure !== 'lost') {
+        this.options.sectionFailure = undefined;
+        if (failure === 'network') return route.abort('failed');
+        const index = draft.body.departments.findIndex(d => !d.existingId);
+        return reply({ code: 'reference_not_saved', message: 'Save Cost centres first: CC_NEW is not saved yet.',
+          plan: { ok: false, items: [], warnings: [], problems: [{ step: 4, field: `departments.${Math.max(index, 0)}.costCentreCode`, code: 'reference_not_saved', message: 'Save Cost centres first: CC_NEW is not saved yet.' }] } }, 422);
+      }
+      const db = this.org()[section] as { existingId?: string | null; code: string; baseline?: Record<string, string | null> | null }[];
+      let created = 0, updated = 0, unchanged = 0;
+      const rows = (draft.body[section] as typeof db).map((row, i) => {
+        const { baseline: _b, ...plain } = row;
+        const saved = { ...plain, existingId: row.existingId ?? `${section}-new-${i}-${this.sequence++}`, baseline: { name: 'saved' } };
+        const was = db.find(d => d.existingId && d.existingId === row.existingId);
+        if (!was) created += 1;
+        else if (JSON.stringify({ ...was, baseline: null }) !== JSON.stringify({ ...plain, baseline: null })) updated += 1;
+        else unchanged += 1;
+        return saved;
+      });
+      (this.org() as Record<Section, unknown>)[section] = structuredClone(rows);
+      const rebased: CompanySetupDraft = { ...draft, version: draft.version + 1, step: 4, body: { ...draft.body, [section]: rows }, updatedAtUtc: now };
+      this.drafts.set(draft.id, rebased);
+      this.sectionMarkers.add(marker);
+      this.sectionApplies.push({ section, version, replayed: false });
+      // A lost response: the write happened, the reply never arrived.
+      if (failure === 'lost') { this.options.sectionFailure = undefined; return route.abort('failed'); }
+      return reply({ draft: rebased, section, created, updated, unchanged, replayed: false });
+    }
     if (rest === '/dry-run' && method === 'POST') {
       const body = req.postDataJSON() as CompanySetupDraftBody;
       if (body.existingCompanyId ? !this.ownCompany(body.existingCompanyId) : !this.scopeGroup) return refuse();
@@ -352,6 +418,17 @@ class ContractServer {
       };
       if (key) this.results.set(key, result);
       return reply(result, 201);
+    }
+    const readinessMatch = rest.match(/^\/readiness\/([^/]+)$/);
+    if (readinessMatch && method === 'GET') {
+      if (!this.ownCompany(readinessMatch[1])) return reply({ message: 'Not your company.' }, 403);
+      const href = (tab: string) => `/setup?tab=${tab}&companyId=${readinessMatch[1]}`;
+      return reply([
+        { key: 'branches', label: 'Branches and head office', labelAr: 'الفروع والمقر الرئيسي', status: 'done', scope: 'company', href: href('branches') },
+        { key: 'glMapping', label: 'GL mapping', labelAr: 'ربط دفتر الأستاذ', status: 'todo', scope: 'company', href: href('glMapping') },
+        { key: 'bankWps', label: 'Bank and WPS settings (before first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: href('gccSettings') },
+        { key: 'smtp', label: 'Outgoing email (SMTP)', labelAr: 'البريد الصادر (SMTP)', status: 'recommended', scope: 'workspace', href: '/setup?tab=emailConfig' },
+      ]);
     }
     this.errors.push(`unexpected ${method} /api/company-setup${rest}`);
     return reply({ message: 'unexpected' }, 500);
@@ -431,6 +508,8 @@ async function boot(page: Page, options: BootOptions = {}, server = new Contract
     if (p === '/api/features/modules' || p === '/api/notifications') return reply([]);
     if (p === '/api/companies') return reply(paged([{ ...sister, legalNameAr: '', tradeName: 'Sister', jurisdiction: 'SA', registrationNumber: '1010000001', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active', taxNumber: '', wpsEmployerId: '', gosiEmployerId: '', qiwaEstablishmentId: '', emailDomain: '', workEmailPattern: 'first.last' }]));
     if (p === '/api/country-packs/available') return reply([]);
+    // Step 5 embeds the Country rules editor (a plain list).
+    if (p === '/api/admin/gcc-settings') return reply([]);
     return reply(paged([]));
   });
   return { server, pageErrors };
@@ -453,8 +532,26 @@ async function expectStep(page: Page, t: ReturnType<typeof T>, heading: string) 
   await expect(page.getByRole('heading', { level: 2, name: t(heading), exact: true })).toBeVisible();
 }
 
-async function next(page: Page, t: ReturnType<typeof T>) {
-  await page.getByRole('button', { name: t('Next'), exact: true }).click();
+/** The footer's primary action: "Next", "Next: Departments", "Save cost centres & next"… */
+async function next(page: Page, _t?: ReturnType<typeof T>) {
+  await page.getByTestId('wizard-next').click();
+}
+
+/** Click the primary action until the given h2 (a step heading or a part name) is on screen. */
+async function nextUntil(page: Page, t: ReturnType<typeof T>, heading: string, max = 14) {
+  const target = page.getByRole('heading', { level: 2, name: t(heading), exact: true });
+  for (let i = 0; i < max; i++) {
+    if (await target.isVisible()) return;
+    const position = await page.getByTestId('wizard-position').getAttribute('data-position');
+    await next(page, t);
+    await expect(page.getByTestId('wizard-position')).not.toHaveAttribute('data-position', position ?? '', { timeout: 10_000 }).catch(() => undefined);
+  }
+  await expect(target).toBeVisible();
+}
+
+/** Through every remaining part and step to the review. */
+async function toReview(page: Page, t: ReturnType<typeof T>, existingMode = false) {
+  await nextUntil(page, t, existingMode ? 'Review & update' : 'Review & create');
 }
 
 async function openWizardFromCompanies(page: Page, t: ReturnType<typeof T>) {
@@ -511,41 +608,80 @@ for (const locale of ['en', 'ar'] as const) {
     await shot(page, info, `${locale}-3-branches`);
     await next(page, t);
 
-    await expectStep(page, t, 'Organisation');
+    // Step 4, one part at a time: Cost centres → Departments → Grades → Designations (Addendum B4).
+    await expectStep(page, t, 'Cost centres');
+    await expect(page).toHaveURL(/part=costCentres/);
     await page.getByRole('button', { name: t('Add cost centre'), exact: true }).click();
     const cc = page.getByTestId('costCentres-row').first();
-    await cc.getByLabel(t('Code')).fill('ADM');
+    await expect(cc.getByLabel(t('Code'))).toBeFocused();
     await cc.getByLabel(t('Name (English)')).fill('Administration');
+    // A code is suggested from the name and used only when the reader says so.
+    await expect(cc.getByLabel(t('Code'))).toHaveAttribute('placeholder', t('Suggested: {code}', { code: 'CC_ADM' }));
+    await expect(cc.getByLabel(t('Code'))).toHaveValue('');
+    await cc.getByRole('button', { name: new RegExp(t('Use {code}', { code: 'CC_ADM' })) }).click();
+    await expect(cc.getByLabel(t('Code'))).toHaveValue('CC_ADM');
+    await expect(cc.getByLabel(t('Code'))).toHaveAttribute('dir', 'ltr');
     await cc.getByLabel(t('Name (Arabic)')).fill('الإدارة');
-    // HR came from the defaults and is in the shared catalog: a read-only summary, never an editor.
-    const hr = page.getByTestId('departments-row').first();
-    await expect(hr).toHaveAttribute('data-reused', 'true');
-    await expect(hr).toContainText(t('Reused'));
-    await expect(hr).toContainText('Human Resources');
-    await expect(hr).toContainText('الموارد البشرية');
-    await expect(hr.locator('input, select')).toHaveCount(0);
-    await expect(hr.getByRole('button', { name: new RegExp(t('Remove from this company')) })).toBeVisible();
-    await page.getByRole('button', { name: t('Use {code} · {name}', { code: 'FIN', name: locale === 'ar' ? 'المالية' : 'Finance' }) }).click();
-    await expect(page.getByTestId('departments-row').nth(1).locator('input, select')).toHaveCount(0);
-    await page.getByRole('button', { name: t('Add department'), exact: true }).click();
-    const ops = page.getByTestId('departments-row').nth(2);
-    await ops.getByLabel(t('Code')).fill('OPS');
-    await ops.getByLabel(t('Name (English)')).fill('Operations');
-    await ops.getByLabel(t('Cost centre')).selectOption('ADM');
-    await expect(page.getByTestId('structure-tree')).toContainText(t('Shared group catalog'));
+    await expect(page.getByTestId('arabic-meter')).toHaveText(t('Arabic names: {filled} of {total}', { filled: 1, total: 1 }));
+    await expect(page.getByTestId('wizard-next')).toContainText(t('Next: {part}', { part: t('Departments') }));
     await contained(page);
-    await shot(page, info, `${locale}-4-organisation`);
+    await shot(page, info, `${locale}-4a-cost-centres`);
     await next(page, t);
 
-    await expectStep(page, t, 'Work & pay rules');
-    await expect(page.getByTestId('work-week-mode')).toHaveText(t('This company follows the country working week.'));
-    await page.getByLabel(t('Prefix')).fill('RTC');
-    await expect(page.getByTestId('numbering-preview')).toContainText('RTC-0001');
-    // Plan labels come in the reader's language when the server sends labelAr.
-    await expect(page.getByText(locale === 'ar' ? 'مكافأة نهاية الخدمة (نظام العمل السعودي)' : 'End-of-service (Saudi Labour Law)')).toBeVisible();
+    await expectStep(page, t, 'Departments');
+    await expect(page).toHaveURL(/part=departments/);
+    // HR came from the country pack: an ordinary row of this company, editable like any other.
+    const hr = page.getByTestId('departments-row').first();
+    await expect(hr.getByLabel(t('Code'))).toHaveValue('HR');
+    await expect(hr.getByLabel(t('Name (English)'))).toBeEditable();
+    await expect(page.getByText(t('Reused'), { exact: true })).toHaveCount(0);
+    // Copy from the sister company, by value: HR is already here, so only OPS is added.
+    await page.getByTestId('copy-from-sister').click();
+    await expect(page.getByTestId('copy-status')).toHaveText(t('{added, plural, one {Copied # row} other {Copied # rows}} from {company}. {skipped, plural, one {# was skipped because its code is already here.} other {# were skipped because their codes are already here.}}', { added: 1, skipped: 1, company: sister.legalNameEn }));
+    const ops = page.getByTestId('departments-row').nth(1);
+    await expect(ops.getByLabel(t('Code'))).toHaveValue('OPS');
+    // Its cost centre was the sister's; this company has none by that code, so Next stops on the field.
+    await next(page, t);
+    await expect(page.locator('#ccw-departments-1-costCentreCode')).toBeFocused();
+    await page.locator('#ccw-departments-1-costCentreCode').selectOption('CC_ADM');
+    await contained(page);
+    await shot(page, info, `${locale}-4b-departments`);
+    await next(page, t);
+
+    await expectStep(page, t, 'Grades');
+    await page.getByRole('button', { name: t('Add grade'), exact: true }).click();
+    const grade = page.getByTestId('grades-row').first();
+    await grade.getByLabel(t('Code')).fill('G1');
+    await grade.getByLabel(t('Name (English)')).fill('Grade 1');
+    await page.locator('#ccw-grades-0-minSalary').fill('3000');
+    await page.locator('#ccw-grades-0-maxSalary').fill('7000');
+    await grade.getByTestId('use-middle').click();
+    await expect(page.locator('#ccw-grades-0-midSalary')).toHaveValue('5000');
+    await contained(page);
+    await shot(page, info, `${locale}-4c-grades`);
+    await next(page, t);
+
+    await expectStep(page, t, 'Designations');
+    await page.getByRole('button', { name: t('Add designation'), exact: true }).click();
+    const acc = page.getByTestId('designations-row').first();
+    await acc.getByLabel(t('Code')).fill('ACC');
+    await acc.getByLabel(t('Name (English)')).fill('Accountant');
+    await page.locator('#ccw-designations-0-departmentCode').selectOption('HR');
+    await page.locator('#ccw-designations-0-gradeCode').selectOption('G1');
+    await expect(page.getByTestId('structure-tree').first()).not.toContainText(t('Shared group catalog'));
+    await expect(page.getByTestId('wizard-next')).toContainText(t('Next: {step}', { step: t('Work & pay rules') }));
+    await contained(page);
+    await shot(page, info, `${locale}-4d-designations`);
+    await next(page, t);
+
+    // Step 5 parts (their content is builder D's RulesStep).
+    await expect(page).toHaveURL(/part=workRules/);
+    await expect(page.getByTestId('work-week-mode').first()).toHaveText(t('This company follows the country working week.'));
+    await page.getByLabel(t('Prefix')).first().fill('RTC');
+    await expect(page.getByTestId('numbering-preview').first()).toContainText('RTC-0001');
     await contained(page);
     await shot(page, info, `${locale}-5-rules`);
-    await next(page, t);
+    await nextUntil(page, t, 'Company super admin');
 
     await expectStep(page, t, 'Company super admin');
     await page.getByLabel(t('Invite a new company super admin')).check();
@@ -587,7 +723,12 @@ for (const locale of ['en', 'ar'] as const) {
     const saved = server.drafts.get(commit.draftId)!.body;
     expect(saved.company).toMatchObject({ legalNameEn: 'Riyadh Trading Company', registrationNumber: '1010123456', molEstablishmentNumber: '7-1234567', qiwaEstablishmentId: '7-1234567', currency: 'SAR' });
     expect(saved.branches[0].locations).toEqual([expect.objectContaining({ code: 'GATE1', nameEn: 'Main gate' })]);
-    expect(saved.departments.map(d => d.code)).toEqual(['HR', 'FIN', 'OPS']);
+    expect(saved.departments.map(d => [d.code, d.costCentreCode ?? null])).toEqual([['HR', null], ['OPS', 'CC_ADM']]);
+    expect(saved.costCentres).toEqual([{ code: 'CC_ADM', nameEn: 'Administration', nameAr: 'الإدارة' }]);
+    expect(saved.grades[0]).toMatchObject({ code: 'G1', minSalary: 3000, midSalary: 5000, maxSalary: 7000 });
+    expect(saved.designations[0]).toMatchObject({ code: 'ACC', departmentCode: 'HR', gradeCode: 'G1' });
+    expect(server.copyCalls).toEqual([{ fromCompanyId: sister.id, section: 'departments' }]);
+    expect(server.sectionApplies).toEqual([]); // create mode: nothing is written before Create
     expect(saved.companyAdmin).toMatchObject({ mode: 'invite', email: 'sara@riyadhtrading.sa' });
     expect(server.dryRuns.length).toBeGreaterThan(0);
     expect(server.errors).toEqual([]);
@@ -605,7 +746,7 @@ test('save draft, sign out, sign in, resume where it stopped', async ({ page }, 
   await next(page, t);
   await expectStep(page, t, 'Branches & locations');
   await page.getByRole('button', { name: t('Save draft & exit'), exact: true }).click();
-  await expect(page).toHaveURL(/\/setup\?tab=companies/);
+  await expect(page).toHaveURL(/path=guided/);
   const [draft] = [...server.drafts.values()];
   expect(draft.step).toBe(3);
   expect(draft.body.company.legalNameEn).toBe('Riyadh Trading Company');
@@ -626,7 +767,8 @@ test('save draft, sign out, sign in, resume where it stopped', async ({ page }, 
   await expect(card).toContainText(t('Stopped at step {step}: {title}', { step: 3, title: t('Branches & locations') }));
   await card.getByRole('link', { name: /Resume/ }).click();
   await expectStep(page, t, 'Branches & locations');
-  await page.getByRole('button', { name: t('Back'), exact: true }).click();
+  await expect(page.getByTestId('wizard-back')).toContainText(t('Company details'));
+  await page.getByTestId('wizard-back').click();
   await expect(page.getByLabel(t('Legal name (English)'))).toHaveValue('Riyadh Trading Company');
   await expect(page.getByLabel(t('MOL establishment number'))).toHaveValue('7-1234567');
   expect(server.errors).toEqual([]);
@@ -661,19 +803,16 @@ test('a conflict in the plan blocks Create until it is fixed', async ({ page }, 
   const cc = page.getByTestId('costCentres-row').first();
   await cc.getByLabel(t('Code')).fill('ADM');
   await cc.getByLabel(t('Name (English)')).fill('Administration');
-  await next(page, t);
-  await next(page, t);
-  await next(page, t); // step 6: group super admins (default) is valid
+  await toReview(page, t); // step 6: group super admins (default) is valid
   await expectStep(page, t, 'Review & create');
   await expect(page.getByTestId('review-plan')).toContainText('Cost centre ADM is already used by Sister Trading KSA. Use another code.');
   await expect(page.getByRole('button', { name: t('Create company'), exact: true })).toBeDisabled();
-  await expect(page.getByText(t('Create is available once every conflict above is resolved.'))).toBeVisible();
+  await expect(page.getByText(t('Create is available once the items above are fixed.'))).toBeVisible();
   await shot(page, info, 'en-7-review-conflict');
   await page.getByRole('button', { name: t('Go to {step}', { step: t('Organisation') }) }).click();
-  await expectStep(page, t, 'Organisation');
+  await expectStep(page, t, 'Cost centres');
   await page.getByTestId('costCentres-row').first().getByLabel(t('Code')).fill('ADM2');
-  for (let i = 0; i < 3; i++) await next(page, t);
-  await expectStep(page, t, 'Review & create');
+  await toReview(page, t);
   await expect(page.getByRole('button', { name: t('Create company'), exact: true })).toBeEnabled();
   expect(server.commits).toEqual([]);
 });
@@ -701,8 +840,7 @@ for (const variant of ['group HR manager', 'admin whose role ceiling refuses Adm
     await expect(page.getByTestId('wizard-rail').getByRole('listitem')).toHaveCount(6);
     await expect(page.getByTestId('wizard-rail')).not.toContainText(t('Company super admin'));
     await startAndFillCompany(page, t);
-    for (let i = 0; i < 4; i++) await next(page, t);
-    await expectStep(page, t, 'Review & create');
+    await toReview(page, t);
     await expect(page.getByTestId('review-plan')).toBeVisible();
     await expect(page.getByTestId('plan-group-6')).toHaveCount(0);
     await expect.poll(() => server.dryRuns.at(-1)?.companyAdmin).toEqual({ mode: 'groupOnly' });
@@ -750,17 +888,15 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(page.getByTestId('branches-row')).toHaveCount(1);
     await next(page, t);
 
-    await expectStep(page, t, 'Organisation');
+    await expectStep(page, t, 'Cost centres');
+    await next(page, t);
+    await expectStep(page, t, 'Departments');
     await page.getByRole('button', { name: t('Add department'), exact: true }).click();
     const typed = page.getByTestId('departments-row').nth(1);
-    const code = typed.getByLabel(t('Code'));
-    await code.pressSequentially('FINANCE');
-    await expect(code).toHaveValue('FINANCE');
-    await expect(code).toBeFocused();
-    await expect(page.getByTestId('departments-row').nth(1)).not.toHaveAttribute('data-reused', 'true');
-    // A section with entered rows asks too.
+    await typed.getByLabel(t('Code')).fill('FINANCE');
     await typed.getByLabel(t('Name (English)')).fill('Finance and accounts');
-    await page.getByRole('heading', { level: 3, name: t('Departments'), exact: true }).locator('xpath=../..').getByRole('button', { name: t('Use defaults'), exact: true }).click();
+    // A section with entered rows asks too.
+    await page.getByRole('button', { name: t('Use defaults'), exact: true }).click();
     await expect(page.getByTestId('use-defaults-confirm')).toBeVisible();
     await shot(page, info, `${locale}-4-use-defaults-confirm`);
   });
@@ -793,7 +929,7 @@ for (const locale of ['en', 'ar'] as const) test(`the app shell stays in its pla
     await check('2-company');
     await next(page, t);
     await next(page, t);
-    await expectStep(page, t, 'Organisation');
+    await expectStep(page, t, 'Cost centres');
     await check('4-organisation');
   }
 });
@@ -803,8 +939,7 @@ async function createWithInvitedAdmin(page: Page, loc: Locale = 'en') {
   const t = T(loc);
   await openWizardFromCompanies(page, t);
   await startAndFillCompany(page, t);
-  for (let i = 0; i < 4; i++) await next(page, t);
-  await expectStep(page, t, 'Company super admin');
+  await nextUntil(page, t, 'Company super admin');
   await page.getByLabel(t('Invite a new company super admin')).check();
   await page.getByLabel(t('Full name (English)')).fill('Sara Al-Qahtani');
   await page.getByLabel(t('Official work email')).fill('sara@riyadhtrading.sa');
@@ -970,7 +1105,6 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(page.getByLabel(t('Salary currency'))).toBeDisabled();
     await expect(page.getByText(t('Fixed for an existing company: payroll, GOSI and bank files depend on it.')).first()).toBeVisible();
     await expect(page.getByLabel(t('Legal name (English)'))).toHaveValue('Evostel LLC');
-    await expect(page.getByTestId('structure-tree')).toContainText(t('Existing'));
     await contained(page);
     await vshot(page, info, `existing-${locale}-2-company`);
     await next(page, t);
@@ -995,22 +1129,35 @@ for (const locale of ['en', 'ar'] as const) {
     await vshot(page, info, `existing-${locale}-3-branches`);
     await next(page, t);
 
-    await expectStep(page, t, 'Organisation');
+    // Organisation, one part at a time. Nothing changed in cost centres: plain Next, nothing written.
+    await expectStep(page, t, 'Cost centres');
+    await expect(page.getByTestId('wizard-next')).toContainText(t('Next: {part}', { part: t('Departments') }));
+    await expect(page.getByRole('button', { name: t('Use defaults'), exact: true })).toHaveCount(0);
+    await expect(page.getByTestId('manage-in-setup')).toHaveCount(0);
+    await next(page, t);
+    await expectStep(page, t, 'Departments');
     const hr = page.getByTestId('departments-row').first();
     await expect(hr).toHaveAttribute('data-existing', 'true');
-    await expect(hr.getByTestId('manage-in-setup')).toHaveAttribute('href', '/setup?tab=departments&companyId=co-evostel');
-    await expect(page.getByRole('button', { name: t('Use defaults'), exact: true })).toHaveCount(0);
+    // A saved row keeps its code and is never removed here; its name is this company's to edit.
+    await expect(hr.getByLabel(t('Code'))).toHaveAttribute('readonly', '');
+    await expect(hr.getByRole('button', { name: new RegExp(t('Remove')) })).toHaveCount(0);
+    await hr.getByLabel(t('Name (English)')).fill('People & Culture');
+    await expect(page.getByTestId('wizard-next')).toContainText(t('Save departments & next'));
+    await expect(page.getByTestId('saves-now')).toHaveText(t('Saves to {company} now. You can still change it later in Setup.', { company: locale === 'ar' ? 'شركة إيفوستل' : 'Evostel LLC' }));
     await contained(page);
-    await vshot(page, info, `existing-${locale}-4-organisation`);
+    await vshot(page, info, `existing-${locale}-4b-departments`);
     await next(page, t);
-
-    await expectStep(page, t, 'Work & pay rules');
-    await expect(page.getByTestId('numbering-preview')).toContainText('EVO-0042');
-    await page.getByTestId('more-settings-section').locator('summary').click();
-    await expect(page.getByTestId('more-settings')).toBeVisible();
+    // Written to the company now (B2), then on to Grades.
+    await expectStep(page, t, 'Grades');
+    await expect(page.getByTestId('section-saved')).toHaveText(t('{part} saved · {created} added, {updated} changed', { part: t('Departments'), created: 0, updated: 1 }));
+    expect(server.sectionApplies).toEqual([{ section: 'departments', version: expect.any(Number), replayed: false }]);
+    await nextUntil(page, t, 'Work rules');
+    await expect(page.getByTestId('numbering-preview').first()).toContainText('EVO-0042');
+    // More settings is its own step 5 part now (B4); company-setup-rules-parts.spec.ts covers it.
+    await expect(page.getByTestId('wizard-rail')).toContainText(t('More settings'));
     await contained(page);
     await vshot(page, info, `existing-${locale}-5-rules`);
-    await next(page, t);
+    await nextUntil(page, t, 'Company super admin');
 
     await expectStep(page, t, 'Company super admin');
     await expect(page.getByLabel(t('Keep the current administrators'))).toBeChecked();
@@ -1019,6 +1166,7 @@ for (const locale of ['en', 'ar'] as const) {
     await next(page, t);
 
     await expectStep(page, t, 'Review & update');
+    // The department was saved by Save & next, so the review shows only the branch changes.
     await expect(page.getByTestId('count-update')).toHaveText(t('{count} to update', { count: 1 }));
     await expect(page.getByTestId('count-create')).toHaveText(t('{count} to add', { count: 1 }));
     const branches = page.getByTestId('plan-group-3');
@@ -1059,9 +1207,9 @@ for (const locale of ['en', 'ar'] as const) {
     await openEvostel(page, t);
     await page.getByRole('button', { name: t('Start'), exact: true }).click();
     await expectStep(page, t, 'Company details');
-    for (let i = 0; i < 5; i++) await next(page, t);
-    await expectStep(page, t, 'Review & update');
+    await toReview(page, t, true);
     await expect(page.getByTestId('review-no-change')).toBeVisible();
+    expect(server.sectionApplies).toEqual([]); // nothing changed: nothing written
     await expect(page.getByTestId('count-update')).toHaveText(t('{count} to update', { count: 0 }));
     await expect(page.getByTestId('count-create')).toHaveText(t('{count} to add', { count: 0 }));
     await expect(page.locator('[data-testid="review-plan"] li[data-action]:visible')).toHaveCount(0);
@@ -1090,18 +1238,20 @@ for (const locale of ['en', 'ar'] as const) {
     await page.getByRole('button', { name: t('Start'), exact: true }).click();
     await next(page, t);
     await next(page, t);
-    await expectStep(page, t, 'Organisation');
-    // Shared catalog: pick only; cost centres are the company's own and can be added.
-    await expect(page.getByRole('button', { name: t('Add department'), exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: t('Add designation'), exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: t('Add grade'), exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: t('Add cost centre'), exact: true })).toBeVisible();
-    await page.getByRole('button', { name: t('Use {code} · {name}', { code: 'FIN', name: locale === 'ar' ? 'المالية' : 'Finance' }) }).click();
+    // Every Organisation row is this company's own: a company super admin adds departments too, and is offered no
+    // copy from a sister company (that is group scope).
+    await expectStep(page, t, 'Cost centres');
+    await expect(page.getByTestId('copy-from-sister')).toHaveCount(0);
+    await next(page, t);
+    await expectStep(page, t, 'Departments');
+    await page.getByRole('button', { name: t('Add department'), exact: true }).click();
+    const fin = page.getByTestId('departments-row').nth(1);
+    await fin.getByLabel(t('Code')).fill('FIN');
+    await fin.getByLabel(t('Name (English)')).fill('Finance');
     await expect(page.getByTestId('departments-row')).toHaveCount(2);
     await contained(page);
     await vshot(page, info, `existing-${locale}-4-organisation-company-admin`);
-    await next(page, t);
-    await next(page, t);
+    await nextUntil(page, t, 'Company super admin');
     await expectStep(page, t, 'Company super admin');
     await expect(page.getByTestId('company-scoped-admin-note')).toBeVisible();
     await page.getByLabel(t('Invite a new company super admin')).check();
@@ -1117,6 +1267,51 @@ for (const locale of ['en', 'ar'] as const) {
     expect(pageErrors).toEqual([]);
   });
 }
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`the chooser explains "5 of 9 done": the checklist opens in place, with one next action (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server, pageErrors } = await boot(page, { locale });
+    await openChooser(page);
+    // Exactly one primary action on the page: the incomplete company, not "Create a new company" as well.
+    await expect(page.getByTestId('guided-setup-chooser').locator('.btn-primary')).toHaveCount(1);
+    await expect(evostelRow(page).locator('.btn-primary')).toHaveCount(1);
+    const toggle = evostelRow(page).getByRole('button', { name: t('Show what is left') });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await toggle.click();
+    await expect(evostelRow(page).getByRole('button', { name: t('Hide the checklist') })).toHaveAttribute('aria-expanded', 'true');
+    const details = evostelRow(page).getByTestId('chooser-readiness-details');
+    await expect(details.getByTestId('readiness-summary')).toContainText(t('{done} of {total} done', { done: 1, total: 4 }));
+    const next = details.locator('[data-next="true"]');
+    await expect(next).toHaveCount(1);
+    await expect(next).toHaveAttribute('data-testid', 'readiness-glMapping');
+    await expect(next.getByRole('link', { name: t('Next: {item}', { item: locale === 'ar' ? 'ربط دفتر الأستاذ' : 'GL mapping' }) })).toHaveAttribute('href', '/setup?tab=glMapping&companyId=co-evostel');
+    await expect(details.locator('.btn-primary')).toHaveCount(1);
+    await expect(details.getByTestId('readiness-smtp')).toContainText(t('Recommended (optional)'));
+    await contained(page);
+    await vshot(page, info, `existing-${locale}-0-chooser-checklist`);
+    expect(server.errors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('a create draft can be discarded from the chooser, and the newest draft is the one primary action', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page);
+  await page.goto('/setup/new-company');
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await page.getByRole('button', { name: t('Save draft & exit'), exact: true }).click();
+  await openChooser(page);
+  const drafts = page.getByTestId('chooser-create-drafts');
+  await expect(drafts.getByRole('link', { name: /Resume/ })).toHaveClass(/btn-primary/);
+  await expect(page.getByTestId('guided-setup-chooser').locator('.btn-primary')).toHaveCount(1);
+  await expect(drafts).toContainText(t('Started by {name}, saved {when}', { name: 'Group Owner', when: 'now' }).replace(/now$/, ''));
+  await drafts.getByRole('button', { name: /Discard/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: t('Discard draft'), exact: true }).click();
+  await expect(page.getByTestId('chooser-create-drafts')).toHaveCount(0);
+  expect([...server.drafts.values()].filter(d => !d.body.existingCompanyId && d.status === 'Open')).toHaveLength(0);
+});
 
 test('an open draft for a company resumes from the chooser instead of starting a second one', async ({ page }) => {
   const t = T('en');
@@ -1145,8 +1340,7 @@ test('a first payroll month is read-only up front once payroll has started, with
   await expect(month).toHaveAttribute('aria-readonly', 'true');
   await expect(month).toHaveValue('2026-11');
   await expect(page.getByText(t('Payroll has already started for this company, so its first payroll month stays as it is.'))).toBeVisible();
-  for (let i = 0; i < 5; i++) await next(page, t);
-  await expectStep(page, t, 'Review & update');
+  await toReview(page, t, true);
   await expect(page.getByRole('button', { name: t('Finish without changes'), exact: true })).toBeEnabled();
   expect(server.dryRuns.at(-1)?.company.firstPayrollMonth).toBe('2026-11');
 });
@@ -1160,8 +1354,7 @@ test('a branch renamed elsewhere since the draft started is a conflict on review
   await next(page, t);
   await expectStep(page, t, 'Branches & locations');
   await page.getByTestId('branches-row').first().getByLabel(t('Name (English)')).first().fill('Head Office Riyadh');
-  for (let i = 0; i < 4; i++) await next(page, t);
-  await expectStep(page, t, 'Review & update');
+  await toReview(page, t, true);
   const conflict = page.locator('[data-testid="review-plan"] li[data-code="changed_since_draft_started"]');
   await expect(conflict).toContainText('Head Office (Setup)');
   await expect(conflict).toHaveAttribute('data-field', 'branches.0.nameEn');
@@ -1170,8 +1363,7 @@ test('a branch renamed elsewhere since the draft started is a conflict on review
   await conflict.getByRole('button', { name: t('Go to {step}', { step: t('Branches & locations') }) }).click();
   await expect(page.locator('#ccw-branches-0-nameEn')).toBeFocused();
   await expect(page.locator('#ccw-branches-0-nameEn-error')).toContainText('Head Office (Setup)');
-  for (let i = 0; i < 4; i++) await next(page, t);
-  await expectStep(page, t, 'Review & update');
+  await toReview(page, t, true);
   await conflict.getByRole('button', { name: t('Use the current value ({value})', { value: 'Head Office (Setup)' }) }).click();
   await expect(conflict).toHaveCount(0);
   await expect(page.getByRole('button', { name: t('Save all changes'), exact: true })).toBeEnabled();
@@ -1196,7 +1388,7 @@ test('a draft saved before baselines existed asks to reload the company, and the
   const refresh = page.locator('[data-testid="review-plan"] li[data-code="draft_needs_refresh"]');
   await expect(refresh).toContainText(t('This draft was started before KynexOne kept a record of what the company had at the time, so it cannot tell your edits from changes made elsewhere. Reload the company’s current setup, then make your changes again.'));
   await refresh.getByRole('button', { name: t('Reload the company’s current setup'), exact: true }).click();
-  await page.getByRole('button', { name: t('Reload'), exact: true }).click();
+  await page.getByRole('button', { name: t('Replace my draft'), exact: true }).click();
   await expect(refresh).toHaveCount(0);
   await expect(page.getByTestId('review-no-change')).toBeVisible();
   expect(server.dryRuns.at(-1)!.company.baseline).toEqual(prefill.company.baseline);
@@ -1217,14 +1409,12 @@ for (const locale of ['en', 'ar'] as const) {
     await vshot(page, info, `existing-${locale}-2-company-legacy-warning`);
     await next(page, t);
     await expectStep(page, t, 'Branches & locations'); // not blocked
-    await next(page, t);
-    await next(page, t);
-    await expectStep(page, t, 'Work & pay rules');
+    await nextUntil(page, t, 'Work rules');
     await expect(page.getByText(t('Already at {number}; it can only go up.', { number: 42 }))).toBeVisible();
     await page.getByLabel(t('Next number')).fill('7');
     await next(page, t);
     await expect(page.locator('#ccw-rules-employeeNumbering-nextSequence-error')).toHaveText(t('The next number is already {number}. A lower one could repeat a number already given; enter {number} or higher.', { number: 42 }));
-    await expectStep(page, t, 'Work & pay rules');
+    await expectStep(page, t, 'Work rules');
   });
 }
 
@@ -1248,8 +1438,8 @@ test('a company super admin is told, in plain words, that shared country default
   await boot(page, { persona: 'companyAdmin' });
   await openEvostel(page, t);
   await page.getByRole('button', { name: t('Start'), exact: true }).click();
-  for (let i = 0; i < 5; i++) await next(page, t);
-  await expectStep(page, t, 'Review & update');
+  await expectStep(page, t, 'Company details');
+  await toReview(page, t, true);
   await expect(page.getByTestId('review-plan')).toContainText(t('Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.'));
   await expect(page.getByRole('button', { name: t('Finish without changes'), exact: true })).toBeEnabled();
 });
@@ -1309,8 +1499,8 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(arabicInput(location, t)).toHaveValue('البوابة الرئيسية');
     await next(page, t);
 
-    // Step 4: cost centres, departments, designations and grades each carry the button on their Arabic column.
-    await expectStep(page, t, 'Organisation');
+    // Step 4, one part at a time: cost centres, departments, grades and designations each carry the button on their Arabic column.
+    await expectStep(page, t, 'Cost centres');
     const add = async (section: string, button: string, code: string, english: string, englishLabel = 'Name (English)') => {
       await page.getByRole('button', { name: t(button), exact: true }).click();
       const row = page.getByTestId(`${section}-row`).last();
@@ -1318,26 +1508,28 @@ for (const locale of ['en', 'ar'] as const) {
       await row.getByLabel(t(englishLabel)).fill(english);
       return row;
     };
-    const checks: [ReturnType<Page['getByTestId']>, string, string?][] = [
-      [await add('costCentres', 'Add cost centre', 'CC_HR', 'Human Resources Cost Center'), 'مركز تكلفة الموارد البشرية'],
-      [await add('departments', 'Add department', 'OPS', 'Operations'), 'العمليات'],
-      [await add('designations', 'Add designation', 'SWE', 'Software Engineer', 'Title (English)'), 'مهندس برمجيات', 'Title (Arabic)'],
-      [await add('grades', 'Add grade', 'G9', 'Grade 9'), 'الدرجة 9'],
-    ];
-    for (const [row, arabic, label] of checks) {
+    const useSuggestion = async (row: ReturnType<Page['getByTestId']>, arabic: string, label?: string) => {
       await expect(row.getByTestId('suggest-arabic')).toHaveCount(1);
       await row.getByTestId('suggest-arabic').click();
       await row.getByRole('button', { name: new RegExp(t('Use «{arabic}»', { arabic })) }).click();
       await expect(arabicInput(row, t, label)).toHaveValue(arabic);
-    }
-    // A shared catalog row (HR) is read-only: no button.
-    await expect(page.getByTestId('departments-row').first().getByTestId('suggest-arabic')).toHaveCount(0);
+    };
+    await useSuggestion(await add('costCentres', 'Add cost centre', 'CC_HR', 'Human Resources Cost Center'), 'مركز تكلفة الموارد البشرية');
+    await next(page, t);
+    await expectStep(page, t, 'Departments');
+    await useSuggestion(await add('departments', 'Add department', 'OPS', 'Operations'), 'العمليات');
     // Dismiss leaves a typed value alone.
     const typed = await add('departments', 'Add department', 'MKT', 'Marketing');
     await arabicInput(typed, t).fill('تسويق خاص');
     await typed.getByTestId('suggest-arabic').click();
     await typed.getByRole('button', { name: new RegExp(`^${t('Dismiss')}`) }).click();
     await expect(arabicInput(typed, t)).toHaveValue('تسويق خاص');
+    await next(page, t);
+    await expectStep(page, t, 'Grades');
+    await useSuggestion(await add('grades', 'Add grade', 'G9', 'Grade 9'), 'الدرجة 9');
+    await next(page, t);
+    await expectStep(page, t, 'Designations');
+    await useSuggestion(await add('designations', 'Add designation', 'SWE', 'Software Engineer'), 'مهندس برمجيات');
     await contained(page);
     await shot(page, info, `arloc-${locale}-suggest-organisation`);
 
@@ -1352,7 +1544,8 @@ for (const locale of ['en', 'ar'] as const) {
     const { server } = await boot(page, { locale });
     await toBranches(page, t);
     await next(page, t);
-    await expectStep(page, t, 'Organisation');
+    await expectStep(page, t, 'Cost centres');
+    await nextUntil(page, t, 'Departments');
     const departments = [['OPS', 'Operations', ''], ['WID', 'Widget Lab', ''], ['SAL', 'Sales', ''], ['MKT', 'Marketing', 'تسويق خاص']];
     for (const [code, english, arabic] of departments) {
       await page.getByRole('button', { name: t('Add department'), exact: true }).click();
@@ -1361,7 +1554,7 @@ for (const locale of ['en', 'ar'] as const) {
       await row.getByLabel(t('Name (English)')).fill(english);
       if (arabic) await arabicInput(row, t).fill(arabic);
     }
-    const section = page.locator('section').filter({ has: page.getByRole('heading', { name: t('Departments'), exact: true }) });
+    const section = page.getByTestId('departments-editor');
     const fill = section.getByTestId('fill-missing-arabic');
     await expect(fill).toHaveText(t('Fill missing Arabic names ({count})', { count: 2 }));
     await shot(page, info, `arloc-${locale}-bulk-before`);
@@ -1475,7 +1668,8 @@ for (const locale of ['en', 'ar'] as const) {
     await panel.getByTestId('pin-locate').click();
     await expect(status).toContainText('24.713600, 46.675300');
     const pin = panel.locator('.leaflet-marker-icon');
-    await pin.scrollIntoViewIfNeeded();
+    // Centre it: the sticky footer must not sit over the map while the pointer drags.
+    await pin.evaluate(el => el.scrollIntoView({ block: 'center' }));
     const box = (await pin.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height - 6);
     await page.mouse.down();
@@ -1517,7 +1711,7 @@ for (const locale of ['en', 'ar'] as const) {
     // What is saved is just the location's latitude, longitude and radius.
     await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0], { timeout: 15_000 }).toMatchObject({ code: 'GATE1', latitude: 24.75, longitude: 46.6753, radiusMeters: 75 });
     await next(page, t);
-    await expectStep(page, t, 'Organisation');
+    await expectStep(page, t, 'Cost centres');
     expect(pageErrors).toEqual([]);
   });
 }
@@ -1549,12 +1743,12 @@ async function startEvostel(page: Page, t: ReturnType<typeof T>) {
 }
 
 for (const locale of ['en', 'ar'] as const) {
-  test(`each section saves on its own, moves to the next, and nothing changes in the company before Save all changes (${locale})`, async ({ page }, info) => {
+  test(`each section saves on its own and moves to the next; Organisation parts have their own Save & next; nothing else changes in the company before Save all changes (${locale})`, async ({ page }, info) => {
     const t = T(locale);
     if (info.project.name === 'pilot') await page.emulateMedia({ colorScheme: 'dark' });
     const { server, pageErrors } = await boot(page, { locale });
     await openEvostel(page, t);
-    await expect(page.getByText(t('See what this company has today, then go step by step. Save each section as you finish it. Nothing changes in the company until you choose Save all changes at the end.'))).toBeVisible();
+    await expect(page.getByText(t('See what this company has today, then go step by step. Save each section as you finish it. Organisation parts are saved to the company when you press Save & next; everything else is applied by Save all changes.'))).toBeVisible();
     await page.getByRole('button', { name: t('Start'), exact: true }).click();
     await expectStep(page, t, 'Company details');
 
@@ -1576,41 +1770,35 @@ for (const locale of ['en', 'ar'] as const) {
     expect(server.puts.at(-1)!.body.company.tradeName).toBe('Evostel Trading');
     await expect(railStep(page, t, 'Company details')).toHaveAttribute('data-saved', 'saved');
     await sectionBar(page, 'branches').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
-    await expectStep(page, t, 'Organisation');
+    await expectStep(page, t, 'Cost centres');
 
-    // Organisation: four sections; "Save and continue" moves focus to the next section's heading.
-    for (const [section, nextSection] of [['costCentres', 'departments'], ['departments', 'designations'], ['designations', 'grades']] as const) {
-      await sectionBar(page, section).getByRole('button', { name: new RegExp(`^${t('Save and continue')}`) }).click();
-      await expect(page.locator(`#ccw-section-${nextSection}`)).toBeFocused();
-      await expect(sectionStatus(page, section)).toHaveAttribute('data-status', 'saved');
-      await expect(sectionStatus(page, section)).toContainText(t('Saved at {time}', { time: '' }).trim());
-    }
-    await shot(page, info, `save-${locale}-organisation-saved`);
-    await sectionBar(page, 'grades').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
-    await expectStep(page, t, 'Work & pay rules');
-    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'saved');
+    // Organisation has no section Save here: each part has its own "Save {part} & next", and the rail shows no Saved hint for it.
+    await expect(page.getByTestId('section-save-costCentres')).toHaveCount(0);
+    await expect(railStep(page, t, 'Organisation')).not.toHaveAttribute('data-saved', /.*/);
+    await nextUntil(page, t, 'Work rules');
 
-    // An edit after Save shows as unsaved again, in the section, its header and the rail.
-    await railStep(page, t, 'Organisation').click();
-    await expectStep(page, t, 'Organisation');
-    await page.getByTestId('costCentres-row').first().getByLabel(t('Name (English)')).fill('Administration & Support');
-    await expect(sectionStatus(page, 'costCentres')).toHaveAttribute('data-status', 'unsaved');
-    await expect(sectionStatus(page, 'departments')).toHaveAttribute('data-status', 'saved');
-    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'unsaved');
-    await expect(railStep(page, t, 'Organisation')).toContainText(t('Unsaved changes'));
+    // Work rules is a section with its own Save: unsaved until saved, and Save opens the next part.
+    await expect(sectionStatus(page, 'rules')).toHaveAttribute('data-status', 'notSaved');
+    await page.getByLabel(t('Prefix')).first().fill('EVX');
+    await expect(sectionStatus(page, 'rules')).toHaveAttribute('data-status', 'unsaved');
+    await expect(railStep(page, t, 'Work & pay rules')).toHaveAttribute('data-saved', 'unsaved');
     await contained(page);
-    await shot(page, info, `save-${locale}-organisation-edited`);
-    await sectionBar(page, 'costCentres').getByRole('button', { name: new RegExp(`^${t('Save and continue')}`) }).click();
-    await expect(railStep(page, t, 'Organisation')).toHaveAttribute('data-saved', 'saved');
+    await shot(page, info, `save-${locale}-rules-edited`);
+    await sectionBar(page, 'rules').getByRole('button', { name: new RegExp(`^${t('Save')}`) }).click();
+    await expectStep(page, t, 'Leave & holidays');
+    await expect(railStep(page, t, 'Work & pay rules')).toHaveAttribute('data-saved', 'saved');
+    await (info.project.name === 'mobile' ? page.getByTestId('part-tab-workRules') : page.getByTestId('wizard-rail-parts').getByRole('button', { name: new RegExp(t('Work rules')) })).click();
+    await expectStep(page, t, 'Work rules');
+    await expect(sectionStatus(page, 'rules')).toHaveAttribute('data-status', 'saved');
+    await expect(sectionStatus(page, 'rules')).toContainText(t('Saved at {time}', { time: '' }).trim());
 
-    // Section saves write the draft only: nothing is applied to the company until the final button.
+    // Draft saves write the draft only: nothing is applied to the company until Save all changes.
     expect(server.commits).toEqual([]);
     await railStep(page, t, 'Review & update').click();
     await expectStep(page, t, 'Review & update');
-    await expect(page.getByText(t('These are exactly the changes that will be saved. Nothing changes in the company until you choose Save all changes.'))).toBeVisible();
+    await expect(page.getByText(t('These are exactly the changes Save all changes will make. Organisation rows you saved in Step 4 are already in the company.'))).toBeVisible();
     const saveAll = page.getByRole('button', { name: t('Save all changes'), exact: true });
     await expect(saveAll).toBeEnabled();
-    await expect(page.getByTestId('review-plan')).toContainText('Administration & Support');
     expect(server.commits).toEqual([]);
     await shot(page, info, `save-${locale}-review`);
     await saveAll.click();
@@ -1737,5 +1925,211 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(panel.getByRole('radio', { name: t('{meters} m', { meters: 150 }) })).toBeChecked();
     await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0], { timeout: 15_000 })
       .toMatchObject({ latitude: 24.7136, longitude: 46.6753, radiusMeters: 150 });
+  });
+}
+
+// ── Addendum B: Organisation one part at a time, live section saves, copy by value ──
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`existing: Organisation goes one part at a time, Save & next writes each part, Back crosses steps (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server, pageErrors } = await boot(page, { locale });
+    await openEvostel(page, t);
+    await page.getByRole('button', { name: t('Start'), exact: true }).click();
+    await expectStep(page, t, 'Company details');
+    await next(page, t);
+    await next(page, t);
+    await expectStep(page, t, 'Cost centres');
+    await expect(page).toHaveURL(/part=costCentres/);
+    if (info.project.name === 'mobile') {
+      await expect(page.getByTestId('wizard-rail-position')).toHaveText(t('Step {position} of {total} · {title} · Part {part} of {parts}: {partTitle}', { position: 4, total: 7, title: t('Organisation'), part: 1, parts: 4, partTitle: t('Cost centres') }));
+      await expect(page.getByTestId('part-tab-costCentres')).toHaveAttribute('aria-selected', 'true');
+    } else {
+      const parts = page.getByTestId('wizard-rail-parts');
+      await expect(parts.locator('button')).toHaveCount(4);
+      await expect(parts.locator('[data-part="costCentres"]')).toHaveAttribute('aria-current', 'step');
+      // Not reachable yet is still focusable, and says why.
+      await expect(page.getByTestId('wizard-rail').locator('button[data-locked="true"]')).toHaveCount(0);
+    }
+    // Back on the first part goes to the previous step.
+    await page.getByTestId('wizard-back').click();
+    await expectStep(page, t, 'Branches & locations');
+    await expect(page).not.toHaveURL(/part=/);
+    await next(page, t);
+    await expectStep(page, t, 'Cost centres');
+
+    await page.getByRole('button', { name: t('Add cost centre'), exact: true }).click();
+    const ops = page.getByTestId('costCentres-row').nth(1);
+    await ops.getByLabel(t('Code')).fill('OPS');
+    await ops.getByLabel(t('Name (English)')).fill('Operations');
+    await expect(page.getByTestId('wizard-next')).toContainText(t('Save cost centres & next'));
+    await expect(page.getByTestId('wizard-next')).toHaveAttribute('aria-keyshortcuts', 'Meta+Enter Control+Enter');
+    await contained(page);
+    await vshot(page, info, `parts-${locale}-4a-cost-centres-changed`);
+    await next(page, t);
+    await expectStep(page, t, 'Departments');
+    await expect(page.getByTestId('section-saved')).toHaveText(t('{part} saved · {created} added, {updated} changed', { part: t('Cost centres'), created: 1, updated: 0 }));
+    expect(server.org().costCentres.map(c => [c.code, !!c.existingId])).toEqual([['ADM', true], ['OPS', true]]);
+
+    // A look-alike name is caught when it is entered, and the reader chooses.
+    await page.getByRole('button', { name: t('Add department'), exact: true }).click();
+    const dup = page.getByTestId('departments-row').nth(1);
+    await dup.getByLabel(t('Name (English)')).fill('HR');
+    await dup.getByLabel(t('Name (English)')).blur();
+    await expect(page.getByTestId('look-alike')).toContainText(t('This looks like {name} ({code}), already in this list.', { name: 'Human Resources', code: 'HR' }));
+    await page.getByTestId('look-alike').getByRole('button', { name: t('Use existing'), exact: true }).click();
+    await expect(page.getByTestId('departments-row')).toHaveCount(1);
+    await expect(page.locator('#ccw-departments-0-nameEn')).toBeFocused();
+
+    // A department is offered the cost centre whose name matches; the reader confirms it.
+    await page.getByRole('button', { name: t('Add department'), exact: true }).click();
+    const opsDept = page.getByTestId('departments-row').nth(1);
+    await opsDept.getByLabel(t('Code')).fill('OPS');
+    await opsDept.getByLabel(t('Name (English)')).fill('Operations');
+    await expect(opsDept.getByTestId('cost-centre-suggestion')).toContainText(t('Suggested: {code} · {name}', { code: 'OPS', name: 'Operations' }));
+    await expect(page.locator('#ccw-departments-1-costCentreCode')).toHaveValue('');
+    await opsDept.getByRole('button', { name: new RegExp(t('Use this cost centre')) }).click();
+    await expect(page.locator('#ccw-departments-1-costCentreCode')).toHaveValue('OPS');
+    // Cmd/Ctrl+Enter is Save & next.
+    await page.locator('#ccw-departments-1-nameEn').focus();
+    await page.keyboard.press('ControlOrMeta+Enter');
+    await expectStep(page, t, 'Grades');
+    await expect(page).toHaveURL(/part=grades/);
+    // Back within the step: nothing to save, so plain Next.
+    await page.getByTestId('wizard-back').click();
+    await expectStep(page, t, 'Departments');
+    await expect(page.getByTestId('wizard-next')).toContainText(t('Next: {part}', { part: t('Grades') }));
+    await nextUntil(page, t, 'Work rules');
+    // Back on step 5's first part goes to step 4's last part.
+    await page.getByTestId('wizard-back').click();
+    await expectStep(page, t, 'Designations');
+    expect(server.sectionApplies.map(a => [a.section, a.replayed])).toEqual([['costCentres', false], ['departments', false]]);
+
+    // Resume from the address: the part it names, once nothing before it blocks.
+    const url = new URL(page.url());
+    url.searchParams.set('part', 'grades');
+    await page.goto(url.pathname + url.search);
+    await expectStep(page, t, 'Grades');
+    await expect(page.getByTestId('departments-row')).toHaveCount(0);
+    expect(server.errors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('a section the server refuses keeps the reader on the part with the problem on its field; a lost reply retries without writing twice', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page, { sectionFailure: 'problem' });
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await nextUntil(page, t, 'Departments');
+  await page.getByRole('button', { name: t('Add department'), exact: true }).click();
+  await page.locator('#ccw-departments-1-code').fill('OPS');
+  await page.locator('#ccw-departments-1-nameEn').fill('Operations');
+  await page.locator('#ccw-departments-1-costCentreCode').selectOption('ADM');
+  await next(page, t);
+  await expectStep(page, t, 'Departments');
+  await expect(page.getByTestId('section-error')).toContainText('Save Cost centres first: CC_NEW is not saved yet.');
+  await expect(page.locator('#ccw-departments-1-costCentreCode-error')).toHaveText('Save Cost centres first: CC_NEW is not saved yet.');
+  await expect(page.locator('#ccw-departments-1-costCentreCode')).toBeFocused();
+  expect(server.sectionApplies).toEqual([]);
+
+  // The write lands but the reply is lost: "Not saved", with the rows still here; Try again replays the same write.
+  server.options.sectionFailure = 'lost';
+  await next(page, t);
+  await expect(page.getByTestId('section-error')).toContainText(t('Not saved. Your changes are still here.'));
+  await expect(page.locator('#ccw-departments-1-code')).toHaveValue('OPS');
+  await page.getByTestId('section-error').getByRole('button', { name: t('Try again'), exact: true }).click();
+  await expectStep(page, t, 'Grades');
+  await expect(page.getByTestId('section-saved')).toHaveText(t('{part} were already saved.', { part: t('Departments') }));
+  expect(server.sectionApplies.map(a => [a.section, a.replayed])).toEqual([['departments', false], ['departments', true]]);
+  expect(server.org().departments.map(d => d.code)).toEqual(['HR', 'OPS']);
+});
+
+test('removing a row leaves "removed · Undo" in its place for 8 s with focus on Undo; a blank new row blocks Next', async ({ page }) => {
+  const t = T('en');
+  await boot(page);
+  await openWizardFromCompanies(page, t);
+  await startAndFillCompany(page, t);
+  await next(page, t);
+  await next(page, t);
+  await expectStep(page, t, 'Cost centres');
+  await page.getByRole('button', { name: t('Add cost centre'), exact: true }).click();
+  // Enter never presses Next; on a valid last row it adds the next row.
+  await page.keyboard.type('CC_A');
+  await page.keyboard.press('Tab');
+  await page.keyboard.type('Alpha');
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await expectStep(page, t, 'Cost centres');
+  await expect(page.getByTestId('costCentres-row')).toHaveCount(2);
+  await expect(page.locator('#ccw-costCentres-1-code')).toBeFocused();
+  // A wholly blank new row asks to be filled in or removed.
+  await next(page, t);
+  await expect(page.locator('#ccw-costCentres-1-code-error')).toHaveText(t('Fill in this row or remove it.'));
+  await page.getByTestId('costCentres-row').first().getByRole('button', { name: new RegExp(t('Remove')) }).click();
+  const placeholder = page.getByTestId('row-removed');
+  await expect(placeholder).toContainText(t('{row} removed.', { row: 'CC_A' }));
+  await expect(placeholder.getByRole('button', { name: new RegExp(t('Undo')) })).toBeFocused();
+  await placeholder.getByRole('button', { name: new RegExp(t('Undo')) }).click();
+  await expect(page.locator('#ccw-costCentres-0-code')).toHaveValue('CC_A');
+  await expect(page.locator('#ccw-costCentres-0-code')).toBeFocused();
+  await expect(page.getByTestId('row-removed')).toHaveCount(0);
+});
+
+test('an edit made just before leaving inside the app is saved on the way out, never dropped', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page);
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await page.getByLabel(t('Trade name (optional)')).fill('Left in a hurry');
+  // Well inside the 1.2 s debounce.
+  await page.getByRole('link', { name: t('Guided setup'), exact: true }).first().click();
+  // The unsaved company section asks first; leaving anyway still sends the draft on the way out.
+  await page.getByRole('dialog').getByRole('button', { name: 'Discard and leave', exact: true }).click();
+  await expect(page.getByTestId('guided-setup-chooser')).toBeVisible();
+  await expect.poll(() => server.puts.at(-1)?.body.company.tradeName).toBe('Left in a hurry');
+});
+
+test('Arabic: arrows are mirrored once by the global rule, never twice', async ({ page }) => {
+  const t = T('ar');
+  await boot(page, { locale: 'ar' });
+  await openWizardFromCompanies(page, t);
+  await startAndFillCompany(page, t);
+  const arrow = page.getByTestId('wizard-next').locator('svg');
+  expect(await arrow.evaluate(el => ({ scale: getComputedStyle(el).scale, transform: getComputedStyle(el).transform }))).toEqual({ scale: '-1 1', transform: 'none' });
+  await contained(page);
+});
+
+test('step content rises in, and does not move at all under reduced motion', async ({ page }) => {
+  const t = T('en');
+  await boot(page);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await openWizardFromCompanies(page, t);
+  await startAndFillCompany(page, t);
+  const name = () => page.getByTestId('wizard-position').evaluate(el => getComputedStyle(el).animationName);
+  expect(await name()).toBe('fade-in');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await next(page, t);
+  await expectStep(page, t, 'Branches & locations');
+  expect(await name()).toBe('none');
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`Organisation parts at 375 px: stacked rows, part tabs, no sideways scroll (${locale})`, async ({ page }, info) => {
+    test.skip(info.project.name !== 'desktop', 'One phone-width pass is enough; it sets its own viewport.');
+    const t = T(locale);
+    await page.setViewportSize({ width: 375, height: 812 });
+    await boot(page, { locale });
+    await openEvostel(page, t);
+    await page.getByRole('button', { name: t('Start'), exact: true }).click();
+    await nextUntil(page, t, 'Departments');
+    await expect(page.getByTestId('departments-editor')).toHaveAttribute('data-layout', 'stacked');
+    await expect(page.getByTestId('part-tab-departments')).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('button', { name: t('Add department'), exact: true }).click();
+    await page.locator('#ccw-departments-1-nameEn').fill('Operations');
+    await contained(page);
+    await vshot(page, info, `parts-${locale}-375-departments`);
+    await shot(page, info, `parts-${locale}-375-departments-full`);
   });
 }

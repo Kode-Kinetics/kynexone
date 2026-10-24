@@ -4,7 +4,11 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Leave;
@@ -23,16 +27,52 @@ public class LeaveTypesController : ControllerBase
         _leaveService = leaveService;
     }
 
+    /// <summary>
+    /// Leave types the caller can see. <paramref name="companyId"/> narrows the list: a company id gives that company's
+    /// types (plus, with <paramref name="includeUnassigned"/>, legacy rows no company owns yet); <c>unassigned</c> gives
+    /// only those legacy rows. <paramref name="employeeId"/> gives the types that employee may request: the employee's
+    /// company's own, plus unassigned legacy types whose code that company does not use.
+    /// </summary>
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] bool? includeInactive, CancellationToken ct)
+    public async Task<IActionResult> List([FromQuery] bool? includeInactive, [FromQuery] string? companyId,
+        [FromQuery] bool? includeUnassigned, [FromQuery] int? employeeId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
         var showAll = includeInactive == true && (User.IsInRole("Admin") || User.IsInRole("HR Manager"));
 
-        var items = await _db.LeaveTypes
-            .Where(t => t.TenantId == tenantId && (showAll || t.IsActive))
+        IQueryable<LeaveType> query = _db.LeaveTypes.Where(t => t.TenantId == tenantId);
+        if (employeeId is int forEmployee)
+        {
+            // Visible only when the caller can see the employee (the employee query filter applies).
+            var employee = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == forEmployee && !e.IsDeleted)
+                .Select(e => new { e.CompanyId }).FirstOrDefaultAsync(ct);
+            if (employee is null) return NotFound();
+            query = LeaveCompanyScope.UsableBy(_db, tenantId.Value, employee.CompanyId);
+        }
+        else if (string.IsNullOrWhiteSpace(companyId) && !IsLeaveAdministrator()
+                 && await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId.Value, ct) is int self)
+        {
+            // Self service (web ESS and the mobile app call this with no filter): an employee sees the leave types of
+            // their own company only, never a sister company's.
+            var ownCompany = await _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && e.Id == self).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+            query = LeaveCompanyScope.UsableBy(_db, tenantId.Value, ownCompany);
+        }
+        else if (string.Equals(companyId, "unassigned", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(t => t.CompanyId == null);
+        else if (!string.IsNullOrWhiteSpace(companyId))
+        {
+            if (!Guid.TryParse(companyId, out var company)) return BadRequest(new { message = "companyId must be a company id or 'unassigned'." });
+            query = includeUnassigned == true
+                ? query.Where(t => t.CompanyId == company || t.CompanyId == null)
+                : query.Where(t => t.CompanyId == company);
+        }
+
+        var items = await query
+            .Where(t => showAll || t.IsActive)
             .OrderBy(t => t.SortOrder)
             .ThenBy(t => t.NameEn)
             .ToListAsync(ct);
@@ -47,15 +87,21 @@ public class LeaveTypesController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var duplicate = await _db.LeaveTypes
-            .AnyAsync(t => t.TenantId == tenantId && t.Code == req.Code, ct);
-        if (duplicate)
-            return BadRequest(new { message = $"A leave type with code '{req.Code}' already exists." });
+        Guid companyId;
+        try { companyId = await LeaveCompanyScope.ResolveOwningCompanyAsync(_db, tenantId.Value, req.CompanyId, ct); }
+        catch (OrganizationRuleException ex) { return BadRequest(ex.ToPayload()); }
+
+        var code = (req.Code ?? string.Empty).Trim();
+        if (code.Length == 0) return BadRequest(new { message = "Code is required." });
+        // Codes are unique per company (owner decision 2026-10-23); a sister company may use the same code.
+        if (await CodeTakenAsync(tenantId.Value, companyId, code, null, ct))
+            return BadRequest(new { error = "leave_type_code_taken", message = $"A leave type with code '{code}' already exists in this company." });
 
         var leaveType = new LeaveType
         {
             TenantId = tenantId.Value,
-            Code = req.Code,
+            CompanyId = companyId,
+            Code = code,
             NameEn = req.NameEn,
             NameAr = req.NameAr ?? string.Empty,
             Category = req.Category,
@@ -90,6 +136,20 @@ public class LeaveTypesController : ControllerBase
         var leaveType = await _db.LeaveTypes
             .FirstOrDefaultAsync(t => t.Id == id && t.TenantId == tenantId, ct);
         if (leaveType is null) return NotFound();
+
+        // The company is fixed once set; an unassigned legacy row takes the company the request names.
+        Guid? company;
+        try { company = await LeaveCompanyScope.ResolveCompanyOnUpdateAsync(_db, tenantId.Value, leaveType.CompanyId, req.CompanyId, ct); }
+        catch (OrganizationRuleException ex) { return BadRequest(ex.ToPayload()); }
+        if (company != leaveType.CompanyId)
+        {
+            if (await CodeTakenAsync(tenantId.Value, company, leaveType.Code, leaveType.Id, ct))
+                return BadRequest(new { error = "leave_type_code_taken", message = $"That company already has a leave type with code '{leaveType.Code}'." });
+            await _leaveService.LogAuditAsync(tenantId.Value, "LeaveType", leaveType.Id.ToString(),
+                "CompanyAssigned", "company_id=", $"company_id={company}", "Unassigned leave type assigned to its company",
+                User.Identity?.Name ?? "Admin", ct);
+            leaveType.CompanyId = company;
+        }
 
         var before = leaveType.NameEn;
         if (!string.IsNullOrWhiteSpace(req.NameEn)) leaveType.NameEn = req.NameEn;
@@ -130,6 +190,22 @@ public class LeaveTypesController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>Leave administrators see every company's types they can reach; everyone else is narrowed to their own.</summary>
+    private bool IsLeaveAdministrator() =>
+        User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer") || User.IsInRole("Auditor")
+        || User.HasPermission("leave.write") || User.HasPermission("leave.policy_manage");
+
+    private const string CodeScopeJustification =
+        "A leave type code is unique per company: the duplicate check must see the company's rows whatever the caller's company switcher shows.";
+
+    /// <summary>Whether <paramref name="company"/> (null: the unassigned rows) already has a type with this code, case-insensitively.</summary>
+    private Task<bool> CodeTakenAsync(Guid tenantId, Guid? company, string code, Guid? exceptId, CancellationToken ct)
+    {
+        var upper = code.Trim().ToUpper();
+        return Infrastructure.Data.ScopedBypass.TenantWide(_db.LeaveTypes, tenantId, CodeScopeJustification)
+            .AnyAsync(t => t.CompanyId == company && t.Code.ToUpper() == upper && (exceptId == null || t.Id != exceptId), ct);
+    }
+
     // ── Export / Import / Template ──────────────────────────────────────────
     private static readonly string[] LeaveTypeCsvHeaders =
         { "Code", "NameEn", "NameAr", "Category", "IsPaid", "IsHalfDayAllowed", "IsHourlyAllowed", "RequiresAttachment", "RequiresReason", "MaxConsecutiveDays", "ColorCode", "SortOrder" };
@@ -140,12 +216,12 @@ public class LeaveTypesController : ControllerBase
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
-    public async Task<IActionResult> Export(CancellationToken ct)
+    public async Task<IActionResult> Export([FromQuery] Guid? companyId, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var items = await _db.LeaveTypes
-            .Where(t => t.TenantId == tenantId && t.IsActive)
+            .Where(t => t.TenantId == tenantId && t.IsActive && (companyId == null || t.CompanyId == companyId))
             .OrderBy(t => t.SortOrder).ThenBy(t => t.NameEn)
             .ToListAsync(ct);
         var rows = items.Select(t => (IReadOnlyList<object?>)new object?[]
@@ -173,6 +249,10 @@ public class LeaveTypesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // The file is imported into one company: the one named, else the switcher's, else the only one.
+        Guid companyId;
+        try { companyId = await LeaveCompanyScope.ResolveOwningCompanyAsync(_db, tenantId.Value, req.CompanyId, ct); }
+        catch (OrganizationRuleException ex) { return BadRequest(ex.ToPayload()); }
         var rows = Csv.Parse(req.CsvContent ?? string.Empty);
         int created = 0, skipped = 0;
         var errors = new List<string>();
@@ -184,8 +264,10 @@ public class LeaveTypesController : ControllerBase
             if (string.IsNullOrWhiteSpace(code)) { skipped++; continue; }
             var nameEn = row.GetValueOrDefault("NameEn", string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(nameEn)) { skipped++; errors.Add($"Row {rowNum}: NameEn is required."); continue; }
-            if (await _db.LeaveTypes.AnyAsync(t => t.TenantId == tenantId && t.Code == code, ct))
-            { skipped++; errors.Add($"Row {rowNum}: Code '{code}' already exists."); continue; }
+            if (await CodeTakenAsync(tenantId.Value, companyId, code, null, ct)
+                || _db.ChangeTracker.Entries<LeaveType>().Any(e => e.State == EntityState.Added && e.Entity.CompanyId == companyId
+                    && string.Equals(e.Entity.Code, code, StringComparison.OrdinalIgnoreCase)))
+            { skipped++; errors.Add($"Row {rowNum}: Code '{code}' already exists in this company."); continue; }
             bool.TryParse(row.GetValueOrDefault("IsPaid", "true"), out var isPaid);
             bool.TryParse(row.GetValueOrDefault("IsHalfDayAllowed", "false"), out var halfDay);
             bool.TryParse(row.GetValueOrDefault("IsHourlyAllowed", "false"), out var hourly);
@@ -196,6 +278,7 @@ public class LeaveTypesController : ControllerBase
             _db.LeaveTypes.Add(new LeaveType
             {
                 TenantId = tenantId.Value,
+                CompanyId = companyId,
                 Code = code,
                 NameEn = nameEn,
                 NameAr = row.GetValueOrDefault("NameAr", string.Empty),
@@ -229,7 +312,8 @@ public record CreateLeaveTypeRequest(
     bool RequiresReason,
     int MaxConsecutiveDays,
     string? ColorCode,
-    int SortOrder);
+    int SortOrder,
+    Guid? CompanyId = null);
 
 public record UpdateLeaveTypeRequest(
     string? NameEn,
@@ -243,6 +327,7 @@ public record UpdateLeaveTypeRequest(
     int? MaxConsecutiveDays,
     string? ColorCode,
     int? SortOrder,
-    bool? IsActive);
+    bool? IsActive,
+    Guid? CompanyId = null);
 
-public record ImportLeaveTypesRequest(string CsvContent);
+public record ImportLeaveTypesRequest(string CsvContent, Guid? CompanyId = null);

@@ -5,6 +5,7 @@ import { useT } from '../../hooks/useT';
 import { usersApi, type UserListItem } from '../../api/identity';
 import type { CompanyAdminMode, CompanySetupAdmin } from '../../api/companySetup';
 import { eligibleCompanySuperAdmins } from '../../lib/companySetupWizard';
+import { completeEmail, emailHost, isPublicEmailDomain } from '../../lib/companySetupFields';
 import { Notice, WizardField, useWizardForm } from './wizardForm';
 
 /**
@@ -22,6 +23,9 @@ export function AdminStep() {
   const companyScoped = existing && context?.isGroupScope === false;
   const companyName = body.company.legalNameEn;
   const domain = (body.company.emailDomain ?? '').trim().toLowerCase();
+  // Owner rule: a login is an official company email; a public mail service is flagged before the review refuses it.
+  const emailDomainOf = emailHost(admin.email);
+  const publicHost = !domain && isPublicEmailDomain(emailDomainOf) ? emailDomainOf : '';
   const set = (patch: Partial<CompanySetupAdmin>) => update(b => ({ ...b, companyAdmin: { ...b.companyAdmin, ...patch } }));
   const [users, setUsers] = useState<UserListItem[] | null>(null);
   const [usersError, setUsersError] = useState(false);
@@ -32,7 +36,7 @@ export function AdminStep() {
     let active = true;
     setUsersError(false);
     usersApi.listAll({ status: 'Active' })
-      .then(rows => { if (active) setUsers(eligibleCompanySuperAdmins(rows)); })
+      .then(rows => { if (active) setUsers(eligibleCompanySuperAdmins(rows).sort((a, b) => a.fullName.localeCompare(b.fullName))); })
       .catch(() => { if (active) setUsersError(true); });
     return () => { active = false; };
   }, [admin.mode, users, attempt]);
@@ -70,12 +74,17 @@ export function AdminStep() {
           <WizardField field="companyAdmin.fullNameEn" label={t('Full name (English)')} required>
             {control => <input {...control} className="input w-full" autoComplete="off" readOnly={readOnly} value={admin.fullNameEn ?? ''} onChange={e => set({ fullNameEn: e.target.value })} />}
           </WizardField>
-          <WizardField field="companyAdmin.fullNameAr" label={t('Full name (Arabic)')}>
+          <WizardField field="companyAdmin.fullNameAr" label={t('Full name (Arabic)')} help={t('Optional. Shown when KynexOne is used in Arabic.')}>
             {control => <input {...control} className="input w-full" dir="rtl" lang="ar" autoComplete="off" readOnly={readOnly} value={admin.fullNameAr ?? ''} onChange={e => set({ fullNameAr: e.target.value })} />}
           </WizardField>
           <WizardField field="companyAdmin.email" label={t('Official work email')} required className="sm:col-span-2"
-            help={domain ? t('Must be an address on {domain}. KynexOne never creates mailboxes.', { domain }) : t('Their existing company email. KynexOne never creates mailboxes.')}>
-            {control => <input {...control} type="email" dir="ltr" className="input w-full" autoComplete="off" readOnly={readOnly} value={admin.email ?? ''} onChange={e => set({ email: e.target.value.trim() })} />}
+            help={publicHost
+              ? <span className="font-medium text-amber-800 dark:text-amber-200">{t('{domain} is a public email service. Use the person’s company email; KynexOne never creates mailboxes.', { domain: publicHost })}</span>
+              : domain ? t('Must be an address on {domain}. Type just the name and @{domain} is added for you.', { domain }) : t('Their existing company email. KynexOne never creates mailboxes.')}>
+            {control => <input {...control} type="email" dir="ltr" spellCheck={false} autoCapitalize="none" className="input w-full" autoComplete="off" readOnly={readOnly}
+              placeholder={domain ? `name@${domain}` : 'name@company.sa'} value={admin.email ?? ''}
+              onChange={e => set({ email: e.target.value.trim() })}
+              onBlur={() => { const done = completeEmail(admin.email ?? '', domain); if (done !== (admin.email ?? '')) set({ email: done }); }} />}
           </WizardField>
         </div>
       )}

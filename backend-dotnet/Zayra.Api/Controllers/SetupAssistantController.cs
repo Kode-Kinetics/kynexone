@@ -258,14 +258,16 @@ public class SetupAssistantController : ControllerBase
             ? chosenBranch : null;
 
         // ── Org: departments → grades/pay scale → cost centers → designations ─
-        var existingDept = await _db.Departments.Where(x => x.TenantId == tenantId)
+        // Addendum B: these rows belong to the reviewed company; codes are matched within it.
+        Guid? orgCompanyId = company?.Id;
+        var existingDept = await _db.Departments.Where(x => x.TenantId == tenantId && x.CompanyId == orgCompanyId)
             .ToDictionaryAsync(x => x.Code.ToUpper(), x => x.Id, ct);
-        var deptEntities = await _db.Departments.Where(x => x.TenantId == tenantId)
+        var deptEntities = await _db.Departments.Where(x => x.TenantId == tenantId && x.CompanyId == orgCompanyId)
             .ToDictionaryAsync(x => x.Code.ToUpper(), ct);
         foreach (var dep in d.Departments)
         {
             if (existingDept.ContainsKey(dep.Code.ToUpper())) continue;
-            var entity = new Department { TenantId = tenantId, BranchId = defaultBranch?.Id, Code = OrgCodes.Normalize(dep.Code), NameEn = dep.NameEn, IsActive = true, CreatedBy = GetUserId() };
+            var entity = new Department { TenantId = tenantId, CompanyId = orgCompanyId, BranchId = defaultBranch?.Id, Code = OrgCodes.Normalize(dep.Code), NameEn = dep.NameEn, IsActive = true, CreatedBy = GetUserId() };
             _db.Departments.Add(entity);
             Audit("organization.department_created", nameof(Department), entity.Id, dep.Code);
             existingDept[dep.Code.ToUpper()] = entity.Id;
@@ -273,7 +275,7 @@ public class SetupAssistantController : ControllerBase
             Bump("departments", 1);
         }
 
-        var gradeByCode = await _db.Grades.Where(x => x.TenantId == tenantId)
+        var gradeByCode = await _db.Grades.Where(x => x.TenantId == tenantId && x.CompanyId == orgCompanyId)
             .ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
         foreach (var g in d.Grades)
         {
@@ -300,6 +302,7 @@ public class SetupAssistantController : ControllerBase
                 var grade = new Grade
                 {
                     TenantId = tenantId,
+                    CompanyId = orgCompanyId,
                     Code = OrgCodes.Normalize(g.Code),
                     Name = g.Name,
                     Band = g.Band,
@@ -359,7 +362,8 @@ public class SetupAssistantController : ControllerBase
             Bump("gradePayComponents", 1);
         }
 
-        var costCenterByCode = await _db.CostCenters.Where(x => x.TenantId == tenantId && !x.IsDeleted)
+        // Cost centres are per company (owner decision 2026-10-23): codes are matched within the reviewed company.
+        var costCenterByCode = await _db.CostCenters.Where(x => x.TenantId == tenantId && x.CompanyId == orgCompanyId && !x.IsDeleted)
             .ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
         foreach (var cc in d.CostCenters)
         {
@@ -373,7 +377,7 @@ public class SetupAssistantController : ControllerBase
             Bump("costCenters", 1);
         }
 
-        var existingDesig = (await _db.Designations.Where(x => x.TenantId == tenantId)
+        var existingDesig = (await _db.Designations.Where(x => x.TenantId == tenantId && x.CompanyId == orgCompanyId)
             .Select(x => x.Code).ToListAsync(ct)).Select(c => c.ToUpper()).ToHashSet();
         foreach (var ds in d.Designations)
         {
@@ -382,7 +386,7 @@ public class SetupAssistantController : ControllerBase
             Guid? gradeId = !string.IsNullOrWhiteSpace(ds.GradeCode) && gradeByCode.TryGetValue(ds.GradeCode.ToUpperInvariant(), out var g) ? g.Id : null;
             var designation = new Designation
             {
-                TenantId = tenantId, Code = OrgCodes.Normalize(ds.Code), TitleEn = ds.TitleEn, DepartmentId = deptId,
+                TenantId = tenantId, CompanyId = orgCompanyId, Code = OrgCodes.Normalize(ds.Code), TitleEn = ds.TitleEn, DepartmentId = deptId,
                 GradeId = gradeId, JobGrade = ds.GradeCode, JobLevel = ds.JobLevel, IsManagerRole = ds.IsManagerRole, LevelRank = ds.LevelRank, IsActive = true,
                 CreatedBy = GetUserId(),
             };
@@ -394,18 +398,20 @@ public class SetupAssistantController : ControllerBase
         // ── Leave types ──────────────────────────────────────────────────────
         // Keyed by code and kept, not discarded: the entitlement policies below attach to a leave
         // type by id, and a type added in this same unit of work has no id in the database yet.
-        var leaveByCode = await _db.LeaveTypes.Where(x => x.TenantId == tenantId)
-            .ToDictionaryAsync(x => x.Code.ToUpperInvariant(), ct);
+        // Leave types are per company (2026-10-23): the company's own, plus unassigned legacy rows it has no own code for.
+        var leaveByCode = Zayra.Api.Infrastructure.Leave.LeaveCompanyScope.ByCodeFor(
+            await _db.LeaveTypes.Where(x => x.TenantId == tenantId && (x.CompanyId == orgCompanyId || x.CompanyId == null)).ToListAsync(ct),
+            orgCompanyId);
         foreach (var lt in d.LeaveTypes)
         {
-            if (leaveByCode.ContainsKey(lt.Code.ToUpperInvariant())) continue;
+            if (leaveByCode.ContainsKey(lt.Code.Trim().ToUpperInvariant())) continue;
             var leaveType = new LeaveType
             {
-                TenantId = tenantId, Code = lt.Code, NameEn = lt.NameEn, Category = lt.Category, IsPaid = lt.IsPaid,
+                TenantId = tenantId, CompanyId = orgCompanyId, Code = lt.Code, NameEn = lt.NameEn, Category = lt.Category, IsPaid = lt.IsPaid,
                 MaxConsecutiveDays = lt.MaxConsecutiveDays, RequiresAttachment = lt.RequiresAttachment, ColorCode = lt.ColorCode, IsActive = true,
             };
             _db.LeaveTypes.Add(leaveType);
-            leaveByCode[lt.Code.ToUpperInvariant()] = leaveType;
+            leaveByCode[lt.Code.Trim().ToUpperInvariant()] = leaveType;
             Bump("leaveTypes", 1);
         }
 
@@ -417,7 +423,7 @@ public class SetupAssistantController : ControllerBase
         var savedEligibility = await _db.LeavePolicyEligibilities.Where(x => x.TenantId == tenantId && x.IsActive).ToListAsync(ct);
         foreach (var lp in d.LeavePolicies)
         {
-            var leaveType = leaveByCode[lp.LeaveTypeCode.ToUpperInvariant()];
+            var leaveType = leaveByCode[lp.LeaveTypeCode.Trim().ToUpperInvariant()];
             var policyName = string.IsNullOrWhiteSpace(lp.Name) ? $"{leaveType.NameEn} Policy" : lp.Name.Trim();
             Guid? gradeId = string.IsNullOrWhiteSpace(lp.GradeCode) ? null : gradeByCode[lp.GradeCode.ToUpperInvariant()].Id;
             Guid? departmentId = string.IsNullOrWhiteSpace(lp.DepartmentCode) ? null : existingDept[lp.DepartmentCode.ToUpperInvariant()];
@@ -923,6 +929,7 @@ public class SetupAssistantController : ControllerBase
     {
         var errors = new List<string>();
         var d = req.Draft;
+        Guid? orgCompanyId = company?.Id; // Addendum B: grade/department codes resolve within the reviewed company
         if (d.LeavePolicies.Count > 0 && string.IsNullOrWhiteSpace(req.LegalEntityName))
             errors.Add("Leave policies require an explicit reviewed legal entity.");
         if (company is null && req.CompanyId.HasValue)
@@ -948,12 +955,14 @@ public class SetupAssistantController : ControllerBase
                 || !string.Equals(company.DefaultCurrency, req.CurrencyCode, StringComparison.OrdinalIgnoreCase))
                 errors.Add("The reviewed country and currency must match the selected legal entity before applying its policies.");
         }
-        var grades = (await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId && g.IsActive)
+        var grades = (await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId && g.CompanyId == orgCompanyId && g.IsActive)
             .Select(g => g.Code).ToListAsync(ct)).Concat(d.Grades.Select(g => g.Code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var departments = await _db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive)
+        var departments = await _db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId && x.CompanyId == orgCompanyId && x.IsActive)
             .Select(x => new { x.Code, x.BranchId }).ToListAsync(ct);
         var departmentCodes = departments.Select(x => x.Code).Concat(d.Departments.Select(x => x.Code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var types = (await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId && t.IsActive)
+        var leaveCompanyId = company?.Id;
+        var types = (await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId && t.IsActive
+                && (t.CompanyId == leaveCompanyId || t.CompanyId == null))
             .Select(t => t.Code).ToListAsync(ct)).Concat(d.LeaveTypes.Select(t => t.Code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var savedBranches = await _db.Branches.AsNoTracking().Where(b => b.TenantId == tenantId && !b.IsDeleted)
             .Select(b => new { b.Id, b.CompanyId, b.Code }).ToListAsync(ct);
@@ -981,12 +990,15 @@ public class SetupAssistantController : ControllerBase
         {
             var saved = await _db.LeavePolicies.AsNoTracking().Where(p => p.TenantId == tenantId && p.CompanyId == company.Id).ToListAsync(ct);
             var eligibility = await _db.LeavePolicyEligibilities.AsNoTracking().Where(e => e.TenantId == tenantId && e.IsActive).ToListAsync(ct);
-            var typeIds = await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId).ToDictionaryAsync(t => t.Code.ToUpper(), t => t.Id, ct);
-            var gradeIds = await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId).ToDictionaryAsync(g => g.Code.ToUpper(), g => g.Id, ct);
-            var departmentIds = await _db.Departments.AsNoTracking().Where(g => g.TenantId == tenantId).ToDictionaryAsync(g => g.Code.ToUpper(), g => g.Id, ct);
+            var typeIds = Zayra.Api.Infrastructure.Leave.LeaveCompanyScope.ByCodeFor(
+                    await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId && (t.CompanyId == company.Id || t.CompanyId == null)).ToListAsync(ct),
+                    company.Id)
+                .ToDictionary(kv => kv.Key, kv => kv.Value.Id);
+            var gradeIds = await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId && g.CompanyId == orgCompanyId).ToDictionaryAsync(g => g.Code.ToUpper(), g => g.Id, ct);
+            var departmentIds = await _db.Departments.AsNoTracking().Where(g => g.TenantId == tenantId && g.CompanyId == orgCompanyId).ToDictionaryAsync(g => g.Code.ToUpper(), g => g.Id, ct);
             foreach (var policy in d.LeavePolicies)
             {
-                if (!typeIds.TryGetValue(policy.LeaveTypeCode.ToUpperInvariant(), out var typeId)) continue;
+                if (!typeIds.TryGetValue(policy.LeaveTypeCode.Trim().ToUpperInvariant(), out var typeId)) continue;
                 Guid? gradeId = !string.IsNullOrEmpty(policy.GradeCode) && gradeIds.TryGetValue(policy.GradeCode.ToUpperInvariant(), out var g) ? g : null;
                 Guid? departmentId = !string.IsNullOrEmpty(policy.DepartmentCode) && departmentIds.TryGetValue(policy.DepartmentCode.ToUpperInvariant(), out var dep) ? dep : null;
                 // A new grade/department cannot match an existing unscoped policy.
@@ -1032,7 +1044,7 @@ public class SetupAssistantController : ControllerBase
         if (!preview && d.GradePayComponents.Count > 0 && !await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId, ct))
         {
             var savedComponents = await _db.GradePayScaleComponents.AsNoTracking().Where(c => c.TenantId == tenantId)
-                .Join(_db.Grades.Where(g => g.TenantId == tenantId), c => c.GradeId, g => g.Id, (c, g) => new { Component = c, GradeCode = g.Code }).ToListAsync(ct);
+                .Join(_db.Grades.Where(g => g.TenantId == tenantId && g.CompanyId == orgCompanyId), c => c.GradeId, g => g.Id, (c, g) => new { Component = c, GradeCode = g.Code }).ToListAsync(ct);
             foreach (var component in d.GradePayComponents)
             {
                 var existing = savedComponents.FirstOrDefault(c => string.Equals(c.GradeCode, component.GradeCode, StringComparison.OrdinalIgnoreCase)
@@ -1122,7 +1134,7 @@ public class SetupAssistantController : ControllerBase
                 DateOnly? end = string.IsNullOrEmpty(benefit.EffectiveTo) ? null : DateOnly.ParseExact(benefit.EffectiveTo, "yyyy-MM-dd", CultureInfo.InvariantCulture);
                 var savedGrades = await _db.BenefitEligibilityRules.AsNoTracking()
                     .Where(r => r.TenantId == tenantId && r.BenefitPlanId == existing.Id && r.IsActive && r.GradeId.HasValue)
-                    .Join(_db.Grades.Where(g => g.TenantId == tenantId), r => r.GradeId, g => (Guid?)g.Id, (r, g) => g.Code)
+                    .Join(_db.Grades.Where(g => g.TenantId == tenantId && g.CompanyId == orgCompanyId), r => r.GradeId, g => (Guid?)g.Id, (r, g) => g.Code)
                     .ToListAsync(ct);
                 var savedRules = await _db.BenefitEligibilityRules.AsNoTracking()
                     .Where(r => r.TenantId == tenantId && r.BenefitPlanId == existing.Id && r.IsActive).ToListAsync(ct);
@@ -1266,11 +1278,13 @@ public class SetupAssistantController : ControllerBase
         if (d.LeaveTypes.Count == 0 && d.LeavePolicies.Count == 0) return null;
         var violations = new List<string>();
 
+        // Within the reviewed company (leave types are per company); its own row of a code wins over a legacy one.
         var existing = await _db.LeaveTypes.AsNoTracking()
-            .Where(x => x.TenantId == tenantId)
-            .Select(x => new { x.Id, x.Code, x.NameEn, x.Category, x.IsPaid, x.MaxConsecutiveDays })
+            .Where(x => x.TenantId == tenantId && (req.CompanyId == null || x.CompanyId == req.CompanyId || x.CompanyId == null))
+            .Select(x => new { x.Id, x.CompanyId, x.Code, x.NameEn, x.Category, x.IsPaid, x.MaxConsecutiveDays })
             .ToListAsync(ct);
         var existingByCode = existing
+            .OrderBy(x => x.CompanyId == null).ThenBy(x => x.Id)
             .GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var draftByCode = d.LeaveTypes

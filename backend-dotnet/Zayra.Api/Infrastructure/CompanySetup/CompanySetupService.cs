@@ -44,7 +44,7 @@ public sealed record CompanySetupOutcome<T>(int Status, T? Value, object? Error 
 public sealed class CompanySetupService
 {
     internal static readonly JsonSerializerOptions BodyJson = new(JsonSerializerDefaults.Web);
-    private const string Why = "Create-company wizard: the tenant's company register, shared catalog and drafts are read across every legal entity of the tenant whatever company the caller's switcher selects.";
+    private const string Why = "Create-company wizard: the tenant's company register, organisation codes and drafts are read across every legal entity of the tenant whatever company the caller's switcher selects.";
     public const string SetupCreatedAction = "company.setup_created";
     /// <summary>Addendum A6: the commit marker of an existing-company completion (counts by action).</summary>
     public const string SetupCompletedAction = "company.setup_completed";
@@ -96,17 +96,6 @@ public sealed class CompanySetupService
                 .OrderBy(c => c.LegalNameEn)
                 .Select(c => new CompanySetupSisterCompany(c.Id, c.LegalNameEn, c.CountryCode)).ToListAsync(ct)
             : [];
-        var departments = await ScopedBypass.TenantWide(_db.Departments, tenantId, Why).AsNoTracking()
-            .Where(d => !d.IsDeleted && d.IsActive).OrderBy(d => d.Code)
-            .Select(d => new CodeName(d.Code, d.NameEn, d.NameAr == "" ? null : d.NameAr)).ToListAsync(ct);
-        var designations = await ScopedBypass.TenantWide(_db.Designations, tenantId, Why).AsNoTracking()
-            .Where(d => !d.IsDeleted && d.IsActive).OrderBy(d => d.Code)
-            .Select(d => new CodeName(d.Code, d.TitleEn, d.TitleAr == "" ? null : d.TitleAr)).ToListAsync(ct);
-        var grades = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking()
-            .Where(g => !g.IsDeleted && g.IsActive).OrderBy(g => g.Level).ThenBy(g => g.Code)
-            .Select(g => new GradeRef(g.Code, g.Name, g.NameAr, g.Currency)).ToListAsync(ct);
-        var gradesCurrency = grades.GroupBy(g => g.Currency).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
-
         return new CompanySetupContext(
             canCreate, code, message,
             tenant?.CompanyCreationMode ?? string.Empty,
@@ -115,8 +104,9 @@ public sealed class CompanySetupService
             sub is { MaxCompanies: > 0 } ? sub.MaxCompanies : null,
             caller.IsGroupScope,
             sisters,
-            new CompanySetupSharedCatalog(departments, designations, grades),
-            gradesCurrency,
+            // Addendum B: no shared group catalog and no workspace grade currency — every company owns its own rows.
+            SharedCatalog: null,
+            GradesCurrency: null,
             canGrantCompanyAdmin) { ManageableCompanies = manageable };
     }
 
@@ -189,27 +179,14 @@ public sealed class CompanySetupService
         }
         var country = CountryCodeStandard.NormalizeToIso2(string.IsNullOrWhiteSpace(countryCode) ? sister?.CountryCode : countryCode);
         if (country is null)
-            return CompanySetupOutcome<CompanySetupDraftBody>.Fail(400, "country_invalid", "Choose the company's country (ISO code, for example SA).",
-                "اختر دولة الشركة.", "company.countryCode", 2);
+            return CompanySetupOutcome<CompanySetupDraftBody>.Fail(400, "country_invalid", CompanySetupDataEntry.CountryInvalidMessage,
+                CompanySetupDataEntry.CountryInvalidMessageAr, "company.countryCode", 2);
         var currency = HomeJurisdiction.CurrencyFor(country);
 
-        var gradeCurrency = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking()
-            .Where(g => !g.IsDeleted && g.IsActive).GroupBy(g => g.Currency).OrderByDescending(g => g.Count())
-            .Select(g => g.Key).FirstOrDefaultAsync(ct);
-        var template = SetupAssistantService.DeterministicCompanyDefaults(country, gradeCurrency ?? currency, null);
+        // Addendum B: grade bands are in the company's own currency.
+        var template = SetupAssistantService.DeterministicCompanyDefaults(country, currency, null);
         var resolved = await _workWeek.ResolveAsync(tenantId, null, country, ct);
         var weekend = CompanySetupPack.FormatWeekend(resolved.WeekendDays);
-
-        var usedCostCentres = (await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking()
-            .Select(x => x.Code).ToListAsync(ct)).Select(OrgCodes.Normalize).ToHashSet(StringComparer.Ordinal);
-        string UniqueCostCentre(string code)
-        {
-            var baseCode = OrgCodes.Normalize(code);
-            var candidate = baseCode;
-            for (var n = 2; usedCostCentres.Contains(candidate); n++) candidate = $"{baseCode}-{n}";
-            usedCostCentres.Add(candidate);
-            return candidate;
-        }
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var firstPayrollMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(1).ToString("yyyy-MM", CultureInfo.InvariantCulture);
@@ -221,51 +198,63 @@ public sealed class CompanySetupService
 
         List<CompanySetupBranch> branches;
         List<CompanySetupCostCentre> costCentres;
+        List<CompanySetupDepartment> departments;
+        List<CompanySetupDesignation> designations;
+        List<CompanySetupGrade> grades;
         var idRule = template.EmployeeIdRule!;
         CompanySetupEmployeeNumbering numbering = new(idRule.CompanyPrefix, idRule.UseCountryPrefix, idRule.UseBranchPrefix,
             idRule.UseDepartmentPrefix, idRule.UseYear, idRule.PaddingLength, 1);
         var holidayUsePack = template.HolidayCalendar is not null;
         var workWeek = new CompanySetupWorkWeek(weekend, Override: false);
-        List<CompanySetupDepartment> departments;
 
         if (sister is null)
         {
+            // A new company has no rows of its own, so the whole pack is proposed, linked within itself.
             branches = template.Branches.Select(b => new CompanySetupBranch(OrgCodes.Normalize(b.Code), b.NameEn, null, b.City,
                 HomeJurisdiction.TimeZoneFor(country), b.IsHeadOffice, [])).ToList();
-            var ccByDept = template.CostCenters.ToDictionary(cc => OrgCodes.Normalize(cc.DepartmentCode), cc => UniqueCostCentre(cc.Code), StringComparer.Ordinal);
+            // Codes are unique within a company, and a new company has none yet: the pack's codes as they are.
+            var usedCostCentres = new HashSet<string>(StringComparer.Ordinal);
+            var ccByDept = template.CostCenters.ToDictionary(cc => OrgCodes.Normalize(cc.DepartmentCode),
+                cc => CompanySetupRows.Unique(usedCostCentres, cc.Code), StringComparer.Ordinal);
             costCentres = template.CostCenters.Select(cc => new CompanySetupCostCentre(ccByDept[OrgCodes.Normalize(cc.DepartmentCode)], cc.Name, null)).ToList();
-            // A template department the group already has is reused as it is (Decision 7), so it carries no links here.
-            var existingDepartments = (await ScopedBypass.TenantWide(_db.Departments, tenantId, Why).AsNoTracking()
-                .Select(x => x.Code).ToListAsync(ct)).Select(OrgCodes.Normalize).ToHashSet(StringComparer.Ordinal);
             var headOfficeCode = OrgCodes.Normalize(template.Branches.FirstOrDefault(b => b.IsHeadOffice)?.Code);
-            departments = template.Departments.Select(d => OrgCodes.Normalize(d.Code)).Select(code => existingDepartments.Contains(code)
-                ? new CompanySetupDepartment(code, template.Departments.First(x => OrgCodes.Normalize(x.Code) == code).NameEn, null, null, null, null)
-                : new CompanySetupDepartment(code, template.Departments.First(x => OrgCodes.Normalize(x.Code) == code).NameEn, null, null,
-                    headOfficeCode, ccByDept.GetValueOrDefault(code))).ToList();
+            departments = template.Departments.Select(d => OrgCodes.Normalize(d.Code)).Distinct(StringComparer.Ordinal)
+                .Select(code => new CompanySetupDepartment(code, template.Departments.First(x => OrgCodes.Normalize(x.Code) == code).NameEn, null, null,
+                    headOfficeCode.Length == 0 ? null : headOfficeCode, ccByDept.GetValueOrDefault(code))).ToList();
+            grades = template.Grades.Select(g => new CompanySetupGrade(OrgCodes.Normalize(g.Code), g.Name, null, g.Level, g.MinSalary, g.MidSalary, g.MaxSalary)).ToList();
+            designations = template.Designations.Select(d => new CompanySetupDesignation(OrgCodes.Normalize(d.Code), d.TitleEn, null,
+                OrgCodes.Normalize(d.DepartmentCode), OrgCodes.Normalize(d.GradeCode))).ToList();
         }
         else
         {
-            // Decision 8: branches (renamed codes), cost centres (renamed codes), the ID-rule shape, the holiday
-            // calendar and the leave-policy selection, copied into the draft for editing.
+            // Decision 8 + Addendum B3: everything is copied BY VALUE into the draft for editing — branches with renamed
+            // codes, the sister's cost centres, departments, designations and grades with their own codes (every
+            // organisation code is per company), links kept by code. Nothing is shared by reference.
             var sisterBranches = await _db.Branches.AsNoTracking()
                 .Where(b => b.TenantId == tenantId && b.CompanyId == sister.Id && !b.IsDeleted && b.IsActive)
                 .OrderByDescending(b => b.IsHeadOffice).ThenBy(b => b.Code).ToListAsync(ct);
             var branchCodes = new HashSet<string>(StringComparer.Ordinal);
+            var branchRename = new Dictionary<string, string>(StringComparer.Ordinal);
             string RenameBranch(string code)
             {
                 var baseCode = OrgCodes.Normalize(code);
                 var candidate = $"{baseCode}-2";
                 for (var n = 3; !branchCodes.Add(candidate); n++) candidate = $"{baseCode}-{n}";
+                branchRename[baseCode] = candidate;
                 return candidate;
             }
             branches = sisterBranches.Select(b => new CompanySetupBranch(RenameBranch(b.Code), b.NameEn, b.NameAr == "" ? null : b.NameAr, b.City,
                 string.IsNullOrWhiteSpace(b.TimeZoneId) ? HomeJurisdiction.TimeZoneFor(country) : b.TimeZoneId, b.IsHeadOffice, [])).ToList();
             if (branches.Count > 0 && branches.Count(b => b.IsHeadOffice) != 1)
                 branches = branches.Select((b, i) => b with { IsHeadOffice = i == 0 }).ToList();
-            costCentres = (await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking()
-                    .Where(cc => cc.CompanyId == sister.Id && !cc.IsDeleted && cc.IsActive).OrderBy(cc => cc.Code).ToListAsync(ct))
-                .Select(cc => new CompanySetupCostCentre(UniqueCostCentre(cc.Code), cc.Name, null)).ToList();
-            departments = [];
+            var rows = await SisterRowsAsync(tenantId, sister.Id, ct);
+            costCentres = rows.CostCentres;
+            departments = rows.Departments.Select(d => d with
+            {
+                BranchCode = d.BranchCode is { } b && branchRename.TryGetValue(b, out var nb) ? nb : null,
+            }).ToList();
+            designations = rows.Designations;
+            grades = rows.Grades;
             var sisterRule = await ScopedBypass.TenantWide(_db.EmployeeIdRules, tenantId, Why).AsNoTracking()
                 .FirstOrDefaultAsync(r => r.CompanyId == sister.Id && !r.IsDeleted, ct);
             if (sisterRule is not null)
@@ -277,17 +266,6 @@ public sealed class CompanySetupService
             var sisterOverrides = sisterWeek.Source == "gcc:company";
             workWeek = new CompanySetupWorkWeek(CompanySetupPack.FormatWeekend(sisterWeek.WeekendDays),
                 Override: sisterOverrides && !sisterWeek.WeekendDays.SetEquals(resolved.WeekendDays));
-        }
-
-        var grades = template.Grades.Select(g => new CompanySetupGrade(OrgCodes.Normalize(g.Code), g.Name, null, g.Level, g.MinSalary, g.MidSalary, g.MaxSalary)).ToList();
-        var designations = template.Designations.Select(d => new CompanySetupDesignation(OrgCodes.Normalize(d.Code), d.TitleEn, null,
-            OrgCodes.Normalize(d.DepartmentCode), OrgCodes.Normalize(d.GradeCode))).ToList();
-        if (sister is not null)
-        {
-            // The shared catalog is shared: a copy reuses what the group already has rather than proposing the template.
-            departments = [];
-            designations = [];
-            grades = [];
         }
 
         var body = new CompanySetupDraftBody(
@@ -307,8 +285,9 @@ public sealed class CompanySetupService
     /// <summary>
     /// Addendum A2: <c>GET /defaults?existingCompanyId=</c> — a body built from what the company HAS today, every existing
     /// row carrying its <c>existingId</c>, so a round trip with no edits plans nothing but <c>unchanged</c>/<c>reuse</c>.
-    /// What the company lacks is filled from the country pack exactly as on create, and carries no id (it is new). For a
-    /// company super admin, pack rows that would ADD to the shared group catalog are left out (only group scope adds them).
+    /// What the company lacks is filled from the country pack exactly as on create, and carries no id (it is new).
+    /// Addendum B: departments, designations and grades are the company's OWN rows (with existingId and an A9 baseline), and a
+    /// company super admin may add to them like a group admin.
     /// </summary>
     public async Task<CompanySetupOutcome<CompanySetupDraftBody>> GetExistingDefaultsAsync(CompanySetupCaller caller, Guid companyId, CancellationToken ct)
     {
@@ -320,10 +299,7 @@ public sealed class CompanySetupService
         var currency = company.DefaultCurrency.Trim().ToUpperInvariant();
         static string? B(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
 
-        var gradeCurrency = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking()
-            .Where(g => !g.IsDeleted && g.IsActive).GroupBy(g => g.Currency).OrderByDescending(g => g.Count())
-            .Select(g => g.Key).FirstOrDefaultAsync(ct);
-        var template = SetupAssistantService.DeterministicCompanyDefaults(country, gradeCurrency ?? currency, null);
+        var template = SetupAssistantService.DeterministicCompanyDefaults(country, currency, null);
         var packTz = HomeJurisdiction.TimeZoneFor(country);
 
         // Branches and their locations (active rows; removed or inactive ones are managed in Setup).
@@ -341,90 +317,72 @@ public sealed class CompanySetupService
         if (branches.Count == 0)
             branches = template.Branches.Select(b => new CompanySetupBranch(OrgCodes.Normalize(b.Code), b.NameEn, null, b.City, packTz, b.IsHeadOffice, [])).ToList();
 
-        // Cost centres: the company's own; the pack's (renamed past any code in use) when it has none.
-        var ccRows = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking()
-            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.IsActive).OrderBy(x => x.Code).ToListAsync(ct);
-        var costCentres = ccRows.Select(x => new CompanySetupCostCentre(OrgCodes.Normalize(x.Code), x.Name, null, x.Id, CompanySetupBaseline.CostCentre(x))).ToList();
+        // Addendum B: the company's OWN organisation rows (cost centres, departments, designations, grades), each with its
+        // existingId and A9 baseline. A section the company has nothing in yet is filled from the country pack as new rows.
+        var org = await CompanySetupRows.CompanyRowsAsync(_db, tenantId, companyId, ct);
+        var maps = await CompanySetupRows.CodeMapsAsync(_db, tenantId, ct);
+        var costCentres = org.CostCentres.Where(x => !x.IsDeleted && x.IsActive).Select(CompanySetupRows.CostCentre).ToList();
         var ccByTemplateDept = new Dictionary<string, string>(StringComparer.Ordinal);
         if (costCentres.Count == 0)
         {
-            var used = (await ScopedBypass.TenantWide(_db.CostCenters, tenantId, Why).AsNoTracking().Select(x => x.Code).ToListAsync(ct))
-                .Select(OrgCodes.Normalize).ToHashSet(StringComparer.Ordinal);
+            // Codes are unique within the company: a pack code steps past the company's own codes only (removed ones too).
+            var used = org.CostCentres.Select(x => OrgCodes.Normalize(x.Code)).ToHashSet(StringComparer.Ordinal);
             foreach (var cc in template.CostCenters)
             {
-                var baseCode = OrgCodes.Normalize(cc.Code);
-                var candidate = baseCode;
-                for (var n = 2; used.Contains(candidate); n++) candidate = $"{baseCode}-{n}";
-                used.Add(candidate);
+                var candidate = CompanySetupRows.Unique(used, cc.Code);
                 ccByTemplateDept[OrgCodes.Normalize(cc.DepartmentCode)] = candidate;
                 costCentres.Add(new CompanySetupCostCentre(candidate, cc.Name, null));
             }
         }
 
-        // The shared-catalog rows the company uses: referenced by its branches, its cost centres or its employees.
-        var companyBranchIds = branchRows.Select(b => (Guid?)b.Id).ToList();
-        var companyCcIds = ccRows.Select(x => (Guid?)x.Id).ToList();
-        // The ordinary filtered read: the company is within this request's scope (AuthorizeExistingAsync above).
-        var used3 = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.CompanyId == companyId && !e.IsDeleted)
-            .Select(e => new { e.DepartmentId, e.DesignationId, e.GradeId }).Distinct().ToListAsync(ct);
-        var employeeDepartmentIds = used3.Where(x => x.DepartmentId != null).Select(x => x.DepartmentId).Distinct().ToList();
-        var allDepartments = await ScopedBypass.TenantWide(_db.Departments, tenantId, Why).AsNoTracking().Where(d => !d.IsDeleted).ToListAsync(ct);
-        var deptCode = allDepartments.ToDictionary(d => d.Id, d => OrgCodes.Normalize(d.Code));
-        var branchCodeOf = branchRows.ToDictionary(b => b.Id, b => OrgCodes.Normalize(b.Code));
-        var ccCodeOf = ccRows.ToDictionary(x => x.Id, x => OrgCodes.Normalize(x.Code));
-        var usedDepartments = allDepartments
-            .Where(d => d.IsActive && (companyBranchIds.Contains(d.BranchId) || companyCcIds.Contains(d.CostCenterId) || employeeDepartmentIds.Contains(d.Id)))
-            .OrderBy(d => d.Code).ToList();
-        var departments = usedDepartments.Select(d => new CompanySetupDepartment(OrgCodes.Normalize(d.Code), d.NameEn, B(d.NameAr),
-            d.ParentDepartmentId is Guid p && deptCode.TryGetValue(p, out var pc) ? pc : null,
-            d.BranchId is Guid bid && branchCodeOf.TryGetValue(bid, out var bc) ? bc : null,
-            d.CostCenterId is Guid cid && ccCodeOf.TryGetValue(cid, out var cc2) ? cc2 : null, d.Id)).ToList();
+        var departments = org.Departments.Where(d => !d.IsDeleted && d.IsActive).Select(d => CompanySetupRows.Department(d, maps)).ToList();
+        var grades = org.Grades.Where(g => !g.IsDeleted && g.IsActive).Select(CompanySetupRows.Grade).ToList();
+        var designations = org.Designations.Where(d => !d.IsDeleted && d.IsActive).Select(d => CompanySetupRows.Designation(d, maps)).ToList();
 
-        // Designations: those its employees hold, and those of the departments it uses.
-        var designationIds = used3.Where(x => x.DesignationId != null).Select(x => x.DesignationId!.Value).Distinct().ToList();
-        var usedDepartmentIds = usedDepartments.Select(d => (Guid?)d.Id).ToList();
-        var designationRows = await ScopedBypass.TenantWide(_db.Designations, tenantId, Why).AsNoTracking()
-            .Where(d => !d.IsDeleted && d.IsActive && (designationIds.Contains(d.Id) || usedDepartmentIds.Contains(d.DepartmentId)))
-            .OrderBy(d => d.Code).ToListAsync(ct);
-        var gradeIds = used3.Where(x => x.GradeId != null).Select(x => x.GradeId!.Value)
-            .Concat(designationRows.Where(d => d.GradeId != null).Select(d => d.GradeId!.Value)).Distinct().ToList();
-        var allGrades = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking().Where(g => !g.IsDeleted).ToListAsync(ct);
-        var gradeCodeOf = allGrades.ToDictionary(g => g.Id, g => OrgCodes.Normalize(g.Code));
-        var designations = designationRows.Select(d => new CompanySetupDesignation(OrgCodes.Normalize(d.Code), d.TitleEn, B(d.TitleAr),
-            d.DepartmentId is Guid dd && deptCode.TryGetValue(dd, out var dc) ? dc : null,
-            d.GradeId is Guid gg && gradeCodeOf.TryGetValue(gg, out var gc) ? gc : null, d.Id)).ToList();
-        var grades = allGrades.Where(g => g.IsActive && gradeIds.Contains(g.Id)).OrderBy(g => g.Level).ThenBy(g => g.Code)
-            .Select(g => new CompanySetupGrade(OrgCodes.Normalize(g.Code), g.Name, B(g.NameAr), g.Level, g.MinSalary, g.MidSalary, g.MaxSalary, g.Id)).ToList();
-
-        // Nothing in use yet: the pack's rows, existing codes reused (with their id), new codes for group scope only.
-        var deptByCode = allDepartments.GroupBy(d => OrgCodes.Normalize(d.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        var gradeByCode = allGrades.GroupBy(g => OrgCodes.Normalize(g.Code)).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        var allDesignations = await ScopedBypass.TenantWide(_db.Designations, tenantId, Why).AsNoTracking().Where(d => !d.IsDeleted)
-            .Select(d => new { d.Id, d.Code }).ToListAsync(ct);
-        var designationByCode = allDesignations.GroupBy(d => OrgCodes.Normalize(d.Code)).ToDictionary(g => g.Key, g => g.First().Id, StringComparer.Ordinal);
-        var headOfficeCode = branches.FirstOrDefault(b => b.IsHeadOffice)?.Code;
+        // Pack rows: codes are unique within the company only, so a pack code steps past the company's own codes (removed
+        // rows included — they still hold theirs), and the pack's links follow the rename.
+        // Linked to the head office only when it is saved: a live save of Departments (B2) needs its links in the database.
+        var headOfficeCode = branches.FirstOrDefault(b => b.IsHeadOffice && b.ExistingId is not null)?.Code;
+        var deptRename = new Dictionary<string, string>(StringComparer.Ordinal);
+        var gradeRename = new Dictionary<string, string>(StringComparer.Ordinal);
         if (departments.Count == 0)
-            departments = template.Departments.Select(d => (d, code: OrgCodes.Normalize(d.Code)))
-                .Where(x => deptByCode.ContainsKey(x.code) || caller.IsGroupScope)
-                .Select(x => deptByCode.TryGetValue(x.code, out var row)
-                    ? new CompanySetupDepartment(x.code, row.NameEn, B(row.NameAr), null, null, null, row.Id)
-                    : new CompanySetupDepartment(x.code, x.d.NameEn, null, null, headOfficeCode, ccByTemplateDept.GetValueOrDefault(x.code))).ToList();
+        {
+            var used = org.Departments.Select(d => OrgCodes.Normalize(d.Code)).ToHashSet(StringComparer.Ordinal);
+            foreach (var d in template.Departments)
+            {
+                var code = OrgCodes.Normalize(d.Code);
+                if (deptRename.ContainsKey(code)) continue;
+                deptRename[code] = CompanySetupRows.Unique(used, code);
+                departments.Add(new CompanySetupDepartment(deptRename[code], d.NameEn, null, null, headOfficeCode, ccByTemplateDept.GetValueOrDefault(code)));
+            }
+        }
         if (grades.Count == 0)
-            grades = template.Grades.Select(g => (g, code: OrgCodes.Normalize(g.Code)))
-                .Where(x => gradeByCode.ContainsKey(x.code) || caller.IsGroupScope)
-                .Select(x => gradeByCode.TryGetValue(x.code, out var row)
-                    ? new CompanySetupGrade(x.code, row.Name, B(row.NameAr), row.Level, row.MinSalary, row.MidSalary, row.MaxSalary, row.Id)
-                    : new CompanySetupGrade(x.code, x.g.Name, null, x.g.Level, x.g.MinSalary, x.g.MidSalary, x.g.MaxSalary)).ToList();
-        // A pack designation is offered only when its department and grade will exist (in the body or the catalog).
-        var knownDepartments = departments.Select(d => d.Code).Concat(deptByCode.Keys).ToHashSet(StringComparer.Ordinal);
-        var knownGrades = grades.Select(g => g.Code).Concat(gradeByCode.Keys).ToHashSet(StringComparer.Ordinal);
+        {
+            var used = org.Grades.Select(g => OrgCodes.Normalize(g.Code)).ToHashSet(StringComparer.Ordinal);
+            foreach (var g in template.Grades)
+            {
+                var code = OrgCodes.Normalize(g.Code);
+                if (gradeRename.ContainsKey(code)) continue;
+                gradeRename[code] = CompanySetupRows.Unique(used, code);
+                grades.Add(new CompanySetupGrade(gradeRename[code], g.Name, null, g.Level, g.MinSalary, g.MidSalary, g.MaxSalary));
+            }
+        }
         if (designations.Count == 0)
-            designations = template.Designations.Select(d => (d, code: OrgCodes.Normalize(d.Code)))
-                .Where(x => designationByCode.ContainsKey(x.code)
-                    || (caller.IsGroupScope && knownDepartments.Contains(OrgCodes.Normalize(x.d.DepartmentCode)) && knownGrades.Contains(OrgCodes.Normalize(x.d.GradeCode))))
-                .Select(x => new CompanySetupDesignation(x.code, x.d.TitleEn, null, OrgCodes.Normalize(x.d.DepartmentCode), OrgCodes.Normalize(x.d.GradeCode),
-                    designationByCode.TryGetValue(x.code, out var id) ? id : null)).ToList();
+        {
+            // A pack designation is offered only when its department and grade will exist (in this body).
+            var knownDepartments = departments.Select(d => d.Code).ToHashSet(StringComparer.Ordinal);
+            var knownGrades = grades.Select(g => g.Code).ToHashSet(StringComparer.Ordinal);
+            var used = org.Designations.Select(d => OrgCodes.Normalize(d.Code)).ToHashSet(StringComparer.Ordinal);
+            foreach (var d in template.Designations)
+            {
+                var dept = OrgCodes.Normalize(d.DepartmentCode);
+                var grade = OrgCodes.Normalize(d.GradeCode);
+                dept = deptRename.GetValueOrDefault(dept, dept);
+                grade = gradeRename.GetValueOrDefault(grade, grade);
+                if (!knownDepartments.Contains(dept) || !knownGrades.Contains(grade)) continue;
+                designations.Add(new CompanySetupDesignation(CompanySetupRows.Unique(used, d.Code), d.TitleEn, null, dept, grade));
+            }
+        }
 
         // Work and pay rules: what the company has, else the pack.
         var rule = await ScopedBypass.TenantWide(_db.EmployeeIdRules, tenantId, Why).AsNoTracking()
@@ -661,6 +619,301 @@ public sealed class CompanySetupService
         [], [], [], [], [], new CompanySetupRules(new CompanySetupWorkWeek("", false), new(false), new(false),
             new CompanySetupEmployeeNumbering("EMP", true, false, true, true, 4, 1)),
         new CompanySetupCompanyAdmin(V.AdminGroupOnly, null, null, null, null));
+
+    // ── POST /drafts/{id}/sections/{section} (Addendum B2: live section save) ──────────────────────────
+
+    /// <summary>The marker audit of a live section save, and the witness its blind retry is answered from.</summary>
+    public const string SectionAppliedAction = "company.setup_section_applied";
+
+    private sealed record SectionCounts(int Created, int Updated, int Unchanged);
+    private sealed record SectionAppliedMarker(Guid DraftId, string Section, int FromVersion, SectionCounts Counts);
+
+    /// <summary>
+    /// Addendum B2. Writes ONE Organisation section of an existing-company draft now, through the same planner (focused on
+    /// that section: only its problems and the step-1 gates block, and a link into another section must already be
+    /// saved) and the same writers as the commit, under the tenant setup lock in one transaction. The draft is rebased in
+    /// place: each row of the section gets its <c>existingId</c> and a fresh A9 baseline (and the values now saved), the
+    /// other sections and the row order are untouched, version + 1, step 4 — so the final commit reads the saved section
+    /// as unchanged. A retry whose version is one behind and whose (draft, section, version) marker exists answers the
+    /// current draft with <c>replayed: true</c>; nothing is written twice.
+    /// </summary>
+    public async Task<CompanySetupOutcome<SectionApplyResult>> ApplySectionAsync(CompanySetupCaller caller, Guid draftId, string? section,
+        CompanySetupSectionApplyRequest? request, CancellationToken ct)
+    {
+        if (!V.Sections.IsValid(section))
+            return CompanySetupOutcome<SectionApplyResult>.Fail(400, "section_invalid",
+                $"Choose one of the sections {string.Join(", ", V.Sections.All)}.", "اختر قسماً صحيحاً من أقسام الهيكل التنظيمي.", "section", 4);
+        if (request is null) return CompanySetupOutcome<SectionApplyResult>.Fail(400, "body_required", "The draft version is required.", field: "version");
+        var tenantId = caller.TenantId;
+        var probe = await _db.CompanySetupDrafts.AsNoTracking().SingleOrDefaultAsync(d => d.TenantId == tenantId && d.Id == draftId, ct);
+        if (probe is null) return CompanySetupOutcome<SectionApplyResult>.Fail(404, "draft_not_found", "Draft not found.", "المسودة غير موجودة.");
+        var draftTarget = ReadBody(probe)?.ExistingCompanyId;
+        // A5, the same caller rules as the commit: a company super admin, for their own company's existing-mode draft only.
+        if (!caller.IsGroupScope)
+        {
+            if (draftTarget is null)
+                return CompanySetupOutcome<SectionApplyResult>.Fail(403, CompanySetupGates.GroupScopeRequiredCode, CompanySetupGates.GroupScopeRequiredMessage,
+                    CompanySetupGates.GroupScopeRequiredMessageAr, step: 1);
+            if (await Planner.ScopeRefusalAsync(caller, draftTarget.Value, null, ct) is { } scope)
+                return CompanySetupOutcome<SectionApplyResult>.Fail(scope.Status, scope.Code, scope.Message, scope.MessageAr, "existingCompanyId", 1);
+        }
+        if (draftTarget is not Guid companyId)
+            return CompanySetupOutcome<SectionApplyResult>.Fail(409, "section_apply_needs_company",
+                "A new company's rows are saved when you create the company. Live section saves are for an existing company.",
+                "تُحفظ بيانات الشركة الجديدة عند إنشائها. الحفظ المباشر للأقسام متاح لشركة قائمة فقط.", "existingCompanyId", 1);
+
+        var target = companyId;
+        CompanySetupOutcome<SectionApplyResult>? refusal = null;
+        SectionApplyResult? result = null;
+        async Task RunAsync()
+        {
+            _db.ChangeTracker.Clear();
+            refusal = null; result = null;
+            await SetupTenantLock.AcquireAsync(_db, tenantId, ct);
+            var draft = await _db.CompanySetupDrafts.SingleOrDefaultAsync(d => d.TenantId == tenantId && d.Id == draftId, ct);
+            if (draft is null) { refusal = CompanySetupOutcome<SectionApplyResult>.Fail(404, "draft_not_found", "Draft not found.", "المسودة غير موجودة."); return; }
+            if (draft.Status != CompanySetupDraftStatuses.Open)
+            {
+                refusal = CompanySetupOutcome<SectionApplyResult>.Fail(409, "draft_not_open",
+                    $"This draft is {draft.Status.ToLowerInvariant()} and can no longer be edited.", "لم تعد هذه المسودة قابلة للتعديل.");
+                return;
+            }
+            if (draft.Version != request.Version)
+            {
+                // A blind retry of a save that landed: the draft moved on by exactly this save.
+                if (draft.Version == request.Version + 1 && await SectionMarkerAsync(draft, section!, request.Version, ct) is { } done)
+                {
+                    result = new SectionApplyResult((await ToDtoAsync(draft, ct))!, section!, done.Counts.Created, done.Counts.Updated, done.Counts.Unchanged, Replayed: true);
+                    return;
+                }
+                refusal = new(409, default, new CompanySetupError("draft_version_stale",
+                    "This draft was saved somewhere else (another tab or device). Reload it to continue from the latest version.",
+                    "تم حفظ هذه المسودة في مكان آخر. أعد تحميلها للمتابعة من أحدث نسخة.", "version", 4) { CurrentVersion = draft.Version });
+                return;
+            }
+            var body = ReadBody(draft);
+            if (body is null) { refusal = CompanySetupOutcome<SectionApplyResult>.Fail(422, "draft_unreadable", "This draft cannot be read. Reload the company's setup."); return; }
+            var (plan, model) = await Planner.PlanAsync(caller, body, ct, focus: section);
+            if (!plan.Ok || model is null) { refusal = RefuseSection(plan, section!); return; }
+
+            var ctx = caller.Context with { TenantId = tenantId };
+            switch (section)
+            {
+                case V.Sections.CostCentres:
+                    await WriteCostCentresAsync(tenantId, target, model, ctx, ct);
+                    break;
+                case V.Sections.Grades:
+                    await WriteGradesAsync(tenantId, target, model, ctx, ct);
+                    break;
+                case V.Sections.Departments:
+                    await WriteDepartmentsAsync(tenantId, target, model, model.ExistingBranchIds, model.ExistingCostCentreIds, ctx, ct);
+                    break;
+                case V.Sections.Designations:
+                    await WriteDesignationsAsync(tenantId, target, model, model.ExistingDepartmentIds, model.ExistingGradeIds, ctx, ct);
+                    break;
+            }
+            var counts = SectionCountsOf(model, section!);
+
+            // Rebase in place, from what is in the database now.
+            var rebased = await RebaseSectionAsync(tenantId, target, body, section!, ct);
+            var json = JsonSerializer.Serialize(rebased, BodyJson);
+            if (Encoding.UTF8.GetByteCount(json) > CompanySetupPlanner.MaxBodyBytes)
+            {
+                refusal = CompanySetupOutcome<SectionApplyResult>.Fail(413, "draft_too_large", "The draft is larger than 128 KiB.");
+                return;
+            }
+            // A writer that clears its change tracker for its own retries must not drop the draft this save rebases.
+            if (_db.Entry(draft).State == EntityState.Detached) _db.CompanySetupDrafts.Attach(draft);
+            var fromVersion = draft.Version;
+            var now = DateTime.UtcNow;
+            draft.Body = json;
+            draft.Version = fromVersion + 1;
+            draft.Step = 4;
+            draft.UpdatedAtUtc = now;
+            var marker = AuthAuditEntry.Create(Guid.NewGuid(), now, SectionAppliedAction, nameof(CompanySetupDraftRecord), draft.Id.ToString(), ctx,
+                JsonSerializer.Serialize(new SectionAppliedMarker(draft.Id, section!, fromVersion, counts), BodyJson));
+            marker.CompanyId = target;
+            _db.AuditLogs.Add(marker);
+            await _db.SaveChangesAsync(ct);
+            result = new SectionApplyResult((await ToDtoAsync(draft, ct))!, section!, counts.Created, counts.Updated, counts.Unchanged, Replayed: false);
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                await RunAsync();
+                if (refusal is null) await tx.CommitAsync(ct);
+                else { await tx.RollbackAsync(ct); _db.ChangeTracker.Clear(); }
+            });
+        }
+        else await RunAsync();
+
+        return refusal ?? CompanySetupOutcome<SectionApplyResult>.Ok(result!);
+    }
+
+    private async Task<SectionAppliedMarker?> SectionMarkerAsync(CompanySetupDraftRecord draft, string section, int fromVersion, CancellationToken ct)
+    {
+        var rows = await ScopedBypass.NullableTenantWide(_db.AuditLogs, draft.TenantId,
+                "Replay of a live company-setup section save: its own marker, found by the draft id.")
+            .AsNoTracking()
+            .Where(a => a.Action == SectionAppliedAction && a.EntityId == draft.Id.ToString())
+            .Select(a => a.Metadata).ToListAsync(ct);
+        foreach (var json in rows)
+        {
+            if (json is null) continue;
+            SectionAppliedMarker? marker;
+            try { marker = JsonSerializer.Deserialize<SectionAppliedMarker>(json, BodyJson); }
+            catch (JsonException) { continue; }
+            if (marker is not null && marker.Section == section && marker.FromVersion == fromVersion) return marker;
+        }
+        return null;
+    }
+
+    /// <summary>The section's body rows by what the save did to them (rows the body does not list are not counted).</summary>
+    private static SectionCounts SectionCountsOf(CompanySetupPlanModel m, string section)
+    {
+        IEnumerable<(bool New, bool Changed)> rows = section switch
+        {
+            V.Sections.CostCentres => m.CostCentres.Select(x => (x.Existing is null, x.Changed)),
+            V.Sections.Departments => m.Departments.Select(x => (x.Existing is null, x.Changed)),
+            V.Sections.Grades => m.Grades.Select(x => (x.Existing is null, x.Changed)),
+            _ => m.Designations.Select(x => (x.Existing is null, x.Changed)),
+        };
+        var list = rows.ToList();
+        return new(list.Count(x => x.New), list.Count(x => !x.New && x.Changed), list.Count(x => !x.New && !x.Changed));
+    }
+
+    /// <summary>B2's rebase: the section's rows, in body order, become the saved rows — values, existingId and a fresh
+    /// baseline, from the same builder the prefill uses. Every other part of the body is returned exactly as stored.</summary>
+    private async Task<CompanySetupDraftBody> RebaseSectionAsync(Guid tenantId, Guid companyId, CompanySetupDraftBody body, string section, CancellationToken ct)
+    {
+        var org = await CompanySetupRows.CompanyRowsAsync(_db, tenantId, companyId, ct);
+        var maps = await CompanySetupRows.CodeMapsAsync(_db, tenantId, ct);
+        static Dictionary<string, T> ByCode<T>(IEnumerable<T> rows, Func<T, string> code) =>
+            rows.GroupBy(x => OrgCodes.Normalize(code(x)), StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        switch (section)
+        {
+            case V.Sections.CostCentres:
+            {
+                var saved = ByCode(org.CostCentres.Where(x => !x.IsDeleted), x => x.Code);
+                return body with { CostCentres = (body.CostCentres ?? []).Select(x =>
+                    saved.TryGetValue(OrgCodes.Normalize(x.Code), out var row) ? CompanySetupRows.CostCentre(row) : x).ToList() };
+            }
+            case V.Sections.Departments:
+            {
+                var saved = ByCode(org.Departments.Where(x => !x.IsDeleted), x => x.Code);
+                return body with { Departments = (body.Departments ?? []).Select(x =>
+                    saved.TryGetValue(OrgCodes.Normalize(x.Code), out var row) ? CompanySetupRows.Department(row, maps) : x).ToList() };
+            }
+            case V.Sections.Grades:
+            {
+                var saved = ByCode(org.Grades.Where(x => !x.IsDeleted), x => x.Code);
+                return body with { Grades = (body.Grades ?? []).Select(x =>
+                    saved.TryGetValue(OrgCodes.Normalize(x.Code), out var row) ? CompanySetupRows.Grade(row) : x).ToList() };
+            }
+            default:
+            {
+                var saved = ByCode(org.Designations.Where(x => !x.IsDeleted), x => x.Code);
+                return body with { Designations = (body.Designations ?? []).Select(x =>
+                    saved.TryGetValue(OrgCodes.Normalize(x.Code), out var row) ? CompanySetupRows.Designation(row, maps) : x).ToList() };
+            }
+        }
+    }
+
+    /// <summary>A refused section save: a conflict in the section is 409, any other blocking problem 422. The headline is
+    /// the first blocking problem (a step-1 gate first); the plan rides along.</summary>
+    private static CompanySetupOutcome<SectionApplyResult> RefuseSection(CompanySetupPlan plan, string section)
+    {
+        var blocking = plan.Problems.Where(p => CompanySetupPlanner.Blocks(p, section)).ToList();
+        var headline = blocking.FirstOrDefault(p => p.Step == 1) ?? blocking.FirstOrDefault();
+        var area = V.Sections.AreaOf(section);
+        var status = headline?.Step == 1
+            ? headline.Code switch
+            {
+                CompanySetupGates.CompanyNotManageableCode or CompanySetupGates.CompanyAdminRequiredCode => 403,
+                "company_not_found" => 404,
+                CompanySetupBaseline.RefreshCode => 409,
+                _ => 409,
+            }
+            : plan.Items.Any(i => i.Area == area && i.Action == V.ActionConflict) ? 409 : 422;
+        // The plan rides along limited to what blocks this save: the section's rows, its problems (plus a step-1 gate,
+        // which blocks everything) and its warnings, with the dry run's field paths.
+        var sectionPlan = new CompanySetupPlan(false, plan.Items.Where(i => i.Area == area).ToList(), blocking,
+            plan.Warnings.Where(p => p.Field == section || p.Field.StartsWith(section + ".", StringComparison.Ordinal)).ToList());
+        return CompanySetupOutcome<SectionApplyResult>.Fail(status, headline?.Code ?? "plan_conflict",
+            headline?.Message ?? "Nothing was saved. Fix the highlighted rows and try again.", headline?.MessageAr, headline?.Field, headline?.Step, sectionPlan);
+    }
+
+    // ── GET /copy-rows (Addendum B3) ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Addendum B3: one section's active rows of a sister company as NEW draft rows (no existingId, no baseline), to copy
+    /// by value. Group scope only (the controller), and the source must be an active company of this tenant (404).
+    /// Links are kept by code: a department's parent, branch and cost centre, a designation's department and grade. Every
+    /// organisation code is per company, so the same codes copied over match once that section is copied and saved; a
+    /// link to a row not saved yet is <c>reference_not_saved</c> at the section save.
+    /// </summary>
+    public async Task<CompanySetupOutcome<CopyRows>> CopyRowsAsync(CompanySetupCaller caller, Guid? fromCompanyId, string? section, CancellationToken ct)
+    {
+        if (!V.Sections.IsValid(section))
+            return CompanySetupOutcome<CopyRows>.Fail(400, "section_invalid", $"Choose one of the sections {string.Join(", ", V.Sections.All)}.",
+                "اختر قسماً صحيحاً من أقسام الهيكل التنظيمي.", "section");
+        if (!caller.IsGroupScope)
+            return CompanySetupOutcome<CopyRows>.Fail(403, CompanySetupGates.GroupScopeRequiredCode, CompanySetupGates.GroupScopeRequiredMessage,
+                CompanySetupGates.GroupScopeRequiredMessageAr, step: 1);
+        var sister = fromCompanyId is Guid id
+            ? await ScopedBypass.TenantWide(_db.Companies, caller.TenantId, Why).AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == id && !c.IsDeleted && c.IsActive && c.ApprovalStatus == CompanyApprovalStatuses.Active, ct)
+            : null;
+        if (sister is null)
+            return CompanySetupOutcome<CopyRows>.Fail(404, "copy_source_not_found", "Choose an active company of this workspace to copy from.",
+                "اختر شركة نشطة في مساحة العمل للنسخ منها.", "fromCompanyId");
+        var rows = await SisterRowsAsync(caller.TenantId, sister.Id, ct);
+        var result = new CopyRows(section!, sister.Id);
+        switch (section)
+        {
+            case V.Sections.CostCentres:
+                return CompanySetupOutcome<CopyRows>.Ok(result with { CostCentres = rows.CostCentres });
+            case V.Sections.Departments:
+                return CompanySetupOutcome<CopyRows>.Ok(result with { Departments = rows.Departments });
+            case V.Sections.Grades:
+                return CompanySetupOutcome<CopyRows>.Ok(result with { Grades = rows.Grades });
+            default:
+                return CompanySetupOutcome<CopyRows>.Ok(result with { Designations = rows.Designations });
+        }
+    }
+
+    private sealed record SisterRows(List<CompanySetupCostCentre> CostCentres, List<CompanySetupDepartment> Departments,
+        List<CompanySetupDesignation> Designations, List<CompanySetupGrade> Grades);
+
+    /// <summary>A sister company's active organisation rows as new draft rows, links by the sister's own codes. A link to a
+    /// row that is not copied (inactive or removed) is dropped, so a copy never points at nothing.</summary>
+    private async Task<SisterRows> SisterRowsAsync(Guid tenantId, Guid sisterId, CancellationToken ct)
+    {
+        var org = await CompanySetupRows.CompanyRowsAsync(_db, tenantId, sisterId, ct);
+        var maps = await CompanySetupRows.CodeMapsAsync(_db, tenantId, ct);
+        var costCentres = org.CostCentres.Where(x => !x.IsDeleted && x.IsActive).Select(x => CompanySetupRows.AsNew(CompanySetupRows.CostCentre(x))).ToList();
+        var departments = org.Departments.Where(x => !x.IsDeleted && x.IsActive).Select(x => CompanySetupRows.AsNew(CompanySetupRows.Department(x, maps))).ToList();
+        var grades = org.Grades.Where(x => !x.IsDeleted && x.IsActive).Select(x => CompanySetupRows.AsNew(CompanySetupRows.Grade(x))).ToList();
+        var designations = org.Designations.Where(x => !x.IsDeleted && x.IsActive).Select(x => CompanySetupRows.AsNew(CompanySetupRows.Designation(x, maps))).ToList();
+        var departmentCodes = departments.Select(d => d.Code).ToHashSet(StringComparer.Ordinal);
+        var gradeCodes = grades.Select(g => g.Code).ToHashSet(StringComparer.Ordinal);
+        var costCentreCodes = costCentres.Select(x => x.Code).ToHashSet(StringComparer.Ordinal);
+        departments = departments.Select(d => d with
+        {
+            ParentCode = d.ParentCode is { } p && departmentCodes.Contains(p) ? p : null,
+            CostCentreCode = d.CostCentreCode is { } x && costCentreCodes.Contains(x) ? x : null,
+        }).ToList();
+        designations = designations.Select(d => d with
+        {
+            DepartmentCode = d.DepartmentCode is { } x && departmentCodes.Contains(x) ? x : null,
+            GradeCode = d.GradeCode is { } g && gradeCodes.Contains(g) ? g : null,
+        }).ToList();
+        return new SisterRows(costCentres, departments, designations, grades);
+    }
 
     // ── POST /dry-run ────────────────────────────────────────────────────────────────────────────────
 
@@ -929,42 +1182,11 @@ public sealed class CompanySetupService
         }
         await _db.SaveChangesAsync(ct);
 
-        var costCentreIds = new Dictionary<string, Guid>(m.ExistingCostCentreIds, StringComparer.Ordinal);
-        foreach (var pc in m.CostCentres)
-        {
-            var cc = pc.Body;
-            if (pc.Existing is { } row)
-            {
-                costCentreIds[cc.Code] = row.Id;
-                if (pc.Changed)
-                    await _organization.UpdateCostCenterAsync(tenantId, row.Id, new CostCenterRequest(companyId, row.Code, cc.NameEn.Trim(), row.IsActive), ctx, ct);
-                continue;
-            }
-            costCentreIds[cc.Code] = (await _organization.CreateCostCenterAsync(tenantId, new CostCenterRequest(companyId, cc.Code, cc.NameEn.Trim()), ctx, ct)).Id;
-        }
-
-        var gradeIds = new Dictionary<string, Guid>(m.ExistingGradeIds, StringComparer.Ordinal);
-        foreach (var g in m.NewGrades)
-            gradeIds[g.Code] = (await _organization.CreateGradeAsync(tenantId, new GradeRequest(g.Code, g.NameEn.Trim(), null, g.Level,
-                g.MinSalary, g.MidSalary, g.MaxSalary, m.GradeCurrency, true, string.IsNullOrWhiteSpace(g.NameAr) ? null : g.NameAr.Trim()), ctx, ct)).Id;
-
-        // Decision 7: existing departments are reused as they are — never re-pointed to this company's branch or cost centre.
-        var departmentIds = new Dictionary<string, Guid>(m.ExistingDepartmentIds, StringComparer.Ordinal);
-        foreach (var d in m.NewDepartments)
-        {
-            Guid? parent = d.ParentCode is { } p && departmentIds.TryGetValue(p, out var pid) ? pid : null;
-            Guid? branch = d.BranchCode is { } bc && branchIds.TryGetValue(bc, out var bid) ? bid : null;
-            Guid? cost = d.CostCentreCode is { } cc && costCentreIds.TryGetValue(cc, out var cid) ? cid : null;
-            departmentIds[d.Code] = (await _organization.CreateDepartmentAsync(tenantId, new DepartmentRequest(branch, parent, cost, d.Code,
-                d.NameEn.Trim(), d.NameAr?.Trim(), null), ctx, ct)).Id;
-        }
-        foreach (var ds in m.NewDesignations)
-        {
-            Guid? dept = ds.DepartmentCode is { } dc && departmentIds.TryGetValue(dc, out var did) ? did : null;
-            Guid? grade = ds.GradeCode is { } gc && gradeIds.TryGetValue(gc, out var gid) ? gid : null;
-            await _organization.CreateDesignationAsync(tenantId, new DesignationRequest(dept, ds.Code, ds.TitleEn.Trim(), ds.TitleAr?.Trim(),
-                ds.GradeCode, grade, null, null), ctx, ct);
-        }
+        // Step 4 through the same writers a live section save uses (Addendum B2): one writer per section, no copies.
+        var costCentreIds = await WriteCostCentresAsync(tenantId, companyId, m, ctx, ct);
+        var gradeIds = await WriteGradesAsync(tenantId, companyId, m, ctx, ct);
+        var departmentIds = await WriteDepartmentsAsync(tenantId, companyId, m, branchIds, costCentreIds, ctx, ct);
+        await WriteDesignationsAsync(tenantId, companyId, m, departmentIds, gradeIds, ctx, ct);
 
         if (m.EmployeeIdRuleAction is V.ActionCreate or V.ActionUpdate)
         {
@@ -1002,9 +1224,10 @@ public sealed class CompanySetupService
 
         if (m.MissingLeaveDefaults.Count > 0)
         {
-            await TenantProvisioningBundle.InstallDefaultLeaveForCountryAsync(_db, tenantId, m.Country, ct);
+            // Per company (owner decision 2026-10-23): the statutory leave types and policies are installed FOR this company.
+            await TenantProvisioningBundle.InstallDefaultLeaveForCountryAsync(_db, tenantId, companyId, m.Country, ct);
             foreach (var policy in _db.ChangeTracker.Entries<LeavePolicy>().Where(e => e.State == EntityState.Added).Select(e => e.Entity).ToList())
-                Audit("leave.policy_created", nameof(LeavePolicy), policy.Id, companyId, new { policy.Name, policy.CountryCode, tenantWide = true });
+                Audit("leave.policy_created", nameof(LeavePolicy), policy.Id, companyId, new { policy.Name, policy.CountryCode, companyId });
         }
 
         if (m.NewGccDefault is not null)
@@ -1037,6 +1260,103 @@ public sealed class CompanySetupService
 
         await _db.SaveChangesAsync(ct);
         return companyId;
+    }
+
+    // ── Step 4 writers (the commit and the live section save) ─────────────────────────────────────────
+    // Every row goes through IOrganizationSetupService, so it keeps that service's validation and audit, and is written
+    // for THIS company (Addendum B: CompanyId on every request). An existing row the plan leaves unchanged is not touched;
+    // an edit carries the row's own values for every field the wizard does not show. Each returns code → id of the
+    // section's rows (the company's existing ones included) for the links of the sections after it.
+
+    private async Task<Dictionary<string, Guid>> WriteCostCentresAsync(Guid tenantId, Guid companyId, CompanySetupPlanModel m, RequestContext ctx, CancellationToken ct)
+    {
+        var ids = new Dictionary<string, Guid>(m.ExistingCostCentreIds, StringComparer.Ordinal);
+        foreach (var pc in m.CostCentres)
+        {
+            var cc = pc.Body;
+            var nameAr = string.IsNullOrWhiteSpace(cc.NameAr) ? null : cc.NameAr.Trim();
+            if (pc.Existing is { } row)
+            {
+                ids[cc.Code] = row.Id;
+                if (pc.Changed)
+                    await _organization.UpdateCostCenterAsync(tenantId, row.Id, new CostCenterRequest(companyId, row.Code, cc.NameEn.Trim(), row.IsActive, nameAr), ctx, ct);
+                continue;
+            }
+            ids[cc.Code] = (await _organization.CreateCostCenterAsync(tenantId, new CostCenterRequest(companyId, cc.Code, cc.NameEn.Trim(), true, nameAr), ctx, ct)).Id;
+        }
+        return ids;
+    }
+
+    private async Task<Dictionary<string, Guid>> WriteGradesAsync(Guid tenantId, Guid companyId, CompanySetupPlanModel m, RequestContext ctx, CancellationToken ct)
+    {
+        var ids = new Dictionary<string, Guid>(m.ExistingGradeIds, StringComparer.Ordinal);
+        foreach (var pg in m.Grades)
+        {
+            var g = pg.Body;
+            var nameAr = string.IsNullOrWhiteSpace(g.NameAr) ? null : g.NameAr.Trim();
+            if (pg.Existing is { } row)
+            {
+                ids[g.Code] = row.Id;
+                // An existing band keeps its own currency and band label; the wizard edits names, level and amounts.
+                if (pg.Changed)
+                    await _organization.UpdateGradeAsync(tenantId, row.Id, new GradeRequest(row.Code, g.NameEn.Trim(), row.Band, g.Level,
+                        g.MinSalary, g.MidSalary, g.MaxSalary, row.Currency, row.IsActive, nameAr, companyId), ctx, ct);
+                continue;
+            }
+            // Addendum B: a new grade's band is in the company's own currency.
+            ids[g.Code] = (await _organization.CreateGradeAsync(tenantId, new GradeRequest(g.Code, g.NameEn.Trim(), null, g.Level,
+                g.MinSalary, g.MidSalary, g.MaxSalary, m.Currency, true, nameAr, companyId), ctx, ct)).Id;
+        }
+        return ids;
+    }
+
+    private async Task<Dictionary<string, Guid>> WriteDepartmentsAsync(Guid tenantId, Guid companyId, CompanySetupPlanModel m,
+        IReadOnlyDictionary<string, Guid> branchIds, IReadOnlyDictionary<string, Guid> costCentreIds, RequestContext ctx, CancellationToken ct)
+    {
+        var ids = new Dictionary<string, Guid>(m.ExistingDepartmentIds, StringComparer.Ordinal);
+        // The plan orders new departments parents first, then edits of existing ones (whose new parent may be new).
+        foreach (var pd in m.Departments)
+        {
+            var d = pd.Body;
+            if (pd.Existing is { } row && !pd.Changed) { ids[d.Code] = row.Id; continue; }
+            Guid? parent = d.ParentCode is { } p && ids.TryGetValue(p, out var pid) ? pid : null;
+            Guid? branch = d.BranchCode is { } bc && branchIds.TryGetValue(bc, out var bid) ? bid : null;
+            Guid? cost = d.CostCentreCode is { } cc && costCentreIds.TryGetValue(cc, out var cid) ? cid : null;
+            var nameAr = string.IsNullOrWhiteSpace(d.NameAr) ? null : d.NameAr.Trim();
+            if (pd.Existing is { } existing)
+            {
+                ids[d.Code] = existing.Id;
+                await _organization.UpdateDepartmentAsync(tenantId, existing.Id, new DepartmentRequest(branch, parent, cost, existing.Code,
+                    d.NameEn.Trim(), nameAr, existing.ManagerEmployeeId, existing.IsActive, companyId), ctx, ct);
+                continue;
+            }
+            ids[d.Code] = (await _organization.CreateDepartmentAsync(tenantId, new DepartmentRequest(branch, parent, cost, d.Code,
+                d.NameEn.Trim(), nameAr, null, true, companyId), ctx, ct)).Id;
+        }
+        return ids;
+    }
+
+    private async Task WriteDesignationsAsync(Guid tenantId, Guid companyId, CompanySetupPlanModel m,
+        IReadOnlyDictionary<string, Guid> departmentIds, IReadOnlyDictionary<string, Guid> gradeIds, RequestContext ctx, CancellationToken ct)
+    {
+        foreach (var pd in m.Designations)
+        {
+            var ds = pd.Body;
+            if (pd.Existing is { } row && !pd.Changed) continue;
+            Guid? dept = ds.DepartmentCode is { } dc && departmentIds.TryGetValue(dc, out var did) ? did : null;
+            Guid? grade = ds.GradeCode is { } gc && gradeIds.TryGetValue(gc, out var gid) ? gid : null;
+            var titleAr = string.IsNullOrWhiteSpace(ds.TitleAr) ? null : ds.TitleAr.Trim();
+            if (pd.Existing is { } existing)
+            {
+                // The free-text job grade follows the grade link when it moves; level, description and manager flag are kept.
+                var jobGrade = grade == existing.GradeId ? existing.JobGrade : ds.GradeCode;
+                await _organization.UpdateDesignationAsync(tenantId, existing.Id, new DesignationRequest(dept, existing.Code, ds.TitleEn.Trim(), titleAr,
+                    jobGrade, grade, existing.JobLevel, existing.JobDescription, existing.IsManagerRole, existing.IsActive, companyId), ctx, ct);
+                continue;
+            }
+            await _organization.CreateDesignationAsync(tenantId, new DesignationRequest(dept, ds.Code, ds.TitleEn.Trim(), titleAr,
+                ds.GradeCode, grade, null, null, false, true, companyId), ctx, ct);
+        }
     }
 
     // ── Company Super Admin (after commit) ─────────────────────────────────────────────────────────────

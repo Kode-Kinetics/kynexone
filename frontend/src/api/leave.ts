@@ -20,6 +20,8 @@ export interface LeaveType {
   colorCode: string;
   isActive: boolean;
   sortOrder: number;
+  /** The owning company (leave types are per company). Null only for a legacy row nobody has assigned yet. */
+  companyId?: string | null;
   createdAtUtc: string;
 }
 
@@ -321,9 +323,10 @@ export interface LeaveDashboard {
 // ── API ────────────────────────────────────────────────────────────────────────
 
 export const leaveTypesApi = {
-  list: () =>
-    client.get<LeaveType[]>('/api/leave/types').then(r => requireList<LeaveType>(r.data, 'leave types')),
-  create: (body: { code: string; nameEn: string; nameAr?: string; category: string; isPaid: boolean; isHalfDayAllowed: boolean; isHourlyAllowed: boolean; requiresAttachment: boolean; requiresReason: boolean; maxConsecutiveDays: number; colorCode?: string; sortOrder?: number }) =>
+  /** `companyId` narrows to one company (with `includeUnassigned`, plus legacy rows no company owns); `employeeId` gives the types that employee may request. */
+  list: (params?: { companyId?: string; includeUnassigned?: boolean; employeeId?: number }) =>
+    client.get<LeaveType[]>('/api/leave/types', params ? { params } : undefined).then(r => requireList<LeaveType>(r.data, 'leave types')),
+  create: (body: { code: string; nameEn: string; nameAr?: string; category: string; isPaid: boolean; isHalfDayAllowed: boolean; isHourlyAllowed: boolean; requiresAttachment: boolean; requiresReason: boolean; maxConsecutiveDays: number; colorCode?: string; sortOrder?: number; companyId?: string }) =>
     client.post<LeaveType>('/api/leave/types', body).then(r => r.data),
   update: (id: string, body: object) =>
     client.put<LeaveType>(`/api/leave/types/${id}`, body).then(r => r.data),
@@ -333,7 +336,7 @@ export const leaveTypesApi = {
 
 export const leavePoliciesApi = {
   /** Every matching policy: the policies screen lists and counts them all (it used to get the first 25). */
-  list: (params: { countryCode?: string; status?: string; leaveTypeId?: string } = {}) =>
+  list: (params: { countryCode?: string; status?: string; leaveTypeId?: string; companyId?: string; includeUnassigned?: boolean } = {}) =>
     fetchAllPages((page, pageSize) =>
       client.get<PagedResult<LeavePolicy>>('/api/leave/policies', { params: { ...params, page, pageSize } }).then(r => r.data)),
   get: (id: string) =>

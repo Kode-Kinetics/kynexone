@@ -1,10 +1,13 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class Department : ITenantOwned
+public class Department : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>The legal entity that owns this row (Addendum B: per company, never shared across the group).
+    /// Null only for a legacy row the backfill could not attribute; Setup asks which company it belongs to.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid? BranchId { get; set; }
     public Guid? ParentDepartmentId { get; set; }
     public Guid? CostCenterId { get; set; }

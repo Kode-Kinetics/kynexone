@@ -1,0 +1,75 @@
+/*
+ * Step 5 motion (docs/design/company-setup-wizard.md B5). Productivity-tool restraint: 150–200 ms, one strong
+ * ease-out, transform and opacity only. Every entrance ends on `transform: none`, so no lasting stacking context
+ * or containing block is left on the content column (fixed descendants and portalled dialogs stay correct).
+ * Exits are shorter and smaller than entrances. All of it is off under prefers-reduced-motion.
+ */
+
+/* Part switch (motion spec M1): 8px logical slide + fade in the reading direction (reversed going back), no exit —
+   the old part unmounts at once, so the switch never feels laggy. Not used when the switch came from the keyboard (M2). */
+@keyframes rules-part-in {
+  from { opacity: 0; transform: translateX(var(--rules-dx, 8px)); }
+  to { opacity: 1; transform: none; }
+}
+.partIn { animation: rules-part-in 180ms var(--wg-ease, cubic-bezier(0.2, 0, 0, 1)) both; }
+:global([dir='rtl']) .partIn { --rules-dx: -8px; }
+.partIn[data-dir='back'] { --rules-dx: -8px; }
+:global([dir='rtl']) .partIn[data-dir='back'] { --rules-dx: 8px; }
+
+/* Tab panel swap inside a part: opacity only (it is triggered often, so it barely moves). */
+@keyframes rules-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.fadeIn { animation: rules-fade-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+
+/* Drawer: slides from the inline end; mirrored for RTL. */
+.scrim {
+  opacity: 0;
+  transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.scrim[data-state='open'] { opacity: 1; }
+.scrim[data-state='closing'] { opacity: 0; transition-duration: 150ms; }
+
+.drawer {
+  opacity: 0;
+  transform: translateX(24px);
+  transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+:global([dir='rtl']) .drawer { transform: translateX(-24px); }
+.drawer[data-state='open'] { opacity: 1; transform: none; }
+.drawer[data-state='closing'] {
+  opacity: 0;
+  transform: translateX(12px);
+  transition-duration: 150ms;
+}
+:global([dir='rtl']) .drawer[data-state='closing'] { transform: translateX(-12px); }
+:global([dir='rtl']) .drawer[data-state='open'] { transform: none; }
+
+/* Part-saved chip (M7): crossfade when its text changes ("Saved · 1 added" → "Saved"). */
+.tick { animation: rules-fade-in 200ms var(--wg-ease, cubic-bezier(0.2, 0, 0, 1)) both; }
+
+/* Back-to-setup bar arrives once per page. */
+@keyframes rules-bar-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.barIn { animation: rules-bar-in 180ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+
+/* Skeleton: a static tint, no shimmer loop. */
+.skeleton { background-color: rgb(148 163 184 / 0.18); border-radius: 8px; }
+:global(.dark) .skeleton { background-color: rgb(255 255 255 / 0.06); }
+
+@media (prefers-reduced-motion: reduce) {
+  .partIn, .fadeIn, .tick, .barIn { animation: none; }
+  .scrim, .drawer, .drawer[data-state='closing'], .scrim[data-state='closing'] { transition: none; }
+  .drawer, :global([dir='rtl']) .drawer, .drawer[data-state='closing'], :global([dir='rtl']) .drawer[data-state='closing'] { transform: none; }
+}
+
+/* The content column is ~410px at 1280px with the structure panel open, ~590px at 1440px and full width on a
+   phone: lay out by the column's width, not the viewport's. */
+.column { container-type: inline-size; }
+.pair { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+@container (min-width: 520px) {
+  .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
