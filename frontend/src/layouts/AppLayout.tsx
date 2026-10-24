@@ -29,10 +29,10 @@ import { permissionAccessDescription } from '../lib/permissionAreas';
 import { useLocale } from '../contexts/LocaleContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { setupNavigationModel } from '../lib/setupAreas';
+import { SETUP_ROUTE_PERMISSIONS } from '../lib/setupModuleSections';
 import { buildSetupSearchIndex, matchSetupEntries } from '../components/setup/setupSearch';
 
 /** Setup's own route gate (app/(dashboard)/setup/page.tsx): any one of these opens /setup. */
-const SETUP_ROUTE_PERMISSIONS = ['organization.read', 'organization.write', 'organization.establishment.write', 'payroll.rates.read', 'payroll.rates.statutory_override'];
 
 const HISTORY_KEY = 'kynexone-search-history';
 const MAX_HISTORY = 8;
@@ -152,7 +152,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   const setupEntries = useMemo(() => {
     if (!SETUP_ROUTE_PERMISSIONS.some(permission => hasPermission(permission)) || !featureFlags.verdictForPath('/setup').allowed) return [];
     const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
-    const model = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake: isFeatureEnabled(POLICY_INTAKE_FLAG) });
+    const model = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake: isFeatureEnabled(POLICY_INTAKE_FLAG), isFeatureEnabled, verdictForPath: featureFlags.verdictForPath, flagStatus: featureFlags.status });
     return buildSetupSearchIndex({
       model,
       access: { hasPermission, hasRole, isFeatureEnabled, verdictForPath: featureFlags.verdictForPath, flagStatus: featureFlags.status, isCompanyScopedGroup },

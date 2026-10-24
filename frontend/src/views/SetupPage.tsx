@@ -2578,7 +2578,7 @@ export function SetupPage() {
   // One model decides who sees which section: the navigation, "Find a setting" and the ⌘K palette all read it —
   // including the readers' rules (Companies only when the server lists them for the role, GL & rates for any GL or
   // rates permission), so Payroll Manager and Finance get their section everywhere, not only in the nav.
-  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake });
+  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status });
   const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
   const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
   const tabParam = searchParams?.get('tab');

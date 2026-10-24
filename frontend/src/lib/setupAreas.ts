@@ -1,6 +1,7 @@
 import { msg } from '../i18n/translations';
 import { navigationItems } from '../routes/navigation';
 import { canListCompanies, canOpenGlAndRates } from './setupAccess';
+import { SETUP_MODULE_SECTIONS, moduleSectionAvailable, type SetupModuleAccess, type SetupModuleGroupId, type SetupModuleSection, type SetupModuleSectionId } from './setupModuleSections';
 
 /**
  * Setup & Administration's own settings sections, in navigation order. The one source for each section's name and
@@ -20,12 +21,24 @@ export interface SetupSettingSection {
   group: SetupSettingGroupId;
 }
 
-/** The navigation's groups, in order. "Get started" holds the setup tools; the others hold the settings below. */
-export const SETUP_SECTION_GROUPS: readonly { id: 'getStarted' | SetupSettingGroupId; label: string }[] = [
+/** Any Setup section: Setup's own settings, or a module's configuration shown here (lib/setupModuleSections.ts). */
+export type SetupSection = SetupSettingSection | SetupModuleSection;
+export type SetupSectionId = SetupSettingId | SetupModuleSectionId;
+export type SetupSectionGroupId = SetupSettingGroupId | SetupModuleGroupId;
+
+/**
+ * The navigation's groups, in order, mirroring the product menu so an administrator finds Leave's settings under
+ * "Time & leave". "Get started" holds the setup tools (and Opening balances); the others hold the settings sections.
+ */
+export const SETUP_SECTION_GROUPS: readonly { id: SetupSectionGroupId; label: string }[] = [
   { id: 'getStarted', label: msg('Get started') },
   { id: 'companyStructure', label: msg('Company structure') },
   { id: 'jobsHeadcount', label: msg('Jobs & headcount') },
+  { id: 'timeLeave', label: msg('Time & leave') },
+  { id: 'payBenefits', label: msg('Pay & benefits') },
+  { id: 'talentServices', label: msg('Talent & employee services') },
   { id: 'payrollCompliance', label: msg('Payroll & compliance') },
+  { id: 'accessSecurity', label: msg('Users & access') },
   { id: 'workspace', label: msg('Workspace') },
 ];
 
@@ -74,6 +87,8 @@ export interface SetupDestination {
   groupOrder: number;
   destinationOrder: number;
   effectiveTargetScope: 'company' | 'tenant' | 'group' | 'recordDependent';
+  /** A module's configuration shown in Setup: available exactly when its Setup section is (moduleSectionAvailable). */
+  moduleSection?: SetupModuleSection;
 }
 
 export interface SetupAreaDefinition {
@@ -126,6 +141,20 @@ function setting(areaId: SetupAreaId, id: SetupSettingId, scope: SetupDestinatio
   return destination({ id, areaId, label: settingLabel(id), path: `/setup?tab=${id}`, kind: 'settings', scope, presentation: 'embedded', effectiveTargetScope, ...nav });
 }
 
+/** A module's configuration, opened as its Setup section. */
+function moduleSetting(areaId: SetupAreaId, id: SetupModuleSectionId, scope: SetupDestination['scope'], nav: DestinationNavigation): SetupDestination {
+  const section = SETUP_MODULE_SECTIONS.find(item => item.id === id);
+  if (!section) throw new Error(`Unknown Setup section: ${id}`);
+  return {
+    id, areaId, label: section.label, path: `/setup?tab=${id}`, kind: 'settings', scope, presentation: 'embedded',
+    assistance: id === 'onboardingChecklists' ? 'existing-onboarding' : 'not-connected',
+    effectiveTargetScope: scope === 'mixed' ? 'recordDependent' : scope,
+    requiredPermissions: section.permissions, requiredFeatureKey: section.featureKey, editorRoles: section.roles,
+    moduleSection: section,
+    ...nav,
+  };
+}
+
 function route(areaId: SetupAreaId, id: string, label: string, path: string, kind: SetupDestination['kind'], scope: SetupDestination['scope'], nav: DestinationNavigation): SetupDestination {
   return destination({ id, areaId, label, path, kind, scope, presentation: 'route', ...nav });
 }
@@ -156,7 +185,7 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
   {
     id: 'onboarding', label: 'Onboarding and confirmation',
     description: 'Shared onboarding checklists and tasks; probation and confirmation remain in Performance.',
-    destinations: [destination({ id: 'onboarding', areaId: 'onboarding', label: 'Onboarding checklists', path: '/recruitment/onboarding', kind: 'templates', scope: 'tenant', presentation: 'embedded', editorRoles: ['Admin', 'HR Manager'], editorPermission: 'recruitment.write', assistance: 'existing-onboarding', ...navigation('templates-tasks', 'Templates and tasks', 0, 0) })],
+    destinations: [moduleSetting('onboarding', 'onboardingChecklists', 'tenant', navigation('templates-tasks', 'Templates and tasks', 0, 0))],
   },
   {
     id: 'time', label: 'Time and attendance',
@@ -164,7 +193,11 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     destinations: [
       setting('time', 'locations', 'mixed', navigation('work-configuration', 'Work configuration', 0, 0)),
       route('time', 'attendance', 'Attendance operations', '/attendance', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 0)),
-      route('time', 'shifts', 'Shift definitions and policy', '/shifts', 'settings', 'mixed', navigation('work-configuration', 'Work configuration', 0, 1)),
+      moduleSetting('time', 'shiftDefinitions', 'tenant', navigation('work-configuration', 'Work configuration', 0, 1)),
+      moduleSetting('time', 'shiftPolicy', 'tenant', navigation('work-configuration', 'Work configuration', 0, 2)),
+      moduleSetting('time', 'overtimePolicies', 'tenant', navigation('work-configuration', 'Work configuration', 0, 3)),
+      moduleSetting('time', 'attendanceDevices', 'tenant', navigation('work-configuration', 'Work configuration', 0, 4)),
+      route('time', 'shifts', 'Shift rosters', '/shifts', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 3)),
       route('time', 'overtime', 'Overtime requests', '/overtime', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 1)),
       route('time', 'timesheets', 'Project timesheets', '/timesheets', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 2)),
     ],
@@ -173,18 +206,23 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     id: 'leave', label: 'Leave and absence',
     description: 'Leave types, policies and holidays within the existing leave workspace.',
     destinations: [
-      ...[['leaveTypes', 'Leave types'], ['leavePolicies', 'Leave policies'], ['holidayCalendars', 'Holiday calendars']].map(([id, label], index) => destination({ id, label, areaId: 'leave', path: '/leave', kind: 'settings', scope: 'tenant', presentation: 'embedded', editorRoles: ['Admin', 'HR Manager'], ...navigation('policy-definitions', 'Policy definitions', 0, index) })),
-      route('leave', 'leave', 'Leave policies and holidays', '/leave', 'settings', 'mixed', navigation('related-workspace', 'Related workspace', 1, 0)),
+      ...(['leaveTypes', 'leavePolicies', 'holidayCalendars'] as const).map((id, index) => moduleSetting('leave', id, 'mixed', navigation('policy-definitions', 'Policy definitions', 0, index))),
+      route('leave', 'leave', 'Leave requests and balances', '/leave', 'operations', 'mixed', navigation('related-workspace', 'Related workspace', 1, 0)),
     ],
   },
   {
     id: 'compensation', label: 'Compensation and benefits',
     description: 'Benefit plans, grade entitlements, loans and merit planning.',
     destinations: [
-      route('compensation', 'benefits', 'Benefit plans and enrollments', '/benefits', 'settings', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 0)),
+      moduleSetting('compensation', 'benefitPlans', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 0)),
       route('compensation', 'gradeBenefits', 'Benefits by grade', '/benefits/by-grade', 'settings', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 1)),
-      route('compensation', 'loans', 'Loan and advance policies', '/loans', 'settings', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 2)),
-      route('compensation', 'merit', 'Merit planning and benchmarks', '/compensation', 'settings', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 3)),
+      moduleSetting('compensation', 'loanTypes', 'tenant', navigation('plans-entitlements', 'Plans and entitlements', 0, 2)),
+      moduleSetting('compensation', 'loanPolicies', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 3)),
+      moduleSetting('compensation', 'advancePolicy', 'tenant', navigation('plans-entitlements', 'Plans and entitlements', 0, 4)),
+      moduleSetting('compensation', 'bonusTypes', 'tenant', navigation('plans-entitlements', 'Plans and entitlements', 0, 5)),
+      route('compensation', 'merit', 'Merit planning and benchmarks', '/compensation', 'settings', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 6)),
+      route('compensation', 'benefits', 'Benefit enrolments', '/benefits', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 0)),
+      route('compensation', 'loans', 'Loans and advances', '/loans', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 1)),
     ],
   },
   {
@@ -194,14 +232,15 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
       setting('payroll', 'glMapping', 'mixed', navigation('posting-calendars', 'Posting and calendars', 0, 0)),
       setting('payroll', 'fiscalYears', 'tenant', navigation('posting-calendars', 'Posting and calendars', 0, 1)),
       route('payroll', 'payroll', 'Payroll and salary structures', '/payroll', 'settings', 'mixed', navigation('payroll-configuration', 'Payroll configuration', 1, 0)),
-      route('payroll', 'payslipTemplates', 'Payslip templates', '/payroll/templates', 'templates', 'tenant', navigation('payroll-configuration', 'Payroll configuration', 1, 1)),
+      moduleSetting('payroll', 'payslipTemplates', 'tenant', navigation('payroll-configuration', 'Payroll configuration', 1, 1)),
     ],
   },
   {
     id: 'performance', label: 'Performance and talent',
     description: 'Review cycles, templates, probation, calibration and succession development.',
     destinations: [
-      route('performance', 'performance', 'Performance cycles and templates', '/performance', 'settings', 'mixed', navigation('cycles-templates', 'Cycles and templates', 0, 0)),
+      moduleSetting('performance', 'performanceScorecards', 'tenant', navigation('cycles-templates', 'Cycles and templates', 0, 0)),
+      route('performance', 'performance', 'Performance cycles', '/performance', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 1)),
       route('performance', 'succession', 'Succession and development', '/performance/succession', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 0)),
     ],
   },
@@ -216,8 +255,10 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     destinations: [
       route('services', 'hrRequests', 'Request center', '/hr-requests', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 0)),
       route('services', 'hrLetters', 'HR letters', '/hr-letters', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 1)),
-      route('services', 'engagement', 'Engagement templates and privacy', '/engagement', 'templates', 'mixed', navigation('templates-communication', 'Templates and communication', 0, 0)),
-      setting('services', 'notificationTemplates', 'tenant', navigation('templates-communication', 'Templates and communication', 0, 1)),
+      moduleSetting('services', 'letterTemplates', 'mixed', navigation('templates-communication', 'Templates and communication', 0, 0)),
+      route('services', 'engagement', 'Engagement survey templates', '/engagement', 'templates', 'mixed', navigation('templates-communication', 'Templates and communication', 0, 1)),
+      moduleSetting('services', 'engagementPrivacy', 'tenant', navigation('templates-communication', 'Templates and communication', 0, 2)),
+      setting('services', 'notificationTemplates', 'tenant', navigation('templates-communication', 'Templates and communication', 0, 3)),
     ],
   },
   {
@@ -231,10 +272,11 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
     destinations: [
       setting('compliance', 'gccSettings', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 0)),
       setting('compliance', 'statutoryRules', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 1)),
-      route('compliance', 'complianceProfiles', 'Compliance profiles', '/compliance-profiles', 'settings', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 2)),
-      route('compliance', 'taxPolicies', 'Tax policies', '/tax-policies', 'settings', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 3)),
+      moduleSetting('compliance', 'complianceProfiles', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 2)),
+      moduleSetting('compliance', 'taxPolicies', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 3)),
+      moduleSetting('compliance', 'saudiCompliance', 'company', navigation('rules-profiles', 'Rules and profiles', 0, 4)),
       route('compliance', 'compliance', 'Documents and renewals', '/compliance', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 0)),
-      route('compliance', 'saudiCompliance', 'Saudi compliance', '/saudi-compliance', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 1)),
+      route('compliance', 'saudiComplianceDashboard', 'Saudization and Qiwa status', '/saudi-compliance', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 1)),
       route('compliance', 'gosiFiling', 'GOSI filing', '/gosi-filing', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 2)),
       destination({ id: 'adminAuditLogs', areaId: 'compliance', label: settingLabel('adminAuditLogs'), path: '/setup?tab=adminAuditLogs', kind: 'operations', scope: 'mixed', presentation: 'embedded', ...navigation('filings-evidence', 'Filings and evidence', 1, 3) }),
     ],
@@ -256,6 +298,15 @@ export interface SetupAccessContext {
 
 
 export function destinationAvailability(destination: SetupDestination, context: SetupAccessContext): 'available' | 'restricted' | 'unavailable' | 'checking' | 'unknown' {
+  // A module's configuration opens for the same people as its Setup section, and follows its module's switch.
+  const section = destination.moduleSection;
+  if (section) {
+    const hasRole = (role: string) => context.hasRole?.(role) ?? false;
+    if (!moduleSectionAvailable(section, { ...context, hasRole, flagStatus: 'ready', isFeatureEnabled: () => true, verdictForPath: () => ({ allowed: true }) })) return 'restricted';
+    if (context.flagStatus === 'loading') return 'checking';
+    if (context.flagStatus === 'error') return 'unknown';
+    return moduleSectionAvailable(section, { ...context, hasRole }) ? 'available' : 'unavailable';
+  }
   if (destination.requiredPermissions.length > 0 && !destination.requiredPermissions.some(context.hasPermission)) return 'restricted';
   if (destination.editorRoles && !destination.editorRoles.some(role => context.hasRole?.(role))) return 'restricted';
   if (destination.editorPermission && !context.hasPermission(destination.editorPermission)) return 'restricted';
@@ -284,7 +335,7 @@ export const SETUP_TOOLS: Record<SetupToolId, { label: string; description: stri
   policyLibrary: { label: msg('Policy library'), description: msg('Policy documents your company has uploaded.'), href: '/setup?tab=policyLibrary' },
 };
 
-export interface SetupNavigationAccess {
+export interface SetupNavigationAccess extends SetupModuleAccess {
   hasPermission: (permission: string) => boolean;
   hasRole: (role: string) => boolean;
   /** A group account's administrator who is limited to some companies. */
@@ -301,8 +352,8 @@ export interface SetupNavigationModel {
   canManagePolicies: boolean;
   /** "Get started" entries, in order. Empty for a reader. */
   tools: SetupToolId[];
-  /** The settings sections this user can open, in navigation order. */
-  settings: SetupSettingSection[];
+  /** The settings sections this user can open, in navigation order: Setup's own, then the modules' configuration. */
+  settings: SetupSection[];
 }
 
 /**
@@ -319,10 +370,12 @@ export function setupNavigationModel(access: SetupNavigationAccess): SetupNaviga
   const canReadStatutoryRules = hasPermission('payroll.rates.read') && (hasRole('Admin') || hasRole('HR Manager') || hasRole('Auditor'));
   const canReadGlAndRates = canOpenGlAndRates({ hasPermission, hasRole });
   const writable = isCompanyScopedGroup ? SETUP_SETTING_SECTIONS.filter(section => COMPANY_OWNED_SETTING_IDS.has(section.id)) : SETUP_SETTING_SECTIONS;
-  const settings = canWrite
+  const own: SetupSection[] = canWrite
     ? [...writable]
     : SETUP_SETTING_SECTIONS.filter(section => (section.id === 'companies' && canReadCompanies)
       || (section.id === 'statutoryRules' && canReadStatutoryRules) || (section.id === 'glMapping' && canReadGlAndRates));
+  // A module's configuration opens for whoever its old tab opened for, whether or not they may edit the organisation.
+  const settings = [...own, ...SETUP_MODULE_SECTIONS.filter(section => moduleSectionAvailable(section, access))];
   const tools: SetupToolId[] = canWrite ? [
     'guidedSetup',
     'allSetupAreas',

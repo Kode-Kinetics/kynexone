@@ -1,13 +1,11 @@
 import {
   Building2,
   BarChart3,
-  DatabaseBackup,
   MessageSquareText,
   BriefcaseBusiness,
   CalendarCheck,
   ClipboardList,
   Clock3,
-  FileText,
   Gauge,
   Headphones,
   Landmark,
@@ -21,11 +19,9 @@ import {
   Timer,
   UserCircle2,
   UserMinus,
-  UserRoundCog,
   UsersRound,
   UserPlus,
   WalletCards,
-  KeyRound,
   CheckSquare2,
   HeartPulse,
   FileSpreadsheet,
@@ -35,7 +31,7 @@ import {
 } from 'lucide-react';
 import type { NavGroup } from '../types/ui';
 import { PERFORMANCE_MODULE_PERMISSIONS } from '../lib/performanceAccess';
-import { GL_AND_RATES_PERMISSIONS } from '../lib/setupAccess';
+import { SETUP_ROUTE_PERMISSIONS } from '../lib/setupModuleSections';
 import { essNavItems } from './essSections';
 
 export const navigationGroups: NavGroup[] = [
@@ -67,7 +63,6 @@ export const navigationGroups: NavGroup[] = [
     label: 'Finance & Talent',
     items: [
       { label: 'Payroll', icon: WalletCards, path: '/payroll', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payroll' },
-      { label: 'Payslip Templates', icon: FileText, path: '/payroll/templates', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payslip_template_designer' },
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.self', 'loans.read', 'loans.write'] },
       { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'] },
       // Release A (release_a opt-in flag): benefits by grade and contract renewals.
@@ -99,20 +94,14 @@ export const navigationGroups: NavGroup[] = [
   {
     label: 'Administration',
     items: [
-      { label: 'Compliance Profiles', icon: ShieldCheck, path: '/compliance-profiles', requiredPermissions: ['compliance.read'] },
-      { label: 'Tax Policies', icon: Landmark, path: '/tax-policies', requiredPermissions: ['payroll.read'] },
       // HR's queue. Employees raise and follow their own requests at /ess/requests (My HR Requests);
       // ess.read used to show this link too, and the page's gate sent them to "Access Denied".
       { label: 'Request Center', icon: Headphones, path: '/hr-requests', requiredPermissions: ['approvals.read', 'approvals.write', 'approvals.decide'] },
       { label: 'Approvals', icon: CheckSquare2, path: '/approvals', requiredPermissions: ['approvals.read', 'approvals.decide'] },
-      { label: 'User Management', icon: KeyRound, path: '/user-management', requiredPermissions: ['users.manage', 'roles.manage', 'security.manage'] },
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
       { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
-      { label: 'Tenant Admin', icon: Settings2, path: '/tenant-admin', requiredPermissions: ['security.manage'] },
-      { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write', ...GL_AND_RATES_PERMISSIONS] },
-      // Implementation-time screen: the consultant-facing front end for the opening-balance engine,
-      // which until now had no caller at all and was driven from Postman.
-      { label: 'Opening Balances', icon: DatabaseBackup, path: '/opening-balances', requiredPermissions: ['employees.write', 'payroll.write'] },
+      // The one home for configuration: every module's settings, users and access, and the workspace (lib/setupModuleSections.ts).
+      { label: 'Setup', icon: Settings2, path: '/setup', requiredPermissions: [...SETUP_ROUTE_PERMISSIONS] },
       // The other half of a go-live: reconciling a run against the register the OUTGOING system
       // produced for the same month. The engine was built and unit-proven with no caller.
       { label: 'Parallel Run Variance', icon: Scale, path: '/payroll/variance', requiredPermissions: ['payroll.read'] },
@@ -143,7 +132,6 @@ export const navigationHints: Record<string, string> = {
   '/overtime': 'Overtime requests and approved hours that flow into payroll.',
   '/timesheets': 'Hours worked per project or task, submitted for approval.',
   '/payroll': 'Run, review, approve and lock monthly payroll.',
-  '/payroll/templates': 'Design the layout of the payslips employees receive.',
   '/loans': 'Salary advances and loans, with their repayment schedules.',
   '/benefits': 'Benefit plans offered to employees, and who is enrolled.',
   '/benefits/by-grade': 'What each grade is entitled to — housing, transport, tickets, medical, education, per diem — per company.',
@@ -158,15 +146,10 @@ export const navigationHints: Record<string, string> = {
   '/compliance': 'Expiring iqamas, passports and permits, and missing documents.',
   '/ai-assistant': 'Ask Kody, your HR assistant, questions about your workforce data.',
   '/reports': 'Standard and custom reports, with scheduled delivery.',
-  '/compliance-profiles': 'Country and company rules that compliance checks run against.',
-  '/tax-policies': 'Tax and contribution rules applied during payroll.',
   '/hr-requests': 'Requests raised by employees to HR, and their status.',
   '/approvals': 'Everything waiting for your decision, oldest first.',
-  '/user-management': 'Users, roles and what each role is allowed to do.',
   '/saudi-compliance': 'Saudization (Nitaqat), Qiwa and Mudad status for the company.',
   '/gosi-filing': 'Prepare and check the monthly GOSI contribution filing.',
-  '/tenant-admin': 'Company-wide settings: security, localisation and modules.',
-  '/setup': 'Company structure, jobs and grades, payroll and country rules, and workspace settings.',
-  '/opening-balances': 'Load leave, loan and end-of-service balances when going live.',
+  '/setup': 'Every setting in one place: company structure, leave, pay, users and access, and the workspace.',
   '/payroll/variance': 'Compare a payroll run with the previous system’s register for the same month.',
 };

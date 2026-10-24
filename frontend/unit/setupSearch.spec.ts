@@ -18,11 +18,11 @@ function access(options: { permissions?: string[]; roles?: string[]; companyScop
     hasRole: role => roles.has(role),
     isCompanyScopedGroup: options.companyScoped ?? false,
     policyIntake: options.policyIntake ?? false,
+    isFeatureEnabled: () => true,
+    verdictForPath: () => ({ allowed: true }),
+    flagStatus: 'ready',
   };
-  return {
-    nav,
-    flags: { ...nav, isFeatureEnabled: () => true, verdictForPath: () => ({ allowed: true }), flagStatus: 'ready' as const },
-  };
+  return { nav, flags: nav };
 }
 function index(options?: Parameters<typeof access>[0]): SetupSearchEntry[] {
   const { nav, flags } = access(options);
@@ -73,10 +73,14 @@ test('synonyms find the setting people mean', () => {
 
 test('All setup areas destinations and Payroll accounting tabs are found with their caption', () => {
   const entries = index();
+  // A module's configuration is a Setup section of its own, found under its navigation group.
   const leave = matchSetupEntries(entries, 'leave types', en)[0];
   expect(leave.label).toBe('Leave types');
-  expect(leave.group).toBe('Leave and absence');
-  expect(leave.entry.href).toBe('/setup?tab=aiSetup&path=configuration&area=leave&setting=leaveTypes');
+  expect(leave.group).toBe('Time & leave');
+  expect(leave.entry.navId).toBe('leaveTypes');
+  expect(leave.entry.href).toBe('/setup?tab=leaveTypes');
+  // An operations destination still opens its module.
+  expect(matchSetupEntries(entries, 'workforce planning', en).find(hit => hit.entry.id === 'destination:recruitment:recruitment')?.entry.href).toBe('/recruitment');
   const rates = matchSetupEntries(entries, 'company rates', en)[0];
   expect(rates.label).toBe('Company Rates');
   expect(rates.group).toBe('Payroll accounting');
@@ -114,10 +118,12 @@ test('a user never finds a section the navigation hides from them', () => {
   // A company-scoped group administrator: only company-owned settings, and no tenant-wide destinations.
   const scoped = index({ companyScoped: true });
   const scopedSections = scoped.filter(entry => entry.navId && !entry.id.startsWith('gl:')).map(entry => entry.id);
-  expect(scopedSections).toEqual(['guidedSetup', 'allSetupAreas', 'policyStarter', 'companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']);
+  // Modules' configuration follows each module's own rule, which company scope never narrowed (the Leave page, Payslip
+  // templates and Tax policies opened for them before the move too).
+  expect(scopedSections).toEqual(['guidedSetup', 'allSetupAreas', 'policyStarter', 'companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs',
+    'leaveTypes', 'leavePolicies', 'holidayCalendars', 'payslipTemplates', 'onboardingChecklists', 'taxPolicies']);
   expect(ids(scoped, 'grades')).toEqual([]);
-  // Leave types are tenant-wide: not theirs. (The Leave workspace itself is, so its area is still found.)
-  expect(ids(scoped, 'leave types')).toEqual(['area:leave']);
+  expect(ids(scoped, 'leave types')).toContain('leaveTypes');
   // Policy library only while policy intake is on; Payroll accounting tabs only with their permission.
   expect(ids(index(), 'policy library')).toEqual([]);
   expect(ids(index({ policyIntake: true }), 'policy library')).toContain('policyLibrary');
