@@ -8,6 +8,8 @@ using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Recruitment;
 
+using Zayra.Api.Infrastructure.Leave;
+
 namespace Zayra.Api.Infrastructure.Seed;
 
 /// <summary>
@@ -569,7 +571,8 @@ public static class TenantProvisioningBundle
         var policies = (await ScopedBypass.TenantWide(db.LeavePolicies, tenantId, why).AsNoTracking()
                 .Where(p => p.CompanyId == companyId || p.CompanyId == null)
                 .Select(p => new { p.LeaveTypeId, p.CountryCode }).ToListAsync(ct))
-            .Select(x => (x.LeaveTypeId, Country: (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
+            // Stored countries may be ISO-3 or aliases (SAU, KSA, ARE): compare as ISO-2, as leave scoping does.
+            .Select(x => (x.LeaveTypeId, Country: LeavePolicyScope.CountryIso2(x.CountryCode) ?? (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
             .ToHashSet();
         var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var basis in LeavePolicyBases)
@@ -628,7 +631,7 @@ public static class TenantProvisioningBundle
 
     /// <summary>A policy's country as the installer stores it: ISO-2 when recognised ("SAU" → "SA"), else trimmed upper-case.</summary>
     private static string NormalizeLeaveCountry(string? countryCode)
-        => CountryCodeStandard.NormalizeToIso2(countryCode) ?? (countryCode ?? string.Empty).Trim().ToUpperInvariant();
+        => LeavePolicyScope.CountryIso2(countryCode) ?? (countryCode ?? string.Empty).Trim().ToUpperInvariant();
 
     /// <summary>
     /// The leave types a company uses, by code: its own rows first, then unassigned legacy rows it has no own code for.
@@ -676,7 +679,8 @@ public static class TenantProvisioningBundle
                 .Where(p => p.CompanyId == companyId || p.CompanyId == null)
                 .Select(p => new { p.LeaveTypeId, p.CountryCode })
                 .ToListAsync(ct))
-            .Select(x => (x.LeaveTypeId, Country: (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
+            // Stored countries may be ISO-3 or aliases (SAU, KSA, ARE): compare as ISO-2, as leave scoping does.
+            .Select(x => (x.LeaveTypeId, Country: LeavePolicyScope.CountryIso2(x.CountryCode) ?? (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()))
             .ToHashSet();
 
         // The country-neutral row first (empty CountryCode = applies to any employee), then one per

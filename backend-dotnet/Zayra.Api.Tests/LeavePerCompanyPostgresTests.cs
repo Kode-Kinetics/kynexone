@@ -560,6 +560,14 @@ public sealed class LeavePerCompanyPostgresTests(PostgresFixture fixture)
         (await TenantProvisioningBundle.MissingDefaultLeaveForCountryAsync(db, tenant, a.Id, "SA", default)).Should().BeEmpty();
         (await TenantProvisioningBundle.InstallDefaultLeaveForCountryAsync(db, tenant, a.Id, "SA", default)).Should().Be((0, 0));
 
+        // Older rows say KSA or SAU: they are the same country (LeavePolicyScope.CountryIso2), so nothing is installed twice.
+        var saPolicies = await db.LeavePolicies.IgnoreQueryFilters().Where(x => x.TenantId == tenant && x.CompanyId == a.Id && x.CountryCode == "SA").ToListAsync();
+        for (var i = 0; i < saPolicies.Count; i++) saPolicies[i].CountryCode = i % 2 == 0 ? "KSA" : "SAU";
+        await db.SaveChangesAsync();
+        (await TenantProvisioningBundle.MissingDefaultLeaveForCountryAsync(db, tenant, a.Id, "SA", default)).Should().BeEmpty();
+        (await TenantProvisioningBundle.MissingDefaultLeaveForCountryAsync(db, tenant, a.Id, "KSA", default)).Should().BeEmpty();
+        (await TenantProvisioningBundle.InstallDefaultLeaveForCountryAsync(db, tenant, a.Id, "SA", default)).Should().Be((0, 0));
+
         // An archived default stays archived: it counts as present.
         var archived = await db.LeavePolicies.IgnoreQueryFilters().FirstAsync(x => x.TenantId == tenant && x.CompanyId == b.Id);
         archived.Status = "Archived";
