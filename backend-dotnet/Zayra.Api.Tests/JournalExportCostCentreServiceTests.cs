@@ -173,6 +173,15 @@ public class JournalExportCostCentreServiceTests
 
     // ── S-039: a rule that became Required after posting ──────────────────────────────────────────
 
+    /// <summary>The rule turns Required after the lines were posted: the ledger guard refuses an uncosted line on a Required
+    /// account at posting time, so the "became Required later" case is set up in that order.</summary>
+    private static void RequireAfterPosting(Zayra.Api.Data.ZayraDbContext db, Guid tenantId)
+    {
+        db.GlAccounts.Single(a => a.TenantId == tenantId && a.Code == "5000").CostCenterRule = "Required";
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+    }
+
     private static void SeedUncosted(Microsoft.EntityFrameworkCore.DbContext db, Guid tenantId)
     {
         db.Add(Row(tenantId, "Accrual", "5000 - Salaries", "", 10_000m, "Confidential July payroll"));
@@ -184,8 +193,9 @@ public class JournalExportCostCentreServiceTests
     public async Task ARequiredRule_WithUncostedPostedLines_IsReportedWithCountsOnly_UntilAcknowledged()
     {
         var (db, tenantId) = await TenantAsync(costAccounting: true);
-        SeedChart(db, tenantId, rule5000: "Required");
+        SeedChart(db, tenantId);
         SeedUncosted(db, tenantId);
+        RequireAfterPosting(db, tenantId);
         var maker = await CallerAsync(db, tenantId, "Payroll Manager");
 
         var refused = await CreateAsync(db, maker);
@@ -224,11 +234,12 @@ public class JournalExportCostCentreServiceTests
 
         // an uncosted CONTRA is exempt (a rule change after posting must not block a void's export); its original still counts once.
         var (rev, revTenant) = await TenantAsync(costAccounting: true);
-        SeedChart(rev, revTenant, rule5000: "Required");
+        SeedChart(rev, revTenant);
         var original = Row(revTenant, "Accrual", "5000 - Salaries", "2100 - Salaries Payable", 50m, "orig");
         rev.Add(original);
         rev.Add(Row(revTenant, "Reversal", "2100 - Salaries Payable", "5000 - Salaries", 50m, "contra", reversalOf: original.Id));
         rev.SaveChanges();
+        RequireAfterPosting(rev, revTenant);
         var refused = await CreateAsync(rev, await CallerAsync(rev, revTenant, "Payroll Manager"));
         StatusOf(refused).Should().Be(422);
         Body(refused).GetProperty("count").GetInt32().Should().Be(1);

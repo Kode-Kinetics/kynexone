@@ -29,6 +29,11 @@ internal static class CostExportHarness
             Id = CompanyA, TenantId = tenantId, LegalNameEn = "Alpha", RegistrationNumber = "7001234567",
             ErpCompanyCode = erpCode, DefaultCurrency = currency, CostAccountingEnabled = costAccounting,
         });
+        // The ledger guard only accepts a cost centre that exists, is active and belongs to the posting company.
+        db.CostCenters.Add(new CostCenter
+        {
+            Id = Cc100, TenantId = tenantId, CompanyId = CompanyA, Code = "CC100", Name = "Operations", GlSegment = "6100-OPS", IsActive = true,
+        });
         await db.SaveChangesAsync();
         return (db, tenantId);
     }
@@ -57,11 +62,14 @@ internal static class CostExportHarness
         TenantId = tenantId, CompanyId = company ?? CompanyA, SourceModule = module, SourceEntityId = source ?? RunId,
         SourceEntityRef = module + "-REF", EventType = evt, DebitAccount = dr, CreditAccount = cr, Amount = amount,
         Currency = currency, EntryDate = new DateOnly(2026, 8, 3), Period = Period, Description = description,
-        CostCenterId = ccCode is null ? null : Guid.NewGuid(), CostCenterCode = ccCode, CostCenterName = ccName,
+        CostCenterId = ccCode is null ? null : ccCode == "CC100" ? Cc100 : Guid.NewGuid(), CostCenterCode = ccCode, CostCenterName = ccName,
         CostCenterGlSegment = ccSegment, ReversalOfEntryId = reversalOf,
     };
 
     public static readonly Guid RunId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+
+    /// <summary>Company A's seeded cost centre; ledger rows that name "CC100" point at it.</summary>
+    public static readonly Guid Cc100 = Guid.Parse("cccccccc-0000-0000-0000-000000000100");
 
     public static GlJournalExportsController Ctrl(ZayraDbContext db, ClaimsPrincipal caller)
     {

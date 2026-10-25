@@ -233,6 +233,7 @@ public class CostCentrePermissionTests
     private static readonly Dictionary<string, string> KnownGaps = new(StringComparer.Ordinal)
     {
         ["Controllers/SetupAssistantController.cs"] = "Applies an AI draft under organization.setup.apply; owned by the setup-assistant work, not WP-A.",
+        ["Controllers/FinanceGlController.CostAccounting.cs"] = "Writes only the company's DefaultCostCenterId, a finance setting gated by finance.gl.manage with a reason and audit (contract AM-3, AM-27), not an HR attribution door.",
         ["Controllers/EstablishmentController.cs"] = "Establishment repair: sets DepartmentId only where the employee's free-text department already names that department (no change in meaning); gated by organization.establishment.write.",
     };
 
