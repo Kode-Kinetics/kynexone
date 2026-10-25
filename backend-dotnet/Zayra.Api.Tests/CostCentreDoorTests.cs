@@ -6,9 +6,11 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
+using Zayra.Api.Application.Timesheets;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Audit;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Timesheets;
@@ -32,8 +34,8 @@ public class CostCentreDoorTests
     {
         var db = Db();
         var tenant = Guid.NewGuid();
-        var a = new Company { TenantId = tenant, LegalNameEn = "Alpha", RegistrationNumber = "A-1", IsActive = true, DefaultCurrency = "SAR" };
-        var b = new Company { TenantId = tenant, LegalNameEn = "Beta", RegistrationNumber = "B-1", IsActive = true, DefaultCurrency = "SAR" };
+        var a = new Company { TenantId = tenant, LegalNameEn = "Alpha", RegistrationNumber = "A-1", IsActive = true, DefaultCurrency = "SAR", CountryCode = "SA" };
+        var b = new Company { TenantId = tenant, LegalNameEn = "Beta", RegistrationNumber = "B-1", IsActive = true, DefaultCurrency = "SAR", CountryCode = "SA" };
         var own = new CostCenter { TenantId = tenant, CompanyId = a.Id, Code = "OWN", Name = "Own" };
         var inactive = new CostCenter { TenantId = tenant, CompanyId = a.Id, Code = "OFF", Name = "Off", IsActive = false };
         var deleted = new CostCenter { TenantId = tenant, CompanyId = a.Id, Code = "DEL", Name = "Del", IsDeleted = true };
