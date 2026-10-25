@@ -108,11 +108,25 @@ public sealed record GlResolutionContext(
     /// </summary>
     public IReadOnlyList<GlDriverRow> InactiveSystemDrivers { get; init; } = Array.Empty<GlDriverRow>();
 
+    // ── Cost accounting (WP-B). All `init`, so neither this record's constructor nor BuildPayrollGlEntries changes arity. ──
+    public IReadOnlyDictionary<string, (string AccountType, string Rule)> AccountRules { get; init; }
+        = new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<(string DriverKey, string Class), (string Code, string Name)> ClassOverrides { get; init; }
+        = new Dictionary<(string, string), (string, string)>();
+    public IReadOnlyDictionary<string, Guid> FixedCostCentres { get; init; } = new Dictionary<string, Guid>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<Guid, GlCostCentreInfo> CostCentres { get; init; } = new Dictionary<Guid, GlCostCentreInfo>();
+    public bool CostAccountingEnabled { get; init; }
+    public Guid? CompanyDefaultCostCentreId { get; init; }
+    public short CostCentreSmallCellMin { get; init; }
+
     public static readonly GlResolutionContext Empty = new(
         new Dictionary<string, (string, string)>(),
         new Dictionary<string, (string, string)>(),
         Array.Empty<GlDriverRow>());
 }
+
+/// <summary>A cost centre as the posting builders see it (live row of the posting company).</summary>
+public sealed record GlCostCentreInfo(string Code, string Name, string? GlSegment, string? FunctionalClass, Guid? ParentId, bool IsActive);
 
 /// <summary>The kinds of problem the resolver can report for a driver. Stable strings: the GL resolution
 /// API returns them verbatim.</summary>
@@ -174,6 +188,10 @@ public static class GlAccountResolver
         if (PayrollGlCatalog.Defaults.TryGetValue(driverKey, out var d)) return d;
         return ("9999", "Unmapped");
     }
+
+    /// <summary>STUB (TDD red): class-aware account choice.</summary>
+    public static (string Code, string Name) AccountFor(string driverKey, string? ccClass, GlResolutionContext ctx)
+        => Resolve(driverKey, ctx.Overrides, ctx.DriverDefaults);
 
     /// <summary>Driver key → the persisted "&lt;code&gt; - &lt;name&gt;" account label written to the ledger.</summary>
     public static string AccountLabel(string driverKey, GlResolutionContext ctx)

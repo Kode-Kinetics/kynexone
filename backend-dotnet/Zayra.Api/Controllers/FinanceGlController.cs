@@ -38,7 +38,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/finance/gl")]
 [Authorize]
-public class FinanceGlController : ControllerBase
+public partial class FinanceGlController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     public FinanceGlController(ZayraDbContext db) => _db = db;
@@ -143,6 +143,11 @@ public class FinanceGlController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, acct.CompanyId));
     }
+
+    /// <summary>STUB (TDD red).</summary>
+    [HttpPost("accounts/cost-centre-rule-preset")]
+    public Task<IActionResult> ApplyCostCentreRulePreset([FromQuery] Guid? companyId, [FromQuery] bool dryRun, [FromBody] CostCentreRulePresetRequest? req, CancellationToken ct)
+        => Task.FromResult<IActionResult>(StatusCode(501));
 
     [HttpDelete("accounts/{id:guid}")]
     public async Task<IActionResult> DeleteAccount(Guid id, CancellationToken ct)
@@ -322,7 +327,7 @@ public class FinanceGlController : ControllerBase
     /// account whose type the driver accepts (earnings → Expense, deductions → the type the catalog
     /// declares, NET_PAYABLE → Liability).</summary>
     [HttpPut("mappings")]
-    public async Task<IActionResult> SetMappings([FromQuery] Guid? companyId, [FromBody] List<GlMappingRequest> mappings, CancellationToken ct)
+    public async Task<IActionResult> SetMappings([FromQuery] Guid? companyId, [FromBody] List<GlMappingRequest> mappings, CancellationToken ct, [FromQuery] string? reason = null)
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -1055,8 +1060,17 @@ public class FinanceGlController : ControllerBase
 public record GlPeriodActionRequest(string? Reason = null);
 /// <param name="ExternalCode">The account code in the client's ERP. Create: optional. Update: null leaves it
 /// unchanged, "" clears it.</param>
-public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true, string? ExternalCode = null);
-public record GlMappingRequest(string DriverKey, Guid AccountId, Guid? SegmentCostCenterId = null);
+/// <param name="CostCenterRule">Required | Optional | NotAllowed. Create: null = Optional. Update: null leaves the rule unchanged.</param>
+public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true, string? ExternalCode = null, string? CostCenterRule = null);
+/// <param name="FunctionalClass">Cost-centre functional class this row applies to; null = every class. Mutually exclusive with a fixed cost centre.</param>
+public record GlMappingRequest(string DriverKey, Guid AccountId, Guid? SegmentCostCenterId = null, string? FunctionalClass = null);
+public record CostCentreRulePresetRequest(string? Reason);
+/// <param name="Enabled">null = unchanged.</param>
+/// <param name="DefaultCostCenterId">null = unchanged (use <paramref name="ClearDefaultCostCenter"/> to remove).</param>
+/// <param name="SmallCellMin">null = unchanged.</param>
+public record CostAccountingSettingsRequest(
+    bool? Enabled = null, Guid? DefaultCostCenterId = null, bool ClearDefaultCostCenter = false, short? SmallCellMin = null,
+    string? Reason = null, bool AcknowledgeBlockers = false);
 public record GlDriverRequest(
     string Key, string Label, string Category, string PostingSide, string DefaultCode, string DefaultName,
     string AccountType = "Expense", string? MatchSource = null, string MatchMode = "Exact",

@@ -178,6 +178,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
+        await EnforceFinanceGlEntryIntegrityAsync(cancellationToken);
         await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
         await RevokeTrustedBrowsersOnCredentialChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
@@ -280,6 +281,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
+        EnforceFinanceGlEntryIntegrityAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         RevokeTrustedBrowsersOnCredentialChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
@@ -509,6 +511,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             prev = row.EntryHash;
         }
     }
+
+    // ── Cost accounting AM-11: ledger-line integrity (STUB, TDD red) ──────────────────────────────────
+    private Task EnforceFinanceGlEntryIntegrityAsync(CancellationToken ct, bool synchronous = false) => Task.CompletedTask;
+    // ── end cost accounting guard ─────────────────────────────────────────────────────────────────────
 
     private void EnforceAuditLogAppendOnly()
     {
