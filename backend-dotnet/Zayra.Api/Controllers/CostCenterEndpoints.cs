@@ -34,6 +34,7 @@ internal static class CostCenterEndpoints
         if (tenantId is null) return c.Unauthorized();
         if (!OrgWriteRules.MayWriteCompany(c, request.CompanyId)) return c.Forbid();
         try { return created(await organization.CreateCostCenterAsync(tenantId.Value, request, context, ct)); }
+        catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
     }
 
@@ -51,6 +52,7 @@ internal static class CostCenterEndpoints
             var costCenter = await organization.UpdateCostCenterAsync(tenantId.Value, id, request, context, ct);
             return costCenter is null ? c.NotFound() : c.Ok(costCenter);
         }
+        catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
     }
 
@@ -61,6 +63,7 @@ internal static class CostCenterEndpoints
         if (tenantId is null) return c.Unauthorized();
         var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
         if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return c.NotFound();
-        return await organization.DeleteCostCenterAsync(tenantId.Value, id, context, ct) ? c.NoContent() : c.NotFound();
+        try { return await organization.DeleteCostCenterAsync(tenantId.Value, id, context, ct) ? c.NoContent() : c.NotFound(); }
+        catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
     }
 }
