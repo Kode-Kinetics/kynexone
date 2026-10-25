@@ -14,6 +14,7 @@ using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -91,6 +92,7 @@ public class OrganizationStructureImportController : ControllerBase
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PackageChecksum == checksum && x.Status != "Committed", ct);
 
         var parsed = ParsePackage(req);
+        if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var validation = await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct);
         var reconciliation = await BuildReconciliationAsync(tenantId, parsed, validation, ct);
         var errors = validation.Rows.SelectMany(x => x.Errors).ToList();
@@ -209,6 +211,7 @@ public class OrganizationStructureImportController : ControllerBase
     {
         var tenantId = GetTenantId();
         var parsed = ParsePackage(req);
+        if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         return Ok(await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct));
     }
 
@@ -217,6 +220,7 @@ public class OrganizationStructureImportController : ControllerBase
     {
         var tenantId = GetTenantId();
         var parsed = ParsePackage(req);
+        if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var validation = await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct);
         if (validation.HasBlockingErrors)
             return UnprocessableEntity(validation);
@@ -443,6 +447,9 @@ public class OrganizationStructureImportController : ControllerBase
             }
             else
             {
+                // A code is printed on journal exports: the same format rule as the form (contract 1.1).
+                if (!CostCentreCode.IsValid(OrgCodes.Normalize(code)))
+                    throw new InvalidOperationException($"Cost center code '{code}': {CostCentreCode.Rule}");
                 cc = new CostCenter { TenantId = tenantId, CompanyId = company.Id, Code = OrgCodes.Normalize(code), Name = Val(row, "Name"), IsActive = Bool(row, "IsActive", true), CreatedBy = GetUserId() };
                 _db.CostCenters.Add(cc);
                 Audit("organization.cost_center_created", nameof(CostCenter), cc.Id, code);
@@ -510,7 +517,12 @@ public class OrganizationStructureImportController : ControllerBase
                 throw new InvalidOperationException($"Department '{code}' links a branch or cost center of another company.");
             // A blank link cell leaves an existing row's link unchanged.
             if (departmentBranch is not null) department.BranchId = departmentBranch.Id;
-            if (departmentCostCenter is not null) department.CostCenterId = departmentCostCenter.Id;
+            if (departmentCostCenter is not null)
+            {
+                if (!departmentCostCenter.IsActive && departmentCostCenter.Id != department.CostCenterId)
+                    throw new InvalidOperationException($"Department '{code}' links cost center '{departmentCostCenter.Code}', which is inactive.");
+                department.CostCenterId = departmentCostCenter.Id;
+            }
             if (!string.IsNullOrWhiteSpace(Val(row, "ManagerEmployeeCode"))) department.ManagerEmployeeId = employeesByCode[Val(row, "ManagerEmployeeCode").ToUpperInvariant()].Id;
             department.ApprovedHeadcount = Int(row, "ApprovedHeadcount");
             department.MonthlyBudgetAmount = Dec(row, "MonthlyBudgetAmount");
@@ -619,7 +631,15 @@ public class OrganizationStructureImportController : ControllerBase
                 position.BranchId = position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
                     : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
             if (!string.IsNullOrWhiteSpace(Val(row, "DepartmentCode"))) position.DepartmentId = departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
-            if (!string.IsNullOrWhiteSpace(Val(row, "CostCenterCode"))) position.CostCenterId = CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode")).Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")))
+            {
+                var positionCostCenter = CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode"));
+                if (!positionCostCenter.IsActive && positionCostCenter.Id != position.CostCenterId)
+                    throw new InvalidOperationException($"Position '{code}' links cost center '{positionCostCenter.Code}', which is inactive.");
+                if (position.CompanyId is Guid positionCompany && positionCostCenter.CompanyId != positionCompany)
+                    throw new InvalidOperationException($"Position '{code}' links a cost center of another company.");
+                position.CostCenterId = positionCostCenter.Id;
+            }
             if (!string.IsNullOrWhiteSpace(Val(row, "DesignationCode"))) position.DesignationId = designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
             if (!string.IsNullOrWhiteSpace(Val(row, "GradeCode"))) position.GradeId = grades[Val(row, "GradeCode").ToUpperInvariant()].Id;
             position.Fte = Dec(row, "Fte", 1m);
@@ -1169,6 +1189,12 @@ public class OrganizationStructureImportController : ControllerBase
         foreach (var value in values)
             if (!string.IsNullOrWhiteSpace(value)) target.Add(value);
     }
+
+    /// <summary>A package that carries cost centres, or links a department or position to one, re-points cost: it needs the cost-centre permission.</summary>
+    private bool PackageSetsCostAttribution(ParsedOrgPackage parsed) =>
+        parsed.CostCenters.Count > 0
+        || parsed.Departments.Any(r => HasValue(r, "CostCenterCode") || HasValue(r, "ParentDepartmentCode"))
+        || parsed.Positions.Any(r => HasValue(r, "CostCenterCode"));
 
     private static ParsedOrgPackage ParsePackage(OrganizationStructureImportRequest req) => new(
         Csv.Parse(req.CompaniesCsv ?? string.Empty),

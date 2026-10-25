@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -30,6 +31,7 @@ public class CostCentersController : ControllerBase
     public CostCentersController(IOrganizationSetupService organization, ZayraDbContext db) { _organization = organization; _db = db; }
 
     [HttpGet]
+    [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<PagedResult<CostCenterDto>>> Search([FromQuery] Guid? companyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
@@ -38,6 +40,7 @@ public class CostCentersController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<CostCenterDto>> Get(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();
@@ -82,6 +85,7 @@ public class CostCentersController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
+        if (!OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;
@@ -94,6 +98,7 @@ public class CostCentersController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
+        if (!OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;

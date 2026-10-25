@@ -183,7 +183,7 @@ public class AuthSeeder : IAuthSeeder
         // reset = Admin, HR Manager (employee-access contract, Amendment 3 F1).
         await EnsureRole(tenantId, "HR Director", "Senior HR leader with strategic visibility", permissions.Where(x =>
             (x.Key.StartsWith("employees.") && !x.Key.StartsWith("employees.access.")) || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
-            x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
+            x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || (x.Key.StartsWith("organization.") && x.Key != "organization.costcenter.manage") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
             x.Key.StartsWith("recruitment.") || x.Key is "payroll.read" or "loans.read" or "audit.read" or
@@ -406,6 +406,7 @@ public class AuthSeeder : IAuthSeeder
             ("organization.write", "Organization", "Create and update organization master data"),
             ("organization.delete", "Organization", "Delete organization master data"),
             ("organization.establishment.write", "Organization", "Edit staffing budgets and establishment envelopes (departmental headcount by level)"),
+            ("organization.costcenter.manage", "Organization", "Create, edit, deactivate and import cost centres, and change which cost centre a department, position or employee costs to"),
             // Attendance
             ("attendance.read", "Attendance", "Read attendance records"),
             ("attendance.write", "Attendance", "Create and update attendance records"),

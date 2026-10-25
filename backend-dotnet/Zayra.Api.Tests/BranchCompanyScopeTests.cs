@@ -50,6 +50,7 @@ public class BranchCompanyScopeTests
             new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new(ClaimTypes.Role, "HR Manager"),
             new("permission", "organization.read"),
+            new("permission", "organization.costcenter.manage"),
         };
         if (companyScope.Length == 0) claims.Add(new Claim("is_group_scope", "true"));
         else claims.AddRange(companyScope.Select(c => new Claim("entity_access", JsonSerializer.Serialize(new { c, r = "HR Manager" }))));

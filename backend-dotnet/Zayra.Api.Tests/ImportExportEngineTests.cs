@@ -55,7 +55,7 @@ public class ImportExportEngineTests
 
     private static ControllerContext MakeContext(Guid tenantId, bool withEstablishmentWrite = false)
     {
-        var claims = new List<Claim> { new("tenant_id", tenantId.ToString()), new(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()) };
+        var claims = new List<Claim> { new("tenant_id", tenantId.ToString()), new(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new("permission", "organization.costcenter.manage") };
         if (withEstablishmentWrite) { claims.Add(new Claim("permission", "organization.establishment.write")); claims.Add(new Claim("is_group_scope", "true")); }
         var identity = new ClaimsIdentity(claims, "test");
         var principal = new ClaimsPrincipal(identity);

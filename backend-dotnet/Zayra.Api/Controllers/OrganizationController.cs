@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 
@@ -112,6 +113,7 @@ public class OrganizationController : ControllerBase
 
     [HttpGet("cost-centers")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+    [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<PagedResult<CostCenterDto>>> CostCenters([FromQuery] Guid? companyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
         => Ok(await _organization.GetCostCentersAsync(RequireTenant(), companyId, page, pageSize, cancellationToken));
 
