@@ -53,6 +53,7 @@ function seedAccounts(options: Options): Account[] {
     { id: 'acc-2100', companyId: null, code: '2100', name: 'Salaries Payable', accountType: 'Liability', isActive: true, costCenterRule: 'NotAllowed' },
     { id: 'acc-1400', companyId: null, code: '1400', name: 'Employee Loans Receivable', accountType: 'Asset', isActive: true, costCenterRule: done ? 'NotAllowed' : 'Optional' },
     { id: 'acc-5090', companyId: 'co-sa', code: '5090', name: 'Riyadh Site Allowance', accountType: 'Expense', isActive: true, costCenterRule: 'Optional' },
+    { id: 'acc-5091', companyId: 'co-sa', code: '5091', name: 'Remote Location Hardship Supplement for Long-Term Contractors and Seconded Staff', accountType: 'Expense', isActive: true, costCenterRule: 'Required', externalCode: 'SAP-600091-HARDSHIP' },
   ];
 }
 
@@ -806,4 +807,60 @@ test('axe: the readiness tab, and the turn-on dialog open over it, have no serio
   await switchEl(page).click();
   await expect(tid(page, 'cc-on-dialog-blocker-employees-unresolved')).toBeVisible();
   expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
+});
+
+
+// ═════════════════════════════ Layout at laptop widths ═════════════════════════════
+// A finance user at 1280 or 1440 must see every column, and the fixed cost centre control, without hunting for a
+// horizontal scrollbar, and nothing may be cut off by an ancestor that hides overflow.
+
+for (const size of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }]) {
+  for (const locale of ['en', 'ar'] as const) {
+    test(`layout ${size.width}x${size.height} ${locale}: the chart and the mapping table show every column without scrolling or clipping`, async ({ page }, info) => {
+      await page.setViewportSize(size);
+      await boot(page, { locale });
+      await expect(tid(page, 'cc-map-fixed-EARN:HOUSING')).toBeVisible();
+      await expect(chart(page).getByRole('cell', { name: '5091', exact: true })).toBeVisible();
+      const problems = await page.evaluate(() => {
+        const out: string[] = [];
+        const vw = document.documentElement.clientWidth;
+        const clips = (v: string) => v === 'hidden' || v === 'clip' || v === 'auto' || v === 'scroll';
+        const check = (label: string, el: Element) => {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0) return;
+          if (r.left < -0.5 || r.right > vw + 0.5) out.push(`${label} outside the viewport`);
+          for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+            const cs = getComputedStyle(a);
+            if (!clips(cs.overflowX)) continue;
+            const ar = a.getBoundingClientRect();
+            if (r.left < ar.left - 0.5 || r.right > ar.right + 0.5) {
+              out.push(`${label} clipped by ${a.tagName.toLowerCase()}${a.getAttribute('data-testid') ? '#' + a.getAttribute('data-testid') : ''}`);
+              break;
+            }
+          }
+        };
+        for (const [name, sel, extra] of [
+          ['chart', '[role="group"][aria-labelledby="gl-coa-heading"]', ['tbody tr:not(:first-child) td']],
+          ['mapping', '[role="group"][aria-labelledby="gl-map-heading"]', ['[data-testid="cc-map-fixed-EARN:HOUSING"]', '[data-testid="cc-map-add-class-EARN:HOUSING"]']],
+        ] as const) {
+          const wrap = document.querySelector(sel) as HTMLElement | null;
+          if (!wrap) { out.push(`${name}: table not found`); continue; }
+          if (wrap.scrollWidth > wrap.clientWidth + 1) out.push(`${name}: scrolls horizontally (${wrap.scrollWidth} > ${wrap.clientWidth})`);
+          wrap.querySelectorAll('thead th').forEach((th) => check(`${name} header "${th.textContent?.trim()}"`, th));
+          for (const e of extra) wrap.querySelectorAll(e).forEach((el) => check(`${name} ${e}`, el));
+        }
+        return out;
+      });
+      expect(problems).toEqual([]);
+      await shot(page, info, `cc-${locale}-layout-${size.width}`);
+    });
+  }
+}
+
+test('a long account name is cut with an ellipsis and keeps its full text in a title', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await boot(page);
+  const name = chart(page).getByRole('row').filter({ hasText: '5091' }).locator('[data-testid="cc-acct-name-5091"]');
+  await expect(name).toHaveAttribute('title', 'Remote Location Hardship Supplement for Long-Term Contractors and Seconded Staff');
+  expect(await name.evaluate((el) => getComputedStyle(el).textOverflow)).toBe('ellipsis');
 });
