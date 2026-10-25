@@ -21,16 +21,32 @@ internal static class CostExportHarness
     public static readonly Guid CompanyB = Guid.Parse("bbbbbbbb-0000-0000-0000-00000000000b");
 
     public static async Task<(ZayraDbContext Db, Guid TenantId)> TenantAsync(
-        string currency = "SAR", bool costAccounting = false)
+        string currency = "SAR", bool costAccounting = false, string? erpCode = "SA01")
     {
         var (db, tenantId) = await NewTenantAsync("gl-cc-export");
         db.Companies.Add(new Company
         {
             Id = CompanyA, TenantId = tenantId, LegalNameEn = "Alpha", RegistrationNumber = "7001234567",
-            ErpCompanyCode = "SA01", DefaultCurrency = currency, CostAccountingEnabled = costAccounting,
+            ErpCompanyCode = erpCode, DefaultCurrency = currency, CostAccountingEnabled = costAccounting,
         });
         await db.SaveChangesAsync();
         return (db, tenantId);
+    }
+
+    /// <summary>The chart the exporter classifies sides with: 5xxx Expense, 2xxx Liability, 1xxx Asset (tenant defaults).</summary>
+    public static void SeedChart(ZayraDbContext db, Guid tenantId, string? rule5000 = null)
+    {
+        foreach (var (code, name, type) in new[]
+        {
+            ("5000", "Salaries", "Expense"), ("5200", "Bonus Expense", "Expense"), ("2100", "Salaries Payable", "Liability"),
+            ("2300", "Bonus Payable", "Liability"), ("1400", "Employee Loans", "Asset"), ("1000", "Bank", "Asset"),
+        })
+            db.GlAccounts.Add(new GlAccount
+            {
+                TenantId = tenantId, Code = code, Name = name, AccountType = type,
+                CostCenterRule = code == "5000" && rule5000 is not null ? rule5000 : "Optional",
+            });
+        db.SaveChanges();
     }
 
     public static FinanceGlEntry Row(
@@ -84,5 +100,30 @@ internal static class CostExportHarness
             Currency = currency, GeneratedAtUtc = new DateTime(2026, 8, 3, 9, 30, 0, DateTimeKind.Utc),
             Lines = lines, ExportId = Zayra.Api.Tests.JournalExportFormatterGoldenTests.ExportId, Kind = JournalExportKinds.Full,
         };
+    }
+
+    /// <summary>RFC-4180 reader (quoted cells may hold commas, quotes and line breaks) — the strict re-parse the corpus tests need.</summary>
+    public static List<List<string>> ParseCsv(string text)
+    {
+        var rows = new List<List<string>>();
+        var row = new List<string>();
+        var cell = new StringBuilder();
+        var quoted = false;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (quoted)
+            {
+                if (c == '"' && i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; }
+                else if (c == '"') quoted = false;
+                else cell.Append(c);
+            }
+            else if (c == '"') quoted = true;
+            else if (c == ',') { row.Add(cell.ToString()); cell.Clear(); }
+            else if (c == '\n') { row.Add(cell.ToString()); cell.Clear(); rows.Add(row); row = new List<string>(); }
+            else cell.Append(c);
+        }
+        if (cell.Length > 0 || row.Count > 0) { row.Add(cell.ToString()); rows.Add(row); }
+        return rows;
     }
 }
