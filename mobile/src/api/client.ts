@@ -9,6 +9,7 @@ import axios, {
   InternalAxiosRequestConfig,
 } from 'axios';
 import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
+import { getApiBaseUrl } from '@/config/server';
 import { tokenStorage, clearAllAuthData } from '@/storage';
 import { createIsolatedPublicAuthClient } from './publicAuthClient';
 
@@ -28,7 +29,7 @@ let refreshPromise: Promise<string> | null = null;
  */
 export function createPublicAuthClient(): AxiosInstance {
   const client = createIsolatedPublicAuthClient({
-    baseURL: APP_CONFIG.API_BASE_URL,
+    baseURL: getApiBaseUrl(),
     timeout: API_TIMEOUT_MS,
     tenantHeader: APP_CONFIG.TENANT_HEADER,
   });
@@ -37,10 +38,32 @@ export function createPublicAuthClient(): AxiosInstance {
     (response) => response,
     (error) => {
       applyServerMessage(error);
+      applyInstallationState(error);
       return Promise.reject(error);
     },
   );
   return client;
+}
+
+export const UPDATE_REQUIRED_MESSAGE =
+  'This version of the KynexOne app is no longer supported. Update it from your app store, then try again.';
+
+/**
+ * Answers about the installation rather than the request: 503 maintenance (an upgrade or restore is running; the
+ * server sends the message to show) and 410 (a route this app version uses has been retired: the app needs updating).
+ */
+function applyInstallationState(error: any): void {
+  const status = error.response?.status;
+  const body = error.response?.data;
+  if (status === 503 && body && typeof body === 'object' && body.error === 'maintenance') {
+    error.message = typeof body.message === 'string' && body.message
+      ? body.message
+      : 'KynexOne is being updated. Please try again in a few minutes.';
+    error.isMaintenance = true;
+  } else if (status === 410) {
+    error.message = UPDATE_REQUIRED_MESSAGE;
+    error.isUpdateRequired = true;
+  }
 }
 
 function applyServerMessage(error: any): void {
@@ -89,7 +112,7 @@ async function refreshAccessToken(): Promise<string> {
 
 export function createApiClient(tenantId: string): AxiosInstance {
   const client = axios.create({
-    baseURL: APP_CONFIG.API_BASE_URL,
+    baseURL: getApiBaseUrl(),
     timeout: API_TIMEOUT_MS,
     headers: {
       'Content-Type': 'application/json',
@@ -106,7 +129,7 @@ export function createApiClient(tenantId: string): AxiosInstance {
       }
       if (__DEV__) {
         const method = config.method?.toUpperCase() ?? 'GET';
-        console.log(`[API] ${method} ${APP_CONFIG.API_BASE_URL}${config.url ?? ''}`);
+        console.log(`[API] ${method} ${getApiBaseUrl()}${config.url ?? ''}`);
       }
       return config;
     },
@@ -156,6 +179,7 @@ export function createApiClient(tenantId: string): AxiosInstance {
       // so screens that show error.message say something a user can act on,
       // instead of "Request failed with status code 400".
       applyServerMessage(error);
+      applyInstallationState(error);
 
       // 403: permission denied
       if (error.response?.status === 403) {

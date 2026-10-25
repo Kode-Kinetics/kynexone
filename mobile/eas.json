@@ -11,24 +11,21 @@
         "simulator": true
       },
       "env": {
-        "EXPO_PUBLIC_APP_ENV": "staging",
-        "EXPO_PUBLIC_API_BASE_URL": "https://zayra-ai-workforce.onrender.com/api"
+        "EXPO_PUBLIC_APP_ENV": "staging"
       }
     },
     "preview": {
       "channel": "preview",
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_APP_ENV": "staging",
-        "EXPO_PUBLIC_API_BASE_URL": "https://zayra-ai-workforce.onrender.com/api"
+        "EXPO_PUBLIC_APP_ENV": "staging"
       }
     },
     "production": {
       "channel": "production",
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_APP_ENV": "production",
-        "EXPO_PUBLIC_API_BASE_URL": "https://zayra-ai-workforce.onrender.com/api"
+        "EXPO_PUBLIC_APP_ENV": "production"
       }
     }
   },

@@ -1,5 +1,6 @@
 {
-  "apiBaseUrl": "http://localhost:5117",
+  "apiBaseUrl": "https://hr.client.example",
+  "caFile": "",
   "pollIntervalSeconds": 60,
   "cursorFile": "./.cursor.json",
   "devices": [

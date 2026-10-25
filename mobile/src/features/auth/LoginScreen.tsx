@@ -42,6 +42,7 @@ import { isWelcomeCode, normalizeWelcomeCode } from '@/auth/welcomeCode';
 import { haptics } from '@/utils/haptics';
 import { SignInLanguageToggle } from './SignInLanguageToggle';
 import { loginErrorKey, type LoginErrorKey } from './loginError';
+import { getServer } from '@/config/server';
 
 /* The company ID is asked for only when needed (a link that names it, or the server answering
    `workspace_required`), so it is validated in onSubmit rather than by the schema. Messages are
@@ -429,6 +430,25 @@ export default function LoginScreen({ navigation, route }: Props) {
               onPress={openWelcome}
               testID="login-welcome-code"
             />
+
+            {/* Which KynexOne installation this is, and the way to another (one app serves every organisation). */}
+            <MotionPressable
+              accessibilityRole="button"
+              accessibilityLabel={t('server.change')}
+              onPress={() => navigation.navigate('ServerSetup')}
+              hitSlop={4}
+              style={styles.serverShell}
+              testID="login-change-server"
+            >
+              {getServer()?.organisationName ? (
+                <Text style={[theme.typography.footnote, styles.status, { color: theme.colors.textSecondary }]}>
+                  {t('server.connectedTo', { name: getServer()?.organisationName })}
+                </Text>
+              ) : null}
+              <Text style={[theme.typography.footnote, styles.status, styles.link, { color: theme.colors.accent }]}>
+                {t('server.change')}
+              </Text>
+            </MotionPressable>
           </Surface>
         </Animated.View>
       </ScrollView>
@@ -477,6 +497,7 @@ const styles = StyleSheet.create({
   forgotShell: { alignSelf: 'flex-end', marginTop: -6, marginBottom: 10 },
   forgot: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
   link: { fontWeight: '600' },
+  serverShell: { marginTop: 14, alignSelf: 'center' },
   status: { textAlign: 'center', marginTop: 10 },
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 16 },
   dividerLine: { flex: 1, height: StyleSheet.hairlineWidth },

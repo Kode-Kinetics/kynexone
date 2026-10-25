@@ -3,6 +3,7 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { deviceApi } from '@/api/services';
+import { isPushEnabled } from '@/config/server';
 import type { AppRoute } from '@/navigation/routes';
 
 type NotificationsModule = typeof import('expo-notifications');
@@ -33,6 +34,12 @@ function configureForegroundHandler(Notifications: NotificationsModule) {
  * Call this after the user is authenticated.
  */
 export async function registerPushToken(deviceId: string): Promise<string | null> {
+  // The installation decides: push goes through Expo's service on the internet, which an offline installation
+  // switches off. Then the app neither asks for permission nor registers a token.
+  if (!isPushEnabled()) {
+    console.log('[Push] Push notifications are switched off on this KynexOne server');
+    return null;
+  }
   if (!Device.isDevice) {
     // Loading expo-notifications in an unsigned simulator build can emit a
     // keychain-registration error. Skip the native module entirely there.

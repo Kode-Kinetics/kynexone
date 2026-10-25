@@ -1,4 +1,6 @@
 export type AuthStackParamList = {
+  /** Choose the KynexOne server (typed or scanned). The first screen until one is chosen. */
+  ServerSetup: undefined;
   Login:
     | {
         tenantId?: string;

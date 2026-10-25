@@ -31,9 +31,10 @@ const productionEnv = eas.build?.production?.env ?? {};
 if (productionEnv.EXPO_PUBLIC_APP_ENV !== 'production') {
   failures.push('EAS production profile must set EXPO_PUBLIC_APP_ENV=production.');
 }
+// One store app serves every client installation: the server is chosen at runtime, so a store build needs no API URL.
+// One that is configured anyway must still be safe.
 const apiUrl = process.env.EXPO_PUBLIC_API_BASE_URL || productionEnv.EXPO_PUBLIC_API_BASE_URL;
-if (!apiUrl) failures.push('Production EXPO_PUBLIC_API_BASE_URL is missing from the shell and EAS production profile.');
-else {
+if (apiUrl) {
   let parsed;
   try { parsed = new URL(apiUrl); } catch { failures.push(`Invalid EXPO_PUBLIC_API_BASE_URL: ${apiUrl}`); }
   if (parsed && parsed.protocol !== 'https:') failures.push('Production API URL must use HTTPS.');

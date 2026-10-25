@@ -11,6 +11,9 @@ export function loadConfig() {
   cfg.pollIntervalSeconds = Number(process.env.KYNEX_POLL_SECONDS || cfg.pollIntervalSeconds || 60);
   cfg.cursorFile = cfg.cursorFile || './.cursor.json';
   if (!cfg.apiBaseUrl) { console.error('[config] apiBaseUrl is required.'); process.exit(1); }
+  // Optional: the organisation's internal CA (PEM), for a KynexOne server whose certificate it issued.
+  cfg.caFile = process.env.KYNEX_CA_FILE || cfg.caFile || '';
+  if (cfg.caFile && !existsSync(cfg.caFile)) { console.error(`[config] caFile not found: ${cfg.caFile}`); process.exit(1); }
   if (!Array.isArray(cfg.devices) || cfg.devices.length === 0) { console.error('[config] No devices configured.'); process.exit(1); }
   return cfg;
 }

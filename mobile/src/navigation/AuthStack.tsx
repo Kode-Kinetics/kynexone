@@ -5,13 +5,16 @@ import ForgotPasswordScreen from '@/features/auth/ForgotPasswordScreen';
 import MfaChallengeScreen from '@/features/auth/MfaChallengeScreen';
 import MfaEnrollmentScreen from '@/features/auth/MfaEnrollmentScreen';
 import WelcomeScreen from '@/features/auth/WelcomeScreen';
+import ServerSetupScreen from '@/features/auth/ServerSetupScreen';
+import { hasServer } from '@/config/server';
 import type { AuthStackParamList } from './authTypes';
 
 const Stack = createNativeStackNavigator<AuthStackParamList>();
 
 export function AuthStack() {
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false }}>
+    <Stack.Navigator screenOptions={{ headerShown: false }} initialRouteName={hasServer() ? 'Login' : 'ServerSetup'}>
+      <Stack.Screen name="ServerSetup" component={ServerSetupScreen} />
       <Stack.Screen name="Login" component={LoginScreen} />
       <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
       <Stack.Screen name="Welcome" component={WelcomeScreen} />

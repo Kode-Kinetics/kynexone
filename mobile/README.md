@@ -35,16 +35,36 @@ Enterprise-grade React Native / Expo mobile app for GCC HR operations. Supports 
 
 ## Environment Setup
 
-Create a `.env` file in the project root (read by `app.config.js`, which owns `expo.extra`):
+### Which server the app talks to
+
+KynexOne is installed by each client on its own server, and **one store app serves every installation**. A store
+build carries no server address. On first start the app shows **Connect to KynexOne**: the employee types their
+organisation's address, or scans the QR code an administrator shows in **Tenant Admin → Licence → Mobile app**
+(`kynexone://server?url=https://…`). The app accepts only an HTTPS address that is not a loopback address, checks
+that it answers `GET /api/public/installation` as a set-up KynexOne server, and keeps it in secure storage.
+**Change server** on the sign-in screen goes back to it.
+
+The server's answer also says whether push notifications are on (`pushEnabled`). When they are off (an offline
+installation), the app neither asks for notification permission nor registers a device token.
+
+A development build may skip the server screen by pointing at a local API. Create a `.env` file in the project root
+(read by `app.config.js`, which owns `expo.extra`):
 
 ```env
-# Backend base URL including /api (no trailing slash)
+# Development only: backend base URL including /api (no trailing slash)
 EXPO_PUBLIC_API_BASE_URL=http://localhost:5117/api
 # Optional until the EAS project exists; push-token registration is skipped without it
 EXPO_PUBLIC_EAS_PROJECT_ID=
 ```
 
-On the iOS simulator `localhost` reaches the host machine; on a physical device use the host's LAN IP.
+On the iOS simulator `localhost` reaches the host machine; on a physical device use the host's LAN IP. Development
+builds also accept `http://` addresses on the server screen; store builds do not.
+
+### Distributing through MDM instead of the public store
+
+An organisation that manages its phones (Intune, Workspace ONE, Jamf…) can distribute the same binary through its MDM
+instead of the public stores, for example as an Apple Business Manager custom app or a managed Google Play private
+app. The app is identical; employees still connect by scanning the Tenant Admin QR code or typing the address.
 
 ### Backend capabilities
 

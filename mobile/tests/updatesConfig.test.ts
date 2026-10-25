@@ -77,11 +77,21 @@ test('an EAS project override moves the update URL with it, so the two can never
   assert.equal(config.updates.url, 'https://u.expo.dev/11111111-2222-3333-4444-555555555555');
 });
 
-test('eas.json is outside the fingerprint; the API URL still reaches it through extra', () => {
+test('eas.json is outside the fingerprint; a configured API URL still reaches it through extra', () => {
   const fingerprintConfig = fs.readFileSync(path.join(root, 'fingerprint.config.js'), 'utf8');
   assert.match(fingerprintConfig, /ignorePaths:\s*\['eas\.json'\]/);
   assert.doesNotMatch(fingerprintConfig, /sourceSkips/, 'extra must stay in the fingerprint');
-  assert.equal(loadEffectiveConfig(root, PROD_ENV).extra.apiBaseUrl, PROD_ENV.EXPO_PUBLIC_API_BASE_URL);
+  const withServer = { ...PROD_ENV, EXPO_PUBLIC_API_BASE_URL: 'https://hr.example.test/api' };
+  assert.equal(loadEffectiveConfig(root, withServer).extra.apiBaseUrl, 'https://hr.example.test/api');
+});
+
+test('a store build carries no server: one app serves every installation, chosen at runtime', () => {
+  for (const profile of ['production', 'preview', 'simulator'] as const) {
+    assert.equal(eas.build[profile].env?.EXPO_PUBLIC_API_BASE_URL, undefined, profile);
+  }
+  assert.equal(loadEffectiveConfig(root, PROD_ENV).extra.apiBaseUrl, undefined);
+  assert.throws(() => loadEffectiveConfig(root, { ...PROD_ENV, EXPO_PUBLIC_API_BASE_URL: 'http://hr.example.test/api' }), /HTTPS/);
+  assert.throws(() => loadEffectiveConfig(root, { ...PROD_ENV, EXPO_PUBLIC_API_BASE_URL: 'https://localhost/api' }), /loopback/);
 });
 
 // ---- local dotenv files ----------------------------------------------------------

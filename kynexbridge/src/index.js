@@ -1,8 +1,20 @@
 #!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { loadConfig, loadCursors } from './config.js';
 import { pollOnce } from './poller.js';
 
 const cfg = loadConfig();
+
+// Node's built-in fetch trusts extra CAs only through NODE_EXTRA_CA_CERTS, which is read once at process start.
+// With a caFile configured, run the bridge again as a child process that has it set.
+if (cfg.caFile && process.env.NODE_EXTRA_CA_CERTS !== resolve(cfg.caFile)) {
+  const child = spawnSync(process.execPath, process.argv.slice(1), {
+    stdio: 'inherit',
+    env: { ...process.env, NODE_EXTRA_CA_CERTS: resolve(cfg.caFile) },
+  });
+  process.exit(child.status ?? 1);
+}
 const cursors = loadCursors(cfg.cursorFile);
 const once = process.argv.includes('--once');
 

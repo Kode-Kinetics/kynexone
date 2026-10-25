@@ -10,14 +10,20 @@ import { LiquidBackdrop, Surface } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
 import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
 import { ResetCodeBanner } from '@/features/auth/ResetCodeBanner';
+import { loadServer, refreshServer } from '@/config/server';
 
 export function RootNavigator() {
   const { isAuthenticated, isInitialized, initialize } = useAuthStore();
   const { theme } = useTheme();
   const { t } = useTranslation();
 
+  // The chosen server first: every API client reads it, including the session restore. Then re-read its answer
+  // in the background (an administrator may have switched push on or off since).
   useEffect(() => {
-    void initialize();
+    void loadServer().then(() => {
+      void refreshServer();
+      return initialize();
+    });
   }, [initialize]);
 
   const navigationTheme = useMemo(() => ({

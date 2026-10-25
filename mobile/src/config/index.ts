@@ -4,10 +4,12 @@
 
 import Constants from 'expo-constants';
 
+// A development build's server (EXPO_PUBLIC_API_BASE_URL). A store build has none: the server is chosen at runtime
+// on the server screen (config/server.ts), and every client reads it through getApiBaseUrl().
 const configuredApiBaseUrl =
   process.env.EXPO_PUBLIC_API_BASE_URL ||
   (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) ||
-  'https://zayra-ai-workforce.onrender.com/api';
+  '';
 
 const ENV = {
   development: {

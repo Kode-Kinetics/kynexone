@@ -12,6 +12,7 @@ import { Platform } from 'react-native';
 import { apiDelete, apiGet, apiPost, apiPut, createPublicAuthClient, getApiClient, unwrapApiData } from './client';
 import { tokenStorage, userStorage, appStorage } from '@/storage';
 import { APP_CONFIG } from '@/config';
+import { getApiBaseUrl } from '@/config/server';
 import { FEATURES, FeatureUnavailableError } from '@/config/features';
 import { normalizeAccessMode } from '@/auth/accessPolicy';
 import {
@@ -516,7 +517,7 @@ const MULTIPART = { headers: { 'Content-Type': 'multipart/form-data' }, timeout:
 
 /** Absolute URL for an API route such as "/api/ess/profile/photo?v=…" (the base URL ends in /api). */
 function apiOrigin(): string {
-  const base = String(getApiClient().defaults.baseURL ?? APP_CONFIG.API_BASE_URL);
+  const base = String(getApiClient().defaults.baseURL ?? getApiBaseUrl());
   return base.replace(/\/api\/?$/, '');
 }
 
