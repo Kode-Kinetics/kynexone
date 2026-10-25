@@ -1,7 +1,13 @@
 import { expect, test } from '@playwright/test';
 import type { CostCenterDto } from '../src/api/organization';
+import type { ReadinessCheck } from '../src/api/financeGl';
 import {
   addClassRule,
+  checkFixTarget,
+  orderChecks,
+  readinessAllClear,
+  sampleHref,
+  turnOnGate,
   apiErrorCode,
   canRequireCostCentre,
   cleanRule,
@@ -202,5 +208,70 @@ test.describe('class rules', () => {
     expect(duplicateClass(d({ cls: 'SELLING', classRules: [{ cls: 'SELLING', accountId: 'a', inherited: false, inheritedAccountId: null }] }))).toBe('SELLING');
     expect(duplicateClass(d({ cls: 'COGS', classRules: [{ cls: 'SELLING', accountId: 'a', inherited: false, inheritedAccountId: null }] }))).toBeNull();
     expect(duplicateClass(d())).toBeNull();
+  });
+});
+
+
+// ═══════════════════════════ Screen 5: readiness and the switch ═══════════════════════════
+
+const check = (key: string, severity: string, count: number): ReadinessCheck => ({ key, severity, count, sample: [] });
+
+test.describe('readiness checks', () => {
+  test('they read in the design order, with the checks the design does not name after them and unknown keys last', () => {
+    const keys = ['small-cell', 'zzz', 'mapping-invisible', 'employees-unresolved', 'rounding-default', 'no-company', 'accounts-no-rule', 'invalid-reference']
+      .map((k) => check(k, 'ok', 0));
+    expect(orderChecks(keys).map((c) => c.key)).toEqual([
+      'employees-unresolved', 'invalid-reference', 'accounts-no-rule', 'no-company', 'rounding-default', 'mapping-invisible', 'small-cell', 'zzz',
+    ]);
+  });
+
+  test('all clear needs every check ok with nothing counted', () => {
+    expect(readinessAllClear([check('a', 'ok', 0), check('b', 'ok', 0)])).toBe(true);
+    expect(readinessAllClear([check('a', 'ok', 0), check('b', 'warning', 2)])).toBe(false);
+    expect(readinessAllClear([])).toBe(false);
+  });
+
+  test('each check points at where it is fixed', () => {
+    expect(checkFixTarget('employees-unresolved')).toEqual({ kind: 'link', href: '/setup?tab=departments' });
+    expect(checkFixTarget('invalid-reference')).toEqual({ kind: 'link', href: '/setup?tab=costCenters' });
+    expect(checkFixTarget('no-company')).toEqual({ kind: 'link', href: '/setup?tab=costCenters' });
+    expect(checkFixTarget('accounts-no-rule')).toEqual({ kind: 'tab', tab: 'coa' });
+    expect(checkFixTarget('mapping-invisible')).toEqual({ kind: 'tab', tab: 'coa' });
+    expect(checkFixTarget('rounding-default')).toEqual({ kind: 'default' });
+    expect(checkFixTarget('currency-scale')).toBeNull();
+  });
+
+  test('a sample row links to the record that holds the problem', () => {
+    expect(sampleHref('employees-unresolved', { id: 412, code: 'E-0412', employeeId: 412 })).toContain('412');
+    expect(sampleHref('invalid-reference', { id: 'dep-1', code: 'CS', kind: 'department' })).toBe('/setup?tab=departments&department=dep-1');
+    expect(sampleHref('invalid-reference', { id: 'pos-1', code: 'AN', kind: 'position' })).toBe('/setup?tab=designations');
+    expect(sampleHref('invalid-reference', { id: 77, code: 'E-0077', kind: 'employee' })).toContain('77');
+    expect(sampleHref('accounts-no-rule', { id: 'a', code: '5002' })).toBeNull();
+  });
+});
+
+test.describe('turning cost accounting on', () => {
+  const ready = (checks: ReadinessCheck[], exposure = 0) => ({ checks, smallCellExposure: { count: exposure, threshold: 3 } });
+
+  test('with nothing in the way only a reason is needed, and the acknowledgement is not asked for', () => {
+    const g = turnOnGate(ready([check('a', 'ok', 0), check('b', 'warning', 3)]), false, '');
+    expect(g).toMatchObject({ needsAck: false, canConfirm: false, hard: [] });
+    expect(turnOnGate(ready([check('a', 'ok', 0)]), false, ' policy ').canConfirm).toBe(true);
+  });
+
+  test('blockers need the acknowledgement as well as the reason, and say which checks block', () => {
+    const r = ready([check('employees-unresolved', 'blocker', 12), check('no-company', 'blocker', 0), check('accounts-no-rule', 'warning', 9)]);
+    const g = turnOnGate(r, false, 'because');
+    expect(g.needsAck).toBe(true);
+    expect(g.hard.map((c) => c.key)).toEqual(['employees-unresolved']);
+    expect(g.canConfirm).toBe(false);
+    expect(turnOnGate(r, true, '').canConfirm).toBe(false);
+    expect(turnOnGate(r, true, 'because').canConfirm).toBe(true);
+  });
+
+  test('small-cell exposure is acknowledged like a blocker (the server refuses otherwise)', () => {
+    const g = turnOnGate(ready([check('a', 'ok', 0)], 2), false, 'because');
+    expect(g).toMatchObject({ needsAck: true, exposure: 2, canConfirm: false });
+    expect(turnOnGate(ready([check('a', 'ok', 0)], 2), true, 'because').canConfirm).toBe(true);
   });
 });

@@ -39,6 +39,8 @@ interface Options {
   awaitingRun?: boolean;
   /** The chart already follows the recommended preset. */
   presetNothingToChange?: boolean;
+  /** Every readiness check is ok. */
+  allClear?: boolean;
 }
 
 interface Recorded { method: string; path: string; search: string; body: unknown }
@@ -86,6 +88,11 @@ function readiness(companyId: string, options: Options, enabled: boolean) {
     blockers: [],
     smallCellExposure: { count: 1, threshold: 3 },
   };
+}
+
+function clearReadiness(companyId: string, options: Options, enabled: boolean) {
+  const r = readiness(companyId, options, enabled);
+  return { ...r, checks: r.checks.map((c) => ({ ...c, severity: 'ok', count: 0, sample: [] })), smallCellExposure: { count: 0, threshold: 3 } };
 }
 
 function mappingRows(companyId: string | null) {
@@ -211,7 +218,7 @@ async function boot(page: Page, options: Options = {}, initialUrl?: string) {
     if (p === '/api/finance/gl/cost-accounting/readiness' && method === 'GET') {
       if (ctl.readinessDelayMs) await new Promise((r) => setTimeout(r, ctl.readinessDelayMs));
       if (ctl.readinessDown) return reply({ code: 'internal_error', message: 'boom', traceId: 'trace-ready' }, 500);
-      const r = readiness(companyId ?? 'co-sa', options, costing.enabled);
+      const r = options.allClear ? clearReadiness(companyId ?? 'co-sa', options, costing.enabled) : readiness(companyId ?? 'co-sa', options, costing.enabled);
       r.settings.defaultCostCenterId = costing.defaultCostCenterId as string;
       return reply(r);
     }
@@ -575,4 +582,228 @@ test('axe: the mapping table, with a class row open, has no serious or critical 
   await tid(page, 'cc-map-add-class-EARN:HOUSING').selectOption('COGS');
   await tid(page, 'cc-map-class-row-EARN:HOUSING-COGS').waitFor();
   expect(await axeSeriousOrWorse(page, '[aria-labelledby="gl-map-heading"]')).toEqual([]);
+});
+
+
+// ═════════════════════════════ Screen 5: Cost accounting readiness and the switch ═════════════════════════════
+
+const openReadiness = async (page: Page) => {
+  await page.getByRole('tab', { name: 'Cost accounting', exact: true }).click();
+  await expect(tid(page, 'cc-ready-switch')).toBeVisible();
+};
+const switchEl = (page: Page) => tid(page, 'cc-ready-switch');
+
+test('the Cost accounting tab names the company, shows the switch as text as well as a control, and lists every check with its severity and count', async ({ page }, info) => {
+  const state = await boot(page, { groupMode: true });
+  await openReadiness(page);
+  await expect(tid(page, 'cc-ready-company')).toBeVisible();
+  await expect(switchEl(page)).toHaveAttribute('role', 'switch');
+  await expect(switchEl(page)).toHaveAttribute('aria-checked', 'false');
+  await expect(page.getByTestId('cc-ready-state')).toHaveText('Off');
+  expect(state.reads.some((r) => r.path === '/api/finance/gl/cost-accounting/readiness' && search(r).get('companyId') === 'co-sa')).toBe(true);
+  await expect(tid(page, 'cc-ready-check-count-employees-unresolved')).toHaveText('12');
+  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('Employees with no cost centre');
+  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('Blocker');
+  await expect(tid(page, 'cc-ready-check-accounts-no-rule')).toContainText('Warning');
+  await expect(tid(page, 'cc-ready-check-rounding-default')).toContainText('OK');
+  await expect(tid(page, 'cc-ready-check-count-no-company')).toHaveText('2');
+  await shot(page, info, 'cc-en-readiness');
+});
+
+test('a check expands to its capped list with links, and says how many more there are', async ({ page }) => {
+  await boot(page);
+  await openReadiness(page);
+  const toggle = tid(page, 'cc-ready-check-employees-unresolved');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const list = tid(page, 'cc-ready-check-list-employees-unresolved');
+  await expect(list).toContainText('E-0412');
+  await expect(list).toContainText('E-0431');
+  await expect(list.getByRole('link', { name: /E-0412/ })).toHaveAttribute('href', /412/);
+  await expect(list).toContainText('…and 10 more.');
+});
+
+test('fix links: employees go to Departments, accounts without a rule go to the chart, the rounding check to the default field', async ({ page }) => {
+  await boot(page);
+  await openReadiness(page);
+  await expect(tid(page, 'cc-ready-check-fix-employees-unresolved')).toHaveAttribute('href', '/setup?tab=departments');
+  await expect(tid(page, 'cc-ready-check-fix-no-company')).toHaveAttribute('href', '/setup?tab=costCenters');
+  await tid(page, 'cc-ready-check-fix-accounts-no-rule').click();
+  await expect(page.getByRole('tab', { name: 'Accounts & Mapping', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(tid(page, 'cc-acct-preset-open')).toBeVisible();
+});
+
+test('"Open Cost accounting" from the account rules note opens this tab for that company', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-acct-costing-off-note').getByRole('button', { name: 'Open Cost accounting', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Cost accounting', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(switchEl(page)).toBeVisible();
+});
+
+test('turning on with blockers: the dialog lists them, and Turn on anyway needs the acknowledgement and a reason', async ({ page }, info) => {
+  const state = await boot(page);
+  await openReadiness(page);
+  await switchEl(page).click();
+  const dialog = tid(page, 'cc-on-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Turn on cost accounting for Masar Trading KSA?' })).toBeVisible();
+  await expect(tid(page, 'cc-on-dialog-blocker-employees-unresolved')).toContainText('12');
+  await expect(tid(page, 'cc-on-dialog-blocker-invalid-reference')).toContainText('3');
+  await expect(tid(page, 'cc-on-dialog-blocker-no-company')).toContainText('2');
+  await expect(dialog).toContainText('1 cost centre holds fewer than 3 employees');
+  const confirm = tid(page, 'cc-on-dialog-confirm');
+  await expect(confirm).toHaveText('Turn on anyway');
+  await expect(confirm).toBeDisabled();
+  await tid(page, 'cc-on-dialog-reason').fill('Pilot with the Sales team');
+  await expect(confirm).toBeDisabled();
+  await shot(page, info, 'cc-en-turn-on-dialog');
+  await tid(page, 'cc-on-dialog-ack').check();
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await expect(page.getByText('Cost accounting turned on.')).toBeVisible();
+  const put = state.writes.find((w) => w.method === 'PUT' && w.path === '/api/finance/gl/cost-accounting')!;
+  expect(search(put).get('companyId')).toBe('co-sa');
+  expect(put.body).toEqual({ enabled: true, reason: 'Pilot with the Sales team', acknowledgeBlockers: true });
+  await expect(switchEl(page)).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByTestId('cc-ready-state')).toHaveText('On');
+});
+
+test('"Fix first" closes the dialog and leaves the switch off', async ({ page }) => {
+  const state = await boot(page);
+  await openReadiness(page);
+  await switchEl(page).click();
+  await tid(page, 'cc-on-dialog-fix-first').click();
+  await expect(tid(page, 'cc-on-dialog')).toHaveCount(0);
+  await expect(switchEl(page)).toHaveAttribute('aria-checked', 'false');
+  expect(state.writes.filter((w) => w.method === 'PUT')).toHaveLength(0);
+});
+
+test('with nothing in the way: "Turn on", only a reason is needed, and the acknowledgement is not shown', async ({ page }) => {
+  await boot(page, { allClear: true });
+  await openReadiness(page);
+  await expect(tid(page, 'cc-ready-allclear')).toHaveText('Ready. Nothing blocks the next Lock.');
+  await switchEl(page).click();
+  await expect(tid(page, 'cc-on-dialog')).toContainText('Nothing blocks the next Lock.');
+  await expect(tid(page, 'cc-on-dialog-ack')).toHaveCount(0);
+  await expect(tid(page, 'cc-on-dialog-confirm')).toHaveText('Turn on');
+  await tid(page, 'cc-on-dialog-reason').fill('Go live');
+  await expect(tid(page, 'cc-on-dialog-confirm')).toBeEnabled();
+});
+
+test('the dialog shows a loading state, and a failed dry-run keeps Turn on off because the user cannot see what they would agree to', async ({ page }) => {
+  const state = await boot(page);
+  await openReadiness(page);
+  state.ctl.readinessDelayMs = 800;
+  await switchEl(page).click();
+  await expect(tid(page, 'cc-on-dialog-loading')).toBeVisible();
+  await expect(tid(page, 'cc-on-dialog-blocker-employees-unresolved')).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+  state.ctl.readinessDelayMs = 0;
+  state.ctl.readinessDown = true;
+  await switchEl(page).click();
+  await expect(tid(page, 'cc-on-dialog-error')).toBeVisible();
+  await expect(tid(page, 'cc-on-dialog-confirm')).toBeDisabled();
+});
+
+test('a refusal on turn-on (blockers changed since the preview) shows the server\'s sentence in the dialog', async ({ page }) => {
+  const state = await boot(page);
+  await openReadiness(page);
+  await switchEl(page).click();
+  state.ctl.switchRefusal = { status: 409, body: { error: 'cost_accounting_blockers', code: 'cost_accounting_blockers', message: 'Cost accounting has readiness blockers or small-cell exposure. Fix them, or acknowledge them to turn it on anyway.', messageAr: 'هناك موانع' } };
+  await tid(page, 'cc-on-dialog-reason').fill('x');
+  await tid(page, 'cc-on-dialog-ack').check();
+  await tid(page, 'cc-on-dialog-confirm').click();
+  await expect(tid(page, 'cc-on-dialog')).toContainText('Cost accounting has readiness blockers or small-cell exposure.');
+  await expect(switchEl(page)).toHaveAttribute('aria-checked', 'false');
+});
+
+test('turning off asks for a reason, and the server\'s refusal once costed runs are locked is shown in the dialog', async ({ page }) => {
+  const state = await boot(page, { costingOn: true });
+  await openReadiness(page);
+  await expect(switchEl(page)).toHaveAttribute('aria-checked', 'true');
+  await switchEl(page).click();
+  await expect(tid(page, 'cc-off-dialog')).toContainText('Payroll stops splitting by cost centre. Lines already posted keep their cost centres.');
+  await expect(tid(page, 'cc-off-dialog-confirm')).toBeDisabled();
+  await tid(page, 'cc-off-dialog-reason').fill('Rolling back');
+  state.ctl.switchRefusal = { status: 409, body: { error: 'cost_accounting_has_costed_runs', code: 'cost_accounting_has_costed_runs', message: 'Cost accounting cannot be turned off because a payroll run of this company was already locked with cost centres. Contact support if it must be reversed.', messageAr: 'لا يمكن إيقاف' } };
+  await tid(page, 'cc-off-dialog-confirm').click();
+  await expect(tid(page, 'cc-off-dialog')).toContainText('already locked with cost centres');
+  state.ctl.switchRefusal = null;
+  await tid(page, 'cc-off-dialog-confirm').click();
+  await expect(page.getByText('Cost accounting turned off.')).toBeVisible();
+  const puts = state.writes.filter((w) => w.method === 'PUT' && w.path === '/api/finance/gl/cost-accounting');
+  expect(puts.at(-1)!.body).toEqual({ enabled: false, reason: 'Rolling back' });
+  await expect(switchEl(page)).toHaveAttribute('aria-checked', 'false');
+});
+
+test('M-7: while a run awaits finance review or lock the switch and the default are off, with the sentence beside them', async ({ page }) => {
+  await boot(page, { awaitingRun: true });
+  await openReadiness(page);
+  await expect(switchEl(page)).toBeDisabled();
+  await expect(tid(page, 'cc-ready-default-cc')).toBeDisabled();
+  await expect(tid(page, 'cc-ready-locked-banner')).toContainText(M7_EN);
+  await expect(switchEl(page)).toHaveAttribute('aria-describedby', /.+/);
+});
+
+test('a read-only reader can read the checks but not change anything, and is told why', async ({ page }) => {
+  await boot(page, { readOnly: true });
+  await openReadiness(page);
+  await expect(tid(page, 'cc-ready-readonly-note')).toContainText('You can view readiness but not change it. Changing needs the Manage GL permission.');
+  await expect(switchEl(page)).toBeDisabled();
+  await expect(tid(page, 'cc-ready-default-cc')).toBeDisabled();
+  await tid(page, 'cc-ready-check-invalid-reference').click();
+  await expect(tid(page, 'cc-ready-check-list-invalid-reference')).toContainText('ANALYST');
+});
+
+test('the default cost centre lists this company\'s active cost centres, and changing it asks for a reason', async ({ page }) => {
+  const state = await boot(page);
+  await openReadiness(page);
+  const select = tid(page, 'cc-ready-default-cc');
+  await expect(select).toHaveValue('cc-admin');
+  const values = await select.locator('option').evaluateAll((options) => options.map((o) => (o as HTMLOptionElement).value));
+  expect(values).toEqual(['', 'cc-admin', 'cc-sales']);
+  await expect(tid(page, 'cc-ready-default-reason')).toHaveCount(0);
+  await select.selectOption('cc-sales');
+  await expect(tid(page, 'cc-ready-default-save')).toBeDisabled();
+  await tid(page, 'cc-ready-default-reason').fill('Sales carries the pool');
+  await tid(page, 'cc-ready-default-save').click();
+  await expect(page.getByText('Saved.')).toBeVisible();
+  const put = state.writes.find((w) => w.method === 'PUT' && w.path === '/api/finance/gl/cost-accounting')!;
+  expect(put.body).toEqual({ defaultCostCenterId: 'cc-sales', reason: 'Sales carries the pool' });
+});
+
+test('a readiness load failure shows the reason and Retry, never an empty list', async ({ page }) => {
+  const state = await boot(page);
+  state.ctl.readinessDown = true;
+  await page.getByRole('tab', { name: 'Cost accounting', exact: true }).click();
+  const alert = page.getByRole('alert').filter({ hasText: 'This could not be loaded.' });
+  await expect(alert).toBeVisible();
+  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toHaveCount(0);
+  state.ctl.readinessDown = false;
+  await alert.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toBeVisible();
+});
+
+test('Arabic readiness: RTL, translated checks, plural count, and the dialog', async ({ page }, info) => {
+  const state = await boot(page, { locale: 'ar' });
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  await page.getByRole('tab', { name: 'محاسبة التكلفة', exact: true }).click();
+  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('موظفون بلا مركز تكلفة');
+  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('مانع');
+  await shot(page, info, 'cc-ar-readiness');
+  await switchEl(page).click();
+  await expect(tid(page, 'cc-on-dialog')).toContainText('إذا فعّلتها الآن فسيتوقف القفل التالي بسبب');
+  await shot(page, info, 'cc-ar-turn-on-dialog');
+  expect(state.errors).toEqual([]);
+});
+
+test('axe: the readiness tab, and the turn-on dialog open over it, have no serious or critical violations', async ({ page }) => {
+  await boot(page);
+  await openReadiness(page);
+  await tid(page, 'cc-ready-check-employees-unresolved').click();
+  expect(await axeSeriousOrWorse(page, 'main')).toEqual([]);
+  await switchEl(page).click();
+  await expect(tid(page, 'cc-on-dialog-blocker-employees-unresolved')).toBeVisible();
+  expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
 });
