@@ -181,6 +181,7 @@ public class MfaController : ControllerBase
         var off = PrivilegedMfaPolicy.IsDisabledForTesting(config);
         var workspaceRequires = !off && policy?.MfaRequired == true;
         var required = workspaceRequires || state.Status != PrivilegedMfaStatus.NotRequired;
+        var policyName = MfaPolicies.For(policy);
         var trustDays = MfaTrustedDevices.EffectiveDays(policy);
         var trustedCount = enrolled && trustDays > 0
             ? (await MfaTrustedDevices.Live(db, tenantId.Value, userId.Value, now).AsNoTracking()
@@ -200,7 +201,8 @@ public class MfaController : ControllerBase
             RememberDeviceDays: trustDays,
             TrustedDeviceCount: trustedCount,
             BackupCodesRemaining: enrolled ? MfaBackupCodes.Remaining(user.MfaRecoveryCodeHashes) : 0,
-            DisabledForTesting: off));
+            DisabledForTesting: off,
+            Policy: policyName));
     }
 
     /// <summary>
@@ -288,13 +290,18 @@ public class MfaController : ControllerBase
     /// </summary>
     [HttpPost("disable")]
     [Authorize]
-    public async Task<IActionResult> Disable([FromBody] MfaDisableRequest request, CancellationToken ct)
+    public async Task<IActionResult> Disable([FromBody] MfaSelfDisableRequest request, CancellationToken ct)
     {
         var userId = GetUserId();
         var tenantId = GetTenantId();
         if (userId is null || tenantId is null) return Unauthorized();
 
-        var outcome = await _mfa.DisableWithOutcomeAsync(userId.Value, tenantId.Value, request.TotpCode, GetContext(), ct);
+        // Exactly one proof: a current app code or one backup code. Refused before anything is touched.
+        var hasTotp = !string.IsNullOrWhiteSpace(request.TotpCode);
+        var hasBackup = !string.IsNullOrWhiteSpace(request.BackupCode);
+        if (hasTotp == hasBackup)
+            return BadRequest(new { code = MfaErrorCodes.CodeRequired, message = "Enter the code from your authenticator app, or one backup code." });
+        var outcome = await _mfa.DisableWithOutcomeAsync(userId.Value, tenantId.Value, request.TotpCode, request.BackupCode, GetContext(), ct);
         switch (outcome)
         {
             case MfaDisableOutcome.Disabled:

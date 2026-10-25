@@ -81,6 +81,8 @@ export interface MfaStatus {
   backupCodesRemaining?: number;
   /** True while the API runs with Auth__Mfa__DisabledForTesting: two-step is not asked for or enforced. */
   disabledForTesting?: boolean;
+  /** The company policy: 'Optional' = each person chooses (nobody is forced). Absent from an older API. */
+  policy?: 'Optional' | 'PrivilegedRoles' | 'Everyone';
 }
 
 /** GET /api/auth/mfa/trusted-devices — one browser that skips the code until it expires. */
@@ -233,8 +235,9 @@ export const authApi = {
   mfaEnrollmentStart: () =>
     client.post<{ enrollmentToken: string; expiresInSeconds: number }>('/api/auth/mfa/enrollment/start').then((r) => r.data),
 
-  mfaDisable: (totpCode: string) =>
-    client.post('/api/auth/mfa/disable', { totpCode }),
+  /** Turn off two-step with a current app code, or (kind 'backup') with one unused backup code. */
+  mfaDisable: (code: string, kind: 'app' | 'backup' = 'app') =>
+    client.post('/api/auth/mfa/disable', kind === 'backup' ? { backupCode: code } : { totpCode: code }),
 
   logout: (refreshToken: string) =>
     client.post('/api/auth/logout', { refreshToken }),

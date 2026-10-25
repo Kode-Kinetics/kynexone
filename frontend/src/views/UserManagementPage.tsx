@@ -14,14 +14,14 @@ import {
 import {
   usersApi, rolesApi, delegationsApi, authoritiesApi, securitySettingsApi,
   identityAuditApi, grantorsApi, permissionGrantApi,
-  entityGrantsApi,
+  entityGrantsApi, effectiveMfaPolicy,
 } from '../api/identity';
 import { companiesApi } from '../api/organization';
 import client, { notifyApiError } from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
-  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult, AccessCeiling,
+  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult, AccessCeiling, MfaPolicy,
 } from '../api/identity';
 import type { CompanyDto } from '../api/organization';
 import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
@@ -2266,11 +2266,30 @@ function SessionLimitsGroup({ security, onChange }: { security: SecuritySetting;
 }
 
 /**
- * Two-step sign-in: who must use it, and how long a trusted browser skips the code. People who can see or change payroll,
- * banking or access always need it (the server's privileged-role rule), so that line is a fact, not a switch.
+ * Two-step sign-in: the company policy (each person chooses / payroll, banking and access roles / everyone) and how long
+ * a trusted browser skips the code. Writes `mfaPolicy` (+ `mfaPolicyReason` when moving to "Each person chooses") and the
+ * legacy `mfaRequired`. `savedPolicy` is the policy as last saved, so the reason is asked for on every relaxation.
  */
-function TwoStepPolicyGroup({ security, onChange }: { security: SecuritySetting; onChange: SecurityPatch }) {
+function TwoStepPolicyGroup({ security, savedPolicy, onChange }: { security: SecuritySetting; savedPolicy: MfaPolicy; onChange: SecurityPatch }) {
   const { t } = useLocale();
+  const policy = effectiveMfaPolicy(security);
+  const policyOptions: { value: MfaPolicy; title: string; hint: string }[] = [
+    {
+      value: 'Optional',
+      title: t('Each person chooses'),
+      hint: t('Nobody is forced to use two-step sign-in, including people with payroll, banking or access rights. Each person turns it on or off on their own page.'),
+    },
+    {
+      value: 'PrivilegedRoles',
+      title: t('Required for people who can see or change payroll, banking or access'),
+      hint: t('Everyone else chooses for themselves.'),
+    },
+    {
+      value: 'Everyone',
+      title: t('Required for everyone'),
+      hint: t('Every person in the company must use it.'),
+    },
+  ];
   const days = Number.isInteger(security.mfaTrustedDeviceDays) ? (security.mfaTrustedDeviceDays as number) : DEFAULT_TRUST_DAYS;
   const choices: number[] = (TRUST_DAY_CHOICES as readonly number[]).includes(days) ? [...TRUST_DAY_CHOICES] : [...TRUST_DAY_CHOICES, days].sort((a, b) => a - b);
   const label = (d: number) => {
@@ -2287,19 +2306,42 @@ function TwoStepPolicyGroup({ security, onChange }: { security: SecuritySetting;
 
       <fieldset className="space-y-3">
         <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400 rtl:text-[13px]">{t('Who must use two-step sign-in')}</legend>
-        <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800/60" data-testid="two-step-always">
-          <p className="text-sm text-slate-700 dark:text-slate-300">{t('People who can see or change payroll, banking or access')}</p>
-          <span className="shrink-0 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200 rtl:text-[13px]">{t('Always required')}</span>
-        </div>
-        <div className="flex items-start gap-3 px-1">
-          <Toggle id="sec-mfa-everyone" checked={security.mfaRequired === true} onChange={value => onChange({ mfaRequired: value })} />
-          <div className="min-w-0">
-            <label htmlFor="sec-mfa-everyone" className="cursor-pointer text-sm text-slate-700 dark:text-slate-300">{t('Also require it for everyone else')}</label>
-            <p id="sec-mfa-everyone-hint" className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-[13px]">
-              {t("When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.")}
+        {policyOptions.map(opt => (
+          <label key={opt.value} htmlFor={`sec-mfa-policy-${opt.value}`}
+            className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${policy === opt.value
+              ? 'border-violet-300 bg-violet-50/60 dark:border-violet-700 dark:bg-violet-950/30'
+              : 'border-slate-200 dark:border-slate-700'}`}>
+            <input id={`sec-mfa-policy-${opt.value}`} type="radio" name="sec-mfa-policy" value={opt.value}
+              checked={policy === opt.value}
+              onChange={() => onChange({ mfaPolicy: opt.value, mfaRequired: opt.value === 'Everyone' })}
+              className="mt-1 h-4 w-4 shrink-0 accent-violet-600" />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">{opt.title}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-[13px]">{opt.hint}</span>
+            </span>
+          </label>
+        ))}
+        {policy === 'Optional' && (
+          <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 dark:border-amber-900/60 dark:bg-amber-950/30" data-testid="two-step-optional-note">
+            <p role="note" className="text-sm text-amber-900 dark:text-amber-200">
+              {t('Recommended only while testing. A customer going live should require it at least for payroll, banking and access.')}
             </p>
+            {savedPolicy !== 'Optional' && (
+              <div>
+                <label htmlFor="sec-mfa-policy-reason" className="mb-1 block text-xs font-medium text-amber-900 dark:text-amber-200 rtl:text-[13px]">{t('Reason (required)')}</label>
+                <textarea id="sec-mfa-policy-reason" rows={2} maxLength={500} required
+                  value={security.mfaPolicyReason ?? ''}
+                  onChange={event => onChange({ mfaPolicyReason: event.target.value })}
+                  className={inp('w-full')} />
+              </div>
+            )}
           </div>
-        </div>
+        )}
+        {policy === 'Everyone' && savedPolicy !== 'Everyone' && (
+          <p id="sec-mfa-everyone-hint" className={`px-1 ${HINT_CLASS}`}>
+            {t("When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.")}
+          </p>
+        )}
       </fieldset>
 
       <div className="max-w-xs">
@@ -2344,12 +2386,14 @@ export function SignInSecurityTab({ onDirtyChange }: { onDirtyChange?: (dirty: b
     setSaving(true); setSaveError(''); setJustSaved(false);
     try {
       const updated = await securitySettingsApi.update(form);
-      const next = { ...form, ...updated };
+      // The reason belonged to this one change; the saved policy becomes the baseline for the next relaxation.
+      const next = { ...form, ...updated, mfaPolicyReason: undefined };
       setSaved(next); setForm(next); setJustSaved(true);
     } catch (error) {
       const response = (error as { response?: { status?: number; data?: { code?: unknown } } } | null)?.response;
       setSaveError(response?.data?.code === 'ERR_SESSION_MAX_HOURS_RANGE' ? t('Maximum session length must be between 1 and 168 hours.')
         : response?.data?.code === 'ERR_MFA_TRUST_DAYS_RANGE' ? t('Trusted browser days must be between 0 (off) and 90.')
+        : response?.data?.code === 'ERR_MFA_POLICY_REASON' ? t('Give a reason for letting each person choose two-step sign-in.')
         : response?.status === 403 ? t('Settings for the whole organisation can only be viewed and changed by an administrator with access to all companies.')
         : t('The sign-in security settings could not be saved. Please try again.'));
     } finally { setSaving(false); }
@@ -2373,7 +2417,7 @@ export function SignInSecurityTab({ onDirtyChange }: { onDirtyChange?: (dirty: b
     <div className="max-w-3xl space-y-5">
       <PasswordPolicyGroup security={form} onChange={patch} />
       <SessionLimitsGroup security={form} onChange={patch} />
-      <TwoStepPolicyGroup security={form} onChange={patch} />
+      <TwoStepPolicyGroup security={form} savedPolicy={saved ? effectiveMfaPolicy(saved) : 'PrivilegedRoles'} onChange={patch} />
 
       {saveError && <p role="alert" className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">{saveError}</p>}
 

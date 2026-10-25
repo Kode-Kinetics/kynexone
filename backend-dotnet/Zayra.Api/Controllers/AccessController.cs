@@ -989,7 +989,14 @@ public class AccessController : ControllerBase
                 code = SessionErrorCodes.MaxHoursRange,
                 message = "Maximum session length must be between 1 and 168 hours.",
             });
-        return Ok(await _accessManagement.UpdateSecuritySettingsAsync(tenantId.Value, request, GetContext(), cancellationToken));
+        try
+        {
+            return Ok(await _accessManagement.UpdateSecuritySettingsAsync(tenantId.Value, request, GetContext(), cancellationToken));
+        }
+        catch (MfaPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>The coded, bilingual 403 for a PrivilegeCeiling refusal.</summary>

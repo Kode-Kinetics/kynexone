@@ -912,6 +912,9 @@ cookie is stateless and cannot be revoked. RLS is a target rule — the live bri
 ### `security_settings.mfa_trusted_device_days` (column)
 - `integer NOT NULL DEFAULT 30`, `ck_security_settings__mfa_trusted_device_days` (`BETWEEN 0 AND 90`). How long a browser stays trusted after a two-step code; 0 = the tenant does not offer it. Read by sign-in (`rememberDeviceDays` on the challenge), `GET /api/auth/mfa/status`, and written by `PUT /api/access/security-settings` (`mfaTrustedDeviceDays`, out of range → 400 `ERR_MFA_TRUST_DAYS_RANGE`).
 
+### `security_settings.mfa_policy` (column)
+- `varchar(20) NOT NULL DEFAULT 'PrivilegedRoles'`, migration `20261025170256_AddSecuritySettingsMfaPolicy`, `ck_security_settings__mfa_policy` (`Optional`, `PrivilegedRoles` or `Everyone`) and `ck_security_settings__mfa_policy_required` (`NOT (mfa_required AND mfa_policy = 'Optional')`). The company's two-step sign-in policy: *each person chooses* (Optional), *required for people who can see or change payroll, banking or access* (PrivilegedRoles, the default) or *required for everyone* (Everyone). One fact with `mfa_required`, which stays and is kept equal to `mfa_policy = 'Everyone'` (derived, written together; every older reader keeps working, and a row that only sets the flag reads as Everyone). Existing rows were backfilled `mfa_required` → Everyone, otherwise PrivilegedRoles; nobody lands on Optional. Written only by `PUT /api/access/security-settings` (`mfaPolicy`; Optional needs `mfaPolicyReason`, else 400 `ERR_MFA_POLICY_REASON`; audited as `security.mfa_policy_changed` / `security.mfa_policy_relaxed` with `from`, `to`, `reason`). Read by `PrivilegedMfaPolicy.ForTenantUserAsync` (Optional = nobody is challenged, enforced or refresh-blocked), the self-disable path and `GET /api/auth/mfa/status` (`policy`).
+
 ## W. Session length and session epoch (live bridge)
 
 Not part of the 76. Four columns, no table, shipped on the **live** EF schema (migration
