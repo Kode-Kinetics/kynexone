@@ -178,7 +178,6 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     {
         var now = DateTime.UtcNow;
         EnforceAuditLogAppendOnly();
-        await EnforceFinanceGlEntryIntegrityAsync(cancellationToken);
         await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
         await RevokeTrustedBrowsersOnCredentialChangeAsync(cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
@@ -276,6 +275,16 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 .Any(name => entry.Property(name).IsModified))
                 throw new InvalidOperationException("Submitted benefit request terms and routing are immutable. Withdraw and submit a new request.");
         }
+    }
+
+    /// <summary>
+    /// EF routes <c>SaveChangesAsync(ct)</c> here (through base), so this single override guards the parameterless-async path
+    /// and a direct <c>SaveChangesAsync(bool, ct)</c> call alike, exactly once. The sync twin is <c>SaveChanges(bool)</c>.
+    /// </summary>
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        await EnforceFinanceGlEntryIntegrityAsync(cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

@@ -40,7 +40,7 @@ public static class CostAccountingReadinessService
     public static readonly string[] CheckKeys =
     {
         "employees-unresolved", "invalid-reference", "accounts-no-rule", "no-company", "rounding-default", "mapping-invisible",
-        "small-cell", "rules-not-enforced", "currency-scale",
+        "small-cell", "rules-not-enforced", "currency-scale", "employees-no-company",
     };
 
     private sealed record CcRow(Guid Id, Guid? CompanyId, string Code, bool IsActive, bool IsDeleted);
@@ -188,6 +188,12 @@ public static class CostAccountingReadinessService
         // 9. 3-decimal currencies are not carried end to end by payroll storage (S-053): a hard refusal, not a warning
         var scale3 = CurrencyMinorUnits.Scale(company.DefaultCurrency) == 3;
         checks.Add(new ReadinessCheck("currency-scale", scale3 ? "blocker" : "ok", scale3 ? 1 : 0, Array.Empty<object>()));
+
+        // 10. active employees with no company: their ledger lines would be unattributed, which a costing tenant refuses.
+        // The pool is tenant-wide by nature (it belongs to no company), so only the COUNT is returned, never who they are.
+        var noCompanyEmployees = await ScopedBypass.NullableTenantWide(db.Employees, tid, "Counts the tenant's active employees that belong to no company; aggregate only.")
+            .AsNoTracking().CountAsync(e => e.CompanyId == null && !e.IsDeleted && e.Status == "Active", ct);
+        checks.Add(new ReadinessCheck("employees-no-company", noCompanyEmployees == 0 ? "ok" : "blocker", noCompanyEmployees, Array.Empty<object>()));
 
         return new ReadinessResult(cid, company.CostAccountingEnabled, defaultCostCenterId, smallCellMin, awaiting, checks, blockers, exposure);
     }
