@@ -182,13 +182,21 @@ public class PlanningController : ControllerBase
         if (changedEnvelope && string.IsNullOrWhiteSpace(body.Reason))
             return BadRequest(new { message = "A reason is required when changing the approved headcount or monthly budget." });
 
+        // The one cost-centre validator: the department's own company, active when the cost centre is new to this department.
+        if (body.CostCenterId is Guid requestedCc && requestedCc != Guid.Empty)
+        {
+            var check = await new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db)
+                .ValidateAsync(tenantId, dept.CompanyId, requestedCc, forNewAssignment: requestedCc != dept.CostCenterId, ct);
+            if (!check.IsValid) return BadRequest(new { error = check.Code, message = check.Message });
+        }
+
         dept.ApprovedHeadcount = newApproved;
         dept.MonthlyBudgetAmount = newBudget;
         if (body.CostCenterId.HasValue)
             dept.CostCenterId = body.CostCenterId.Value == Guid.Empty ? null : body.CostCenterId.Value;
         dept.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("establishment.budget_updated", "Department", dept.Id.ToString(), Context(),
+        // Staged, so the audit row commits in the same SaveChanges as the change.
+        _audit.Stage("establishment.budget_updated", "Department", dept.Id.ToString(), Context(),
             JsonSerializer.Serialize(new
             {
                 scope = "envelope",
@@ -198,7 +206,8 @@ public class PlanningController : ControllerBase
                 reason = body.Reason,
                 before,
                 after = new { dept.ApprovedHeadcount, dept.MonthlyBudgetAmount, dept.CostCenterId }
-            }), ct);
+            }), dept.CompanyId);
+        await _db.SaveChangesAsync(ct);
         return Ok(new { dept.Id, dept.ApprovedHeadcount, dept.MonthlyBudgetAmount, dept.CostCenterId });
     }
 

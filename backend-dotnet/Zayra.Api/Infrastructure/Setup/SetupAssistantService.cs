@@ -608,7 +608,8 @@ public sealed class SetupAssistantService : ISetupAssistantService
         var costCenters = !s.Entity ? new() : Dedup(d.CostCenters.Where(x => !string.IsNullOrWhiteSpace(x.Name))
             .Select(x => x with
             {
-                Code = Code(x.Code, x.Name),
+                // A cost-centre code is printed on journal exports: an AI-proposed one is made safe here, before anything applies it.
+                Code = Zayra.Api.Infrastructure.Payroll.CostCentreCode.Sanitise(x.Code, x.Name),
                 DepartmentCode = deptCodes.Contains(x.DepartmentCode ?? "") ? x.DepartmentCode!.Trim().ToUpperInvariant() : "",
             }), x => x.Code);
         var gradePay = !s.Payroll ? new() : Dedup(d.GradePayComponents.Where(x => !string.IsNullOrWhiteSpace(x.ComponentName))

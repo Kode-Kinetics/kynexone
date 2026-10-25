@@ -59,8 +59,8 @@ public class PositionsController : ControllerBase
             await ValidateAsync(tenantId, request, null, ct);
             var position = Apply(new Position { TenantId = tenantId, CreatedBy = UserId() }, request);
             _db.Positions.Add(position);
+            StageAudit("position.created", null, position);
             await _db.SaveChangesAsync(ct);
-            await WriteAudit("position.created", position, ct);
             return Created($"/api/positions/{position.Id}", position);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -77,11 +77,12 @@ public class PositionsController : ControllerBase
             var position = await Scoped().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId && !x.IsDeleted, ct);
             if (position is null) return NotFound();
             await ValidateAsync(tenantId, request, position, ct);
+            var before = PositionSnapshot(position);
             Apply(position, request);
             position.UpdatedAtUtc = DateTime.UtcNow;
             position.UpdatedBy = UserId();
+            StageAudit("position.updated", before, position);
             await _db.SaveChangesAsync(ct);
-            await WriteAudit("position.updated", position, ct);
             return Ok(position);
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -125,6 +126,13 @@ public class PositionsController : ControllerBase
             throw new InvalidOperationException("Position code already exists.");
         if (request.CompanyId is not null && !await _db.Companies.AnyAsync(x => x.TenantId == tenantId && x.Id == request.CompanyId && x.IsActive && !x.IsDeleted, ct))
             throw new InvalidOperationException("Selected legal entity is not active.");
+        if (request.CostCenterId is Guid costCenterId)
+        {
+            // The one cost-centre validator (it was never checked here): the position's own company, active when new to this position.
+            var check = await new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db)
+                .ValidateAsync(tenantId, request.CompanyId, costCenterId, forNewAssignment: costCenterId != existing?.CostCenterId, ct);
+            if (!check.IsValid) throw new Zayra.Api.Infrastructure.Payroll.CostCentreRefException(check.Code!, check.Message!);
+        }
         if (request.DepartmentId is not null && !await _db.Departments.AnyAsync(x => x.TenantId == tenantId && x.Id == request.DepartmentId && x.IsActive && !x.IsDeleted, ct))
             throw new InvalidOperationException("Selected department is not active.");
         if (request.DesignationId is not null && !await _db.Designations.AnyAsync(x => x.TenantId == tenantId && x.Id == request.DesignationId && x.IsActive && !x.IsDeleted, ct))
@@ -152,6 +160,13 @@ public class PositionsController : ControllerBase
     private IQueryable<Position> Scoped() => _db.Positions.Where(x => this.GetEntityScope().IsGroupLevel || (x.CompanyId.HasValue && this.GetEntityScope().AccessibleCompanyIds.Contains(x.CompanyId.Value)));
     private Guid RequireTenant() => this.GetTenantId() ?? throw new UnauthorizedAccessException();
     private Guid? UserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
+    private sealed record PositionSnapshotRow(Guid Id, string Code, Guid? CompanyId, Guid? DepartmentId, Guid? CostCenterId, Guid? DesignationId, Guid? GradeId, decimal Fte, decimal BudgetedMonthlyCost, string Status);
+    private static PositionSnapshotRow PositionSnapshot(Position p) =>
+        new(p.Id, p.Code, p.CompanyId, p.DepartmentId, p.CostCenterId, p.DesignationId, p.GradeId, p.Fte, p.BudgetedMonthlyCost, p.Status);
+    /// <summary>Stages the audit row (before/after, company) so it commits in the same SaveChanges as the position.</summary>
+    private void StageAudit(string action, PositionSnapshotRow? before, Position after) =>
+        _audit.Stage(action, "Position", after.Id.ToString(), new RequestContext(null, null, UserId(), RequireTenant()),
+            JsonSerializer.Serialize(new { before, after = PositionSnapshot(after) }, new JsonSerializerOptions(JsonSerializerDefaults.Web)), after.CompanyId);
     private Task WriteAudit(string action, Position position, CancellationToken ct) => _audit.WriteAsync(action, "Position", position.Id.ToString(), new RequestContext(null, null, UserId(), RequireTenant()), JsonSerializer.Serialize(new { position.Code, position.Status, position.CompanyId, position.DepartmentId, position.DesignationId, position.GradeId, position.Fte, position.BudgetedMonthlyCost }), ct);
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));

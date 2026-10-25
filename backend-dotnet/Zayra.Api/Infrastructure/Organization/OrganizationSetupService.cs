@@ -333,13 +333,14 @@ public class OrganizationSetupService : IOrganizationSetupService
     public async Task<DepartmentDto> CreateDepartmentAsync(Guid tenantId, DepartmentRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var companyId = await ResolveOwningCompanyAsync(tenantId, request.CompanyId, cancellationToken);
-        await EnsureDepartmentLinksAsync(tenantId, companyId, null, request, cancellationToken);
+        await EnsureDepartmentLinksAsync(tenantId, companyId, null, request, null, cancellationToken);
         await EnsureDepartmentCodeUnique(tenantId, companyId, request.Code, null, cancellationToken);
         var department = new Department { TenantId = tenantId, CompanyId = companyId, CreatedBy = context.UserId };
         Apply(department, request);
         _db.Departments.Add(department);
+        _audit.Stage("organization.department_created", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
+            DepartmentAuditJson(null, department), department.CompanyId);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.department_created", nameof(Department), department.Id.ToString(), context, null, cancellationToken);
         return department.ToDto();
     }
 
@@ -348,14 +349,16 @@ public class OrganizationSetupService : IOrganizationSetupService
         var department = await _db.Departments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (department is null) return null;
         var companyId = await ResolveCompanyOnUpdateAsync(tenantId, department.CompanyId, request.CompanyId, cancellationToken);
-        await EnsureDepartmentLinksAsync(tenantId, companyId, id, request, cancellationToken);
+        await EnsureDepartmentLinksAsync(tenantId, companyId, id, request, department.CostCenterId, cancellationToken);
         await EnsureDepartmentCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
+        var before = DepartmentSnapshot(department);
         department.CompanyId = companyId;
         Apply(department, request);
         department.UpdatedAtUtc = DateTime.UtcNow;
         department.UpdatedBy = context.UserId;
+        _audit.Stage("organization.department_updated", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
+            DepartmentAuditJson(before, department), department.CompanyId);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.department_updated", nameof(Department), department.Id.ToString(), context, null, cancellationToken);
         return department.ToDto();
     }
 
@@ -615,6 +618,15 @@ public class OrganizationSetupService : IOrganizationSetupService
         var counts = await CostCentreUsageAsync(tenantId, costCenter.Id, cancellationToken);
         if (counts.Values.Any(n => n > 0)) throw CostCentreRuleException.InUse(costCenter.Code, counts);
     }
+
+    private sealed record DepartmentSnapshotRow(Guid Id, string Code, string NameEn, Guid? CompanyId, Guid? BranchId, Guid? ParentDepartmentId, Guid? CostCenterId, bool IsActive);
+
+    private static DepartmentSnapshotRow DepartmentSnapshot(Department d) =>
+        new(d.Id, d.Code, d.NameEn, d.CompanyId, d.BranchId, d.ParentDepartmentId, d.CostCenterId, d.IsActive);
+
+    private static string DepartmentAuditJson(DepartmentSnapshotRow? before, Department after) =>
+        System.Text.Json.JsonSerializer.Serialize(new { before, after = DepartmentSnapshot(after) },
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
 
     private static CostCentreSnapshotRow CostCentreSnapshot(CostCenter c) => new(
         c.Id, c.Code, c.Name, c.NameAr, c.CompanyId, c.ParentId, c.IsActive, c.FunctionalClass, c.GlSegment, c.IsDeleted);
@@ -1169,7 +1181,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         new(OrganizationRuleException.CompanyMismatch, $"The {what} belongs to another company. Choose one of this company's.");
 
     /// <summary>A department's branch, parent and cost centre must belong to the department's own company.</summary>
-    private async Task EnsureDepartmentLinksAsync(Guid tenantId, Guid? companyId, Guid? selfId, DepartmentRequest request, CancellationToken cancellationToken)
+    private async Task EnsureDepartmentLinksAsync(Guid tenantId, Guid? companyId, Guid? selfId, DepartmentRequest request, Guid? currentCostCenterId, CancellationToken cancellationToken)
     {
         if (request.BranchId is Guid branchId)
         {
@@ -1190,11 +1202,14 @@ public class OrganizationSetupService : IOrganizationSetupService
         }
         if (request.CostCenterId is Guid costCenterId)
         {
-            var costCenter = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, OrgScopeJustification)
-                .Where(x => x.Id == costCenterId && !x.IsDeleted)
-                .Select(x => new { x.CompanyId }).FirstOrDefaultAsync(cancellationToken)
-                ?? throw new InvalidOperationException("Cost center not found in this tenant.");
-            if (costCenter.CompanyId != companyId) throw Mismatch("cost centre");
+            // The one validator: an unchanged value is carried through (a cost centre deactivated since must not block an unrelated edit); a new one must be active.
+            var check = await new CostCentreRefValidator(_db).ValidateAsync(tenantId, companyId, costCenterId, forNewAssignment: costCenterId != currentCostCenterId, cancellationToken);
+            if (!check.IsValid)
+            {
+                if (check.Code == CostCentreRefCodes.NotFound) throw new InvalidOperationException("Cost center not found in this tenant.");
+                if (check.Code == CostCentreRefCodes.OtherCompany) throw Mismatch("cost centre");
+                throw new CostCentreRefException(check.Code!, check.Message!);
+            }
         }
     }
 

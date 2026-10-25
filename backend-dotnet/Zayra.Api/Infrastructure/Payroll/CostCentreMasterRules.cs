@@ -20,6 +20,39 @@ public static class CostCentreCode
     /// <summary>The same expression as the <c>cost_centers.gl_segment</c> CHECK.</summary>
     public static bool IsValidGlSegment(string? segment) => IsValid(segment);
 
+    /// <summary>
+    /// Makes a proposed code (an AI draft, a template) safe: upper case, anything outside letters, digits, dot, dash and underscore becomes an
+    /// underscore, runs of underscores collapse, leading non-alphanumerics and trailing underscores go, and it is cut to 30 characters.
+    /// When nothing usable remains the <paramref name="fallback"/> (a name) is sanitised the same way.
+    /// </summary>
+    public static string Sanitise(string? raw, string fallback)
+    {
+        var code = Clean(raw);
+        if (code.Length == 0) code = Clean(fallback);
+        return code.Length == 0 ? "CC" : code;
+    }
+
+    private static string Clean(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var chars = new System.Text.StringBuilder();
+        foreach (var ch in value.Trim().ToUpperInvariant())
+        {
+            var c = ch is (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '.' or '-' or '_' ? ch : '_';
+            if (c == '_' && chars.Length > 0 && chars[^1] == '_') continue;
+            chars.Append(c);
+        }
+        var text = chars.ToString().TrimStart(c => !char.IsAsciiLetterOrDigit(c)).TrimEnd('_');
+        return text.Length > MaxLength ? text[..MaxLength].TrimEnd('_', '.', '-') : text;
+    }
+
+    private static string TrimStart(this string s, Func<char, bool> drop)
+    {
+        var i = 0;
+        while (i < s.Length && drop(s[i])) i++;
+        return s[i..];
+    }
+
     public const string Rule = "A cost centre code starts with a letter or digit and then uses only letters, digits, dot, dash or underscore, up to 30 characters.";
 }
 

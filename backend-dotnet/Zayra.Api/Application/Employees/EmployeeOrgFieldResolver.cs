@@ -1,6 +1,11 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Application.Employees;
@@ -97,7 +102,7 @@ public static class EmployeeOrgFieldResolver
     /// Clearing (empty string) nulls the ID — an explicit, countable "no department".
     /// </summary>
     public static async Task ResolveAppliedChangesAsync(ZayraDbContext db, Guid tenantId, Employee employee,
-        IEnumerable<string> changedFields, CancellationToken ct)
+        IEnumerable<string> changedFields, CancellationToken ct, PreparedCostCentre? costCentre = null)
     {
         var fields = new HashSet<string>(changedFields, StringComparer.OrdinalIgnoreCase);
 
@@ -107,6 +112,7 @@ public static class EmployeeOrgFieldResolver
             {
                 employee.DepartmentId = null;
                 employee.CostCenterId = null;
+                employee.CostCenterIsOverride = false;
                 employee.CostCenter = string.Empty;
                 if (!fields.Contains("managerEmployeeId")) employee.ManagerEmployeeId = null;
             }
@@ -123,6 +129,9 @@ public static class EmployeeOrgFieldResolver
                     .Select(d => new { d.CostCenterId, d.ManagerEmployeeId })
                     .SingleAsync(ct);
                 employee.CostCenterId = departmentDefaults.CostCenterId;
+                // A transfer drops the person's old override: they inherit the new department's cost centre (a patch that also names a
+                // cost centre sets a fresh override below). The change is audited with the resolved cost centre before and after.
+                employee.CostCenterIsOverride = false;
                 employee.CostCenter = departmentDefaults.CostCenterId is Guid costCenterId
                     ? await ScopedBypass.TenantWide(db.CostCenters, tenantId,
                             "The department's default cost centre is copied by id; its company is the department's choice, not the caller's selected company.")
@@ -157,5 +166,95 @@ public static class EmployeeOrgFieldResolver
                 employee.Branch = nameEn;
             }
         }
+
+        if (costCentre is not null) await ApplyCostCentreAsync(db, tenantId, employee, costCentre, ct);
+    }
+
+    /// <summary>A "costCenter" patch value, resolved and validated BEFORE any column is touched. <see cref="Clear"/> = the value was blank: drop the override and inherit.</summary>
+    public sealed record PreparedCostCentre(bool Clear, Guid? Id, string Code);
+
+    /// <summary>
+    /// The free-text "costCenter" patch key is a cost-centre CODE: it must resolve, in the employee's own company, to a live cost centre (active when
+    /// it is a new assignment), else the whole patch is refused with nothing written. It used to be stored as a string and never read.
+    /// </summary>
+    public static async Task<PreparedCostCentre?> PrepareCostCentreAsync(ZayraDbContext db, Guid tenantId, Employee employee,
+        IReadOnlyDictionary<string, JsonElement> changes, CancellationToken ct)
+    {
+        if (!changes.TryGetValue("costCenter", out var element)) return null;
+        var raw = element.ValueKind == JsonValueKind.String ? element.GetString()?.Trim() ?? string.Empty : string.Empty;
+        if (raw.Length == 0) return new PreparedCostCentre(true, null, string.Empty);
+
+        var code = OrgCodes.Normalize(raw);
+        var match = await db.CostCenters.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.CompanyId == employee.CompanyId && c.Code.ToUpper() == code)
+            .Select(c => new { c.Id, c.Code })
+            .FirstOrDefaultAsync(ct);
+        if (match is null)
+            throw new InvalidOperationException($"Cost centre '{raw}' was not found among this employee's company's cost centres. No change was applied.");
+        await new CostCentreRefValidator(db).EnsureAsync(tenantId, employee.CompanyId, match.Id, forNewAssignment: match.Id != employee.CostCenterId, ct);
+        return new PreparedCostCentre(false, match.Id, match.Code);
+    }
+
+    private static async Task ApplyCostCentreAsync(ZayraDbContext db, Guid tenantId, Employee employee, PreparedCostCentre costCentre, CancellationToken ct)
+    {
+        if (!costCentre.Clear)
+        {
+            employee.CostCenterId = costCentre.Id;
+            employee.CostCenterIsOverride = true;
+            employee.CostCenter = costCentre.Code;
+            return;
+        }
+
+        // Blank: back to inheriting. The cached copy follows the department, as it does for every other reader.
+        Guid? inherited = null;
+        var code = string.Empty;
+        if (employee.DepartmentId is Guid departmentId)
+        {
+            inherited = await db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId && d.Id == departmentId)
+                .Select(d => d.CostCenterId).FirstOrDefaultAsync(ct);
+            if (inherited is Guid inheritedId)
+                code = await db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == inheritedId)
+                    .Select(c => c.Code).FirstOrDefaultAsync(ct) ?? string.Empty;
+        }
+        employee.CostCenterId = inherited;
+        employee.CostCenterIsOverride = false;
+        employee.CostCenter = code;
+    }
+
+    /// <summary>The attribution inputs of an employee, captured before a change is applied.</summary>
+    public sealed record AttributionState(Guid? DepartmentId, Guid? PositionId, Guid? CostCenterId, bool IsOverride)
+    {
+        public static AttributionState Of(Employee e) => new(e.DepartmentId, e.PositionId, e.CostCenterId, e.CostCenterIsOverride);
+    }
+
+    /// <summary>
+    /// Stages ONE audit row when a change moved where the employee's cost goes: the resolved cost centre, the override flag or the stored copy
+    /// differs. It records the resolved cost centre before and after (contract AM-9 / S-029), whichever path caused the change. Does not save.
+    /// </summary>
+    public static async Task StageAttributionAuditAsync(ZayraDbContext db, Guid tenantId, Employee employee, AttributionState before, Guid? actorUserId, CancellationToken ct)
+    {
+        var after = AttributionState.Of(employee);
+        if (before == after) return;
+
+        Guid? resolvedBefore = null, resolvedAfter = null;
+        string? sourceBefore = null, sourceAfter = null;
+        if (employee.CompanyId is Guid companyId)
+        {
+            var snapshot = await CostCentreResolver.LoadSnapshotAsync(db, tenantId, companyId, ct);
+            var b = CostCentreResolver.Resolve(new ResolverEmployee(before.DepartmentId, before.PositionId, before.CostCenterId, before.IsOverride), snapshot);
+            var a = CostCentreResolver.Resolve(new ResolverEmployee(after.DepartmentId, after.PositionId, after.CostCenterId, after.IsOverride), snapshot);
+            (resolvedBefore, sourceBefore) = (b.CostCenterId, b.Source ?? b.UnresolvedReason);
+            (resolvedAfter, sourceAfter) = (a.CostCenterId, a.Source ?? a.UnresolvedReason);
+            if (resolvedBefore == resolvedAfter && before.IsOverride == after.IsOverride && before.DepartmentId == after.DepartmentId
+                && before.PositionId == after.PositionId) return; // only the cached copy moved: no cost moved
+        }
+
+        var json = JsonSerializer.Serialize(new
+        {
+            before = new { departmentId = before.DepartmentId, positionId = before.PositionId, costCenterId = before.CostCenterId, @override = before.IsOverride, resolvedCostCenterId = resolvedBefore, source = sourceBefore },
+            after = new { departmentId = after.DepartmentId, positionId = after.PositionId, costCenterId = after.CostCenterId, @override = after.IsOverride, resolvedCostCenterId = resolvedAfter, source = sourceAfter },
+        });
+        new AuditService(db).Stage("employee.cost_attribution_changed", nameof(Employee), employee.Id.ToString(),
+            new RequestContext(null, null, actorUserId, tenantId), json, employee.CompanyId);
     }
 }

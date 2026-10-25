@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Payroll;
 using System.Data;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
@@ -1437,6 +1438,23 @@ public class EmployeeManagementService : IEmployeeManagementService
         return new EmployeeStatusSummaryDto(items);
     }
 
+    /// <summary>
+    /// The form door for the employee's cost centre (contract 2.9). Blank means "no change" (the form sends every field back on each save), a value equal
+    /// to the stored one is carried through untouched, and a new one is validated by the one validator against the employee's own company. An explicit
+    /// cost centre that differs from the department's is an override; one equal to the department's is just a copy.
+    /// </summary>
+    private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken)
+    {
+        if (requested is not Guid costCenterId || costCenterId == employee.CostCenterId) return;
+        await new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db)
+            .EnsureAsync(tenantId, employee.CompanyId, costCenterId, forNewAssignment: true, cancellationToken);
+        var departmentCostCentre = departmentId is Guid d
+            ? await _db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == d).Select(x => x.CostCenterId).FirstOrDefaultAsync(cancellationToken)
+            : null;
+        employee.CostCenterId = costCenterId;
+        employee.CostCenterIsOverride = costCenterId != departmentCostCentre;
+    }
+
     private async Task ApplyEmployee(Employee employee, EmployeeCreateRequest request, Guid tenantId, CancellationToken cancellationToken)
     {
         employee.EnglishName = Clean(request.EnglishName);
@@ -1459,7 +1477,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
         employee.GradeId = request.GradeId;
-        employee.CostCenterId = request.CostCenterId;
+        await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken);
         employee.PositionId = request.PositionId;
         employee.Branch = request.BranchId is null ? employee.Branch : await _db.Branches.Where(x => x.TenantId == tenantId && x.Id == request.BranchId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Branch;
         var department = request.DepartmentId is null ? null : await _db.Departments
