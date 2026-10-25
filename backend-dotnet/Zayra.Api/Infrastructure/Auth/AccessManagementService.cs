@@ -2406,6 +2406,7 @@ public class AccessManagementService : IAccessManagementService
             }
 
             var mfaWasRequired = setting.MfaRequired;
+            var policyBefore = setting.EffectiveMfaPolicy;
             if (request.PasswordMinLength.HasValue) setting.PasswordMinLength = Math.Clamp(request.PasswordMinLength.Value, 6, 64);
             if (request.PasswordRequireUppercase.HasValue) setting.PasswordRequireUppercase = request.PasswordRequireUppercase.Value;
             if (request.PasswordRequireLowercase.HasValue) setting.PasswordRequireLowercase = request.PasswordRequireLowercase.Value;
@@ -2423,7 +2424,25 @@ public class AccessManagementService : IAccessManagementService
                     Models.SecuritySetting.MinSessionMaxHours, Models.SecuritySetting.MaxSessionMaxHours);
             if (request.RefreshTokenExpiryDays.HasValue) setting.RefreshTokenExpiryDays = Math.Clamp(request.RefreshTokenExpiryDays.Value, 1, 90);
             if (request.AllowMultipleSessions.HasValue) setting.AllowMultipleSessions = request.AllowMultipleSessions.Value;
-            if (request.MfaRequired.HasValue) setting.MfaRequired = request.MfaRequired.Value;
+            // The company policy. mfaPolicy (three-way) wins; the legacy mfaRequired flag still works: true = Everyone,
+            // false = back to PrivilegedRoles only when the company was on Everyone (it never silently picks Optional).
+            if (request.MfaPolicy is not null)
+            {
+                if (!MfaPolicies.IsValid(request.MfaPolicy))
+                    throw new MfaPolicyException(MfaErrorCodes.PolicyInvalid, "Choose one of: each person chooses, required for payroll/banking/access roles, required for everyone.");
+                setting.MfaPolicy = request.MfaPolicy;
+            }
+            else if (request.MfaRequired.HasValue)
+            {
+                if (request.MfaRequired.Value) setting.MfaPolicy = MfaPolicies.Everyone;
+                else if (policyBefore == MfaPolicies.Everyone) setting.MfaPolicy = MfaPolicies.PrivilegedRoles;
+            }
+            setting.MfaRequired = setting.MfaPolicy == MfaPolicies.Everyone;
+            var policyAfter = setting.EffectiveMfaPolicy;
+            var movedToOptional = policyAfter == MfaPolicies.Optional && policyBefore != MfaPolicies.Optional;
+            var policyReason = request.MfaPolicyReason?.Trim();
+            if (movedToOptional && string.IsNullOrEmpty(policyReason))
+                throw new MfaPolicyException(MfaErrorCodes.PolicyReasonRequired, "Give a reason for letting each person choose two-step sign-in.");
             // The endpoint refuses values outside 0..90 (ERR_MFA_TRUST_DAYS_RANGE); the clamp only backs it up.
             var trustDaysBefore = setting.MfaTrustedDeviceDays;
             if (request.MfaTrustedDeviceDays.HasValue)
@@ -2488,6 +2507,31 @@ public class AccessManagementService : IAccessManagementService
                 "SecuritySetting",
                 setting.Id.ToString(),
                 context with { TenantId = tenant.Id }));
+            if (policyAfter != policyBefore)
+            {
+                // Its own row, old and new values; moving to Optional is a warning with the reason (a go-live risk).
+                var meta = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    from = policyBefore,
+                    to = policyAfter,
+                    severity = movedToOptional ? "warning" : "info",
+                    reason = string.IsNullOrEmpty(policyReason) ? null : policyReason,
+                });
+                _db.AuditLogs.Add(AuthAuditEntry.Create(
+                    Guid.NewGuid(),
+                    changedAtUtc,
+                    movedToOptional ? "security.mfa_policy_relaxed" : "security.mfa_policy_changed",
+                    "SecuritySetting",
+                    setting.Id.ToString(),
+                    context with { TenantId = tenant.Id },
+                    meta));
+                // The free-text reason stays in the audit row only: written into a log line it would let the caller
+                // forge log entries (CodeQL cs/log-forging). Everything logged here is server-side.
+                if (movedToOptional)
+                    _logger?.LogWarning(
+                        "[MFA-POLICY] Tenant {TenantId} moved two-step sign-in to \"each person chooses\" ({From} -> Optional) by {UserId}. The reason is in the audit log.",
+                        tenant.Id, policyBefore, context.UserId);
+            }
             await _db.SaveChangesAsync(ct);
             result = ToSecuritySettingDto(setting);
             return true;
@@ -3416,7 +3460,7 @@ public class AccessManagementService : IAccessManagementService
     }
 
     private static SecuritySettingDto ToSecuritySettingDto(Models.SecuritySetting s) =>
-        new(s.Id, s.TenantId, s.PasswordMinLength, s.PasswordRequireUppercase, s.PasswordRequireLowercase, s.PasswordRequireDigit, s.PasswordRequireSpecial, s.PasswordExpiryDays, s.PasswordHistoryCount, s.MaxFailedLoginAttempts, s.LockoutDurationMinutes, s.SessionTimeoutMinutes, s.RefreshTokenExpiryDays, s.AllowMultipleSessions, s.MfaRequired, s.UpdatedAtUtc, s.MfaTrustedDeviceDays, s.SessionMaxHours);
+        new(s.Id, s.TenantId, s.PasswordMinLength, s.PasswordRequireUppercase, s.PasswordRequireLowercase, s.PasswordRequireDigit, s.PasswordRequireSpecial, s.PasswordExpiryDays, s.PasswordHistoryCount, s.MaxFailedLoginAttempts, s.LockoutDurationMinutes, s.SessionTimeoutMinutes, s.RefreshTokenExpiryDays, s.AllowMultipleSessions, s.MfaRequired, s.UpdatedAtUtc, s.MfaTrustedDeviceDays, s.SessionMaxHours, s.EffectiveMfaPolicy);
 
     private static RoleDto ToRoleDto(Role role) =>
         new(role.Id, role.Name, role.Description, role.IsSystem, role.IsActive, role.IsEditable, role.AuthorityLevel,

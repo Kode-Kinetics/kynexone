@@ -3338,12 +3338,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             {
                 t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90");
                 t.HasCheckConstraint("ck_security_settings__session_max_hours", "session_max_hours BETWEEN 1 AND 168");
+                t.HasCheckConstraint("ck_security_settings__mfa_policy", "mfa_policy IN ('Optional','PrivilegedRoles','Everyone')");
+                // "Everyone" and the legacy flag are one fact: Optional can never coexist with mfa_required.
+                t.HasCheckConstraint("ck_security_settings__mfa_policy_required", "NOT (mfa_required AND mfa_policy = 'Optional')");
             });
             entity.HasKey(x => x.Id);
             // The hard session limit in hours (1..168). Default 12 for every tenant, including rows that predate it.
             // 0 is never valid, so the CLR default can stay the sentinel.
             entity.Property(x => x.SessionMaxHours).HasDefaultValue(SecuritySetting.DefaultSessionMaxHours);
             entity.HasIndex(x => x.TenantId).IsUnique();
+            entity.Property(x => x.MfaPolicy).HasMaxLength(20).HasDefaultValue(MfaPolicies.PrivilegedRoles);
+            entity.Ignore(x => x.EffectiveMfaPolicy);
             // How long a browser stays trusted after a two-step code (0 = never offer it). Default 30 (the column
             // default serves rows that predate it). The sentinel is NOT 0: with the CLR default as sentinel EF would
             // omit an explicit 0 on INSERT and the database would store 30, silently turning "off" into "30 days".

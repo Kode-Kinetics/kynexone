@@ -1182,3 +1182,74 @@ test.describe('review screenshots', () => {
     }
   }
 });
+
+test.describe('Sign-in security: the company lets each person choose', () => {
+  // Policy "Optional": the API reports required=false even for a payroll login, so the buttons appear.
+  const optionalStatus = (over: Partial<Status> = {}) => ({ ...status(over), policy: 'Optional' }) as Status;
+
+  test('a privileged person who is enrolled can turn it off with a backup code, after confirming', async ({ page }, info) => {
+    const api = await mockApi(page, { status: optionalStatus({ enabled: true, backupCodesRemaining: 8 }), devices: [], privileged: true });
+    await openSecurity(page);
+    await expect(card(page).getByTestId('two-step-optional-note')).toHaveText('Your company lets each person choose whether to use two-step sign-in.');
+    await expect(card(page).getByTestId('two-step-required-reason')).toHaveCount(0);
+    await shot(page, 'account-security-optional-on-en', info.outputPath.bind(info));
+    await card(page).getByTestId('two-step-turn-off').click();
+    const submit = page.getByRole('button', { name: 'Turn off', exact: true });
+    await page.getByTestId('two-step-disable-switch').click();
+    await expect(page.getByRole('button', { name: 'Use the app code instead' })).toBeVisible();
+    await page.getByTestId('two-step-disable-backup').fill(CODES[0]);
+    await expect(submit).toBeDisabled();                       // not until it is confirmed
+    await page.getByRole('checkbox').check();
+    await shot(page, 'account-security-optional-disable-backup-en', info.outputPath.bind(info));
+    await submit.click();
+    await expect.poll(() => api.calls.find((c) => c.path === '/api/auth/mfa/disable')?.body).toEqual({ backupCode: CODES[0] });
+    await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is off');
+    await expect(card(page).getByTestId('two-step-turn-on')).toBeVisible();
+    expect(api.errors).toEqual([]);
+  });
+
+  test('with the app code the body is totpCode; a wrong backup code is explained', async ({ page }) => {
+    const api = await mockApi(page, {
+      status: optionalStatus({ enabled: true, backupCodesRemaining: 10 }), devices: [], privileged: true,
+      disable: [{ status: 400, body: { code: 'ERR_MFA_CODE_INVALID', message: 'no' } }, { status: 204 }],
+    });
+    await openSecurity(page);
+    await card(page).getByTestId('two-step-turn-off').click();
+    await page.getByTestId('two-step-disable-switch').click();
+    await page.getByTestId('two-step-disable-backup').fill('AAAAA-BBBBB');
+    await page.getByRole('checkbox').check();
+    await page.getByRole('button', { name: 'Turn off', exact: true }).click();
+    await expect(page.getByText("That backup code didn't work. Check it, or use another one. Each code works once.")).toBeVisible();
+    await page.getByTestId('two-step-disable-switch').click();
+    await page.getByLabel('Current 6-digit code from your authenticator app').fill('123456');
+    await page.getByRole('button', { name: 'Turn off', exact: true }).click();
+    await expect.poll(() => api.calls.filter((c) => c.path === '/api/auth/mfa/disable').at(-1)?.body).toEqual({ totpCode: '123456' });
+  });
+
+  test('a person who is not enrolled can turn it on', async ({ page }) => {
+    await mockApi(page, { status: optionalStatus(), devices: [], privileged: true });
+    await openSecurity(page);
+    await expect(card(page).getByTestId('two-step-status')).toHaveText('Two-step sign-in is off');
+    await expect(card(page).getByTestId('two-step-turn-on')).toBeVisible();
+    await expect(card(page).getByTestId('two-step-turn-off')).toHaveCount(0);
+  });
+
+  test('Arabic: the choice note and the backup-code switch are translated', async ({ page }) => {
+    await mockApi(page, { status: optionalStatus({ enabled: true, backupCodesRemaining: 5 }), devices: [], locale: 'ar' });
+    await openSecurity(page);
+    await expect(card(page).getByTestId('two-step-optional-note')).toHaveText('تتيح شركتك لكل شخص أن يختار استخدام التحقق بخطوتين أو عدم استخدامه.');
+    await card(page).getByTestId('two-step-turn-off').click();
+    await expect(page.getByTestId('two-step-disable-switch')).toHaveText('استخدم رمزًا احتياطيًا بدلًا من ذلك');
+  });
+
+  test('when it is required, today\'s text stays and there is no off button', async ({ page }) => {
+    await mockApi(page, {
+      status: status({ enabled: true, required: true, requiredBecause: 'privileged_role', backupCodesRemaining: 10 }),
+      devices: [], privileged: true,
+    });
+    await openSecurity(page);
+    await expect(card(page).getByTestId('two-step-required-reason')).toContainText(ROLE_REASON);
+    await expect(card(page).getByTestId('two-step-turn-off')).toHaveCount(0);
+    await expect(card(page).getByTestId('two-step-optional-note')).toHaveCount(0);
+  });
+});

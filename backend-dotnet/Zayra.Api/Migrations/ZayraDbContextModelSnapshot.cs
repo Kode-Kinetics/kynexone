@@ -29434,6 +29434,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_failed_login_attempts");
 
+                    b.Property<string>("MfaPolicy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("PrivilegedRoles")
+                        .HasColumnName("mfa_policy");
+
                     b.Property<bool>("MfaRequired")
                         .HasColumnType("boolean")
                         .HasColumnName("mfa_required");
@@ -29509,6 +29517,10 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("security_settings", null, t =>
                         {
+                            t.HasCheckConstraint("ck_security_settings__mfa_policy", "mfa_policy IN ('Optional','PrivilegedRoles','Everyone')");
+
+                            t.HasCheckConstraint("ck_security_settings__mfa_policy_required", "NOT (mfa_required AND mfa_policy = 'Optional')");
+
                             t.HasCheckConstraint("ck_security_settings__mfa_trusted_device_days", "mfa_trusted_device_days BETWEEN 0 AND 90");
 
                             t.HasCheckConstraint("ck_security_settings__session_max_hours", "session_max_hours BETWEEN 1 AND 168");

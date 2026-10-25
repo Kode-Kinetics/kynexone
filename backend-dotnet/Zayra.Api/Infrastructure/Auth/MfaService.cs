@@ -463,10 +463,15 @@ public class MfaService : IMfaService
     /// code. Success rotates the stamp (ends sessions) and revokes every trusted browser, as before plus trust.
     /// </summary>
     public Task<MfaDisableOutcome> DisableWithOutcomeAsync(Guid userId, Guid tenantId, string totpCode, RequestContext context, CancellationToken ct) =>
+        DisableWithOutcomeAsync(userId, tenantId, totpCode, null, context, ct);
+
+    /// <summary>Self-disable proven by a current app code OR one unused backup code.</summary>
+    public Task<MfaDisableOutcome> DisableWithOutcomeAsync(Guid userId, Guid tenantId, string? totpCode, string? backupCode, RequestContext context, CancellationToken ct) =>
         DisableTenantFactorAsync(
             userId,
             tenantId,
             totpCode,
+            backupCode,
             privilegedRecovery: false,
             context with { UserId = userId, TenantId = tenantId },
             ct);
@@ -480,6 +485,7 @@ public class MfaService : IMfaService
             userId,
             tenantId,
             totpCode: null,
+            backupCode: null,
             privilegedRecovery: true,
             context with { UserId = null, TenantId = tenantId },
             ct) == MfaDisableOutcome.Disabled;
@@ -488,6 +494,7 @@ public class MfaService : IMfaService
         Guid userId,
         Guid tenantId,
         string? totpCode,
+        string? backupCode,
         bool privilegedRecovery,
         RequestContext context,
         CancellationToken ct)
@@ -527,27 +534,41 @@ public class MfaService : IMfaService
                 // cannot switch it off (platform recovery, the lost-device path, is not this method's caller).
                 var graph = await LoadCompleteTenantGraphAsync(user.Id, user.TenantId, cancellationToken);
                 if (graph is null) return false;
-                if (!mfaRulesOff && await PrivilegedMfaPolicy.IsPrivilegedTenantUserAsync(_db, graph, cancellationToken))
+                var policy = await _db.SecuritySettings.AsNoTracking()
+                    .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
+                // Under "each person chooses" a privileged role may switch it off too.
+                if (!mfaRulesOff && MfaPolicies.For(policy) != MfaPolicies.Optional
+                    && await PrivilegedMfaPolicy.IsPrivilegedTenantUserAsync(_db, graph, cancellationToken))
                 {
                     outcome = MfaDisableOutcome.RequiredForRole;
                     return false;
                 }
-                var policy = await _db.SecuritySettings.AsNoTracking()
-                    .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
                 if (!mfaRulesOff && policy?.MfaRequired == true)
                 {
                     outcome = MfaDisableOutcome.RequiredByWorkspace;
                     return false;
                 }
 
-                string plainSecret;
-                try { plainSecret = _totp.DecryptSecret(user.MfaSecretEncrypted); }
-                catch { return false; }
-                if (string.IsNullOrWhiteSpace(totpCode)
-                    || !TotpService.IsFreshStep(_totp.MatchStep(plainSecret, totpCode), user.MfaLastTotpStep))
+                if (!string.IsNullOrWhiteSpace(backupCode))
                 {
-                    outcome = MfaDisableOutcome.CodeInvalid;
-                    return false;
+                    // A backup code proves the factor too; everything is cleared below, so nothing is consumed first.
+                    if (!MfaBackupCodes.TryConsume(user.MfaRecoveryCodeHashes, backupCode, out _, out _))
+                    {
+                        outcome = MfaDisableOutcome.CodeInvalid;
+                        return false;
+                    }
+                }
+                else
+                {
+                    string plainSecret;
+                    try { plainSecret = _totp.DecryptSecret(user.MfaSecretEncrypted); }
+                    catch { return false; }
+                    if (string.IsNullOrWhiteSpace(totpCode)
+                        || !TotpService.IsFreshStep(_totp.MatchStep(plainSecret, totpCode), user.MfaLastTotpStep))
+                    {
+                        outcome = MfaDisableOutcome.CodeInvalid;
+                        return false;
+                    }
                 }
             }
 

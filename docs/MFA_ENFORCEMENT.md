@@ -20,7 +20,32 @@ Tests: `Zayra.Api.Tests/Security/PrivilegedMfaEnforcementTests.cs`, `MfaStatusHt
   (`payroll.read`). Not: Employee, Manager, HR Assistant, Kiosk Operator.
 - The tenant audit log (`GET /api/audit-logs`) returns raw metadata, IP and user agent only to
   callers holding `security.manage`; other readers get the event without them.
-- Unchanged: a tenant can still require MFA for *all* its users (`security_settings.mfa_required`).
+- A tenant can require MFA for *all* its users, or let each person choose: see **Company policy** below.
+
+## Company policy (per tenant)
+
+`security_settings.mfa_policy` holds one of three values, set in Tenant Admin → Security → Two-step sign-in
+(`PUT /api/access/security-settings`, needs `security.manage`, `mfaPolicy`):
+
+| Policy | Label | Effect |
+|---|---|---|
+| `PrivilegedRoles` (default for new and existing tenants) | Required for people who can see or change payroll, banking or access | The rules in this document apply as written. Everyone else chooses on their own page. |
+| `Everyone` | Required for everyone | Every tenant user must enrol; a user without a factor gets the enrolment challenge at sign-in. |
+| `Optional` | Each person chooses | Nobody is forced, privileged roles included. A privileged user is `NotRequired`: no enrolment challenge, no enforcement date, no refresh block, and **self-disable is allowed**. A user who has enrolled is still challenged at sign-in until they turn it off. |
+
+- `mfa_required` stays and always equals `mfa_policy = 'Everyone'` (written together; a CHECK forbids `Optional` with
+  `mfa_required`; a row that only sets the flag reads as Everyone). Existing rows were migrated `mfa_required` → `Everyone`,
+  everything else → `PrivilegedRoles`. Nobody is moved to `Optional` by the migration.
+- Moving **to** `Optional` needs `mfaPolicyReason` (else 400 `ERR_MFA_POLICY_REASON`). Every change writes an audit row
+  with `from`, `to` and `reason`: `security.mfa_policy_changed`, or `security.mfa_policy_relaxed` (severity `warning`,
+  also logged as `[MFA-POLICY]`) for a move to Optional. An unknown value is 400 `ERR_MFA_POLICY_INVALID`. The older
+  `mfaRequired` flag is still accepted when `mfaPolicy` is absent (true = Everyone; false = PrivilegedRoles only from Everyone).
+- `GET /api/auth/mfa/status` reports `policy`. Under `Optional` it says `required: false`, `canDisable: true` for an
+  enrolled user, and the account page (/account/security) offers **Turn on** or **Turn off** (a current 6-digit code or
+  one backup code, plus a confirmation; `POST /api/auth/mfa/disable` with `totpCode` or `backupCode`, exactly one).
+- **Go-live:** a live customer must not be on `Optional` (LIVE_READINESS_CHECKLIST.md).
+- `Auth__Mfa__DisabledForTesting` overrides every policy for tenant users, unchanged. Platform-operator MFA is never
+  affected by the policy.
 
 ## When
 

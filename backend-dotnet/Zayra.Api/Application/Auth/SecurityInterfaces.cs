@@ -70,6 +70,10 @@ public interface IMfaService
         => await DisableAsync(userId, tenantId, totpCode, cancellationToken)
             ? Zayra.Api.Application.Auth.MfaDisableOutcome.Disabled
             : Zayra.Api.Application.Auth.MfaDisableOutcome.CodeInvalid;
+    async Task<Zayra.Api.Application.Auth.MfaDisableOutcome> DisableWithOutcomeAsync(Guid userId, Guid tenantId, string? totpCode, string? backupCode, RequestContext context, CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(backupCode)
+            ? await DisableWithOutcomeAsync(userId, tenantId, totpCode ?? string.Empty, context, cancellationToken)
+            : throw new NotSupportedException("This IMfaService does not support disabling with a backup code.");
 
     // ── Platform user MFA ─────────────────────────────────────────────────────
     Task<MfaSetupInitDto> InitiatePlatformSetupAsync(Guid platformUserId, CancellationToken cancellationToken);
