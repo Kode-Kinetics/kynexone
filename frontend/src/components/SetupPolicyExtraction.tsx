@@ -195,7 +195,7 @@ export function SetupPolicyExtraction({ value, onChange, profile, onProfileChang
         savePolicyFormDraft(localStorage, bundle, { replace: true });
       }
       if (onReviewOnboardingDraft) onReviewOnboardingDraft();
-      else router.push('/setup?tab=onboardingChecklists&policyDraft=1');
+      else router.push(`/setup?tab=onboardingChecklists&policyDraft=1&companyId=${encodeURIComponent(company.id)}`);
     } catch (cause) { setError(apiErrorReason(cause, t('The form draft could not be saved in this browser. Your setup values are unchanged.'))); }
   };
   return <div className="space-y-3">

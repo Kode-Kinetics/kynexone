@@ -298,6 +298,9 @@ test('below 1280px the section header opens the grouped list, which closes on ch
   // A keyboard choice must not drop focus to the document when the list collapses.
   await toggle.press('Enter');
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  // On a phone the list is a modal sheet whose focus starts on the current entry; let it land before moving on, or the
+  // move races it (a longer list since every module's settings joined Setup makes the race visible).
+  if (isPhone(page)) await expect(nav.getByRole('link', { name: 'Grades', exact: true })).toBeFocused();
   const branches = nav.getByRole('link', { name: 'Branches', exact: true });
   await branches.focus();
   await page.keyboard.press('Enter');

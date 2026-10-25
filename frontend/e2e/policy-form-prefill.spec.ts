@@ -148,7 +148,7 @@ test(`workspace policy intake reviews and saves in the existing onboarding form 
   await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
   await page.getByRole('button', { name: 'Extract from policy', exact: true }).click();
   await page.getByRole('button', { name: 'Review prefilled forms', exact: true }).click();
-  await expect(page).toHaveURL(url => url.pathname === '/setup' && url.searchParams.get('area') === 'onboarding' && url.searchParams.get('setting') === 'onboarding' && !url.searchParams.has('mode'));
+  await expect(page).toHaveURL(url => url.pathname === '/setup' && url.searchParams.get('area') === 'onboarding' && url.searchParams.get('setting') === 'onboardingChecklists' && !url.searchParams.has('mode'));
   await page.getByTitle('Onboarding checklist', { exact: true }).selectOption(checklistId);
   await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Arrange contract signing');
@@ -220,7 +220,7 @@ async function extractAndOpen(page: Page) {
   await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
   await page.getByRole('button', { name: 'Extract from policy', exact: true }).click();
   await page.getByRole('button', { name: 'Review prefilled forms', exact: true }).click();
-  await expect(page).toHaveURL(/\/recruitment\/onboarding/);
+  await expect(page).toHaveURL(/\/setup\?tab=onboardingChecklists&policyDraft=1/); // Drafts open in Setup → Onboarding checklists (2026-10-24).
   await expect(page.getByRole('region', { name: 'Policy task drafts', exact: true })).toBeVisible();
   await page.getByTitle('Onboarding checklist', { exact: true }).selectOption(checklistId);
 }
@@ -240,7 +240,7 @@ test('resumed extraction opens existing forms without another AI call despite re
   await page.getByRole('button', { name: 'Review policy text', exact: true }).click();
   await page.getByRole('button', { name: '2. Prepare form values', exact: true }).click();
   await page.getByRole('button', { name: 'Review prefilled forms', exact: true }).click();
-  await expect(page).toHaveURL(/\/recruitment\/onboarding/);
+  await expect(page).toHaveURL(/\/setup\?tab=onboardingChecklists&policyDraft=1/); // Drafts open in Setup → Onboarding checklists (2026-10-24).
   expect(state.writes.filter(write => write.path.endsWith('/policy/extract'))).toHaveLength(1);
   expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toHaveLength(0);
 });
@@ -261,7 +261,9 @@ test('policy extraction opens actual existing task controls without saving or in
 test('explicit manual save uses existing template endpoint and reads saved values back', async ({ page }) => {
   const state = await boot(page);
   await extractAndOpen(page);
-  state.identity.writerRole = 'Custom recruitment editor';
+  // Setup → Onboarding checklists opens for Admin and HR Manager, the roles the template endpoint accepts, so a
+  // different writer than the Admin who extracted is an HR Manager (a custom role is refused by the API and the section).
+  state.identity.writerRole = 'HR Manager';
   await page.reload();
   await page.getByTitle('Onboarding checklist', { exact: true }).selectOption(checklistId);
   await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
@@ -384,7 +386,9 @@ for (const boundary of ['tenantId', 'userId'] as const) {
     await extractAndOpen(page);
     state.identity[boundary] = `different-${boundary}`;
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Recruitment & Requisitions', exact: true })).toBeVisible();
+    // The draft's home is Setup → Onboarding checklists: it opens for the new identity, finds no draft of theirs, and says so.
+    await expect(page.locator('#setup-section-heading')).toHaveText('Onboarding checklists', { timeout: 30_000 });
+    await expect(page.getByRole('status').filter({ hasText: 'No policy task draft is available' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Policy task drafts', exact: true })).toHaveCount(0);
     expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
   });
@@ -398,8 +402,13 @@ test('read-only recruitment permission cannot save a populated policy draft', as
   await page.getByTitle('Due offset days', { exact: true }).fill('2');
   state.identity.readOnly = true;
   await page.reload();
-  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Save Template Task', exact: true })).toBeDisabled();
+  // A read-only recruitment user (HR Officer) is not offered Setup → Onboarding checklists at all (it needs recruitment.write and
+  // Admin or HR Manager, as the API does): no editor, no populated draft and no save control are reachable, and nothing is written.
+  await expect(page.locator('[data-module-section="onboardingChecklists"]')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Setup & Administration', exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('region', { name: 'Policy task drafts', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Fill existing task form', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save Template Task', exact: true })).toHaveCount(0);
   expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
 });
 
@@ -429,6 +438,8 @@ test('Group company switch clears old policy values without converting them into
   await expect(page.getByRole('button', { name: 'Save Template Task', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Switch company', exact: true }).click();
   await page.getByRole('menuitem', { name: /Other Group Company LLC/ }).click();
+  // Setup guards unsaved edits: the filled form is unsaved, so the switch asks before it discards them.
+  await page.getByRole('button', { name: 'Discard and leave', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Policy task drafts', exact: true })).toHaveCount(0);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('');
   await expect(page.getByPlaceholder('Owner', { exact: true })).toHaveValue('');
