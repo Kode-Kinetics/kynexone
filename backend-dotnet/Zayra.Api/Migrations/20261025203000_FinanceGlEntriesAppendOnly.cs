@@ -53,6 +53,7 @@ namespace Zayra.Api.Migrations
         [
             ("finance_gl_entries", "trg_finance_gl_entries__append_only"),
             ("finance_gl_entries", "trg_finance_gl_entries__no_truncate"),
+            ("finance_gl_entries", "trg_finance_gl_entries__reversal_witness"),
             ("finance_gl_entries", "trg_finance_gl_entries__reversal_valid"),
             ("finance_gl_entries", "trg_finance_gl_entries__reversed_needs_contra"),
             ("finance_gl_entries", "trg_finance_gl_entries__erp_evidence"),
@@ -68,7 +69,7 @@ namespace Zayra.Api.Migrations
         private static readonly string[] Functions =
         [
             "finance_ledger_tenant_is_purging(uuid)", "finance_ledger_trigger_bypass_roles()",
-            "finance_gl_entries_append_only()", "finance_gl_entries_no_truncate()", "finance_gl_entries_reversal_valid()",
+            "finance_gl_entries_append_only()", "finance_gl_entries_no_truncate()", "finance_gl_entries_reversal_witness()", "finance_gl_entries_reversal_valid()",
             "finance_gl_entries_reversed_needs_contra()", "finance_gl_entries_erp_evidence()",
             "cost_centers_guard()", "cost_centers_parent_cycle()", "gl_journal_export_lines_immutable()",
             "payroll_runs_stamp_freeze()", "payroll_lines_stamp_freeze()",
@@ -109,6 +110,7 @@ namespace Zayra.Api.Migrations
             migrationBuilder.Sql(LockTimeoutSql);
             foreach (var (table, trigger) in LedgerTriggers.Reverse())
                 migrationBuilder.Sql($"DROP TRIGGER IF EXISTS {trigger} ON {table};");
+            migrationBuilder.Sql("DROP INDEX IF EXISTS ix_finance_gl_entries_reversal_of;");
             foreach (var function in Functions)
                 migrationBuilder.Sql($"DROP FUNCTION IF EXISTS {function};");
         }
@@ -145,6 +147,12 @@ namespace Zayra.Api.Migrations
                   IF NOT OLD.is_reversed AND NEW.is_reversed AND OLD.reversal_of_entry_id IS NOT NULL THEN
                     RAISE EXCEPTION 'finance_gl_entries is append-only: a reversal row cannot itself be marked is_reversed (row id=%)', OLD.id
                       USING ERRCODE = 'restrict_violation';
+                  END IF;
+
+                  -- Remember, for this transaction only, which originals are being flagged now: a reversal of an original that is ALREADY
+                  -- flagged (by an earlier transaction) is a double reversal, but the writers flag the original and insert its contra together.
+                  IF NOT OLD.is_reversed AND NEW.is_reversed THEN
+                    PERFORM set_config('kynex.gl_flagged', coalesce(current_setting('kynex.gl_flagged', true), '') || NEW.id::text || ',', true);
                   END IF;
 
                   -- erp_*: the state machine the export code implies (ErpPostingTransitions at run level; ErpPostingEvidence per line).
@@ -231,9 +239,38 @@ namespace Zayra.Api.Migrations
                 ALTER TABLE finance_gl_entries ENABLE ALWAYS TRIGGER trg_finance_gl_entries__no_truncate;
                 """,
 
-                // AM-11, DB half: a reversal row points at an existing, same-tenant, same-company entry that is not itself a reversal,
-                // mirrors its accounts (one leg may be absent: the void writes one-sided rows), copies its cost centre verbatim, and all
-                // contras together never exceed it (a partial contra is a bonus cancel; a second full one is a double void).
+                // Transaction-local witnesses (set_config(..., is_local => true): gone at COMMIT or ROLLBACK, undone with a rolled-back savepoint).
+                // They let the deferred checks ask "was this written in THIS transaction" without relying on xmin, which is a sub-transaction id
+                // under the savepoints EF opens inside an explicit transaction. Only reversal rows and the void's reclass rows pay for the trigger.
+                """
+                CREATE OR REPLACE FUNCTION finance_gl_entries_reversal_witness() RETURNS trigger LANGUAGE plpgsql AS $fn$
+                BEGIN
+                  IF NEW.reversal_of_entry_id IS NOT NULL THEN
+                    PERFORM set_config('kynex.gl_contra_for', coalesce(current_setting('kynex.gl_contra_for', true), '') || NEW.reversal_of_entry_id::text || ',', true);
+                  ELSE
+                    PERFORM set_config('kynex.gl_reclass', coalesce(current_setting('kynex.gl_reclass', true), '') || NEW.source_entity_id::text || ':' || NEW.event_type || ',', true);
+                  END IF;
+                  RETURN NULL;
+                END
+                $fn$;
+                """,
+                """
+                DROP TRIGGER IF EXISTS trg_finance_gl_entries__reversal_witness ON finance_gl_entries;
+                CREATE TRIGGER trg_finance_gl_entries__reversal_witness AFTER INSERT ON finance_gl_entries
+                  FOR EACH ROW
+                  WHEN (NEW.reversal_of_entry_id IS NOT NULL OR NEW.event_type = 'PayrollNetSettlementReclass' OR NEW.event_type LIKE 'PayrollRemitReclass:%')
+                  EXECUTE FUNCTION finance_gl_entries_reversal_witness();
+                ALTER TABLE finance_gl_entries ENABLE ALWAYS TRIGGER trg_finance_gl_entries__reversal_witness;
+                """,
+
+                // The reversal triggers look contras up by their original on every insert and every flag.
+                "CREATE INDEX IF NOT EXISTS ix_finance_gl_entries_reversal_of ON finance_gl_entries (tenant_id, reversal_of_entry_id) WHERE reversal_of_entry_id IS NOT NULL;",
+                "COMMENT ON INDEX ix_finance_gl_entries_reversal_of IS 'Serves: the M2 reversal triggers (contras of one original), LoansController.HasContraAsync and the bonus and void ledgers (reversals of a source).';",
+
+                // AM-11 database half, as ruled by AM-25: a reversal row points at an existing entry of the same tenant, company and currency that is
+                // not itself a reversal and is not already reversed; it is side-swapped (one leg may be empty: the void writes one-sided rows, and a
+                // period-shifted void changes only period, date and reference); it copies the cost centre verbatim; and its amount, and the sum of all
+                // reversals of the original, never exceed the original (a partial contra is a bonus cancel; a second full one is a double void).
                 """
                 CREATE OR REPLACE FUNCTION finance_gl_entries_reversal_valid() RETURNS trigger LANGUAGE plpgsql AS $fn$
                 DECLARE
@@ -251,6 +288,10 @@ namespace Zayra.Api.Migrations
                   END IF;
                   IF o.reversal_of_entry_id IS NOT NULL THEN
                     RAISE EXCEPTION 'finance_gl_entries reversal % reverses a reversal (%): reversing a reversal re-applies the original', NEW.id, o.id
+                      USING ERRCODE = 'check_violation';
+                  END IF;
+                  IF o.is_reversed AND position(o.id::text || ',' in coalesce(current_setting('kynex.gl_flagged', true), '')) = 0 THEN
+                    RAISE EXCEPTION 'finance_gl_entries reversal % targets % which was already reversed', NEW.id, o.id
                       USING ERRCODE = 'check_violation';
                   END IF;
                   IF NEW.currency IS DISTINCT FROM o.currency THEN
@@ -287,33 +328,36 @@ namespace Zayra.Api.Migrations
                 ALTER TABLE finance_gl_entries ENABLE ALWAYS TRIGGER trg_finance_gl_entries__reversal_valid;
                 """,
 
-                // AM-12: is_reversed may become true only with its contra. The contra normally covers the whole original. The one other shape
-                // is PayrollVoidService with funds DISBURSED: the retained cash leg (and only that) is flagged without a linked contra, and the
-                // unlinked reclassification row of the same run stands in for it.
+                // AM-12: is_reversed may become true only with its contra WRITTEN IN THE SAME TRANSACTION (the witness), and the contras together cover
+                // the original: the writers flag an original only when its reversal closes it out (BonusesController: "only when the contra closes it
+                // out completely"; a void, a loan reversal and a settlement cancel always reverse the whole line). The one other shape is
+                // PayrollVoidService with funds DISBURSED: the retained cash leg (and only that) is flagged without a linked contra, and the unlinked
+                // reclassification row of the same run, written in the same transaction, stands in for it.
                 """
                 CREATE OR REPLACE FUNCTION finance_gl_entries_reversed_needs_contra() RETURNS trigger LANGUAGE plpgsql AS $fn$
                 DECLARE
                   v_total numeric;
-                  v_count bigint;
                   v_reclass text;
                 BEGIN
-                  SELECT coalesce(sum(c.amount), 0), count(*) INTO v_total, v_count
-                  FROM finance_gl_entries c
-                  WHERE c.tenant_id = NEW.tenant_id AND c.reversal_of_entry_id = NEW.id AND c.company_id IS NOT DISTINCT FROM NEW.company_id;
-                  IF v_count > 0 AND v_total >= NEW.amount THEN RETURN NULL; END IF;
+                  IF position(NEW.id::text || ',' in coalesce(current_setting('kynex.gl_contra_for', true), '')) > 0 THEN
+                    SELECT coalesce(sum(c.amount), 0) INTO v_total
+                    FROM finance_gl_entries c
+                    WHERE c.tenant_id = NEW.tenant_id AND c.reversal_of_entry_id = NEW.id AND c.company_id IS NOT DISTINCT FROM NEW.company_id;
+                    IF v_total >= NEW.amount THEN RETURN NULL; END IF;
+                    RAISE EXCEPTION 'finance_gl_entries is_reversed on % needs contras covering the original: they total % of %', NEW.id, v_total, NEW.amount
+                      USING ERRCODE = 'check_violation';
+                  END IF;
 
                   v_reclass := CASE
                     WHEN NEW.event_type = 'PayrollNetSettlement' THEN 'PayrollNetSettlementReclass'
                     WHEN NEW.event_type LIKE 'PayrollRemit:%' THEN 'PayrollRemitReclass:' || substr(NEW.event_type, length('PayrollRemit:') + 1)
                   END;
-                  IF v_reclass IS NOT NULL AND NEW.debit_account = '' AND EXISTS (
-                       SELECT 1 FROM finance_gl_entries r
-                       WHERE r.tenant_id = NEW.tenant_id AND r.source_module = NEW.source_module AND r.source_entity_id = NEW.source_entity_id
-                         AND r.event_type = v_reclass AND r.reversal_of_entry_id IS NULL) THEN
+                  IF v_reclass IS NOT NULL AND NEW.debit_account = ''
+                     AND position(NEW.source_entity_id::text || ':' || v_reclass || ',' in coalesce(current_setting('kynex.gl_reclass', true), '')) > 0 THEN
                     RETURN NULL;
                   END IF;
 
-                  RAISE EXCEPTION 'finance_gl_entries is_reversed on % needs a matching contra: contras found %, totalling % of %', NEW.id, v_count, v_total, NEW.amount
+                  RAISE EXCEPTION 'finance_gl_entries is_reversed on % needs a matching contra written in the same transaction', NEW.id
                     USING ERRCODE = 'check_violation';
                 END
                 $fn$;
