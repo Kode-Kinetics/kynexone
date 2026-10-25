@@ -56,6 +56,8 @@ public class DepartmentsController : ControllerBase
     public async Task<ActionResult<DepartmentDto>> Create(DepartmentRequest request, CancellationToken cancellationToken)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
+        // A cost centre or a parent department decides where the department's people cost to: that is the cost-centre permission, not plain org write.
+        if ((request.CostCenterId is not null || request.ParentDepartmentId is not null) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -75,6 +77,11 @@ public class DepartmentsController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var current = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId.Value && d.Id == id)
+                .Select(d => new { d.CostCenterId, d.ParentDepartmentId }).FirstOrDefaultAsync(cancellationToken);
+            if (current is not null
+                && (request.CostCenterId != current.CostCenterId || request.ParentDepartmentId != current.ParentDepartmentId)
+                && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
             var department = await _organization.UpdateDepartmentAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return department is null ? NotFound() : Ok(department);
         }
@@ -140,6 +147,10 @@ public class DepartmentsController : ControllerBase
     public IActionResult ImportTemplate() =>
         File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "departments_import_template.csv");
 
+    /// <summary>A department file that names a cost centre or a parent department on any row re-points cost: it needs the cost-centre permission.</summary>
+    private static bool CsvSetsCostAttribution(string csv) => Csv.Parse(csv).Any(r =>
+        !string.IsNullOrWhiteSpace(r.GetValueOrDefault("CostCenterCode")) || !string.IsNullOrWhiteSpace(r.GetValueOrDefault("ParentDepartmentCode")));
+
     // ── Import Preview ────────────────────────────────────────────────────────
 
     [HttpPost("import-preview")]
@@ -147,6 +158,7 @@ public class DepartmentsController : ControllerBase
     public async Task<IActionResult> ImportPreview([FromBody] DeptImportRequest req, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
+        if (CsvSetsCostAttribution(req.Csv) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;
@@ -162,6 +174,7 @@ public class DepartmentsController : ControllerBase
     public async Task<IActionResult> Import([FromBody] DeptImportRequest req, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
+        if (CsvSetsCostAttribution(req.Csv) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;

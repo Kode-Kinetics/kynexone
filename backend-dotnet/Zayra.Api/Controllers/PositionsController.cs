@@ -56,6 +56,7 @@ public class PositionsController : ControllerBase
         try
         {
             var tenantId = RequireTenant();
+            if (request.CostCenterId is not null && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
             await ValidateAsync(tenantId, request, null, ct);
             var position = Apply(new Position { TenantId = tenantId, CreatedBy = UserId() }, request);
             _db.Positions.Add(position);
@@ -76,6 +77,7 @@ public class PositionsController : ControllerBase
             var tenantId = RequireTenant();
             var position = await Scoped().FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId && !x.IsDeleted, ct);
             if (position is null) return NotFound();
+            if (request.CostCenterId != position.CostCenterId && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
             await ValidateAsync(tenantId, request, position, ct);
             var before = PositionSnapshot(position);
             Apply(position, request);

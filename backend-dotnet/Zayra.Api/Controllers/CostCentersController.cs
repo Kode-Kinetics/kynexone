@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -30,6 +31,7 @@ public class CostCentersController : ControllerBase
     public CostCentersController(IOrganizationSetupService organization, ZayraDbContext db) { _organization = organization; _db = db; }
 
     [HttpGet]
+    [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<PagedResult<CostCenterDto>>> Search([FromQuery] Guid? companyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
@@ -38,6 +40,7 @@ public class CostCentersController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<CostCenterDto>> Get(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();
@@ -48,17 +51,20 @@ public class CostCentersController : ControllerBase
 
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.costcenter.manage")]
     public Task<ActionResult<CostCenterDto>> Create(CostCenterRequest request, CancellationToken cancellationToken)
         => CostCenterEndpoints.CreateAsync(this, _organization, request, Context(),
             costCenter => CreatedAtAction(nameof(Get), new { id = costCenter.Id }, costCenter), cancellationToken);
 
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.costcenter.manage")]
     public Task<ActionResult<CostCenterDto>> Update(Guid id, CostCenterRequest request, CancellationToken cancellationToken)
         => CostCenterEndpoints.UpdateAsync(this, _organization, _db, id, request, Context(), cancellationToken);
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.costcenter.manage")]
     public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
         => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), cancellationToken);
 
@@ -80,6 +86,7 @@ public class CostCentersController : ControllerBase
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.costcenter.manage")]
     public async Task<IActionResult> ImportPreview([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -92,6 +99,7 @@ public class CostCentersController : ControllerBase
 
     [HttpPost("import")]
     [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("organization.costcenter.manage")]
     public async Task<IActionResult> Import([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();

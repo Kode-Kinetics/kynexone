@@ -175,6 +175,11 @@ public class PlanningController : ControllerBase
             if (companyId is null || !this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
         }
 
+        // Re-pointing the department's cost centre is the cost-centre permission, not the establishment one.
+        if (body.CostCenterId is Guid asked
+            && (asked == Guid.Empty ? dept.CostCenterId is not null : asked != dept.CostCenterId)
+            && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
+
         var before = new { dept.ApprovedHeadcount, dept.MonthlyBudgetAmount, dept.CostCenterId };
         var newApproved = Math.Max(0, body.ApprovedHeadcount);
         var newBudget = Math.Max(0, body.MonthlyBudgetAmount);

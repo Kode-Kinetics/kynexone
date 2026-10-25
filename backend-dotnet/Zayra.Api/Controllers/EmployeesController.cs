@@ -2897,6 +2897,8 @@ public class EmployeesController : ControllerBase
         try
         {
             var tenantId = RequireTenant();
+            // An explicit cost centre is an override of the department's: the cost-centre permission, not just employees.write.
+            if (request.CostCenterId is not null && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
 
             // Enforce employee limit
             var sub = await _db.TenantSubscriptions
@@ -3911,6 +3913,9 @@ public class EmployeesController : ControllerBase
         if (employee is null) return NotFound();
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
+        // A department or cost-centre change moves where the person's pay posts (cost-centre accounting): that needs the cost-centre permission,
+        // not just employees.write. An unchanged value sent back with the form is not a change.
+        if (OrgWriteRules.MovesEmployeeAttribution(employee, request.Changes) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         // FAIL LOUD ON AN UNKNOWN KEY — before a single column is touched, so a rejected patch is never
         // half-applied. ApplyChanges had no default arm, so a key it did not recognise was accepted with 200
         // and discarded; the user saw a successful save and the value was gone. Ordinal match, because the

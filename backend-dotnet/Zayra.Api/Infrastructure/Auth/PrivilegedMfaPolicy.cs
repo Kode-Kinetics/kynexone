@@ -128,6 +128,8 @@ public static class PrivilegedMfaPolicy
         "employees.bulk_import", "employees.access.issue", "employees.access.reset", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
         // Organisation, policy and configuration.
         "organization.write", "organization.delete", "organization.establishment.write", "organization.setup.apply",
+        // Re-pointing a department, position or employee to another cost centre moves where payroll cost posts.
+        "organization.costcenter.manage",
         "leave.policy_manage", "leave.cancel", "overtime.policy_manage", "attendance.policy_manage", "notifications.manage", "localization.manage",
         "shifts.write", "shifts.manage", "qiwa.configure", "qiwa.sync",
         // Attendance that drives pay.

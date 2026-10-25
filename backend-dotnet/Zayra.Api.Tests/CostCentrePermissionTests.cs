@@ -243,7 +243,7 @@ public class CostCentrePermissionTests
 
         foreach (var (file, doors) in CoveredBy)
             foreach (var door in doors)
-                SourceScan.StripCSharpComments(File.ReadAllText(Path.Combine(root, door))).Should().Contain(Manage, $"{door} is the door for {file}");
+                SourceScan.StripCSharpComments(File.ReadAllText(Path.Combine(root, door))).Should().MatchRegex(@"organization\.costcenter\.manage|MayManageCostCentres", $"{door} is the door for {file}");
 
         (CoveredBy.Keys.Concat(KnownGaps.Keys)).Where(k => !writers.Contains(k)).Should().BeEmpty("an entry for a file that no longer writes those columns must be removed");
     }
