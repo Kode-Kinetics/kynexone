@@ -67,7 +67,7 @@ public class JournalExportDownloadAccessTests
 
         var get = await CtrlWithIp(db, reader).Get(id, default);
         var body = Body(get);
-        body.GetProperty("export").GetProperty("totalDebits").GetDecimal().Should().Be(10_000m, "totals stay visible to a reader");
+        body.GetProperty("export").GetProperty("TotalDebits").GetDecimal().Should().Be(10_000m, "totals stay visible to a reader");
         body.GetProperty("lines").ValueKind.Should().Be(JsonValueKind.Null, "line detail (descriptions, cost centres) is for export holders");
 
         var maker = await CallerAsync(db, tenantId, "Payroll Manager");
@@ -97,7 +97,7 @@ public class JournalExportDownloadAccessTests
             meta.GetProperty("fileHash").GetString().Should().Be(export.FileHash);
             meta.GetProperty("byteLength").GetInt32().Should().Be(((FileContentResult)first).FileContents.Length);
             meta.GetProperty("actorKind").GetString().Should().Be("user");
-            meta.GetProperty("fileName").GetString().Should().Be(export.FileName);
+            meta.GetProperty("FileName").GetString().Should().Be(export.FileName);
         }
         ((FileContentResult)second).FileContents.Should().Equal(((FileContentResult)first).FileContents);
     }
