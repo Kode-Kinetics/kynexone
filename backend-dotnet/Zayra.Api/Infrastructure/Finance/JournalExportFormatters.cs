@@ -62,9 +62,20 @@ public static class ErpFile
     /// one segment per <c>|</c>, tokens <c>{company}</c> / <c>{account}</c>, anything else literal.</summary>
     public static string[] Segments(string template, JournalExportLine l) =>
         template.Split('|').Take(30)
-            .Select(t => t.Replace("{company}", l.CompanyCode, StringComparison.Ordinal)
-                          .Replace("{account}", l.ErpAccount, StringComparison.Ordinal))
+            .Select(t => WithCostCentre(t, l))
             .ToArray();
+
+    /// <summary>
+    /// <c>{costcenter}</c> = the cost centre's <c>gl_segment</c> else its code, blank on an uncosted line. The value is
+    /// substituted LAST and never re-scanned, so a cost-centre code that itself reads <c>{account}</c> stays literal text.
+    /// </summary>
+    public static string WithCostCentre(string template, JournalExportLine l) =>
+        template.Replace("{costcenter}", CcMark, StringComparison.Ordinal)
+                .Replace("{company}", l.CompanyCode, StringComparison.Ordinal)
+                .Replace("{account}", l.ErpAccount, StringComparison.Ordinal)
+                .Replace(CcMark, l.CostCentreErpCode, StringComparison.Ordinal);
+
+    private const string CcMark = "\u0001CC\u0001";   // option values are control-character-free, so a template can never hold it
 }
 
 /// <summary>
@@ -82,7 +93,9 @@ public sealed class GenericCsvJournalFormatter : IJournalExportFormatter
       + "Import using AccountingDate (not SystemPostedDate) — SystemPostedDate is when our system wrote the row, "
       + "AccountingDate is the accounting month the line belongs to. CompanyCode is per line (the company's ERP "
       + "code); ExternalAccountCode is your ERP account when one is mapped. ExportId + EntryId + DR/CR identify a "
-      + "line uniquely: use them to refuse a second import of the same file.";
+      + "line uniquely: use them to refuse a second import of the same file. When any line carries a cost centre the file "
+      + "ends with CostCentre (code), CostCentreName and CostCentreErpCode (the ERP cost-centre value: the cost centre's "
+      + "ERP segment when set, else its code); they are blank on lines with no cost centre, and absent when no line has one.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
 
@@ -94,16 +107,30 @@ public sealed class GenericCsvJournalFormatter : IJournalExportFormatter
         "EntryId", "ReversalOfEntryId", "IsReversed", "ExportId", "ExternalAccountCode", "ExportKind",
     };
 
-    public byte[] Format(JournalExportDocument doc) =>
-        ErpFile.Csv(Headers, doc.Lines.Select(l => new object?[]
+    /// <summary>Appended after ExportKind, only when the document holds at least one costed line.</summary>
+    internal static readonly string[] CostCentreHeaders = { "CostCentre", "CostCentreName", "CostCentreErpCode" };
+
+    public bool CarriesCostCentre => true;
+
+    public byte[] Format(JournalExportDocument doc)
+    {
+        var withCc = doc.HasCostCentres;
+        return ErpFile.Csv(withCc ? Headers.Concat(CostCentreHeaders).ToArray() : Headers, doc.Lines.Select(l =>
         {
-            ErpFile.Date(l.AccountingDate, "yyyy-MM-dd"), ErpFile.Date(l.SystemPostedDate, "yyyy-MM-dd"),
-            l.Period, l.JournalRef, l.LineNo, l.AccountCode, l.AccountName,
-            ErpFile.Amt(l.Debit, l.Scale), ErpFile.Amt(l.Credit, l.Scale), l.Currency, l.Description, l.CompanyCode,
-            l.SourceModule, l.SourceEntityRef, l.EventType, l.EntryId,
-            l.ReversalOfEntryId?.ToString() ?? string.Empty, new ErpFile.Raw(l.IsReversed ? "true" : "false"),
-            doc.ExportId, l.ExternalAccountCode ?? string.Empty, doc.Kind,
+            var row = new List<object?>
+            {
+                ErpFile.Date(l.AccountingDate, "yyyy-MM-dd"), ErpFile.Date(l.SystemPostedDate, "yyyy-MM-dd"),
+                l.Period, l.JournalRef, l.LineNo, l.AccountCode, l.AccountName,
+                ErpFile.Amt(l.Debit, l.Scale), ErpFile.Amt(l.Credit, l.Scale), l.Currency, l.Description, l.CompanyCode,
+                l.SourceModule, l.SourceEntityRef, l.EventType, l.EntryId,
+                l.ReversalOfEntryId?.ToString() ?? string.Empty, new ErpFile.Raw(l.IsReversed ? "true" : "false"),
+                doc.ExportId, l.ExternalAccountCode ?? string.Empty, doc.Kind,
+            };
+            // Text path (Csv.Escape), never Raw: a cost-centre code or name is operator-authored and lands in Excel.
+            if (withCc) row.AddRange(new object?[] { l.CostCenterCode ?? string.Empty, l.CostCenterName ?? string.Empty, l.CostCentreErpCode });
+            return row.ToArray();
         }));
+    }
 }
 
 /// <summary>

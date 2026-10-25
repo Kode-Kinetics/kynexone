@@ -80,7 +80,8 @@ public class GlJournalExportsController : ControllerBase
         CancellationToken ct = default,
         // Appended after ct so positional callers keep compiling; MVC binds by name.
         [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
-        [FromQuery(Name = "options")] Dictionary<string, string>? options = null)
+        [FromQuery(Name = "options")] Dictionary<string, string>? options = null,
+        [FromQuery] bool acknowledgeUncostedRequired = false)
     {
         if (!CanRead()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -89,7 +90,7 @@ public class GlJournalExportsController : ControllerBase
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
-            includePreviouslyConfirmed, replacesExportId);
+            includePreviouslyConfirmed, replacesExportId, acknowledgeUncostedRequired);
         var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct, options);
         if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
 
@@ -110,7 +111,8 @@ public class GlJournalExportsController : ControllerBase
         CancellationToken ct = default,
         // Appended after ct so positional callers keep compiling; MVC binds by name.
         [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
-        [FromQuery(Name = "options")] Dictionary<string, string>? options = null)
+        [FromQuery(Name = "options")] Dictionary<string, string>? options = null,
+        [FromQuery] bool acknowledgeUncostedRequired = false)
     {
         if (!CanExport()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -119,7 +121,7 @@ public class GlJournalExportsController : ControllerBase
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
-            includePreviouslyConfirmed, replacesExportId);
+            includePreviouslyConfirmed, replacesExportId, acknowledgeUncostedRequired);
         var groupCaller = this.GetEntityScope().IsGroupLevel;
 
         return await SerialisedAsync(async () =>
@@ -976,6 +978,9 @@ public class GlJournalExportsController : ControllerBase
             balanced = b.Balanced, lines = b.Lines,
         }).ToList(),
         journalCount = build.Document.PostingDocuments().Count,
+        // Cost accounting: whether any line carries a cost centre. Per-cost-centre amounts are deliberately not in the
+        // manifest — a cost centre with one employee would disclose that person's pay to a metadata reader.
+        hasCostCentres = build.Document.HasCostCentres,
         // The double-post guard at work: rows an ERP-confirmed export already holds, left out of this file.
         previouslyConfirmedExcluded = new
         {

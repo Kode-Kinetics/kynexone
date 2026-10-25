@@ -209,22 +209,35 @@ public sealed class JournalExportService
         // the same precedence GL posting uses to resolve the account.
         var mapped = await ScopedBypass.TenantWide(_db.GlAccounts, tenantId,
                 "journal export: a group export resolves each company's ERP account code")
-            .AsNoTracking().Select(a => new { a.CompanyId, a.Code, a.ExternalCode }).ToListAsync(ct);
+            .AsNoTracking().Select(a => new { a.CompanyId, a.Code, a.ExternalCode, a.AccountType, a.CostCenterRule }).ToListAsync(ct);
         var external = mapped.GroupBy(a => (a.CompanyId, a.Code))
             .ToDictionary(g => g.Key, g => g.First().ExternalCode);
+        var accountInfo = mapped.GroupBy(a => (a.CompanyId, a.Code))
+            .ToDictionary(g => g.Key, g => (Type: g.First().AccountType, Rule: g.First().CostCenterRule));
         string? ExternalOf(FinanceGlEntry e, string code)
         {
             var cidForRow = e.CompanyId ?? filter.CompanyId;
             if (cidForRow is { } x && external.TryGetValue((x, code), out var own)) return own;
             return external.TryGetValue((null, code), out var dflt) ? dflt : null;
         }
+        // The same precedence for the account's type and cost-centre rule: the company's own account, else the tenant default.
+        (string Type, string Rule)? InfoOf(Guid? companyId, string code)
+        {
+            var cidForRow = companyId ?? filter.CompanyId;
+            if (cidForRow is { } x && accountInfo.TryGetValue((x, code), out var own)) return own;
+            return accountInfo.TryGetValue((null, code), out var dflt) ? dflt : null;
+        }
+        // A two-sided row's cost centre belongs to its Expense/Revenue side; unknown accounts stay unclassified (null).
+        bool? IsProfitAndLoss(FinanceGlEntry e, string code) =>
+            InfoOf(e.CompanyId, code) is { } i ? i.Type is "Expense" or "Revenue" : null;
 
-        var lines = JournalExportBuilder.Expand(selection.Entries, CodeOf, ExternalOf);
-        var tieOut = JournalExportBuilder.Verify(lines, selection.Entries);
+        var lines = JournalExportBuilder.Expand(selection.Entries, CodeOf, ExternalOf, IsProfitAndLoss);
+        var tieOut = JournalExportBuilder.Verify(lines, selection.Entries, IsProfitAndLoss);
         if (!tieOut.Ok)
             return (null, new JournalExportRefusal(422, new
             {
-                error = tieOut.Failure == JournalExportErrors.CompanyUnbalanced ? JournalExportErrors.CompanyUnbalanced : JournalExportErrors.TieOutFailed,
+                error = tieOut.Failure is JournalExportErrors.CompanyUnbalanced or JournalExportErrors.CostCentreTotalMismatch
+                    ? tieOut.Failure : JournalExportErrors.TieOutFailed,
                 failure = tieOut.Failure,
                 message = tieOut.Failure == JournalExportErrors.CompanyUnbalanced
                     ? "Each company's journal must balance on its own, because your ERP books each company separately. "
@@ -239,6 +252,7 @@ public sealed class JournalExportService
                 emittedLines = tieOut.EmittedLineCount,
                 expectedLines = tieOut.ExpectedLineCount,
                 accountDeltas = tieOut.AccountDeltas,
+                costCentreDeltas = tieOut.CostCentreDeltas ?? Array.Empty<string>(),
                 byCompany = (tieOut.ByCompany ?? Array.Empty<CompanyBalance>()).Select(b => new
                 {
                     companyCode = b.CompanyCode, companyId = b.CompanyId, debits = b.Debits, credits = b.Credits,
@@ -260,6 +274,57 @@ public sealed class JournalExportService
         var codes = lines.Select(l => l.CompanyCode).Distinct(StringComparer.Ordinal).ToList();
         var companyCode = company is not null ? JournalExportBuilder.CompanyCodeOf(company)
                         : codes.Count == 1 ? codes[0] : JournalExportBuilder.CompanyCodeOf(null);
+
+        // The company code is part of the file name the client downloads. A path separator or drive prefix in it must
+        // never reach a name (nor a Content-Disposition header): refuse before anything is persisted.
+        if (!IsSafeFileToken(companyCode))
+            return (null, new JournalExportRefusal(422, new
+            {
+                error = JournalExportErrors.UnsafeCompanyCode,
+                message = "The company's ERP company code contains characters that cannot appear in a file name "
+                        + "(a path separator, a colon or a control character). Correct it in Company setup, then export again.",
+            }));
+
+        // S-040: once cost accounting is on for a company, its journal is in the company's currency. A line in another
+        // currency is refused here (the database cannot see the company's currency).
+        var offCurrency = selection.Entries
+            .Where(e => e.CompanyId is { } id && byId.TryGetValue(id, out var c) && c.CostAccountingEnabled
+                        && !string.Equals(c.DefaultCurrency, e.Currency, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (offCurrency.Count > 0)
+            return (null, new JournalExportRefusal(422, new
+            {
+                error = JournalExportErrors.MixedCurrency,
+                message = "A line in this scope is not in its company's currency. With cost accounting on, a company's journal "
+                        + "is single-currency in the company currency: correct or void the line, then export again.",
+                companyCurrency = byId[offCurrency[0].CompanyId!.Value].DefaultCurrency,
+                currencies = offCurrency.Select(e => e.Currency).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(c => c, StringComparer.Ordinal).ToList(),
+                count = offCurrency.Count,
+            }));
+
+        // S-039: a rule that became Required AFTER posting leaves uncosted lines that would otherwise export silently.
+        // Counts only (no ids, amounts or descriptions); a contra is exempt, as at posting; a company with costing off is untouched.
+        var uncostedRequired = lines
+            .Where(l => string.IsNullOrEmpty(l.CostCenterCode) && l.ReversalOfEntryId is null && l.CompanyId is { } cid2
+                        && byId.TryGetValue(cid2, out var co) && co.CostAccountingEnabled
+                        && InfoOf(l.CompanyId, l.AccountCode) is { Rule: "Required" })
+            .ToList();
+        if (uncostedRequired.Count > 0)
+        {
+            if (!filter.AcknowledgeUncostedRequired)
+                return (null, new JournalExportRefusal(422, new
+                {
+                    error = JournalExportErrors.UncostedRequiredLines,
+                    message = "Some posted lines are on an account that now requires a cost centre but carry none. Fix the "
+                            + "posting or export with acknowledgeUncostedRequired=true to hand them over uncosted.",
+                    count = uncostedRequired.Count,
+                    accounts = uncostedRequired.GroupBy(l => l.AccountCode, StringComparer.Ordinal)
+                        .Select(g => new { accountCode = g.Key, lines = g.Count() })
+                        .OrderBy(a => a.accountCode, StringComparer.Ordinal).ToList(),
+                }));
+            warnings.Add($"{uncostedRequired.Count} line(s) are on an account that requires a cost centre but have none "
+                       + "(exported without a cost centre, as acknowledged).");
+        }
         var kind = filter.ReplacesExportId is not null ? JournalExportKinds.Replacement
                  : selection.PreviouslyConfirmedExcludedCount > 0 ? JournalExportKinds.Supplementary
                  : JournalExportKinds.Full;
@@ -284,6 +349,10 @@ public sealed class JournalExportService
             Kind = kind,
             Options = validOptions,
         };
+
+        if (doc.HasCostCentres && !formatter.CarriesCostCentre)
+            warnings.Add($"{formatter.DisplayName} has no cost-centre field, so the cost centres on these lines are not in the file. "
+                       + "Use the generic CSV, SAP, Oracle, Dynamics 365 or QuickBooks format to carry them.");
 
         var bytes = formatter.Format(doc);
         var scopeTag = filter.PayrollRunId is { } rid ? "run-" + rid.ToString("N")[..8]
@@ -405,12 +474,24 @@ public sealed class JournalExportService
                 SourceCompanyId = l.CompanyId,
                 CompanyCode = l.CompanyCode,
                 ExternalAccountCode = l.ExternalAccountCode,
+                // Frozen verbatim, like ExternalAccountCode: a later rename of the cost centre never changes this artifact.
+                CostCenterCode = l.CostCenterCode,
+                CostCenterName = l.CostCenterName,
+                CostCenterGlSegment = l.CostCenterGlSegment,
             });
 
         SupersedePriors(export, priorLive);
 
         return export;
     }
+
+    /// <summary>True for a company code that is safe inside a file name: not empty, no path separator, drive colon, wildcard,
+    /// quote or control character, and no ".." sequence.</summary>
+    internal static bool IsSafeFileToken(string? token) =>
+        !string.IsNullOrWhiteSpace(token)
+        && !token.Contains("..", StringComparison.Ordinal)
+        && token.IndexOfAny(new[] { '/', '\\', ':', '*', '?', '"', '<', '>', '|' }) < 0
+        && !token.Any(char.IsControl);
 
     /// <summary>The scale a document was written at: its currency's minor units (lines carry it; 2 when empty).</summary>
     private static int ScaleOf(JournalExportDocument doc) =>
@@ -514,7 +595,8 @@ public sealed class JournalExportService
                 v1 ? export.CompanyId : l.SourceCompanyId, v1 ? export.CompanyCode : l.CompanyCode, l.IsReversed,
                 v1 ? null : l.ExternalAccountCode,
                 // NULL amount_scale = a legacy export, which is 2 dp; version-1 layouts are 2 dp by definition.
-                v1 ? JournalAmount.Scale : export.AmountScale ?? JournalAmount.Scale)).ToList(),
+                v1 ? JournalAmount.Scale : export.AmountScale ?? JournalAmount.Scale,
+                v1 ? null : l.CostCenterCode, v1 ? null : l.CostCenterName, v1 ? null : l.CostCenterGlSegment)).ToList(),
         };
     }
 

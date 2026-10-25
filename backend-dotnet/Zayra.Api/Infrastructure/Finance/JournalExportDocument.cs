@@ -37,10 +37,20 @@ public sealed record JournalExportLine(
     string CompanyCode,
     bool IsReversed,
     string? ExternalAccountCode = null,
-    int Scale = 2)
+    int Scale = 2,
+    string? CostCenterCode = null,
+    string? CostCenterName = null,
+    string? CostCenterGlSegment = null)
 {
     public decimal Debit => Side == "DR" ? Amount : 0m;
     public decimal Credit => Side == "CR" ? Amount : 0m;
+
+    /// <summary>Cost accounting: the value an ERP's cost-centre field receives — the cost centre's <c>gl_segment</c> (the
+    /// client's own ERP value) when set, else its code; empty on an uncosted line. The three <c>CostCenter*</c> members are the
+    /// snapshot frozen on the ledger row and on the export line, so they never follow a later rename.</summary>
+    public string CostCentreErpCode =>
+        string.IsNullOrEmpty(CostCenterCode) ? string.Empty
+        : !string.IsNullOrWhiteSpace(CostCenterGlSegment) ? CostCenterGlSegment! : CostCenterCode!;
 
     /// <summary>The debit as emitted: rounded half away from zero at the line's currency scale.</summary>
     public decimal RoundedDebit => JournalAmount.Round(Debit, Scale);
@@ -158,6 +168,10 @@ public sealed class JournalExportDocument
     /// too narrow for a whole GUID.</summary>
     public string ExportShort => ExportId.ToString("N")[..8].ToUpperInvariant();
 
+    /// <summary>True when at least one line carries a cost centre. Every formatter emits its ordinary bytes when this is false
+    /// (no format-version bump: frozen v2 exports have no cost centre and must regenerate to their stored hash).</summary>
+    public bool HasCostCentres => Lines.Any(l => !string.IsNullOrEmpty(l.CostCenterCode));
+
     public decimal TotalDebits => Lines.Sum(l => l.Debit);
     public decimal TotalCredits => Lines.Sum(l => l.Credit);
     public int EntryCount => Lines.Select(l => l.EntryId).Distinct().Count();
@@ -272,4 +286,8 @@ public interface IJournalExportFormatter
     /// file, one Xero/Zoho organisation, one D365 legal entity per data project). A file holding several companies
     /// is refused for these formats, because the ERP would book every company into one ledger.</summary>
     bool SingleEntity => false;
+
+    /// <summary>True when the layout has a field for the cost centre (generic CSV, SAP, Oracle, D365, QuickBooks). A layout that
+    /// cannot carry one says so in <see cref="Disclaimer"/> and the export warns when costed lines are sent to it.</summary>
+    bool CarriesCostCentre => false;
 }

@@ -18,9 +18,11 @@ public sealed class SapS4GeneralJournalFormatter : IJournalExportFormatter
     public string Disclaimer =>
         "Rows for SAP's Upload General Journal Entries app: paste into the downloaded template (or save as its CSV). "
       + "CompanyCode is each company's ERP code (BUKRS) and GLAccount the external code when mapped. Document type "
-      + "defaults to SA. Each BatchID is one balanced journal entry.";
+      + "defaults to SA. Each BatchID is one balanced journal entry. CostCenter carries the cost centre's ERP segment when "
+      + "set, else its code, on the expense or revenue line only; it is blank on every other line.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
+    public bool CarriesCostCentre => true;
     public IReadOnlyList<JournalExportOptionSpec> Options { get; } = new[]
     {
         new JournalExportOptionSpec("documentType", "Document type", "SA", "SAP document type (BLART).", 2),
@@ -40,7 +42,7 @@ public sealed class SapS4GeneralJournalFormatter : IJournalExportFormatter
         {
             j.Sequence, j.CompanyCode, type, ErpFile.Date(j.AccountingDate, "yyyyMMdd"), ErpFile.Date(j.AccountingDate, "yyyyMMdd"),
             l.Currency, new ErpFile.Raw(refs[j.Sequence]), $"KynexOne {doc.ExportShort}", i + 1, l.ErpAccount,
-            ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale), string.Empty, ErpFile.Clip(l.Description, 50),
+            ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale), l.CostCentreErpCode, ErpFile.Clip(l.Description, 50),
             new ErpFile.Raw(l.EntryId.ToString("N")[..18].ToUpperInvariant()),
         })));
     }
@@ -64,14 +66,21 @@ public sealed class D365GeneralJournalFormatter : IJournalExportFormatter
     public string Disclaimer =>
         "Data management import of general journal lines. Each JOURNALBATCHNUMBER holds one company — import it into "
       + "that legal entity. ACCOUNTDISPLAYVALUE is the external code when mapped (include your financial dimensions "
-      + "there, e.g. 6100-001-DEPT). Journal name defaults to GenJrn. Dates are ISO yyyy-MM-dd: set the source data "
+      + "there, e.g. 6100-001-DEPT). Cost centres: when any line carries one the file ends with a COSTCENTRE column (the "
+      + "cost centre's ERP segment when set, else its code), and the Dimension format setting (for example "
+      + "{account}-{costcenter}) builds ACCOUNTDISPLAYVALUE for costed lines. Journal name defaults to GenJrn. Dates are ISO yyyy-MM-dd: set the source data "
       + "format accordingly. COMPANYCODE is informational: leave it unmapped. A data project imports into one legal entity, so "
       + "one file holds one company: export each company separately.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
+    public bool CarriesCostCentre => true;
     public IReadOnlyList<JournalExportOptionSpec> Options { get; } = new[]
     {
         new JournalExportOptionSpec("journalName", "Journal name", "GenJrn", "General journal name set up in D365.", 10),
+        new JournalExportOptionSpec("dimensionFormat", "Dimension format", string.Empty,
+            "Builds ACCOUNTDISPLAYVALUE for lines that carry a cost centre: {account} = account (external code when mapped), "
+          + "{costcenter} = the cost centre's ERP segment when set, else its code. Example: {account}-{costcenter}. "
+          + "Blank keeps the plain account.", 60),
     };
 
     private static readonly string[] Headers =
@@ -84,6 +93,8 @@ public sealed class D365GeneralJournalFormatter : IJournalExportFormatter
     {
         var vouchers = doc.ShortRefs("KX", 12);
         var name = doc.Option("journalName", "GenJrn");
+        var dimensionFormat = doc.Option("dimensionFormat", string.Empty);
+        var withCc = doc.HasCostCentres;
         var docs = doc.PostingDocuments();
         var companies = docs.Select(d => d.CompanyCode).Distinct(StringComparer.Ordinal).ToList();
         var rows = new List<object?[]>();
@@ -92,14 +103,21 @@ public sealed class D365GeneralJournalFormatter : IJournalExportFormatter
             var batch = $"KX{doc.ExportShort}-{companies.IndexOf(company) + 1:D2}";
             var line = 0;
             foreach (var j in docs.Where(d => d.CompanyCode == company))
-                rows.AddRange(j.Lines.Select(l => new object?[]
+                rows.AddRange(j.Lines.Select(l =>
                 {
-                    batch, ++line, name, new ErpFile.Raw(vouchers[j.Sequence]), ErpFile.Date(j.AccountingDate, "yyyy-MM-dd"),
-                    "Ledger", l.ErpAccount, l.Currency, ErpFile.Amt(l.Debit, l.Scale), ErpFile.Amt(l.Credit, l.Scale),
-                    ErpFile.Clip(l.Description, 60), company,
+                    var costed = withCc && !string.IsNullOrEmpty(l.CostCenterCode);
+                    var row = new List<object?>
+                    {
+                        batch, ++line, name, new ErpFile.Raw(vouchers[j.Sequence]), ErpFile.Date(j.AccountingDate, "yyyy-MM-dd"),
+                        "Ledger", costed && dimensionFormat.Length > 0 ? ErpFile.WithCostCentre(dimensionFormat, l) : l.ErpAccount,
+                        l.Currency, ErpFile.Amt(l.Debit, l.Scale), ErpFile.Amt(l.Credit, l.Scale),
+                        ErpFile.Clip(l.Description, 60), company,
+                    };
+                    if (withCc) row.Add(l.CostCentreErpCode);
+                    return row.ToArray();
                 }));
         }
-        return ErpFile.Csv(Headers, rows);
+        return ErpFile.Csv(withCc ? Headers.Append("COSTCENTRE").ToArray() : Headers, rows);
     }
 }
 
@@ -115,7 +133,9 @@ public sealed class OdooAccountMoveFormatter : IJournalExportFormatter
     public string Disclaimer =>
         "Import into Odoo Journal Entries. account_id is matched on the account code (external code when mapped); "
       + "company_id on the company name — set each company's ERP code to its Odoo company name. Journal defaults to "
-      + "\"Miscellaneous Operations\". External ids stop a second import of the same file from creating duplicates.";
+      + "\"Miscellaneous Operations\". External ids stop a second import of the same file from creating duplicates. "
+      + "This layout has no cost-centre field: cost centres on the ledger lines are NOT in this file (Odoo analytic "
+      + "distribution is not exported), so use the generic CSV if you need them.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
     public IReadOnlyList<JournalExportOptionSpec> Options { get; } = new[]
@@ -156,7 +176,8 @@ public sealed class NetSuiteJournalFormatter : IJournalExportFormatter
     public string Disclaimer =>
         "Map in the Import Assistant: External ID groups lines into one journal; Subsidiary is each company's ERP code "
       + "(set it to the NetSuite subsidiary name or internal id); Account the external code when mapped. Dates are "
-      + "MM/DD/YYYY — match your NetSuite date preference.";
+      + "MM/DD/YYYY — match your NetSuite date preference. This layout has no cost-centre field: cost centres on the "
+      + "ledger lines are NOT in this file, so set departments or classes in NetSuite or use the generic CSV.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
 
@@ -184,7 +205,9 @@ public sealed class XeroManualJournalFormatter : IJournalExportFormatter
     public string DisplayName => "Xero manual journal import CSV" + ErpFile.TemplateSuffix;
     public string Disclaimer =>
         "Xero imports manual journals in your organisation's base currency only, and one Xero organisation is one "
-      + "company: export each company separately. AccountCode is the external code when mapped. Dates are DD/MM/YYYY.";
+      + "company: export each company separately. AccountCode is the external code when mapped. Dates are DD/MM/YYYY. "
+      + "This layout has no cost-centre field: cost centres on the ledger lines are NOT in this file (Xero tracking "
+      + "categories are not exported), so use the generic CSV if you need them.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
 
@@ -212,7 +235,8 @@ public sealed class ZohoBooksJournalFormatter : IJournalExportFormatter
     public string Disclaimer =>
         "Map the columns in Zoho Books' journal import. Account is matched on the account name or code — set the GL "
       + "account's external code to your Zoho account. One Zoho organisation is one company: export each company "
-      + "separately. Dates are yyyy-MM-dd.";
+      + "separately. Dates are yyyy-MM-dd. This layout has no cost-centre field: cost centres on the ledger lines are "
+      + "NOT in this file, so use the generic CSV if you need them.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
 

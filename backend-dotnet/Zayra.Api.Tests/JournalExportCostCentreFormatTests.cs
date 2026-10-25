@@ -249,7 +249,7 @@ public class JournalExportCostCentreFormatTests
         {
             var rows = ParseCsv(Utf8(Formatter("generic-csv").Format(Poisoned(payload, new Dictionary<string, string>()))));
             var h = rows[0];
-            var costed = rows[1];
+            var costed = rows.Skip(1).Single(r => r[h.IndexOf("AccountCode")] == "5000");   // line order follows entry ids
             var expected = payload.Length > 0 && "=+-@\t\r".Contains(payload[0]) ? "'" + payload : payload;
 
             costed[h.IndexOf("CostCentre")].Should().Be(expected);
@@ -266,12 +266,12 @@ public class JournalExportCostCentreFormatTests
         var oracle = ParseCsv(Utf8(Formatter("oracle-gl-interface-csv").Format(
             Poisoned("{account}", new Dictionary<string, string> { ["segments"] = "{costcenter}|{account}|{company}" }))));
         var h = oracle[0];
-        oracle[1][h.IndexOf("SEGMENT1")].Should().Be("{account}", "the value is inserted, never re-scanned for tokens");
-        oracle[1][h.IndexOf("SEGMENT2")].Should().Be("5000");
+        var costedOracle = oracle.Skip(1).Single(r => r[h.IndexOf("SEGMENT2")] == "5000");
+        costedOracle[h.IndexOf("SEGMENT1")].Should().Be("{account}", "the value is inserted, never re-scanned for tokens");
 
         var d365 = ParseCsv(Utf8(Formatter("d365-fo-general-journal").Format(
             Poisoned("{company}", new Dictionary<string, string> { ["dimensionFormat"] = "{account}-{costcenter}" }))));
-        d365[1][d365[0].IndexOf("ACCOUNTDISPLAYVALUE")].Should().Be("5000-{company}");
+        d365.Skip(1).Select(r => r[d365[0].IndexOf("ACCOUNTDISPLAYVALUE")]).Should().BeEquivalentTo(new[] { "5000-{company}", "2100" });
     }
 
     // ── Per-cost-centre tie-out (T-058 unit) ──────────────────────────────────────────────────────

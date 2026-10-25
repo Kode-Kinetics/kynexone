@@ -45,15 +45,18 @@ public class JournalExportCostCentreServiceTests
         frozen.Where(l => l.AccountCode == "2100").Should().OnlyContain(l => l.CostCenterCode == null && l.CostCenterName == null);
 
         var g = ParseCsv(Utf8(await DownloadAsync(db, tenantId, generic)));
-        g[1][g[0].IndexOf("CostCentre")].Should().Be("CC100");
-        g[1][g[0].IndexOf("CostCentreErpCode")].Should().Be("6100-OPS");
-        g[2][g[0].IndexOf("CostCentre")].Should().BeEmpty();
+        var gCosted = g.Skip(1).Single(r => r[g[0].IndexOf("AccountCode")] == "5000");
+        gCosted[g[0].IndexOf("CostCentre")].Should().Be("CC100");
+        gCosted[g[0].IndexOf("CostCentreErpCode")].Should().Be("6100-OPS");
+        g.Skip(1).Single(r => r[g[0].IndexOf("AccountCode")] == "2100")[g[0].IndexOf("CostCentre")].Should().BeEmpty();
 
         var s = ParseCsv(Utf8(await DownloadAsync(db, tenantId, sap)));
-        s.Select(r => r[s[0].IndexOf("CostCenter")]).Skip(1).Should().Equal("6100-OPS", "");
+        s.Skip(1).ToDictionary(r => r[s[0].IndexOf("GLAccount")], r => r[s[0].IndexOf("CostCenter")])
+            .Should().BeEquivalentTo(new Dictionary<string, string> { ["5000"] = "6100-OPS", ["2100"] = "" });
 
         var d = ParseCsv(Utf8(await DownloadAsync(db, tenantId, d365)));
-        d.Select(r => r[d[0].IndexOf("COSTCENTRE")]).Skip(1).Should().Equal("6100-OPS", "");
+        d.Skip(1).ToDictionary(r => r[d[0].IndexOf("ACCOUNTDISPLAYVALUE")], r => r[d[0].IndexOf("COSTCENTRE")])
+            .Should().BeEquivalentTo(new Dictionary<string, string> { ["5000"] = "6100-OPS", ["2100"] = "" });
     }
 
     [Fact]
@@ -140,8 +143,9 @@ public class JournalExportCostCentreServiceTests
         Body(second).GetProperty("kind").GetString().Should().Be("Supplementary");
         var rows = ParseCsv(Utf8(await DownloadAsync(db, tenantId, IdOf(second))));
         rows.Should().HaveCount(3);
-        rows[1][rows[0].IndexOf("CostCentre")].Should().Be("CC100");
-        rows[1][rows[0].IndexOf("ExportKind")].Should().Be("Supplementary");
+        var costed = rows.Skip(1).Single(r => r[rows[0].IndexOf("AccountCode")] == "5000");
+        costed[rows[0].IndexOf("CostCentre")].Should().Be("CC100");
+        costed[rows[0].IndexOf("ExportKind")].Should().Be("Supplementary");
     }
 
     [Fact]
@@ -163,7 +167,7 @@ public class JournalExportCostCentreServiceTests
         StatusOf(replacement).Should().Be(201);
         Body(replacement).GetProperty("kind").GetString().Should().Be("Replacement");
         var rows = ParseCsv(Utf8(await DownloadAsync(db, tenantId, IdOf(replacement))));
-        rows[1][rows[0].IndexOf("CostCentre")].Should().Be("CC100");
+        rows.Skip(1).Single(r => r[rows[0].IndexOf("AccountCode")] == "5000")[rows[0].IndexOf("CostCentre")].Should().Be("CC100");
         (await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == IdOf(replacement))).ReplacesExportId.Should().Be(full);
     }
 
