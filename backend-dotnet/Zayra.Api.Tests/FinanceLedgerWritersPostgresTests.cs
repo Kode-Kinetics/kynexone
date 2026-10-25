@@ -344,6 +344,43 @@ public sealed class FinanceLedgerWritersPostgresTests
         }
     }
 
+    // ── tenant erasure: the only DELETE of the ledger ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task TenantPurge_ErasesALedger_OnlyOnceTheTenantIsSoftDeleted()
+    {
+        // PlatformController.PurgeTenantRowsCoreAsync<TEntity> and SoftDeletedTenantRule: ExecuteDelete over every ITenantOwned type,
+        // filtered by tenant id. The same statement against a LIVE tenant must not remove a posted line.
+        await using var live = await NewKitAsync();
+        var (liveTenant, _, liveIds) = await SeedRunLines(live, 2);
+        await using (var db = live.NewContext())
+        {
+            var refused = await Record.ExceptionAsync(() => db.FinanceGlEntries.IgnoreQueryFilters().Where(e => e.TenantId == liveTenant).ExecuteDeleteAsync());
+            StateOf(refused!).Should().Be("23001", "a live tenant's ledger cannot be erased");
+        }
+
+        await using var gone = await NewKitAsync();
+        var (goneTenant, goneRun, goneIds) = await SeedRunLines(gone, 3);
+        await using (var db = gone.NewContext())
+        {
+            var export = new GlJournalExport { TenantId = goneTenant, CompanyId = gone.CompanyId, Period = "2026-09", FormatKey = "generic-csv", Currency = "SAR", FileName = "j.csv", FileHash = "h" };
+            db.GlJournalExports.Add(export);
+            db.GlJournalExportLines.Add(new GlJournalExportLine { TenantId = goneTenant, GlJournalExportId = export.Id, FinanceGlEntryId = goneIds[0], LineNo = 1, Side = "DR" });
+            var tenant = await db.Tenants.SingleAsync(t => t.Id == goneTenant);
+            tenant.IsActive = false;
+            tenant.Slug = $"{tenant.Slug}__deleted_{goneTenant.ToString("N")[..8]}";   // PlatformController.DeleteTenant
+            await db.SaveChangesAsync();
+        }
+        await using (var db = gone.NewContext())
+        {
+            await db.GlJournalExportLines.IgnoreQueryFilters().Where(e => e.TenantId == goneTenant).ExecuteDeleteAsync();
+            (await db.FinanceGlEntries.IgnoreQueryFilters().Where(e => e.TenantId == goneTenant).ExecuteDeleteAsync()).Should().Be(goneIds.Count);
+        }
+        await using var read = live.NewContext();
+        (await read.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking().CountAsync(e => e.TenantId == liveTenant)).Should().Be(liveIds.Count);
+        goneRun.Should().NotBeEmpty();
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────────────────
 
     private static FinanceGlEntry Line(GlPostingKit k, Guid runId, string eventType, string debit, string credit, decimal amount) => new()

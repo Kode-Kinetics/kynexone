@@ -327,6 +327,109 @@ public sealed class FinanceLedgerAppendOnlyPostgresTests
             _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", reversalOf: original));
     }
 
+    // ── AM-25: reversal validity (supersedes "mirrored" in AM-11 and AM-12) ──────────────────────────────────────
+
+    [Fact]
+    public async Task Am25_APartialBonusReversal_IsAllowed_AndLeavesTheOriginalUnflagged()
+    {
+        var accrual = await _db.Post(_db.CompanyA, amount: 500m, eventType: "BonusAccrual", module: "Bonus");
+        await _db.RunTx(_db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", amount: 200m, reversalOf: accrual,
+            eventType: "BonusAccrualReversal", module: "Bonus"));
+        (await _db.Scalar<bool>($"SELECT is_reversed FROM finance_gl_entries WHERE id = '{accrual}'")).Should().BeFalse("only a reversal that closes the accrual flags it (BonusesController)");
+    }
+
+    [Fact]
+    public async Task Am25_PartialReversalsWhoseSumExceedsTheOriginal_AreRefused()
+    {
+        var accrual = await _db.Post(_db.CompanyA, amount: 500m, eventType: "BonusAccrual", module: "Bonus");
+        await _db.RunTx(_db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", amount: 300m, reversalOf: accrual));
+        await _db.ExpectTx(AtCommit, "300 + 201 > 500",
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", amount: 201m, reversalOf: accrual));
+        await _db.RunTx(_db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", amount: 200m, reversalOf: accrual));
+    }
+
+    [Fact]
+    public async Task Am25_APeriodShiftedPayrollVoid_IsAllowed()
+    {
+        // PayrollVoidService with PriorPeriodAdjustment: the contra lands in an OPEN month, dated today, referencing the original period.
+        var original = await _db.Post(_db.CompanyA, debit: "5001 - Salary", credit: "", amount: 5_000m, source: Guid.NewGuid());
+        var contra = _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "", credit: "5001 - Salary", amount: 5_000m, reversalOf: original,
+            eventType: "PayrollVoid", period: "2026-10", sourceRef: "2026-09", description: "VOID — reversal of \"Salary\" [prior-period adjustment for 2026-09]");
+        await _db.RunTx(contra, $"UPDATE finance_gl_entries SET is_reversed = true WHERE id = '{original}'");
+        (await _db.Scalar<string>($"SELECT period FROM finance_gl_entries WHERE reversal_of_entry_id = '{original}'")).Should().Be("2026-10");
+    }
+
+    [Fact]
+    public async Task Am25_AReversalWithADifferentCostCentre_IsRefused()
+    {
+        var original = await _db.Post(_db.CompanyA, cc: _db.CcA1, ccCode: "CC-A1", ccName: "CC A1", ccSegment: "S-1");
+        await _db.ExpectTx(AtCommit, "a different cost centre",
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", reversalOf: original, cc: _db.CcA2, ccCode: "CC-A2", ccName: "CC A2", ccSegment: "S-1"));
+        await _db.ExpectTx(AtCommit, "a reversal of a costed line that dropped the cost centre",
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", reversalOf: original));
+    }
+
+    [Fact]
+    public async Task Am25_AReversalOfAReversal_IsRefused()
+    {
+        var original = await _db.Post(_db.CompanyA);
+        var contra = Guid.NewGuid();
+        await _db.RunTx(_db.InsertEntry(contra, _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", reversalOf: original, amount: 60m));
+        await _db.ExpectTx(AtCommit, "even a partial one, even though 60 < 100",
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "5001 - Salary", credit: "2100 - Net pay", reversalOf: contra, amount: 10m));
+    }
+
+    [Fact]
+    public async Task Am25_AnOriginalAlreadyReversedInAnEarlierTransaction_TakesNoFurtherReversal()
+    {
+        // The retained cash leg of a funds-disbursed void is flagged with no linked contra, so the amount cap alone (0 of 500) would
+        // admit a "reversal" of it: the already-reversed rule is what refuses it.
+        var run = Guid.NewGuid();
+        var cash = await _db.Post(_db.CompanyA, debit: "", credit: "1000 - Cash/Bank", amount: 500m, eventType: "PayrollNetSettlement", source: run);
+        await _db.RunTx(
+            $"UPDATE finance_gl_entries SET is_reversed = true WHERE id = '{cash}'",
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "1420 - Employee receivable", credit: "", amount: 500m, eventType: "PayrollNetSettlementReclass", source: run));
+
+        var ex = await _db.ExpectTx(AtCommit, "already reversed",
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "1000 - Cash/Bank", credit: "", amount: 500m, reversalOf: cash, eventType: "PayrollNetSettlementReversal", source: run));
+        ex.MessageText.Should().Contain("already reversed");
+    }
+
+    [Fact]
+    public async Task Am25_AnOriginalFlaggedAndReversedInTheSameTransaction_IsNotAlreadyReversed()
+    {
+        // The writers flag the original and insert its contra in one unit of work, in either statement order: the flag must not make
+        // the contra look like a reversal of something already reversed.
+        var original = await _db.Post(_db.CompanyA);
+        await _db.RunTx(
+            $"UPDATE finance_gl_entries SET is_reversed = true WHERE id = '{original}'",
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", reversalOf: original));
+        var other = await _db.Post(_db.CompanyA);
+        await _db.RunTx(
+            _db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", reversalOf: other),
+            $"UPDATE finance_gl_entries SET is_reversed = true WHERE id = '{other}'");
+    }
+
+    [Fact]
+    public async Task IsReversed_NeedsTheContraInTheSameTransaction_NotOneFromEarlier()
+    {
+        // AM-12: "a matching contra exists in the same transaction". A contra committed earlier (a partial bonus reversal, say) does not
+        // license a later bare flag.
+        var original = await _db.Post(_db.CompanyA, amount: 100m);
+        await _db.RunTx(_db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "2100 - Net pay", credit: "5001 - Salary", amount: 100m, reversalOf: original));
+        var ex = await _db.Expect(AtCommit, $"UPDATE finance_gl_entries SET is_reversed = true WHERE id = '{original}'", "the contra was committed by someone else, earlier");
+        ex.MessageText.Should().Contain("same transaction");
+    }
+
+    [Fact]
+    public async Task IsReversed_TheReclassRowMustAlsoBeFromTheSameTransaction()
+    {
+        var run = Guid.NewGuid();
+        var cash = await _db.Post(_db.CompanyA, debit: "", credit: "1000 - Cash/Bank", amount: 500m, eventType: "PayrollNetSettlement", source: run);
+        await _db.RunTx(_db.InsertEntry(Guid.NewGuid(), _db.CompanyA, debit: "1420 - Employee receivable", credit: "", amount: 500m, eventType: "PayrollNetSettlementReclass", source: run));
+        await _db.Expect(AtCommit, $"UPDATE finance_gl_entries SET is_reversed = true WHERE id = '{cash}'", "a reclass row from an earlier void cannot excuse a later flag");
+    }
+
     // ── erp_* state machine (S-023, AM-12) ───────────────────────────────────────────────────────────────────────
 
     public static IEnumerable<object[]> LegalErpEdges() => new (string From, string To)[]

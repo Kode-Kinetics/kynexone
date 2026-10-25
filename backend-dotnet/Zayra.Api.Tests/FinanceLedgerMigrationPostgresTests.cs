@@ -58,6 +58,9 @@ public sealed class FinanceLedgerMigrationPostgresTests
         (await fx.Scalar<long>($"SELECT count(*) FROM finance_gl_entries WHERE id IN ('{reversed}','{posted}','{orphanContra}','{unattributed}')")).Should().Be(4, "no legacy row is touched");
         var present = await fx.Column(TriggerCatalogue);
         present.Should().Contain(Triggers, "every trigger is enabled ALWAYS");
+        (await fx.Column("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_finance_gl_entries_reversal_of'"))
+            .Should().ContainSingle().Which.Should().Contain("(tenant_id, reversal_of_entry_id)").And.Contain("WHERE (reversal_of_entry_id IS NOT NULL)",
+                "the reversal triggers look contras up by their original on every insert and every flag; an unindexed scan per contra would make a big void quadratic");
 
         await fx.Expect("23001", $"UPDATE finance_gl_entries SET amount = 8 WHERE id = '{reversed}'");
         await fx.Expect("23001", $"DELETE FROM finance_gl_entries WHERE id = '{unattributed}'");
@@ -79,6 +82,7 @@ public sealed class FinanceLedgerMigrationPostgresTests
             "OR t.tgname LIKE 'trg\\_payroll\\_%\\_\\_stamp\\_freeze' ESCAPE '\\')")).Should().BeEmpty();
         (await fx.Scalar<long>("SELECT count(*) FROM pg_proc WHERE proname LIKE 'finance\\_gl\\_entries\\_%' ESCAPE '\\' OR proname = 'finance_ledger_trigger_bypass_roles'"))
             .Should().Be(0, "its functions go with it");
+        (await fx.Column("SELECT indexname FROM pg_indexes WHERE indexname = 'ix_finance_gl_entries_reversal_of'")).Should().BeEmpty();
         (await fx.Exec($"UPDATE finance_gl_entries SET amount = 9 WHERE id = '{reversed}'")).Should().Be(1);
 
         await migrator.MigrateAsync(m2);
