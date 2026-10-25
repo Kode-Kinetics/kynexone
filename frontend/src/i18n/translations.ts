@@ -1970,7 +1970,7 @@ const ar: Dict = {
   'These are issued after the employee joins, through the labour ministry and Jawazat. None is needed to create or activate the employee; each one is required before their first payroll. Add them to the profile as they are issued.': 'تصدر هذه المستندات بعد التحاق الموظف عبر وزارة الموارد البشرية والجوازات. لا يلزم أي منها لإنشاء سجل الموظف أو تفعيله، لكن كلاً منها مطلوب قبل أول مسير رواتب له. أضفها إلى الملف عند صدورها.',
   'Required before payroll': 'مطلوب قبل مسير الرواتب',
   'Iqama expiry due — employee is on border number': 'تاريخ انتهاء الإقامة مستحق — الموظف يعمل برقم الحدود',
-  'Iqama required before payroll — the border-number period (90 days from joining) has ended': 'الإقامة مطلوبة قبل مسير الرواتب — انتهت مدة العمل برقم الحدود (90 يوماً من الالتحاق)',
+  'Iqama required before payroll — the border-number period has ended': 'الإقامة مطلوبة قبل مسير الرواتب — انتهت مدة العمل برقم الحدود',
   'Check this number — it does not look like the usual format. You can still save it.': 'تحقق من هذا الرقم — لا يبدو بالصيغة المعتادة. يمكنك حفظه مع ذلك.',
   'Basic Salary': 'الراتب الأساسي',
   'No employees found': 'لا يوجد موظفون',
