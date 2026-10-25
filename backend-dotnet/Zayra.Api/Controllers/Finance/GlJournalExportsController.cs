@@ -298,7 +298,7 @@ public class GlJournalExportsController : ControllerBase
             newRowsInScopeSinceExport = new
             {
                 count = newSince.Count,
-                total = JournalAmount.Round(newSince.Sum(e => e.Amount)),
+                total = JournalAmount.Round(newSince.Sum(e => e.Amount), JournalAmount.ScaleFor(export.Currency)),
                 message = newSince.Count == 0 ? null
                     : "GL rows have been posted into this scope since the export was taken (a void contra is dated "
                     + "into the ORIGINAL period; loans/advances post continuously). The exported file is still valid "
@@ -967,8 +967,8 @@ public class GlJournalExportsController : ControllerBase
         companyCode = build.CompanyCode,
         entryCount = build.Document.EntryCount,
         lineCount = build.Document.Lines.Count,
-        totalDebits = JournalAmount.Round(build.TieOut.RoundedDebits),
-        totalCredits = JournalAmount.Round(build.TieOut.RoundedCredits),
+        totalDebits = JournalAmount.Round(build.TieOut.RoundedDebits, JournalAmount.ScaleFor(build.Document.Currency)),
+        totalCredits = JournalAmount.Round(build.TieOut.RoundedCredits, JournalAmount.ScaleFor(build.Document.Currency)),
         // Each company's journal balances on its own — the per-company check the gate enforced.
         byCompany = (build.TieOut.ByCompany ?? Array.Empty<CompanyBalance>()).Select(b => new
         {
@@ -980,7 +980,7 @@ public class GlJournalExportsController : ControllerBase
         previouslyConfirmedExcluded = new
         {
             count = build.Selection.PreviouslyConfirmedExcludedCount,
-            total = JournalAmount.Round(build.Selection.PreviouslyConfirmedExcludedTotal),
+            total = JournalAmount.Round(build.Selection.PreviouslyConfirmedExcludedTotal, JournalAmount.ScaleForAll(build.Selection.Currencies)),
             exportIds = build.Selection.PreviouslyConfirmedExportIds,
         },
         warnings = build.Warnings ?? Array.Empty<string>(),

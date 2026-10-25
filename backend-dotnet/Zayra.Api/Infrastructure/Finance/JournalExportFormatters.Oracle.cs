@@ -78,7 +78,7 @@ public sealed class OracleGlInterfaceCsvFormatter : IJournalExportFormatter
             row.AddRange(Enumerable.Range(0, segCount).Select(i => (object?)(i < segs.Length ? segs[i] : string.Empty)));
             row.AddRange(new object?[]
             {
-                ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit),
+                ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale),
                 OracleOptions.BatchName(doc, j), ErpFile.Clip($"{doc.Kind} export {doc.ExportId}", 240),
                 ErpFile.Clip(j.DocumentRef, 100), ErpFile.Clip(j.Description, 240),
                 ErpFile.Clip(l.Description, 240), l.EntryId, doc.ExportId, new ErpFile.Raw(group),
@@ -135,7 +135,7 @@ public sealed class OracleFusionFbdiJournalFormatter : IJournalExportFormatter
             row.AddRange(Enumerable.Range(0, 30).Select(i => (object?)(i < segs.Length ? segs[i] : string.Empty)));
             row.AddRange(new object?[]
             {
-                ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit), string.Empty, string.Empty,
+                ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale), string.Empty, string.Empty,
                 OracleOptions.BatchName(doc, j), ErpFile.Clip($"{doc.Kind} export {doc.ExportId}", 240), string.Empty,
                 ErpFile.Clip(j.DocumentRef, 100), ErpFile.Clip(j.Description, 240), ErpFile.Clip(j.DocumentRef, 240),
                 string.Empty, string.Empty, string.Empty, ErpFile.Clip(l.Description, 240),

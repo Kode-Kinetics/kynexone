@@ -128,7 +128,7 @@ public sealed class JournalExportService
                 previouslyConfirmed = new
                 {
                     count = selection.PreviouslyConfirmedExcludedCount,
-                    total = JournalAmount.Round(selection.PreviouslyConfirmedExcludedTotal),
+                    total = JournalAmount.Round(selection.PreviouslyConfirmedExcludedTotal, JournalAmount.ScaleForAll(selection.Currencies)),
                     exportIds = selection.PreviouslyConfirmedExportIds,
                 },
             }));
@@ -361,8 +361,10 @@ public sealed class JournalExportService
             FileHash = build.FileHash,
             LineCount = build.Document.Lines.Count,
             EntryCount = build.Document.EntryCount,
-            TotalDebits = JournalAmount.Round(build.TieOut.RoundedDebits),
-            TotalCredits = JournalAmount.Round(build.TieOut.RoundedCredits),
+            TotalDebits = JournalAmount.Round(build.TieOut.RoundedDebits, ScaleOf(build.Document)),
+            TotalCredits = JournalAmount.Round(build.TieOut.RoundedCredits, ScaleOf(build.Document)),
+            // NULL means a legacy 2-dp export; every export taken from now on records the scale it was written at.
+            AmountScale = (short)ScaleOf(build.Document),
             IncludeUnattributed = filter.IncludeUnattributed,
             SuppressReversedPairs = filter.SuppressReversedPairs,
             FilterJson = JsonSerializer.Serialize(filter),
@@ -409,6 +411,10 @@ public sealed class JournalExportService
 
         return export;
     }
+
+    /// <summary>The scale a document was written at: its currency's minor units (lines carry it; 2 when empty).</summary>
+    private static int ScaleOf(JournalExportDocument doc) =>
+        doc.Lines.Count > 0 ? doc.Lines[0].Scale : JournalAmount.ScaleFor(doc.Currency);
 
     /// <summary>Exports produced from now on. 0/1 = the frozen v1 layouts (see JournalExportFormattersV1).</summary>
     public const int CurrentFormatVersion = 2;
@@ -506,7 +512,9 @@ public sealed class JournalExportService
                 l.Amount, l.Currency, l.AccountingDate, l.SystemPostedDate, l.Period, l.JournalRef,
                 l.Description, l.SourceModule, l.SourceEntityId, l.SourceEntityRef, l.EventType,
                 v1 ? export.CompanyId : l.SourceCompanyId, v1 ? export.CompanyCode : l.CompanyCode, l.IsReversed,
-                v1 ? null : l.ExternalAccountCode)).ToList(),
+                v1 ? null : l.ExternalAccountCode,
+                // NULL amount_scale = a legacy export, which is 2 dp; version-1 layouts are 2 dp by definition.
+                v1 ? JournalAmount.Scale : export.AmountScale ?? JournalAmount.Scale)).ToList(),
         };
     }
 

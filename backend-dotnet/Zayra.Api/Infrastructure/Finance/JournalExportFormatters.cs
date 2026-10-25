@@ -25,8 +25,12 @@ public static class ErpFile
     public readonly record struct Raw(string Value);
 
     public static Raw Amt(decimal value) => new(JournalAmount.Emit(value));
+    /// <summary>An amount at the line's own currency scale (3 dp for KWD/BHD/OMR). <c>Amt(v, 2)</c> equals <c>Amt(v)</c>.</summary>
+    public static Raw Amt(decimal value, int scale) => new(JournalAmount.Emit(value, scale));
     /// <summary>Blank for zero — for layouts where only the populated side may carry a value.</summary>
-    public static Raw AmtOrBlank(decimal value) => new(JournalAmount.Round(value) == 0m ? string.Empty : JournalAmount.Emit(value));
+    public static Raw AmtOrBlank(decimal value) => AmtOrBlank(value, JournalAmount.Scale);
+    public static Raw AmtOrBlank(decimal value, int scale) =>
+        new(JournalAmount.Round(value, scale) == 0m ? string.Empty : JournalAmount.Emit(value, scale));
     public static Raw Date(DateOnly d, string format) => new(d.ToString(format, CultureInfo.InvariantCulture));
     public static string Clip(string? s, int max) => (s ??= string.Empty).Length <= max ? s : s[..max];
 
@@ -95,7 +99,7 @@ public sealed class GenericCsvJournalFormatter : IJournalExportFormatter
         {
             ErpFile.Date(l.AccountingDate, "yyyy-MM-dd"), ErpFile.Date(l.SystemPostedDate, "yyyy-MM-dd"),
             l.Period, l.JournalRef, l.LineNo, l.AccountCode, l.AccountName,
-            ErpFile.Amt(l.Debit), ErpFile.Amt(l.Credit), l.Currency, l.Description, l.CompanyCode,
+            ErpFile.Amt(l.Debit, l.Scale), ErpFile.Amt(l.Credit, l.Scale), l.Currency, l.Description, l.CompanyCode,
             l.SourceModule, l.SourceEntityRef, l.EventType, l.EntryId,
             l.ReversalOfEntryId?.ToString() ?? string.Empty, new ErpFile.Raw(l.IsReversed ? "true" : "false"),
             doc.ExportId, l.ExternalAccountCode ?? string.Empty, doc.Kind,
@@ -113,10 +117,33 @@ public sealed class GenericCsvJournalFormatter : IJournalExportFormatter
 /// </summary>
 public static class JournalAmount
 {
+    /// <summary>The legacy / default scale. Every export taken before cost accounting (amount_scale NULL) is 2 dp.</summary>
     public const int Scale = 2;
 
-    public static decimal Round(decimal value) => Math.Round(value, Scale, MidpointRounding.AwayFromZero);
+    public static decimal Round(decimal value) => Round(value, Scale);
 
-    public static string Emit(decimal value) =>
-        Round(value).ToString("F" + Scale, CultureInfo.InvariantCulture);
+    /// <summary>Half away from zero at <paramref name="scale"/> decimals — the same rule as
+    /// <see cref="CurrencyMinorUnits.Round"/> that Lock applies, so the file and the ledger cannot disagree by a minor unit.</summary>
+    public static decimal Round(decimal value, int scale)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(scale);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(scale, 4);   // finance_gl_entries.amount is numeric(18,4)
+        return Math.Round(value, scale, MidpointRounding.AwayFromZero);
+    }
+
+    public static string Emit(decimal value) => Emit(value, Scale);
+
+    public static string Emit(decimal value, int scale) =>
+        Round(value, scale).ToString("F" + scale, CultureInfo.InvariantCulture);
+
+    /// <summary>The minor-unit scale a journal in <paramref name="currency"/> is written at (KWD/BHD/OMR 3, everything else 2).</summary>
+    public static int ScaleFor(string? currency) => CurrencyMinorUnits.Scale(currency);
+
+    /// <summary>The one scale a set of currencies shares, or the 2-dp default when they differ (or there are none) — for
+    /// a total that spans currencies and so cannot honestly claim more precision than the legacy default.</summary>
+    public static int ScaleForAll(IEnumerable<string?> currencies)
+    {
+        var scales = currencies.Select(ScaleFor).Distinct().ToList();
+        return scales.Count == 1 ? scales[0] : Scale;
+    }
 }

@@ -40,7 +40,7 @@ public sealed class SapS4GeneralJournalFormatter : IJournalExportFormatter
         {
             j.Sequence, j.CompanyCode, type, ErpFile.Date(j.AccountingDate, "yyyyMMdd"), ErpFile.Date(j.AccountingDate, "yyyyMMdd"),
             l.Currency, new ErpFile.Raw(refs[j.Sequence]), $"KynexOne {doc.ExportShort}", i + 1, l.ErpAccount,
-            ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit), string.Empty, ErpFile.Clip(l.Description, 50),
+            ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale), string.Empty, ErpFile.Clip(l.Description, 50),
             new ErpFile.Raw(l.EntryId.ToString("N")[..18].ToUpperInvariant()),
         })));
     }
@@ -95,7 +95,7 @@ public sealed class D365GeneralJournalFormatter : IJournalExportFormatter
                 rows.AddRange(j.Lines.Select(l => new object?[]
                 {
                     batch, ++line, name, new ErpFile.Raw(vouchers[j.Sequence]), ErpFile.Date(j.AccountingDate, "yyyy-MM-dd"),
-                    "Ledger", l.ErpAccount, l.Currency, ErpFile.Amt(l.Debit), ErpFile.Amt(l.Credit),
+                    "Ledger", l.ErpAccount, l.Currency, ErpFile.Amt(l.Debit, l.Scale), ErpFile.Amt(l.Credit, l.Scale),
                     ErpFile.Clip(l.Description, 60), company,
                 }));
         }
@@ -139,7 +139,7 @@ public sealed class OdooAccountMoveFormatter : IJournalExportFormatter
             i == 0 ? ErpFile.Date(j.AccountingDate, "yyyy-MM-dd") : new ErpFile.Raw(string.Empty),
             i == 0 ? j.DocumentRef : string.Empty, i == 0 ? journal : string.Empty, i == 0 ? j.CompanyCode : string.Empty,
             new ErpFile.Raw($"kynexone_{x}_{l.EntryId:N}_{l.Side.ToLowerInvariant()}"), l.ErpAccount, l.Description,
-            ErpFile.Amt(l.Debit), ErpFile.Amt(l.Credit),
+            ErpFile.Amt(l.Debit, l.Scale), ErpFile.Amt(l.Credit, l.Scale),
         })));
     }
 }
@@ -167,7 +167,7 @@ public sealed class NetSuiteJournalFormatter : IJournalExportFormatter
         ErpFile.Csv(Headers, doc.PostingDocuments().SelectMany(j => j.Lines.Select(l => new object?[]
         {
             new ErpFile.Raw($"KX-{doc.ExportShort}-{j.Sequence:D4}"), j.CompanyCode, ErpFile.Date(j.AccountingDate, "MM/dd/yyyy"),
-            l.Currency, l.ErpAccount, ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit),
+            l.Currency, l.ErpAccount, ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale),
             ErpFile.Clip(j.DocumentRef, 999), ErpFile.Clip(l.Description, 999), l.EntryId,
         })));
 }
@@ -195,7 +195,7 @@ public sealed class XeroManualJournalFormatter : IJournalExportFormatter
         {
             $"{j.DocumentRef} (KX {doc.ExportShort})", ErpFile.Date(j.AccountingDate, "dd/MM/yyyy"), l.Description,
             l.ErpAccount, "Tax Exempt",
-            new ErpFile.Raw(JournalAmount.Emit(JournalAmount.Round(l.Debit) - JournalAmount.Round(l.Credit))),
+            new ErpFile.Raw(JournalAmount.Emit(l.RoundedDebit - l.RoundedCredit, l.Scale)),
         })));
 }
 
@@ -226,7 +226,7 @@ public sealed class ZohoBooksJournalFormatter : IJournalExportFormatter
         {
             ErpFile.Date(j.AccountingDate, "yyyy-MM-dd"), new ErpFile.Raw(nums[j.Sequence]), $"KX-{doc.ExportShort}",
             ErpFile.Clip(j.DocumentRef, 500), "both", l.Currency, l.ErpAccount, ErpFile.Clip(l.Description, 500),
-            ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit),
+            ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale),
         })));
     }
 }

@@ -36,10 +36,16 @@ public sealed record JournalExportLine(
     Guid? CompanyId,
     string CompanyCode,
     bool IsReversed,
-    string? ExternalAccountCode = null)
+    string? ExternalAccountCode = null,
+    int Scale = 2)
 {
     public decimal Debit => Side == "DR" ? Amount : 0m;
     public decimal Credit => Side == "CR" ? Amount : 0m;
+
+    /// <summary>The debit as emitted: rounded half away from zero at the line's currency scale.</summary>
+    public decimal RoundedDebit => JournalAmount.Round(Debit, Scale);
+    /// <summary>The credit as emitted: rounded half away from zero at the line's currency scale.</summary>
+    public decimal RoundedCredit => JournalAmount.Round(Credit, Scale);
 
     /// <summary>The account string an ERP should receive: the GL account's <c>external_code</c> (the
     /// client's ERP account / segment string) when one is mapped, otherwise our own account code.</summary>
@@ -64,8 +70,8 @@ public sealed record JournalPostingDocument(
     IReadOnlyList<string> JournalRefs,
     IReadOnlyList<JournalExportLine> Lines)
 {
-    public decimal Debits => Lines.Sum(l => JournalAmount.Round(l.Debit));
-    public decimal Credits => Lines.Sum(l => JournalAmount.Round(l.Credit));
+    public decimal Debits => Lines.Sum(l => l.RoundedDebit);
+    public decimal Credits => Lines.Sum(l => l.RoundedCredit);
     public DateOnly AccountingDate => Lines.Max(l => l.AccountingDate);
     public string Description => Lines.Select(l => l.Description).FirstOrDefault(d => !string.IsNullOrWhiteSpace(d)) ?? DocumentRef;
 }
@@ -186,7 +192,7 @@ public sealed class JournalExportDocument
             foreach (var journal in company.Lines.GroupBy(l => l.JournalRef).OrderBy(g => g.Key, StringComparer.Ordinal))
             {
                 var lines = journal.OrderBy(l => l.LineNo).ToList();
-                var net = lines.Sum(l => JournalAmount.Round(l.Debit) - JournalAmount.Round(l.Credit));
+                var net = lines.Sum(l => l.RoundedDebit - l.RoundedCredit);
                 if (net != 0m) { residual.AddRange(lines); residualRefs.Add(journal.Key); continue; }
                 var docRef = refCompanies[journal.Key] > 1 ? $"{journal.Key}@{code}" : journal.Key;
                 docs.Add(new JournalPostingDocument(++seq, code, docRef, false, new[] { journal.Key }, lines));

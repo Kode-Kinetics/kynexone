@@ -370,7 +370,8 @@ public static class JournalExportBuilder
             JournalRef: journalRef, Description: e.Description, SourceModule: e.SourceModule,
             SourceEntityId: e.SourceEntityId, SourceEntityRef: e.SourceEntityRef, EventType: e.EventType,
             CompanyId: e.CompanyId, CompanyCode: companyCode, IsReversed: e.IsReversed,
-            ExternalAccountCode: string.IsNullOrWhiteSpace(external) ? null : external.Trim());
+            ExternalAccountCode: string.IsNullOrWhiteSpace(external) ? null : external.Trim(),
+            Scale: JournalAmount.ScaleFor(e.Currency));
     }
 
     /// <summary>
@@ -428,8 +429,8 @@ public static class JournalExportBuilder
     /// </summary>
     public static JournalTieOut Verify(IReadOnlyList<JournalExportLine> lines, IReadOnlyList<FinanceGlEntry> source)
     {
-        var roundedDr = lines.Sum(l => JournalAmount.Round(l.Debit));
-        var roundedCr = lines.Sum(l => JournalAmount.Round(l.Credit));
+        var roundedDr = lines.Sum(l => l.RoundedDebit);
+        var roundedCr = lines.Sum(l => l.RoundedCredit);
         var sourceDr = source.Where(e => !string.IsNullOrEmpty(e.DebitAccount)).Sum(e => e.Amount);
         var sourceCr = source.Where(e => !string.IsNullOrEmpty(e.CreditAccount)).Sum(e => e.Amount);
 
@@ -450,11 +451,13 @@ public static class JournalExportBuilder
         foreach (var l in lines)
             Accumulate(actualByAccount, l.Side + "|" + l.AccountCode, l.Amount);
 
+        // The scale is the journal's currency scale (the selection is single-currency by the time it is tied out).
+        var scale = lines.Count > 0 ? lines[0].Scale : JournalAmount.ScaleFor(source.FirstOrDefault()?.Currency);
         var deltas = new List<string>();
         foreach (var key in expectedByAccount.Keys.Union(actualByAccount.Keys, StringComparer.Ordinal).OrderBy(k => k, StringComparer.Ordinal))
         {
-            var exp = JournalAmount.Round(expectedByAccount.GetValueOrDefault(key));
-            var act = JournalAmount.Round(actualByAccount.GetValueOrDefault(key));
+            var exp = JournalAmount.Round(expectedByAccount.GetValueOrDefault(key), scale);
+            var act = JournalAmount.Round(actualByAccount.GetValueOrDefault(key), scale);
             if (exp != act) deltas.Add($"{key}: expected {exp}, exported {act}");
         }
 
@@ -464,7 +467,7 @@ public static class JournalExportBuilder
         // string must each balance, never offset each other.
         var byCompany = JournalLegalEntities.Of(lines)
             .Select(g => new CompanyBalance(g.CompanyCode, g.CompanyId,
-                g.Lines.Sum(l => JournalAmount.Round(l.Debit)), g.Lines.Sum(l => JournalAmount.Round(l.Credit)), g.Lines.Count))
+                g.Lines.Sum(l => l.RoundedDebit), g.Lines.Sum(l => l.RoundedCredit), g.Lines.Count))
             .ToList();
 
         string? failure = null;

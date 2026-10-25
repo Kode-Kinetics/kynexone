@@ -59,14 +59,14 @@ public sealed class QuickBooksIifJournalFormatter : IJournalExportFormatter
             for (var i = 0; i < journal.Lines.Count; i++)
             {
                 var l = journal.Lines[i];
-                var amount = JournalAmount.Round(l.Debit) - JournalAmount.Round(l.Credit);
+                var amount = l.RoundedDebit - l.RoundedCredit;
                 sb.Append(i == 0 ? "TRNS" : "SPL").Append("\t\t")
                   .Append(TrnType).Append('\t')
                   .Append(date).Append('\t')
                   .Append(Tsv(Account(l))).Append('\t')
                   .Append('\t')                                   // NAME: employee-level PII deliberately omitted
                   .Append('\t')                                   // CLASS: no cost centre on ledger rows yet
-                  .Append(JournalAmount.Emit(amount)).Append('\t')
+                  .Append(JournalAmount.Emit(amount, l.Scale)).Append('\t')
                   .Append(docNums[journal.Sequence]).Append('\t')
                   .Append(Tsv(Memo(l.Description, journal.DocumentRef)))
                   .Append("\r\n");
@@ -156,7 +156,7 @@ public sealed class QuickBooksOnlineJournalFormatter : IJournalExportFormatter
         return ErpFile.Csv(Headers, doc.PostingDocuments().SelectMany(j => j.Lines.Select(l => new object?[]
         {
             new ErpFile.Raw(nums[j.Sequence]), ErpFile.Date(j.AccountingDate, "MM/dd/yyyy"), l.Currency,
-            ErpFile.Clip(j.DocumentRef, 4000), l.ErpAccount, ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit),
+            ErpFile.Clip(j.DocumentRef, 4000), l.ErpAccount, ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale),
             ErpFile.Clip(l.Description, 4000), string.Empty, string.Empty, string.Empty,
         })));
     }
