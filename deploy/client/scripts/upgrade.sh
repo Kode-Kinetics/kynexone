@@ -78,7 +78,13 @@ if [ -n "$BUNDLE" ]; then
   chmod +x "$KIT_DIR"/scripts/*.sh
 fi
 env_set KYNEXONE_VERSION "$NEW"
-[ -n "$BUNDLE" ] || compose pull migrate backend web
+if [ -z "$BUNDLE" ]; then
+  if docker image inspect "$(env_get KYNEXONE_REGISTRY)/kynexone-api:$NEW" >/dev/null 2>&1      && docker image inspect "$(env_get KYNEXONE_REGISTRY)/kynexone-web:$NEW" >/dev/null 2>&1; then
+    say "Using the $NEW images already on this server"
+  else
+    compose pull migrate backend web
+  fi
+fi
 
 # ── 6. Migrations ────────────────────────────────────────────────────────────
 say "Applying the $NEW database changes"

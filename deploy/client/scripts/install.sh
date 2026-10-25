@@ -15,7 +15,8 @@
 #  7. starts everything, waits for /health/ready and prints the address.
 #
 # Unattended (CI): set KYNEXONE_DOMAIN and the OrganisationSetup__* variables (OrganisationName, HomeCountry,
-# AdminEmail, AdminFullName, AdminPassword) in the environment and nothing is asked.
+# AdminEmail, AdminFullName, AdminPassword) in the environment and nothing is asked. KYNEXONE_VERSION and
+# KYNEXONE_REGISTRY in the environment are written to .env; images already on this server are used as they are.
 source "$(dirname "$0")/_common.sh"
 
 DOMAIN="${KYNEXONE_DOMAIN:-}"; LICENCE=""; FORCE=""
@@ -58,6 +59,10 @@ if [ ! -f .env ]; then
   env_set JWT_SIGNING_KEY "$(random_secret 96)"
   env_set PROXY_CLIENT_IP_SECRET "$(random_secret 48)"
 fi
+for key in KYNEXONE_VERSION KYNEXONE_REGISTRY CADDY_TLS; do
+  value="$(printenv "$key" || true)"
+  [ -z "$value" ] || env_set "$key" "$value"
+done
 [ -n "$DOMAIN" ] || DOMAIN="$(ask "Address people will use to reach KynexOne (e.g. hr.example.local)" "$(env_get KYNEXONE_DOMAIN)")"
 [ -n "$DOMAIN" ] && [ "$DOMAIN" != "hr.example.local" ] || die "Give the real address with --domain."
 env_set KYNEXONE_DOMAIN "$DOMAIN"
@@ -79,8 +84,15 @@ if [ -f "$BUNDLE_DIR/images/kynexone-images.tar" ]; then
   say "Loading images"
   docker load -i "$BUNDLE_DIR/images/kynexone-images.tar"
 else
-  say "Pulling images for version $(env_get KYNEXONE_VERSION)"
-  compose pull postgres redis migrate backend web proxy
+  API_IMAGE="$(env_get KYNEXONE_REGISTRY)/kynexone-api:$(env_get KYNEXONE_VERSION)"
+  WEB_IMAGE="$(env_get KYNEXONE_REGISTRY)/kynexone-web:$(env_get KYNEXONE_VERSION)"
+  if docker image inspect "$API_IMAGE" >/dev/null 2>&1 && docker image inspect "$WEB_IMAGE" >/dev/null 2>&1; then
+    say "Using the KynexOne images already on this server ($(env_get KYNEXONE_VERSION))"
+    compose pull postgres redis proxy
+  else
+    say "Pulling images for version $(env_get KYNEXONE_VERSION)"
+    compose pull postgres redis migrate backend web proxy
+  fi
 fi
 
 # ── 4. Database and storage ──────────────────────────────────────────────────
