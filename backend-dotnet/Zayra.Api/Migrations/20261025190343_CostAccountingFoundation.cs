@@ -279,52 +279,32 @@ namespace Zayra.Api.Migrations
                 "(SELECT d.cost_center_id FROM departments d WHERE d.tenant_id = e.tenant_id AND d.id = e.department_id);");
 
             // The keys every cost-centre foreign key points at. EF cannot model (tenant_id, company_id, id): company_id is nullable.
-            migrationBuilder.Sql(AddUniqueSql("uq_cost_centers__tenant_id", "(tenant_id, id)"));
-            migrationBuilder.Sql(AddUniqueSql("uq_cost_centers__tenant_company_id", "(tenant_id, company_id, id)"));
+            migrationBuilder.Sql(UniqueKeysSql);
 
             // NOT VALID CHECKs: bind every new or updated row, never the rows that exist at upgrade time. Legacy offenders
             // are listed by the pre-migration audit query and repaired before M3 validates them.
-            migrationBuilder.Sql(AddCheckNotValidSql("cost_centers", "ck_cost_centers__code_format", "code ~ " + CodePattern));
-            migrationBuilder.Sql(AddCheckNotValidSql("finance_gl_entries", "ck_finance_gl_entries__amount_nonnegative", "amount >= 0"));
-            migrationBuilder.Sql(AddCheckNotValidSql("finance_gl_entries", "ck_finance_gl_entries__has_account", "(debit_account <> '' OR credit_account <> '')"));
-            migrationBuilder.Sql(AddCheckNotValidSql("finance_gl_entries", "ck_finance_gl_entries__currency_format", "currency ~ '^[A-Z]{3}$'"));
+            migrationBuilder.Sql(NotValidChecksSql);
 
             // Foreign keys: composite and tenant-first, ON DELETE RESTRICT, MATCH SIMPLE (a NULL cost centre is skipped).
-            // New columns / self reference / company-scoped keys are valid on creation; keys over columns that may already hold
-            // dangling ids (departments, positions, employees, timesheets, mapping segment) are NOT VALID until M3.
-            foreach (var (table, name, column) in NotValidCostCentreForeignKeys)
-                migrationBuilder.Sql(AddForeignKeySql(table, name, $"(tenant_id, {column})", "cost_centers (tenant_id, id)", notValid: true));
-            foreach (var (table, name, column) in NewColumnCostCentreForeignKeys)
-                migrationBuilder.Sql(AddForeignKeySql(table, name, $"(tenant_id, {column})", "cost_centers (tenant_id, id)", notValid: true));
-            migrationBuilder.Sql(AddForeignKeySql("cost_centers", "fk_cost_centers__parent", "(tenant_id, parent_id)", "cost_centers (tenant_id, id)", notValid: false));
-            migrationBuilder.Sql(AddForeignKeySql("finance_gl_entries", "fk_finance_gl_entries__cost_center",
-                "(tenant_id, company_id, cost_center_id)", "cost_centers (tenant_id, company_id, id)", notValid: false));
-            migrationBuilder.Sql(AddForeignKeySql("companies", "fk_companies__default_cost_center",
-                "(tenant_id, id, default_cost_center_id)", "cost_centers (tenant_id, company_id, id)", notValid: false));
+            // Keys over columns that may already hold dangling ids, and over the new payroll columns, are NOT VALID until M3;
+            // the self reference and the two company-scoped keys are valid on creation (their columns are new, all NULL).
+            migrationBuilder.Sql(ForeignKeysSql);
 
             // The mapping unique is widened by the cost-centre class. The new unique index (created above) is identical to the old
             // one while every class is NULL, so uniqueness is never absent; the old one goes in the same transaction.
             migrationBuilder.Sql("DROP INDEX IF EXISTS ux_gl_account_mappings_scope_driver;");
         }
 
-/// <inheritdoc />
+        /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             // Foreign keys first (they depend on the unique keys), then the old mapping unique back before the new one goes.
-            foreach (var (table, name, _) in NotValidCostCentreForeignKeys.Concat(NewColumnCostCentreForeignKeys))
-                migrationBuilder.Sql($"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name};");
-            migrationBuilder.Sql("ALTER TABLE cost_centers DROP CONSTRAINT IF EXISTS fk_cost_centers__parent;");
-            migrationBuilder.Sql("ALTER TABLE finance_gl_entries DROP CONSTRAINT IF EXISTS fk_finance_gl_entries__cost_center;");
-            migrationBuilder.Sql("ALTER TABLE companies DROP CONSTRAINT IF EXISTS fk_companies__default_cost_center;");
-            migrationBuilder.Sql("ALTER TABLE cost_centers DROP CONSTRAINT IF EXISTS uq_cost_centers__tenant_company_id;");
-            migrationBuilder.Sql("ALTER TABLE cost_centers DROP CONSTRAINT IF EXISTS uq_cost_centers__tenant_id;");
+            migrationBuilder.Sql(DropKeysSql);
             // Restored with the definition 20260729034732_RekeyGlUniquesForCompanyScope gave it. Fails if rows that differ only
             // by functional_class were written meanwhile: roll such data back first.
             migrationBuilder.Sql(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_gl_account_mappings_scope_driver " +
                 "ON gl_account_mappings (tenant_id, company_id, driver_key) NULLS NOT DISTINCT;");
-            foreach (var (table, name) in NotValidChecks)
-                migrationBuilder.Sql($"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name};");
 
             migrationBuilder.DropCheckConstraint(
                 name: "ck_payroll_earnings__cost_center_source",
@@ -488,52 +468,84 @@ namespace Zayra.Api.Migrations
         }
     
 
-        // ── frozen SQL helpers ────────────────────────────────────────────────────────────────────────
+        // ── frozen SQL ────────────────────────────────────────────────────────────────────────────────
+        // Whole statements as constants (read by DestructiveMigrationGuardTests). Each is guarded, so the migration can be
+        // re-run against a partly applied database.
 
         /// <summary>Transaction-scoped, as in AddMfaTrustedDevices.</summary>
         public const string LockTimeoutSql = "SET LOCAL lock_timeout = '5s';";
 
-        private const string CodePattern = "'^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$'";
+        private const string UniqueKeysSql = @"
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_cost_centers__tenant_id' AND conrelid = 'cost_centers'::regclass) THEN
+    ALTER TABLE cost_centers ADD CONSTRAINT uq_cost_centers__tenant_id UNIQUE (tenant_id, id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_cost_centers__tenant_company_id' AND conrelid = 'cost_centers'::regclass) THEN
+    ALTER TABLE cost_centers ADD CONSTRAINT uq_cost_centers__tenant_company_id UNIQUE (tenant_id, company_id, id);
+  END IF;
+END $$;";
 
-        /// <summary>Referencing columns that may already hold ids with no cost centre behind them (NOT VALID until M3).</summary>
-        private static readonly (string Table, string Name, string Column)[] NotValidCostCentreForeignKeys =
-        {
-            ("departments", "fk_departments__cost_center", "cost_center_id"),
-            ("positions", "fk_positions__cost_center", "cost_center_id"),
-            ("employees", "fk_employees__cost_center", "cost_center_id"),
-            ("timesheet_entries", "fk_timesheet_entries__cost_center", "cost_center_id"),
-            ("gl_account_mappings", "fk_gl_account_mappings__segment_cost_center", "segment_cost_center_id"),
-        };
+        private const string NotValidChecksSql = @"
+DO $$ DECLARE r record; BEGIN
+  FOR r IN SELECT * FROM (VALUES
+    ('cost_centers',      'ck_cost_centers__code_format',               $e$code ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$'$e$),
+    ('finance_gl_entries','ck_finance_gl_entries__amount_nonnegative',  $e$amount >= 0$e$),
+    ('finance_gl_entries','ck_finance_gl_entries__has_account',         $e$(debit_account <> '' OR credit_account <> '')$e$),
+    ('finance_gl_entries','ck_finance_gl_entries__currency_format',     $e$currency ~ '^[A-Z]{3}$'$e$)
+  ) AS v(tbl, name, expr) LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = r.name AND conrelid = r.tbl::regclass) THEN
+      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I CHECK (%s) NOT VALID', r.tbl, r.name, r.expr);
+    END IF;
+  END LOOP;
+END $$;";
 
-        /// <summary>Columns this migration creates (all NULL): the contract still states NOT VALID, validated with the rest in M3.</summary>
-        private static readonly (string Table, string Name, string Column)[] NewColumnCostCentreForeignKeys =
-        {
-            ("payroll_earnings", "fk_payroll_earnings__cost_center", "cost_center_id"),
-            ("payroll_deductions", "fk_payroll_deductions__cost_center", "cost_center_id"),
-            ("payroll_slips", "fk_payroll_slips__cost_center", "cost_center_id"),
-            ("eosb_provision_snapshots", "fk_eosb_provision_snapshots__cost_center", "cost_center_id"),
-        };
+        private const string ForeignKeysSql = @"
+DO $$ DECLARE r record; BEGIN
+  FOR r IN SELECT * FROM (VALUES
+    ('departments',              'fk_departments__cost_center',                '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('positions',                'fk_positions__cost_center',                  '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('employees',                'fk_employees__cost_center',                  '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('timesheet_entries',        'fk_timesheet_entries__cost_center',          '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('gl_account_mappings',      'fk_gl_account_mappings__segment_cost_center','(tenant_id, segment_cost_center_id)',         'cost_centers (tenant_id, id)',             true),
+    ('payroll_earnings',         'fk_payroll_earnings__cost_center',           '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('payroll_deductions',       'fk_payroll_deductions__cost_center',         '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('payroll_slips',            'fk_payroll_slips__cost_center',              '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('eosb_provision_snapshots', 'fk_eosb_provision_snapshots__cost_center',   '(tenant_id, cost_center_id)',                 'cost_centers (tenant_id, id)',             true),
+    ('cost_centers',             'fk_cost_centers__parent',                    '(tenant_id, parent_id)',                      'cost_centers (tenant_id, id)',             false),
+    ('finance_gl_entries',       'fk_finance_gl_entries__cost_center',         '(tenant_id, company_id, cost_center_id)',     'cost_centers (tenant_id, company_id, id)', false),
+    ('companies',                'fk_companies__default_cost_center',          '(tenant_id, id, default_cost_center_id)',     'cost_centers (tenant_id, company_id, id)', false)
+  ) AS v(tbl, name, cols, target, not_valid) LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = r.name AND conrelid = r.tbl::regclass) THEN
+      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY %s REFERENCES %s ON DELETE RESTRICT%s',
+                     r.tbl, r.name, r.cols, r.target, CASE WHEN r.not_valid THEN ' NOT VALID' ELSE '' END);
+    END IF;
+  END LOOP;
+END $$;";
 
-        private static readonly (string Table, string Name)[] NotValidChecks =
-        {
-            ("cost_centers", "ck_cost_centers__code_format"),
-            ("finance_gl_entries", "ck_finance_gl_entries__amount_nonnegative"),
-            ("finance_gl_entries", "ck_finance_gl_entries__has_account"),
-            ("finance_gl_entries", "ck_finance_gl_entries__currency_format"),
-        };
-
-        // Each statement is guarded so the migration can be re-run against a partly applied database.
-        private static string AddUniqueSql(string name, string columns) =>
-            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '" + name + "' AND conrelid = 'cost_centers'::regclass) THEN " +
-            "ALTER TABLE cost_centers ADD CONSTRAINT " + name + " UNIQUE " + columns + "; END IF; END $$;";
-
-        private static string AddCheckNotValidSql(string table, string name, string expression) =>
-            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '" + name + "' AND conrelid = '" + table + "'::regclass) THEN " +
-            "ALTER TABLE " + table + " ADD CONSTRAINT " + name + " CHECK (" + expression + ") NOT VALID; END IF; END $$;";
-
-        private static string AddForeignKeySql(string table, string name, string columns, string target, bool notValid) =>
-            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '" + name + "' AND conrelid = '" + table + "'::regclass) THEN " +
-            "ALTER TABLE " + table + " ADD CONSTRAINT " + name + " FOREIGN KEY " + columns + " REFERENCES " + target +
-            " ON DELETE RESTRICT" + (notValid ? " NOT VALID" : "") + "; END IF; END $$;";
+        private const string DropKeysSql = @"
+DO $$ DECLARE r record; BEGIN
+  FOR r IN SELECT * FROM (VALUES
+    ('departments',              'fk_departments__cost_center'),
+    ('positions',                'fk_positions__cost_center'),
+    ('employees',                'fk_employees__cost_center'),
+    ('timesheet_entries',        'fk_timesheet_entries__cost_center'),
+    ('gl_account_mappings',      'fk_gl_account_mappings__segment_cost_center'),
+    ('payroll_earnings',         'fk_payroll_earnings__cost_center'),
+    ('payroll_deductions',       'fk_payroll_deductions__cost_center'),
+    ('payroll_slips',            'fk_payroll_slips__cost_center'),
+    ('eosb_provision_snapshots', 'fk_eosb_provision_snapshots__cost_center'),
+    ('cost_centers',             'fk_cost_centers__parent'),
+    ('finance_gl_entries',       'fk_finance_gl_entries__cost_center'),
+    ('companies',                'fk_companies__default_cost_center'),
+    ('finance_gl_entries',       'ck_finance_gl_entries__amount_nonnegative'),
+    ('finance_gl_entries',       'ck_finance_gl_entries__has_account'),
+    ('finance_gl_entries',       'ck_finance_gl_entries__currency_format'),
+    ('cost_centers',             'ck_cost_centers__code_format'),
+    ('cost_centers',             'uq_cost_centers__tenant_company_id'),
+    ('cost_centers',             'uq_cost_centers__tenant_id')
+  ) AS v(tbl, name) LOOP
+    EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', r.tbl, r.name);
+  END LOOP;
+END $$;";
     }
 }
