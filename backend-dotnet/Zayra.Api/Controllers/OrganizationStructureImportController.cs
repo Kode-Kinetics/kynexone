@@ -508,9 +508,10 @@ public class OrganizationStructureImportController : ControllerBase
                 && ((departmentBranch is not null && departmentBranch.CompanyId != owner)
                     || (departmentCostCenter is not null && departmentCostCenter.CompanyId != owner)))
                 throw new InvalidOperationException($"Department '{code}' links a branch or cost center of another company.");
-            department.BranchId = departmentBranch?.Id;
-            department.CostCenterId = departmentCostCenter?.Id;
-            department.ManagerEmployeeId = string.IsNullOrWhiteSpace(Val(row, "ManagerEmployeeCode")) ? null : employeesByCode[Val(row, "ManagerEmployeeCode").ToUpperInvariant()].Id;
+            // A blank link cell leaves an existing row's link unchanged.
+            if (departmentBranch is not null) department.BranchId = departmentBranch.Id;
+            if (departmentCostCenter is not null) department.CostCenterId = departmentCostCenter.Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "ManagerEmployeeCode"))) department.ManagerEmployeeId = employeesByCode[Val(row, "ManagerEmployeeCode").ToUpperInvariant()].Id;
             department.ApprovedHeadcount = Int(row, "ApprovedHeadcount");
             department.MonthlyBudgetAmount = Dec(row, "MonthlyBudgetAmount");
             department.IsActive = Bool(row, "IsActive", true);
@@ -580,11 +581,14 @@ public class OrganizationStructureImportController : ControllerBase
             designation.TitleEn = Val(row, "TitleEn");
             designation.TitleAr = Val(row, "TitleAr");
             var designationDepartment = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()];
-            designation.DepartmentId = designationDepartment?.Id;
+            if (designationDepartment is not null) designation.DepartmentId = designationDepartment.Id;
             designation.CompanyId ??= designationDepartment?.CompanyId ?? onlyCompanyId;
             var gradeCode = Val(row, "GradeCode", Val(row, "JobGrade"));
-            designation.GradeId = string.IsNullOrWhiteSpace(gradeCode) ? null : grades[gradeCode.ToUpperInvariant()].Id;
-            designation.JobGrade = gradeCode;
+            if (!string.IsNullOrWhiteSpace(gradeCode))
+            {
+                designation.GradeId = grades[gradeCode.ToUpperInvariant()].Id;
+                designation.JobGrade = gradeCode;
+            }
             designation.JobLevel = Val(row, "JobLevel");
             designation.JobDescription = Val(row, "JobDescription");
             designation.IsManagerRole = Bool(row, "IsManagerRole", false);
@@ -609,15 +613,15 @@ public class OrganizationStructureImportController : ControllerBase
                 Bump("positions");
             }
             position.Title = Val(row, "Title");
-            position.CompanyId = string.IsNullOrWhiteSpace(Val(row, "CompanyLegalName")) ? null : companies[Val(row, "CompanyLegalName").ToUpperInvariant()].Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "CompanyLegalName"))) position.CompanyId = companies[Val(row, "CompanyLegalName").ToUpperInvariant()].Id;
             var positionBranchCode = Val(row, "BranchCode").ToUpperInvariant();
-            position.BranchId = string.IsNullOrWhiteSpace(positionBranchCode) ? null
-                : position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
-                : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
-            position.DepartmentId = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
-            position.CostCenterId = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode")).Id;
-            position.DesignationId = string.IsNullOrWhiteSpace(Val(row, "DesignationCode")) ? null : designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
-            position.GradeId = string.IsNullOrWhiteSpace(Val(row, "GradeCode")) ? null : grades[Val(row, "GradeCode").ToUpperInvariant()].Id;
+            if (!string.IsNullOrWhiteSpace(positionBranchCode))
+                position.BranchId = position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
+                    : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "DepartmentCode"))) position.DepartmentId = departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "CostCenterCode"))) position.CostCenterId = CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode")).Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "DesignationCode"))) position.DesignationId = designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "GradeCode"))) position.GradeId = grades[Val(row, "GradeCode").ToUpperInvariant()].Id;
             position.Fte = Dec(row, "Fte", 1m);
             position.BudgetedMonthlyCost = Dec(row, "BudgetedMonthlyCost");
             position.Currency = Val(row, "Currency", "SAR").ToUpperInvariant();
