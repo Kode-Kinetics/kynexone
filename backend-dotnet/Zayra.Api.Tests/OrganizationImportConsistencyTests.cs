@@ -127,6 +127,59 @@ public class OrganizationImportConsistencyTests
         saved.GradeId.Should().Be(w.Grade.Id);
     }
 
+    private static async Task<(Company Beta, Branch Branch, Department Dept, CostCenter CostCenter, Designation Designation, Grade Grade)> SeedSecondCompany(
+        ZayraDbContext db, Guid tenant)
+    {
+        var beta = new Company { TenantId = tenant, LegalNameEn = "Beta Logistics", RegistrationNumber = "B-1", IsActive = true };
+        var branch = new Branch { TenantId = tenant, CompanyId = beta.Id, Code = "BHQ", NameEn = "Beta office" };
+        var cc = new CostCenter { TenantId = tenant, CompanyId = beta.Id, Code = "BCC", Name = "Beta ops" };
+        var dept = new Department { TenantId = tenant, CompanyId = beta.Id, Code = "BOPS", NameEn = "Beta operations" };
+        var grade = new Grade { TenantId = tenant, CompanyId = beta.Id, Code = "BG1", Name = "Beta grade 1" };
+        var desig = new Designation { TenantId = tenant, CompanyId = beta.Id, Code = "BCLK", TitleEn = "Clerk" };
+        db.AddRange(beta, branch, cc, dept, grade, desig);
+        await db.SaveChangesAsync();
+        return (beta, branch, dept, cc, desig, grade);
+    }
+
+    [Fact]
+    public async Task MovingAPositionToAnotherCompany_WithBlankLinkCells_IsRefused_AndThePositionIsUnchanged()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        await SeedSecondCompany(db, w.TenantId);
+
+        var result = await Controller(db, w.TenantId).Commit(
+            Request(positions: "Code,Title,CompanyLegalName,BranchCode,DepartmentCode,CostCenterCode,DesignationCode,GradeCode\nP1,Accountant,Beta Logistics,,,,,"), default);
+
+        result.Result.Should().NotBeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var saved = await db.Positions.SingleAsync(p => p.Id == w.Position.Id);
+        saved.CompanyId.Should().Be(w.Company.Id);
+        saved.BranchId.Should().Be(w.Branch.Id);
+        saved.CostCenterId.Should().Be(w.CostCenter.Id);
+    }
+
+    [Fact]
+    public async Task MovingAPositionToAnotherCompany_WithThatCompanysLinks_IsAccepted()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var b = await SeedSecondCompany(db, w.TenantId);
+
+        var result = await Controller(db, w.TenantId).Commit(
+            Request(positions: "Code,Title,CompanyLegalName,BranchCode,DepartmentCode,CostCenterCode,DesignationCode,GradeCode\nP1,Clerk,Beta Logistics,BHQ,BOPS,BCC,BCLK,BG1"), default);
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var saved = await db.Positions.SingleAsync(p => p.Id == w.Position.Id);
+        saved.CompanyId.Should().Be(b.Beta.Id);
+        saved.BranchId.Should().Be(b.Branch.Id);
+        saved.DepartmentId.Should().Be(b.Dept.Id);
+        saved.CostCenterId.Should().Be(b.CostCenter.Id);
+        saved.DesignationId.Should().Be(b.Designation.Id);
+        saved.GradeId.Should().Be(b.Grade.Id);
+    }
+
     [Fact]
     public async Task ANamedLinkCellOnAnExistingDepartmentRow_StillRepointsTheLink()
     {
