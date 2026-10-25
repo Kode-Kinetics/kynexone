@@ -512,8 +512,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         }
     }
 
-    // ── Cost accounting AM-11: ledger-line integrity (STUB, TDD red) ──────────────────────────────────
-    private Task EnforceFinanceGlEntryIntegrityAsync(CancellationToken ct, bool synchronous = false) => Task.CompletedTask;
+    // ── Cost accounting AM-11: ledger-line integrity ──────────────────────────────────────────────────
+    // Required / NotAllowed / P&L-side, company-required, reversal-mirror checks for new finance_gl_entries rows.
+    // Lives here (not in a Program.cs interceptor) so every context, however it was built, applies it. Pure
+    // ChangeTracker inspection plus batched no-tracking reads, and a no-op for a save with no ledger rows.
+    private Task EnforceFinanceGlEntryIntegrityAsync(CancellationToken ct, bool synchronous = false)
+        => Infrastructure.Finance.FinanceGlEntryGuard.EnforceAsync(this, synchronous, ct);
     // ── end cost accounting guard ─────────────────────────────────────────────────────────────────────
 
     private void EnforceAuditLogAppendOnly()

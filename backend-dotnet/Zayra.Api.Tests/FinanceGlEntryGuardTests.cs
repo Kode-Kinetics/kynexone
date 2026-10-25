@@ -147,18 +147,30 @@ public class FinanceGlEntryGuardTests
     }
 
     [Theory, MemberData(nameof(Paths))]
-    public async Task CostingOff_NoRuleIsEnforced_ButTheRowStillNeedsACompany(bool sync)
+    public async Task CostingOff_NoRuleIsEnforced_AndLegacyUnattributedLinesStillPost(bool sync)
     {
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var f = await Seed(db, costingOn: false);
         db.FinanceGlEntries.Add(Line(f, Label(f.Req), Label(f.Liab)));
+        var legacy = Line(f, Label(f.Req), Label(f.Liab));
+        legacy.CompanyId = null;
+        db.FinanceGlEntries.Add(legacy);
         await Save(db, sync);
+        db.ChangeTracker.Clear();
+        (await db.FinanceGlEntries.CountAsync()).Should().Be(2, "a tenant that never turned costing on posts exactly as before");
+    }
 
-        var bad = Line(f, Label(f.Req), Label(f.Liab));
+    [Theory, MemberData(nameof(Paths))]
+    public async Task OnceAnyCompanyOfTheTenantCostsPayroll_AnUnattributedNewLineIsRejected(bool sync)
+    {
+        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
+        var f = await Seed(db, costingOn: false);
+        f.Other.CostAccountingEnabled = true;       // a SIBLING company costs; this line has no company at all
+        await db.SaveChangesAsync();
+        var bad = Line(f, Label(f.Opt), Label(f.Liab));
         bad.CompanyId = null;
         db.FinanceGlEntries.Add(bad);
-        var act = () => Save(db, sync);
-        (await act.Should().ThrowAsync<GlCostCentreRuleException>()).Which.Code.Should().Be("finance_gl_entry_company_required");
+        await ExpectRejected(db, sync, "finance_gl_entry_company_required");
     }
 
     [Theory, MemberData(nameof(Paths))]
@@ -417,14 +429,34 @@ public class FinanceGlEntryGuardTests
     }
 
     [Theory, MemberData(nameof(Paths))]
-    public async Task Reversal_WithNoCompany_IsRejected(bool sync)
+    public async Task Reversal_WithNoCompany_OfACompanyEntry_IsRejected(bool sync)
     {
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var f = await Seed(db);
         var o = await Original(db, f);
         var c = Contra(o); c.CompanyId = null;
         db.FinanceGlEntries.Add(c);
-        await ExpectRejected2(db, sync, "finance_gl_entry_company_required", 1);
+        await ExpectReversalRejected(db, sync, 1);
+    }
+
+    [Theory, MemberData(nameof(Paths))]
+    public async Task Reversal_OfALegacyNullCompanyEntry_IsAllowed_SoOldRunsCanStillBeVoided(bool sync)
+    {
+        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
+        var f = await Seed(db);
+        var o = Line(f, Label(f.Opt), Label(f.Liab));
+        db.FinanceGlEntries.Add(o);
+        await db.SaveChangesAsync();
+        // A historical (pre-company) row: written long before the guard, so it is made null-company outside SaveChanges.
+        await db.FinanceGlEntries.Where(e => e.Id == o.Id).ExecuteUpdateAsync(s => s.SetProperty(e => e.CompanyId, (Guid?)null));
+        db.ChangeTracker.Clear();
+        var legacy = await db.FinanceGlEntries.AsNoTracking().SingleAsync();
+        legacy.CompanyId.Should().BeNull();
+
+        db.FinanceGlEntries.Add(Contra(legacy));
+        await Save(db, sync);
+        db.ChangeTracker.Clear();
+        (await db.FinanceGlEntries.CountAsync()).Should().Be(2);
     }
 
     private static async Task ExpectRejected2(ZayraDbContext db, bool sync, string code, int rows)
