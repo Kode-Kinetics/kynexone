@@ -226,6 +226,7 @@ public sealed class LedgerSupportTriggersPostgresTests
 
     private async Task<SeededRun> SeedRun(string status = "Approved", bool stamped = true)
     {
+        // Stamped while still Approved (that is when stamps are legal), THEN moved on to the status under test.
         var run = Guid.NewGuid();
         var earning = Guid.NewGuid();
         var deduction = Guid.NewGuid();
@@ -233,7 +234,7 @@ public sealed class LedgerSupportTriggersPostgresTests
         var n = Interlocked.Increment(ref _seq);
         await _db.Exec(await _db.Insert("payroll_runs", new()
         {
-            ["id"] = Q(run), ["tenant_id"] = Q(_db.Tenant), ["company_id"] = Q(_db.CompanyA), ["status"] = Q(status),
+            ["id"] = Q(run), ["tenant_id"] = Q(_db.Tenant), ["company_id"] = Q(_db.CompanyA), ["status"] = "'Approved'",
             ["year"] = (2000 + n % 90).ToString(), ["month"] = (1 + n % 12).ToString(), ["run_type"] = "'OffCycle'",
         }));
         await _db.Exec(await _db.Insert("payroll_earnings", new() { ["id"] = Q(earning), ["tenant_id"] = Q(_db.Tenant), ["payroll_run_id"] = Q(run) }));
@@ -246,13 +247,14 @@ public sealed class LedgerSupportTriggersPostgresTests
             await _db.Exec($"UPDATE payroll_slips SET cost_center_id = '{_db.CcA1}' WHERE id = '{slip}'");
             await _db.Exec($"UPDATE payroll_runs SET cost_center_resolution_hash = '{new string('a', 64)}' WHERE id = '{run}'");
         }
+        if (status != "Approved") await _db.Exec($"UPDATE payroll_runs SET status = '{status}' WHERE id = '{run}'");
         return new SeededRun(run, earning, deduction, slip);
     }
 
-    private string Stamp(SeededRun r) =>
-        $"UPDATE payroll_earnings SET cost_center_id = '{_db.CcA2}', cost_center_source = 'Position' WHERE id = '{r.Earning}'; " +
-        $"UPDATE payroll_deductions SET cost_center_id = '{_db.CcA2}', cost_center_source = 'Position' WHERE id = '{r.Deduction}'; " +
-        $"UPDATE payroll_slips SET cost_center_id = '{_db.CcA2}' WHERE id = '{r.Slip}'";
+    private string Stamp(SeededRun r, Guid? cc = null, string source = "Position") =>
+        $"UPDATE payroll_earnings SET cost_center_id = '{cc ?? _db.CcA2}', cost_center_source = '{source}' WHERE id = '{r.Earning}'; " +
+        $"UPDATE payroll_deductions SET cost_center_id = '{cc ?? _db.CcA2}', cost_center_source = '{source}' WHERE id = '{r.Deduction}'; " +
+        $"UPDATE payroll_slips SET cost_center_id = '{cc ?? _db.CcA2}' WHERE id = '{r.Slip}'";
 
     [Fact]
     public async Task Stamps_AreWritable_WhileTheRunIsNotLocked()
@@ -324,6 +326,6 @@ public sealed class LedgerSupportTriggersPostgresTests
         var r = await SeedRun("Approved");
         await _db.RunTx($"UPDATE payroll_runs SET status = 'Locked', cost_accounting_applied = true WHERE id = '{r.Run}'", Stamp(r));
         // A LATER unit of work (very likely on the same pooled connection) gets no excuse from the earlier Lock.
-        await _db.ExpectTx(AtCommit, "stamping after the Lock committed", Stamp(r));
+        await _db.ExpectTx(AtCommit, "stamping after the Lock committed", Stamp(r, _db.CcA1, "Department"));
     }
 }
