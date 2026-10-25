@@ -46,5 +46,42 @@ test('a module panel that fails is contained: Setup keeps its menu and offers Re
   await failed.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(page.locator('[data-module-section="holidayCalendars"]').getByRole('alert')).toContainText('This section could not be shown');
   // The render error is still reported (React logs what a boundary caught), never swallowed.
-  expect(consoleErrors.some(message => message.includes('calendars.filter'))).toBe(true);
+  // Leaving the failed section works every time (after a failure the move is a full load: React's recovery from a
+  // render error could otherwise trip the app router's hooks on the next in-page navigation).
+  await page.getByRole('navigation', { name: 'Setup sections' }).getByRole('link', { name: 'Leave types', exact: true }).click();
+  await expect(page.locator('#setup-section-heading')).toHaveText('Leave types');
+  await expect(page.locator('[data-module-section="leaveTypes"]').getByRole('button', { name: /New Leave Type/i })).toBeVisible();
+  await expect(page.getByText(/Application error|Something went wrong/)).toHaveCount(0);
+  // (A production build minifies the names, so match the kind of error, not the variable.)
+  expect(consoleErrors.some(message => /filter is not a function/.test(message))).toBe(true);
+});
+
+test('while module switches load, a section shows loading, never "no access"', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Record whether the denial ever appears, however briefly.
+    new MutationObserver(() => {
+      if (document.querySelector('[data-testid="setup-section-no-access"]')) (window as unknown as { sawDenial: boolean }).sawDenial = true;
+    }).observe(document, { childList: true, subtree: true });
+  });
+  await boot(page, { persona: ADMIN, url: '/setup?tab=branding', flagsDelayMs: 2_500 });
+  await expect(page.locator('[data-module-section="branding"]')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('#setup-section-heading')).toHaveText('Branding');
+  expect(await page.evaluate(() => (window as unknown as { sawDenial?: boolean }).sawDenial ?? false)).toBe(false);
+});
+
+test('a switched-off module offers "Manage modules" only to someone who can switch modules', async ({ page }) => {
+  const mocks = { '/api/features/modules': [{ key: 'Shifts', labelEn: 'Shifts', navPaths: ['/shifts'], enabled: false }] };
+  // An HR Manager reaches /shifts but cannot switch modules (security.manage): no dead-end link.
+  await boot(page, { persona: { roles: ['HR Manager'], permissions: ['dashboard.read', 'attendance.read'] }, url: '/shifts', mocks });
+  await expect(page.getByTestId('module-disabled')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('link', { name: 'Manage modules', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Back to dashboard', exact: true })).toBeVisible();
+});
+
+test('an administrator who can switch modules goes from a switched-off module to Setup → Modules', async ({ page }) => {
+  const mocks = { '/api/features/modules': [{ key: 'Shifts', labelEn: 'Shifts', navPaths: ['/shifts'], enabled: false }] };
+  await boot(page, { persona: ADMIN, url: '/shifts', mocks });
+  await page.getByRole('link', { name: 'Manage modules', exact: true }).click({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/setup\?tab=modules/);
+  await expect(page.locator('#setup-section-heading')).toHaveText('Modules');
 });

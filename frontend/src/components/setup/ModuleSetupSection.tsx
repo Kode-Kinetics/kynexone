@@ -143,13 +143,27 @@ function SectionFailed({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+let sectionFailed = false;
+
+/**
+ * Whether a module editor has failed to render on this page. React's recovery from a render error can trip the app
+ * router's hooks on the next in-page navigation (React error #310, seen on production builds), so after a failure
+ * Setup moves to the next section with a full load of the same address instead.
+ */
+export function setupSectionHasFailed(): boolean {
+  return sectionFailed;
+}
+
 /**
  * Each module's editor fails on its own: an error while one renders is shown in its section, with Try again, and the
  * rest of Setup (its navigation, the other sections) keeps working instead of the whole page falling over.
  */
 class SectionBoundary extends Component<{ children: ReactNode }, { failed: boolean; attempt: number }> {
   state = { failed: false, attempt: 0 };
-  static getDerivedStateFromError() { return { failed: true }; }
+  static getDerivedStateFromError() {
+    sectionFailed = true;
+    return { failed: true };
+  }
   render() {
     if (this.state.failed) return <SectionFailed onRetry={() => this.setState(state => ({ failed: false, attempt: state.attempt + 1 }))} />;
     return <div key={this.state.attempt} className="min-w-0">{this.props.children}</div>;

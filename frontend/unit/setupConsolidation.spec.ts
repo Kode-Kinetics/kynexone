@@ -199,6 +199,8 @@ test('old_addresses_lead_to_their_setup_section', () => {
     ['/saudi-compliance', 'companyId=c1', null],
     ['/recruitment/onboarding', '', null],
     ['/setup', 'tab=users', null],
+    // An impersonation request never rides along into Setup (middleware.ts only honours it on /login).
+    ['/tenant-admin', 'impersonate=tenant-b&tab=branding', '/setup?tab=branding'],
   ];
   for (const [path, query, expected] of cases) {
     expect(legacySetupHref(path, new URLSearchParams(query)), `${path}?${query}`).toBe(expected);
@@ -211,6 +213,12 @@ test('the_edge_redirect_runs_on_every_old_address', () => {
   // Temporary (307): a browser never caches it, so a section can still move again while the product is in testing.
   expect(moved.status).toBe(307);
   expect(moved.headers.get('location')).toBe('https://app.example/setup?tab=branding');
+  // Only the path and query change: same origin, nothing from the old address can choose another host.
+  // (A real domain: Next itself reports a loopback host as localhost.)
+  const sameOrigin = middleware(new NextRequest('https://kynexone.example/user-management?search=a%26b&next=https://evil.example'));
+  expect(sameOrigin.headers.get('location')).toBe('https://kynexone.example/setup?tab=users&search=a%26b&next=https%3A%2F%2Fevil.example');
+  const pathTrick = middleware(new NextRequest('https://kynexone.example/tenant-admin?tab=//evil.example'));
+  expect(new URL(pathTrick.headers.get('location')!).host).toBe('kynexone.example');
   const kept = middleware(new NextRequest('https://app.example/leave?companyId=c1'));
   expect(kept.headers.get('location')).toBeNull();
 });

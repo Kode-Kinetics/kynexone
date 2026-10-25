@@ -93,7 +93,7 @@ import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
 import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
 import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionId } from '../lib/setupModuleSections';
-import { ModuleSetupSection } from '../components/setup/ModuleSetupSection';
+import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
@@ -2690,6 +2690,8 @@ export function SetupPage() {
     landingCompanyLink.current = null;
     if (tab === activeTab) return;
     if (!confirmLeave()) return;
+    // After a module editor failed to render, leave with a full load (ModuleSetupSection: setupSectionHasFailed).
+    if (setupSectionHasFailed()) { window.location.assign(tabHref(tab)); return; }
     setActiveTab(tab);
     // The tab is shown immediately, so its history entry must exist immediately too.
     // router.push only writes the entry when its server round trip commits; a second
@@ -2766,7 +2768,7 @@ export function SetupPage() {
     if (id === selectedNavId && (id === 'policyStarter' || (setupPath.area === 'overview' && !setupPath.setting))) return;
     const href = studioHref(id);
     // The tab follows the address (requestedTab), so no in-between section is shown or announced on the way.
-    confirmLeave(href, () => { router.push(href, { scroll: false }); });
+    confirmLeave(href, () => { if (setupSectionHasFailed()) window.location.assign(href); else router.push(href, { scroll: false }); });
   };
   // Guided setup's own progress (its chooser's "N of M done"), refreshed on a company change, each time Guided setup
   // or All setup areas is opened, and on every move inside All setup areas (an area, an embedded setting and back), the
@@ -2915,9 +2917,12 @@ export function SetupPage() {
         <header className="setup-page-header min-w-0">
           <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         </header>
-        <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-no-sections">
-          {t('Your role has no Setup sections to open. Ask an administrator if you need one.')}
-        </p>
+        {/* A module's settings are known only once its switch is (moduleSectionAvailable): wait for it, never deny early. */}
+        {flags.status === 'loading'
+          ? <p role="status" aria-busy="true" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-sections-loading">{t('Loading…')}</p>
+          : <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-no-sections">
+            {t('Your role has no Setup sections to open. Ask an administrator if you need one.')}
+          </p>}
       </div>
     );
   }
@@ -3063,7 +3068,9 @@ export function SetupPage() {
           <div className="min-w-0" key={companyVersion}>
             {isSettingsTab(selectedTab) && (visibleTabs.some(tab => tab.id === selectedTab)
               ? renderExistingSettings(selectedTab)
-              : <p role="status" data-testid="setup-section-no-access" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Your role does not have access')}</p>)}
+              : flags.status === 'loading' && isSetupModuleSectionId(selectedTab)
+                ? <p role="status" aria-busy="true" data-testid="setup-section-loading" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Loading…')}</p>
+                : <p role="status" data-testid="setup-section-no-access" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Your role does not have access')}</p>)}
           </div>
         </section>
       )}

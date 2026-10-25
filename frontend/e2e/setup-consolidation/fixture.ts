@@ -31,7 +31,7 @@ export type ApiMocks = Record<string, unknown | ((url: URL, method: string) => u
 
 const COMPANY = { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', countryCode: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' };
 
-export async function boot(page: Page, options: { persona?: Persona; url: string; mocks?: ApiMocks; disabledKeys?: string[] }) {
+export async function boot(page: Page, options: { persona?: Persona; url: string; mocks?: ApiMocks; disabledKeys?: string[]; flagsDelayMs?: number }) {
   const persona = options.persona ?? ADMIN;
   const errors: string[] = [];
   const writes: string[] = [];
@@ -54,7 +54,10 @@ export async function boot(page: Page, options: { persona?: Persona; url: string
       companies: [{ id: COMPANY.id, name: COMPANY.legalNameEn, code: COMPANY.id, countryCode: 'SA', isActive: true }],
     } });
     if (path === '/api/auth/mfa/status') return route.fulfill({ json: { promptToEnroll: false } });
-    if (path === '/api/features/disabled-keys') return route.fulfill({ json: options.disabledKeys ?? [] });
+    if (path === '/api/features/disabled-keys') {
+      if (options.flagsDelayMs) await new Promise(resolve => setTimeout(resolve, options.flagsDelayMs));
+      return route.fulfill({ json: options.disabledKeys ?? [] });
+    }
     if (path === '/api/companies') return route.fulfill({ json: { items: [COMPANY], total: 1, page: 1, pageSize: 100 } });
     if (path === '/api/tenant-admin/localization') return route.fulfill({ json: { countryCode: 'SA', currencyCode: 'SAR' } });
     if (path === '/api/dashboard/full') return route.fulfill({ status: 503, json: { message: 'Dashboard fixture unavailable' } });

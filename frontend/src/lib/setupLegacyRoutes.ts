@@ -75,6 +75,7 @@ export function legacySetupHref(pathname: string, params: URLSearchParams): stri
   if (!match) return null;
   const next = new URLSearchParams();
   next.set('tab', match.section);
-  params.forEach((value, key) => { if (key !== 'tab') next.append(key, value); });
+  // An impersonation request is honoured only on /login (middleware.ts); it never rides along into Setup.
+  params.forEach((value, key) => { if (key !== 'tab' && key !== 'impersonate') next.append(key, value); });
   return `/setup?${next.toString()}`;
 }
