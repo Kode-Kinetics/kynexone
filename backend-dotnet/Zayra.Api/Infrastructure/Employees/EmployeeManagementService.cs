@@ -1457,6 +1457,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     private async Task ApplyEmployee(Employee employee, EmployeeCreateRequest request, Guid tenantId, CancellationToken cancellationToken)
     {
+        var attributionBefore = Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.AttributionState.Of(employee);
         employee.EnglishName = Clean(request.EnglishName);
         employee.ArabicName = Clean(request.ArabicName);
         employee.FullName = employee.EnglishName;
@@ -1479,6 +1480,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.GradeId = request.GradeId;
         await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken);
         employee.PositionId = request.PositionId;
+        // AM-9: someone in a run awaiting finance review or lock cannot be moved to another cost centre until the run is reopened or locked.
+        await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
         employee.Branch = request.BranchId is null ? employee.Branch : await _db.Branches.Where(x => x.TenantId == tenantId && x.Id == request.BranchId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Branch;
         var department = request.DepartmentId is null ? null : await _db.Departments
             .Where(x => x.TenantId == tenantId && x.Id == request.DepartmentId && x.IsActive && !x.IsDeleted)

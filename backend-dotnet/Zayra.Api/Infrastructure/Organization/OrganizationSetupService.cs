@@ -351,6 +351,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         var companyId = await ResolveCompanyOnUpdateAsync(tenantId, department.CompanyId, request.CompanyId, cancellationToken);
         await EnsureDepartmentLinksAsync(tenantId, companyId, id, request, department.CostCenterId, cancellationToken);
         await EnsureDepartmentCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
+        if (request.ParentDepartmentId != department.ParentDepartmentId || request.CostCenterId != department.CostCenterId)
+            await new CostAttributionGuard(_db).EnsureDepartmentUnchangedAsync(tenantId, department.CompanyId, department.Id, request.ParentDepartmentId, request.CostCenterId, cancellationToken);
         var before = DepartmentSnapshot(department);
         department.CompanyId = companyId;
         Apply(department, request);
@@ -522,6 +524,10 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (classChanged && string.IsNullOrWhiteSpace(request.Reason)) throw CostCentreRuleException.ReasonRequired();
         var glSegment = NormalizeGlSegment(request.GlSegment, out var segmentGiven);
         if (segmentGiven && glSegment is not null && !CostCentreCode.IsValidGlSegment(glSegment)) throw CostCentreRuleException.GlSegmentInvalid();
+
+        // AM-9: a class or active-state change of a cost centre a pending run resolves to would change what that run posts.
+        if (classChanged || before.IsActive != request.IsActive)
+            await new CostAttributionGuard(_db).EnsureCostCentreUnchangedAsync(tenantId, costCenter.CompanyId, id, cancellationToken);
 
         // M-9: once a posted line carries the cost centre, its code and company are frozen (the line holds a snapshot of both).
         if ((codeChanged || companyChanged)

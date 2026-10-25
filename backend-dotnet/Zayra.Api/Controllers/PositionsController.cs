@@ -64,6 +64,7 @@ public class PositionsController : ControllerBase
             await _db.SaveChangesAsync(ct);
             return Created($"/api/positions/{position.Id}", position);
         }
+        catch (Zayra.Api.Application.Organization.CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -79,6 +80,8 @@ public class PositionsController : ControllerBase
             if (position is null) return NotFound();
             if (request.CostCenterId != position.CostCenterId && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
             await ValidateAsync(tenantId, request, position, ct);
+            if (request.CostCenterId != position.CostCenterId)
+                await new Zayra.Api.Infrastructure.Payroll.CostAttributionGuard(_db).EnsurePositionUnchangedAsync(tenantId, position.CompanyId, position.Id, request.CostCenterId, ct);
             var before = PositionSnapshot(position);
             Apply(position, request);
             position.UpdatedAtUtc = DateTime.UtcNow;
@@ -87,6 +90,7 @@ public class PositionsController : ControllerBase
             await _db.SaveChangesAsync(ct);
             return Ok(position);
         }
+        catch (Zayra.Api.Application.Organization.CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 

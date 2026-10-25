@@ -187,6 +187,16 @@ public class PlanningController : ControllerBase
         if (changedEnvelope && string.IsNullOrWhiteSpace(body.Reason))
             return BadRequest(new { message = "A reason is required when changing the approved headcount or monthly budget." });
 
+        if (body.CostCenterId is Guid newCc)
+        {
+            var target = newCc == Guid.Empty ? (Guid?)null : newCc;
+            if (target != dept.CostCenterId)
+            {
+                try { await new Zayra.Api.Infrastructure.Payroll.CostAttributionGuard(_db).EnsureDepartmentUnchangedAsync(tenantId, dept.CompanyId, dept.Id, dept.ParentDepartmentId, target, ct); }
+                catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+            }
+        }
+
         // The one cost-centre validator: the department's own company, active when the cost centre is new to this department.
         if (body.CostCenterId is Guid requestedCc && requestedCc != Guid.Empty)
         {

@@ -26,6 +26,14 @@ public sealed class CostCentreResolverSnapshot
         Positions = positions.ToDictionary(p => p.Id);
     }
 
+    /// <summary>A copy with one department replaced (what the snapshot would look like after that department is edited).</summary>
+    public CostCentreResolverSnapshot WithDepartment(ResolverDepartment department) =>
+        new(TenantId, CompanyId, DefaultCostCenterId, CostCentres.Values, Departments.Values.Where(d => d.Id != department.Id).Append(department), Positions.Values);
+
+    /// <summary>A copy with one position replaced.</summary>
+    public CostCentreResolverSnapshot WithPosition(ResolverPosition position) =>
+        new(TenantId, CompanyId, DefaultCostCenterId, CostCentres.Values, Departments.Values, Positions.Values.Where(p => p.Id != position.Id).Append(position));
+
     public Guid TenantId { get; }
     public Guid CompanyId { get; }
     public Guid? DefaultCostCenterId { get; }

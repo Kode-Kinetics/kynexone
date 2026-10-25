@@ -182,6 +182,7 @@ public static class EmployeeChangeApplier
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
         await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct);
         await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, ct, costCentre);
+        await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(db, tenantId, employee, attributionBefore, ct);
         await EmployeeOrgFieldResolver.StageAttributionAuditAsync(db, tenantId, employee, attributionBefore, actorUserId, ct);
         await EmployeeBankProfileSync.SyncAsync(db, employee, changes.Keys, ct);
         return unknown;

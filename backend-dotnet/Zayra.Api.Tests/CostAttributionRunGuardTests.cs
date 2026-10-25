@@ -213,9 +213,11 @@ public class CostAttributionRunGuardTests
         ex.Message.Should().Contain("awaiting finance review or lock").And.Contain("Reopen");
         ex.Message.Should().NotContain("send back", "SendBack only exists from PendingFinanceReview; the real paths are Reopen or Lock");
         ex.MessageAr.Should().NotBeNullOrWhiteSpace();
-        var body = JsonSerializer.Serialize(ex.ToPayload());
-        body.Should().NotContain(w.Run.Id.ToString()).And.NotContain("2026").And.NotContain("\"IN\"").And.NotContain(w.InRun.Id.ToString());
-        body.Should().NotContainEquivalentOf("period").And.NotContainEquivalentOf("total");
+        // Everything the caller is told: code, both messages and the counts. None of it can carry the run's id, period, totals or a person.
+        var disclosed = new[] { ex.Code, ex.Message, ex.MessageAr };
+        disclosed.Should().OnlyContain(t => !t.Contains(w.Run.Id.ToString()) && !t.Contains("2026") && !t.Contains("IN-") && !t.Contains("Dept One"));
+        ex.Counts.Should().BeNull();
+        ex.ToPayload().GetType().GetProperties().Select(p => p.Name).Should().BeEquivalentTo("error", "message", "messageAr", "counts");
     }
 }
 

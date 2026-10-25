@@ -221,6 +221,26 @@ public static class EmployeeOrgFieldResolver
         employee.CostCenter = code;
     }
 
+    /// <summary>
+    /// AM-9: after a change has been applied in memory (nothing saved), refuse it when the employee is in a run awaiting finance review or lock
+    /// and the change moves where they resolve to. The tracked employee is reloaded first, so a caller that saves afterwards writes nothing.
+    /// </summary>
+    public static async Task EnsureNotLockedIntoRunAsync(ZayraDbContext db, Guid tenantId, Employee employee, AttributionState before, CancellationToken ct)
+    {
+        if (employee.Id == 0 || before == AttributionState.Of(employee)) return;
+        try
+        {
+            await new CostAttributionGuard(db).EnsureEmployeeUnchangedAsync(tenantId, employee.CompanyId, employee.Id,
+                new ResolverEmployee(before.DepartmentId, before.PositionId, before.CostCenterId, before.IsOverride),
+                new ResolverEmployee(employee.DepartmentId, employee.PositionId, employee.CostCenterId, employee.CostCenterIsOverride), ct);
+        }
+        catch (CostCentreRuleException)
+        {
+            await db.Entry(employee).ReloadAsync(ct);
+            throw;
+        }
+    }
+
     /// <summary>The attribution inputs of an employee, captured before a change is applied.</summary>
     public sealed record AttributionState(Guid? DepartmentId, Guid? PositionId, Guid? CostCenterId, bool IsOverride)
     {
