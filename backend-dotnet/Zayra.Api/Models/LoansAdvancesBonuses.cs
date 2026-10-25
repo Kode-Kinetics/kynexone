@@ -551,5 +551,15 @@ public class FinanceGlEntry : ITenantOwned
     public string? ErpDocumentNumber { get; set; }
     public DateTime? ErpStatusChangedAtUtc { get; set; }
     public string? ErpRejectionReason { get; set; }
+    /// <summary>Cost-accounting M1: the cost centre on the Expense/Revenue side of this line (null = uncosted). Composite FK
+    /// (tenant_id, company_id, cost_center_id): same company only.</summary>
+    public Guid? CostCenterId { get; set; }
+    /// <summary>Cost-accounting M1: snapshots taken at post time, so history survives a rename (frozen, with the id).</summary>
+    public string? CostCenterCode { get; set; }
+    public string? CostCenterName { get; set; }
+    public string? CostCenterGlSegment { get; set; }
+    /// <summary>Cost-accounting M1: idempotency key, unique per tenant when set (a re-posted or twice-voided line fails at the
+    /// database). Null for writers that do not supply one and for all historical rows.</summary>
+    public string? PostingKey { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

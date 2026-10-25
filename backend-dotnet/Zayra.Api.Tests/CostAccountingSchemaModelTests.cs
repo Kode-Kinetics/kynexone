@@ -142,4 +142,23 @@ public sealed class CostAccountingSchemaModelTests
             .Where(fk => fk.PrincipalEntityType.GetTableName() == "cost_centers")
             .Should().BeEmpty();
     }
+
+    /// <summary>
+    /// CTO amendment AM-14 (segregation of duties): "who changed a mapping / class / the switch / the default cost centre /
+    /// an override / K for company C in period P" must be answerable from rows M1 relies on, with no new column. The audit row
+    /// carries actor, company, action, entity and time; the existing (tenant_id, company_id) index leads the lookup. ERP keys
+    /// a user created are answered by erp_api_keys. A guard: it fails if either table loses what the query needs.
+    /// </summary>
+    [Fact]
+    public void SegregationOfDutiesQuery_IsAnswerableFromAuditRows_AndErpApiKeys()
+    {
+        var model = DesignModel();
+        foreach (var column in new[] { "tenant_id", "company_id", "user_id", "action", "entity_name", "entity_id", "metadata", "created_at_utc" })
+            Column(model, "audit_logs", column).Should().NotBeNull($"audit_logs.{column}");
+        Entity(model, "audit_logs").GetIndexes()
+            .Should().Contain(i => i.Properties.Select(p => p.Name).Take(2).SequenceEqual(new[] { "TenantId", "CompanyId" }),
+                "the company-scoped lookup of audit rows is index-led");
+        foreach (var column in new[] { "tenant_id", "company_id", "created_by_user_id", "created_at_utc" })
+            Column(model, "erp_api_keys", column).Should().NotBeNull($"erp_api_keys.{column}");
+    }
 }

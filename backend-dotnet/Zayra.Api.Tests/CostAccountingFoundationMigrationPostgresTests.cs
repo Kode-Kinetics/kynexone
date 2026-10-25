@@ -136,7 +136,7 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
             indexes.Where(i => i.Contains($" ON public.{table} ")).Should().NotContain(i => i.Contains("cost_center_id"), $"{table}.cost_center_id is deliberately unindexed (v1-spec 1.6)");
 
         // ── Legacy rows survive; new writes are bound by what NOT VALID covers ─────────────────────────────────────
-        await Exec(container, "UPDATE departments SET name = 'renamed' WHERE id = '" + DeptDangling + "'");
+        await Exec(container, "UPDATE departments SET name_en = 'renamed' WHERE id = '" + DeptDangling + "'");
         var dangling = async () => await Exec(container, await Insert(container, "departments", Dept(Guid.NewGuid(), "D-NEW", Guid.NewGuid())));
         (await dangling.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(ForeignKeyViolation, "a new dangling cost centre id is refused even though the old one stays");
         var otherTenantRef = async () => await Exec(container, await Insert(container, "departments", Dept(Guid.NewGuid(), "D-XT", CcOtherTenant)));
@@ -191,7 +191,7 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
         await Expect(container, CheckViolation, await Insert(container, "finance_gl_entries", Entry(CompanyA, CcA1, null)), "id without its code snapshot");
         await Expect(container, CheckViolation, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, "CC1")), "code snapshot without an id");
         await Expect(container, UniqueViolation, await Insert(container, "finance_gl_entries", Entry(CompanyA, CcA1, "CC1", key: "k1")), "duplicate (tenant_id, posting_key)");
-        await Exec(container, await Insert(container, "finance_gl_entries", Entry(CompanyA, CcA1, "CC1", key: "k1", tenant: OtherTenant))); // another tenant may reuse a key
+        await Exec(container, await Insert(container, "finance_gl_entries", Entry(null, null, null, key: "k1", tenant: OtherTenant))); // another tenant may reuse a key
         await Exec(container, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null)));
         await Exec(container, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null))); // NULL keys never conflict
         await Expect(container, CheckViolation, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null, amount: "-1")));
@@ -285,10 +285,10 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
         await Exec(container, await Insert(container, "gl_accounts", new() { ["id"] = Q(account), ["tenant_id"] = Q(Tenant), ["code"] = "'5001'", ["name"] = "'Basic'", ["account_type"] = "'Expense'", ["is_active"] = "true" }));
         await Exec(container, await Insert(container, "gl_account_mappings", new() { ["tenant_id"] = Q(Tenant), ["company_id"] = "NULL", ["driver_key"] = "'EARN:BASIC'", ["account_id"] = Q(account), ["is_active"] = "true" }));
 
-        await Exec(container, await Insert(container, "payroll_runs", new() { ["tenant_id"] = Q(Tenant), ["company_id"] = Q(CompanyA) }));
+        await Exec(container, await Insert(container, "payroll_runs", new() { ["tenant_id"] = Q(Tenant), ["company_id"] = Q(CompanyA), ["status"] = "'Draft'" }));
         await Exec(container, await Insert(container, "payroll_earnings", new() { ["tenant_id"] = Q(Tenant) }));
         await Exec(container, await Insert(container, "payroll_deductions", new() { ["tenant_id"] = Q(Tenant) }));
-        await Exec(container, await Insert(container, "payroll_slips", new() { ["tenant_id"] = Q(Tenant) }));
+        await Exec(container, await Insert(container, "payroll_slips", new() { ["tenant_id"] = Q(Tenant), ["status"] = "'Draft'" }));
 
         // A legacy ledger row that would fail every NOT VALID check: it must survive the upgrade, and stay editable.
         await Exec(container, await Insert(container, "finance_gl_entries", new()
@@ -305,13 +305,15 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
 
     private static Dictionary<string, string> Dept(Guid id, string code, Guid? cc) => new()
     {
-        ["id"] = Q(id), ["tenant_id"] = Q(Tenant), ["company_id"] = Q(CompanyA), ["code"] = $"'{code}'", ["name"] = $"'{code}'",
+        ["id"] = Q(id), ["tenant_id"] = Q(Tenant), ["company_id"] = Q(CompanyA), ["code"] = $"'{code}'", ["name_en"] = $"'{code}'",
         ["cost_center_id"] = cc is null ? "NULL" : Q(cc.Value), ["is_deleted"] = "false",
     };
 
+    private static int _employeeIds;
+
     private static Dictionary<string, string> Emp(string code, Guid? dept, Guid? cc) => new()
     {
-        ["tenant_id"] = Q(Tenant), ["company_id"] = Q(CompanyA), ["employee_code"] = $"'{code}'", ["full_name"] = $"'{code}'",
+        ["id"] = (++_employeeIds).ToString(), ["tenant_id"] = Q(Tenant), ["company_id"] = Q(CompanyA), ["employee_code"] = $"'{code}'", ["full_name"] = $"'{code}'",
         ["department_id"] = dept is null ? "NULL" : Q(dept.Value), ["cost_center_id"] = cc is null ? "NULL" : Q(cc.Value),
         ["public_id"] = Q(Guid.NewGuid()),
     };

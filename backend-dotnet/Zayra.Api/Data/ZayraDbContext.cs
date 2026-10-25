@@ -5543,6 +5543,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         LearningModelConfiguration.Configure(modelBuilder);
         // SUC — succession and career development (same append-only convention).
         SuccessionModelConfiguration.Configure(modelBuilder);
+        // Cost-centre accounting M1 (columns, CHECKs, indexes; the cost-centre foreign keys are raw SQL in the migration).
+        CostAccountingModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

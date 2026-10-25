@@ -42,7 +42,7 @@ public sealed class CostAccountingSchemaDocsTests
             if (start < 0) { missing.Add($"{table}: no '{heading}' entry"); continue; }
             var end = text.IndexOf("\n### ", start + heading.Length, StringComparison.Ordinal);
             var block = end < 0 ? text[start..] : text[start..end];
-            missing.AddRange(columns.Where(c => !block.Contains($"`{c}`", StringComparison.Ordinal)).Select(c => $"{table}.{c}"));
+            missing.AddRange(columns.Where(c => !(block.Contains($"`{c}`", StringComparison.Ordinal) || block.Contains($"`{c} ", StringComparison.Ordinal))).Select(c => $"{table}.{c}"));
         }
         missing.Should().BeEmpty("every new cost-accounting column needs its data-dictionary line: " + string.Join(", ", missing));
     }
