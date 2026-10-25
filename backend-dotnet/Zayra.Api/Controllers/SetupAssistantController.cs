@@ -16,6 +16,7 @@ using Zayra.Api.Infrastructure.AI;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Leave;
@@ -336,6 +337,7 @@ public class SetupAssistantController : ControllerBase
             };
             gradePayComponents = [];
         }
+        var packageGrades = new HashSet<Grade>();
         foreach (var component in gradePayComponents)
         {
             if (!gradeByCode.TryGetValue(component.GradeCode.ToUpperInvariant(), out var grade)) continue;
@@ -360,6 +362,16 @@ public class SetupAssistantController : ControllerBase
             _db.GradePayScaleComponents.Add(payComponent);
             Audit("organization.grade_pay_component_created", nameof(GradePayScaleComponent), payComponent.Id, $"{grade.Code}/{component.ComponentCode}");
             Bump("gradePayComponents", 1);
+            packageGrades.Add(grade);
+        }
+        // The grade is where a pay package lives; its salary structure follows it (GradeSalaryStructureSync), in this save.
+        foreach (var grade in packageGrades)
+        {
+            var lines = (await _db.GradePayScaleComponents.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.GradeId == grade.Id && x.IsActive).ToListAsync(ct))
+                .Concat(_db.GradePayScaleComponents.Local.Where(x => x.GradeId == grade.Id && _db.Entry(x).State == EntityState.Added))
+                .ToList();
+            await GradeSalaryStructureSync.StageAsync(_db, grade, lines, GetUserId(), createIfMissing: true, ct);
         }
 
         // Cost centres are per company (owner decision 2026-10-23): codes are matched within the reviewed company.

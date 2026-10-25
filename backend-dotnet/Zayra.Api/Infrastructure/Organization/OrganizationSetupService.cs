@@ -9,6 +9,7 @@ using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
@@ -446,6 +447,11 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (string.IsNullOrWhiteSpace(request.Currency)) grade.Currency = previousCurrency;
         grade.UpdatedAtUtc = DateTime.UtcNow;
         grade.UpdatedBy = context.UserId;
+        // The grade's salary structure is derived from the grade: a renamed grade, a new pay range or currency follows
+        // into it in the same save. Only an existing structure is kept in step; the package editor creates it.
+        var packageLines = await _db.GradePayScaleComponents.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.GradeId == grade.Id && c.IsActive).ToListAsync(cancellationToken);
+        await GradeSalaryStructureSync.StageAsync(_db, grade, packageLines, context.UserId, createIfMissing: false, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("organization.grade_updated", nameof(Grade), grade.Id.ToString(), context, null, cancellationToken);
         return grade.ToDto();

@@ -189,6 +189,14 @@ public static class PayComponentCalcMethods
     public const string StructureField = "StructureField";
     public const string Integration = "Integration";
     public const string Statutory = "Statutory";
+    /// <summary>
+    /// A grade pay-package line definition: the catalogue holds its identity (code, name, type, taxable) and the AMOUNT is
+    /// set per grade in Setup → Grades. The engine never pays this row itself (it has no amount to pay and is not a
+    /// configured-value method): the grade's figure reaches payroll through the employee's salary columns, exactly like
+    /// every other grade line. Written only by the grade editor (<c>GradePackageCatalog</c>); the payroll component API
+    /// refuses to create or edit one.
+    /// </summary>
+    public const string GradePackage = "GradePackage";
 }
 
 public static class PayComponentProviders
