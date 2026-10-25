@@ -14,7 +14,9 @@ namespace Zayra.Api.Infrastructure.Licensing;
 /// </summary>
 public sealed class LicenceRefreshWorker : BackgroundService
 {
-    public static readonly TimeSpan Interval = TimeSpan.FromMinutes(15);
+    // One indexed read of the active licence a minute: a licence imported from the command line (install, the e2e
+    // setup) is in force within a minute, without a restart.
+    public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
     public const string PathConfigKey = "Licence:Path";
 
     private readonly ILicenceService _licence;

@@ -5,10 +5,10 @@ using Npgsql;
 namespace Zayra.Api.Infrastructure.Operations;
 
 /// <summary>
-/// Which database this API is connected to — its NAME and HOST only — for platform operators.
+/// Which database this API is connected to — its NAME and HOST only — for the organisation's administrators.
 /// </summary>
 /// <remarks>
-/// Surfaced on the authenticated <c>GET /api/platform/health</c> (platform Owner/Admin/Support/Auditor),
+/// Surfaced on the authenticated <c>GET /health/ready/details</c> (<c>security.manage</c>),
 /// never on the public health endpoints, and never with a port, user, password or any other part of
 /// the connection string. The e2e preflight (<c>frontend/e2e/preflight</c>) reads it to refuse a run
 /// whose API is attached to a production database (<c>kynexone_clean</c>, <c>neondb</c>, a Neon or

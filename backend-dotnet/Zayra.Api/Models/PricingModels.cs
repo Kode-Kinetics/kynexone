@@ -1,22 +1,7 @@
 namespace Zayra.Api.Models;
 
-// ── Module keys for pricing (superset of FeatureKeys) ─────────────────────────
-
-public static class PricingModuleKeys
-{
-    public const string CoreHr            = "core_hr";
-    public const string LeaveAttendance   = "leave_attendance";
-    public const string Payroll           = "payroll";
-    public const string Performance       = "performance";
-    public const string Recruitment       = "recruitment";
-    public const string Documents         = "documents";
-    public const string Compliance        = "compliance";
-    public const string KsaCompliance     = "ksa_compliance";
-    public const string AiAssistant       = "ai_assistant";
-    public const string AdvancedAnalytics = "advanced_analytics";
-    public const string MobileApp         = "mobile_app";
-    public const string SsoMfa            = "sso_mfa";
-}
+// Retired with the SaaS platform: these tables stay mapped (unused) until the database restructure (WP5)
+// drops them, so no release drops a table in the change that stops using it. See OrphanEntityRatchetTests.
 
 // ── Platform-wide pricing parameters (one row per key) ────────────────────────
 
@@ -74,12 +59,4 @@ public class PricingQuote
     public Guid? ConvertedToTenantId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
-}
-
-public static class QuoteStatuses
-{
-    public const string New       = "New";
-    public const string Contacted = "Contacted";
-    public const string Converted = "Converted";
-    public const string Lost      = "Lost";
 }

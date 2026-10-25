@@ -19,6 +19,7 @@ export interface LicenceView {
   optInFeatures: string[];
   countries: string[] | null;
   version: string;
+  organisationCreatedAtUtc: string | null;
 }
 
 export interface LicenceImportResult {

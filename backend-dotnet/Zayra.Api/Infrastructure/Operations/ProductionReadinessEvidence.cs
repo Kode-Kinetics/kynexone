@@ -53,7 +53,8 @@ public static class ProductionReadinessEvidence
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
             pendingMigrations,
-            queues);
+            queues,
+            includeDetail ? DatabaseIdentity.Describe(db.Database) : null);
     }
 
     /// <summary>Pure status rule: ready iff the DB is reachable AND no migrations are pending.</summary>
@@ -403,14 +404,17 @@ public sealed record ReadinessEvidence(
     int Tenants,
     int ActiveTenants,
     int PendingMigrations,
-    QueueHealthEvidence Queues);
+    QueueHealthEvidence Queues,
+    // The database this process is connected to (name and host, never credentials). Details only: the
+    // e2e preflight uses it to prove it is about to write into a disposable database.
+    DatabaseIdentity.Identity? Database = null);
 
 /// <summary>
 /// The ONLY body the anonymous <c>/health/ready</c> returns. Render's health check reads the status
 /// code; CI and the e2e preflight read <c>status</c> and <c>pendingMigrations</c>. Everything else in
 /// <see cref="ReadinessEvidence"/> — tenant counts, worker names, SMTP and Qiwa modes, queue depths —
-/// told an anonymous caller how many customers we have and how outbound mail is wired, so it moved
-/// behind the PlatformAdmin policy at <c>/health/ready/details</c>.
+/// told an anonymous caller how the installation is wired, so it is at <c>/health/ready/details</c> for the
+/// organisation's administrators (<c>security.manage</c>) only.
 /// </summary>
 public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations)
 {

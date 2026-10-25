@@ -36,11 +36,10 @@ public static class ModuleKeys
 
     // ── Keys introduced with the module catalog ─────────────────────────────────
     //
-    // "core_hr", "leave_attendance" and "documents" reuse the spellings already in
-    // PricingModuleKeys so the commercial catalogue and the runtime catalogue agree.
-    public const string CoreHr          = PricingModuleKeys.CoreHr;          // "core_hr"
-    public const string LeaveAttendance = PricingModuleKeys.LeaveAttendance; // "leave_attendance"
-    public const string Documents       = PricingModuleKeys.Documents;       // "documents"
+    // "core_hr", "leave_attendance" and "documents" keep the spellings stored module rows already use.
+    public const string CoreHr          = "core_hr";
+    public const string LeaveAttendance = "leave_attendance";
+    public const string Documents       = "documents";
 
     public const string AccessControl = "access_control";
     public const string Audit         = "audit";

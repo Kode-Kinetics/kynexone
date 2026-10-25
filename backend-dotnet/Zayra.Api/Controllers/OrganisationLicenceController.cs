@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
@@ -66,6 +67,10 @@ public sealed class OrganisationLicenceController : ControllerBase
             optInFeatures = p?.OptInFeatures ?? [],
             countries = p?.Countries,
             version = Zayra.Api.Infrastructure.Operations.BuildInfo.Version,
+            // When the organisation was set up: the e2e preflight uses it to notice a database re-provisioned
+            // after its world was verified.
+            organisationCreatedAtUtc = await _db.Tenants.AsNoTracking().OrderBy(t => t.CreatedAtUtc)
+                .Select(t => (DateTime?)t.CreatedAtUtc).FirstOrDefaultAsync(ct),
         });
     }
 

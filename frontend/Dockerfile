@@ -40,6 +40,9 @@ ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 # so the e2e preflight can refuse a stale image. docker compose forwards BUILD_COMMIT.
 ARG BUILD_COMMIT=
 ENV BUILD_COMMIT=${BUILD_COMMIT}
+# The release's semantic version (MAJOR.MINOR.PATCH), also served at /build-info.
+ARG VERSION=0.0.0-dev
+ENV BUILD_VERSION=${VERSION}
 # No retry loop: the six typefaces are vendored in app/fonts (next/font/local), so the build does
 # not reach the public internet. A failure here is a real failure.
 RUN npm run build && mkdir -p public
