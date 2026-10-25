@@ -321,7 +321,7 @@ test('saving an account sends its cost centre rule, and the server\'s refusal sh
 test('adding an account carries the chosen rule, defaulting to Optional', async ({ page }) => {
   const state = await boot(page, { groupMode: true });
   await expect(tid(page, 'cc-acct-form-rule')).toHaveValue('Optional');
-  await page.getByLabel('Code', { exact: true }).first().fill('5099');
+  await page.getByPlaceholder('5006').fill('5099');
   await page.getByPlaceholder('Account name').fill('Transport');
   await tid(page, 'cc-acct-form-rule').selectOption('Required');
   await page.getByRole('button', { name: 'Add account', exact: true }).click();
@@ -380,13 +380,12 @@ test('M-7: the preset is refused while a run awaits lock, and the server\'s sent
   await expect(tid(page, 'cc-acct-preset-open')).toBeDisabled();
 });
 
-test('costing off for a company: the rules note says they apply once it is on, and links to Cost accounting', async ({ page }) => {
+test('costing off for a company: the rules note says they apply once it is on', async ({ page }) => {
   await boot(page, { groupMode: true });
   // Group scope has no single switch to point at.
   await expect(tid(page, 'cc-acct-costing-off-note')).toHaveCount(0);
   await page.getByLabel('Configuration scope').selectOption('co-sa');
   await expect(tid(page, 'cc-acct-costing-off-note')).toContainText('Cost accounting is off for this company. These rules apply once you turn it on.');
-  await expect(tid(page, 'cc-acct-costing-off-note').getByRole('button', { name: 'Open Cost accounting', exact: true })).toBeVisible();
 });
 
 test('costing on: no "off" note', async ({ page }) => {
@@ -399,7 +398,7 @@ test('Arabic: RTL, the rule badges and explainer are translated, and a refusal s
   const state = await boot(page, { groupMode: true, locale: 'ar' });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   await expect(tid(page, 'cc-acct-explainer')).toContainText('نوع الحساب يحدد طبيعة المبلغ');
-  await expect(tid(page, 'cc-acct-rule-5001')).toHaveText('إلزامي');
+  await expect(tid(page, 'cc-acct-rule-5001')).toHaveText('مطلوب');
   await expect(tid(page, 'cc-acct-rule-2100')).toHaveText('غير مسموح');
   await shot(page, info, 'cc-ar-accounts-rule');
   state.ctl.presetRefusal = { status: 409, body: lockedBody };

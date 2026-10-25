@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AlertTriangle, BarChart2, ShieldCheck, BookOpen, Building2, Calculator,
@@ -45,6 +45,7 @@ import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
+import { LoadError, serverMessage } from '../components/gl/glUi';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
@@ -3187,18 +3188,27 @@ function EOSBTab() {
 // ── GL Journal Tab ──────────────────────────────────────────────────────────────
 
 function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
+  const t = useT();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
   const [loading, setLoading] = useState(false);
+  // A failed read is shown with a Retry, never swallowed: an empty run list or journal would read as "nothing to post".
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [journalError, setJournalError] = useState<string | null>(null);
 
-  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
+  const loadRuns = useCallback(() => {
+    setRunsError(null);
+    payrollApi.listAllRuns().then(setRuns).catch((e: unknown) => setRunsError(serverMessage(e, t)));
+  }, [t]);
+  useEffect(() => { loadRuns(); }, [loadRuns]);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {
     if (!runId) return;
     setLoading(true);
-    payrollApi.glJournal(runId).then(j => setJournal(j)).catch(() => {}).finally(() => setLoading(false));
+    setJournalError(null);
+    payrollApi.glJournal(runId).then(j => setJournal(j)).catch((e: unknown) => { setJournal(null); setJournalError(serverMessage(e, t)); }).finally(() => setLoading(false));
   };
 
   const debits  = journal?.entries.filter(e => e.entryType === 'DR') ?? [];
@@ -3222,6 +3232,8 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
           <BookOpen className="h-4 w-4" /> {loading ? 'Loading…' : 'Generate Journal'}
         </button>
       </div>
+      {runsError && <LoadError message={runsError} onRetry={loadRuns} />}
+      {journalError && <LoadError message={journalError} onRetry={() => void load()} />}
 
       {journal && (
         <div className="space-y-4">

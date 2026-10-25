@@ -4,6 +4,7 @@ import { cloneElement, isValidElement, useCallback, useEffect, useId, useRef, us
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import { describeApiError } from '../../lib/apiError';
+import { pickServerMessage } from '../../lib/glCostAccounting';
 import { Modal } from '../Modal';
 
 // Small presentational helpers shared across the GL / rates configuration panels.
@@ -81,14 +82,21 @@ export function Badge({
   tone = 'slate',
   children,
   title,
+  testId,
+  label,
 }: {
   tone?: Tone;
   children: ReactNode;
   title?: string;
+  testId?: string;
+  /** A full accessible name for a badge whose text alone is not enough ("Cost centre rule: Required"). */
+  label?: string;
 }) {
   return (
     <span
       title={title}
+      data-testid={testId}
+      {...(label ? { role: 'img' as const, 'aria-label': label } : {})}
       className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClass[tone]}`}
     >
       {children}
@@ -342,10 +350,17 @@ export function useScopedResource<T>(key: string, fetcher: () => Promise<T>, ena
   };
 }
 
-/** The server's own refusal sentence (shown verbatim), else a translated description. */
-export function serverMessage(err: unknown, t: Translator): string {
-  const msg = (err as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
-  return typeof msg === 'string' && msg.trim() ? msg.trim() : describeApiError(err, t);
+/** The page's language, set on <html> by the locale provider; handlers that have no hook read it from here. */
+function pageLocale(): string {
+  return typeof document === 'undefined' ? 'en' : document.documentElement.lang || 'en';
+}
+
+/**
+ * The server's own refusal sentence (shown verbatim) in the viewer's language (`messageAr` for Arabic, `message`
+ * otherwise), else a translated description.
+ */
+export function serverMessage(err: unknown, t: Translator, locale: string = pageLocale()): string {
+  return pickServerMessage((err as { response?: { data?: unknown } })?.response?.data, locale) ?? describeApiError(err, t);
 }
 
 export function errorStatus(err: unknown): number | undefined {

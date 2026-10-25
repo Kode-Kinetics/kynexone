@@ -24,6 +24,8 @@ export interface GlAccount {
   isActive: boolean;
   /** The account code in the client's ERP, when it differs from `code`. Journal exports send it. */
   externalCode?: string | null;
+  /** Required | Optional | NotAllowed. Absent on a server that predates cost accounting (reads as Optional). */
+  costCenterRule?: string;
 }
 
 export interface GlAccountRequest {
@@ -33,6 +35,17 @@ export interface GlAccountRequest {
   isActive: boolean;
   /** Create: optional. Update: omitted/null leaves it unchanged, '' clears it. */
   externalCode?: string | null;
+  /** Required | Optional | NotAllowed. Create: omitted = Optional. Update: omitted leaves it unchanged. */
+  costCenterRule?: string;
+}
+
+/** POST /accounts/cost-centre-rule-preset: the recommended rule per account type, counted before it is applied. */
+export interface GlRulePresetResult {
+  dryRun: boolean;
+  /** Accounts in the scope whose rule differs from the recommended one. */
+  changed: number;
+  total: number;
+  byType: { accountType: string; to: string; count: number }[];
 }
 
 export interface GlMappingRow {
@@ -163,6 +176,58 @@ export interface GlSeedResult {
   rateDefinitions: number;
 }
 
+// ── Cost accounting: readiness and the per-company switch ───────────────────
+export type ReadinessSeverity = 'ok' | 'warning' | 'blocker';
+
+/** One capped example under a readiness check: an id and a code, plus the AM-1 detail for employees. */
+export interface ReadinessSample {
+  id: string | number;
+  code: string;
+  /** invalid-reference only: department | position | employee | company. */
+  kind?: string;
+  employeeId?: number;
+  employeeCode?: string;
+  /** employee | position | department | parentDepartment | company */
+  level?: string;
+  departmentId?: string | null;
+  positionId?: string | null;
+  parentDepartmentId?: string | null;
+  reason?: string;
+}
+
+export interface ReadinessCheck {
+  key: string;
+  severity: ReadinessSeverity | string;
+  count: number;
+  /** Capped (employees 10, the rest 25); `count` is the true total. */
+  sample: ReadinessSample[];
+}
+
+export interface CostAccountingSettings {
+  enabled: boolean;
+  defaultCostCenterId: string | null;
+  smallCellMin: number;
+  /** A payroll run of the company awaits finance review or lock (M-7): the switch and default cannot move. */
+  awaitingRun: boolean;
+}
+
+export interface CostAccountingReadiness {
+  companyId: string;
+  settings: CostAccountingSettings;
+  checks: ReadinessCheck[];
+  smallCellExposure: { count: number; threshold: number };
+}
+
+/** PUT /cost-accounting: a field left out stays as it is. Every change needs a reason. */
+export interface CostAccountingChange {
+  enabled?: boolean;
+  defaultCostCenterId?: string | null;
+  clearDefaultCostCenter?: boolean;
+  reason: string;
+  /** Turning ON with readiness blockers or small-cell exposure is refused without this. */
+  acknowledgeBlockers?: boolean;
+}
+
 export const financeGlApi = {
   // ── Chart of accounts ──────────────────────────────────────────────────────
   listAccounts: (companyId?: string | null) =>
@@ -174,6 +239,22 @@ export const financeGlApi = {
       .put<GlAccount>(`/api/finance/gl/accounts/${id}`, data, { params: opts?.force ? { force: true } : undefined })
       .then((r) => r.data),
   deleteAccount: (id: string) => client.delete(`/api/finance/gl/accounts/${id}`),
+  /** GET /cost-accounting/readiness: the company's switch settings and the dry-run checks (needs finance.gl.read). */
+  costAccountingReadiness: (companyId: string) =>
+    client.get<CostAccountingReadiness>('/api/finance/gl/cost-accounting/readiness', { params: { companyId } }).then((r) => r.data),
+  /** PUT /cost-accounting (needs finance.gl.manage). */
+  setCostAccounting: (companyId: string, change: CostAccountingChange) =>
+    client.put<{ companyId: string; changed: string[]; settings: CostAccountingSettings }>('/api/finance/gl/cost-accounting', change, { params: { companyId } }).then((r) => r.data),
+  /** Dry run: counts what "Apply recommended rules" would change and writes nothing. */
+  previewRulePreset: (companyId?: string | null) =>
+    client
+      .post<GlRulePresetResult>('/api/finance/gl/accounts/cost-centre-rule-preset', {}, { params: { ...(scoped(companyId) ?? {}), dryRun: true } })
+      .then((r) => r.data),
+  /** Applies the recommended rules to the scope's accounts. Needs a reason; refused (409) while a run awaits lock. */
+  applyRulePreset: (reason: string, companyId?: string | null) =>
+    client
+      .post<GlRulePresetResult>('/api/finance/gl/accounts/cost-centre-rule-preset', { reason }, { params: { ...(scoped(companyId) ?? {}), dryRun: false } })
+      .then((r) => r.data),
 
   // ── Driver → account mappings ──────────────────────────────────────────────
   listMappings: (companyId?: string | null) =>

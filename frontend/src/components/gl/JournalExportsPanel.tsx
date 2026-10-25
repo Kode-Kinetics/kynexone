@@ -126,7 +126,11 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
     try {
       saveJournalFile(await financeErpApi.download(row.id, row.fileName));
     } catch (err) {
-      setRefusal(refusalOf(err, t('The file could not be downloaded.')));
+      // The file comes back as a blob, so a refusal carries no sentence to read. 403 is the read-only finance user (AM-21).
+      const status = (err as { response?: { status?: number } } | null)?.response?.status;
+      setRefusal(status === 403
+        ? { message: t('Your access lets you see totals and balances, but not download the file.'), byCompany: [] }
+        : refusalOf(err, t('The file could not be downloaded.')));
     }
   };
 
@@ -230,6 +234,12 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
           </p>
           <CompanyTable rows={manifest.byCompany} currency={currencyOf(manifest)} />
           {manifest.warnings.map(w => <p key={w} className="text-xs text-amber-700 dark:text-amber-300">{w}</p>)}
+          {/* AM-21: a read-only finance user gets no example lines; say so instead of showing nothing. */}
+          {manifest.sample === null && (
+            <p data-testid="journal-export-lines-hidden" className="text-xs text-slate-500 dark:text-slate-400">
+              {t('Line detail is shown to people who can download the file. You can see totals and balances.')}
+            </p>
+          )}
           {manifest.exportId && (
             <button type="button" className="btn-secondary text-xs" onClick={() => download({ id: manifest.exportId!, fileName: manifest.fileName })}>
               {t('Download file')}
