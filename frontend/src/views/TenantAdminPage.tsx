@@ -60,6 +60,8 @@ interface SubscriptionUsage {
   featureFlags: Record<string, boolean>;
 }
 
+type MfaPolicy = 'Optional' | 'PrivilegedRoles' | 'Everyone';
+
 interface SecuritySettings {
   passwordMinLength: number;
   passwordRequireUppercase: boolean;
@@ -71,8 +73,12 @@ interface SecuritySettings {
   sessionMaxHours?: number;
   maxFailedLoginAttempts: number;
   lockoutDurationMinutes: number;
-  /** Two-step sign-in for everyone, on top of the people who can see or change payroll, banking or access. */
+  /** Legacy flag, equal to mfaPolicy === 'Everyone'. Still sent so an older API keeps working. */
   mfaRequired?: boolean;
+  /** The company two-step policy. Absent from an older API: derived from mfaRequired. */
+  mfaPolicy?: MfaPolicy;
+  /** Why the company lets each person choose; required by the API when moving to 'Optional'. */
+  mfaPolicyReason?: string;
   /** How long a trusted browser skips the code: 0 (off) to 90 days; 30 by default. */
   mfaTrustedDeviceDays?: number;
 }
@@ -165,15 +171,34 @@ function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onCha
 
 /**
  * Two-step sign-in in the Security Settings form: who must use it, and how long a trusted browser
- * skips the code. Writes `mfaRequired` and `mfaTrustedDeviceDays` of PUT /api/access/security-settings
- * with the rest of the form. People who can see or change payroll, banking or access always need it
- * (the server's privileged-role rule), so that line is a fact, not a switch.
+ * skips the code. Writes `mfaPolicy` (+ `mfaPolicyReason` when moving to "Each person chooses"), the legacy
+ * `mfaRequired` and `mfaTrustedDeviceDays` of PUT /api/access/security-settings with the rest of the form.
  */
 function TwoStepPolicyGroup({ security, onChange }: {
   security: SecuritySettings;
   onChange: (patch: Partial<SecuritySettings>) => void;
 }) {
   const { t } = useLocale();
+  const policy: MfaPolicy = security.mfaPolicy ?? (security.mfaRequired ? 'Everyone' : 'PrivilegedRoles');
+  // What was saved when the form opened: a reason is only asked for when moving AWAY from it to "Each person chooses".
+  const [originalPolicy] = useState<MfaPolicy>(policy);
+  const policyOptions: { value: MfaPolicy; title: string; hint: string }[] = [
+    {
+      value: 'Optional',
+      title: t('Each person chooses'),
+      hint: t('Nobody is forced to use two-step sign-in, including people with payroll, banking or access rights. Each person turns it on or off on their own page.'),
+    },
+    {
+      value: 'PrivilegedRoles',
+      title: t('Required for people who can see or change payroll, banking or access'),
+      hint: t('Everyone else chooses for themselves.'),
+    },
+    {
+      value: 'Everyone',
+      title: t('Required for everyone'),
+      hint: t('Every person in the company must use it.'),
+    },
+  ];
   const days = Number.isInteger(security.mfaTrustedDeviceDays) ? (security.mfaTrustedDeviceDays as number) : DEFAULT_TRUST_DAYS;
   const choices: number[] = (TRUST_DAY_CHOICES as readonly number[]).includes(days) ? [...TRUST_DAY_CHOICES] : [...TRUST_DAY_CHOICES, days].sort((a, b) => a - b);
   const label = (d: number) => {
@@ -188,22 +213,42 @@ function TwoStepPolicyGroup({ security, onChange }: {
     <section className="space-y-4" aria-labelledby="sec-two-step-heading" data-testid="two-step-policy">
       <h3 id="sec-two-step-heading" className="text-sm font-semibold text-gray-700 border-b border-gray-100 pb-2">{t('Two-step sign-in')}</h3>
 
-      <fieldset className="space-y-3">
+      <fieldset className="space-y-2" data-testid="two-step-policy-choice">
         <legend className="text-xs font-medium text-gray-700 mb-1 rtl:text-[13px]">{t('Who must use two-step sign-in')}</legend>
-        <div className="flex items-start justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5" data-testid="two-step-always">
-          <p className="text-sm text-gray-700">{t('People who can see or change payroll, banking or access')}</p>
-          <span className="shrink-0 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700 rtl:text-[13px]">{t('Always required')}</span>
-        </div>
-        <div className="flex items-start gap-3 px-1">
-          <Toggle id="sec-mfa-everyone" checked={security.mfaRequired === true}
-            onChange={(v) => onChange({ mfaRequired: v })} />
-          <div className="min-w-0">
-            <label htmlFor="sec-mfa-everyone" className="text-sm text-gray-700 cursor-pointer">{t('Also require it for everyone else')}</label>
-            <p id="sec-mfa-everyone-hint" className="mt-0.5 text-xs leading-5 text-gray-500 rtl:text-[13px]">
-              {t("When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.")}
+        {policyOptions.map((opt) => (
+          <label key={opt.value} htmlFor={`sec-mfa-policy-${opt.value}`}
+            className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${policy === opt.value ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-200'}`}>
+            <input id={`sec-mfa-policy-${opt.value}`} type="radio" name="sec-mfa-policy" value={opt.value}
+              checked={policy === opt.value}
+              onChange={() => onChange({ mfaPolicy: opt.value, mfaRequired: opt.value === 'Everyone' })}
+              className="mt-1 h-4 w-4 shrink-0 accent-indigo-600" />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-gray-800">{opt.title}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-gray-500 rtl:text-[13px]">{opt.hint}</span>
+            </span>
+          </label>
+        ))}
+        {policy === 'Optional' && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 space-y-2" data-testid="two-step-optional-note">
+            <p role="note" className="text-sm text-amber-900">
+              {t('Recommended only while testing. A customer going live should require it at least for payroll, banking and access.')}
             </p>
+            {originalPolicy !== 'Optional' && (
+              <div>
+                <label htmlFor="sec-mfa-policy-reason" className="block text-xs font-medium text-amber-900 mb-1 rtl:text-[13px]">{t('Reason (required)')}</label>
+                <textarea id="sec-mfa-policy-reason" rows={2} maxLength={500} required
+                  value={security.mfaPolicyReason ?? ''}
+                  onChange={(e) => onChange({ mfaPolicyReason: e.target.value })}
+                  className="w-full border border-amber-200 rounded-lg px-3 py-2 text-sm bg-white" />
+              </div>
+            )}
           </div>
-        </div>
+        )}
+        {policy === 'Everyone' && originalPolicy !== 'Everyone' && (
+          <p id="sec-mfa-everyone-hint" className="px-1 text-xs leading-5 text-gray-500 rtl:text-[13px]">
+            {t("When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.")}
+          </p>
+        )}
       </fieldset>
 
       <div className="max-w-xs">
@@ -491,6 +536,8 @@ export default function TenantAdminPage() {
       const code = (err as { response?: { data?: { code?: unknown } } } | null)?.response?.data?.code;
       setSecurityError(code === 'ERR_SESSION_MAX_HOURS_RANGE'
         ? t('Maximum session length must be between 1 and 168 hours.')
+        : code === 'ERR_MFA_POLICY_REASON'
+        ? t('Give a reason for letting each person choose two-step sign-in.')
         : 'Failed to save security settings. Please try again.');
     } finally {
       setSecuritySaving(false);

@@ -528,7 +528,7 @@ public sealed class MfaTrustedDeviceTests
         await using (var db = kit.NewDb())
         {
             var controller = SignedIn(kit, db, who.UserId, kit.TenantId, cookie);
-            (await controller.Disable(new MfaDisableRequest(Totp.ForStep(who.Secret, step + 1)), CancellationToken.None))
+            (await controller.Disable(new MfaSelfDisableRequest(Totp.ForStep(who.Secret, step + 1)), CancellationToken.None))
                 .Should().BeOfType<NoContentResult>();
             TrustCookieHeader(controller.Response).Should().NotBeNull().And.Contain("expires=Thu, 01 Jan 1970");
         }
@@ -627,7 +627,7 @@ public sealed class MfaTrustedDeviceTests
     private static async Task<IActionResult> DisableAsync(AuthHardeningTestKit kit, Guid userId, string code)
     {
         await using var db = kit.NewDb();
-        return await SignedIn(kit, db, userId, kit.TenantId).Disable(new MfaDisableRequest(code), CancellationToken.None);
+        return await SignedIn(kit, db, userId, kit.TenantId).Disable(new MfaSelfDisableRequest(code), CancellationToken.None);
     }
 
     private static void ShouldBeCoded(IActionResult result, int status, string code)

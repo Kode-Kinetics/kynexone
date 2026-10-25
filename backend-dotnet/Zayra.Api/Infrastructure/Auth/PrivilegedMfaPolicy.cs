@@ -380,6 +380,8 @@ public static class PrivilegedMfaPolicy
         ZayraDbContext db, IConfiguration? config, User user, SecuritySetting? policy, DateTime nowUtc, CancellationToken ct)
     {
         if (IsDisabledForTesting(config)) return new(PrivilegedMfaStatus.NotRequired, null, false);
+        // "Each person chooses": nobody is forced, privileged roles included. No challenge, no enforcement, no refresh block.
+        if (MfaPolicies.For(policy) == MfaPolicies.Optional) return new(PrivilegedMfaStatus.NotRequired, null, false);
         var required = await IsPrivilegedTenantUserAsync(db, user, ct);
         if (!required) return new(PrivilegedMfaStatus.NotRequired, null, false);
         var enforceFrom = policy?.PrivilegedMfaEnforceFromUtc ?? await LoadPlatformEnforceFromAsync(db, ct);

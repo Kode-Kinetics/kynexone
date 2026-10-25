@@ -309,36 +309,59 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
     await expect(page.getByTestId('two-step-policy')).toBeVisible();
   }
 
-  test('saves mfaRequired and mfaTrustedDeviceDays with the rest of the form', async ({ page }, info) => {
+  test('saves the company policy and mfaTrustedDeviceDays with the rest of the form', async ({ page }, info) => {
     const api = await mockApi(page);
     await openSecurity(page);
     const group = page.getByTestId('two-step-policy');
     await expect(group.getByRole('heading', { name: 'Two-step sign-in' })).toBeVisible();
-    // A fact, not a switch: privileged roles always need it.
-    await expect(group.getByTestId('two-step-always')).toHaveText(/People who can see or change payroll, banking or access\s*Always required/);
-    await expect(group.getByTestId('two-step-always').getByRole('switch')).toHaveCount(0);
-    const everyone = group.getByRole('switch', { name: 'Also require it for everyone else' });
-    await expect(everyone).toHaveAttribute('aria-checked', 'false');
+    // Three options, one-line explanations; the default (no stored policy, mfaRequired false) is the privileged-roles rule.
+    const optional = group.getByRole('radio', { name: /Each person chooses/ });
+    const privileged = group.getByRole('radio', { name: /Required for people who can see or change payroll, banking or access/ });
+    const everyone = group.getByRole('radio', { name: /Required for everyone/ });
+    await expect(group.getByRole('radio')).toHaveCount(3);
+    await expect(privileged).toBeChecked();
+    await expect(group.getByTestId('two-step-optional-note')).toHaveCount(0);
     const days = group.getByLabel('Trusted browsers');
     await expect(days).toHaveValue('30');
     await expect(days.locator('option')).toHaveText(['Off', '7 days', '14 days', '30 days (default)', '90 days']);
-    await expect(group.getByText('Shorter is safer. Shortening it also shortens browsers already trusted.')).toBeVisible();
     await shot(page, 'tenant-admin-two-step-en', info.outputPath.bind(info));
 
-    await everyone.click();
-    await expect(everyone).toHaveAttribute('aria-checked', 'true');
+    await everyone.check();
     await days.selectOption('14');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect.poll(() => api.calls.find((c) => c.method === 'PUT' && c.path === '/api/access/security-settings')?.body)
-      .toMatchObject({ mfaRequired: true, mfaTrustedDeviceDays: 14 });
+      .toMatchObject({ mfaPolicy: 'Everyone', mfaRequired: true, mfaTrustedDeviceDays: 14 });
 
-    // Off is 0 days, and turning the company rule off again is sent as false.
-    await everyone.click();
+    await privileged.check();
     await days.selectOption('0');
     await page.getByRole('button', { name: 'Save Settings' }).click();
     await expect.poll(() => api.calls.filter((c) => c.method === 'PUT' && c.path === '/api/access/security-settings').at(-1)?.body)
-      .toMatchObject({ mfaRequired: false, mfaTrustedDeviceDays: 0 });
+      .toMatchObject({ mfaPolicy: 'PrivilegedRoles', mfaRequired: false, mfaTrustedDeviceDays: 0 });
+
+    // "Each person chooses": the amber go-live warning and a required reason, sent with the policy.
+    await optional.check();
+    const note = group.getByTestId('two-step-optional-note');
+    await expect(note).toContainText('Recommended only while testing. A customer going live should require it at least for payroll, banking and access.');
+    await group.getByLabel('Reason (required)').fill('Pilot with test data only');
+    await shot(page, 'tenant-admin-two-step-optional-en', info.outputPath.bind(info));
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => api.calls.filter((c) => c.method === 'PUT' && c.path === '/api/access/security-settings').at(-1)?.body)
+      .toMatchObject({ mfaPolicy: 'Optional', mfaRequired: false, mfaPolicyReason: 'Pilot with test data only' });
     expect(api.errors).toEqual([]);
+  });
+
+  test('a refused reason is explained; a company already on "Each person chooses" is not asked again', async ({ page }) => {
+    await mockApi(page, {
+      security: { mfaPolicy: 'Optional' },
+      securityPut: [{ status: 400, body: { code: 'ERR_MFA_POLICY_REASON', message: 'x' } }],
+    });
+    await openSecurity(page);
+    const group = page.getByTestId('two-step-policy');
+    await expect(group.getByRole('radio', { name: /Each person chooses/ })).toBeChecked();
+    await expect(group.getByTestId('two-step-optional-note')).toBeVisible();
+    await expect(group.getByLabel('Reason (required)')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect(page.getByText('Give a reason for letting each person choose two-step sign-in.')).toBeVisible();
   });
 
   test('the special-character rule is read from and saved to the field the API uses', async ({ page }) => {
@@ -356,14 +379,14 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
   });
 
   test('a stored lifetime outside the choices is shown, not silently changed', async ({ page }) => {
-    const api = await mockApi(page, { security: { mfaTrustedDeviceDays: 45, mfaRequired: true } });
+    const api = await mockApi(page, { security: { mfaTrustedDeviceDays: 45, mfaRequired: true, mfaPolicy: 'Everyone' } });
     await openSecurity(page);
     const days = page.getByTestId('two-step-policy').getByLabel('Trusted browsers');
     await expect(days).toHaveValue('45');
     await expect(days.locator('option:checked')).toHaveText('45 days (current)');
-    await expect(page.getByRole('switch', { name: 'Also require it for everyone else' })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByRole('radio', { name: /Required for everyone/ })).toBeChecked();
     await page.getByRole('button', { name: 'Save Settings' }).click();
-    await expect.poll(() => api.calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ mfaRequired: true, mfaTrustedDeviceDays: 45 });
+    await expect.poll(() => api.calls.find((c) => c.method === 'PUT')?.body).toMatchObject({ mfaPolicy: 'Everyone', mfaRequired: true, mfaTrustedDeviceDays: 45 });
   });
 
   test('Arabic: the group is Arabic, with no capitals or tracking', async ({ page }, info) => {
@@ -372,8 +395,9 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
     await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
     const group = page.getByTestId('two-step-policy');
     await expect(group.getByRole('heading', { name: 'التحقق بخطوتين' })).toBeVisible();
-    await expect(group.getByTestId('two-step-always')).toContainText('مطلوب دائمًا');
-    await expect(group.getByRole('switch', { name: 'طلبه أيضًا من جميع الآخرين' })).toBeVisible();
+    await expect(group.getByRole('radio')).toHaveCount(3);
+    await expect(group.getByRole('radio', { name: /كل شخص يختار بنفسه/ })).toBeVisible();
+    await expect(group.getByRole('radio', { name: /مطلوب من الجميع/ })).toBeVisible();
     await expect(group.getByLabel('المتصفحات الموثوقة').locator('option')).toHaveText(['متوقف', '7 أيام', '14 يومًا', '30 يومًا (الافتراضي)', '90 يومًا']);
     await expect(group.getByText('المدة الأقصر أكثر أمانًا. وتقصيرها يُقصّر أيضًا مدة المتصفحات الموثوقة حاليًا.')).toBeVisible();
     await expect(group).not.toContainText('الثنائي');

@@ -168,10 +168,20 @@ Object.assign(ar, {
 
   // Tenant Admin → Security: the company's two-step sign-in policy.
   "Who must use two-step sign-in": "من يجب عليه استخدام التحقق بخطوتين",
-  "People who can see or change payroll, banking or access":
-    "من يستطيعون الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها",
-  "Always required": "مطلوب دائمًا",
-  "Also require it for everyone else": "طلبه أيضًا من جميع الآخرين",
+  "Your company lets each person choose whether to use two-step sign-in.":
+    "تتيح شركتك لكل شخص أن يختار استخدام التحقق بخطوتين أو عدم استخدامه.",
+  "Each person chooses": "كل شخص يختار بنفسه",
+  "Nobody is forced to use two-step sign-in, including people with payroll, banking or access rights. Each person turns it on or off on their own page.":
+    "لا يُجبَر أحد على استخدام التحقق بخطوتين، حتى من لديهم صلاحيات الرواتب أو البيانات المصرفية أو الوصول. يفعّله كل شخص أو يوقفه من صفحته.",
+  "Required for people who can see or change payroll, banking or access":
+    "مطلوب لمن يستطيعون الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها",
+  "Everyone else chooses for themselves.": "ويختار الباقون بأنفسهم.",
+  "Required for everyone": "مطلوب من الجميع",
+  "Every person in the company must use it.": "على كل شخص في الشركة استخدامه.",
+  "Recommended only while testing. A customer going live should require it at least for payroll, banking and access.":
+    "يُنصح به أثناء الاختبار فقط. على العميل عند الإطلاق الفعلي أن يطلبه على الأقل لمن يتعاملون مع الرواتب والبيانات المصرفية والوصول.",
+  "Reason (required)": "السبب (مطلوب)",
+  "Give a reason for letting each person choose two-step sign-in.": "اذكر سببًا لترك الخيار لكل شخص في استخدام التحقق بخطوتين.",
   "When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.":
     "عند تفعيل هذا الخيار والحفظ، يُسجَّل خروج كل من لم يُعدّه بعد، وسيُعدّه عند تسجيل الدخول التالي.",
   "7 days": "7 أيام",

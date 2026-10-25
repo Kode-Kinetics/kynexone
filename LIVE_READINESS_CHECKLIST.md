@@ -52,6 +52,7 @@ negative cross-tenant test) should be closed before unsupervised production at s
 ## Known issues / pre-production hardening (priority order)
 
 - **Go-live blocker:** `Auth__Mfa__DisabledForTesting` must be unset before the first customer goes live (it switches tenant two-step sign-in off; see docs/MFA_ENFORCEMENT.md). `/health/ready/details` (platform admins only) shows `mfaDisabledForTesting: true` while it is on.
+- **Go-live blocker:** the company two-step policy (Tenant Admin → Security → Two-step sign-in, `security_settings.mfa_policy`) must not be **"Each person chooses"** (`Optional`) for a live customer. Use at least "Required for people who can see or change payroll, banking or access" (the default). Choosing it is audited as a warning (`security.mfa_policy_relaxed`, with a reason); check `SELECT tenant_id FROM security_settings WHERE mfa_policy = 'Optional'` before each go-live.
 
 | # | Item | Severity | Owner action |
 |---|------|----------|--------------|

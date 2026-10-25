@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, CheckCircle2, Info, Loader2, Monitor, RefreshCw, ShieldAlert, ShieldCheck, Smartphone, Tablet, type LucideIcon } from 'lucide-react';
-import { authApi, MFA_ERRORS, type MfaStatus, type TrustedDevice } from '@/src/api/auth';
+import { authApi, MFA_ERRORS, normalizeBackupCode, type MfaStatus, type TrustedDevice } from '@/src/api/auth';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { useFormat } from '@/src/hooks/useFormat';
@@ -33,6 +33,8 @@ type Panel = 'none' | 'setup' | 'disable' | 'regenerate' | 'codes';
 
 /** At this many unused backup codes or fewer, the card suggests getting new ones. */
 const FEW_BACKUP_CODES = 3;
+/** What a printed backup code looks like (XXXXX-XXXXX), shown in the empty field. */
+const BACKUP_CODE_PLACEHOLDER = 'XXXXX-XXXXX';
 
 const ROLE_REQUIRES = 'Required for your role, because you can see or change payroll, banking or access.';
 const WORKSPACE_REQUIRES = 'Required by your company for everyone.';
@@ -271,6 +273,13 @@ export function SignInSecurityCard() {
         )}
 
         {notice && <InlineNotice notice={notice} />}
+
+        {/* "Each person chooses": a fact about the company, shown so the buttons below make sense. */}
+        {status.policy === 'Optional' && !requiredBy && (
+          <p className="mt-4 text-sm leading-6 text-slate-600 dark:text-slate-400" data-testid="two-step-optional-note">
+            {t('Your company lets each person choose whether to use two-step sign-in.')}
+          </p>
+        )}
 
         {/* A fact about the account, not a warning: neutral, with the shield in the brand colour. */}
         {requiredBy && (!on || !canDisable) && (
@@ -551,17 +560,21 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
   const { t } = useLocale();
   const id = useId();
   const [code, setCode] = useState('');
+  const [backup, setBackup] = useState('');
+  /** The proof: the 6-digit app code, or (switched by a link) one unused backup code. */
+  const [kind, setKind] = useState<'app' | 'backup'>('app');
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const headingRef = useFocusOnMount<HTMLHeadingElement>();
+  const ready = kind === 'app' ? code.length === 6 : normalizeBackupCode(backup).length === 10;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (code.length !== 6 || !confirmed || busy) return;
+    if (!ready || !confirmed || busy) return;
     setBusy(true); setError('');
     try {
-      await authApi.mfaDisable(code);
+      await authApi.mfaDisable(kind === 'app' ? code : backup, kind);
       onDone();
     } catch (err) {
       const s = statusOf(err);
@@ -570,9 +583,10 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
       if (c === MFA_ERRORS.requiredByWorkspace) { onRequired('workspace'); return; }
       if (c === MFA_ERRORS.notEnabled) { onAlreadyOff(); return; }
       if (isNetwork(err)) setError(t('Cannot reach the server. Check your connection and try again.'));
+      else if (kind === 'backup' && (c === MFA_ERRORS.codeInvalid || s === 400)) setError(t("That backup code didn't work. Check it, or use another one. Each code works once."));
       else if (c === MFA_ERRORS.codeInvalid || s === 400) setError(t("That code didn't match. Enter the newest code from your authenticator app. Each code works only once."));
       else setError(t('Two-step sign-in could not be turned off. Try again in a moment.'));
-      setCode('');
+      setCode(''); setBackup('');
     } finally {
       setBusy(false);
     }
@@ -581,8 +595,27 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
   return (
     <form onSubmit={submit} noValidate className="mt-5 space-y-4 border-t border-slate-100 pt-5 dark:border-white/[0.07]" data-testid="two-step-disable">
       <h3 ref={headingRef} tabIndex={-1} className={`text-sm font-semibold text-slate-900 dark:text-white ${focusHeading}`} data-testid="two-step-disable-heading">{t('Turn off two-step sign-in')}</h3>
-      <CodeField id={`${id}-code`} label={t('Current 6-digit code from your authenticator app')} value={code}
-        onChange={(v) => { setCode(v); setError(''); }} error={error} />
+      {kind === 'app' ? (
+        <CodeField id={`${id}-code`} label={t('Current 6-digit code from your authenticator app')} value={code}
+          onChange={(v) => { setCode(v); setError(''); }} error={error} />
+      ) : (
+        <div className="space-y-1.5">
+          <label htmlFor={`${id}-backup`} className="block text-sm font-semibold text-slate-800 dark:text-slate-200">{t('Backup code')}</label>
+          <p id={`${id}-backup-hint`} className="text-xs text-slate-500 dark:text-slate-400">
+            {t('Enter one of the backup codes you saved when you turned on two-step sign-in.')}
+          </p>
+          <input id={`${id}-backup`} type="text" inputMode="text" maxLength={16} dir="ltr" value={backup}
+            onChange={(e) => { setBackup(e.target.value); setError(''); }} placeholder={BACKUP_CODE_PLACEHOLDER}
+            autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false}
+            aria-invalid={error ? true : undefined} aria-describedby={`${id}-backup-hint${error ? ` ${id}-backup-error` : ''}`}
+            className={codeInput} data-testid="two-step-disable-backup" />
+          {error && <p id={`${id}-backup-error`} role="alert" className="text-sm font-medium text-rose-700 dark:text-rose-300">{error}</p>}
+        </div>
+      )}
+      <button type="button" className="text-sm font-medium text-blue-700 underline-offset-2 hover:underline dark:text-blue-300"
+        onClick={() => { setKind(kind === 'app' ? 'backup' : 'app'); setError(''); setCode(''); setBackup(''); }} data-testid="two-step-disable-switch">
+        {kind === 'app' ? t('Use a backup code instead') : t('Use the app code instead')}
+      </button>
       <div className="flex items-start gap-2.5">
         <input id={`${id}-confirm`} type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)}
           className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#0d1225]" />
@@ -594,7 +627,7 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
         {t('Turning it off signs you out everywhere else, and you may need to sign in again here.')}
       </p>
       <div className="flex flex-wrap gap-3">
-        <button type="submit" className={dangerBtn} disabled={busy || code.length !== 6 || !confirmed} aria-busy={busy}>
+        <button type="submit" className={dangerBtn} disabled={busy || !ready || !confirmed} aria-busy={busy}>
           {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
           {busy ? t('Turning off…') : t('Turn off')}
         </button>
