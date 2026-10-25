@@ -71,6 +71,10 @@ export function legacySetupHref(pathname: string, params: URLSearchParams): stri
   const routes = SETUP_LEGACY_ROUTES.filter(route => route.path === path);
   if (routes.length === 0) return null;
   const tab = params.get('tab');
+  // /leave?companyId= with nothing else is the old company-readiness link to that company's leave policies; the page
+  // itself, narrowed by company, is reached with another parameter (the Setup area breadcrumb adds `setupArea`).
+  if (path === '/leave' && tab === null && params.get('companyId') && [...params.keys()].every(key => key === 'companyId'))
+    return `/setup?${new URLSearchParams({ tab: 'leavePolicies', companyId: params.get('companyId')! }).toString()}`;
   const match = routes.find(route => tab !== null && route.tab === tab) ?? routes.find(route => route.tab === undefined);
   if (!match) return null;
   const next = new URLSearchParams();

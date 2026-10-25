@@ -2283,7 +2283,8 @@ export function LeavePage() {
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [companyId, setCompanyId] = useState('');
   const [branchId, setBranchId] = useState('');
-  // `/leave?companyId={id}` narrows the page to that company. Leave types, policies and holidays are in Setup now
+  // `/leave?companyId={id}` plus another parameter narrows the page to that company; on its own it is the old readiness link and
+  // middleware sends it to Setup. Leave types, policies and holidays are in Setup now
   // (`/setup?tab=leavePolicies&companyId={id}`); middleware sends the old `?tab=` addresses there.
   useEffect(() => {
     const linked = new URLSearchParams(window.location.search).get('companyId');

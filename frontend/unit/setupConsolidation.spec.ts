@@ -191,7 +191,9 @@ test('old_addresses_lead_to_their_setup_section', () => {
     ['/saudi-compliance', 'tab=configure&section=qiwa', '/setup?tab=saudiCompliance&section=qiwa'],
     // Daily work stays where it is.
     ['/leave', '', null],
-    ['/leave', 'companyId=c1', null],
+    // /leave?companyId= alone is the old company-readiness link to the leave policies (CompanySetupReadiness), so it leads there.
+    ['/leave', 'companyId=c1', '/setup?tab=leavePolicies&companyId=c1'],
+    ['/leave', 'companyId=c1&setupArea=leave', null],
     ['/loans', 'tab=loans', null],
     ['/benefits', '', null],
     ['/shifts', '', null],
@@ -219,7 +221,11 @@ test('the_edge_redirect_runs_on_every_old_address', () => {
   expect(sameOrigin.headers.get('location')).toBe('https://kynexone.example/setup?tab=users&search=a%26b&next=https%3A%2F%2Fevil.example');
   const pathTrick = middleware(new NextRequest('https://kynexone.example/tenant-admin?tab=//evil.example'));
   expect(new URL(pathTrick.headers.get('location')!).host).toBe('kynexone.example');
-  const kept = middleware(new NextRequest('https://app.example/leave?companyId=c1'));
+  // The old readiness link (/leave?companyId=) now leads to that company's leave policies in Setup; a Leave link that
+  // carries anything else (the Setup area breadcrumb's, a tab) is the operational page.
+  const readiness = middleware(new NextRequest('https://app.example/leave?companyId=c1'));
+  expect(readiness.headers.get('location')).toBe('https://app.example/setup?tab=leavePolicies&companyId=c1');
+  const kept = middleware(new NextRequest('https://app.example/leave?companyId=c1&setupArea=leave'));
   expect(kept.headers.get('location')).toBeNull();
 });
 
