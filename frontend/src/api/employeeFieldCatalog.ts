@@ -76,6 +76,12 @@ export interface EmployeeComplianceField {
   /** Local identity-document format hint from the country pack (advisory validation only). */
   pattern?: string;
   patternHint?: string;
+  /**
+   * Issued by the authority only AFTER the person is hired / arrives in this jurisdiction (KSA: Iqama,
+   * GOSI, Qiwa contract, Muqeem, sponsor, work permit, visa file). The create form groups these under
+   * "Issued after joining — add when available" and never marks them with an asterisk.
+   */
+  issuedAfterHire?: boolean;
 }
 
 // ── Shared option constants — ONE source for both the create and edit selects ───────────────────
@@ -218,11 +224,16 @@ const COUNTRY_COMPLIANCE_PROFILES: Record<string, EmployeeComplianceField[]> = {
   SA: [
     ...COMMON_COMPLIANCE_FIELDS,
     { fieldKey: 'id_number', fieldLabel: 'National ID (Hawiyya)', entityKey: 'idNumber' },
-    { fieldKey: 'iqama_number', fieldLabel: 'Iqama (residence permit)', entityKey: 'iqamaNumber', expiryEntityKey: 'iqamaExpiryDate' },
-    { fieldKey: 'muqeem_reference', fieldLabel: 'Muqeem Reference', entityKey: 'muqeemNumber' },
-    { fieldKey: 'gosi_reference', fieldLabel: 'GOSI Reference', entityKey: 'gosiReference' },
-    { fieldKey: 'qiwa_contract_reference', fieldLabel: 'Qiwa Contract Number', entityKey: 'qiwaContractNumber' },
-    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber' },
+    // Border Number: issued at first entry on a work visa, before the Iqama — a new arrival works on it.
+    { fieldKey: 'border_number', fieldLabel: 'Border number', entityKey: 'borderNumber' },
+    { fieldKey: 'iqama_number', fieldLabel: 'Iqama (residence permit)', entityKey: 'iqamaNumber', expiryEntityKey: 'iqamaExpiryDate', issuedAfterHire: true },
+    { fieldKey: 'muqeem_reference', fieldLabel: 'Muqeem Reference', entityKey: 'muqeemNumber', issuedAfterHire: true },
+    { fieldKey: 'gosi_reference', fieldLabel: 'GOSI Reference', entityKey: 'gosiReference', issuedAfterHire: true },
+    { fieldKey: 'qiwa_contract_reference', fieldLabel: 'Qiwa Contract Number', entityKey: 'qiwaContractNumber', issuedAfterHire: true },
+    { fieldKey: 'work_permit', fieldLabel: 'Work Permit Number', entityKey: 'workPermitNumber', issuedAfterHire: true },
+    { fieldKey: 'visa_number', fieldLabel: 'Visa number', entityKey: 'visaNumber', expiryEntityKey: 'visaExpiryDate', issuedAfterHire: true },
+    { fieldKey: 'visa_file_number', fieldLabel: 'Visa file number', entityKey: 'visaFileNumber', issuedAfterHire: true },
+    { fieldKey: 'sponsor', fieldLabel: 'Sponsor name', entityKey: 'sponsorName', issuedAfterHire: true },
   ],
   AE: [
     ...COMMON_COMPLIANCE_FIELDS,
@@ -296,7 +307,8 @@ export function complianceRecordsForCountry(
       issueDate: current?.issueDate,
       expiryDate: current?.expiryDate,
       isSensitive: true,
-      isRequired: Boolean(field.required),
+      // An issued-after-hire document is never "required" on the create form, whatever its later gate.
+      isRequired: Boolean(field.required) && !field.issuedAfterHire,
     };
   });
 }
@@ -390,6 +402,8 @@ export interface RemoteFieldDescriptor {
   /** Identity-document format from the country pack (advisory validation / input hint only). */
   pattern?: string | null;
   patternHint?: string | null;
+  /** Issued only after hire/arrival in the resolved jurisdiction (UX grouping only; never a gate). */
+  issuedAfterHire?: boolean | null;
 }
 
 export interface FieldCatalogQuery {
@@ -473,6 +487,7 @@ function toComplianceField(d: RemoteFieldDescriptor): EmployeeComplianceField {
     gate: d.gate ?? undefined,
     pattern: d.pattern ?? undefined,
     patternHint: d.patternHint ?? undefined,
+    issuedAfterHire: d.issuedAfterHire ?? false,
   };
 }
 

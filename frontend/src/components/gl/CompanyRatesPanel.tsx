@@ -486,17 +486,28 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
                   : undefined
               }
             >
-              <input
-                type={selectedDef?.dataType === 'decimal' ? 'number' : 'text'}
-                step="any"
-                inputMode="decimal"
-                min={selectedDef?.minValue ?? undefined}
-                max={selectedDef?.maxValue ?? undefined}
-                value={draft.rateValue}
-                onChange={(e) => setDraft((d) => ({ ...d, rateValue: e.target.value }))}
-                className="input w-full"
-                placeholder="0"
-              />
+              {selectedDef?.allowedValues && selectedDef.allowedValues.length > 0 ? (
+                <select
+                  value={draft.rateValue}
+                  onChange={(e) => setDraft((d) => ({ ...d, rateValue: e.target.value }))}
+                  className="select w-full"
+                >
+                  <option value="">{t('Choose a value…')}</option>
+                  {selectedDef.allowedValues.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              ) : (
+                <input
+                  type={selectedDef?.dataType === 'decimal' ? 'number' : 'text'}
+                  step="any"
+                  inputMode="decimal"
+                  min={selectedDef?.minValue ?? undefined}
+                  max={selectedDef?.maxValue ?? undefined}
+                  value={draft.rateValue}
+                  onChange={(e) => setDraft((d) => ({ ...d, rateValue: e.target.value }))}
+                  className="input w-full"
+                  placeholder="0"
+                />
+              )}
             </Field>
             <Field label={t('Category')}>
               <input value={rateCategoryLabel(t, selectedDef?.rateCategory ?? '')} readOnly className="input w-full opacity-70" />

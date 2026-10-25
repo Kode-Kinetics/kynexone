@@ -1573,6 +1573,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                   .HasDatabaseName("ix_employees_dup_id_number").HasFilter("id_number <> ''");
             entity.HasIndex(x => new { x.TenantId, x.IqamaNumber })
                   .HasDatabaseName("ix_employees_dup_iqama").HasFilter("iqama_number <> ''");
+            // Serves EmployeeDuplicateDetector's STRONG point-lookup on the KSA Border Number (the pre-Iqama ID).
+            entity.HasIndex(x => new { x.TenantId, x.BorderNumber })
+                  .HasDatabaseName("ix_employees_dup_border_number").HasFilter("border_number <> ''");
             entity.HasIndex(x => new { x.TenantId, x.EmiratesId })
                   .HasDatabaseName("ix_employees_dup_emirates_id").HasFilter("emirates_id <> ''");
             entity.HasIndex(x => new { x.TenantId, x.Qid })

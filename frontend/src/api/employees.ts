@@ -356,6 +356,8 @@ export interface EmployeeEntity {
   visaFileNumber: string;
   iqamaNumber: string;
   iqamaExpiryDate?: string;
+  /** KSA Border Number (pre-Iqama ID). Sensitive — empty when masked; absent from older APIs. */
+  borderNumber?: string;
   muqeemNumber: string;
   gosiReference: string;
   /** F02 — the GOSI first-registration date (YYYY-MM-DD). Null when unknown, or when masked. */

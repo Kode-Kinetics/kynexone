@@ -20,6 +20,7 @@ public static class EmployeeSafeSnapshot
     {
         nameof(Employee.BankIban), nameof(Employee.WpsBankDetails),
         nameof(Employee.PassportNumber), nameof(Employee.VisaNumber), nameof(Employee.IqamaNumber),
+        nameof(Employee.BorderNumber),
         nameof(Employee.MuqeemNumber), nameof(Employee.GosiReference), nameof(Employee.QiwaContractNumber),
         nameof(Employee.EmiratesId), nameof(Employee.LaborCardNumber), nameof(Employee.VisaFileNumber),
         nameof(Employee.Qid), nameof(Employee.WorkPermitNumber), nameof(Employee.CivilId),

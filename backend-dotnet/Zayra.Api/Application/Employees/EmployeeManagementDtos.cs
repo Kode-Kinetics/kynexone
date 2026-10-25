@@ -221,6 +221,8 @@ public record EmployeeDetailDto
     public string VisaNumber { get; init; } = string.Empty;
     public string VisaFileNumber { get; init; } = string.Empty;
     public string IqamaNumber { get; init; } = string.Empty;
+    /// <summary>KSA Border Number (pre-Iqama ID). SENSITIVE — empty when masked.</summary>
+    public string BorderNumber { get; init; } = string.Empty;
     public string MuqeemNumber { get; init; } = string.Empty;
     public string GosiReference { get; init; } = string.Empty;
     /// <summary>F02 — the GOSI first-registration date (sensitive; null when unknown or masked).</summary>
@@ -339,6 +341,7 @@ public record EmployeeDetailDto
             WpsBankDetails                = includeSensitive ? e.WpsBankDetails : string.Empty,
             PassportNumber                = includeSensitive ? e.PassportNumber : string.Empty,
             IqamaNumber                   = includeSensitive ? e.IqamaNumber : string.Empty,
+            BorderNumber                  = includeSensitive ? e.BorderNumber : string.Empty,
             MedicalInformation            = includeSensitive ? e.MedicalInformation : string.Empty,
             DisciplinaryRecords           = includeSensitive ? e.DisciplinaryRecords : string.Empty,
             TerminationReason             = includeSensitive ? e.TerminationReason : string.Empty,
@@ -442,6 +445,7 @@ public record EssEmployeeProfileDto
     public DateOnly? VisaExpiryDate { get; init; }
     public string IqamaNumber { get; init; } = string.Empty;
     public DateOnly? IqamaExpiryDate { get; init; }
+    public string BorderNumber { get; init; } = string.Empty;
     public string EmiratesId { get; init; } = string.Empty;
     public DateOnly? EmiratesIdExpiryDate { get; init; }
     public string Qid { get; init; } = string.Empty;
@@ -493,6 +497,7 @@ public record EssEmployeeProfileDto
         VisaExpiryDate           = e.VisaExpiryDate,
         IqamaNumber              = e.IqamaNumber,
         IqamaExpiryDate          = e.IqamaExpiryDate,
+        BorderNumber             = e.BorderNumber,
         EmiratesId               = e.EmiratesId,
         EmiratesIdExpiryDate     = e.EmiratesIdExpiryDate,
         Qid                      = e.Qid,
@@ -559,6 +564,7 @@ public record EmployeeDraftDto
     public string VisaNumber { get; init; } = string.Empty;
     public string VisaFileNumber { get; init; } = string.Empty;
     public string IqamaNumber { get; init; } = string.Empty;
+    public string BorderNumber { get; init; } = string.Empty;
     public string MuqeemNumber { get; init; } = string.Empty;
     public string GosiReference { get; init; } = string.Empty;
     public string QiwaContractNumber { get; init; } = string.Empty;
@@ -621,6 +627,7 @@ public record EmployeeDraftDto
         VisaNumber               = includeSensitive ? d.VisaNumber : string.Empty,
         VisaFileNumber           = includeSensitive ? d.VisaFileNumber : string.Empty,
         IqamaNumber              = includeSensitive ? d.IqamaNumber : string.Empty,
+        BorderNumber             = includeSensitive ? d.BorderNumber : string.Empty,
         MuqeemNumber             = includeSensitive ? d.MuqeemNumber : string.Empty,
         GosiReference            = includeSensitive ? d.GosiReference : string.Empty,
         QiwaContractNumber       = includeSensitive ? d.QiwaContractNumber : string.Empty,
@@ -728,6 +735,7 @@ public static class EmployeeDocumentSensitivity
         "Passport", "Passport Number", "passport_number", "Passport expiry", "PassportExpiryDate",
         "National ID", "National Identity", "National ID (Hawiyya)", "id_number",
         "Iqama", "Iqama (residence permit)", "Iqama (residence permit) no.", "iqama_number",
+        "Border number", "Border Number", "border_number",
         "Residence permit", "Residence permit number", "Residency permit",
         "Visa", "Visa number", "Residence visa number", "visa_number", "Visa expiry", "VisaExpiryDate",
         "Visa file", "Visa File Number", "visa_file_number",

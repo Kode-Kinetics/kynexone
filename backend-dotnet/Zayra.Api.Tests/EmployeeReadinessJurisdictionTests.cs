@@ -61,8 +61,12 @@ public class EmployeeReadinessJurisdictionTests
 
         policy.Items.Should().NotContain(i => i.Key == "EmiratesId",
             "an Emirates ID is a UAE identity card — the UAE tenant-default profile must not reach a Saudi employee");
-        policy.Items.Should().NotContain(i => i.Key == "WorkPermitNumber",
+        // KSA now requires its OWN work permit — before payroll, never to activate (owner, 2026-10-24). What must
+        // not reach a Saudi employee is the UAE profile's MOHRE permit as an ACTIVATION blocker.
+        policy.Items.Should().NotContain(i => i.Key == "WorkPermitNumber" && i.Gate == "activate",
             "a MOHRE work permit is UAE work authorization");
+        policy.Items.Should().ContainSingle(i => i.Key == "WorkPermitNumber")
+            .Which.Source.Should().Be("floor", "the only work-permit requirement is the KSA floor's pay-stage one");
         policy.Items.Should().NotContain(i => i.Key == "Qid" || i.Key == "CivilId",
             "Qatari/Kuwaiti/Omani/Bahraini identity cards belong to their own jurisdictions");
     }

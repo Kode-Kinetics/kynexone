@@ -1,4 +1,5 @@
 using Zayra.Api.Application.CountryPack;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll;
@@ -107,6 +108,13 @@ public static class StatutoryRateGuard
         // Under payparameter.* (not eosb.*) on purpose: it is an ACCOUNTING policy choice, not the
         // statutory award, so it belongs on Surface A. Default Off; the effective date of the
         // StatutoryMonthly row is when provisioning starts.
+        // ── KSA Border Number (Employees/BorderNumberRule.cs) ─────────────────────────────────────
+        // The default window is the dated statutory row ksa.border_number_grace_days (90); these are the
+        // per-company overrides. Both are READ by readiness and by the Saudi wage / bank file.
+        Def(tenantId, BorderNumberRule.GraceDaysRateKey,        "PayParameter", "decimal", "days", BorderNumberRule.MinGraceDays, BorderNumberRule.MaxGraceDays,
+            "Days after joining that a new arrival's Border Number counts in place of the Iqama before first payroll (0 = Iqama needed from the first payroll)"),
+        Def(tenantId, BorderNumberRule.UseAsWageFileIdRateKey,  "PayParameter", "string",  "enum", null, null,
+            "Use the Border Number as the employee ID in the Saudi wage file until the Iqama is issued: On (default) | Off (such an employee is held from the file)"),
         Def(tenantId, EosbProvisioningRateKeys.Mode,             "PayParameter", "string",  "enum",  null, null, "Monthly end-of-service provision at payroll Lock: Off (default) | StatutoryMonthly"),
     };
 
@@ -129,6 +137,8 @@ public static class StatutoryRateGuard
         ProrationRateKeys.ProratedComponents,
         // POD-C2 — read by PayrollController.BuildEosbProvisionAsync at every Lock.
         EosbProvisioningRateKeys.Mode,
+        BorderNumberRule.GraceDaysRateKey,
+        BorderNumberRule.UseAsWageFileIdRateKey,
     };
 
     /// <summary>True only for a client-rate key some payroll calculation reads (see <see cref="PayrollAppliedKeys"/>).

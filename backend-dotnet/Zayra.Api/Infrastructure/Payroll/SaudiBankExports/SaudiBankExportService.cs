@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
@@ -461,6 +462,9 @@ public sealed class SaudiBankExportService
 
         var rows = new List<AnbPaymentInput>();
         var ksaRows = new List<KsaWageFileRow>();
+        // KSA: border-number employees inside the company's window (measured at the period END) with no Iqama yet.
+        var borderIds = await BorderNumberRule.ResolveWageFileIdsAsync(
+            _db, tenantId, employees, BorderNumberRule.PeriodEnd(run.Year, run.Month), ct);
         foreach (var rec in records.OrderBy(r => r.EmployeeId))
         {
             // A zero-amount record (a batch built before zero-net payslips were left out) has nothing to
@@ -521,6 +525,18 @@ public sealed class SaudiBankExportService
                 }
                 .Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.Ordinal).ToList();
             if (idCandidates.Count > 1) Err("employee_id_conflict", "national ID/Iqama differs between identity fields.", "employeeId");
+            if (idCandidates.Count == 0 && borderIds.TryGetValue(emp.Id, out var borderId))
+            {
+                if (borderId.Allowed)
+                {
+                    idCandidates.Add(borderId.BorderNumber);
+                    warnings.Add(new(BorderNumberRule.BorderNumberUsedAsIdCode,
+                        $"{label}: no Iqama yet; the Border Number is written as the employee ID."));
+                }
+                else
+                    Err(BorderNumberRule.BorderNumberNotAllowedAsIdCode,
+                        "no Iqama yet, and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates.", "employeeId");
+            }
 
             ksaRows.Add(new KsaWageFileRow(
                 rec.EmployeeId, label, emp.Nationality, idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),

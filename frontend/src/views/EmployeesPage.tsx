@@ -123,7 +123,7 @@ function employeeEditStep(field: EditField): number {
 
 // GET masks these values independently of whether changing them requires approval.
 const MASKED_EMPLOYEE_EDIT_KEYS = new Set([
-  'salary', 'bankName', 'bankIban', 'wpsBankDetails', 'passportNumber', 'iqamaNumber',
+  'salary', 'bankName', 'bankIban', 'wpsBankDetails', 'passportNumber', 'iqamaNumber', 'borderNumber',
   'medicalInformation', 'disciplinaryRecords', 'terminationReason', 'passportIssueDate',
   'passportExpiryDate', 'visaIssueDate', 'visaExpiryDate', 'residencyIssueDate',
   'workPermitIssueDate', 'visaNumber', 'visaFileNumber', 'muqeemNumber', 'gosiReference',
@@ -134,6 +134,15 @@ const MASKED_EMPLOYEE_EDIT_KEYS = new Set([
 ]);
 const EXTENDED_PAYROLL_EDIT_KEYS = new Set(['molId', 'salaryCurrency', 'payrollGroup', 'salaryStructureReference', 'paymentMethod']);
 const OPTIONAL_EXPIRY_EDIT_KEYS = new Set(['iqamaExpiryDate', 'emiratesIdExpiryDate', 'qidExpiryDate', 'civilIdExpiryDate']);
+
+// Identity step: the numbers a new joiner already holds on day one lead the list (KSA border number,
+// then passport); everything else keeps the catalog's order.
+const IDENTITY_FIRST_FIELD_KEYS = ['border_number', 'passport_number'];
+
+/** The country pack's format regex, or null when it cannot be compiled (an advisory hint must never throw). */
+function safeRegExp(pattern: string): RegExp | null {
+  try { return new RegExp(pattern); } catch { return null; }
+}
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
 // Filter dropdown for the ACTIVE People list: drop 'Terminated' — the backend now excludes former
@@ -1247,6 +1256,43 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       }
       return { ...current, complianceRecords };
     });
+
+  // Identity step layout. Documents the authority issues only AFTER the hire (KSA: Iqama, GOSI, Qiwa,
+  // Muqeem, sponsor, work permit, visa file — flagged per jurisdiction by the field catalog) sit in their
+  // own "add when available" group with no asterisk: none is needed to create the employee. Of the rest,
+  // the numbers a new joiner already holds on day one (border number, passport) come first.
+  const identityRecordEntries = (form.complianceRecords ?? []).map((record, index) => ({
+    record,
+    index,
+    field: formComplianceFields.find((f) => f.fieldKey === record.fieldKey),
+  }));
+  const identityRecordsLater = identityRecordEntries.filter((entry) => entry.field?.issuedAfterHire);
+  const identityRecordsNow = identityRecordEntries
+    .filter((entry) => !entry.field?.issuedAfterHire)
+    .map((entry, order) => ({ entry, order, rank: IDENTITY_FIRST_FIELD_KEYS.indexOf(entry.record.fieldKey) }))
+    .sort((a, b) => (a.rank === -1 ? Number.MAX_SAFE_INTEGER : a.rank) - (b.rank === -1 ? Number.MAX_SAFE_INTEGER : b.rank) || a.order - b.order)
+    .map(({ entry }) => entry);
+  const renderIdentityRecord = ({ record, index, field }: (typeof identityRecordEntries)[number]) => {
+    const value = (record.fieldValue ?? '').trim();
+    // Format is ADVISORY: an unusual number is flagged, never refused (the server never blocks on it either).
+    const formatWarning = !!field?.pattern && value.length > 0 && !safeRegExp(field.pattern)?.test(value);
+    return (
+      <div key={record.fieldKey} className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+        <Input
+          label={t(record.fieldLabel)}
+          required={record.isRequired && !field?.issuedAfterHire}
+          placeholder={field?.patternHint ? t(field.patternHint) : undefined}
+          value={record.fieldValue ?? ''}
+          onChange={(v) => setComplianceValue(index, 'fieldValue', v)}
+          ltr
+        />
+        {formatWarning && (
+          <p className="text-xs text-amber-700 dark:text-amber-300">{t('Check this number — it does not look like the usual format. You can still save it.')}</p>
+        )}
+        {(field?.expiryEntityKey || record.expiryDate) && <Input label={t('Expiry date')} value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />}
+      </div>
+    );
+  };
 
   // Step checks reuse the create rules. Activation-only requirements remain advisory.
   const validateCreateStep = (step: number) => {
@@ -2832,22 +2878,16 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                 <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
               )
             )}
-            {(form.complianceRecords ?? []).map((record, index) => {
-              const field = formComplianceFields.find((f) => f.fieldKey === record.fieldKey);
-              return (
-                <div key={record.fieldKey} className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                  <Input
-                    label={record.fieldLabel}
-                    required={record.isRequired}
-                    placeholder={field?.patternHint}
-                    value={record.fieldValue ?? ''}
-                    onChange={(v) => setComplianceValue(index, 'fieldValue', v)}
-                  />
-                  {(field?.expiryEntityKey || record.expiryDate) && <Input label="Expiry date" value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />}
-                </div>
-              );
-            })}
+            {identityRecordsNow.map(renderIdentityRecord)}
           </Section>
+          {identityRecordsLater.length > 0 && (
+            <div className="mt-4">
+              <Section title={t('Issued after joining — required before first payroll')}>
+                <p className="text-xs text-slate-500 dark:text-slate-400 sm:col-span-2">{t('These are issued after the employee joins, through the labour ministry and Jawazat. None is needed to create or activate the employee; each one is required before their first payroll. Add them to the profile as they are issued.')}</p>
+                {identityRecordsLater.map(renderIdentityRecord)}
+              </Section>
+            </div>
+          )}
           </EmployeeCreatePanel>
           <EmployeeCreatePanel step={5} activeStep={formStep}>
             <EmployeeCreateReview sections={createReviewSections} onEdit={changeCreateStep} busy={saving} />
