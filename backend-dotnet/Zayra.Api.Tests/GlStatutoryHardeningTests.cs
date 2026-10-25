@@ -226,7 +226,12 @@ public class GlStatutoryHardeningTests
         (await gl.SetMappings(null, new() { new("EARN:BASIC", inactive.Id) }, default)).Should().BeOfType<BadRequestObjectResult>();
 
         (await gl.SetMappings(null, new() { new("EARN:BASIC", expense.Id), new("NET_PAYABLE", liability.Id) }, default)).Should().BeOfType<OkObjectResult>();
-        (await gl.SetMappings(null, new() { new("EARN:BASIC", expense.Id, cc.Id), new("NET_PAYABLE", liability.Id) }, default)).Should().BeOfType<OkObjectResult>();
+        // AM-4: a fixed cost centre belongs to a COMPANY mapping and must be that company's cost centre; a tenant default refuses it.
+        (await gl.SetMappings(null, new() { new("EARN:BASIC", expense.Id, cc.Id), new("NET_PAYABLE", liability.Id) }, default))
+            .Should().BeOfType<UnprocessableEntityObjectResult>();
+        var company = Guid.NewGuid();
+        await db.CostCenters.Where(x => x.Id == cc.Id).ExecuteUpdateAsync(u => u.SetProperty(x => x.CompanyId, (Guid?)company));
+        (await gl.SetMappings(company, new() { new("EARN:BASIC", expense.Id, cc.Id), new("NET_PAYABLE", liability.Id) }, default, "Pin basic pay to the Riyadh cost centre")).Should().BeOfType<OkObjectResult>();
         var last = await db.AuditLogs.AsNoTracking().Where(a => a.Action == "finance.gl.mapping.saved").OrderByDescending(a => a.CreatedAtUtc).FirstAsync();
         last.Metadata.Should().Contain(cc.Id.ToString(), "a cost-centre-only change is a recorded change");
     }
