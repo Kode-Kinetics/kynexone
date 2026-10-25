@@ -1,5 +1,5 @@
-# Keep the Docker build context small (the Dockerfile only needs backend-dotnet/Zayra.Api).
-# A bloated context inflates build memory/time on Render's free-tier builder.
+# Keep the Docker build context small: the root Dockerfile only needs backend-dotnet/Zayra.Api.
+# The EF model snapshot is a design-time file (dotnet ef); the runtime model comes from OnModelCreating.
 .git
 **/node_modules
 frontend
@@ -16,3 +16,7 @@ docs
 .claude
 e2e
 **/*.test.*
+backend-dotnet/Zayra.Api/Migrations/*ModelSnapshot.cs
+backend-dotnet/Zayra.Api.Tests
+tools
+deploy

@@ -48,3 +48,16 @@ backend-dotnet/Zayra.Api/storage/
 # Brainstorm companion runtime state (ports, PIDs, session tokens): local only
 .superpowers/brainstorm/.last-*
 .superpowers/brainstorm/*/state/
+
+# Licences and signing keys never enter the repository (tools/LicenceIssuer/README.md).
+*.licence
+kynexone-*.key
+*.private.pem
+
+# Client installation kit: the generated settings and local backups never belong in the repository.
+deploy/client/.env
+deploy/client/backups/
+deploy/client/certs/*.pem
+# The per-run CI licence key (scripts/ci/ci-licence.sh): generated, never committed.
+backend-dotnet/Zayra.Api/Infrastructure/Licensing/Keys/ci/
+.ci-licence/

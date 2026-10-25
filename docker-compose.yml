@@ -19,11 +19,15 @@ services:
 
   backend:
     build:
-      context: ./backend-dotnet/Zayra.Api
+      # The one API image definition (root Dockerfile), the same image the client kit runs.
+      context: .
+      dockerfile: Dockerfile
       # Baked into the image and reported by /health/live; the e2e preflight compares it with the
       # commit under test. `BUILD_COMMIT=$(git rev-parse HEAD) docker compose up -d --build`.
       args:
         BUILD_COMMIT: ${BUILD_COMMIT:-}
+        # true in CI after scripts/ci/ci-licence.sh: the image also trusts that run's licence key.
+        CI_LICENCE_KEY: ${CI_LICENCE_KEY:-false}
     container_name: zayra-api
     restart: unless-stopped
     depends_on:

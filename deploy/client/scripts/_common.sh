@@ -31,22 +31,37 @@ env_set() {
   fi
 }
 
-random_secret() { # $1 = length, alphanumeric so it is safe in a connection string and in .env
-  LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$1"
+random_secret() { # $1 = length; alphanumeric, so it is safe in a connection string and in .env
+  LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$1" || true
 }
 
-# The API answers /health/ready only once it can serve: database reachable and every migration this image
-# carries applied. Asked from inside the caddy container, so it works before DNS and certificates do.
+backend_running() { [ -n "$(compose ps --status running -q backend 2>/dev/null)" ]; }
+
+# /health/ready is 200 only once the API can serve: database reachable and every migration this image carries
+# applied. Asked from inside the proxy container, so it works before DNS and certificates do.
+probe() { compose exec -T proxy wget -q -O "${2:-/dev/null}" "http://backend:5117$1" 2>/dev/null; }
+
 wait_ready() {
   local tries="${1:-60}"
   say "Waiting for KynexOne to report ready"
   for _ in $(seq 1 "$tries"); do
-    if compose exec -T caddy wget -q -O /dev/null http://api:5117/health/ready 2>/dev/null; then
-      say "KynexOne is ready."; return 0
-    fi
+    if probe /health/ready; then say "KynexOne is ready."; return 0; fi
     sleep 5
   done
   return 1
 }
 
-api_command() { compose run --rm --no-deps api "$@"; }
+# The checks after an install, restore or upgrade: ready, the public installation answer is set up and licensed,
+# and the web front end answers.
+smoke_check() {
+  local info; info="$(compose exec -T proxy wget -q -O - http://backend:5117/api/public/installation 2>/dev/null)" \
+    || { warn "GET /api/public/installation failed."; return 1; }
+  echo "$info" | grep -q '"setupComplete":true' || { warn "The organisation is not set up: $info"; return 1; }
+  echo "$info" | grep -q '"state":"Missing"' && warn "No licence is installed yet."
+  compose exec -T proxy wget -q -O /dev/null http://web:5173/build-info 2>/dev/null || { warn "The web front end is not answering."; return 1; }
+  say "Smoke checks passed."
+}
+
+# One-shot API commands (--maintenance, --setup-organisation, --import-licence, --licence-status) run in a fresh
+# container of the configured image, beside the running services.
+api_command() { compose run --rm --no-deps backend "$@"; }

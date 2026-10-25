@@ -1,13 +1,16 @@
+# KynexOne API image — the one API image definition (client installations, the docker-compose dev stack and CI).
+#
+#   docker build -t kynexone-api:<version> --build-arg VERSION=<MAJOR.MINOR.PATCH> \
+#     --build-arg BUILD_COMMIT=$(git rev-parse HEAD) .
+#
+# The same image serves the API and runs the one-shot commands: --migrate, --setup-organisation,
+# --import-licence, --licence-status and --maintenance (deploy/client/README.md).
+
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-# Cache bust: increment when a stale registry cache must be forced to rebuild.
-ARG CACHE_BUST=3
-# ── BUILD-TIME MEMORY CONTAINMENT (fixes Render free-tier "ran out of memory >8GB") ──
-# The project carries 38+ EF migrations, each Designer.cs embedding the full ~7,400-line model
-# snapshot (~280k lines of near-duplicate model-builder code). Compiling that under the .NET
-# default SERVER GC — which allocates one managed heap PER build-host core — exceeded 8 GB on
-# Render's builder. Workstation GC (single heap) + disabling analyzers + a single MSBuild node
-# keep peak build memory well under the limit. These settings affect the BUILD stage only;
-# runtime GC is tuned separately in the final image below.
+# ── BUILD-TIME MEMORY CONTAINMENT ──
+# The project carries many EF migrations whose Designer.cs files each embed the full model. Compiling them under
+# the default SERVER GC (one managed heap per core) needs far more memory than a workstation GC with a single
+# heap, no analyzers and one MSBuild node. These settings affect the BUILD stage only.
 ENV DOTNET_gcServer=0
 ENV DOTNET_GCHeapCount=1
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
@@ -16,33 +19,11 @@ WORKDIR /src
 COPY backend-dotnet/Zayra.Api/Zayra.Api.csproj ./
 RUN dotnet restore
 COPY backend-dotnet/Zayra.Api/ ./
-# ── DECISIVE OOM FIX: do not compile EF migrations into the RUNTIME image ──
-# DO NOT REMOVE without first proving the build fits in Render's builder. This was reverted once
-# (Aug 2026) on the theory that workstation GC alone bounded the build; the repo's own history
-# disproves it — #40 "workstation GC + trimmed Docker build" came FIRST and was insufficient, which
-# is why #41 landed this line and called it "decisive". Migrations have since grown 38 -> 59, each
-# Designer ~23k lines, so the compile load is now LARGER than when GC tuning already failed.
-# The Designer.cs files embed ~1.4M lines of duplicate model snapshots — the bulk of the compiler's
-# memory. The RUNTIME app never applies migrations (Database__RunMigrationsOnStartup is "false";
-# schema is applied by the Render pre-deploy `--migrate` and CI's `dotnet ef database update` — both
-# SEPARATE builds that keep the migrations). EF builds its runtime model from ZayraDbContext
-# .OnModelCreating, NOT from these snapshots, so dropping them here is safe and cuts peak build
-# memory from >8GB (Server GC) to ~2GB.
-#
-# ── WHAT THIS USED TO BREAK, AND WHY IT NO LONGER DOES ──
-# Deleting the directory left the image with ZERO migrations, and GetPendingMigrationsAsync() is
-# "migrations in the assembly MINUS applied history" — so it returned 0 pending for every database,
-# forever. /health/ready reported `ready` against a database missing twelve migrations, which is how
-# a release was promoted onto an un-migrated schema. The old comment here called that "acceptable
-# because CI applies migrations ahead of deploy"; the incident proved otherwise, and render.yaml's
-# promotion guarantee was false for as long as this line existed unaccompanied.
-#
-# The manifest below is the fix: record the migration ids (a few KB of text) BEFORE deleting the
-# classes, embed them, and let ProductionReadinessEvidence diff them against __EFMigrationsHistory.
-# The gate becomes real without reintroducing the compile cost. `test -s` means the image can never
-# ship without one — and if a manifest is somehow absent, the readiness check fails CLOSED rather
-# than reporting a comfortable zero. Squashing the migrations is still tracked and would let this
-# whole block go away.
+
+# The migration ids this build carries, embedded as Migrations.manifest. The migrations themselves stay compiled
+# in — the image's own `--migrate` applies them — and /health/ready compares this list with
+# __EFMigrationsHistory, so an image never serves traffic on a database it has not migrated. `test -s` means the
+# image can never ship without one.
 RUN ls Migrations/*.cs \
       | grep -v '\.Designer\.cs$' \
       | grep -v 'ModelSnapshot\.cs$' \
@@ -51,40 +32,38 @@ RUN ls Migrations/*.cs \
       | sort > Migrations.manifest \
     && test -s Migrations.manifest \
     && echo "Recorded $(wc -l < Migrations.manifest) migration ids into Migrations.manifest"
-RUN rm -rf Migrations
+
+# The release version (semantic, WP10) and commit, baked into the assembly and reported by /health/live.
+ARG VERSION=0.0.0-dev
+ARG BUILD_COMMIT=
+# CI only (browser suites): also trust the per-run key scripts/ci/ci-licence.sh generated. Never set for a release.
+ARG CI_LICENCE_KEY=false
 RUN dotnet publish Zayra.Api.csproj -c Release -o /app/publish --no-restore \
+    -p:Version=${VERSION} -p:SourceRevisionId=${BUILD_COMMIT} -p:KynexOneCiLicenceKey=${CI_LICENCE_KEY} \
     -p:RunAnalyzers=false -p:UseSharedCompilation=false -maxcpucount:1
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=build /app/publish ./
 
-# Memory/GC tuning for 512 MB containers (Render free/starter tier).
-# GCConserveMemory=9: most aggressive heap trimming after each GC cycle.
-# EnableDiagnostics=0: skip diagnostic pipes/sockets (-3 MB baseline).
-# gcServer=0: workstation GC. The build stage's setting does NOT carry into this stage, so without
-#   this line ASP.NET's default Server GC ran in production and held far more memory.
-# GCHeapHardLimit: cap managed heap at 320 MiB, leaving ~190 MiB for native/stack.
-#   DOTNET_GC* values are parsed as HEX. The previous value 398458880 was meant as 380 MB decimal
-#   and was read as 0x398458880 ≈ 14.4 GiB, so the cap never engaged and the kernel OOM-killed the
-#   container instead (12 kills 2026-09-20/21). Always write these with the 0x prefix.
-# Render env vars with the same names override these; production sets them explicitly.
+# Workstation GC and no diagnostic pipes. There is no managed-heap cap: memory is limited by the container
+# (deploy/client/docker-compose.yml gives the API at least 2 GB), so a large payroll run is not starved.
 ENV DOTNET_gcServer=0
-ENV DOTNET_GCConserveMemory=9
 ENV DOTNET_EnableDiagnostics=0
-ENV DOTNET_GCHeapHardLimit=0x14000000
+ENV ASPNETCORE_URLS=http://0.0.0.0:5117
 
 # ── RUN AS A NON-ROOT USER ──
 # The aspnet:8.0 base ships an unprivileged `app` user and exports its uid as APP_UID (1654).
 # The published app stays root-owned and is therefore read-only to the process: a compromised
-# request handler cannot rewrite the binaries it runs from. The only directory the process needs
-# to write under /app is storage/ (LocalDocumentStorage, Development/compose only — production
-# documents go to S3); it is created here and handed to `app`, so a fresh named volume mounted on
-# it inherits that ownership. The DataProtection key ring lives in PostgreSQL
-# (PersistKeysToDbContext), and captured mail goes to /tmp, so nothing else needs write access.
-# Port 8080 is above 1024, so binding it needs no capability.
-RUN mkdir -p /app/storage && chown "$APP_UID" /app/storage
+# request handler cannot rewrite the binaries it runs from. The only directories the process needs
+# to write are storage/ (LocalDocumentStorage without Storage__LocalRoot: Development/compose) and
+# /var/lib/kynexone/documents (the client kit's durable volume when Storage__Provider=local); both are
+# created here and handed to `app`, so a fresh named volume mounted on them inherits that ownership. The
+# DataProtection key ring lives in PostgreSQL (PersistKeysToDbContext), and captured mail goes to /tmp.
+# Port 5117 is above 1024, so binding it needs no capability.
+RUN mkdir -p /app/storage /var/lib/kynexone/documents \
+    && chown "$APP_UID" /app/storage /var/lib/kynexone/documents
 USER $APP_UID
 
-EXPOSE 8080
+EXPOSE 5117
 ENTRYPOINT ["dotnet", "Zayra.Api.dll"]
