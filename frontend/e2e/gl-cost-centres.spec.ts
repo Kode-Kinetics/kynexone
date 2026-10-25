@@ -418,3 +418,163 @@ test('axe: the chart and the preset dialog have no serious or critical violation
   await expect(tid(page, 'cc-acct-preset-dialog')).toBeVisible();
   expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
 });
+
+// ═════════════════════════════ Screen 3: Mappings (functional class, fixed cost centre) ═════════════════════════════
+
+const mapping = (page: Page) => page.getByRole('region', { name: /^(Payroll GL Mapping|ربط الرواتب بدفتر الأستاذ العام)$/ });
+const lastMappingPut = (state: { writes: Recorded[] }) => state.writes.filter((w) => w.method === 'PUT' && w.path === '/api/finance/gl/mappings').at(-1)!;
+
+test('group view: the fixed cost centre is off with the per-company explanation, and the class rule row is listed', async ({ page }, info) => {
+  await boot(page, { groupMode: true });
+  const region = mapping(page);
+  for (const header of ['Posting line', 'Category', 'Account', 'Functional class', 'Fixed cost centre', 'Actions']) {
+    await expect(region.getByRole('columnheader', { name: header, exact: true })).toBeVisible();
+  }
+  await expect(tid(page, 'cc-map-fixed-EARN:BASIC')).toBeDisabled();
+  await expect(tid(page, 'cc-map-group-scope-hint')).toHaveText('Fixed cost centres are set per company. Switch to a company to set one.');
+  await expect(tid(page, 'cc-map-class-row-EARN:BASIC-SELLING')).toBeVisible();
+  await expect(tid(page, 'cc-map-class-row-EARN:BASIC-SELLING')).toContainText('Selling');
+  await shot(page, info, 'cc-en-mappings-group');
+});
+
+test('company view: the fixed cost centre offers only this company\'s active cost centres, never a null-company one', async ({ page }) => {
+  await boot(page);
+  const select = tid(page, 'cc-map-fixed-EARN:HOUSING');
+  await expect(select).toBeEnabled();
+  await expect(select).toHaveValue('cc-admin');
+  const values = await select.locator('option').evaluateAll((options) => options.map((o) => (o as HTMLOptionElement).value));
+  expect(values).toEqual(['', 'cc-admin', 'cc-sales']);
+  await expect(tid(page, 'cc-map-group-scope-hint')).toHaveCount(0);
+});
+
+test('a reason appears once something is edited, is required to save, and travels with the class and fixed cost centre', async ({ page }, info) => {
+  const state = await boot(page);
+  await expect(tid(page, 'cc-map-reason')).toHaveCount(0);
+  await expect(tid(page, 'cc-map-save')).toBeDisabled();
+  await page.getByLabel('Account for Loan recovery').selectOption('acc-1400');
+  await tid(page, 'cc-map-fixed-LOAN_RECEIVABLE').selectOption('cc-sales');
+  await expect(tid(page, 'cc-map-reason')).toBeVisible();
+  await expect(tid(page, 'cc-map-save')).toBeDisabled();
+  await shot(page, info, 'cc-en-mappings-company-edit');
+  await tid(page, 'cc-map-reason').fill('Sales loans are charged to Sales');
+  await tid(page, 'cc-map-save').click();
+  await expect(page.getByText('Mappings saved.')).toBeVisible();
+  const put = lastMappingPut(state);
+  expect(search(put).get('reason')).toBe('Sales loans are charged to Sales');
+  expect(search(put).get('companyId')).toBe('co-sa');
+  expect(put.body).toEqual([
+    { driverKey: 'EARN:HOUSING', accountId: 'acc-5090', segmentCostCenterId: 'cc-admin', functionalClass: null },
+    { driverKey: 'LOAN_RECEIVABLE', accountId: 'acc-1400', segmentCostCenterId: 'cc-sales', functionalClass: null },
+  ]);
+});
+
+test('picking a functional class turns the fixed cost centre off, and picking a fixed cost centre turns the class off', async ({ page }) => {
+  await boot(page);
+  const klass = tid(page, 'cc-map-class-EARN:HOUSING');
+  const fixed = tid(page, 'cc-map-fixed-EARN:HOUSING');
+  // Housing starts with a fixed cost centre, so its class is off and the hint says why.
+  await expect(klass).toBeDisabled();
+  await expect(tid(page, 'cc-map-exclusive-hint-EARN:HOUSING')).toHaveText('A posting rule uses either a functional class or a fixed cost centre, not both.');
+  await fixed.selectOption('');
+  await expect(klass).toBeEnabled();
+  await klass.selectOption('SELLING');
+  await expect(fixed).toBeDisabled();
+  await expect(tid(page, 'cc-map-exclusive-hint-EARN:HOUSING')).toBeVisible();
+  await expect(klass.locator('option[value="CAPITALISABLE"]')).toBeDisabled();
+});
+
+test('a row with no account has nothing to classify; clearing the account clears its class and fixed cost centre', async ({ page }) => {
+  await boot(page);
+  await expect(tid(page, 'cc-map-class-LOAN_RECEIVABLE')).toBeDisabled();
+  await expect(tid(page, 'cc-map-fixed-LOAN_RECEIVABLE')).toBeDisabled();
+  await page.getByLabel('Account for Housing allowance').selectOption('');
+  await expect(tid(page, 'cc-map-fixed-EARN:HOUSING')).toHaveValue('');
+  await expect(tid(page, 'cc-map-fixed-EARN:HOUSING')).toBeDisabled();
+});
+
+test('add a rule for a class offers only unused classes, and removing it returns the class', async ({ page }) => {
+  await boot(page);
+  const add = tid(page, 'cc-map-add-class-EARN:HOUSING');
+  const values = () => add.locator('option').evaluateAll((options) => options.map((o) => (o as HTMLOptionElement).value));
+  await expect(add).toBeEnabled();
+  expect(await values()).toEqual(['', 'COGS', 'SELLING', 'G_AND_A', 'R_AND_D', 'OPERATIONS', 'CAPITALISABLE']);
+  await expect(add.locator('option[value="CAPITALISABLE"]')).toBeDisabled();
+  await add.selectOption('COGS');
+  const classRow = tid(page, 'cc-map-class-row-EARN:HOUSING-COGS');
+  await expect(classRow).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Cost of goods sold' })).toBeVisible();
+  expect(await values()).not.toContain('COGS');
+  await classRow.getByRole('combobox').selectOption('acc-5002');
+  await expect(tid(page, 'cc-map-reason')).toBeVisible();
+  await tid(page, 'cc-map-remove-EARN:HOUSING-COGS').click();
+  await expect(classRow).toHaveCount(0);
+  expect(await values()).toContain('COGS');
+});
+
+test('the same class twice on one line is an inline error and blocks Save', async ({ page }) => {
+  await boot(page);
+  await page.getByLabel('Account for Basic salary').selectOption('acc-5001');
+  await tid(page, 'cc-map-class-EARN:BASIC').selectOption('SELLING');
+  await expect(tid(page, 'cc-map-dup-error-EARN:BASIC')).toHaveText('This line already has a rule for this class.');
+  await tid(page, 'cc-map-reason').fill('Test');
+  await expect(tid(page, 'cc-map-save')).toBeDisabled();
+});
+
+test('M-7: a refusal while a run awaits lock shows the server sentence with a link to the run, and every control is off', async ({ page }) => {
+  const state = await boot(page);
+  state.ctl.mappingRefusal = { status: 409, body: lockedBody };
+  await page.getByLabel('Account for Loan recovery').selectOption('acc-1400');
+  await tid(page, 'cc-map-reason').fill('Policy');
+  await tid(page, 'cc-map-save').click();
+  const banner = tid(page, 'cc-map-locked-banner');
+  await expect(banner).toContainText(M7_EN);
+  await expect(banner.getByRole('link', { name: 'Open the approved run', exact: true })).toHaveAttribute('href', '/payroll');
+  await expect(page.getByLabel('Account for Loan recovery')).toBeDisabled();
+  await expect(tid(page, 'cc-map-save')).toBeDisabled();
+});
+
+test('another refusal shows above the table in the server\'s words, and the edits are kept', async ({ page }) => {
+  const state = await boot(page);
+  state.ctl.mappingRefusal = { status: 422, body: { error: 'fixed_cost_centre_invalid', code: 'fixed_cost_centre_invalid', message: 'The fixed cost centre must be an active cost centre of this company.', messageAr: 'يجب أن يكون مركز التكلفة الثابت مركزًا نشطًا تابعًا لهذه الشركة.' } };
+  await page.getByLabel('Account for Loan recovery').selectOption('acc-1400');
+  await tid(page, 'cc-map-reason').fill('Policy');
+  await tid(page, 'cc-map-save').click();
+  await expect(tid(page, 'cc-map-error')).toHaveText('The fixed cost centre must be an active cost centre of this company.');
+  await expect(page.getByLabel('Account for Loan recovery')).toHaveValue('acc-1400');
+  await expect(tid(page, 'cc-map-locked-banner')).toHaveCount(0);
+});
+
+test('a read-only reader sees the mapping with every control off, no reason field and no Save', async ({ page }) => {
+  await boot(page, { readOnly: true });
+  await expect(page.getByLabel('Account for Housing allowance')).toBeDisabled();
+  await expect(tid(page, 'cc-map-fixed-EARN:HOUSING')).toBeDisabled();
+  await expect(tid(page, 'cc-map-class-EARN:HOUSING')).toBeDisabled();
+  await expect(tid(page, 'cc-map-save')).toHaveCount(0);
+  await expect(tid(page, 'cc-map-reason')).toHaveCount(0);
+  await expect(tid(page, 'cc-map-add-class-EARN:HOUSING')).toHaveCount(0);
+});
+
+test('Arabic mappings: RTL, translated headers and classes, and the server\'s Arabic refusal', async ({ page }, info) => {
+  const state = await boot(page, { locale: 'ar' });
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  const region = mapping(page);
+  await expect(region.getByRole('columnheader', { name: 'التصنيف الوظيفي', exact: true })).toBeVisible();
+  await expect(region.getByRole('columnheader', { name: 'مركز التكلفة الثابت', exact: true })).toBeVisible();
+  await expect(tid(page, 'cc-map-class-row-EARN:BASIC-SELLING')).toContainText('البيع والتسويق');
+  await shot(page, info, 'cc-ar-mappings-company');
+  state.ctl.mappingRefusal = { status: 409, body: lockedBody };
+  await page.getByLabel('Account for Loan recovery').selectOption('acc-1400').catch(async () => {
+    await region.getByRole('combobox').nth(0).selectOption({ index: 1 });
+  });
+  await tid(page, 'cc-map-reason').fill('سياسة');
+  await tid(page, 'cc-map-save').click();
+  await expect(tid(page, 'cc-map-locked-banner')).toContainText(M7_AR);
+  expect(state.errors).toEqual([]);
+});
+
+test('axe: the mapping table, with a class row open, has no serious or critical violations', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-map-add-class-EARN:HOUSING').selectOption('COGS');
+  await tid(page, 'cc-map-class-row-EARN:HOUSING-COGS').waitFor();
+  expect(await axeSeriousOrWorse(page, '[aria-labelledby="gl-map-heading"]')).toEqual([]);
+});
