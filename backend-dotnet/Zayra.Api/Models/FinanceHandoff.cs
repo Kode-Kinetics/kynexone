@@ -33,6 +33,9 @@ public class GlJournalExport : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Cost-accounting M1: decimal places of the amounts in this export (2 for SAR/AED/QAR, 3 for KWD/BHD/OMR),
+    /// set when the export is persisted. Null = taken before cost accounting, which is 2.</summary>
+    public short? AmountScale { get; set; }
 
     /// <summary>Legal-entity filter this export was taken under. Null = whole tenant (group-level caller).
     /// <para>SCOPING — a reporting DIMENSION, mirroring <see cref="FinanceGlEntry"/>, and registered in
@@ -201,6 +204,11 @@ public class GlJournalExportLine : ITenantOwned
     /// <summary>gl_accounts.external_code AS EMITTED (the client's ERP account / segment string), or null
     /// when the account had none and our own AccountCode was sent.</summary>
     public string? ExternalAccountCode { get; set; }
+    /// <summary>Cost-accounting M1: the cost centre AS EMITTED on this line, frozen verbatim like <see cref="ExternalAccountCode"/>.
+    /// Null on every line of an export taken before cost accounting and on uncosted lines.</summary>
+    public string? CostCenterCode { get; set; }
+    public string? CostCenterName { get; set; }
+    public string? CostCenterGlSegment { get; set; }
 }
 
 public static class GlJournalExportStatuses

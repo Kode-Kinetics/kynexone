@@ -27,6 +27,8 @@ public class EosbProvisionSnapshot : ITenantOwned, ICompanyScopedOperational
     public DateOnly MeasuredAt { get; set; }
     /// <summary>The run whose Lock journal carries the movement (and whose void removes this row).</summary>
     public Guid PayrollRunId { get; set; }
+    /// <summary>Cost-accounting M1: the employee's resolved cost centre at measurement, for traceability only.</summary>
+    public Guid? CostCenterId { get; set; }
     /// <summary>Statutory obligation at <see cref="MeasuredAt"/> (Art. 84 full award, see the planner).</summary>
     public decimal Obligation { get; set; }
     /// <summary>The provision already carried for this employee before this month's movement.</summary>
