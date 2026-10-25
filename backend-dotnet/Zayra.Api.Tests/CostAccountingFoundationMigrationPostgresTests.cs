@@ -57,7 +57,6 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
         ("cost_centers", "ck_cost_centers__functional_class", true),
         ("cost_centers", "ck_cost_centers__gl_segment_format", true),
         ("cost_centers", "ck_cost_centers__parent_not_self", true),
-        ("cost_centers", "ck_cost_centers__code_format", false),
         ("gl_accounts", "ck_gl_accounts__cost_center_rule", true),
         ("gl_account_mappings", "ck_gl_account_mappings__functional_class", true),
         ("companies", "ck_companies__cost_centre_small_cell_min", true),
@@ -65,9 +64,6 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
         ("payroll_deductions", "ck_payroll_deductions__cost_center_source", true),
         ("finance_gl_entries", "ck_finance_gl_entries__cost_center_pair", true),
         ("finance_gl_entries", "ck_finance_gl_entries__cost_center_needs_company", true),
-        ("finance_gl_entries", "ck_finance_gl_entries__amount_nonnegative", false),
-        ("finance_gl_entries", "ck_finance_gl_entries__has_account", false),
-        ("finance_gl_entries", "ck_finance_gl_entries__currency_format", false),
     ];
 
     [Fact]
@@ -116,6 +112,8 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
             row.Should().NotBeNull($"{table} must carry check {name}");
             row![0].Should().Be(validated ? "true" : "false", $"{name} validated state");
         }
+        (await Scalar<long>(container, "SELECT count(*) FROM pg_constraint WHERE conname IN ('ck_cost_centers__code_format', 'ck_finance_gl_entries__amount_nonnegative', 'ck_finance_gl_entries__has_account', 'ck_finance_gl_entries__currency_format')"))
+            .Should().Be(0, "these four wait for M3: they would reject an UPDATE of a legacy row");
         (await Scalar<string>(container, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'fk_finance_gl_entries__cost_center'"))
             .Should().Contain("(tenant_id, company_id, cost_center_id)").And.Contain("cost_centers(tenant_id, company_id, id)");
         (await Scalar<string>(container, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'fk_companies__default_cost_center'"))
@@ -156,13 +154,9 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
         await Expect(container, UniqueViolation, $"UPDATE cost_centers SET gl_segment = '6100-OPS' WHERE id = '{CcA2}'");
         await Exec(container, $"UPDATE cost_centers SET gl_segment = '6100-OPS' WHERE id = '{CcB1}'"); // same segment, other company
         await Exec(container, $"UPDATE cost_centers SET is_deleted = true, gl_segment = '6100-OPS' WHERE id = '{CcA2}'"); // a deleted row frees the segment
-        // The code format binds new and edited rows only: the legacy ' bad code' row survives, a new one cannot be written.
-        await Expect(container, CheckViolation, await Insert(container, "cost_centers", CostCentre(Guid.NewGuid(), CompanyA, "bad code!")));
-        await Exec(container, await Insert(container, "cost_centers", CostCentre(Guid.NewGuid(), CompanyA, "OK-1.2_x")));
-        // NOT VALID skips the existing row at migration time only: any later UPDATE of that row re-checks it, so the
-        // legacy offender is editable again once its code is repaired (the pre-migration audit query lists them).
-        await Expect(container, CheckViolation, $"UPDATE cost_centers SET name = 'renamed' WHERE id = '{CcGroup}'");
-        await Exec(container, $"UPDATE cost_centers SET code = 'CC-GROUP', name = 'renamed' WHERE id = '{CcGroup}'");
+        // Legacy rows that would fail the M3 checks stay editable and new ones are accepted: nothing here changes behaviour.
+        await Exec(container, await Insert(container, "cost_centers", CostCentre(Guid.NewGuid(), CompanyA, "bad code!")));
+        await Exec(container, $"UPDATE cost_centers SET name = 'renamed' WHERE id = '{CcGroup}'");
 
         // ── gl_accounts / gl_account_mappings ─────────────────────────────────────────────────────────────────────────
         await Expect(container, CheckViolation, "UPDATE gl_accounts SET cost_center_rule = 'Maybe'");
@@ -194,13 +188,8 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
         await Exec(container, await Insert(container, "finance_gl_entries", Entry(null, null, null, key: "k1", tenant: OtherTenant))); // another tenant may reuse a key
         await Exec(container, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null)));
         await Exec(container, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null))); // NULL keys never conflict
-        await Expect(container, CheckViolation, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null, amount: "-1")));
-        await Expect(container, CheckViolation, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null, currency: "sar")));
-        await Expect(container, CheckViolation, await Insert(container, "finance_gl_entries", Entry(CompanyA, null, null, debit: "", credit: "")));
-        // The legacy row (negative amount, lowercase currency, no accounts) survived the upgrade untouched, but NOT VALID
-        // re-checks a row whenever it is UPDATED — so it cannot take even an erp_* status change until it is repaired.
-        await Expect(container, CheckViolation, "UPDATE finance_gl_entries SET erp_posting_status = 'Posted' WHERE description = 'legacy'");
-        await Exec(container, "UPDATE finance_gl_entries SET amount = 5, currency = 'SAR', debit_account = '5001', credit_account = '2001', erp_posting_status = 'Posted' WHERE description = 'legacy'");
+        // The legacy row (negative amount, lowercase currency, no accounts) takes an erp_* status update as before.
+        await Exec(container, "UPDATE finance_gl_entries SET erp_posting_status = 'Posted' WHERE description = 'legacy'");
 
         // ── payroll tables ──────────────────────────────────────────────────────────────────────────────────────────
         await Expect(container, CheckViolation, "UPDATE payroll_earnings SET cost_center_source = 'Guess'");

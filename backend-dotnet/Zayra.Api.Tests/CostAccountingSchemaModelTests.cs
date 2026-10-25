@@ -81,7 +81,6 @@ public sealed class CostAccountingSchemaModelTests
             ("cost_centers", "ck_cost_centers__functional_class"),
             ("cost_centers", "ck_cost_centers__gl_segment_format"),
             ("cost_centers", "ck_cost_centers__parent_not_self"),
-            ("cost_centers", "ck_cost_centers__code_format"),
             ("gl_accounts", "ck_gl_accounts__cost_center_rule"),
             ("gl_account_mappings", "ck_gl_account_mappings__functional_class"),
             ("companies", "ck_companies__cost_centre_small_cell_min"),
@@ -89,9 +88,6 @@ public sealed class CostAccountingSchemaModelTests
             ("payroll_deductions", "ck_payroll_deductions__cost_center_source"),
             ("finance_gl_entries", "ck_finance_gl_entries__cost_center_pair"),
             ("finance_gl_entries", "ck_finance_gl_entries__cost_center_needs_company"),
-            ("finance_gl_entries", "ck_finance_gl_entries__amount_nonnegative"),
-            ("finance_gl_entries", "ck_finance_gl_entries__has_account"),
-            ("finance_gl_entries", "ck_finance_gl_entries__currency_format"),
         })
             yield return [t, c];
     }
@@ -100,6 +96,16 @@ public sealed class CostAccountingSchemaModelTests
     [MemberData(nameof(Checks))]
     public void Check_IsDeclaredOnTheModel(string table, string check) =>
         Entity(DesignModel(), table).GetCheckConstraints().Select(c => c.Name).Should().Contain(check);
+
+    /// <summary>CTO ruling: these four reject an UPDATE of a legacy row even when NOT VALID, so they wait for M3 (see
+    /// docs/schema/M3_COST_ACCOUNTING_VALIDATION.md), after the validator ships and the pre-deploy audit returns zero.</summary>
+    [Theory]
+    [InlineData("cost_centers", "ck_cost_centers__code_format")]
+    [InlineData("finance_gl_entries", "ck_finance_gl_entries__amount_nonnegative")]
+    [InlineData("finance_gl_entries", "ck_finance_gl_entries__has_account")]
+    [InlineData("finance_gl_entries", "ck_finance_gl_entries__currency_format")]
+    public void CheckThatCouldRejectALegacyRowUpdate_IsNotInM1(string table, string check) =>
+        Entity(DesignModel(), table).GetCheckConstraints().Select(c => c.Name).Should().NotContain(check);
 
     [Fact]
     public void Indexes_AreDeclared_WithTheirPredicates()
