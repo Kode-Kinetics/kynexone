@@ -58,12 +58,17 @@ export interface GlMappingRow {
   segmentCostCenterId: string | null;
   /** True when the effective mapping for this driver is inherited from the group default. */
   inherited: boolean;
+  /** One entry per functional class that has its own account for this driver (company beats group). */
+  classRules?: { functionalClass: string; accountId: string; inherited: boolean }[];
 }
 
 export interface GlMappingInput {
   driverKey: string;
   accountId: string;
+  /** The fixed cost centre of the posting rule. Company mappings only; not together with a functional class. */
   segmentCostCenterId?: string | null;
+  /** null = every class. COGS | SELLING | G_AND_A | R_AND_D | OPERATIONS (CAPITALISABLE is reserved). */
+  functionalClass?: string | null;
 }
 
 export interface GlDriver {
@@ -259,10 +264,11 @@ export const financeGlApi = {
   // ── Driver → account mappings ──────────────────────────────────────────────
   listMappings: (companyId?: string | null) =>
     client.get<GlMappingRow[]>('/api/finance/gl/mappings', { params: scoped(companyId) }).then((r) => r.data),
-  setMappings: (mappings: GlMappingInput[], companyId?: string | null) =>
+  /** `reason` is recorded in the audit log (M-10); the server requires it for classes and fixed cost centres. */
+  setMappings: (mappings: GlMappingInput[], companyId?: string | null, reason?: string) =>
     client
       .put<{ count: number; changed: number; removed: number }>('/api/finance/gl/mappings', mappings, {
-        params: scoped(companyId),
+        params: { ...(scoped(companyId) ?? {}), ...(reason?.trim() ? { reason: reason.trim() } : {}) },
       })
       .then((r) => r.data),
 

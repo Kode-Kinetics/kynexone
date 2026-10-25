@@ -53,3 +53,130 @@ export function isLockedIntoApprovedRun(err: unknown): boolean {
   const status = (err as { response?: { status?: number } } | null | undefined)?.response?.status;
   return status === 409 && apiErrorCode(err) === 'locked_into_approved_run';
 }
+
+// ═══════════════════════════ Mappings: functional class and fixed cost centre ═══════════════════════════
+
+/** Server order. CAPITALISABLE is reserved: stored, but refused for posting in v1, so the UI shows it disabled. */
+export const FUNCTIONAL_CLASSES = ['COGS', 'SELLING', 'G_AND_A', 'R_AND_D', 'OPERATIONS', 'CAPITALISABLE'] as const;
+export type FunctionalClass = (typeof FUNCTIONAL_CLASSES)[number];
+export const RESERVED_CLASS: FunctionalClass = 'CAPITALISABLE';
+
+interface CostCentreLike { id: string; companyId?: string | null; isActive: boolean }
+
+/**
+ * The cost centres a fixed posting rule may point at: the viewed company's own active ones. A group-level
+ * (null-company) cost centre can never be stamped on a company journal, so it is never offered; and the group
+ * view offers none, because a fixed cost centre is set per company (AM-4).
+ */
+export function fixedCostCentreOptions<T extends CostCentreLike>(costCenters: readonly T[], scope: string | null): T[] {
+  if (!scope) return [];
+  return costCenters.filter((c) => c.isActive && c.companyId === scope);
+}
+
+export interface ClassRuleDraft {
+  cls: string;
+  /** '' = no override of its own (an inherited rule, or one just added and not yet given an account). */
+  accountId: string;
+  inherited: boolean;
+  inheritedAccountId: string | null;
+}
+
+/** One driver's editable state: the base row (every class) plus one extra row per functional class. */
+export interface DriverDraft {
+  driverKey: string;
+  accountId: string;
+  fixedCostCentreId: string;
+  /** '' = any class. Picking one makes the base row that class's rule. */
+  cls: string;
+  classRules: ClassRuleDraft[];
+}
+
+export interface MappingRowShape {
+  driverKey: string;
+  mappedAccountId: string | null;
+  segmentCostCenterId: string | null;
+  inherited: boolean;
+  classRules?: { functionalClass: string; accountId: string; inherited: boolean }[];
+}
+
+/**
+ * A company view starts rows it only inherits unset (no override of its own), so saving never copies the group
+ * mapping into the company; a group view, or an existing company override, starts filled.
+ */
+export function draftFromRow(row: MappingRowShape, inCompanyView: boolean): DriverDraft {
+  return {
+    driverKey: row.driverKey,
+    accountId: row.inherited ? '' : row.mappedAccountId ?? '',
+    fixedCostCentreId: row.inherited ? '' : row.segmentCostCenterId ?? '',
+    cls: '',
+    classRules: (row.classRules ?? []).map((r) => {
+      const inherited = inCompanyView && r.inherited;
+      return { cls: r.functionalClass, accountId: inherited ? '' : r.accountId, inherited, inheritedAccountId: inherited ? r.accountId : null };
+    }),
+  };
+}
+
+export interface MappingInput {
+  driverKey: string;
+  accountId: string;
+  segmentCostCenterId: string | null;
+  functionalClass: string | null;
+}
+
+/** The PUT body: the base row, then one row per class that has an account. Rows with no account are not sent. */
+export function toMappingInputs(drafts: readonly DriverDraft[]): MappingInput[] {
+  const out: MappingInput[] = [];
+  for (const d of drafts) {
+    if (d.accountId) {
+      out.push({ driverKey: d.driverKey, accountId: d.accountId, segmentCostCenterId: d.cls ? null : d.fixedCostCentreId || null, functionalClass: d.cls || null });
+    }
+    for (const r of d.classRules) {
+      if (r.accountId) out.push({ driverKey: d.driverKey, accountId: r.accountId, segmentCostCenterId: null, functionalClass: r.cls });
+    }
+  }
+  return out;
+}
+
+export function mappingsChanged(base: readonly DriverDraft[], current: readonly DriverDraft[]): boolean {
+  return JSON.stringify(toMappingInputs(base)) !== JSON.stringify(toMappingInputs(current));
+}
+
+export interface ExclusiveState {
+  classDisabled: boolean;
+  fixedDisabled: boolean;
+  /** Why something is off: no account yet, the group view, or the other of the pair is in use. */
+  why: 'account' | 'group' | 'class' | 'fixed' | null;
+}
+
+/** A posting rule uses either a functional class or a fixed cost centre, never both (the server answers 422 for both). */
+export function exclusiveState(d: DriverDraft, inCompanyView: boolean): ExclusiveState {
+  if (!d.accountId) return { classDisabled: true, fixedDisabled: true, why: 'account' };
+  if (!inCompanyView) return { classDisabled: false, fixedDisabled: true, why: 'group' };
+  if (d.cls) return { classDisabled: false, fixedDisabled: true, why: 'class' };
+  if (d.fixedCostCentreId) return { classDisabled: true, fixedDisabled: false, why: 'fixed' };
+  return { classDisabled: false, fixedDisabled: false, why: null };
+}
+
+export const setBaseAccount = (d: DriverDraft, accountId: string): DriverDraft =>
+  ({ ...d, accountId, ...(accountId ? {} : { cls: '', fixedCostCentreId: '' }) });
+export const setBaseClass = (d: DriverDraft, cls: string): DriverDraft =>
+  ({ ...d, cls, fixedCostCentreId: cls ? '' : d.fixedCostCentreId });
+export const setFixedCostCentre = (d: DriverDraft, id: string): DriverDraft =>
+  ({ ...d, fixedCostCentreId: id, cls: id ? '' : d.cls });
+
+/** Classes this driver has no rule for yet (the reserved one included, so it can be shown disabled). */
+export function unusedClasses(d: DriverDraft): FunctionalClass[] {
+  return FUNCTIONAL_CLASSES.filter((c) => c !== d.cls && !d.classRules.some((r) => r.cls === c));
+}
+
+export const addClassRule = (d: DriverDraft, cls: string): DriverDraft =>
+  d.classRules.some((r) => r.cls === cls) ? d : { ...d, classRules: [...d.classRules, { cls, accountId: '', inherited: false, inheritedAccountId: null }] };
+export const removeClassRule = (d: DriverDraft, cls: string): DriverDraft =>
+  ({ ...d, classRules: d.classRules.filter((r) => r.cls !== cls) });
+export const setClassRuleAccount = (d: DriverDraft, cls: string, accountId: string): DriverDraft =>
+  ({ ...d, classRules: d.classRules.map((r) => (r.cls === cls ? { ...r, accountId } : r)) });
+
+/** The class the base row and a class rule both claim, if any: the server would refuse the pair. */
+export function duplicateClass(d: DriverDraft): string | null {
+  return d.cls && d.classRules.some((r) => r.cls === d.cls) ? d.cls : null;
+}

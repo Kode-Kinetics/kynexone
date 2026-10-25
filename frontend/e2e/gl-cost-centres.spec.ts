@@ -563,9 +563,7 @@ test('Arabic mappings: RTL, translated headers and classes, and the server\'s Ar
   await expect(tid(page, 'cc-map-class-row-EARN:BASIC-SELLING')).toContainText('البيع والتسويق');
   await shot(page, info, 'cc-ar-mappings-company');
   state.ctl.mappingRefusal = { status: 409, body: lockedBody };
-  await page.getByLabel('Account for Loan recovery').selectOption('acc-1400').catch(async () => {
-    await region.getByRole('combobox').nth(0).selectOption({ index: 1 });
-  });
+  await page.getByLabel('حساب Loan recovery').selectOption('acc-1400');
   await tid(page, 'cc-map-reason').fill('سياسة');
   await tid(page, 'cc-map-save').click();
   await expect(tid(page, 'cc-map-locked-banner')).toContainText(M7_AR);

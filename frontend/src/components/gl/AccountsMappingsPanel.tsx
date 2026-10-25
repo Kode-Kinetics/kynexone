@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Ban, Download, Info, Pencil, Plus, RotateCcw, Search, Upload } from 'lucide-react';
 import { notifyApiError } from '../../api/client';
@@ -16,13 +17,29 @@ import {
 import type { CostCenterDto } from '../../api/organization';
 import { useT } from '../../hooks/useT';
 import {
+  addClassRule,
   apiErrorCode,
   cleanRule,
   COST_CENTRE_RULES,
+  draftFromRow,
+  duplicateClass,
+  exclusiveState,
+  fixedCostCentreOptions,
+  FUNCTIONAL_CLASSES,
   isLockedIntoApprovedRun,
+  mappingsChanged,
   matchesRuleFilter,
+  removeClassRule,
+  RESERVED_CLASS,
   ruleBlockedForType,
+  setBaseAccount,
+  setBaseClass,
+  setClassRuleAccount,
+  setFixedCostCentre,
+  toMappingInputs,
+  unusedClasses,
   type CostCentreRule,
+  type DriverDraft,
 } from '../../lib/glCostAccounting';
 import { useAppToast } from '../ui/AppToast';
 import { Modal } from '../Modal';
@@ -67,11 +84,6 @@ interface Props {
   onRoutingChanged: () => void;
   /** Opens the Cost accounting tab (readiness and the switch). Absent when this reader cannot see it. */
   onOpenCostAccounting?: () => void;
-}
-
-interface MapEdit {
-  accountId: string;
-  segmentCostCenterId: string;
 }
 
 interface Loaded {
@@ -143,30 +155,28 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
     [t],
   );
 
-  const [edits, setEdits] = useState<Record<string, MapEdit>>({});
+  // The mapping being edited: one draft per driver (base row + class rows), rebuilt whenever the rows are reloaded.
+  const baseDrafts = useMemo(() => rows.map((r) => draftFromRow(r, inCompanyView)), [rows, inCompanyView]);
+  const [drafts, setDrafts] = useState<Record<string, DriverDraft>>({});
   useEffect(() => {
-    setEdits(
-      Object.fromEntries(
-        rows.map((r) => [
-          r.driverKey,
-          // A company view starts inherited rows unset (no override); an existing company
-          // override (or the group mapping in group view) pre-fills the select.
-          { accountId: r.inherited ? '' : r.mappedAccountId ?? '', segmentCostCenterId: r.inherited ? '' : r.segmentCostCenterId ?? '' },
-        ]),
-      ),
-    );
-  }, [rows]);
+    setDrafts(Object.fromEntries(baseDrafts.map((d) => [d.driverKey, d])));
+    setMapReason('');
+    setMapError('');
+  }, [baseDrafts]);
+  const [mapReason, setMapReason] = useState('');
+  const [mapError, setMapError] = useState('');
+  // M-7 on the mapping save: the server's sentence, and every control off until the user tries again.
+  const [mapLocked, setMapLocked] = useState<string | null>(null);
+  const [announce, setAnnounce] = useState('');
 
   const reloadAll = async () => {
     await res.reload();
     onRoutingChanged();
   };
 
-  // Cost centers a mapping in this scope may tag: tenant-global + this company's own.
-  const visibleCostCenters = useMemo(
-    () => costCenters.filter((c) => c.isActive && (!c.companyId || c.companyId === scope)),
-    [costCenters, scope],
-  );
+  // Cost centres a fixed posting rule may use: this company's own active ones. Never a group (null-company) one, and
+  // none in the group view: a fixed cost centre is set per company (AM-4).
+  const fixedOptions = useMemo(() => [...fixedCostCentreOptions(costCenters, scope)].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true })), [costCenters, scope]);
 
   // Accounts a mapping in this scope may point at: own + inherited group defaults (active only).
   const selectableAccounts = useMemo(
@@ -183,39 +193,49 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
     [ownAccounts, groupDefaults],
   );
 
-  const dirty = useMemo(
-    () =>
-      rows.some((r) => {
-        const e = edits[r.driverKey];
-        if (!e) return false;
-        const base = r.inherited ? '' : r.mappedAccountId ?? '';
-        const baseSeg = r.inherited ? '' : r.segmentCostCenterId ?? '';
-        return e.accountId !== base || e.segmentCostCenterId !== baseSeg;
-      }),
-    [rows, edits],
-  );
+  const draftList = useMemo(() => baseDrafts.map((b) => drafts[b.driverKey] ?? b), [baseDrafts, drafts]);
+  const dirty = useMemo(() => mappingsChanged(baseDrafts, draftList), [baseDrafts, draftList]);
+  const hasDuplicate = draftList.some((d) => duplicateClass(d) !== null);
 
-  const setEdit = (driverKey: string, patch: Partial<MapEdit>) =>
-    setEdits((prev) => ({ ...prev, [driverKey]: { ...prev[driverKey], ...patch } }));
+  const updateDraft = (driverKey: string, fn: (d: DriverDraft) => DriverDraft) =>
+    setDrafts((prev) => {
+      const current = prev[driverKey] ?? baseDrafts.find((b) => b.driverKey === driverKey);
+      return current ? { ...prev, [driverKey]: fn(current) } : prev;
+    });
+
+  const classLabel = useCallback(
+    (cls: string) => {
+      switch (cls) {
+        case 'COGS': return t('Cost of goods sold');
+        case 'SELLING': return t('Selling');
+        case 'G_AND_A': return t('General & administrative');
+        case 'R_AND_D': return t('Research & development');
+        case 'OPERATIONS': return t('Operations');
+        case RESERVED_CLASS: return t('Capitalisable (reserved)');
+        default: return cls;
+      }
+    },
+    [t],
+  );
 
   // ── Mapping save ───────────────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const saveMappings = async () => {
-    if (!writable) return;
+    if (!writable || !mapReason.trim()) return;
     setSaving(true);
+    setMapError('');
     try {
-      const payload = Object.entries(edits)
-        .filter(([, e]) => e.accountId)
-        .map(([driverKey, e]) => ({ driverKey, accountId: e.accountId, segmentCostCenterId: e.segmentCostCenterId || null }));
-      await financeGlApi.setMappings(payload, scope);
+      await financeGlApi.setMappings(toMappingInputs(draftList), scope, mapReason);
       toast.success(t('Mappings saved.'));
       await reloadAll();
     } catch (e) {
-      notifyApiError(e);
+      if (isLockedIntoApprovedRun(e)) setMapLocked(serverMessage(e, t));
+      else setMapError(serverMessage(e, t));
     } finally {
       setSaving(false);
     }
   };
+  const mapEditable = canManage && !mapLocked;
 
   // ── Load standard payroll chart (group scope) ─────────────────────────────
   const [seeding, setSeeding] = useState(false);
@@ -904,11 +924,47 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
             </p>
           </div>
           {canManage && (
-            <button type="button" onClick={saveMappings} disabled={saving || !dirty || !writable} className="btn-primary text-xs disabled:opacity-60">
+            <button
+              type="button"
+              onClick={saveMappings}
+              disabled={saving || !dirty || !writable || !mapReason.trim() || hasDuplicate || !!mapLocked}
+              data-testid="cc-map-save"
+              className="btn-primary text-xs disabled:opacity-60"
+            >
               {saving ? t('Saving…') : t('Save mappings')}
             </button>
           )}
         </div>
+
+        <div className="mb-3 space-y-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+          <p>{t('Functional class: use a different account for cost centres of this class, for example Selling or Operations.')}</p>
+          <p>{t('Fixed cost centre: always post this line to one cost centre, whatever the employee\'s own cost centre.')}</p>
+          <p id="cc-map-account-first-hint">{t('Choose an account for a line before setting its functional class or fixed cost centre.')}</p>
+          {!inCompanyView && (
+            <p id="cc-map-group-hint" data-testid="cc-map-group-scope-hint" className="font-medium text-slate-600 dark:text-slate-300">
+              {t('Fixed cost centres are set per company. Switch to a company to set one.')}
+            </p>
+          )}
+        </div>
+
+        {mapLocked && (
+          <div role="alert" data-testid="cc-map-locked-banner" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+            <p>{mapLocked}</p>
+            <div className="flex items-center gap-2">
+              <Link href="/payroll" className="font-semibold underline underline-offset-2 hover:no-underline">{t('Open the approved run')}</Link>
+              <button type="button" onClick={() => setMapLocked(null)} className="btn-secondary h-7 px-2 text-xs">{t('Retry')}</button>
+            </div>
+          </div>
+        )}
+        <FieldError error={mapError} testId="cc-map-error" />
+
+        {canManage && dirty && (
+          <div className="mb-3 max-w-xl">
+            <Field label={t('Reason for this change')} required hint={t('Recorded in the audit log.')}>
+              <input value={mapReason} onChange={(e) => setMapReason(e.target.value)} disabled={!!mapLocked} data-testid="cc-map-reason" className="input w-full" maxLength={500} />
+            </Field>
+          </div>
+        )}
 
         <PanelState
           loading={res.loading && !res.data}
@@ -918,91 +974,202 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           emptyLabel={inCompanyView ? t('No posting drivers are set up yet. Ask a group administrator to load the standard payroll chart.') : t('No posting drivers are set up yet. Load the standard payroll chart above to get started.')}
         >
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-map-heading">
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full min-w-[900px] text-sm">
               <thead className={theadClass}>
                 <tr>
                   <th scope="col" className={thClass}>{t('Posting line')}</th>
                   <th scope="col" className={thClass}>{t('Category')}</th>
                   <th scope="col" className={thClass}>{t('Account')}</th>
-                  <th scope="col" className={thClass}>{t('Cost centre tag')}</th>
+                  <th scope="col" className={thClass}>{t('Functional class')}</th>
+                  <th scope="col" className={thClass}>{t('Fixed cost centre')}</th>
                   <th scope="col" className={`${thClass} text-end`}>{t('Actions')}</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  const e = edits[r.driverKey] ?? { accountId: '', segmentCostCenterId: '' };
-                  const isOverridden = inCompanyView && e.accountId !== '';
+                  const d = drafts[r.driverKey] ?? baseDrafts.find((b) => b.driverKey === r.driverKey);
+                  if (!d) return null;
+                  const ex = exclusiveState(d, inCompanyView);
+                  const dup = duplicateClass(d);
+                  const isOverridden = inCompanyView && d.accountId !== '';
                   const inheritedAccount = inCompanyView && r.inherited ? accountLabel(r.mappedAccountId) : null;
+                  const hintId = `cc-map-excl-${r.driverKey.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+                  const hint = (
+                    <p id={hintId} data-testid={`cc-map-exclusive-hint-${r.driverKey}`} className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                      {t('A posting rule uses either a functional class or a fixed cost centre, not both.')}
+                    </p>
+                  );
+                  const unused = unusedClasses(d);
                   return (
-                    <tr key={r.driverKey} className="border-t border-slate-100 dark:border-white/5">
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-slate-800 dark:text-slate-100">{r.label}</span>
-                          {isOverridden && <Badge tone="violet">{t('Company override')}</Badge>}
-                          {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge />}
-                        </div>
-                        <p className="text-[11px] text-slate-500">
-                          {inheritedAccount && !isOverridden
-                            ? t('Fallback {account} · inherits {inherited}', { account: r.defaultAccount, inherited: inheritedAccount })
-                            : t('Fallback {account}', { account: r.defaultAccount })}
-                        </p>
-                      </td>
-                      <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{driverCategoryLabel(t, r.category)}</td>
-                      <td className="px-3 py-2">
-                        <select
-                          aria-label={t('Account for {line}', { line: r.label })}
-                          value={e.accountId}
-                          disabled={!canManage}
-                          onChange={(ev) => setEdit(r.driverKey, { accountId: ev.target.value, ...(ev.target.value ? {} : { segmentCostCenterId: '' }) })}
-                          className="select w-full min-w-[200px] text-xs disabled:opacity-60"
-                        >
-                          <option value="">{inCompanyView ? t('Inherit group mapping') : t('Use the fallback account')}</option>
-                          {selectableAccounts.map((a) => (
-                            <option key={a.id} value={a.id}>
-                              {inCompanyView && a.companyId === null
-                                ? t('{code} — {name} (group)', { code: a.code, name: a.name })
-                                : `${a.code} — ${a.name}`}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-3 py-2">
-                        <select
-                          aria-label={t('Cost centre tag for {line}', { line: r.label })}
-                          title={t('Optional cost centre stamped on this posting line')}
-                          value={e.segmentCostCenterId}
-                          disabled={!canManage || !e.accountId}
-                          onChange={(ev) => setEdit(r.driverKey, { segmentCostCenterId: ev.target.value })}
-                          className="select w-full text-xs disabled:opacity-50"
-                        >
-                          <option value="">{t('No cost centre')}</option>
-                          {visibleCostCenters.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.code}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-3 py-2 text-end">
-                        {canManage && isOverridden ? (
-                          <button
-                            type="button"
-                            onClick={() => setEdit(r.driverKey, { accountId: '', segmentCostCenterId: '' })}
-                            className="btn-secondary h-7 px-2 text-xs"
+                    <Fragment key={r.driverKey}>
+                      <tr data-testid={`cc-map-row-${r.driverKey}`} className="border-t border-slate-100 dark:border-white/5">
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-slate-800 dark:text-slate-100">{r.label}</span>
+                            {isOverridden && <Badge tone="violet">{t('Company override')}</Badge>}
+                            {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge />}
+                          </div>
+                          <p className="text-[11px] text-slate-500">
+                            {inheritedAccount && !isOverridden
+                              ? t('Fallback {account} · inherits {inherited}', { account: r.defaultAccount, inherited: inheritedAccount })
+                              : t('Fallback {account}', { account: r.defaultAccount })}
+                          </p>
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{driverCategoryLabel(t, r.category)}</td>
+                        <td className="px-3 py-2">
+                          <select
+                            aria-label={t('Account for {line}', { line: r.label })}
+                            value={d.accountId}
+                            disabled={!mapEditable}
+                            onChange={(ev) => updateDraft(r.driverKey, (x) => setBaseAccount(x, ev.target.value))}
+                            className="select w-full min-w-[200px] text-xs disabled:opacity-60"
                           >
-                            <RotateCcw className="h-3 w-3" aria-hidden /> {t('Use group mapping')}
-                          </button>
-                        ) : (
-                          <span className="text-[11px] text-slate-400" aria-hidden>—</span>
-                        )}
-                      </td>
-                    </tr>
+                            <option value="">{inCompanyView ? t('Inherit group mapping') : t('Use the fallback account')}</option>
+                            {selectableAccounts.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {inCompanyView && a.companyId === null
+                                  ? t('{code} — {name} (group)', { code: a.code, name: a.name })
+                                  : `${a.code} — ${a.name}`}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-2">
+                          <select
+                            aria-label={t('Functional class for {line}', { line: r.label })}
+                            value={d.cls}
+                            disabled={!mapEditable || ex.classDisabled}
+                            aria-describedby={ex.why === 'fixed' ? hintId : ex.why === 'account' ? 'cc-map-account-first-hint' : undefined}
+                            data-testid={`cc-map-class-${r.driverKey}`}
+                            onChange={(ev) => updateDraft(r.driverKey, (x) => setBaseClass(x, ev.target.value))}
+                            className="select w-full min-w-[150px] text-xs disabled:opacity-60"
+                          >
+                            <option value="">{t('Any class')}</option>
+                            {FUNCTIONAL_CLASSES.map((c) => (
+                              <option key={c} value={c} disabled={c === RESERVED_CLASS}>
+                                {classLabel(c)}
+                              </option>
+                            ))}
+                          </select>
+                          {ex.why === 'fixed' && hint}
+                          {dup && (
+                            <p role="alert" data-testid={`cc-map-dup-error-${r.driverKey}`} className="mt-1 text-[11px] font-medium text-rose-700 dark:text-rose-300">
+                              {t('This line already has a rule for this class.')}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <select
+                            aria-label={t('Fixed cost centre for {line}', { line: r.label })}
+                            value={d.fixedCostCentreId}
+                            disabled={!mapEditable || ex.fixedDisabled}
+                            aria-describedby={ex.why === 'group' ? 'cc-map-group-hint' : ex.why === 'class' ? hintId : ex.why === 'account' ? 'cc-map-account-first-hint' : undefined}
+                            data-testid={`cc-map-fixed-${r.driverKey}`}
+                            onChange={(ev) => updateDraft(r.driverKey, (x) => setFixedCostCentre(x, ev.target.value))}
+                            className="select w-full min-w-[150px] text-xs disabled:opacity-50"
+                          >
+                            <option value="">{t('None')}</option>
+                            {fixedOptions.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {`${c.code} — ${c.name}`}
+                              </option>
+                            ))}
+                          </select>
+                          {ex.why === 'class' && hint}
+                        </td>
+                        <td className="px-3 py-2 text-end">
+                          <div className="flex flex-col items-end gap-1.5">
+                            {mapEditable && (
+                              <select
+                                value=""
+                                aria-label={t('Add rule for a class')}
+                                data-testid={`cc-map-add-class-${r.driverKey}`}
+                                onChange={(ev) => {
+                                  const cls = ev.target.value;
+                                  if (!cls) return;
+                                  updateDraft(r.driverKey, (x) => addClassRule(x, cls));
+                                  setAnnounce(t('Added a rule for {class}.', { class: classLabel(cls) }));
+                                }}
+                                className="select h-8 w-full max-w-[200px] text-xs"
+                              >
+                                <option value="">{t('Add rule for a class')}</option>
+                                {unused.map((c) => (
+                                  <option key={c} value={c} disabled={c === RESERVED_CLASS}>
+                                    {classLabel(c)}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            {mapEditable && isOverridden && (
+                              <button
+                                type="button"
+                                onClick={() => updateDraft(r.driverKey, (x) => setBaseAccount(x, ''))}
+                                className="btn-secondary h-7 px-2 text-xs"
+                              >
+                                <RotateCcw className="h-3 w-3" aria-hidden /> {t('Use group mapping')}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {d.classRules.map((rule) => (
+                        <tr key={rule.cls} data-testid={`cc-map-class-row-${r.driverKey}-${rule.cls}`} className="border-t border-slate-100 bg-slate-50/50 dark:border-white/5 dark:bg-white/[0.02]">
+                          <td className="border-s-2 border-violet-200 py-2 ps-6 pe-3 dark:border-violet-500/30">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{t('{class} rule', { class: classLabel(rule.cls) })}</span>
+                              {rule.inherited && <InheritedBadge />}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2" />
+                          <td className="px-3 py-2">
+                            <select
+                              aria-label={t('Class rule for {line}: {class}', { line: r.label, class: classLabel(rule.cls) })}
+                              value={rule.accountId}
+                              disabled={!mapEditable}
+                              onChange={(ev) => updateDraft(r.driverKey, (x) => setClassRuleAccount(x, rule.cls, ev.target.value))}
+                              className="select w-full min-w-[200px] text-xs disabled:opacity-60"
+                            >
+                              <option value="">{rule.inherited ? t('Inherit group mapping') : t('Use the fallback account')}</option>
+                              {selectableAccounts.map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  {inCompanyView && a.companyId === null
+                                    ? t('{code} — {name} (group)', { code: a.code, name: a.name })
+                                    : `${a.code} — ${a.name}`}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{classLabel(rule.cls)}</td>
+                          <td className="px-3 py-2 text-[11px] text-slate-400" aria-hidden>—</td>
+                          <td className="px-3 py-2 text-end">
+                            {mapEditable && !rule.inherited ? (
+                              <button
+                                type="button"
+                                data-testid={`cc-map-remove-${r.driverKey}-${rule.cls}`}
+                                aria-label={t('Remove the rule for {line}: {class}', { line: r.label, class: classLabel(rule.cls) })}
+                                onClick={() => {
+                                  updateDraft(r.driverKey, (x) => removeClassRule(x, rule.cls));
+                                  setAnnounce(t('Removed the rule for {class}.', { class: classLabel(rule.cls) }));
+                                  requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-testid="cc-map-class-${r.driverKey}"]`)?.focus());
+                                }}
+                                className="btn-secondary h-7 px-2 text-xs"
+                              >
+                                {t('Remove rule')}
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-slate-400" aria-hidden>—</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
                   );
                 })}
               </tbody>
             </table>
           </div>
         </PanelState>
+        <p role="status" className="sr-only">{announce}</p>
       </section>
 
       {/* Edit account modal */}

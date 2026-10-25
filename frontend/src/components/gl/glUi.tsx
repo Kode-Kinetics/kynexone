@@ -49,10 +49,10 @@ export function Field({
   );
 }
 
-export function FieldError({ error }: { error: string }) {
+export function FieldError({ error, testId }: { error: string; testId?: string }) {
   if (!error) return null;
   return (
-    <p role="alert" className="mb-3 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
+    <p role="alert" data-testid={testId} className="mb-3 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
       {error}
     </p>
   );
