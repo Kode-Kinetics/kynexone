@@ -19,7 +19,7 @@ public class CostAccountingReadinessTests
     private static readonly string[] Keys =
     {
         "employees-unresolved", "invalid-reference", "accounts-no-rule", "no-company", "rounding-default", "mapping-invisible",
-        "small-cell", "rules-not-enforced", "currency-scale",
+        "small-cell", "rules-not-enforced", "currency-scale", "employees-no-company",
     };
 
     private static async Task<Employee> Emp(ZayraDbContext db, Guid tid, Guid co, string code, Action<Employee>? cfg = null, string status = "Active")
@@ -426,6 +426,30 @@ public class CostAccountingReadinessTests
         var co = await AddCompany(db, tid, currency: "KWD");
 
         Check(await Run(db, tid, co.Id), "currency-scale").Pipe(c => (c.P("count").GetInt32(), c.P("severity").GetString())).Should().Be((1, "blocker"));
+    }
+
+    // ── employees with no company (they cannot be posted once any company costs payroll) ──
+
+    [Fact]
+    public async Task ActiveEmployeesWithNoCompany_AreCountedOnly_AsABlocker()
+    {
+        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var co = await AddCompany(db, tid, enabled: true);
+        var other = await AddCompany(db, tid);
+        await Emp(db, tid, co.Id, "OK1");
+        for (var i = 0; i < 3; i++)
+            db.Employees.Add(new Employee { TenantId = tid, CompanyId = null, EmployeeCode = $"ORPHAN{i}", FullName = "Nameless", Status = "Active", JoiningDate = new DateTime(2024, 1, 1) });
+        db.Employees.Add(new Employee { TenantId = tid, CompanyId = null, EmployeeCode = "GONE", FullName = "x", Status = "Terminated", JoiningDate = new DateTime(2024, 1, 1) });
+        db.Employees.Add(new Employee { TenantId = Guid.NewGuid(), CompanyId = null, EmployeeCode = "OTHERTENANT", FullName = "x", Status = "Active", JoiningDate = new DateTime(2024, 1, 1) });
+        await db.SaveChangesAsync();
+
+        var body = await Run(db, tid, co.Id);
+
+        var c = Check(body, "employees-no-company");
+        (c.P("count").GetInt32(), c.P("severity").GetString(), c.P("sample").GetArrayLength()).Should().Be((3, "blocker", 0));
+        body.GetRawText().Should().NotContain("ORPHAN");
+        Check(await Run(db, tid, other.Id), "employees-no-company").P("count").GetInt32().Should().Be(3, "the unattributed pool is tenant-wide");
     }
 
     // ── S-033: permission, scope, tenant ────────────────────────────────────

@@ -494,21 +494,78 @@ public class FinanceGlEntryGuardTests
 
     // ── S-019: the guard lives in the context ───────────────────────────────
 
+    // ── all four EF save entry points ───────────────────────────────────────
+
+    public static IEnumerable<object[]> EntryPoints => new[]
+    {
+        "SaveChanges()", "SaveChanges(true)", "SaveChanges(false)", "SaveChangesAsync(ct)", "SaveChangesAsync(true,ct)", "SaveChangesAsync(false,ct)",
+    }.Select(x => new object[] { x });
+
+    private static async Task SaveVia(ZayraDbContext db, string entryPoint)
+    {
+        switch (entryPoint)
+        {
+            case "SaveChanges()": db.SaveChanges(); break;
+            case "SaveChanges(true)": db.SaveChanges(true); break;
+            case "SaveChanges(false)": db.SaveChanges(false); break;
+            case "SaveChangesAsync(ct)": await db.SaveChangesAsync(CancellationToken.None); break;
+            case "SaveChangesAsync(true,ct)": await db.SaveChangesAsync(true, CancellationToken.None); break;
+            case "SaveChangesAsync(false,ct)": await db.SaveChangesAsync(false, CancellationToken.None); break;
+            default: throw new ArgumentOutOfRangeException(nameof(entryPoint));
+        }
+    }
+
+    [Theory, MemberData(nameof(EntryPoints))]
+    public async Task EveryEfSaveEntryPoint_RefusesARequiredAccountLineWithNoCostCentre(string entryPoint)
+    {
+        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
+        var f = await Seed(db);
+        db.FinanceGlEntries.Add(Line(f, Label(f.Req), Label(f.Liab)));
+
+        var act = () => SaveVia(db, entryPoint);
+
+        (await act.Should().ThrowAsync<GlCostCentreRuleException>()).Which.Code.Should().Be("cost_centre_required");
+        db.ChangeTracker.Clear();
+        (await db.FinanceGlEntries.CountAsync()).Should().Be(0);
+    }
+
+    [Theory, MemberData(nameof(EntryPoints))]
+    public async Task EveryEfSaveEntryPoint_StillSavesACompliantLine(string entryPoint)
+    {
+        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
+        var f = await Seed(db);
+        db.FinanceGlEntries.Add(Line(f, Label(f.Req), Label(f.Liab), 100m, f.Cc));
+
+        await SaveVia(db, entryPoint);
+
+        db.ChangeTracker.Clear();
+        (await db.FinanceGlEntries.CountAsync()).Should().Be(1);
+    }
+
     [Fact]
-    public void S019_Ratchet_TheGuardIsCalledFromBothSaveOverloads_AndNotRegisteredInProgramCs()
+    public void S019_Ratchet_TheGuardSitsOnTheTwoBoolOverloads_ExactlyOnce_AndNotInProgramCs()
     {
         var api = Path.Combine(RepoRoot(), "backend-dotnet", "Zayra.Api");
         var ctx = File.ReadAllText(Path.Combine(api, "Data", "ZayraDbContext.cs"));
-        var asyncBody = Between(ctx, "public override async Task<int> SaveChangesAsync(CancellationToken", "public override int SaveChanges(bool");
-        var syncBody = ctx[ctx.IndexOf("public override int SaveChanges(bool", StringComparison.Ordinal)..];
-        syncBody = syncBody[..Math.Min(syncBody.Length, 3500)];
 
-        asyncBody.Should().Contain("EnforceFinanceGlEntryIntegrity", "the async overload must call the guard next to EnforceAuditLogAppendOnly");
-        syncBody.Should().Contain("EnforceFinanceGlEntryIntegrity", "the sync overload must call it too");
-        ctx.IndexOf("EnforceFinanceGlEntryIntegrity", StringComparison.Ordinal).Should().BeLessThan(ctx.IndexOf("EnforceAuditLogAppendOnly()", StringComparison.Ordinal) + 400);
+        // EF routes SaveChanges() -> SaveChanges(bool) and SaveChangesAsync(ct) -> SaveChangesAsync(bool, ct); the guard is on those.
+        var asyncBool = ctx.IndexOf("public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken", StringComparison.Ordinal);
+        asyncBool.Should().BeGreaterThan(-1, "SaveChangesAsync(bool, ct) must be overridden so a direct call is guarded");
+        var syncBool = ctx.IndexOf("public override int SaveChanges(bool acceptAllChangesOnSuccess)", StringComparison.Ordinal);
+        syncBool.Should().BeGreaterThan(-1);
 
-        var program = File.ReadAllText(Path.Combine(api, "Program.cs"));
-        program.Should().NotContain("GlEntryCostCentreInterceptor", "a Program.cs-registered interceptor is absent in tests and in services that build their own options");
+        string Body(int start) { var open = ctx.IndexOf('{', start); var depth = 0; for (var i = open; i < ctx.Length; i++) { if (ctx[i] == '{') depth++; else if (ctx[i] == '}' && --depth == 0) return ctx[open..(i + 1)]; } throw new InvalidOperationException(); }
+        Body(asyncBool).Should().Contain("EnforceFinanceGlEntryIntegrityAsync(");
+        Body(syncBool).Should().Contain("EnforceFinanceGlEntryIntegrityAsync(");
+
+        var asyncCt = ctx.IndexOf("public override async Task<int> SaveChangesAsync(CancellationToken", StringComparison.Ordinal);
+        Body(asyncCt).Should().NotContain("EnforceFinanceGlEntryIntegrityAsync(", "it reaches the bool overload through base, so a second call would run the guard twice");
+        Body(asyncCt).Should().Contain("EnforceAuditLogAppendOnly()", "the existing append-only check stays where it was");
+
+        System.Text.RegularExpressions.Regex.Matches(ctx, @"EnforceFinanceGlEntryIntegrityAsync\(").Count
+            .Should().Be(3, "one declaration and exactly one call per bool overload");
+
+        File.ReadAllText(Path.Combine(api, "Program.cs")).Should().NotContain("GlEntryCostCentreInterceptor");
         File.Exists(Path.Combine(api, "Infrastructure", "Finance", "GlEntryCostCentreInterceptor.cs")).Should().BeFalse();
     }
 
