@@ -21,7 +21,7 @@ const canOpen = (id: string, access: SetupModuleAccess) => {
 };
 
 const hrOfficer = persona(['HR Officer'], ['leave.read', 'attendance.read', 'overtime.read']);
-const hrManager = persona(['HR Manager'], ['leave.read', 'leave.write', 'attendance.read', 'attendance.write', 'overtime.read', 'overtime.write']);
+const hrManager = persona(['HR Manager'], ['leave.read', 'leave.write', 'attendance.read', 'attendance.write', 'attendance.policy_manage', 'overtime.read', 'overtime.write']);
 const lineManager = persona(['Manager'], ['leave.read', 'attendance.read', 'overtime.read']);
 const employee = persona(['Employee'], ['ess.read', 'leave.read', 'attendance.read']);
 
@@ -78,6 +78,20 @@ test('attendance_devices_open_for_the_roles_the_device_list_serves', () => {
   expect(canOpen('attendanceDevices', lineManager)).toBe(false);
   expect(canOpen('attendanceDevices', persona(['Payroll Manager'], ['attendance.read']))).toBe(false);
   expect(canOpen('attendanceDevices', employee)).toBe(false);
+});
+
+test('attendance_rules_open_for_whoever_holds_attendance_policy_manage', () => {
+  // AttendancePoliciesController: every action needs attendance.policy_manage (Admin, HR Manager, HR Director hold it).
+  // attendance.read / attendance.write are held by HR Officer, Payroll Manager, Supervisors and others, who would get a
+  // 403 on load, so the section keys on the dedicated permission alone.
+  expect(canOpen('attendanceRules', hrManager)).toBe(true);
+  expect(canOpen('attendanceRules', persona(['Admin'], ['attendance.policy_manage']))).toBe(true);
+  expect(canOpen('attendanceRules', persona(['HR Director'], ['attendance.read', 'attendance.policy_manage']))).toBe(true);
+  expect(canOpen('attendanceRules', persona(['Payroll Manager'], ['attendance.read', 'attendance.write']))).toBe(false);
+  expect(canOpen('attendanceRules', hrOfficer)).toBe(false);
+  expect(canOpen('attendanceRules', persona(['Auditor'], ['attendance.read']))).toBe(false);
+  expect(canOpen('attendanceRules', lineManager)).toBe(false);
+  expect(canOpen('attendanceRules', employee)).toBe(false);
 });
 
 test('a_module_switched_off_hides_its_settings', () => {

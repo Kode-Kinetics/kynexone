@@ -33,6 +33,7 @@ import { setupDataEntry } from './setupDataEntry';
 import { setupGuidedEntry } from './setupGuidedEntry';
 import { setupReview } from './setupReview';
 import { setupSections } from './setupSections';
+import { attendanceRules } from './attendanceRules';
 import { appChrome } from './appChrome';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
@@ -57,6 +58,7 @@ const en: Dict = {
   ...setupGuidedEntry.en,
   ...setupReview.en,
   ...setupSections.en,
+  ...attendanceRules.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
   "Cost center": "Cost center",
@@ -1494,6 +1496,7 @@ const ar: Dict = {
   ...setupGuidedEntry.ar,
   ...setupReview.ar,
   ...setupSections.ar,
+  ...attendanceRules.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
   "Cost center": "مركز التكلفة",

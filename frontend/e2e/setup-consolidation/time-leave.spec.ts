@@ -28,6 +28,10 @@ movedSectionSpecs([
     ready: page => page.getByRole('button', { name: /Save Policy/i }),
     mocks: { ...roster, '/api/shifts/policy': rosteringPolicy },
     module: { path: '/shifts', goneTab: 'Policy', door: 'Shift settings' } },
+  // The rules had no screen before (the old setup studio could create one), so there is no old address to follow.
+  { id: 'attendanceRules', label: 'Attendance rules', group: 'Time & leave', old: '/setup?tab=attendanceRules',
+    ready: page => page.getByRole('button', { name: 'New rules' }),
+    mocks: { '/api/attendance/policies': [] } },
   { id: 'overtimePolicies', label: 'Overtime policies', group: 'Time & leave', old: '/overtime?tab=policies',
     ready: page => page.getByRole('button', { name: /New Policy/i }),
     mocks: { '/api/overtime/requests': paged, '/api/overtime/summary': {} },

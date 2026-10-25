@@ -34,7 +34,7 @@ test('catalogue_keeps_exactly_twelve_areas_and_all_existing_destinations', () =>
     { id: 'time', destinations: [
       ['locations', '/setup?tab=locations'], ['attendance', '/attendance'],
       ['shiftDefinitions', '/setup?tab=shiftDefinitions'], ['shiftPolicy', '/setup?tab=shiftPolicy'],
-      ['overtimePolicies', '/setup?tab=overtimePolicies'], ['attendanceDevices', '/setup?tab=attendanceDevices'],
+      ['attendanceRules', '/setup?tab=attendanceRules'], ['overtimePolicies', '/setup?tab=overtimePolicies'], ['attendanceDevices', '/setup?tab=attendanceDevices'],
       ['shifts', '/shifts'], ['overtime', '/overtime'], ['timesheets', '/timesheets'],
     ] },
     { id: 'leave', destinations: [
@@ -70,7 +70,7 @@ test('catalogue_keeps_exactly_twelve_areas_and_all_existing_destinations', () =>
       ['gosiFiling', '/gosi-filing'], ['adminAuditLogs', '/setup?tab=adminAuditLogs'],
     ] },
   ]);
-  expect(destinations()).toHaveLength(58);
+  expect(destinations()).toHaveLength(59);
 });
 
 test('every_destination_has_stable_group_and_order', () => {
@@ -137,7 +137,7 @@ test('every_destination_has_stable_group_and_order', () => {
       { id: 'templates-tasks', label: 'Templates and tasks', order: 0, destinations: ['onboardingChecklists'] },
     ] },
     { areaId: 'time', groups: [
-      { id: 'work-configuration', label: 'Work configuration', order: 0, destinations: ['locations', 'shiftDefinitions', 'shiftPolicy', 'overtimePolicies', 'attendanceDevices'] },
+      { id: 'work-configuration', label: 'Work configuration', order: 0, destinations: ['locations', 'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'overtimePolicies', 'attendanceDevices'] },
       { id: 'related-operations', label: 'Related operations', order: 1, destinations: ['attendance', 'overtime', 'timesheets', 'shifts'] },
     ] },
     { areaId: 'leave', groups: [
@@ -180,7 +180,7 @@ test('setup_owned_destinations_carry_the_section_label_and_route_labels_are_unch
     companies: 'Companies', branches: 'Branches', departments: 'Departments', designations: 'Designations', grades: 'Grades',
     costCenters: 'Cost centres', establishment: 'Headcount & budget', masterData: 'Drop-down lists', people: 'Employee records and contracts',
     contractRenewals: 'Contract renewals', recruitment: 'Recruitment and workforce planning', onboardingChecklists: 'Onboarding checklists',
-    locations: 'Locations', attendance: 'Attendance operations', shiftDefinitions: 'Shifts', shiftPolicy: 'Shift policy',
+    locations: 'Locations', attendance: 'Attendance operations', shiftDefinitions: 'Shifts', shiftPolicy: 'Shift policy', attendanceRules: 'Attendance rules',
     overtimePolicies: 'Overtime policies', attendanceDevices: 'Attendance devices', shifts: 'Shift rosters',
     overtime: 'Overtime requests', timesheets: 'Project timesheets', leaveTypes: 'Leave types', leavePolicies: 'Leave policies',
     holidayCalendars: 'Holiday calendars', leave: 'Leave requests and balances', benefitPlans: 'Benefit plans',

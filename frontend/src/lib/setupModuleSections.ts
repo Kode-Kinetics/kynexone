@@ -16,7 +16,7 @@ import { GL_AND_RATES_PERMISSIONS } from './setupAccess';
  */
 export type SetupModuleSectionId =
   | 'openingBalances'
-  | 'leaveTypes' | 'leavePolicies' | 'holidayCalendars' | 'shiftDefinitions' | 'shiftPolicy' | 'overtimePolicies' | 'attendanceDevices'
+  | 'leaveTypes' | 'leavePolicies' | 'holidayCalendars' | 'shiftDefinitions' | 'shiftPolicy' | 'attendanceRules' | 'overtimePolicies' | 'attendanceDevices'
   | 'benefitPlans' | 'loanTypes' | 'loanPolicies' | 'advancePolicy' | 'bonusTypes' | 'payslipTemplates'
   | 'onboardingChecklists' | 'performanceScorecards' | 'letterTemplates' | 'engagementPrivacy'
   | 'taxPolicies' | 'complianceProfiles' | 'saudiCompliance' | 'countryPayrollKeys'
@@ -64,6 +64,7 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   { id: 'holidayCalendars', group: 'timeLeave', label: msg('Holiday calendars'), description: msg('Public holidays for each country and company.'), permissions: LEAVE, roles: HR_SETTINGS_EDITORS, modulePath: '/leave' },
   { id: 'shiftDefinitions', group: 'timeLeave', label: msg('Shifts'), description: msg('Shift times, breaks and grace periods.'), permissions: ['attendance.read'], roles: HR_SETTINGS_EDITORS, modulePath: '/shifts', featureKey: 'shifts' },
   { id: 'shiftPolicy', group: 'timeLeave', label: msg('Shift policy'), description: msg('Rotation, rest-day and roster rules.'), permissions: ['attendance.read'], roles: ['Admin', 'HR Manager'], modulePath: '/shifts', featureKey: 'shifts' }, // GET /api/shifts/policy is Admin, HR Manager only
+  { id: 'attendanceRules', group: 'timeLeave', label: msg('Attendance rules'), description: msg('What counts as late, an early exit or a half day, and the length of the working day.'), permissions: ['attendance.policy_manage'], modulePath: '/attendance' }, // every /api/attendance/policies action needs attendance.policy_manage (Admin, HR Manager, HR Director)
   { id: 'overtimePolicies', group: 'timeLeave', label: msg('Overtime policies'), description: msg('Overtime rates, caps and approval rules.'), permissions: ['overtime.read', 'overtime.write'], roles: ['Admin', 'HR Manager'], modulePath: '/overtime', featureKey: 'overtime' },
   { id: 'attendanceDevices', group: 'timeLeave', label: msg('Attendance devices'), description: msg('Biometric devices and other punch sources, and their connection keys.'), permissions: ['attendance.read', 'attendance.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Auditor'], modulePath: '/attendance' },
 

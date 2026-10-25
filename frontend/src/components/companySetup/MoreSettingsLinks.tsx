@@ -20,7 +20,7 @@ import { SetupEditorState } from '../setup/SetupEditorState';
  * destination (same path, permission and scope as All setup areas), so the list never offers a screen the viewer
  * cannot open. Settings with an editor that fits beside the wizard open in place (a side panel, or the Leave &
  * holidays part); the rest open their own page, which then offers "Back to company setup" (setup/SetupWorkspaceReturn).
- * What has no screen of its own yet (attendance rules, HR approval rules) is set up by the group super admin.
+ * HR approval rules have no screen of their own yet and are set up by the group super admin.
  */
 type Panel = 'leave' | 'statutory';
 type Target = { kind: 'page'; href: string } | { kind: 'panel'; panel: Panel } | { kind: 'part'; part: RulesPartId };
@@ -30,6 +30,7 @@ const GROUPS: { id: string; label: string; items: { id: string; /** The Setup de
   { id: 'time', label: msg('Time & attendance'), items: [
     // Shift definitions and overtime policies are Setup sections now; Shifts and Overtime keep rosters and requests.
     { id: 'shifts', dest: 'shiftDefinitions', what: msg('Shift definitions and roster rules') },
+    { id: 'attendanceRules', what: msg('Grace period, early leaving, half day and working day') },
     { id: 'overtime', dest: 'overtimePolicies', what: msg('Overtime policies: add a policy and its rates') },
   ] },
   { id: 'leave', label: msg('Leave & holidays'), items: [
@@ -147,7 +148,7 @@ export function MoreSettingsLinks({ companyId, onOpenPart, returnTo, beforeLeave
           </ul>
         </section>
       ))}
-      <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Attendance rules and HR approval rules have no screen of their own yet. Ask your group super admin to set these up.')}</p>
+      <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{t('HR approval rules have no screen of their own yet. Ask your group super admin to set these up.')}</p>
       <SettingsDrawer open={panelOpen} wide={panel === 'statutory'} title={t(PANEL_COPY[panel].title)} description={t(PANEL_COPY[panel].description)} onClose={() => setPanelOpen(false)}>
         {panel === 'leave' && <LeaveEditors companyId={companyId ?? undefined} idPrefix="more-leave" />}
         {panel === 'statutory' && <SetupEditorState.Provider value={reportStatutory}><EmbeddedStatutoryRules /></SetupEditorState.Provider>}

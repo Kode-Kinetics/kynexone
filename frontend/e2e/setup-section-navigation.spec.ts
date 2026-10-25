@@ -10,7 +10,7 @@ const SHOTS = process.env.SETUP_NAV_SHOTS_DIR;
 
 // Wave 1 (2026-10-22): groups, order and sentence-case names approved by the Integration Owner.
 const WRITER_SECTIONS = {
-  'Get started': ['Guided setup', 'All setup areas', 'Import organization', 'Policy starter', 'Policy library'],
+  'Get started': ['Guided setup', 'All setup areas', 'Import organization', 'Policy library'],
   'Company structure': ['Companies', 'Branches', 'Locations', 'Cost centres', 'Departments'],
   'Jobs & headcount': ['Grades', 'Designations', 'Headcount & budget'],
   // 2026-10-24: every module's configuration is a Setup section; this fixture's administrator holds leave, recruitment
@@ -165,7 +165,6 @@ test('every entry opens a section whose header carries the same name', async ({ 
   for (const label of ALL_WRITER_SECTIONS) {
     await openSetupSection(page, label);
     await expect(sectionHeading(page)).toHaveText(label);
-    // The Policy starter folds the list at every width, so the entry is looked up through the helper.
     await expect(await setupSection(page, label)).toHaveAttribute('aria-current', 'page');
     await expect(page.getByRole('heading', { level: 2, name: label, exact: true }).first()).toBeVisible();
   }
@@ -425,7 +424,7 @@ test('All setup areas: an overview without the side rail, then a breadcrumb on e
   const content = page.getByTestId('setup-area-content');
   await expect(sectionHeading(page)).toHaveText('All setup areas');
   // Retired from the overview: the duplicate entry buttons, the grey status box, the Next actions rail and Browse.
-  for (const name of ['Policy library', 'Administration settings', 'Policy starter (attendance, overtime, benefits…)', 'Browse all areas']) {
+  for (const name of ['Policy library', 'Administration settings', 'Browse all areas']) {
     await expect(page.getByTestId('setup-studio-workspace').getByRole('button', { name, exact: true })).toHaveCount(0);
   }
   await expect(page.getByText('Configuration status is not assessed here. Open an area to review its saved settings.', { exact: true })).toHaveCount(0);
@@ -528,28 +527,11 @@ test('a company-scoped group administrator sees only company-owned settings, Cos
   await boot(page, { companyScoped: true, url: '/setup?tab=companies' });
   const nav = setupSectionEntries(page);
   await showList(page);
-  await expect(nav.getByRole('listitem').getByRole('link')).toHaveText(['Guided setup', 'All setup areas', 'Policy starter', 'Policy library', 'Companies', 'Branches', 'Cost centres',
+  await expect(nav.getByRole('listitem').getByRole('link')).toHaveText(['Guided setup', 'All setup areas', 'Policy library', 'Companies', 'Branches', 'Cost centres',
     // Modules' configuration keeps each module page's own rule, which company scope never narrowed.
     'Leave types', 'Leave policies', 'Holiday calendars', 'Payslip templates', 'Onboarding checklists', 'Payroll accounting', 'Tax policies', 'Audit log']);
   await openSetupSection(page, 'Cost centres');
   await expect(sectionHeading(page)).toHaveText('Cost centres');
   await expect(page).toHaveURL(/[?&]tab=costCenters(&|$)/);
   await expect(page.getByRole('button', { name: 'Add Cost Center', exact: true })).toBeVisible();
-});
-
-test('the Policy starter keeps the full width and folds the sections under its header', async ({ page }) => {
-  await boot(page, { url: '/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company' });
-  const nav = setupSectionEntries(page);
-  const toggle = setupSectionsToggle(page);
-  await expect(toggle).toBeVisible();
-  await expect(sectionHeading(page)).toHaveText('Policy starter');
-  await expect(nav.getByRole('link', { name: 'Grades', exact: true })).toBeHidden();
-  const headerBox = (await page.locator('.setup-section-header').boundingBox())!;
-  const starterBox = (await page.locator('#setup-aiSetup').boundingBox())!;
-  // Stacked under the header, not beside a column.
-  expect(starterBox.y).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
-  expect(Math.abs(starterBox.width - headerBox.width)).toBeLessThanOrEqual(2);
-  await openSetupSection(page, 'Grades');
-  await expect(page.getByRole('heading', { level: 2, name: 'Grades', exact: true })).toBeVisible();
-  await shot(page, `${page.viewportSize()!.width}-en-grades-after-starter`);
 });

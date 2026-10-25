@@ -50,6 +50,10 @@ const ShiftPolicy = dynamic(() => import('../../views/ShiftsPage').then(module =
   const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.ShiftSetupPanel section="policy" onDirtyChange={onDirtyChange} />;
   return Panel;
 }));
+const AttendanceRules = dynamic(() => import('../attendance/AttendanceRulesPanel').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.AttendanceRulesPanel onDirtyChange={onDirtyChange} />;
+  return Panel;
+}));
 const OvertimePolicies = dynamic(() => import('../../views/OvertimePage').then(module => {
   const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.PoliciesTab onDirtyChange={onDirtyChange} />;
   return Panel;
@@ -101,6 +105,7 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   holidayCalendars: HolidayCalendars,
   shiftDefinitions: ShiftDefinitions,
   shiftPolicy: ShiftPolicy,
+  attendanceRules: AttendanceRules,
   overtimePolicies: OvertimePolicies,
   attendanceDevices: AttendanceDevices,
   benefitPlans: BenefitPlans,

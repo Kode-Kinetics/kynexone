@@ -195,8 +195,9 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
       route('time', 'attendance', 'Attendance operations', '/attendance', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 0)),
       moduleSetting('time', 'shiftDefinitions', 'tenant', navigation('work-configuration', 'Work configuration', 0, 1)),
       moduleSetting('time', 'shiftPolicy', 'tenant', navigation('work-configuration', 'Work configuration', 0, 2)),
-      moduleSetting('time', 'overtimePolicies', 'tenant', navigation('work-configuration', 'Work configuration', 0, 3)),
-      moduleSetting('time', 'attendanceDevices', 'tenant', navigation('work-configuration', 'Work configuration', 0, 4)),
+      moduleSetting('time', 'attendanceRules', 'tenant', navigation('work-configuration', 'Work configuration', 0, 3)),
+      moduleSetting('time', 'overtimePolicies', 'tenant', navigation('work-configuration', 'Work configuration', 0, 4)),
+      moduleSetting('time', 'attendanceDevices', 'tenant', navigation('work-configuration', 'Work configuration', 0, 5)),
       route('time', 'shifts', 'Shift rosters', '/shifts', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 3)),
       route('time', 'overtime', 'Overtime requests', '/overtime', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 1)),
       route('time', 'timesheets', 'Project timesheets', '/timesheets', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 2)),
@@ -325,13 +326,12 @@ export function destinationAvailability(destination: SetupDestination, context: 
 // ── Who sees which Setup section ──────────────────────────────────────────────────────────────────────────────────
 
 /** The setup tools at the top of the navigation ("Get started"). */
-export type SetupToolId = 'guidedSetup' | 'allSetupAreas' | 'importOrganization' | 'policyStarter' | 'policyLibrary';
+export type SetupToolId = 'guidedSetup' | 'allSetupAreas' | 'importOrganization' | 'policyLibrary';
 
 export const SETUP_TOOLS: Record<SetupToolId, { label: string; description: string; href: string }> = {
   guidedSetup: { label: msg('Guided setup'), description: msg('Create a company, or finish setting one up, one screen at a time.'), href: '/setup?tab=aiSetup&path=guided' },
   allSetupAreas: { label: msg('All setup areas'), description: msg('Every setup area, with its settings and related workspaces.'), href: '/setup?tab=aiSetup&path=configuration&area=overview' },
   importOrganization: { label: msg('Import organization'), description: msg('Load companies, branches, departments and jobs from a file.'), href: '/setup?tab=importOrganization' },
-  policyStarter: { label: msg('Policy starter'), description: msg('Attendance, overtime, benefits and other policies.'), href: '/setup?tab=aiSetup&path=policyStarter' },
   policyLibrary: { label: msg('Policy library'), description: msg('Policy documents your company has uploaded.'), href: '/setup?tab=policyLibrary' },
 };
 
@@ -380,7 +380,6 @@ export function setupNavigationModel(access: SetupNavigationAccess): SetupNaviga
     'guidedSetup',
     'allSetupAreas',
     ...(!isCompanyScopedGroup ? ['importOrganization' as const] : []),
-    'policyStarter',
     ...(canManagePolicies ? ['policyLibrary' as const] : []),
   ] : [];
   return { canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates, canManagePolicies, tools, settings };

@@ -12,7 +12,7 @@ import { openSetupSection, setupSectionEntries } from '../setupSections';
 
 export const ALL_PERMISSIONS = [
   'dashboard.read', 'ess.read', 'organization.read', 'organization.write',
-  'leave.read', 'leave.write', 'attendance.read', 'attendance.write', 'attendance.bulk_import', 'overtime.read', 'overtime.write',
+  'leave.read', 'leave.write', 'attendance.read', 'attendance.write', 'attendance.bulk_import', 'attendance.policy_manage', 'overtime.read', 'overtime.write',
   'employees.read', 'employees.write', 'loans.read', 'loans.write', 'payroll.read', 'payroll.write',
   'recruitment.read', 'recruitment.write', 'performance.cycle_manage', 'engagement.read', 'engagement.manage',
   'compliance.read', 'compliance.write', 'qiwa.read', 'security.manage', 'users.manage', 'roles.manage',
@@ -31,16 +31,16 @@ export type ApiMocks = Record<string, unknown | ((url: URL, method: string) => u
 
 const COMPANY = { id: 'fixture-company', legalNameEn: 'Workspace Fixture LLC', countryCode: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' };
 
-export async function boot(page: Page, options: { persona?: Persona; url: string; mocks?: ApiMocks; disabledKeys?: string[]; flagsDelayMs?: number }) {
+export async function boot(page: Page, options: { persona?: Persona; url: string; mocks?: ApiMocks; disabledKeys?: string[]; flagsDelayMs?: number; locale?: 'en' | 'ar' }) {
   const persona = options.persona ?? ADMIN;
   const errors: string[] = [];
   const writes: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(() => {
+  await page.addInitScript((locale: string) => {
     localStorage.setItem('zayra_access_token', 'fixture');
-    localStorage.setItem('kynexone-locale-choice-v2', 'en');
+    localStorage.setItem('kynexone-locale-choice-v2', locale);
     localStorage.setItem('kynexone-company:reviewer', 'fixture-company');
-  });
+  }, options.locale ?? 'en');
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());

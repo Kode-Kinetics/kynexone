@@ -120,7 +120,7 @@ test('a user never finds a section the navigation hides from them', () => {
   const scopedSections = scoped.filter(entry => entry.navId && !entry.id.startsWith('gl:')).map(entry => entry.id);
   // Modules' configuration follows each module's own rule, which company scope never narrowed (the Leave page, Payslip
   // templates and Tax policies opened for them before the move too).
-  expect(scopedSections).toEqual(['guidedSetup', 'allSetupAreas', 'policyStarter', 'companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs',
+  expect(scopedSections).toEqual(['guidedSetup', 'allSetupAreas', 'companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs',
     'leaveTypes', 'leavePolicies', 'holidayCalendars', 'payslipTemplates', 'onboardingChecklists', 'taxPolicies']);
   expect(ids(scoped, 'grades')).toEqual([]);
   expect(ids(scoped, 'leave types')).toContain('leaveTypes');

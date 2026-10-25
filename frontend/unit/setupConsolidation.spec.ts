@@ -32,7 +32,7 @@ test('the_moved_screens_and_their_groups_are_exactly_these', () => {
   for (const item of SETUP_MODULE_SECTIONS) (byGroup[item.group] ??= []).push(item.id);
   expect(byGroup).toEqual({
     getStarted: ['openingBalances'],
-    timeLeave: ['leaveTypes', 'leavePolicies', 'holidayCalendars', 'shiftDefinitions', 'shiftPolicy', 'overtimePolicies', 'attendanceDevices'],
+    timeLeave: ['leaveTypes', 'leavePolicies', 'holidayCalendars', 'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'overtimePolicies', 'attendanceDevices'],
     payBenefits: ['benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates'],
     talentServices: ['onboardingChecklists', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy'],
     payrollCompliance: ['taxPolicies', 'complianceProfiles', 'saudiCompliance', 'countryPayrollKeys'],

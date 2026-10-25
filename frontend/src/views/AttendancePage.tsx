@@ -300,7 +300,7 @@ export function AttendancePage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <ModuleSettingsLink sections={['attendanceDevices']} label={msg('Attendance settings')} />
+          <ModuleSettingsLink sections={['attendanceRules', 'attendanceDevices']} label={msg('Attendance settings')} />
           <input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="input" aria-label="Attendance date" />
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="select" aria-label="Status filter">
             <option value="">All statuses</option>

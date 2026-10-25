@@ -5,8 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail,
-  BadgeCheck, Blocks, CalendarClock, CalendarDays, Clock3, CreditCard, DatabaseBackup, FileSignature, Fingerprint, Gift, HeartPulse, HelpCircle, KeyRound, Languages, Lock, Palette, Percent, Scale, ScrollText, Star, Table2, TimerReset, UserCheck, UserCog, Wallet } from 'lucide-react';
-import { AiSetupAssistant } from '../components/AiSetupAssistant';
+  AlarmClockCheck, BadgeCheck, Blocks, CalendarClock, CalendarDays, Clock3, CreditCard, DatabaseBackup, FileSignature, Fingerprint, Gift, HeartPulse, HelpCircle, KeyRound, Languages, Lock, Palette, Percent, Scale, ScrollText, Star, Table2, TimerReset, UserCheck, UserCog, Wallet } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
@@ -21,7 +20,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
 import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChooser';
-import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
+import { SetupEditorState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
@@ -105,8 +104,8 @@ import Link from 'next/link';
 type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | SetupSectionId;
 /** A settings section: Setup's own, or a module's configuration (each module's editor, loaded when opened). */
 type SettingsTab = SetupSectionId;
-/** A navigation entry: a settings section, a setup tool, or one of the three Setup paths that share tab=aiSetup. */
-type SetupNavId = Exclude<Tab, 'aiSetup'> | 'guidedSetup' | 'allSetupAreas' | 'policyStarter';
+/** A navigation entry: a settings section, a setup tool, or one of the two Setup paths that share tab=aiSetup. */
+type SetupNavId = Exclude<Tab, 'aiSetup'> | 'guidedSetup' | 'allSetupAreas';
 function isSettingsTab(id: string): id is SettingsTab { return tabs.some(tab => tab.id === id); }
 
 const settingIcons: Record<SetupSettingId, React.ElementType> = {
@@ -117,7 +116,7 @@ const settingIcons: Record<SetupSettingId, React.ElementType> = {
 };
 const moduleIcons: Record<SetupModuleSectionId, React.ElementType> = {
   openingBalances: DatabaseBackup,
-  leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock,
+  leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock, attendanceRules: AlarmClockCheck,
   overtimePolicies: TimerReset, attendanceDevices: Fingerprint,
   benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText,
   onboardingChecklists: ListChecks, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
@@ -139,11 +138,10 @@ const toolSections: Record<Exclude<SetupNavId, SettingsTab>, { label: string; ic
   guidedSetup: { label: SETUP_TOOLS.guidedSetup.label, icon: ListChecks },
   allSetupAreas: { label: SETUP_TOOLS.allSetupAreas.label, icon: LayoutGrid },
   importOrganization: { label: SETUP_TOOLS.importOrganization.label, icon: Upload },
-  policyStarter: { label: SETUP_TOOLS.policyStarter.label, icon: FileText },
   policyLibrary: { label: SETUP_TOOLS.policyLibrary.label, icon: ClipboardList },
 };
-const studioPaths: Record<'guidedSetup' | 'allSetupAreas' | 'policyStarter', SetupStudioPath> = {
-  guidedSetup: 'guided', allSetupAreas: 'configuration', policyStarter: 'policyStarter',
+const studioPaths: Record<'guidedSetup' | 'allSetupAreas', SetupStudioPath> = {
+  guidedSetup: 'guided', allSetupAreas: 'configuration',
 };
 
 // Small read-only field for the statutory pack profile panel.
@@ -2611,15 +2609,7 @@ export function SetupPage() {
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [editorDirty, setEditorDirty] = useState(false);
-  const [pendingStarterFiles, setPendingStarterFiles] = useState(false);
-  const clearDirty = useCallback(() => setEditorDirty(false), []);
-  // "Discard and leave" covers the selected-but-unuploaded files as well. Leaving the
-  // pending-file flag set kept the guard armed after the user had confirmed, so the
-  // company sync that follows a confirmed Back/Forward asked the same question again.
-  const discardSetupWork = useCallback(() => {
-    setEditorDirty(false);
-    setPendingStarterFiles(false);
-  }, []);
+  const discardSetupWork = useCallback(() => setEditorDirty(false), []);
   // A Guided setup deep link is the address this Setup visit arrived with, read once here, before the company scope is
   // reconciled into the URL. Every later return to Guided setup (navigation, search, Back) keeps `companyId` only as
   // the scope and opens the chooser.
@@ -2628,7 +2618,7 @@ export function SetupPage() {
   // This arrival has been read: a later visit is classified afresh (a followed link after a Back is a link again).
   useEffect(() => { setupDocumentLandingSeen = true; lastTraversedHref = null; }, []);
   const authorizedCompany = useSetupCompanyQuery();
-  const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, pendingStarterFiles, authorizedCompany);
+  const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, false, authorizedCompany);
   const setupPath = resolveSetupPath(new URLSearchParams(searchParams?.toString()), {
     authorizedCompanyIds: new Set(authorizedCompanies.map(company => company.id)),
     selectedCompanyId: authorizedCompany,
@@ -2708,15 +2698,8 @@ export function SetupPage() {
     : isSettingsTab(activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration' && !configurationScopeUnavailable;
-  // Guided setup is the company setup chooser (create, or complete an existing company — Addendum A). The old
-  // studio stays reachable only as the "Policy starter", for what has no screen of its own (A7).
+  // Guided setup is the company setup chooser (create, or complete an existing company — Addendum A).
   const isGuided = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
-  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'policyStarter';
-  const starterScope = authorizedCompany ?? 'group';
-  const setupPathHref = (path: SetupStudioPath) => {
-    const next = serializeSetupPath({ ...setupPath, path, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
-    return `/setup?${next.toString()}`;
-  };
   const recoverConfigurationScope = (companyId: string | null) => {
     setSelectedCompany(companyId);
     const next = serializeSetupPath({
@@ -2727,45 +2710,24 @@ export function SetupPage() {
     }, new URLSearchParams(searchParams?.toString()));
     router.replace(`/setup?${next.toString()}`, { scroll: false });
   };
-  const selectSetupPath = (path: SetupStudioPath) => {
-    if (path === setupPath.path) return;
-    const href = setupPathHref(path);
-    confirmLeave(href, () => {
-      setActiveTab('aiSetup');
-      router.push(href, { scroll: false });
-    });
-  };
-  const returnToWorkspace = () => {
-    if (pendingStarterFiles) {
-      selectSetupPath('configuration');
-      return;
-    }
-    // AiSetupAssistant invokes this callback only after saveForLater succeeds.
-    // The persisted draft no longer needs the dirty-value blocker.
-    clearDirty();
-    setActiveTab('aiSetup');
-    router.push(setupPathHref('configuration'), { scroll: false });
-  };
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
-  // Guided setup, All setup areas and the Policy starter share tab=aiSetup and differ by path. Guided setup and All
-  // setup areas open at their start (no area or setting), which is also where a plain click on the current entry
-  // returns to. The Policy starter keeps the area on screen, so its "Return to workspace" comes back to it.
+  // Guided setup and All setup areas share tab=aiSetup and differ by path. Both open at their start (no area or
+  // setting), which is also where a plain click on the current entry returns to.
   const studioHref = (entry: keyof typeof studioPaths) => {
-    const area = entry === 'policyStarter' ? setupPath.area : 'overview';
-    const next = serializeSetupPath({ ...setupPath, path: studioPaths[entry], area, setting: null, notice: undefined, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
+    const next = serializeSetupPath({ ...setupPath, path: studioPaths[entry], area: 'overview', setting: null, notice: undefined, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
     return `/setup?${next.toString()}`;
   };
   const selectedNavId: SetupNavId = selectedTab === 'aiSetup'
-    ? (setupPath.path === 'guided' ? 'guidedSetup' : setupPath.path === 'policyStarter' ? 'policyStarter' : 'allSetupAreas')
+    ? (setupPath.path === 'guided' ? 'guidedSetup' : 'allSetupAreas')
     : selectedTab;
   const selectNavigation = (id: SetupNavId) => {
     // An in-page move: whatever the arrival named is no longer a deep link.
     landingCompanyLink.current = null;
-    if (id !== 'guidedSetup' && id !== 'allSetupAreas' && id !== 'policyStarter') {
+    if (id !== 'guidedSetup' && id !== 'allSetupAreas') {
       selectTab(id);
       return;
     }
-    if (id === selectedNavId && (id === 'policyStarter' || (setupPath.area === 'overview' && !setupPath.setting))) return;
+    if (id === selectedNavId && setupPath.area === 'overview' && !setupPath.setting) return;
     const href = studioHref(id);
     // The tab follows the address (requestedTab), so no in-between section is shown or announced on the way.
     confirmLeave(href, () => { if (setupSectionHasFailed()) window.location.assign(href); else router.push(href, { scroll: false }); });
@@ -2791,7 +2753,7 @@ export function SetupPage() {
       description: t('{company}: {done} of {total} setup items done', { company: guidedCompanyName, done: guidedProgress.done, total: guidedProgress.total }),
     } : undefined,
   });
-  // Get started: the setup paths and tools. The Policy starter is for setup writers, like the rest of this group.
+  // Get started: the setup paths and tools, for setup writers.
   const setupTools: SetupSectionNavItem<SetupNavId>[] = navigationModel.tools.map(navItem);
   const navigationSettings = visibleTabs;
   const navigationGroups: SetupSectionNavGroup<SetupNavId>[] = SETUP_SECTION_GROUPS.map(group => ({
@@ -2978,18 +2940,17 @@ export function SetupPage() {
       </header>
 
       {/* One navigation for the page: the grouped section column beside the selected section from 1280px. Below that
-          (and for the Policy starter, which brings its own step rail) the list folds away under the section header's
-          "All sections" button, so the header comes first, then the list when it is open, then the section. */}
-      <div className={showNavigation && !isStarter
+          the list folds away under the section header's "All sections" button, so the header comes first, then the list
+          when it is open, then the section. */}
+      <div className={showNavigation
         ? 'setup-page-layout grid min-w-0 xl:grid-cols-[15rem_minmax(0,1fr)] xl:grid-rows-[auto_1fr] xl:gap-x-6'
         : 'setup-page-layout grid min-w-0'}>
       {showNavigation && (
-        <div className={`min-w-0 ${isStarter ? '' : 'xl:col-start-1 xl:row-span-2 xl:row-start-1'}`}>
+        <div className="min-w-0 xl:col-start-1 xl:row-span-2 xl:row-start-1">
           <SetupSectionNav
             groups={navigationGroups}
             selectedId={selectedNavId}
             currentLabel={currentSectionLabel}
-            collapsed={isStarter}
             open={sectionListOpen}
             onOpenChange={setSectionListOpen}
             toggleRef={sectionToggle}
@@ -3003,16 +2964,16 @@ export function SetupPage() {
           />
         </div>
       )}
-      <div className={`order-first min-w-0 ${showNavigation && !isStarter ? 'xl:order-none xl:col-start-2 xl:row-start-1' : ''}`}>
+      <div className={`order-first min-w-0 ${showNavigation ? 'xl:order-none xl:col-start-2 xl:row-start-1' : ''}`}>
         <SetupSectionHeader
           icon={currentSection.icon}
           title={currentSectionLabel}
           description={sectionDescription}
           divider={isSettings}
-          action={showNavigation ? <SetupSectionsToggle open={sectionListOpen} onToggle={() => setSectionListOpen(value => !value)} collapsed={isStarter} toggleRef={sectionToggle} /> : undefined}
+          action={showNavigation ? <SetupSectionsToggle open={sectionListOpen} onToggle={() => setSectionListOpen(value => !value)} toggleRef={sectionToggle} /> : undefined}
         />
       </div>
-      <div className={`setup-page-content mt-4 min-w-0 space-y-4 ${showNavigation && !isStarter ? 'xl:col-start-2 xl:row-start-2' : ''}`}>
+      <div className={`setup-page-content mt-4 min-w-0 space-y-4 ${showNavigation ? 'xl:col-start-2 xl:row-start-2' : ''}`}>
 
       {/* Each path owns its mounted subtree; browser drafts plus the guard preserve authored work. */}
       {canWrite && (
@@ -3028,20 +2989,6 @@ export function SetupPage() {
             </section>}
             {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
             {isGuided && <GuidedSetupChooser showHeading={false} linkedCompanyId={landingCompanyLink.current} onLinkedCompanyUsed={() => { landingCompanyLink.current = null; }} />}
-            {isStarter && <div className="flex flex-col">
-              {/* One compact line. On a phone it follows the starter, so the starter's first screen keeps its
-                  own controls (setup-experience: policy entry in the first viewport). */}
-              <p className="order-last mt-3 flex flex-wrap sm:order-first sm:mb-2 sm:mt-0 items-center gap-x-2 gap-y-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400" data-testid="policy-starter-banner">
-                <span className="font-semibold text-slate-900 dark:text-white">{t('Attendance, overtime, benefits and other policies.')}</span>
-                <span>{t('For a company’s structure, use Guided setup.')}</span>
-                <button type="button" className="font-semibold text-sapphire underline-offset-2 hover:underline dark:text-cyanAccent" onClick={() => selectSetupPath('configuration')}>{t('Back to All setup areas')}</button>
-              </p>
-              <div className="min-w-0" onChangeCapture={event => {
-              setEditorDirty(true);
-              const target = event.target;
-              if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
-            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>
-            </div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
               guidedCompanies={guidedCompanies}
