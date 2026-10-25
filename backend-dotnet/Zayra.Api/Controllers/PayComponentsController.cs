@@ -370,6 +370,7 @@ public class PayComponentsController : ControllerBase
         c.Id, c.CompanyId, c.Code, c.NameEn, c.NameAr, c.ComponentType, c.CalcMethod, c.Value, c.StructureField,
         c.ProviderKey, c.IsTaxable, c.GosiSubject, c.WpsIncluded, c.EosbIncluded, c.GlDriverKey, c.DisplayOrder,
         c.EffectiveFrom, c.EffectiveTo, c.IsSystem, c.IsStatutory, c.IsActive,
-        editable = !c.IsSystem && !c.IsStatutory,
+        // A grade-package definition is listed (it is in the catalogue) but is changed in Setup → Grades, not here.
+        editable = !c.IsSystem && !c.IsStatutory && c.CalcMethod != PayComponentCalcMethods.GradePackage,
     };
 }
