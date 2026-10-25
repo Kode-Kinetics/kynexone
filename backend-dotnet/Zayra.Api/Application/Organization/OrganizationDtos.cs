@@ -104,7 +104,9 @@ public record DepartmentRequest(
     [MaxLength(180)] string? NameAr,
     int? ManagerEmployeeId,
     bool IsActive = true,
-    Guid? CompanyId = null);
+    Guid? CompanyId = null,
+    // Cost-accounting v1: the reason for clearing a cost-centre or parent link (recorded in the audit row).
+    [MaxLength(500)] string? Reason = null);
 
 public record DesignationDto(
     Guid Id,

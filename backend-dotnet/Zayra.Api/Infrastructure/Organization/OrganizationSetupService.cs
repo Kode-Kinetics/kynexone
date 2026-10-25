@@ -339,7 +339,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         Apply(department, request);
         _db.Departments.Add(department);
         _audit.Stage("organization.department_created", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
-            DepartmentAuditJson(null, department), department.CompanyId);
+            DepartmentAuditJson(null, department, request.Reason), department.CompanyId);
         await _db.SaveChangesAsync(cancellationToken);
         return department.ToDto();
     }
@@ -359,7 +359,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         department.UpdatedAtUtc = DateTime.UtcNow;
         department.UpdatedBy = context.UserId;
         _audit.Stage("organization.department_updated", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
-            DepartmentAuditJson(before, department), department.CompanyId);
+            DepartmentAuditJson(before, department, request.Reason), department.CompanyId);
         await _db.SaveChangesAsync(cancellationToken);
         return department.ToDto();
     }
@@ -630,8 +630,8 @@ public class OrganizationSetupService : IOrganizationSetupService
     private static DepartmentSnapshotRow DepartmentSnapshot(Department d) =>
         new(d.Id, d.Code, d.NameEn, d.CompanyId, d.BranchId, d.ParentDepartmentId, d.CostCenterId, d.IsActive);
 
-    private static string DepartmentAuditJson(DepartmentSnapshotRow? before, Department after) =>
-        System.Text.Json.JsonSerializer.Serialize(new { before, after = DepartmentSnapshot(after) },
+    private static string DepartmentAuditJson(DepartmentSnapshotRow? before, Department after, string? reason) =>
+        System.Text.Json.JsonSerializer.Serialize(new { before, after = DepartmentSnapshot(after), reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim() },
             new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
 
     private static CostCentreSnapshotRow CostCentreSnapshot(CostCenter c) => new(
