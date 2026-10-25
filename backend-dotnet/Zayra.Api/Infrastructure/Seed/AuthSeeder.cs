@@ -243,7 +243,7 @@ public class AuthSeeder : IAuthSeeder
             "payroll.run_delete",
             "approvals.read", "approvals.decide", "reports.read", "notifications.read",
             // Phase 2 GL + non-statutory rates (NOT statutory_override / author_predicates — higher trust).
-            "finance.gl.read", "finance.gl.manage", "finance.gl.drivers.manage",
+            "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
             "payroll.rates.read", "payroll.rates.manage"
         }), 4, true, cancellationToken);
 
@@ -517,6 +517,8 @@ public class AuthSeeder : IAuthSeeder
             // Finance — GL configuration (Phase 2)
             ("finance.gl.read", "Finance", "View chart of accounts and payroll GL mappings"),
             ("finance.gl.manage", "Finance", "Manage GL accounts, mappings and per-company overrides"),
+            // Taking a journal-export file (download and its line detail). finance.gl.read keeps metadata and totals only (AM-19/AM-21).
+            ("finance.gl.export", "Finance", "Download GL journal export files and see their line detail"),
             ("finance.gl.drivers.manage", "Finance", "Manage custom GL posting drivers"),
             ("finance.gl.drivers.author_predicates", "Finance", "Author non-Exact GL driver predicates and employer-expense pairs (Admin/vendor)"),
             // Reopening a closed GL period un-freezes finalised books. Admin-only by default (Admin holds every

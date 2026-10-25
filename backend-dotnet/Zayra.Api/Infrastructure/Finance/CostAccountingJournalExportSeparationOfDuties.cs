@@ -1,9 +1,47 @@
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 
 namespace Zayra.Api.Infrastructure.Finance;
 
-/// <summary>Skeleton: the adapter over <see cref="CostAccountingSod"/> (AM-22). Behaviour follows in the next commit.</summary>
+/// <summary>
+/// AM-22: the production <see cref="IJournalExportSeparationOfDuties"/>, over WP-B's <see cref="CostAccountingSod"/>.
+/// <para>A person is barred when they changed the company's costing set-up since its previous lock; so is an ERP API key's
+/// creator (a key acts for its creator, AM-14), checked on the creator's user id. The rule applies only while the company's
+/// costing switch is on (AM-26): <see cref="CostAccountingSod.HasConflictAsync"/> answers false for a company that is off or
+/// unknown. When the export names no company (a group export) every company of the tenant is checked, because the file would
+/// carry them all; a run-only request resolves its company and month from the run. When the period cannot be determined the
+/// check is made over the company's whole history, the strictest reading, so an unreadable scope never relaxes the rule.</para>
+/// </summary>
 public sealed class CostAccountingJournalExportSeparationOfDuties(ZayraDbContext db) : IJournalExportSeparationOfDuties
 {
-    public Task<bool> IsBarredAsync(JournalExportSodRequest request, CancellationToken ct) => Task.FromResult(false);
+    public async Task<bool> IsBarredAsync(JournalExportSodRequest request, CancellationToken ct)
+    {
+        var companyIds = new List<Guid>();
+        var period = request.Period;
+
+        if (request.PayrollRunId is { } runId)
+        {
+            var run = await ScopedBypass.TenantWide(db.PayrollRuns, request.TenantId, "SoD resolves the run an export is for, regardless of the caller's company claims.")
+                .AsNoTracking().Where(r => r.Id == runId).Select(r => new { r.CompanyId, r.Year, r.Month }).FirstOrDefaultAsync(ct);
+            if (run is not null)
+            {
+                if (run.CompanyId is { } rc) companyIds.Add(rc);
+                if (string.IsNullOrWhiteSpace(period)) period = $"{run.Year:0000}-{run.Month:00}";
+            }
+        }
+        if (request.CompanyId is { } c) companyIds.Add(c);
+        if (companyIds.Count == 0)
+            companyIds = await ScopedBypass.TenantWide(db.Companies, request.TenantId, "A tenant-wide export is checked against every company of the tenant.")
+                .AsNoTracking().Select(x => x.Id).ToListAsync(ct);
+
+        var users = new List<Guid> { request.ActorUserId };
+        if (request.ApiKeyCreatorUserId is { } creator) users.Add(creator);
+
+        foreach (var company in companyIds.Distinct())
+            foreach (var user in users.Distinct())
+                if (await CostAccountingSod.HasConflictAsync(db, request.TenantId, company, period ?? string.Empty, user, ct))
+                    return true;
+        return false;
+    }
 }
