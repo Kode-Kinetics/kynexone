@@ -14,6 +14,7 @@ using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Models;
 using Zayra.Api.Tests.SelfieAttendance;
+using Zayra.Api.Tests.Security;
 
 namespace Zayra.Api.Tests;
 
