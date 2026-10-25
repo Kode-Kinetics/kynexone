@@ -2677,6 +2677,10 @@ export function SetupPage() {
     else { params.delete('area'); params.delete('setting'); }
     // Payroll accounting's tab request belongs to the link that made it, never to the next section's address.
     params.delete('glTab');
+    // The same holds for what Users and Plan and billing read from their link: a pre-filled search, the guided
+    // "create a user" dialog and where it returns to, and the subscription alert. Carried on, they would reopen the
+    // dialog or refilter the list when the section is next visited.
+    ['search', 'openCreate', 'purpose', 'returnTo', 'alert'].forEach(key => params.delete(key));
     if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
     return `/setup?${params.toString()}`;
   };

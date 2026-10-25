@@ -44,7 +44,7 @@ async function boot(page: Page, url: string, options: { policyIntake: boolean })
   return { policyCalls, writes, errors };
 }
 
-const onboardingUrl = '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboarding';
+const onboardingUrl = '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboardingChecklists';
 const studioUrl = '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=leave';
 
 test('flag off: Setup → Onboarding is the manual editor only, with no Fill from policy', async ({ page }) => {

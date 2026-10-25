@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
-import { complianceProfilesApi, type ComplianceReadiness } from '@/src/api/governance';
-import { useCompany } from '@/src/contexts/CompanyContext';
-import { JawazatPolicyEditor } from '@/src/components/compliance/JawazatPolicyEditor';
+import { complianceProfilesApi, type ComplianceReadiness } from '../api/governance';
+import { useCompany } from '../contexts/CompanyContext';
+import { JawazatPolicyEditor } from '../components/compliance/JawazatPolicyEditor';
 
-/** Per-company compliance readiness. Configurable readiness tooling — NOT legal certification. */
-export default function ComplianceProfilesPage() {
+/** Per-company compliance readiness. Configurable readiness tooling — NOT legal certification. Shown as the Setup section Compliance profiles, which carries the title. */
+export function ComplianceProfilesPage() {
   const { companies, selectedCompanyId } = useCompany();
   const [companyId, setCompanyId] = useState<string | ''>('');
   const [readiness, setReadiness] = useState<ComplianceReadiness | null>(null);
@@ -47,10 +47,7 @@ export default function ComplianceProfilesPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">Compliance Profiles</h1>
-          <p className="text-xs text-slate-400">Per-legal-entity readiness</p>
-        </div>
+        <p className="text-xs text-slate-400">Per-legal-entity readiness</p>
         <label className="text-xs font-medium text-slate-500 dark:text-slate-400">
           Company{' '}
           <select

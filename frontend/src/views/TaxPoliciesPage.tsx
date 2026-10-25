@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Landmark, Plus, RefreshCw } from 'lucide-react';
-import { taxPoliciesApi, type CompanyTaxPolicy, type CompanyTaxPolicyInput } from '@/src/api/governance';
-import { useAuth } from '@/src/contexts/AuthContext';
-import { useCompany } from '@/src/contexts/CompanyContext';
+import { taxPoliciesApi, type CompanyTaxPolicy, type CompanyTaxPolicyInput } from '../api/governance';
+import { useAuth } from '../contexts/AuthContext';
+import { useCompany } from '../contexts/CompanyContext';
 
 // The six GCC states levy 0% statutory personal income tax (mirrors the server's
 // CountryTier.IsZeroPersonalIncomeTax). Setting a non-zero CompanyTaxPolicy rate for one of
@@ -13,8 +13,11 @@ import { useCompany } from '@/src/contexts/CompanyContext';
 const GCC_ZERO_PIT_CODES = new Set(['SA', 'SAU', 'AE', 'ARE', 'QA', 'QAT', 'KW', 'KWT', 'OM', 'OMN', 'BH', 'BHR']);
 const isGccZeroPit = (code: string) => GCC_ZERO_PIT_CODES.has(code.trim().toUpperCase());
 
-/** Per-company tax policy admin. Configurable policy foundation — NOT legal or tax advice. */
-export default function TaxPoliciesPage() {
+/**
+ * Per-company tax policy admin. Configurable policy foundation — NOT legal or tax advice. Shown as the Setup section
+ * Tax policies, which carries the title; the "New policy" action stays with Admin and Payroll Manager.
+ */
+export function TaxPoliciesPage() {
   const { hasRole } = useAuth();
   const { companies, companyVersion } = useCompany();
   const [policies, setPolicies] = useState<CompanyTaxPolicy[]>([]);
@@ -43,10 +46,7 @@ export default function TaxPoliciesPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">Tax Policies</h1>
-          <p className="text-xs text-slate-400">Per-legal-entity income tax configuration</p>
-        </div>
+        <p className="text-xs text-slate-400">Per-legal-entity income tax configuration</p>
         {canManage && (
           <button type="button" onClick={() => setShowCreate(true)}
             className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-2 text-xs font-semibold text-white transition hover:opacity-90">

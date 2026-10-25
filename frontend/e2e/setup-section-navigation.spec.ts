@@ -235,7 +235,7 @@ test('a ?tab= deep link opens its section and marks it, even low in the list', a
 });
 
 test('switching section with unsaved work asks first, and Cancel keeps the work', async ({ page }) => {
-  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboarding' });
+  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboardingChecklists' });
   const draft = page.getByPlaceholder('Task title', { exact: true });
   await draft.fill('Keep this task');
   const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });

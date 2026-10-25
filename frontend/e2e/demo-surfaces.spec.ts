@@ -94,15 +94,19 @@ test.describe('HR letters', () => {
     expect(page.items[0].fileHash, 'the register stores a content hash for each PDF').toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test('the HR letters screen shows its four working areas', async ({ page }) => {
+  test('the HR letters screen shows its three working areas and links to its templates in Setup', async ({ page }) => {
     await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
     await page.goto('/hr-letters');
     await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
 
     const text = await mainText(page);
-    for (const tab of ['Employee Requests', 'Issue a Letter', 'Issued Register', 'Templates']) {
+    for (const tab of ['Employee Requests', 'Issue a Letter', 'Issued Register']) {
       expect(text, `the ${tab} area must be reachable from /hr-letters`).toContain(tab);
     }
+    // The templates are Setup → Letter templates now; the page links there for the people who may edit them.
+    await page.getByRole('link', { name: 'Letter settings', exact: true }).click();
+    await expect(page).toHaveURL(/\/setup\?tab=letterTemplates/);
+    await expect(page.locator('#setup-section-heading')).toHaveText('Letter templates');
   });
 });
 

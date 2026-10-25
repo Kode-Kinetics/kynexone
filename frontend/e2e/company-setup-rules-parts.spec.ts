@@ -311,9 +311,10 @@ test('a page link leaves with the way back; Back to company setup returns to the
   const { pageErrors } = await boot(page);
   await openPart(page, t, 'moreSettings');
   const shifts = page.getByTestId('more-settings-shifts');
-  await expect(shifts).toHaveAttribute('href', `/shifts?returnTo=companySetup&company=${COMPANY}&draft=${DRAFT}&part=moreSettings`);
+  // Shift definitions are a Setup section now (Shifts keeps the roster); the page link carries the company and the way back.
+  await expect(shifts).toHaveAttribute('href', `/setup?tab=shiftDefinitions&companyId=${COMPANY}&returnTo=companySetup&company=${COMPANY}&draft=${DRAFT}&part=moreSettings`);
   await shifts.click();
-  await expect(page).toHaveURL(/\/shifts\?returnTo=companySetup/);
+  await expect(page).toHaveURL(/\/setup\?tab=shiftDefinitions.*returnTo=companySetup/);
   const bar = page.getByTestId('company-setup-return');
   await expect(bar, pageErrors.join('\n')).toBeVisible();
   await expect(bar.getByRole('link', { name: t('Back to company setup') })).toHaveAttribute('href', partUrl('moreSettings'));

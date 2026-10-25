@@ -100,7 +100,7 @@ export function BenefitClaimForm({ benefit, employeeId, onClose, onSubmitted }: 
   };
   return <Modal title={t('Claim {benefit}', { benefit: benefit.planName })} onClose={() => { if (!saving && !uploading) onClose(); }}>
     <div className="space-y-4"><FormError message={error} />
-      {missingRoute && (canConfigure ? <Link href="/benefits#benefit-claim-approval" className="inline-block text-sm font-semibold text-sapphire">{t('Configure claim approvals')}</Link> : <p className="text-sm text-amber-700">{t('Ask an administrator to configure benefit claim approvals, then retry this claim.')}</p>)}
+      {missingRoute && (canConfigure ? <Link href="/setup?tab=benefitPlans#benefit-claim-approval" target="_blank" rel="noopener noreferrer" className="inline-block text-sm font-semibold text-sapphire">{t('Configure claim approvals')}<span className="sr-only"> {t('(opens in a new tab)')}</span></Link> : <p className="text-sm text-amber-700">{t('Ask an administrator to configure benefit claim approvals, then retry this claim.')}</p>)}
       {reviewing ? <>
         <dl className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-4 text-sm dark:bg-white/5"><div><dt className="text-xs text-slate-500">{t('Claim amount')}</dt><dd className="font-semibold">{format.money(claimAmount, benefit.currency)}</dd></div>
           {child && <div><dt className="text-xs text-slate-500">{t('Child')}</dt><dd className="break-words">{child.name}</dd></div>}

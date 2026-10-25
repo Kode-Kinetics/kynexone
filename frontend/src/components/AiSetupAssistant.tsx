@@ -559,10 +559,10 @@ export function AiSetupAssistant({ companies = [], onOpenLibrary, onReturnToWork
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Group rollout</h3>
             {[
               ['1', 'Create the legal entity', 'Registration, country, currency and activation status.'],
-              ['2', 'Assign its administrator', 'Use User Management after the company is active.'],
+              ['2', 'Assign its administrator', 'Add them under Users & access in Setup after the company is active.'],
               ['3', 'Configure this company', 'Open a company-bound draft, review and apply.'],
             ].map(([number, title, detail]) => <div key={number} className="flex gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">{number}</span><div><p className="text-xs font-semibold text-slate-800 dark:text-slate-100">{title}</p><p className="mt-0.5 text-[11px] leading-4 text-slate-500">{detail}</p></div></div>)}
-            <Link href="/user-management" className="btn-secondary mt-2 w-full justify-center"><Users className="h-4 w-4" />Manage administrators</Link>
+            <Link href="/setup?tab=users" className="btn-secondary mt-2 w-full justify-center"><Users className="h-4 w-4" />Manage administrators</Link>
             <div className="border-t border-slate-200 pt-3 dark:border-white/10">
               <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">Shared group baseline</p>
               <p className="mt-1 text-[11px] leading-4 text-slate-500">Configure shared catalogs once, then let each company use them without copying conflicting versions.</p>

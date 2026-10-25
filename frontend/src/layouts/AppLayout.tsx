@@ -296,7 +296,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   };
 
   const openUserResult = (searchText: string) => {
-    const path = `/user-management?search=${encodeURIComponent(searchText)}`;
+    const path = `/setup?tab=users&search=${encodeURIComponent(searchText)}`;
     if (commandQuery.trim().length >= 2) saveToHistory(commandQuery.trim());
     setSearchHistory(loadHistory());
     navigationGuard.push(path, commandTriggerRef.current);

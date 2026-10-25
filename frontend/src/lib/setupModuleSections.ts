@@ -48,8 +48,10 @@ export interface SetupModuleAccess {
 const HR_ADMINS = ['Admin', 'HR Manager', 'HR Officer'] as const;
 const LEAVE = ['leave.read', 'leave.write'] as const;
 const LOANS = ['loans.read', 'loans.write'] as const;
-const ACCESS = ['users.manage', 'roles.manage', 'security.manage'] as const;
-const TENANT = ['security.manage'] as const;
+// Users & access and the workspace are served by security.manage alone (AccessController.cs:23, TenantAdminController.cs:17):
+// users.manage and roles.manage open nothing in them, so a section never lists them.
+const SECURITY = ['security.manage'] as const;
+const TENANT = SECURITY;
 
 export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   // Get started
@@ -60,40 +62,40 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   { id: 'leavePolicies', group: 'timeLeave', label: msg('Leave policies'), description: msg('Who gets which leave, accrual, carry-forward and encashment.'), permissions: LEAVE, roles: HR_ADMINS, modulePath: '/leave' },
   { id: 'holidayCalendars', group: 'timeLeave', label: msg('Holiday calendars'), description: msg('Public holidays for each country and company.'), permissions: LEAVE, roles: HR_ADMINS, modulePath: '/leave' },
   { id: 'shiftDefinitions', group: 'timeLeave', label: msg('Shifts'), description: msg('Shift times, breaks and grace periods.'), permissions: ['attendance.read'], roles: HR_ADMINS, modulePath: '/shifts', featureKey: 'shifts' },
-  { id: 'shiftPolicy', group: 'timeLeave', label: msg('Shift policy'), description: msg('Rotation, rest-day and roster rules.'), permissions: ['attendance.read'], roles: HR_ADMINS, modulePath: '/shifts', featureKey: 'shifts' },
+  { id: 'shiftPolicy', group: 'timeLeave', label: msg('Shift policy'), description: msg('Rotation, rest-day and roster rules.'), permissions: ['attendance.read'], roles: ['Admin', 'HR Manager'], modulePath: '/shifts', featureKey: 'shifts' }, // GET /api/shifts/policy is Admin, HR Manager only
   { id: 'overtimePolicies', group: 'timeLeave', label: msg('Overtime policies'), description: msg('Overtime rates, caps and approval rules.'), permissions: ['overtime.read', 'overtime.write'], roles: ['Admin', 'HR Manager'], modulePath: '/overtime', featureKey: 'overtime' },
   { id: 'attendanceDevices', group: 'timeLeave', label: msg('Attendance devices'), description: msg('Biometric devices and other punch sources, and their connection keys.'), permissions: ['attendance.read', 'attendance.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Auditor'], modulePath: '/attendance' },
 
   // Pay & benefits
-  { id: 'benefitPlans', group: 'payBenefits', label: msg('Benefit plans'), description: msg('The benefits on offer and their eligibility rules.'), permissions: ['employees.write'], modulePath: '/benefits' },
+  { id: 'benefitPlans', group: 'payBenefits', label: msg('Benefit plans'), description: msg('The benefits on offer and their eligibility rules.'), permissions: ['employees.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Finance', 'Auditor'], modulePath: '/benefits' },
   { id: 'loanTypes', group: 'payBenefits', label: msg('Loan types'), description: msg('The kinds of loan employees can request.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'loanPolicies', group: 'payBenefits', label: msg('Loan policies'), description: msg('Loan limits by grade, instalments and eligibility.'), permissions: LOANS, roles: ['Admin', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'advancePolicy', group: 'payBenefits', label: msg('Salary advance policy'), description: msg('How much can be advanced, how often, and how it is repaid.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'bonusTypes', group: 'payBenefits', label: msg('Bonus types'), description: msg('The kinds of bonus paid through payroll.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
-  { id: 'payslipTemplates', group: 'payBenefits', label: msg('Payslip templates'), description: msg('The layout of the payslips employees receive.'), permissions: ['payroll.read'], modulePath: '/payroll/templates', featureKey: 'payslip_template_designer' },
+  { id: 'payslipTemplates', group: 'payBenefits', label: msg('Payslip templates'), description: msg('The layout of the payslips employees receive.'), permissions: ['payroll.read'], roles: ['Admin', 'HR Manager', 'Payroll Manager', 'Payroll Officer'], modulePath: '/payroll/templates', featureKey: 'payslip_template_designer' },
 
   // Talent & employee services
   { id: 'onboardingChecklists', group: 'talentServices', label: msg('Onboarding checklists'), description: msg('The tasks a new joiner and their team complete, as reusable checklists.'), permissions: ['recruitment.write'], roles: ['Admin', 'HR Manager'], modulePath: '/recruitment', featureKey: 'recruitment' },
   { id: 'performanceScorecards', group: 'talentServices', label: msg('Review scorecards'), description: msg('The review forms and rating scales used in performance cycles.'), permissions: ['performance.cycle_manage'], modulePath: '/performance', featureKey: 'performance' },
-  { id: 'letterTemplates', group: 'talentServices', label: msg('Letter templates'), description: msg('Salary certificates, experience letters and other HR letters.'), permissions: ['employees.write'], roles: HR_ADMINS, modulePath: '/hr-letters' },
+  { id: 'letterTemplates', group: 'talentServices', label: msg('Letter templates'), description: msg('Salary certificates, experience letters and other HR letters.'), permissions: ['employees.write'], roles: ['Admin', 'HR Manager'], modulePath: '/hr-letters' },
   { id: 'engagementPrivacy', group: 'talentServices', label: msg('Survey privacy'), description: msg('The smallest group whose survey results can be shown.'), permissions: ['engagement.manage'], modulePath: '/engagement', featureKey: 'engagement' },
 
   // Payroll & compliance
-  { id: 'taxPolicies', group: 'payrollCompliance', label: msg('Tax policies'), description: msg('Tax and contribution rules applied during payroll.'), permissions: ['payroll.read'], modulePath: '/tax-policies' },
-  { id: 'complianceProfiles', group: 'payrollCompliance', label: msg('Compliance profiles'), description: msg('Country and company rules that compliance checks run against.'), permissions: ['compliance.read'], modulePath: '/compliance-profiles' },
-  { id: 'saudiCompliance', group: 'payrollCompliance', label: msg('Saudi compliance'), description: msg('Qiwa, GOSI, Mudad and WPS details for Saudi companies.'), permissions: ['compliance.read', 'qiwa.read'], modulePath: '/saudi-compliance' },
+  { id: 'taxPolicies', group: 'payrollCompliance', label: msg('Tax policies'), description: msg('Tax and contribution rules applied during payroll.'), permissions: ['payroll.read'], roles: ['Admin', 'HR Director', 'Payroll Manager', 'Finance Approver', 'Auditor'], modulePath: '/tax-policies' },
+  { id: 'complianceProfiles', group: 'payrollCompliance', label: msg('Compliance profiles'), description: msg('Country and company rules that compliance checks run against.'), permissions: ['compliance.read'], roles: ['Admin', 'HR Director', 'HR Manager', 'Compliance Officer', 'Auditor'], modulePath: '/compliance-profiles' },
+  { id: 'saudiCompliance', group: 'payrollCompliance', label: msg('Saudi compliance'), description: msg('Qiwa, GOSI, Mudad and WPS details for Saudi companies.'), permissions: ['qiwa.read'], modulePath: '/saudi-compliance' },
   { id: 'countryPayrollKeys', group: 'payrollCompliance', label: msg('Country payroll keys'), description: msg('Extra per-country payroll values, such as weekend days.'), permissions: TENANT, modulePath: '/tenant-admin' },
 
   // Users & access
-  { id: 'users', group: 'accessSecurity', label: msg('Users'), description: msg('Who can sign in, their roles and companies.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'roles', group: 'accessSecurity', label: msg('Roles'), description: msg('Roles and what each one may do.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'permissionMatrix', group: 'accessSecurity', label: msg('Permission matrix'), description: msg('Every role against every permission, on one grid.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'permissions', group: 'accessSecurity', label: msg('Permissions'), description: msg('The catalogue of permissions the system knows.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'permissionGrantors', group: 'accessSecurity', label: msg('Permission grantors'), description: msg('Who may grant which permissions to others.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'approvalAuthorities', group: 'accessSecurity', label: msg('Approval authorities'), description: msg('Who approves what, and up to which amount.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'approvalDelegations', group: 'accessSecurity', label: msg('Approval delegations'), description: msg('Approvers standing in for others while they are away.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'signInSecurity', group: 'accessSecurity', label: msg('Sign-in security'), description: msg('Passwords, two-step verification and session limits.'), permissions: ACCESS, modulePath: '/user-management' },
-  { id: 'accessLog', group: 'accessSecurity', label: msg('Sign-in and access log'), description: msg('Sign-ins, failed attempts and access changes.'), permissions: ACCESS, modulePath: '/user-management' },
+  { id: 'users', group: 'accessSecurity', label: msg('Users'), description: msg('Who can sign in, their roles and companies.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'roles', group: 'accessSecurity', label: msg('Roles'), description: msg('Roles and what each one may do.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'permissionMatrix', group: 'accessSecurity', label: msg('Permission matrix'), description: msg('Every role against every permission, on one grid.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'permissions', group: 'accessSecurity', label: msg('Permissions'), description: msg('The catalogue of permissions the system knows.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'permissionGrantors', group: 'accessSecurity', label: msg('Permission grantors'), description: msg('Who may grant which permissions to others.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'approvalAuthorities', group: 'accessSecurity', label: msg('Approval authorities'), description: msg('Who approves what, and up to which amount.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'approvalDelegations', group: 'accessSecurity', label: msg('Approval delegations'), description: msg('Approvers standing in for others while they are away.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'signInSecurity', group: 'accessSecurity', label: msg('Sign-in security'), description: msg('Passwords, two-step verification and session limits.'), permissions: SECURITY, modulePath: '/user-management' },
+  { id: 'accessLog', group: 'accessSecurity', label: msg('Sign-in and access log'), description: msg('Sign-ins, failed attempts and access changes.'), permissions: SECURITY, roles: ['Admin'], modulePath: '/user-management' },
 
   // Workspace
   { id: 'localization', group: 'workspace', label: msg('Language and region'), description: msg('Languages, calendar, date and number formats, and currency.'), permissions: TENANT, modulePath: '/tenant-admin' },

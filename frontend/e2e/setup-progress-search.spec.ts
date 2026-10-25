@@ -479,7 +479,7 @@ test('no match says so and offers All setup areas', async ({ page }) => {
 });
 
 test('opening a result with unsaved work asks first, and Cancel keeps the work', async ({ page }) => {
-  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboarding' });
+  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboardingChecklists' });
   const draft = page.getByPlaceholder('Task title', { exact: true });
   await draft.fill('Keep this task');
   const box = await searchBox(page);

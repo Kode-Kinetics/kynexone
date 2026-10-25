@@ -67,7 +67,7 @@ export function ModuleGate({ children }: { children: React.ReactNode }) {
           Back to dashboard
         </Link>
         <Link
-          href="/tenant-admin?tab=modules"
+          href="/setup?tab=modules"
           className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire focus-visible:ring-offset-2 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800 dark:ring-offset-midnight"
         >
           Manage modules

@@ -85,7 +85,7 @@ export function PayrollHero({ data, payrollEnabled, dense = false, currency = nu
             <p className="max-w-prose text-[14px] text-white/85">
               {payrollEnabled
                 ? t('Runs, their trend and their progress appear here once the first payroll is calculated.')
-                : t('Turn on the payroll module in Tenant Admin to track runs here.')}
+                : t('Turn on the payroll module in Setup → Modules to track runs here.')}
             </p>
             {payrollEnabled && (
               <Link href="/payroll" className="wg-press mt-1 inline-flex w-fit items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-[13px] font-semibold text-blue-900 hover:bg-blue-50">

@@ -57,7 +57,7 @@ async function openClaim(page: Page) {
 
 test('custom benefit policy shows only applicable payment controls and saves a dedicated deduction mapping', async ({ page }) => {
   const { saves, mappings, errors } = await boot(page, { emptyMappings: true });
-  await page.goto('/benefits');
+  await page.goto('/setup?tab=benefitPlans'); // plan editing: Setup → Benefit plans
   await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
   await dialog.getByLabel('Plan code').fill('GYM'); await dialog.getByLabel('Plan name').fill('Gym membership');
@@ -84,7 +84,7 @@ test('custom benefit policy shows only applicable payment controls and saves a d
 
 test('reimbursement policy filters bound mappings and clears money when changed to coverage', async ({ page }) => {
   const { saves } = await boot(page);
-  await page.goto('/benefits'); await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
+  await page.goto('/setup?tab=benefitPlans'); await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
   await dialog.getByLabel('Plan code').fill('COVER'); await dialog.getByLabel('Plan name').fill('Wellbeing cover');
   await dialog.getByLabel('How this benefit works', { exact: true }).selectOption('Reimbursement');
@@ -151,7 +151,7 @@ test('missing claim approval route preserves submission and offers employee cont
 });
 
 test('claim approval setup uses an independent BenefitClaim workflow', async ({ page }) => {
-  const { workflows } = await boot(page); await page.goto('/benefits#benefit-claim-approval');
+  const { workflows } = await boot(page); await page.goto('/setup?tab=benefitPlans#benefit-claim-approval'); // approval routes: Setup → Benefit plans
   const dialog = page.getByRole('dialog', { name: 'Benefit claim approvals', exact: true });
   await expect(dialog.getByLabel('Approver role for step 1')).toHaveValue('HR Manager');
   await dialog.getByRole('button', { name: 'Save approval route', exact: true }).click();
@@ -172,7 +172,7 @@ test('approved, payroll-included and paid claims remain distinct', async ({ page
 
 
 test('saved benefit policy keeps its payment method while future assignment terms remain editable', async ({ page }) => {
-  await boot(page); await page.goto('/benefits');
+  await boot(page); await page.goto('/setup?tab=benefitPlans'); // plan editing: Setup → Benefit plans
   await page.getByText(plan.name, { exact: true }).first().click();
   await page.getByRole('button', { name: 'Edit plan', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: `Edit plan ${plan.code}`, exact: true });
@@ -219,7 +219,7 @@ async function bootEducation(page: Page, options: { exception?: boolean; childre
 
 test('HR sets education rules on a reimbursement plan and the payslip line is filled from the plan', async ({ page }) => {
   const { saves, mappings, errors } = await boot(page, { emptyMappings: true });
-  await page.goto('/benefits');
+  await page.goto('/setup?tab=benefitPlans'); // plan editing: Setup → Benefit plans
   await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
   await dialog.getByLabel('Plan code').fill('edu-allow'); await dialog.getByLabel('Plan name').fill('Child education allowance');
@@ -261,7 +261,7 @@ test('HR sets education rules on a reimbursement plan and the payslip line is fi
 });
 
 test('the eligibility rule editor offers the contract-year limit period', async ({ page }) => {
-  await boot(page); await page.goto('/benefits');
+  await boot(page); await page.goto('/setup?tab=benefitPlans'); // plan editing: Setup → Benefit plans
   await page.getByText(plan.name, { exact: true }).first().click();
   await page.getByRole('button', { name: /Add rule|Add eligibility rule/ }).first().click();
   const form = page.getByRole('form', { name: 'Add eligibility rule' });

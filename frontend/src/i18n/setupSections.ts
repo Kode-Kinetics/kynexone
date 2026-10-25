@@ -16,7 +16,7 @@ const ar: Record<string, string> = {
   'Overtime settings': 'إعدادات العمل الإضافي',
   'Attendance settings': 'إعدادات الحضور',
   'Benefit settings': 'إعدادات المزايا',
-  'Loan settings': 'إعدادات القروض والسلف',
+  'Loan settings': 'إعدادات القروض',
   'Performance settings': 'إعدادات الأداء',
   'Letter settings': 'إعدادات الخطابات',
   'Engagement settings': 'إعدادات الاستبيانات',
@@ -98,6 +98,67 @@ const ar: Record<string, string> = {
   'Switch modules on or off for your organisation.': 'شغّل الوحدات أو أوقفها لمنشأتك.',
   'Plan and billing': 'الباقة والفواتير',
   'Your subscription, usage and invoices.': 'اشتراكك واستخدامك وفواتيرك.',
+
+  // Pay & benefits (benefit plans panel, Benefits page empty state)
+  'No benefit plans yet': 'لا توجد خطط مزايا بعد',
+  'Plans are set up in Setup. Once one exists, employees can be enrolled here.': 'تُنشأ الخطط في الإعدادات. وبعد إنشاء خطة يمكن تسجيل الموظفين هنا.',
+  'Set up benefit plans': 'إعداد خطط المزايا',
+
+  // Talent & employee services and Payroll & compliance (HR letters hint, onboarding task generation)
+  'Restore the bilingual defaults in Setup → Letter templates.': 'استعد القوالب الافتراضية ثنائية اللغة من الإعداد ← قوالب الخطابات.',
+  'Ask an Admin or HR Manager to restore the bilingual defaults in Setup.': 'اطلب من المسؤول أو مدير الموارد البشرية استعادة القوالب الافتراضية ثنائية اللغة من الإعداد.',
+  'Generate tasks from the selected checklist': 'إنشاء مهام من قائمة المهام المحددة',
+
+  // ── Users & access, Workspace and Opening balances (components/setup/accessWorkspaceSetupPanels.tsx) ──────────────────
+  // Sign-in security: the one editor of the password, lockout, session and two-step policy
+  'Password policy': 'سياسة كلمة المرور',
+  'Minimum length': 'الحد الأدنى للطول',
+  'Fewest characters a password may have. 10-12+ recommended; applies to new passwords only.': 'أقل عدد من الأحرف تتكوّن منه كلمة المرور. يُنصح بـ 10 إلى 12 فأكثر، ويسري على كلمات المرور الجديدة فقط.',
+  'Password expiry': 'انتهاء صلاحية كلمة المرور',
+  '(days, 0 = never)': '(بالأيام، 0 = لا تنتهي)',
+  'Days until staff must change their password. 0 turns off forced rotation.': 'عدد الأيام قبل أن يُطلب من الموظفين تغيير كلمة المرور. القيمة 0 تلغي التغيير الإلزامي.',
+  'Password history count': 'عدد كلمات المرور السابقة المحفوظة',
+  'How many previous passwords are remembered and blocked from reuse. 0 allows reuse.': 'عدد كلمات المرور السابقة التي تُحفظ ويُمنع إعادة استخدامها. القيمة 0 تسمح بإعادة الاستخدام.',
+  'Require uppercase letter': 'اشتراط حرف كبير (A–Z)',
+  'Require lowercase letter': 'اشتراط حرف صغير (a–z)',
+  'Require digit': 'اشتراط رقم',
+  'Require special character': 'اشتراط رمز خاص',
+  'Wrong-password tries allowed before the account is temporarily locked. 5 is a common default.': 'عدد محاولات كلمة المرور الخاطئة المسموح بها قبل قفل الحساب مؤقتًا. القيمة 5 شائعة.',
+  'How long a locked account stays locked before it can try again. Admins can unlock earlier from Users.': 'المدة التي يبقى فيها الحساب مقفلًا قبل أن يحاول صاحبه الدخول مجددًا. يمكن للمسؤولين فتحه مبكرًا من المستخدمين.',
+  'Remembered sign-in': 'تذكّر تسجيل الدخول',
+  '(days)': '(بالأيام)',
+  'The longest a sign-in is remembered without asking for the password again. Shorter is safer, and means more sign-ins.': 'أطول مدة يُحفظ فيها تسجيل الدخول دون طلب كلمة المرور من جديد. المدة الأقصر أكثر أمانًا لكنها تعني تسجيل دخول أكثر تكرارًا.',
+  'Allow multiple concurrent sessions': 'السماح بجلسات متزامنة متعددة',
+  'Save Settings': 'حفظ الإعدادات',
+  'Saved!': 'تم الحفظ',
+  'The sign-in security settings could not be loaded.': 'تعذّر تحميل إعدادات أمان تسجيل الدخول.',
+  'The sign-in security settings could not be saved. Please try again.': 'تعذّر حفظ إعدادات أمان تسجيل الدخول. حاول مرة أخرى.',
+  'Trusted browser days must be between 0 (off) and 90.': 'يجب أن تتراوح مدة المتصفحات الموثوقة بين 0 (متوقف) و90 يومًا.',
+  'Settings for the whole organisation can only be viewed and changed by an administrator with access to all companies.': 'لا يمكن عرض إعدادات المنشأة كلها أو تغييرها إلا من مسؤول لديه صلاحية الوصول إلى كل الشركات.',
+  'Only an administrator with access to all companies can change settings for the whole organisation.': 'لا يغيّر إعدادات المنشأة كلها إلا مسؤول لديه صلاحية الوصول إلى كل الشركات.',
+  // Plan and billing
+  'Your subscription is inactive or has expired, so some actions are refused. Contact your account manager or support to renew it.': 'اشتراكك غير نشط أو منتهي، ولذلك تُرفض بعض الإجراءات. تواصل مع مدير حسابك أو الدعم لتجديده.',
+  'The subscription could not be loaded.': 'تعذّر تحميل الاشتراك.',
+  'The usage figures could not be loaded.': 'تعذّر تحميل أرقام الاستخدام.',
+  'The invoices could not be loaded.': 'تعذّر تحميل الفواتير.',
+  // Modules, language and region, branding
+  'Could not load your modules. Refresh to try again.': 'تعذّر تحميل وحداتك. حدّث الصفحة وحاول مرة أخرى.',
+  'The language and region settings could not be loaded.': 'تعذّر تحميل إعدادات اللغة والمنطقة.',
+  'The settings could not be saved. Please try again.': 'تعذّر حفظ الإعدادات. حاول مرة أخرى.',
+  'The branding could not be loaded.': 'تعذّر تحميل إعدادات الهوية.',
+  'Save Branding': 'حفظ الهوية',
+  'Configure Branding': 'إعداد الهوية',
+  'No branding configured. System defaults are active.': 'لم تُعدّ الهوية بعد. تُستخدم الإعدادات الافتراضية للنظام.',
+  // Country payroll keys, field help text
+  'The country payroll keys could not be loaded.': 'تعذّر تحميل مفاتيح الرواتب للدول.',
+  'The rule could not be deleted. Please try again.': 'تعذّر حذف القاعدة. حاول مرة أخرى.',
+  'The rule could not be added. Please try again.': 'تعذّرت إضافة القاعدة. حاول مرة أخرى.',
+  'Weekend days are also set in Setup → Country rules.': 'تُحدَّد أيام عطلة نهاية الأسبوع أيضًا في الإعداد ← قواعد الدول.',
+  'Open Country rules': 'فتح قواعد الدول',
+  'The custom help texts could not be loaded.': 'تعذّر تحميل نصوص المساعدة المخصصة.',
+  // Links that used to name Tenant Admin
+  'Workspace-wide display and calendar settings, in Setup': 'إعدادات العرض والتقويم لمساحة العمل كلها، في الإعداد',
+  'Turn on the payroll module in Setup → Modules to track runs here.': 'فعّل وحدة الرواتب من الإعداد ← الوحدات لمتابعة المسيرات هنا.',
 };
 
 export const setupSections = {

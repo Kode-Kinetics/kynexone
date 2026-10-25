@@ -4,14 +4,17 @@ import { useEffect, useState } from 'react';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { helpTextsApi, type FieldHelpText } from '../api/helpTexts';
 import { useHelpTexts } from '../contexts/HelpTextContext';
+import { useLocale } from '../contexts/LocaleContext';
 
 /**
- * Tenant Admin → Help Text: lets the company admin replace any built-in field
+ * Setup → Field help text: lets the company admin replace any built-in field
  * tooltip with their own policy wording. Every ⓘ tooltip in the app shows its
  * "key:" at the bottom — enter that key here with custom text to override it.
  */
 export function HelpTextManager() {
   const { refresh } = useHelpTexts();
+  const { t } = useLocale();
+  const [loadFailed, setLoadFailed] = useState(false);
   const [items, setItems] = useState<FieldHelpText[]>([]);
   const [loading, setLoading] = useState(true);
   const [fieldKey, setFieldKey] = useState('');
@@ -22,7 +25,8 @@ export function HelpTextManager() {
 
   const load = async () => {
     setLoading(true);
-    try { setItems(await helpTextsApi.list()); } catch { /**/ } finally { setLoading(false); }
+    setLoadFailed(false);
+    try { setItems(await helpTextsApi.list()); } catch { setLoadFailed(true); } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
 
@@ -105,6 +109,11 @@ export function HelpTextManager() {
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {loading ? (
           <p className="p-6 text-sm text-gray-500">Loading…</p>
+        ) : loadFailed ? (
+          <div role="alert" className="p-6 text-sm text-red-600">
+            <p>{t('The custom help texts could not be loaded.')}</p>
+            <button type="button" onClick={() => void load()} className="btn-secondary mt-3 h-8 px-3 text-sm">{t('Retry')}</button>
+          </div>
         ) : items.length === 0 ? (
           <p className="p-6 text-sm text-gray-500">No custom help texts yet — all tooltips show the built-in defaults.</p>
         ) : (

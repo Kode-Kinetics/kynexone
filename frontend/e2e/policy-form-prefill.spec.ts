@@ -56,7 +56,7 @@ async function boot(page: Page, options: { group?: boolean; workspace?: boolean;
     return reply({ items: [], total: 0 });
   });
   if (options.workspace) {
-    await page.goto('/setup?tab=aiSetup&area=onboarding&setting=onboarding');
+    await page.goto('/setup?tab=aiSetup&area=onboarding&setting=onboardingChecklists');
     // A deep link to one setting opens the focused editor: the area is its context line and the
     // setting itself is the heading.
     const focused = page.getByRole('region', { name: 'Onboarding checklists', exact: true });

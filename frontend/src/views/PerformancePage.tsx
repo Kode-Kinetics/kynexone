@@ -1,6 +1,8 @@
 'use client';
 
 import { InfoTip } from '../components/InfoTip';
+import { msg } from '../i18n/translations';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
@@ -1028,7 +1030,8 @@ function TemplateFormModal({ tpl, onClose, onSaved }: { tpl?: ScorecardTemplate;
   );
 }
 
-function TemplatesTab() {
+/** The review scorecards editor: the Setup section Review scorecards shows it. */
+export function TemplatesTab() {
   const [templates, setTemplates] = useState<ScorecardTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<ScorecardTemplate | undefined>(undefined);
@@ -1796,7 +1799,6 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
   { id: 'my-reviews', label: 'My Reviews', icon: Star },
   { id: 'team-reviews', label: 'Team Reviews', icon: Users },
   { id: 'goals', label: 'Goals & KPIs', icon: Target },
-  { id: 'templates', label: 'Scorecards', icon: Settings },
   { id: 'calibration', label: 'Calibration', icon: BarChart2 },
   { id: 'recommendations', label: 'Recommendations', icon: TrendingUp },
   { id: 'pip', label: 'PIP & Probation', icon: AlertTriangle },
@@ -1817,11 +1819,14 @@ export function PerformancePage({ initialTab }: { initialTab?: Tab } = {}) {
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
-      <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Performance & Appraisals</h1>
-        <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          Balanced scorecard appraisals, goal management, calibration, recommendations, PIPs, and analytics.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Performance & Appraisals</h1>
+          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+            Balanced scorecard appraisals, goal management, calibration, recommendations, PIPs, and analytics.
+          </p>
+        </div>
+        <ModuleSettingsLink sections={['performanceScorecards']} label={msg('Performance settings')} />
       </div>
 
       {/* Tab bar — scrollable on mobile */}
@@ -1846,7 +1851,6 @@ export function PerformancePage({ initialTab }: { initialTab?: Tab } = {}) {
       {tab === 'my-reviews' && <MyReviewsTab />}
       {tab === 'team-reviews' && <TeamReviewsTab />}
       {tab === 'goals' && <GoalsTab />}
-      {tab === 'templates' && <TemplatesTab />}
       {tab === 'calibration' && <CalibrationTab />}
       {tab === 'recommendations' && <RecommendationsTab />}
       {tab === 'pip' && <PIPProbationTab />}

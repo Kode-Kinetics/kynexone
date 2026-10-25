@@ -26,10 +26,11 @@ type Panel = 'leave' | 'statutory';
 type Target = { kind: 'page'; href: string } | { kind: 'panel'; panel: Panel } | { kind: 'part'; part: RulesPartId };
 interface Row { key: string; label: string; what: string; target: Target }
 
-const GROUPS: { id: string; label: string; items: { id: string; label?: string; what: string }[] }[] = [
+const GROUPS: { id: string; label: string; items: { id: string; /** The Setup destination it opens, when it is not `id`. */ dest?: string; label?: string; what: string }[] }[] = [
   { id: 'time', label: msg('Time & attendance'), items: [
-    { id: 'shifts', what: msg('Shift definitions and roster rules') },
-    { id: 'overtime', what: msg('Overtime policies: add a policy and its rates') },
+    // Shift definitions and overtime policies are Setup sections now; Shifts and Overtime keep rosters and requests.
+    { id: 'shifts', dest: 'shiftDefinitions', what: msg('Shift definitions and roster rules') },
+    { id: 'overtime', dest: 'overtimePolicies', what: msg('Overtime policies: add a policy and its rates') },
   ] },
   { id: 'leave', label: msg('Leave & holidays'), items: [
     { id: 'leave', label: msg('Leave policies, holidays and leave types'), what: msg('Leave types, extra leave policies and holiday calendars') },
@@ -46,8 +47,8 @@ const GROUPS: { id: string; label: string; items: { id: string; label?: string; 
 
 const destinations = new Map<string, SetupDestination>(SETUP_AREAS.flatMap(area => area.destinations.map(d => [d.id, d] as const)));
 
-/** Workspace localisation (language, time zone, working week) lives in Tenant Admin, outside the Setup areas. */
-const LOCALISATION = { href: '/tenant-admin', permission: 'security.manage', label: msg('Language, time zone and working week'), what: msg('Workspace-wide display and calendar settings, in Tenant Admin') };
+/** Workspace localisation (language, time zone, working week) is its own Setup section, outside the Setup areas. */
+const LOCALISATION = { href: '/setup?tab=localization', permission: 'security.manage', label: msg('Language, time zone and working week'), what: msg('Workspace-wide display and calendar settings, in Setup') };
 
 const PANEL_COPY: Record<Panel, { title: string; description: string }> = {
   leave: { title: msg('Leave policies, holidays and leave types'), description: msg('This company’s own leave policies, holidays and leave types. Changes save as you edit.') },
@@ -82,8 +83,8 @@ export function MoreSettingsLinks({ companyId, onOpenPart, returnTo, beforeLeave
 
   const groups = GROUPS.map(group => ({
     ...group,
-    rows: group.items.flatMap<Row>(({ id, label, what }) => {
-      const d = destinations.get(id);
+    rows: group.items.flatMap<Row>(({ id, dest, label, what }) => {
+      const d = destinations.get(dest ?? id);
       if (id === 'leave' && access.canEditLeave) return [{ key: id, label: label ?? d?.label ?? id, what, target: onOpenPart ? { kind: 'part', part: 'leave' } : { kind: 'panel', panel: 'leave' } }];
       if (id === 'statutoryRules' && access.canReadStatutoryRules) return [{ key: id, label: d?.label ?? id, what, target: { kind: 'panel', panel: 'statutory' } }];
       if (!allowed(d)) return [];

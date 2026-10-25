@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, ArrowRight, CheckCircle2, Download, FileWarning, History,
   Loader2, Lock, PlayCircle, RotateCcw, Upload, X,
@@ -78,7 +78,14 @@ function lockedRefusals(err: unknown): LockedPeriodRefusal[] {
 const money = (n: number) =>
   n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-export function MigrationImportPage() {
+const OPENING_BALANCES_DESCRIPTION =
+  'Carry a customer in from their previous system, at any point in the year. Import the cutover date for each legal entity first, then the balances that sit under it — year-to-date payroll, leave, loans, advances and the end-of-service provision. Nothing is written until you have seen the reconciliation.';
+
+/**
+ * Opening balances. `embedded` is its Setup section (Setup → Get started): the section header already names it, so only
+ * its description and the "Start over" action are shown, without a page title.
+ */
+export function MigrationImportPage({ embedded = false, onDirtyChange }: { embedded?: boolean; onDirtyChange?: (dirty: boolean) => void } = {}) {
   const [step, setStep] = useState<Step>('choose');
   const [selected, setSelected] = useState<string[]>([]);
   const [files, setFiles] = useState<Record<string, string>>({});
@@ -96,6 +103,10 @@ export function MigrationImportPage() {
   const [history, setHistory] = useState<StoredRun[]>([]);
 
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  // Files attached, or a reconciliation waiting for its commit: leaving Setup's section would throw that work away.
+  const inProgress = step === 'upload' || step === 'preview';
+  useLayoutEffect(() => { onDirtyChange?.(inProgress); return () => onDirtyChange?.(false); }, [inProgress, onDirtyChange]);
 
   useEffect(() => {
     setHistory(readHistory());
@@ -265,25 +276,32 @@ export function MigrationImportPage() {
     setError(null);
   }
 
+  const startOverButton = step !== 'choose' ? (
+    <button
+      type="button"
+      onClick={startOver}
+      className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+    >
+      <RotateCcw className="h-4 w-4" aria-hidden="true" />
+      Start over
+    </button>
+  ) : null;
+
   return (
     <div className="space-y-6">
-      <SectionHeader
-        eyebrow="Implementation"
-        title="Opening balances"
-        description="Carry a customer in from their previous system, at any point in the year. Import the cutover date for each legal entity first, then the balances that sit under it — year-to-date payroll, leave, loans, advances and the end-of-service provision. Nothing is written until you have seen the reconciliation."
-        action={
-          step !== 'choose' ? (
-            <button
-              type="button"
-              onClick={startOver}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-            >
-              <RotateCcw className="h-4 w-4" aria-hidden="true" />
-              Start over
-            </button>
-          ) : null
-        }
-      />
+      {embedded ? (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <p className="max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">{OPENING_BALANCES_DESCRIPTION}</p>
+          {startOverButton}
+        </div>
+      ) : (
+        <SectionHeader
+          eyebrow="Implementation"
+          title="Opening balances"
+          description={OPENING_BALANCES_DESCRIPTION}
+          action={startOverButton}
+        />
+      )}
 
       <Stepper step={step} />
 

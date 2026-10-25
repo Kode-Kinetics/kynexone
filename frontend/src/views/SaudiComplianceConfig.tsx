@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckCircle, XCircle, RefreshCw, Save, Wifi, WifiOff, Eye, EyeOff,
   ShieldCheck, Banknote, Users, Clock, FileText,
@@ -992,8 +992,24 @@ function CompanyScope({ companies, allCount, companyId, onChange, error }: {
   );
 }
 
-export function SaudiComplianceConfig() {
-  const [active, setActive] = useState<ConfigSection>('qiwa');
+/** The part of the configuration a link asked for (`?section=qiwa|gosi|wps|labor|documents`), or undefined. */
+export function configSectionFrom(value: string | null | undefined): ConfigSection | undefined {
+  return navItems.find(item => item.id === value)?.id;
+}
+
+/**
+ * The Saudi compliance settings (Setup → Saudi compliance). `initialSection` opens one part of it, and moves focus
+ * there: the compliance action centre sends people straight to the Qiwa or GOSI details that need attention.
+ */
+export function SaudiComplianceConfig({ initialSection }: { initialSection?: ConfigSection } = {}) {
+  const [active, setActive] = useState<ConfigSection>(initialSection ?? 'qiwa');
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!initialSection) return;
+    setActive(initialSection);
+    panelRef.current?.focus({ preventScroll: true });
+    panelRef.current?.scrollIntoView?.({ block: 'start' });
+  }, [initialSection]);
   const [companies, setCompanies] = useState<CompanyDto[] | null>(null);
   const [allCompanyCount, setAllCompanyCount] = useState(0);
   const [companiesError, setCompaniesError] = useState<unknown>(null);
@@ -1034,6 +1050,7 @@ export function SaudiComplianceConfig() {
             key={id}
             type="button"
             onClick={() => setActive(id)}
+            aria-current={active === id ? 'true' : undefined}
             className={`w-full rounded-xl px-3 py-2.5 text-start transition ${active === id ? 'bg-sapphire/[0.08] dark:bg-cyanAccent/[0.08]' : 'hover:bg-slate-50 dark:hover:bg-white/[0.04]'}`}
           >
             <div className="flex items-center gap-2">
@@ -1053,7 +1070,7 @@ export function SaudiComplianceConfig() {
       </nav>
 
       {/* Panel */}
-      <div className="min-w-0 flex-1 space-y-4">
+      <div ref={panelRef} tabIndex={-1} data-config-section={active} aria-label={navItems.find(item => item.id === active)?.label} role="region" className="min-w-0 flex-1 space-y-4 outline-none">
         {(active === 'gosi' || active === 'wps') && (
           <CompanyScope companies={companies} allCount={allCompanyCount} companyId={companyId} onChange={setCompanyId} error={companiesError} />
         )}

@@ -4,6 +4,13 @@ import dynamic from 'next/dynamic';
 import type { ComponentType } from 'react';
 import type { CompanyDto } from '../../api/organization';
 import type { SetupModuleSectionId } from '../../lib/setupModuleSections';
+import {
+  ComplianceProfiles, EngagementPrivacy, LetterTemplates, PerformanceScorecards, SaudiCompliance, TaxPolicies,
+} from './talentComplianceSetupPanels';
+import {
+  AccessLog, ApprovalAuthorities, ApprovalDelegations, Branding, CountryPayrollKeys, HelpText, Localization, Modules, OpeningBalances,
+  PermissionGrantors, PermissionMatrix, Permissions, PlanBilling, Roles, SignInSecurity, Users,
+} from './accessWorkspaceSetupPanels';
 
 /**
  * A module's configuration screen, shown as its Setup section (lib/setupModuleSections.ts). Each panel is the module's
@@ -20,20 +27,63 @@ export interface ModuleSetupPanelProps {
 
 type Panel = ComponentType<ModuleSetupPanelProps>;
 
+// Time & leave. Leave types and policies filter to the company chosen in Setup's scope; holidays show that company's
+// calendars beside the workspace-wide ones.
 const LeaveTypes = dynamic(() => import('../../views/LeavePage').then(module => {
-  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.LeaveTypesTab onDirtyChange={onDirtyChange} />;
+  const Panel = ({ onDirtyChange, companyId }: ModuleSetupPanelProps) => <module.LeaveTypesTab onDirtyChange={onDirtyChange} initialCompanyFilter={companyId ?? ''} />;
   return Panel;
 }));
 const LeavePolicies = dynamic(() => import('../../views/LeavePage').then(module => {
-  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.PoliciesTab onDirtyChange={onDirtyChange} />;
+  const Panel = ({ onDirtyChange, companyId }: ModuleSetupPanelProps) => <module.PoliciesTab onDirtyChange={onDirtyChange} initialCompanyFilter={companyId ?? ''} />;
   return Panel;
 }));
 const HolidayCalendars = dynamic(() => import('../../views/LeavePage').then(module => {
-  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.HolidayCalendarTab onDirtyChange={onDirtyChange} />;
+  const Panel = ({ onDirtyChange, companyId }: ModuleSetupPanelProps) => <module.HolidayCalendarTab onDirtyChange={onDirtyChange} companyId={companyId ?? undefined} />;
+  return Panel;
+}));
+const ShiftDefinitions = dynamic(() => import('../../views/ShiftsPage').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.ShiftSetupPanel section="definitions" onDirtyChange={onDirtyChange} />;
+  return Panel;
+}));
+const ShiftPolicy = dynamic(() => import('../../views/ShiftsPage').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.ShiftSetupPanel section="policy" onDirtyChange={onDirtyChange} />;
+  return Panel;
+}));
+const OvertimePolicies = dynamic(() => import('../../views/OvertimePage').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.PoliciesTab onDirtyChange={onDirtyChange} />;
+  return Panel;
+}));
+const AttendanceDevices = dynamic(() => import('../attendance/AttendanceDevicesPanel').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.AttendanceDevicesPanel onDirtyChange={onDirtyChange} />;
   return Panel;
 }));
 const OnboardingChecklists = dynamic(() => import('./OnboardingPolicyWorkspace').then(module => {
   const Panel = ({ onDirtyChange, companies }: ModuleSetupPanelProps) => <module.OnboardingPolicyWorkspace companies={companies ?? []} onDirtyChange={onDirtyChange ?? (() => {})} />;
+  return Panel;
+}));
+
+const BenefitPlans = dynamic(() => import('../benefits/BenefitPlansPanel').then(module => {
+  const Panel = (_props: ModuleSetupPanelProps) => <module.BenefitPlansPanel />;
+  return Panel;
+}));
+const LoanTypes = dynamic(() => import('../../views/LoansPage').then(module => {
+  const Panel = (_props: ModuleSetupPanelProps) => <module.LoanTypesTab />;
+  return Panel;
+}));
+const LoanPolicies = dynamic(() => import('../loans/LoanPoliciesPanel').then(module => {
+  const Panel = (_props: ModuleSetupPanelProps) => <module.LoanPoliciesPanel />;
+  return Panel;
+}));
+const AdvancePolicy = dynamic(() => import('../../views/LoansPage').then(module => {
+  const Panel = (_props: ModuleSetupPanelProps) => <module.AdvancePolicyTab />;
+  return Panel;
+}));
+const BonusTypes = dynamic(() => import('../../views/LoansPage').then(module => {
+  const Panel = (_props: ModuleSetupPanelProps) => <module.BonusTypesTab />;
+  return Panel;
+}));
+const PayslipTemplates = dynamic(() => import('../../views/PayslipTemplatesPage').then(module => {
+  const Panel = (_props: ModuleSetupPanelProps) => <module.PayslipTemplatesPanel />;
   return Panel;
 }));
 
@@ -44,42 +94,42 @@ function pending(id: SetupModuleSectionId): Panel {
 }
 
 const PANELS: Record<SetupModuleSectionId, Panel> = {
-  openingBalances: pending('openingBalances'),
+  openingBalances: OpeningBalances,
   leaveTypes: LeaveTypes,
   leavePolicies: LeavePolicies,
   holidayCalendars: HolidayCalendars,
-  shiftDefinitions: pending('shiftDefinitions'),
-  shiftPolicy: pending('shiftPolicy'),
-  overtimePolicies: pending('overtimePolicies'),
-  attendanceDevices: pending('attendanceDevices'),
-  benefitPlans: pending('benefitPlans'),
-  loanTypes: pending('loanTypes'),
-  loanPolicies: pending('loanPolicies'),
-  advancePolicy: pending('advancePolicy'),
-  bonusTypes: pending('bonusTypes'),
-  payslipTemplates: pending('payslipTemplates'),
+  shiftDefinitions: ShiftDefinitions,
+  shiftPolicy: ShiftPolicy,
+  overtimePolicies: OvertimePolicies,
+  attendanceDevices: AttendanceDevices,
+  benefitPlans: BenefitPlans,
+  loanTypes: LoanTypes,
+  loanPolicies: LoanPolicies,
+  advancePolicy: AdvancePolicy,
+  bonusTypes: BonusTypes,
+  payslipTemplates: PayslipTemplates,
   onboardingChecklists: OnboardingChecklists,
-  performanceScorecards: pending('performanceScorecards'),
-  letterTemplates: pending('letterTemplates'),
-  engagementPrivacy: pending('engagementPrivacy'),
-  taxPolicies: pending('taxPolicies'),
-  complianceProfiles: pending('complianceProfiles'),
-  saudiCompliance: pending('saudiCompliance'),
-  countryPayrollKeys: pending('countryPayrollKeys'),
-  users: pending('users'),
-  roles: pending('roles'),
-  permissionMatrix: pending('permissionMatrix'),
-  permissions: pending('permissions'),
-  permissionGrantors: pending('permissionGrantors'),
-  approvalAuthorities: pending('approvalAuthorities'),
-  approvalDelegations: pending('approvalDelegations'),
-  signInSecurity: pending('signInSecurity'),
-  accessLog: pending('accessLog'),
-  localization: pending('localization'),
-  branding: pending('branding'),
-  helpText: pending('helpText'),
-  modules: pending('modules'),
-  planBilling: pending('planBilling'),
+  performanceScorecards: PerformanceScorecards,
+  letterTemplates: LetterTemplates,
+  engagementPrivacy: EngagementPrivacy,
+  taxPolicies: TaxPolicies,
+  complianceProfiles: ComplianceProfiles,
+  saudiCompliance: SaudiCompliance,
+  countryPayrollKeys: CountryPayrollKeys,
+  users: Users,
+  roles: Roles,
+  permissionMatrix: PermissionMatrix,
+  permissions: Permissions,
+  permissionGrantors: PermissionGrantors,
+  approvalAuthorities: ApprovalAuthorities,
+  approvalDelegations: ApprovalDelegations,
+  signInSecurity: SignInSecurity,
+  accessLog: AccessLog,
+  localization: Localization,
+  branding: Branding,
+  helpText: HelpText,
+  modules: Modules,
+  planBilling: PlanBilling,
 };
 
 export function ModuleSetupSection({ id, ...props }: ModuleSetupPanelProps & { id: SetupModuleSectionId }) {

@@ -109,19 +109,12 @@
     "your grade's total outstanding maximum"
   ],
   "files": {
-    "app/(dashboard)/compliance-profiles/page.tsx": {
-      "hardcoded": 11
-    },
     "app/(dashboard)/group/page.tsx": {
       "hardcoded": 14,
       "rawStatus": 1
     },
     "app/(dashboard)/people/page.tsx": {
       "hardcoded": 2
-    },
-    "app/(dashboard)/tax-policies/page.tsx": {
-      "hardcoded": 25,
-      "rawStatus": 1
     },
     "app/access-denied/page.tsx": {
       "hardcoded": 3
@@ -439,6 +432,9 @@
       "rawStatus": 5,
       "locale": 3
     },
+    "src/views/ComplianceProfilesPage.tsx": {
+      "hardcoded": 10
+    },
     "src/views/DashboardPage.tsx": {
       "hardcoded": 2
     },
@@ -548,6 +544,10 @@
     "src/views/ShiftsPage.tsx": {
       "hardcoded": 113,
       "locale": 8
+    },
+    "src/views/TaxPoliciesPage.tsx": {
+      "hardcoded": 24,
+      "rawStatus": 1
     },
     "src/views/TenantAdminPage.tsx": {
       "hardcoded": 87,

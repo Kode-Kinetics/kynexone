@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   AlertTriangle, CheckCircle2, Download, FileSignature, Inbox, Loader2, RefreshCw, Search, Send, XCircle,
 } from 'lucide-react';
@@ -11,15 +12,18 @@ import {
   type DocumentRequest, type IssuedLetter, type LetterTemplate, type LetterTypeInfo,
 } from '../api/hrLetters';
 import { Modal } from '../components/Modal';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
+import { useAuth } from '../contexts/AuthContext';
+import { useT } from '../hooks/useT';
+import { msg } from '../i18n/translations';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 
-type Tab = 'requests' | 'issue' | 'register' | 'templates';
+type Tab = 'requests' | 'issue' | 'register';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType<{ className?: string }> }[] = [
   { id: 'requests', label: 'Employee Requests', icon: Inbox },
   { id: 'issue', label: 'Issue a Letter', icon: Send },
   { id: 'register', label: 'Issued Register', icon: FileSignature },
-  { id: 'templates', label: 'Templates', icon: RefreshCw },
 ];
 
 const LANGUAGES = [
@@ -39,7 +43,7 @@ function Spinner({ label }: { label: string }) {
   );
 }
 
-function Empty({ title, hint }: { title: string; hint?: string }) {
+function Empty({ title, hint }: { title: string; hint?: React.ReactNode }) {
   return (
     <div className="py-12 text-center">
       <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{title}</p>
@@ -301,7 +305,7 @@ function IssueTab({ types, onIssued }: { types: LetterTypeInfo[]; onIssued: () =
       <div className="surface p-6">
         <Empty
           title="No letter templates are configured for this tenant."
-          hint="Open the Templates tab and restore the bilingual defaults, then come back."
+          hint={<RestoreDefaultsHint />}
         />
       </div>
     );
@@ -488,7 +492,8 @@ function RegisterTab({ types, refreshKey }: { types: LetterTypeInfo[]; refreshKe
 
 // ── Templates ─────────────────────────────────────────────────────────────────
 
-function TemplatesTab({ onChanged }: { onChanged: () => void }) {
+/** The letter templates editor: the Setup section Letter templates shows it. */
+export function TemplatesTab({ onChanged }: { onChanged: () => void }) {
   const [items, setItems] = useState<LetterTemplate[]>([]);
   const [tokens, setTokens] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -506,7 +511,7 @@ function TemplatesTab({ onChanged }: { onChanged: () => void }) {
       setTokens(data.knownTokens);
     } catch (e) {
       notifyApiError(e);
-      setError('Templates could not be loaded. This tab needs the Admin or HR Manager role.');
+      setError('Templates could not be loaded. This needs the Admin or HR Manager role.');
     } finally {
       setLoading(false);
     }
@@ -647,6 +652,14 @@ function TemplatesTab({ onChanged }: { onChanged: () => void }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+/** Where to restore the default templates: Setup → Letter templates for Admin and HR Manager, who are the ones the API lets. */
+function RestoreDefaultsHint() {
+  const t = useT();
+  const { hasRole } = useAuth();
+  if (!hasRole('Admin') && !hasRole('HR Manager')) return <>{t('Ask an Admin or HR Manager to restore the bilingual defaults in Setup.')}</>;
+  return <Link href="/setup?tab=letterTemplates" className="font-semibold underline">{t('Restore the bilingual defaults in Setup → Letter templates.')}</Link>;
+}
+
 export default function HrLettersPage() {
   const [tab, setTab] = useState<Tab>('requests');
   const [types, setTypes] = useState<LetterTypeInfo[]>([]);
@@ -673,12 +686,15 @@ export default function HrLettersPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-bold text-slate-900 dark:text-white">HR Letters</h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Salary certificates, bank letters and employment verification — issued from a tenant template, in English
-          and Arabic, with a stored reference number.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white">HR Letters</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Salary certificates, bank letters and employment verification — issued from a tenant template, in English
+            and Arabic, with a stored reference number.
+          </p>
+        </div>
+        <ModuleSettingsLink sections={['letterTemplates']} label={msg('Letter settings')} />
       </div>
 
       <ErrorNote message={error} />
@@ -686,7 +702,7 @@ export default function HrLettersPage() {
       {!loading && unconfigured.length > 0 && (
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-400">
           {unconfigured.length} letter type(s) have no template and are hidden from issuance:{' '}
-          {unconfigured.map((t) => t.nameEn).join(', ')}. Restore the defaults on the Templates tab.
+          {unconfigured.map((t) => t.nameEn).join(', ')}. <RestoreDefaultsHint />
         </p>
       )}
 
@@ -698,7 +714,6 @@ export default function HrLettersPage() {
             {tab === 'requests' && <RequestsTab types={types} onIssued={() => setRefreshKey((k) => k + 1)} />}
             {tab === 'issue' && <IssueTab types={types} onIssued={() => setRefreshKey((k) => k + 1)} />}
             {tab === 'register' && <RegisterTab types={types} refreshKey={refreshKey} />}
-            {tab === 'templates' && <TemplatesTab onChanged={loadTypes} />}
           </>
         )}
       </TabPanel>

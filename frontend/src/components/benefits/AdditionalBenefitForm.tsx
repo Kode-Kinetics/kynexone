@@ -7,7 +7,7 @@ import { useLocale } from '@/src/contexts/LocaleContext';
 import { useAppToast } from '@/src/components/ui/AppToast';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { BenefitPolicySummary, policyTreatment } from './BenefitPaymentPolicy';
-import { COVERAGE_TIERS, FormError, INPUT, LABEL, Modal, PRIMARY, SECONDARY, today } from './benefitUi';
+import { COVERAGE_TIERS, FormError, INPUT, LABEL, Modal, PRIMARY, SECONDARY, today, benefitSetupHref } from './benefitUi';
 import { AdditionalBenefitSummary, COST_FREQUENCY_LABELS, PERIOD_LABELS, TREATMENT_LABELS } from './AdditionalBenefitSummary';
 
 export interface BenefitEmployee { id: number; fullName: string; }
@@ -107,14 +107,14 @@ export function AdditionalBenefitForm({ plans, employee: fixedEmployee, existing
       onRequested(request);
     } catch (err) {
       const data = (err as { response?: { data?: { code?: string; setupUrl?: string } } }).response?.data;
-      setSetupUrl(data?.code === 'approval_route_not_configured' && data.setupUrl?.startsWith('/') && !data.setupUrl.startsWith('//') ? data.setupUrl : null);
+      setSetupUrl(data?.code === 'approval_route_not_configured' && data.setupUrl?.startsWith('/') && !data.setupUrl.startsWith('//') ? benefitSetupHref(data.setupUrl) : null);
       setError(benefitsErrorMessage(err, t('Could not submit the additional benefit.')));
     } finally { setSaving(false); }
   };
 
   return <Modal title={t(existing ? 'Amend additional benefit' : 'Add additional benefit')} onClose={saving ? () => {} : onClose} wide>
     <FormError message={error} />
-    {setupUrl && <p className="my-3 text-xs text-slate-600 dark:text-slate-300">{t('An approval route is required before this request can be submitted.')} {canConfigure ? <a href={setupUrl} className="font-semibold text-sapphire underline">{t('Configure approval workflow')}</a> : t('Contact an administrator to configure additional benefit approvals.')}</p>}
+    {setupUrl && <p className="my-3 text-xs text-slate-600 dark:text-slate-300">{t('An approval route is required before this request can be submitted.')} {canConfigure ? <a href={setupUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-sapphire underline">{t('Configure approval workflow')}<span className="sr-only"> {t('(opens in a new tab)')}</span></a> : t('Contact an administrator to configure additional benefit approvals.')}</p>}
     {reviewing && employee && plan ? <div className="space-y-4">
       <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Review additional benefit')}</h3>
       <AdditionalBenefitSummary terms={terms} currency={plan.currency} baseline={existing} employeeName={employee.fullName} planName={plan.name} paymentPolicy={paymentPolicy} />
