@@ -56,28 +56,14 @@ services:
       Jwt__Issuer: ${JWT_ISSUER:-Zayra.Api}
       Jwt__Audience: ${JWT_AUDIENCE:-Zayra.Client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-CHANGE_ME_TO_A_64_CHARACTER_PRODUCTION_SECRET_KEY_1234567890}
-      SeedAdmin__TenantName: ${SEED_TENANT_NAME:-KynexOne}
-      SeedAdmin__TenantSlug: ${SEED_TENANT_SLUG:-zayra}
-      SeedAdmin__Email: ${SEED_ADMIN_EMAIL:-admin@zayra.local}
-      SeedAdmin__FullName: ${SEED_ADMIN_NAME:-KynexOne Admin}
-      # DEVELOPMENT-ONLY default (ASPNETCORE_ENVIRONMENT=Development here). Production/dedicated
-      # deployments MUST provide a real SEED_ADMIN_PASSWORD — the backend refuses to boot on
-      # 'ChangeMe123!' in Production.
-      SeedAdmin__Password: ${SEED_ADMIN_PASSWORD:-ChangeMe123!}
-      # SeedAdmin__SeedDemoData and SEED_ENTERPRISE_TEST_DATA used to be here. Both seeders were
-      # deleted (docs/DATA_ENTRY_PATHS.md) and NoSideDoorDataTests fails the build if either returns,
-      # so the variables now switch on nothing — and a variable that reads as "seed the demo data"
-      # while seeding nothing is worse than its absence. A compose stack comes up with an EMPTY
-      # database; provision it with frontend/e2e/bootstrap.
-      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-platform@kynexone.com}
-      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-PlatformAdmin123!}
+      # No bootstrap admin and no seeded organisation: a compose stack starts with an EMPTY database.
+      # Create the organisation and its first administrator once with
+      #   docker compose exec backend dotnet Zayra.Api.dll --setup-organisation
+      # (docs/DATA_ENTRY_PATHS.md).
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       # Deployed/local default remains 10/minute. An isolated broad browser suite may opt into a
       # larger login budget without changing the production security default.
       RateLimit__LoginPermitLimit: ${LOGIN_PERMIT_LIMIT:-10}
-      # Same reasoning for the platform operator's own limiter: the e2e bootstrap authenticates as
-      # the platform owner to create every tenant, so a disposable stack may raise it. Default 5.
-      RateLimit__PlatformLoginPermitLimit: ${PLATFORM_LOGIN_PERMIT_LIMIT:-5}
       # Pre-hash login refusals (LoginAbuseGuard) and the PBKDF2 concurrency gate. Production
       # defaults; a browser suite that signs the same personas in many times raises them.
       Auth__LoginThrottle__AccountIpAttempts: ${LOGIN_ACCOUNT_IP_ATTEMPT_LIMIT:-10}
