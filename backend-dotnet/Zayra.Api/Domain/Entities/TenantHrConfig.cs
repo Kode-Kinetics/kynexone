@@ -4,23 +4,8 @@ public class TenantHrConfig : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
-    // The eleven switches below were never read by anything; retired 2026-10-25 (unused, unwritten). The columns stay
-    // mapped for this release so a rollback works and are dropped in a later release.
-    // Approval routing
-    public bool UseDeptHeadApproval { get; set; } = true;
-    public bool UseHrFinalApproval { get; set; } = true;
-    public bool UseSupervisorBeforeManager { get; set; } = false;
-    public bool AllowDottedLineApproval { get; set; } = false;
-    // Import behaviour
-    public bool AutoCreateDeptOnImport { get; set; } = false;
-    public bool AutoCreateDesignationOnImport { get; set; } = false;
-    public bool RequireImportPreviewBeforeCommit { get; set; } = true;
-    // Hierarchy rules
-    public bool AllowCrossDeptManager { get; set; } = true;
-    public bool AllowCrossLocationManager { get; set; } = true;
-    // Payroll / compliance
-    public bool RequireCostCenterForPayroll { get; set; } = false;
-    public bool RequireGradeForApprovalPolicy { get; set; } = false;
+    // Eleven approval-routing / import / hierarchy / payroll switches were never read and are no longer mapped; their
+    // columns stay in the database, with defaults, until a later release drops them.
     // Establishment matrix enforcement: Off | Advisory | Enforced. Default Enforced is
     // deploy-safe because enforcement is per-budget-row opt-in (absent row = uncontrolled);
     // changing this value is itself permission-gated + audited (never flipped by deploys).

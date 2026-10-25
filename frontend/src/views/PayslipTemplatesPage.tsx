@@ -10,6 +10,7 @@ import {
   PayslipSectionConfig, SectionDef, TemplateDto, TemplateListItem,
   payslipTemplatesApi,
 } from '../api/payslipTemplates';
+import { useAuth } from '../contexts/AuthContext';
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,9 @@ const btnDanger = 'inline-flex items-center gap-1.5 rounded-lg border border-ros
 
 /** The payslip layouts, as the Setup → Payslip templates section (Setup shows the section title). */
 export function PayslipTemplatesPanel() {
+  const { hasPermission } = useAuth();
+  // The API enforces payroll.write on creating a template (PayslipTemplatesController POST); readers get no create button.
+  const mayWrite = hasPermission('payroll.write');
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
   const [registry, setRegistry] = useState<SectionDef[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,10 +103,12 @@ export function PayslipTemplatesPanel() {
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
           </button>
-          <button type="button" className={btnPrimary} onClick={openNew}>
-            <Plus className="h-4 w-4" />
-            New Template
-          </button>
+          {mayWrite && (
+            <button type="button" className={btnPrimary} onClick={openNew}>
+              <Plus className="h-4 w-4" />
+              New Template
+            </button>
+          )}
         </div>
       </div>
 
@@ -116,10 +122,12 @@ export function PayslipTemplatesPanel() {
           <div className="flex flex-col items-center py-20 text-center">
             <FileText className="mb-3 h-10 w-10 text-slate-300 dark:text-slate-600" />
             <p className="font-medium text-slate-600 dark:text-slate-400">No templates yet</p>
-            <p className="mt-1 text-sm text-slate-400">Create your first payslip template to get started.</p>
-            <button type="button" className={btnPrimary + ' mt-4'} onClick={openNew}>
-              <Plus className="h-4 w-4" /> Create Template
-            </button>
+            {mayWrite && <p className="mt-1 text-sm text-slate-400">Create your first payslip template to get started.</p>}
+            {mayWrite && (
+              <button type="button" className={btnPrimary + ' mt-4'} onClick={openNew}>
+                <Plus className="h-4 w-4" /> Create Template
+              </button>
+            )}
           </div>
         ) : (
           <table className="w-full text-sm">

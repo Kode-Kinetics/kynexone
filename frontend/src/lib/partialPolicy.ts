@@ -16,10 +16,8 @@ const object = (fields: Record<string, PolicyShape>): PolicyShape => ({ kind: 'o
 const array = (item: PolicyShape): PolicyShape => ({ kind: 'array', item });
 // Match the existing setup contract without supplying any missing policy values.
 export const partialPolicyShapes: Record<string, PolicyShape> = {
-  attendancePolicy: object({ code: text, name: text, graceMinutes: integer, lateThresholdMinutes: integer,
-    earlyExitThresholdMinutes: integer, halfDayThresholdMinutes: integer, absentThresholdMinutes: integer,
-    standardWorkMinutes: integer, breakMinutes: integer, roundingRule: choice('NearestMinute', 'Nearest15'),
-    requiresOvertimeApproval: boolean, allowAbsenceToLeaveConversion: boolean }),
+  attendancePolicy: object({ code: text, name: text, graceMinutes: integer, earlyExitThresholdMinutes: integer,
+    halfDayThresholdMinutes: integer, standardWorkMinutes: integer, breakMinutes: integer }),
   overtimePolicy: object({ code: text, name: text, hourlyRateBasis: choice('BasicSalary', 'GrossSalary'), standardMonthlyHours: integer,
     minimumMinutes: integer, maximumMinutesPerDay: integer, monthlyCapMinutes: integer,
     roundingRule: choice('NearestMinute', 'Nearest15'), requiresApproval: boolean, allowCompOffConversion: boolean,

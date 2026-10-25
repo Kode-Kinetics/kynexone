@@ -105,42 +105,6 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
     // ── P1: the two remaining legacy writers ─────────────────────────────────────────────────────
 
     [Fact]
-    public async Task AiSetupApply_WritesNoGradePayLinesForAReleaseATenant_AndSaysWhy_ButStillDoesForOthers()
-    {
-        foreach (var releaseA in new[] { true, false })
-        {
-            var seed = await SeedAsync(releaseA);
-            await using var db = fixture.CreateDb();
-            var controller = new SetupAssistantController(db, new NoModel(), new AuditService(db))
-            {
-                ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(seed.TenantId, "HR Manager", "organization.setup.apply", "organization.write") } },
-            };
-            var draft = SetupDraft.Empty() with
-            {
-                Grades = [new DraftGrade("G3", "Supervisor", "Professional", 30, 0, 0, 0, "SAR")],
-                GradePayComponents = [new DraftGradePayComponent("G3", "HOUSING", "Housing", "Earning", "PercentOfBasic", 0, 25, false, "Monthly")],
-            };
-
-            var result = await controller.Apply(new ApplySetupRequest(draft, "SA", "SAR", null), default);
-
-            var body = JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(result).Value, Web);
-            var written = await db.GradePayScaleComponents.CountAsync(x => x.TenantId == seed.TenantId);
-            if (releaseA)
-            {
-                written.Should().Be(0);
-                body.GetProperty("applied").TryGetProperty("gradePayComponents", out _).Should().BeFalse();
-                var skipped = body.GetProperty("skipped").GetProperty("gradePayComponents");
-                (skipped.GetProperty("count").GetInt32(), skipped.GetProperty("reasonCode").GetString()).Should().Be((1, "moved_to_benefits_by_grade"));
-            }
-            else
-            {
-                written.Should().Be(1, "a tenant without Release A keeps the legacy writer");
-                body.GetProperty("skipped").EnumerateObject().Should().BeEmpty();
-            }
-        }
-    }
-
-    [Fact]
     public async Task OrgStructureImport_SkipsGradePayLinesForAReleaseATenant_RowByRowWithTheReason()
     {
         foreach (var releaseA in new[] { true, false })
@@ -360,11 +324,5 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
     private sealed class FixedClock(DateOnly today) : ITenantClock
     {
         public Task<DateOnly> TodayAsync(Guid tenantId, CancellationToken ct) => Task.FromResult(today);
-    }
-
-    private sealed class NoModel : ISetupAssistantService
-    {
-        public Task<SetupPreviewResult> GenerateAsync(SetupRequester requester, CompanyProfile profile, CancellationToken ct) =>
-            Task.FromResult(new SetupPreviewResult(SetupDraft.Empty(), [], "test"));
     }
 }

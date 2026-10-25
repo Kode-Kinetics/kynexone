@@ -57,8 +57,6 @@ public class CompanySetupUnitTests
 
     private static bool IsModelType(Type type) =>
         type == typeof(Zayra.Api.Application.AI.ILlmClient)
-        || type == typeof(ISetupAssistantService)
-        || type == typeof(SetupAssistantService)
         || (type.Namespace ?? string.Empty).StartsWith("Zayra.Api.Infrastructure.AI", StringComparison.Ordinal)
         || (type.Namespace ?? string.Empty).StartsWith("Zayra.Api.Application.AI", StringComparison.Ordinal);
 
@@ -83,8 +81,8 @@ public class CompanySetupUnitTests
     [Fact]
     public void The_deterministic_defaults_are_the_same_every_time()
     {
-        var a = SetupAssistantService.DeterministicCompanyDefaults("SA", "SAR", "Acme");
-        var b = SetupAssistantService.DeterministicCompanyDefaults("SA", "SAR", "Acme");
+        var a = SetupDraftDefaults.DeterministicCompanyDefaults("SA", "SAR", "Acme");
+        var b = SetupDraftDefaults.DeterministicCompanyDefaults("SA", "SAR", "Acme");
         System.Text.Json.JsonSerializer.Serialize(a).Should().Be(System.Text.Json.JsonSerializer.Serialize(b));
         a.HolidayCalendar.Should().NotBeNull();
         a.Grades.Should().NotBeEmpty().And.OnlyContain(g => g.Currency == "SAR");

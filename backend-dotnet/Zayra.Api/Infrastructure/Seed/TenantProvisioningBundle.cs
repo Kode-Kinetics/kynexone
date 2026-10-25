@@ -355,10 +355,9 @@ public static class TenantProvisioningBundle
         db.AttendancePolicies.Add(new AttendancePolicy
         {
             TenantId = tenantId, Code = "DEFAULT", Name = "Default attendance policy",
-            GraceMinutes = 10, LateThresholdMinutes = 15, EarlyExitThresholdMinutes = 15,
-            HalfDayThresholdMinutes = 240, AbsentThresholdMinutes = 120,
+            GraceMinutes = 10, EarlyExitThresholdMinutes = 15,
+            HalfDayThresholdMinutes = 240,
             StandardWorkMinutes = 480, BreakMinutes = 60,
-            RequiresOvertimeApproval = true, AllowAbsenceToLeaveConversion = true,
         });
         return 1;
     }
