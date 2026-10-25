@@ -257,13 +257,26 @@ Same transaction, tenant lock, draft-id idempotency, audit (`company.setup_compl
 mode, counts by action). The company row is updated, never recreated. A Draft/inactive company is
 refused (the existing activation gap still applies).
 
-### A7. The old Setup Studio's other capabilities
-Anything only the old studio could configure (e.g. attendance/overtime policy starters, benefit
-plans, salary structure, HR governance config) must stay reachable: either it is already a page
-of its own (then the readiness checklist links to it), or it is moved into step 5 as a collapsed
-section. The builder lists each capability with where it now lives. `/setup?tab=aiSetup` and any
-`returnTo` that pointed at the old studio open the chooser (with `companyId` → that company's
-existing-mode wizard).
+### A7. The old Setup Studio's other capabilities (retired 2026-10-25)
+The old studio ("Policy starter", `/setup?tab=aiSetup&path=policyStarter`) is gone. Everything it could configure now
+has a Setup section or a wizard step, and a saved link to it opens All setup areas (`path=configuration`):
+
+| Old studio section | Where it lives now |
+|---|---|
+| departments, designations, grades, cost centres, branches | Setup sections of the same names, and the wizard's organisation steps |
+| grade pay components | Setup → Grades |
+| leave types and policies, holiday calendars | Setup → Leave types, Leave policies, Holiday calendars |
+| shifts | Setup → Shifts, Shift policy |
+| working week, localisation | Setup → Language and region |
+| pay components, statutory rules | Setup → Payroll accounting, Statutory rules |
+| employee ID rule | Setup → Record numbering |
+| benefit plans | Setup → Benefit plans |
+| overtime policy | Setup → Overtime policies |
+| attendance policy | Setup → Attendance rules (new; needs `attendance.policy_manage`) |
+| HR governance config (`TenantHrConfig`) | no screen; eleven of its switches were never read and are retired, `establishmentEnforcementMode` is edited in Setup → Headcount & budget |
+
+`/setup?tab=aiSetup` and any `returnTo` that pointed at the old studio open the chooser (with `companyId` → that
+company's existing-mode wizard). The backend `/api/setup-assistant` draft endpoints remain until a follow-up removes them.
 
 ### A9. Changes made elsewhere since the draft started (three-way comparison)
 The prefill stamps the company block, every existing branch, location and cost centre, and the

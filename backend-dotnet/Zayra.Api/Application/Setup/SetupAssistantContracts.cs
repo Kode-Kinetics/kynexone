@@ -34,8 +34,6 @@ public sealed record CompanyProfile(
     string? PayrollModel,
     string? ApprovalModel,
     bool StrictEntityScope,
-    bool RequireCostCenterForPayroll,
-    bool RequireGradeForApprovalPolicy,
     SetupSections Sections,
 
     // ── Operating choices ────────────────────────────────────────────────────
@@ -95,7 +93,6 @@ public sealed record SetupConfiguration(
     DraftOvertimePolicy? OvertimePolicy = null,
     List<DraftGrade>? Grades = null,
     List<DraftLeavePolicy>? LeavePolicies = null,
-    DraftHrConfig? HrConfig = null,
     List<DraftBenefitPlan>? BenefitPlans = null,
     string? PolicySourceText = null,
     bool UsePolicySourceForAi = false,
@@ -159,8 +156,6 @@ public sealed record DraftLocalization(
     string DefaultLanguage, bool RtlEnabled, string CalendarSystem, string DefaultTimezone,
     string DateFormat, bool HijriDatesEnabled);
 
-public sealed record DraftHrConfig(bool UseDeptHeadApproval, bool UseHrFinalApproval, bool UseSupervisorBeforeManager, bool AllowDottedLineApproval, bool AutoCreateDeptOnImport, bool AutoCreateDesignationOnImport, bool RequireImportPreviewBeforeCommit, bool AllowCrossDeptManager, bool AllowCrossLocationManager, bool RequireCostCenterForPayroll, bool RequireGradeForApprovalPolicy);
-
 public sealed record SetupDraft(
     List<DraftBranch> Branches,
     List<DraftDepartment> Departments,
@@ -174,7 +169,6 @@ public sealed record SetupDraft(
     List<DraftPayComponent> PayComponents,
     List<DraftStatutoryRule> StatutoryRules,
     DraftEmployeeIdRule? EmployeeIdRule,
-    DraftHrConfig? HrConfig,
     List<DraftLeavePolicy> LeavePolicies,
     DraftHolidayCalendar? HolidayCalendar,
     DraftAttendancePolicy? AttendancePolicy,
@@ -186,7 +180,7 @@ public sealed record SetupDraft(
     public List<SetupPolicyDocumentSource>? PolicySources { get; init; }
     public List<SetupPolicyFieldSource>? PolicyFieldSources { get; init; }
     public static SetupDraft Empty() =>
-        new(new(), new(), new(), new(), new(), new(), new(), new(), null, new(), new(), null, null,
+        new(new(), new(), new(), new(), new(), new(), new(), new(), null, new(), new(), null,
             new(), null, null, null, null);
 }
 

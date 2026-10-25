@@ -45,7 +45,6 @@ const ar: Record<string, string> = {
   'Opens here': 'يُفتح هنا',
   'Opens its page': 'يُفتح في صفحته',
   'Saving the draft…': 'جارٍ حفظ المسودة…',
-  'Attendance rules and HR approval rules have no screen of their own yet. Ask your group super admin to set these up.': 'ليس لقواعد الحضور وقواعد موافقات الموارد البشرية شاشة خاصة بعد. اطلب من المسؤول الأعلى للمجموعة إعدادها.',
   // Unsaved editor forms
   'Save your changes to {editor}?': 'هل تريد حفظ تغييراتك على {editor}؟',
   'The {editor} form is still open and its changes are not saved. Keep editing to save them there, or discard them and continue.': 'نموذج {editor} ما زال مفتوحًا وتغييراته غير محفوظة. تابع التعديل لحفظها هناك، أو تجاهلها وتابع.',

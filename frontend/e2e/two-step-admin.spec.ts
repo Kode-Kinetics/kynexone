@@ -4,7 +4,8 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 
 /**
  * Two-step sign-in, administered (mfa2-contract): an administrator resets another user's two-step
- * sign-in from User Management, and sets the company's policy in Tenant Admin → Security.
+ * sign-in from Setup → Users, and sets the company's policy in Setup → Sign-in security (both were pages of their own:
+ * User Management, and Tenant Admin → Security).
  *
  * Over mocked API routes shaped as the contract: the user list's `mfaEnabled`, POST
  * /api/access/users/{id}/mfa/reset { reason } → 204 with its refusals (400 ERR_MFA_RESET_REASON,
@@ -130,7 +131,7 @@ const resetButton = (page: Page, name: string) => rowOf(page, name).getByRole('b
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Reset two-step sign-in?' });
 
 async function openUsers(page: Page) {
-  await page.goto('/user-management');
+  await page.goto('/setup?tab=users');
   await expect(rowOf(page, 'Noah Williams')).toBeVisible({ timeout: 30_000 });
 }
 
@@ -141,7 +142,7 @@ async function expectNoHorizontalScroll(page: Page) {
 
 test.use({ storageState: { cookies: [], origins: [] }, timezoneId: 'Asia/Riyadh' });
 
-test.describe('User Management: reset another user\'s two-step sign-in', () => {
+test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
   test('offered for someone with two-step on; never for yourself or someone without it', async ({ page }, info) => {
     await mockApi(page);
     await openUsers(page);
@@ -156,8 +157,12 @@ test.describe('User Management: reset another user\'s two-step sign-in', () => {
   });
 
   test('not offered to a viewer who cannot manage user accounts', async ({ page }) => {
+    // users.manage and roles.manage do not make the accounts API answer (every /api/access action needs security.manage,
+    // AccessController.cs:23), so Setup does not offer Users to them at all, let alone a reset.
     await mockApi(page, { permissions: ['users.manage', 'roles.manage'] });
-    await openUsers(page);
+    await page.goto('/setup?tab=users');
+    await expect(page.getByTestId('setup-no-sections').or(page.getByText('Access Denied')).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-module-section="users"]')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Reset two-step sign-in' })).toHaveCount(0);
   });
 
@@ -275,7 +280,7 @@ test.describe('User Management: reset another user\'s two-step sign-in', () => {
 
   test('Arabic: the dialog reads right to left in Arabic', async ({ page }, info) => {
     await mockApi(page, { locale: 'ar' });
-    await page.goto('/user-management');
+    await page.goto('/setup?tab=users');
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
     const button = rowOf(page, 'Noah Williams').getByRole('button', { name: 'إعادة تعيين التحقق بخطوتين' });
     await button.click({ timeout: 30_000 });
@@ -302,10 +307,9 @@ test.describe('User Management: reset another user\'s two-step sign-in', () => {
   });
 });
 
-test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
+test.describe('Setup → Sign-in security: the two-step sign-in group', () => {
   async function openSecurity(page: Page) {
-    await page.goto('/tenant-admin');
-    await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
+    await page.goto('/setup?tab=signInSecurity');
     await expect(page.getByTestId('two-step-policy')).toBeVisible();
   }
 
@@ -368,8 +372,7 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
 
   test('Arabic: the group is Arabic, with no capitals or tracking', async ({ page }, info) => {
     await mockApi(page, { locale: 'ar' });
-    await page.goto('/tenant-admin');
-    await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
+    await page.goto('/setup?tab=signInSecurity');
     const group = page.getByTestId('two-step-policy');
     await expect(group.getByRole('heading', { name: 'التحقق بخطوتين' })).toBeVisible();
     await expect(group.getByTestId('two-step-always')).toContainText('مطلوب دائمًا');
@@ -393,14 +396,13 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
 
 /*
  * Session limits (session-contract C): the idle timeout, relabelled, and the maximum session length
- * (`sessionMaxHours`, 1–168, 12 by default) in Tenant Admin → Security; and the sign-in page's
+ * (`sessionMaxHours`, 1–168, 12 by default) in Setup → Sign-in security; and the sign-in page's
  * notice when a refresh is refused with 401 ERR_SESSION_EXPIRED. That the server enforces the limit
  * is the backend tests' job; these prove what the screens show and send.
  */
-test.describe('Tenant Admin → Security: sessions and lockout', () => {
+test.describe('Setup → Sign-in security: sessions and lockout', () => {
   async function openSecurity(page: Page) {
-    await page.goto('/tenant-admin');
-    await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
+    await page.goto('/setup?tab=signInSecurity');
     await expect(page.getByTestId('session-limits')).toBeVisible();
   }
   const putBodies = (calls: Call[]) => calls.filter((c) => c.method === 'PUT' && c.path === '/api/access/security-settings').map((c) => c.body);
@@ -469,8 +471,7 @@ test.describe('Tenant Admin → Security: sessions and lockout', () => {
 
   test('Arabic: the group is Arabic and right to left, with no capitals or tracking', async ({ page }, info) => {
     await mockApi(page, { locale: 'ar', security: { sessionMaxHours: 6 } });
-    await page.goto('/tenant-admin');
-    await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
+    await page.goto('/setup?tab=signInSecurity');
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
     const group = page.getByTestId('session-limits');
     const heading = group.getByRole('heading', { name: 'الجلسات وقفل الحساب' });

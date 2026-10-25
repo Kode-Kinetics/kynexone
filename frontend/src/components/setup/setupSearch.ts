@@ -3,6 +3,7 @@ import {
   SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, destinationAvailability,
   type SetupAccessContext, type SetupDestination, type SetupNavigationModel,
 } from '../../lib/setupAreas';
+import { SETUP_MODULE_SECTIONS } from '../../lib/setupModuleSections';
 
 /**
  * "Find a setting": one index of what a user can open in Setup, and the matcher that searches it. Pure, so it is
@@ -201,4 +202,4 @@ export function buildSetupSearchIndex({ model, access, sectionHref, areaHref = d
   return entries;
 }
 
-const SETUP_SECTION_IDS = new Set<string>(SETUP_SETTING_SECTIONS.map(section => section.id));
+const SETUP_SECTION_IDS = new Set<string>([...SETUP_SETTING_SECTIONS, ...SETUP_MODULE_SECTIONS].map(section => section.id));

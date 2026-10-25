@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BarChart3, ClipboardList, ListChecks, Plus, Rocket, Settings2, ShieldCheck } from 'lucide-react';
+import { BarChart3, ClipboardList, ListChecks, Plus, Rocket, ShieldCheck } from 'lucide-react';
 import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
@@ -20,10 +20,11 @@ import { ActionsPanel } from '../components/engagement/ActionsPanel';
 import { SurveyBuilder } from '../components/engagement/SurveyBuilder';
 import { TemplateBuilder } from '../components/engagement/TemplateBuilder';
 import { LikertStyles } from '../components/engagement/LikertBar';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 
 export const ENGAGEMENT_FLAG = 'engagement';
 
-type Tab = 'surveys' | 'results' | 'actions' | 'templates' | 'settings';
+type Tab = 'surveys' | 'results' | 'actions' | 'templates';
 
 const TEMPLATE_STATUS_LABELS = { Draft: msg('Draft'), Published: msg('Published'), Retired: msg('Retired') } as const;
 
@@ -32,7 +33,7 @@ type Pending = { kind: 'launch' | 'close' | 'cancel' | 'delete'; survey: Survey 
 /**
  * Engagement surveys — HR and managers. Opt-in per tenant (the `engagement` flag); the API refuses the same tenant,
  * so the sentence below is the courtesy layer, not the gate. Readers (engagement.read) see Results and Actions; builders
- * (engagement.manage) also see Surveys, Templates and Settings.
+ * (engagement.manage) also see Surveys and Templates; the privacy settings are in Setup.
  */
 export function EngagementPage() {
   const { t } = useLocale();
@@ -60,7 +61,6 @@ function Engagement() {
     if (canRead) list.push({ id: 'results', label: t('Results'), icon: BarChart3 });
     if (canRead || hasPermission('engagement.actions.manage')) list.push({ id: 'actions', label: t('Actions'), icon: ListChecks });
     if (canManage) list.push({ id: 'templates', label: t('Templates'), icon: ClipboardList });
-    if (canManage) list.push({ id: 'settings', label: t('Privacy settings'), icon: Settings2 });
     return list;
   }, [canManage, canRead, hasPermission, t]);
   const [tab, setTab] = useState<Tab>(tabs[0]?.id ?? 'results');
@@ -192,6 +192,7 @@ function Engagement() {
             <Plus className="h-4 w-4" aria-hidden="true" />{t('New template')}
           </button>
         )}
+        <ModuleSettingsLink sections={['engagementPrivacy']} label={msg('Engagement settings')} />
       </header>
 
       {settings && (
@@ -322,12 +323,6 @@ function Engagement() {
               )}
             </TabPanel>
           )}
-
-          {tab === 'settings' && canManage && settings && (
-            <TabPanel idPrefix="engagement" tabId="settings">
-              <SettingsPanel settings={settings} onSaved={(s) => { setSettings(s); setNotice(t('Privacy settings saved.')); }} />
-            </TabPanel>
-          )}
         </>
       )}
 
@@ -364,6 +359,31 @@ function Engagement() {
       >
         <p className="text-sm text-slate-700 dark:text-slate-200">{pendingCopy?.body}</p>
       </Modal>
+    </div>
+  );
+}
+
+/**
+ * The survey privacy settings, loading their own values: the Setup section (Survey privacy) shows this, and the
+ * module's header links to it. The survey screen reads the default again the next time it opens.
+ */
+export function EngagementPrivacyPanel() {
+  const { t } = useLocale();
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    engagementApi.settings().then(value => { if (live) setSettings(value); }).catch(e => { if (live) setError(describeApiError(e, t)); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  if (error) return <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800/60 dark:bg-rose-900/20 dark:text-rose-300">{error}</p>;
+  if (!settings) return <div className="h-40 animate-pulse rounded-xl bg-slate-100 dark:bg-white/[0.04]" aria-busy="true" />;
+  return (
+    <div className="space-y-3">
+      {notice && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-900/20 dark:text-emerald-200">{notice}</p>}
+      <SettingsPanel settings={settings} onSaved={value => { setSettings(value); setNotice(t('Privacy settings saved.')); }} />
     </div>
   );
 }

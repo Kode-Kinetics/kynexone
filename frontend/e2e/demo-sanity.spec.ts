@@ -35,6 +35,11 @@ const TENANT_ROUTE_CONTENT: Record<string, RegExp> = {
   '/approvals':         /approval|pending|request/i,
   '/reports':           /report/i,
   '/saudi-compliance':  /gosi|saudi|nitaqat|compliance|wps/i,
+  // Moved into Setup: the old address redirects there (src/lib/setupLegacyRoutes.ts), so the screen is Setup's section.
+  '/tax-policies':      /tax policies/i,
+  '/compliance-profiles': /compliance profiles/i,
+  '/tenant-admin':      /plan and billing/i,
+  '/user-management':   /users/i,
   '/org-chart':         /org|report|hierarch/i,
   '/dashboard':         /dashboard|overview|employee|headcount/i,
 };
@@ -104,7 +109,7 @@ test.describe('IntelliFlow tenant — demo sanity', () => {
     '/attendance',
     '/leave',
     '/payroll',
-    '/payroll/templates',
+    '/setup?tab=payslipTemplates', // was /payroll/templates, which now redirects here
     '/recruitment',
     '/recruitment/onboarding',
     '/performance',

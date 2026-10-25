@@ -1069,19 +1069,13 @@ test('old studio links land on the chooser; a companyId link opens that company,
   await expect(page).not.toHaveURL(/\/complete/);
 });
 
-test('the old studio stays reachable only as Setup → Policy starter', async ({ page }) => {
+test('the retired Policy starter is gone from Setup and its old address opens All setup areas', async ({ page }) => {
   await boot(page);
-  await page.goto('/setup?tab=aiSetup&path=configuration');
-  await openSetupSection(page, 'Policy starter');
-  await expect(page).toHaveURL(/path=policyStarter/);
-  await expect(page.getByTestId('policy-starter-banner')).toBeVisible();
-  // Its own Setup section, never Guided setup.
-  await expect(page.locator('#setup-section-heading')).toHaveText('Policy starter');
-  await expect(await setupSection(page, 'Policy starter')).toHaveAttribute('aria-current', 'page');
-  await expect(await setupSection(page, 'Guided setup')).not.toHaveAttribute('aria-current', 'page');
-  await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'Back to All setup areas', exact: true }).click();
+  await page.goto('/setup?tab=aiSetup&path=policyStarter');
   await expect(page).toHaveURL(/path=configuration/);
+  await expect(page.locator('#setup-section-heading')).toHaveText('All setup areas');
+  await expect(page.getByRole('link', { name: 'Policy starter' })).toHaveCount(0);
+  await expect(page.getByTestId('policy-starter-banner')).toHaveCount(0);
 });
 
 for (const locale of ['en', 'ar'] as const) {

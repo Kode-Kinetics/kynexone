@@ -140,7 +140,7 @@ public class SetupAssistantController : ControllerBase
         if (values.Count > 0) return RefuseConfiguration(values);
         if (d.LeavePolicies.Count > 0 && !HasPermission("leave.policy_manage")
             || d.OvertimePolicy is not null && !HasPermission("overtime.policy_manage")
-            || (d.HrConfig is not null || d.Grades.Count > 0 || d.GradePayComponents.Count > 0) && !HasPermission("organization.write")
+            || (d.Grades.Count > 0 || d.GradePayComponents.Count > 0) && !HasPermission("organization.write")
             || d.PayComponents.Count > 0 && !HasPermission("payroll.structure_manage")
             || d.StatutoryRules.Count > 0 && !HasPermission("payroll.rates.manage")
             || d.BenefitPlans is { Count: > 0 } && !HasPermission("employees.approve")) return Forbid();
@@ -701,44 +701,11 @@ public class SetupAssistantController : ControllerBase
             }
         }
 
-        // ── Governance / import behaviour / employee ID rule ─────────────────
+        // ── Employee ID rule ─────────────────
         if (d.EmployeeIdRule is not null)
         {
             var (_, ruleCreated) = await SetupWriters.UpsertEmployeeIdRuleAsync(_db, tenantId, company?.Id, d.EmployeeIdRule, GetUserId(), ct);
             if (ruleCreated) Bump("employeeIdRules", 1);
-        }
-
-        if (d.HrConfig is not null)
-        {
-            var config = await _db.TenantHrConfigs.FirstOrDefaultAsync(x => x.TenantId == tenantId, ct);
-            var before = config is null ? null : HrConfigSnapshot(config);
-            if (config is null)
-            {
-                // Onboarding tenants default to ADVISORY establishment enforcement (budget warns, never
-                // blocks) so a fresh org skeleton can be populated without headcount budgets fighting the
-                // import. Existing tenants and the TenantHrConfig PUT path are untouched.
-                config = new TenantHrConfig
-                {
-                    TenantId = tenantId,
-                    EstablishmentEnforcementMode = Zayra.Api.Infrastructure.Organization.EstablishmentGuardService.ModeAdvisory,
-                };
-                _db.TenantHrConfigs.Add(config);
-                Bump("hrConfig", 1);
-            }
-            config.UseDeptHeadApproval = d.HrConfig.UseDeptHeadApproval;
-            config.UseHrFinalApproval = d.HrConfig.UseHrFinalApproval;
-            config.UseSupervisorBeforeManager = d.HrConfig.UseSupervisorBeforeManager;
-            config.AllowDottedLineApproval = d.HrConfig.AllowDottedLineApproval;
-            config.AutoCreateDeptOnImport = d.HrConfig.AutoCreateDeptOnImport;
-            config.AutoCreateDesignationOnImport = d.HrConfig.AutoCreateDesignationOnImport;
-            config.RequireImportPreviewBeforeCommit = d.HrConfig.RequireImportPreviewBeforeCommit;
-            config.AllowCrossDeptManager = d.HrConfig.AllowCrossDeptManager;
-            config.AllowCrossLocationManager = d.HrConfig.AllowCrossLocationManager;
-            config.RequireCostCenterForPayroll = d.HrConfig.RequireCostCenterForPayroll;
-            config.RequireGradeForApprovalPolicy = d.HrConfig.RequireGradeForApprovalPolicy;
-            config.UpdatedAtUtc = DateTime.UtcNow;
-            Audit("organization.hr_config_updated", nameof(TenantHrConfig), config.Id, "governance");
-            auditChanges[config.Id] = new { before, after = HrConfigSnapshot(config) };
         }
 
         // ── Statutory rules ──────────────────────────────────────────────────
@@ -836,11 +803,6 @@ public class SetupAssistantController : ControllerBase
             ? "Add a branch for the reviewed company before configuring attendance or overtime. Setup cannot create an implicit workspace-wide policy." : null);
         return new(null, "Attendance and overtime need an unambiguous branch. Mark exactly one reviewed branch as head office, or configure branch policies separately.");
     }
-
-    private static DraftHrConfig HrConfigSnapshot(TenantHrConfig c) => new(
-        c.UseDeptHeadApproval, c.UseHrFinalApproval, c.UseSupervisorBeforeManager, c.AllowDottedLineApproval,
-        c.AutoCreateDeptOnImport, c.AutoCreateDesignationOnImport, c.RequireImportPreviewBeforeCommit,
-        c.AllowCrossDeptManager, c.AllowCrossLocationManager, c.RequireCostCenterForPayroll, c.RequireGradeForApprovalPolicy);
 
     /// <summary>
     /// What a draft's encashment switch is stored as. A 0-day cap encashes nothing (EncashmentController refuses every
@@ -1188,7 +1150,6 @@ public class SetupAssistantController : ControllerBase
             if (d.Shifts.Count > 0 || d.WorkingWeek is not null) sharedAreas.Add("shifts and working week");
             if (d.AttendancePolicy is not null || d.OvertimePolicy is not null) sharedAreas.Add("attendance and overtime policies");
             if (d.PayComponents.Count > 0 || d.StatutoryRules.Count > 0) sharedAreas.Add("payroll and statutory rules");
-            if (d.HrConfig is not null) sharedAreas.Add("workspace governance");
             if (d.Localization is not null) sharedAreas.Add("language, time zone and currency defaults");
             if (sharedAreas.Count > 0)
                 problems.Add("A company administrator cannot change group-shared " + string.Join(", ", sharedAreas) + ". Ask a group administrator to publish the shared baseline, then apply only company-owned policies.");

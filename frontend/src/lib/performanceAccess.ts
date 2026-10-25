@@ -25,17 +25,19 @@ export const PERFORMANCE_MODULE_PERMISSIONS: string[] = [
 ];
 
 export type PerformanceTab =
-  | 'overview' | 'cycles' | 'my-reviews' | 'team-reviews' | 'goals' | 'templates'
+  | 'overview' | 'cycles' | 'my-reviews' | 'team-reviews' | 'goals'
   | 'calibration' | 'recommendations' | 'pip' | 'analytics' | 'feedback';
 
-/** The keys that show each tab: any one of them is enough. */
+/**
+ * The keys that show each tab: any one of them is enough. The scorecard templates are not a tab: they are Setup's
+ * Review scorecards (lib/setupModuleSections.ts), for performance.cycle_manage.
+ */
 export const PERFORMANCE_TAB_PERMISSIONS: Record<PerformanceTab, readonly string[]> = {
   overview: [PERFORMANCE.approve],
   cycles: [PERFORMANCE.write, PERFORMANCE.approve, PERFORMANCE.setup],
   'my-reviews': PERFORMANCE_MODULE_PERMISSIONS,
   'team-reviews': [PERFORMANCE.write, PERFORMANCE.approve],
   goals: PERFORMANCE_MODULE_PERMISSIONS,
-  templates: [PERFORMANCE.setup],
   calibration: [PERFORMANCE.approve],
   recommendations: [PERFORMANCE.approve],
   pip: [PERFORMANCE.write, PERFORMANCE.approve],

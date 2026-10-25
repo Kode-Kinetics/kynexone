@@ -238,6 +238,8 @@ export interface SecuritySetting {
   mfaRequired: boolean;
   /** Hard cap: everyone signs in again after this many hours, even if active (1–168, default 12). */
   sessionMaxHours?: number;
+  /** How long a trusted browser skips the two-step code: 0 (off) to 90 days; 30 by default. */
+  mfaTrustedDeviceDays?: number;
   updatedAtUtc: string;
 }
 

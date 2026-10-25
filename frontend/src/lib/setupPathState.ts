@@ -2,9 +2,10 @@ import { SETUP_AREAS, type SetupAreaId } from './setupAreas';
 
 /**
  * guided = the company setup chooser (create, or complete an existing company); configuration = All setup areas;
- * policyStarter = the old studio ("Policy starter"), kept for what has no screen of its own (A7).
+ * The old studio's own path ("policyStarter") is retired: what it configured has a Setup section each, so a saved link
+ * to it opens All setup areas, which lists them, and is rewritten.
  */
-export type SetupStudioPath = 'guided' | 'configuration' | 'policyStarter';
+export type SetupStudioPath = 'guided' | 'configuration';
 
 export type SetupPathResolution = {
   path: SetupStudioPath;
@@ -28,7 +29,7 @@ export function resolveSetupPath(params: URLSearchParams, context: SetupPathCont
   const requestedArea = params.get('area');
   const requestedSetting = params.get('setting');
   const requestedCompany = params.get('companyId');
-  let needsReplace = requestedPath !== null && requestedPath !== 'guided' && requestedPath !== 'configuration' && requestedPath !== 'policyStarter';
+  let needsReplace = requestedPath !== null && requestedPath !== 'guided' && requestedPath !== 'configuration';
   let notice: SetupPathResolution['notice'];
 
   let companyId: string | null;
@@ -54,7 +55,7 @@ export function resolveSetupPath(params: URLSearchParams, context: SetupPathCont
     : requestedPath === 'guided'
       ? 'guided'
       : requestedPath === 'policyStarter'
-        ? 'policyStarter'
+        ? 'configuration'
         : legacyStarter
           ? 'guided'
           : hasLegacyConfigurationTarget

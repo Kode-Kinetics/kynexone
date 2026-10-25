@@ -52,7 +52,7 @@ public static class CompanySetupReadiness
         // Statutory leave is per company (owner decision 2026-10-23): this company's own live policies for its country.
         var leave = await ScopedBypass.TenantWide(db.LeavePolicies, tenantId, Why)
             .AnyAsync(p => p.CompanyId == id && p.CountryCode == country && p.Status != "Archived", ct);
-        Add("leavePolicies", "Statutory leave policies", "سياسات الإجازة النظامية", leave, V.ReadinessTodo, $"/leave?companyId={id}");
+        Add("leavePolicies", "Statutory leave policies", "سياسات الإجازة النظامية", leave, V.ReadinessTodo, SetupHref("leavePolicies", id));
 
         var iso3 = country switch { "SA" => "SAU", "AE" => "ARE", "QA" => "QAT", "KW" => "KWT", "BH" => "BHR", "OM" => "OMN", _ => country };
         var statutory = await ScopedBypass.NullableTenantWide(db.StatutoryRules, null,

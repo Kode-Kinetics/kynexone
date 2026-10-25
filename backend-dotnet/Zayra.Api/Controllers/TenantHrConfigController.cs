@@ -40,10 +40,10 @@ public class TenantHrConfigController : ControllerBase
         if (config is null)
         {
             // Return safe defaults without persisting
-            return Ok(new TenantHrConfig { TenantId = tenantId.Value });
+            return Ok(TenantHrConfigDto.From(new TenantHrConfig { TenantId = tenantId.Value }));
         }
 
-        return Ok(config);
+        return Ok(TenantHrConfigDto.From(config));
     }
 
     [HttpPut]
@@ -86,17 +86,8 @@ public class TenantHrConfigController : ControllerBase
             }
         }
 
-        config.UseDeptHeadApproval = req.UseDeptHeadApproval;
-        config.UseHrFinalApproval = req.UseHrFinalApproval;
-        config.UseSupervisorBeforeManager = req.UseSupervisorBeforeManager;
-        config.AllowDottedLineApproval = req.AllowDottedLineApproval;
-        config.AutoCreateDeptOnImport = req.AutoCreateDeptOnImport;
-        config.AutoCreateDesignationOnImport = req.AutoCreateDesignationOnImport;
-        config.RequireImportPreviewBeforeCommit = req.RequireImportPreviewBeforeCommit;
-        config.AllowCrossDeptManager = req.AllowCrossDeptManager;
-        config.AllowCrossLocationManager = req.AllowCrossLocationManager;
-        config.RequireCostCenterForPayroll = req.RequireCostCenterForPayroll;
-        config.RequireGradeForApprovalPolicy = req.RequireGradeForApprovalPolicy;
+        // The eleven approval-routing / import / hierarchy / payroll switches are retired (2026-10-25): nothing ever read them.
+        // A request that still carries them is ignored; the columns stay for one release so a rollback works.
         config.UpdatedAtUtc = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
@@ -106,21 +97,21 @@ public class TenantHrConfigController : ControllerBase
                 new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), tenantId),
                 JsonSerializer.Serialize(new { before = modeBefore, after = modeAfter, reason = req.EstablishmentModeChangeReason }), ct);
         }
-        return Ok(config);
+        return Ok(TenantHrConfigDto.From(config));
     }
 }
 
+/// <summary>
+/// The tenant HR settings that are still live. Unknown properties are ignored on deserialisation, so a client that still
+/// sends the retired switches is not refused. Omitting a field keeps the stored value.
+/// </summary>
 public record TenantHrConfigRequest(
-    bool UseDeptHeadApproval = true,
-    bool UseHrFinalApproval = true,
-    bool UseSupervisorBeforeManager = false,
-    bool AllowDottedLineApproval = false,
-    bool AutoCreateDeptOnImport = false,
-    bool AutoCreateDesignationOnImport = false,
-    bool RequireImportPreviewBeforeCommit = true,
-    bool AllowCrossDeptManager = true,
-    bool AllowCrossLocationManager = true,
-    bool RequireCostCenterForPayroll = false,
-    bool RequireGradeForApprovalPolicy = false,
     string? EstablishmentEnforcementMode = null,
     string? EstablishmentModeChangeReason = null);
+
+/// <summary>What GET and PUT return: the live settings only (never the entity, so a retired column cannot leak back).</summary>
+public record TenantHrConfigDto(string EstablishmentEnforcementMode, int EngagementMinCohortSize, int EngagementFreeTextRetentionMonths, DateTime UpdatedAtUtc)
+{
+    public static TenantHrConfigDto From(TenantHrConfig c) =>
+        new(c.EstablishmentEnforcementMode, c.EngagementMinCohortSize, c.EngagementFreeTextRetentionMonths, c.UpdatedAtUtc);
+}

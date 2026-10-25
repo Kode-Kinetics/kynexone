@@ -43,6 +43,8 @@ import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { describeApiError } from '../lib/apiError';
 import { useEmployeeReferenceLists } from '../hooks/useReferenceLists';
 import { referenceLabel, referenceOptions, sameReferenceValue, type ReferenceValue } from '../lib/referenceLists';
+import { msg } from '../i18n/translations';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -2257,7 +2259,7 @@ function AIInsightsTab() {
 
 // ── Root Page ─────────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'balance' | 'apply' | 'requests' | 'approvals' | 'calendar' | 'types' | 'policies' | 'holidays' | 'encashment' | 'compoff' | 'absences' | 'reports' | 'ai-insights';
+type Tab = 'dashboard' | 'balance' | 'apply' | 'requests' | 'approvals' | 'calendar' | 'encashment' | 'compoff' | 'absences' | 'reports' | 'ai-insights';
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
@@ -2266,9 +2268,6 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
   { id: 'requests', label: 'My Requests', icon: FileText },
   { id: 'approvals', label: 'Approvals', icon: CheckCircle },
   { id: 'calendar', label: 'Calendar', icon: Calendar },
-  { id: 'types', label: 'Leave Types', icon: Settings },
-  { id: 'policies', label: 'Policies', icon: Shield },
-  { id: 'holidays', label: 'Holidays', icon: Star },
   { id: 'encashment', label: 'Encashment', icon: TrendingUp },
   { id: 'compoff', label: 'Comp-Off', icon: RefreshCw },
   { id: 'absences', label: 'Absences', icon: AlertTriangle },
@@ -2284,14 +2283,12 @@ export function LeavePage() {
   const [branches, setBranches] = useState<BranchDto[]>([]);
   const [companyId, setCompanyId] = useState('');
   const [branchId, setBranchId] = useState('');
-  // `/leave?companyId={id}` (the company setup wizard's readiness item) opens that company's leave policies.
+  // `/leave?companyId={id}` plus another parameter narrows the page to that company; on its own it is the old readiness link and
+  // middleware sends it to Setup. Leave types, policies and holidays are in Setup now
+  // (`/setup?tab=leavePolicies&companyId={id}`); middleware sends the old `?tab=` addresses there.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const linked = params.get('companyId');
-    if (!linked) return;
-    setCompanyId(linked);
-    const linkedTab = params.get('tab');
-    setTab(linkedTab === 'types' || linkedTab === 'policies' ? linkedTab : 'policies');
+    const linked = new URLSearchParams(window.location.search).get('companyId');
+    if (linked) setCompanyId(linked);
   }, []);
 
   const isAdmin    = user?.roles.some(r => ['Admin', 'HR Manager', 'HR Officer'].includes(r)) ?? false;
@@ -2328,7 +2325,7 @@ export function LeavePage() {
   const visibleTabs = TABS
     .map(t => t.id === 'requests' ? { ...t, label: requestsLabel } : t)
     .filter(t => {
-      if (['types', 'policies', 'holidays', 'reports', 'ai-insights'].includes(t.id)) return isAdmin;
+      if (['reports', 'ai-insights'].includes(t.id)) return isAdmin;
       if (t.id === 'approvals') return isAdmin || isManager;
       if (t.id === 'absences') return isAdmin || isManager;
       // Plus anyone who can take an encashment decision (HR Director, Finance Approver hold these keys).
@@ -2350,13 +2347,16 @@ export function LeavePage() {
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Leave & Absence Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>
-        <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
-          isAdmin   ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent'
-          : isManager ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400'
-          : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
-        }`}>
-          {isAdmin ? 'Admin / HR' : isManager ? 'Manager' : 'Employee'}
-        </span>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <ModuleSettingsLink sections={['leaveTypes', 'leavePolicies', 'holidayCalendars']} label={msg('Leave settings')} />
+          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+            isAdmin   ? 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent'
+            : isManager ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400'
+            : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
+          }`}>
+            {isAdmin ? 'Admin / HR' : isManager ? 'Manager' : 'Employee'}
+          </span>
+        </div>
       </div>
 
       {isAdmin && companies.length > 0 && (
@@ -2385,9 +2385,6 @@ export function LeavePage() {
       {tab === 'requests'   && <MyRequestsTab />}
       {tab === 'approvals'  && <ApprovalsTab groupFilter={groupFilter} />}
       {tab === 'calendar'   && <CalendarTab groupFilter={groupFilter} />}
-      {tab === 'types'      && <LeaveTypesTab initialCompanyFilter={companyId} />}
-      {tab === 'policies'   && <PoliciesTab initialCompanyFilter={companyId} />}
-      {tab === 'holidays'   && <HolidayCalendarTab />}
       {tab === 'encashment' && <EncashmentTab groupFilter={groupFilter} />}
       {tab === 'compoff'    && <CompOffTab groupFilter={groupFilter} />}
       {tab === 'absences'   && <AbsencesTab groupFilter={groupFilter} />}

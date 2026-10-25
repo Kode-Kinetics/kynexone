@@ -5,12 +5,14 @@ import { useAuth } from '../contexts/AuthContext';
 import { EmployeePicker } from '../components/EmployeePicker';
 import type { SelectedEmployee } from '../components/EmployeePicker';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
 import { apiErrorReason, notifyApiError } from '../api/client';
 import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { msg } from '../i18n/translations';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import {
   AlertTriangle, BarChart2, Calculator, CheckCircle2, Clock3, FileClock,
   Layers3, Plus, RefreshCw, Settings, TimerReset, TrendingUp,
@@ -121,7 +123,7 @@ const btn = {
 
 // ── Tabs ────────────────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'submit' | 'my-ot' | 'team-ot' | 'approvals' | 'policies' | 'calc-preview' | 'payroll-review' | 'reports';
+type Tab = 'dashboard' | 'submit' | 'my-ot' | 'team-ot' | 'approvals' | 'calc-preview' | 'payroll-review' | 'reports';
 
 const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: 'dashboard', label: 'Dashboard', icon: BarChart2 },
@@ -129,7 +131,6 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
   { key: 'my-ot', label: 'My OT', icon: Clock3 },
   { key: 'team-ot', label: 'Team OT', icon: Users },
   { key: 'approvals', label: 'Approvals', icon: CheckCircle2 },
-  { key: 'policies', label: 'Policies', icon: Settings },
   { key: 'calc-preview', label: 'Calculation Preview', icon: Calculator },
   { key: 'payroll-review', label: 'Payroll Review', icon: WalletCards },
   { key: 'reports', label: 'Reports', icon: TrendingUp },
@@ -185,7 +186,6 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
               ['Submit OT Request', 'submit', Plus],
               ['Approve Requests', 'approvals', CheckCircle2],
               ['Team OT View', 'team-ot', Users],
-              ['OT Policies', 'policies', Settings],
               ['Calculation Preview', 'calc-preview', Calculator],
               ['Payroll Review', 'payroll-review', WalletCards],
             ] as [string, Tab, React.ComponentType<{ className?: string }>][])
@@ -292,7 +292,7 @@ function SubmitOTTab({ selfEmployeeId, isEmployee }: { selfEmployeeId?: number; 
       <div className="surface p-5">
         <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Policy & Type</p>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="OT Policy" info="The overtime policy that sets the pay multiplier (e.g. 1.25x weekday, 1.5x holiday). Configured in the Policies tab." infoKey="overtime.policy">
+          <Field label="OT Policy" info="The overtime policy that sets the pay multiplier (e.g. 1.25x weekday, 1.5x holiday). Configured in Overtime settings, under Setup." infoKey="overtime.policy">
             <select aria-label="OT Policy" className={sel} value={form.policyId} onChange={e => set('policyId', e.target.value)}>
               <option value="">Auto-select default</option>
               {policies.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -753,12 +753,21 @@ function CreatePolicyModal({ onClose, onSaved }: { onClose: () => void; onSaved:
   );
 }
 
-function PoliciesTab() {
+/** Overtime policies, shown as the Overtime policies section of Setup. */
+export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const [policies, setPolicies] = useState<OvertimePolicy[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [showCreate, setShowCreate] = useState(false);
+  useLayoutEffect(() => { onDirtyChange?.(showCreate); return () => onDirtyChange?.(false); }, [showCreate, onDirtyChange]);
 
-  const load = () => { setLoading(true); overtimeApi.policies().then(setPolicies).catch(() => {}).finally(() => setLoading(false)); };
+  const load = () => {
+    setLoading(true);
+    overtimeApi.policies()
+      .then(rows => { setPolicies(rows); setLoadError(null); })
+      .catch(error => { setPolicies([]); setLoadError(error); })
+      .finally(() => setLoading(false));
+  };
   useEffect(load, []);
 
   return (
@@ -766,7 +775,9 @@ function PoliciesTab() {
       <div className="flex justify-end">
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Policy</button>
       </div>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : policies.length === 0 ? (
+      {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? (
+        <div className="surface"><LoadFailedNotice error={loadError} onRetry={load} /></div>
+      ) : policies.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Settings className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No overtime policies yet</p>
@@ -1062,7 +1073,6 @@ export function OvertimePage() {
       case 'my-ot':         return <MyOTTab selfEmployeeId={selfEmployeeId} isEmployee={isEmployee} />;
       case 'team-ot':       return <TeamOTTab />;
       case 'approvals':     return <ApprovalsTab isAdmin={isAdmin} isHRManager={isHRManager} isManager={isManager} />;
-      case 'policies':      return <PoliciesTab />;
       case 'calc-preview':  return <CalcPreviewTab />;
       case 'payroll-review': return <PayrollReviewTab />;
       case 'reports':       return <ReportsTab />;
@@ -1081,7 +1091,10 @@ export function OvertimePage() {
              'GCC overtime policies, approvals, calculations, and payroll integration.'}
           </p>
         </div>
-        {roleBadge}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <ModuleSettingsLink sections={['overtimePolicies']} label={msg('Overtime settings')} />
+          {roleBadge}
+        </div>
       </div>
 
       <div className="flex gap-1 overflow-x-auto rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/5">

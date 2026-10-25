@@ -37,10 +37,13 @@ async function openCreateUser(page: Page, options: { policy?: PasswordPolicy; fa
     if (pathname === '/api/tenant-admin/localization') return json({ defaultTimezone: 'America/New_York', currencyCode: 'USD', countryCode: 'US' });
     return json({ items: [], total: 0 });
   });
+  // The readiness link the server sends is still /user-management?companyId=…; the edge redirects it to Setup → Users
+  // keeping companyId, openCreate, purpose and returnTo, which is what the guided flow starts from.
   await page.goto(options.guidedCompany
     ? '/user-management?companyId=c-new&openCreate=1&purpose=companyAdmin&returnTo=%2Fsetup%3Ftab%3DaiSetup%26companyId%3Dc-new'
-    : '/user-management');
-  await expect(page.getByRole('heading', { name: 'User Management & Access Control' })).toBeVisible();
+    : '/setup?tab=users');
+  await expect(page).toHaveURL(/\/setup\?tab=users/);
+  await expect(page.locator('#setup-section-heading')).toHaveText('Users');
   if (!options.guidedCompany) await page.getByRole('button', { name: 'Create User', exact: true }).click();
   const password = page.getByLabel('Password', { exact: true });
   const panel = page.locator(`[id="${await password.getAttribute('aria-describedby')}"]`);

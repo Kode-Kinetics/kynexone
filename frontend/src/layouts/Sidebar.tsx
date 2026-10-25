@@ -8,6 +8,7 @@ import { Logo } from '../components/Logo';
 import { navigationGroups, navigationHints } from '../routes/navigation';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
+import { useCanOpenSetup } from '../hooks/useCanOpenSetup';
 import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
@@ -36,6 +37,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
   const pathname = usePathname();
   const { user, logout, hasPermission } = useAuth();
   const { isFeatureEnabled, verdictForPath } = useFeatureFlags();
+  const canOpenSetup = useCanOpenSetup();
   const { t } = useLocale();
 
   // Hover / focus info tag for a menu entry. Rendered fixed beside the rail, because the nav
@@ -210,7 +212,8 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 canSee(item.requiredPermissions) &&
                 (!item.requiredFeatureKey || isFeatureEnabled(item.requiredFeatureKey)) &&
                 (!item.path || verdictForPath(item.path).allowed) &&
-                (!item.groupAccountOnly || canSeeGroupItem),
+                (!item.groupAccountOnly || canSeeGroupItem) &&
+                (!item.requiresSetupSection || canOpenSetup),
             );
             if (visibleItems.length === 0) return null;
 
