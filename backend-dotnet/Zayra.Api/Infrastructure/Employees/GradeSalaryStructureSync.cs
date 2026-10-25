@@ -37,8 +37,13 @@ public static class GradeSalaryStructureSync
     {
         if (await EntitlementMatrixService.ReleaseAEnabledAsync(db, grade.TenantId, ct)) return null;
         var code = EmployeeSalaryBreakdownWriter.DefaultStructureCode(grade);
+        // Only lines that are part of the MONTHLY salary row become structure components. Payroll's tax base sums every
+        // taxable component of the employee's structure on every regular run, so an Annual earning (a yearly bonus) or a
+        // non-cash Benefit line copied here would be taxed each month although it is never paid monthly. Same rule as the
+        // salary writer (MonthlySalaryField); the grade itself keeps every line, and Payroll → Grade packages shows them all.
         var desired = lines
-            .Where(l => l.IsActive && !string.IsNullOrWhiteSpace(l.ComponentCode))
+            .Where(l => l.IsActive && !string.IsNullOrWhiteSpace(l.ComponentCode)
+                && EmployeeSalaryBreakdownWriter.MonthlySalaryField(l) is not null)
             .OrderBy(l => l.SortOrder).ThenBy(l => l.ComponentCode, StringComparer.Ordinal)
             .Select(l => new ComponentShape(l.ComponentCode.Trim().ToUpperInvariant(), l.ComponentName.Trim(), l.ComponentType,
                 CalculationTypeOf(l.CalculationType), l.Amount, l.Percentage, l.IsTaxable))

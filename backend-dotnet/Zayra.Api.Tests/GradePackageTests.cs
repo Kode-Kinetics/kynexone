@@ -96,6 +96,26 @@ public class GradePackageTests
     }
 
     [Fact]
+    public async Task TheDerivedStructure_HoldsOnlyMonthlySalaryLines_SoAnAnnualOrInKindLineIsNeverTaxedMonthly()
+    {
+        var w = await Seed();
+        GradePayScaleComponent L(string code, string type, decimal amount, string frequency = "Monthly") => new()
+        {
+            TenantId = w.Tenant, GradeId = w.Grade.Id, ComponentCode = code, ComponentName = code, ComponentType = type,
+            CalculationType = "Fixed", Amount = amount, Frequency = frequency, IsTaxable = true, IsActive = true,
+        };
+
+        var structure = await GradeSalaryStructureSync.StageAsync(w.Db, w.Grade,
+            [L("BASIC", "Earning", 12_000m), L("BONUS_ANNUAL", "Earning", 24_000m, "Annual"), L("MEDICAL", "Benefit", 900m),
+             L("FIXED_DEDUCTION", "Deduction", 150m)], null, createIfMissing: true, default);
+        await w.Db.SaveChangesAsync();
+
+        // Payroll taxes every taxable component of the structure on every regular run: the yearly bonus and the in-kind
+        // medical cover must not be among them.
+        (await Components(w, structure!.Id)).Select(c => c.Code).Should().Equal("BASIC", "FIXED_DEDUCTION");
+    }
+
+    [Fact]
     public async Task ACodeOutsideTheCatalogue_IsRefused_AndNothingIsWritten()
     {
         var w = await Seed();
