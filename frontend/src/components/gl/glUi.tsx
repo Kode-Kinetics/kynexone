@@ -84,7 +84,9 @@ export function Badge({
   title,
   testId,
   label,
+  wrap,
 }: {
+  wrap?: boolean;
   tone?: Tone;
   children: ReactNode;
   title?: string;
@@ -97,17 +99,17 @@ export function Badge({
       title={title}
       data-testid={testId}
       {...(label ? { role: 'img' as const, 'aria-label': label } : {})}
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClass[tone]}`}
+      className={`inline-flex items-center gap-1 ${wrap ? 'text-start' : 'whitespace-nowrap'} rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClass[tone]}`}
     >
       {children}
     </span>
   );
 }
 
-export function InheritedBadge() {
+export function InheritedBadge({ wrap }: { wrap?: boolean } = {}) {
   const t = useT();
   return (
-    <Badge tone="slate" title={t('Set at group level and not overridden for this company.')}>
+    <Badge wrap={wrap} tone="slate" title={t('Set at group level and not overridden for this company.')}>
       {t('Inherited from group')}
     </Badge>
   );
@@ -442,5 +444,7 @@ export function todayIso(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** Tighter header cell for tables that must fit beside Setup's menu. */
+export const thCompact = 'px-2 py-2 text-start align-bottom font-medium';
 export const thClass = 'px-3 py-2 text-start font-medium';
 export const theadClass = 'bg-slate-50 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400';

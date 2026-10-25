@@ -44,6 +44,7 @@ import {
 import { useAppToast } from '../ui/AppToast';
 import { Modal } from '../Modal';
 import {
+  thCompact,
   accountTypeLabel,
   ActiveBadge,
   Badge,
@@ -756,17 +757,28 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           }
         >
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-coa-heading">
-            <table className="w-full min-w-[960px] text-sm">
+            {/* Fixed layout: every column shares the width the page gives it (about 640px beside Setup's menu), long text wraps or is cut with a title, and nothing needs a horizontal scrollbar. */}
+            <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[9%]" />
+                <col className="w-[14%]" />
+                <col className="w-[22%]" />
+                <col className="w-[10%]" />
+                <col className="w-[14%]" />
+                <col className="w-[10%]" />
+                <col className="w-[8%]" />
+                <col className="w-[13%]" />
+              </colgroup>
               <thead className={theadClass}>
                 <tr>
-                  <th scope="col" className={thClass}>{t('Code')}</th>
-                  <th scope="col" className={thClass}>{t('ERP account code')}</th>
-                  <th scope="col" className={thClass}>{t('Name')}</th>
-                  <th scope="col" className={thClass}>{t('Type')}</th>
-                  <th scope="col" className={thClass}>{t('Cost centre rule')}</th>
-                  <th scope="col" className={thClass}>{t('Scope')}</th>
-                  <th scope="col" className={thClass}>{t('Status')}</th>
-                  <th scope="col" className={`${thClass} text-end`}>{t('Actions')}</th>
+                  <th scope="col" className={thCompact}>{t('Code')}</th>
+                  <th scope="col" className={thCompact}>{t('ERP account code')}</th>
+                  <th scope="col" className={thCompact}>{t('Name')}</th>
+                  <th scope="col" className={thCompact}>{t('Type')}</th>
+                  <th scope="col" className={thCompact}>{t('Cost centre rule')}</th>
+                  <th scope="col" className={thCompact}>{t('Scope')}</th>
+                  <th scope="col" className={thCompact}>{t('Status')}</th>
+                  <th scope="col" className={`${thCompact} text-end`}>{t('Actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -786,13 +798,13 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                     </tr>
                     {g.rows.map(({ account: a, inherited }) => (
                       <tr key={a.id} className="border-t border-slate-100 dark:border-white/5">
-                        <td className="px-3 py-2 font-mono text-xs">{a.code}</td>
-                        <td className="px-3 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">
-                          {a.externalCode ? a.externalCode : <><span className="text-slate-400" aria-hidden>—</span><span className="sr-only">{t('No ERP account code')}</span></>}
+                        <td className="px-2 py-2 font-mono text-xs"><bdi dir="ltr" className="break-all">{a.code}</bdi></td>
+                        <td className="px-2 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">
+                          {a.externalCode ? <bdi dir="ltr" className="break-all">{a.externalCode}</bdi> : <><span className="text-slate-400" aria-hidden>—</span><span className="sr-only">{t('No ERP account code')}</span></>}
                         </td>
-                        <td className="px-3 py-2">{a.name}</td>
-                        <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{accountTypeLabel(t, a.accountType)}</td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2"><span data-testid={`cc-acct-name-${a.code}`} title={a.name} className="block overflow-hidden text-ellipsis whitespace-nowrap">{a.name}</span></td>
+                        <td className="px-2 py-2 text-xs text-slate-600 dark:text-slate-300">{accountTypeLabel(t, a.accountType)}</td>
+                        <td className="px-2 py-2">
                           {(() => {
                             const rule = cleanRule(a.costCenterRule);
                             const Icon = RULE_ICON[rule];
@@ -808,14 +820,14 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             );
                           })()}
                         </td>
-                        <td className="px-3 py-2">
-                          {inherited ? <InheritedBadge /> : inCompanyView ? <Badge tone="violet">{t('Company')}</Badge> : <Badge tone="sapphire">{t('Group')}</Badge>}
+                        <td className="px-2 py-2">
+                          {inherited ? <InheritedBadge wrap /> : inCompanyView ? <Badge tone="violet">{t('Company')}</Badge> : <Badge tone="sapphire">{t('Group')}</Badge>}
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <ActiveBadge active={a.isActive} />
                         </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center justify-end gap-1.5">
+                        <td className="px-2 py-2">
+                          <div className="flex flex-col items-end gap-1.5">
                             {canManage && !inherited ? (
                               <>
                                 <button type="button" onClick={() => openEdit(a)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
@@ -974,15 +986,21 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           emptyLabel={inCompanyView ? t('No posting drivers are set up yet. Ask a group administrator to load the standard payroll chart.') : t('No posting drivers are set up yet. Load the standard payroll chart above to get started.')}
         >
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-map-heading">
-            <table className="w-full min-w-[900px] text-sm">
+            <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[24%]" />
+                <col className="w-[23%]" />
+                <col className="w-[17%]" />
+                <col className="w-[19%]" />
+                <col className="w-[17%]" />
+              </colgroup>
               <thead className={theadClass}>
                 <tr>
-                  <th scope="col" className={thClass}>{t('Posting line')}</th>
-                  <th scope="col" className={thClass}>{t('Category')}</th>
-                  <th scope="col" className={thClass}>{t('Account')}</th>
-                  <th scope="col" className={thClass}>{t('Functional class')}</th>
-                  <th scope="col" className={thClass}>{t('Fixed cost centre')}</th>
-                  <th scope="col" className={`${thClass} text-end`}>{t('Actions')}</th>
+                  <th scope="col" className={thCompact}>{t('Posting line')}</th>
+                  <th scope="col" className={thCompact}>{t('Account')}</th>
+                  <th scope="col" className={thCompact}>{t('Functional class')}</th>
+                  <th scope="col" className={thCompact}>{t('Fixed cost centre')}</th>
+                  <th scope="col" className={`${thCompact} text-end`}>{t('Actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1003,26 +1021,26 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                   return (
                     <Fragment key={r.driverKey}>
                       <tr data-testid={`cc-map-row-${r.driverKey}`} className="border-t border-slate-100 dark:border-white/5">
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-slate-800 dark:text-slate-100">{r.label}</span>
-                            {isOverridden && <Badge tone="violet">{t('Company override')}</Badge>}
-                            {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge />}
+                            <span className="break-words text-slate-800 dark:text-slate-100">{r.label}</span>
+                            {isOverridden && <Badge tone="violet" wrap>{t('Company override')}</Badge>}
+                            {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge wrap />}
                           </div>
-                          <p className="text-[11px] text-slate-500">
+                          <p className="text-[11px] text-slate-500">{driverCategoryLabel(t, r.category)}</p>
+                          <p className="break-words text-[11px] text-slate-500">
                             {inheritedAccount && !isOverridden
                               ? t('Fallback {account} · inherits {inherited}', { account: r.defaultAccount, inherited: inheritedAccount })
                               : t('Fallback {account}', { account: r.defaultAccount })}
                           </p>
                         </td>
-                        <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{driverCategoryLabel(t, r.category)}</td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <select
                             aria-label={t('Account for {line}', { line: r.label })}
                             value={d.accountId}
                             disabled={!mapEditable}
                             onChange={(ev) => updateDraft(r.driverKey, (x) => setBaseAccount(x, ev.target.value))}
-                            className="select w-full min-w-[200px] text-xs disabled:opacity-60"
+                            className="select w-full min-w-0 text-xs disabled:opacity-60"
                           >
                             <option value="">{inCompanyView ? t('Inherit group mapping') : t('Use the fallback account')}</option>
                             {selectableAccounts.map((a) => (
@@ -1034,7 +1052,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             ))}
                           </select>
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <select
                             aria-label={t('Functional class for {line}', { line: r.label })}
                             value={d.cls}
@@ -1042,7 +1060,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             aria-describedby={ex.why === 'fixed' ? hintId : ex.why === 'account' ? 'cc-map-account-first-hint' : undefined}
                             data-testid={`cc-map-class-${r.driverKey}`}
                             onChange={(ev) => updateDraft(r.driverKey, (x) => setBaseClass(x, ev.target.value))}
-                            className="select w-full min-w-[150px] text-xs disabled:opacity-60"
+                            className="select w-full min-w-0 text-xs disabled:opacity-60"
                           >
                             <option value="">{t('Any class')}</option>
                             {FUNCTIONAL_CLASSES.map((c) => (
@@ -1058,7 +1076,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             </p>
                           )}
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
                           <select
                             aria-label={t('Fixed cost centre for {line}', { line: r.label })}
                             value={d.fixedCostCentreId}
@@ -1066,7 +1084,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             aria-describedby={ex.why === 'group' ? 'cc-map-group-hint' : ex.why === 'class' ? hintId : ex.why === 'account' ? 'cc-map-account-first-hint' : undefined}
                             data-testid={`cc-map-fixed-${r.driverKey}`}
                             onChange={(ev) => updateDraft(r.driverKey, (x) => setFixedCostCentre(x, ev.target.value))}
-                            className="select w-full min-w-[150px] text-xs disabled:opacity-50"
+                            className="select w-full min-w-0 text-xs disabled:opacity-50"
                           >
                             <option value="">{t('None')}</option>
                             {fixedOptions.map((c) => (
@@ -1077,7 +1095,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                           </select>
                           {ex.why === 'class' && hint}
                         </td>
-                        <td className="px-3 py-2 text-end">
+                        <td className="px-2 py-2 text-end">
                           <div className="flex flex-col items-end gap-1.5">
                             {mapEditable && (
                               <select
@@ -1090,7 +1108,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                                   updateDraft(r.driverKey, (x) => addClassRule(x, cls));
                                   setAnnounce(t('Added a rule for {class}.', { class: classLabel(cls) }));
                                 }}
-                                className="select h-8 w-full max-w-[200px] text-xs"
+                                className="select h-8 w-full min-w-0 text-xs"
                               >
                                 <option value="">{t('Add rule for a class')}</option>
                                 {unused.map((c) => (
@@ -1114,20 +1132,19 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                       </tr>
                       {d.classRules.map((rule) => (
                         <tr key={rule.cls} data-testid={`cc-map-class-row-${r.driverKey}-${rule.cls}`} className="border-t border-slate-100 bg-slate-50/50 dark:border-white/5 dark:bg-white/[0.02]">
-                          <td className="border-s-2 border-violet-200 py-2 ps-6 pe-3 dark:border-violet-500/30">
+                          <td className="border-s-2 border-violet-200 py-2 ps-4 pe-2 dark:border-violet-500/30">
                             <div className="flex flex-wrap items-center gap-1.5">
                               <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{t('{class} rule', { class: classLabel(rule.cls) })}</span>
                               {rule.inherited && <InheritedBadge />}
                             </div>
                           </td>
-                          <td className="px-3 py-2" />
-                          <td className="px-3 py-2">
+                          <td className="px-2 py-2">
                             <select
                               aria-label={t('Class rule for {line}: {class}', { line: r.label, class: classLabel(rule.cls) })}
                               value={rule.accountId}
                               disabled={!mapEditable}
                               onChange={(ev) => updateDraft(r.driverKey, (x) => setClassRuleAccount(x, rule.cls, ev.target.value))}
-                              className="select w-full min-w-[200px] text-xs disabled:opacity-60"
+                              className="select w-full min-w-0 text-xs disabled:opacity-60"
                             >
                               <option value="">{rule.inherited ? t('Inherit group mapping') : t('Use the fallback account')}</option>
                               {selectableAccounts.map((a) => (
@@ -1139,9 +1156,9 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                               ))}
                             </select>
                           </td>
-                          <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{classLabel(rule.cls)}</td>
-                          <td className="px-3 py-2 text-[11px] text-slate-400" aria-hidden>—</td>
-                          <td className="px-3 py-2 text-end">
+                          <td className="px-2 py-2 text-xs text-slate-600 dark:text-slate-300">{classLabel(rule.cls)}</td>
+                          <td className="px-2 py-2 text-[11px] text-slate-400" aria-hidden>—</td>
+                          <td className="px-2 py-2 text-end">
                             {mapEditable && !rule.inherited ? (
                               <button
                                 type="button"

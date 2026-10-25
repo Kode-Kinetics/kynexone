@@ -435,7 +435,7 @@ const lastMappingPut = (state: { writes: Recorded[] }) => state.writes.filter((w
 test('group view: the fixed cost centre is off with the per-company explanation, and the class rule row is listed', async ({ page }, info) => {
   await boot(page, { groupMode: true });
   const region = mapping(page);
-  for (const header of ['Posting line', 'Category', 'Account', 'Functional class', 'Fixed cost centre', 'Actions']) {
+  for (const header of ['Posting line', 'Account', 'Functional class', 'Fixed cost centre', 'Actions']) {
     await expect(region.getByRole('columnheader', { name: header, exact: true })).toBeVisible();
   }
   await expect(tid(page, 'cc-map-fixed-EARN:BASIC')).toBeDisabled();
@@ -845,7 +845,11 @@ for (const size of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }])
         ] as const) {
           const wrap = document.querySelector(sel) as HTMLElement | null;
           if (!wrap) { out.push(`${name}: table not found`); continue; }
-          if (wrap.scrollWidth > wrap.clientWidth + 1) out.push(`${name}: scrolls horizontally (${wrap.scrollWidth} > ${wrap.clientWidth})`);
+          if (wrap.scrollWidth > wrap.clientWidth + 1) {
+            const wr = wrap.getBoundingClientRect();
+            const wide = [...wrap.querySelectorAll('*')].filter((e) => e.tagName !== 'OPTION' && (e.getBoundingClientRect().right > wr.right - 1 || e.getBoundingClientRect().left < wr.left)).slice(0, 4).map((e) => `${e.tagName.toLowerCase()}[${(e.textContent ?? '').slice(0, 30)}|${e.className}]${Math.round(e.getBoundingClientRect().right - wr.right)}`);
+            out.push(`${name}: scrolls horizontally (${wrap.scrollWidth} > ${wrap.clientWidth}) by ${wide.join(', ')}`);
+          }
           wrap.querySelectorAll('thead th').forEach((th) => check(`${name} header "${th.textContent?.trim()}"`, th));
           for (const e of extra) wrap.querySelectorAll(e).forEach((el) => check(`${name} ${e}`, el));
         }
