@@ -80,6 +80,7 @@ public class RatesController : ControllerBase
         return Ok(defs.Select(d => new
         {
             d.RateKey, d.RateCategory, d.DataType, d.Unit, d.MinValue, d.MaxValue, d.Description,
+            allowedValues = AllowedValuesFor(d.RateKey),
             // False = recorded only: payroll never reads this key, so a new value is refused (COMPANY_RATE_NOT_APPLIED).
             appliedByPayroll = StatutoryRateGuard.IsAppliedByPayroll(d.RateKey),
             notAppliedReason = StatutoryRateGuard.IsAppliedByPayroll(d.RateKey) ? null : NotAppliedMessage(d),
@@ -931,6 +932,18 @@ public class RatesController : ControllerBase
     private bool CanReadStatutory() =>
         HasPermission("payroll.rates.read") || HasPermission("payroll.rates.manage") || HasPermission("payroll.rates.statutory_override");
 
+    private static readonly IReadOnlyDictionary<string, string[]> BorderNumberRateAllowedValues =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            [Infrastructure.Employees.BorderNumberRule.UseAsWageFileIdRateKey] = Infrastructure.Employees.BorderNumberRule.OnOff,
+        };
+
+    /// <summary>Closed list of admissible words for a string-typed key, or null when free text.</summary>
+    private static string[]? AllowedValuesFor(string key) =>
+        ProrationRateKeys.AllowedValues.TryGetValue(key, out var a) ? a
+        : EosbProvisioningRateKeys.AllowedValues.TryGetValue(key, out a) ? a
+        : BorderNumberRateAllowedValues.TryGetValue(key, out a) ? a : null;
+
     private async Task<IReadOnlyList<ClientRateDefinition>> LoadRegistryAsync(Guid tid, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
@@ -991,7 +1004,8 @@ public class RatesController : ControllerBase
             var value = (req.RateValue ?? string.Empty).Trim();
             if (value.Length == 0) return (BadRequest(new { message = $"'{key}' expects a non-empty value." }), null);
             if (ProrationRateKeys.AllowedValues.TryGetValue(key, out var allowed)
-                || EosbProvisioningRateKeys.AllowedValues.TryGetValue(key, out allowed))
+                || EosbProvisioningRateKeys.AllowedValues.TryGetValue(key, out allowed)
+                || BorderNumberRateAllowedValues.TryGetValue(key, out allowed))
             {
                 if (!allowed.Contains(value, StringComparer.OrdinalIgnoreCase))
                     return (BadRequest(new

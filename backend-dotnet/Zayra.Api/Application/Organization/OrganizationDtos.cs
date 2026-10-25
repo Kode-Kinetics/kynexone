@@ -156,9 +156,12 @@ public record GradePayScaleComponentDto(
     string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable,
     string Frequency, int SortOrder, bool IsActive);
 
+/// <summary>One line of a grade's pay package. <paramref name="ComponentCode"/> names a component of the grade company's pay
+/// component catalogue; name, type and taxable are taken from that catalogue row when saved. A row with a blank code is an
+/// unfinished editor row and is ignored.</summary>
 public record GradePayScaleComponentRequest(
-    [Required, MaxLength(40)] string ComponentCode,
-    [Required, MaxLength(120)] string ComponentName,
+    [MaxLength(40)] string? ComponentCode,
+    [MaxLength(120)] string? ComponentName = null,
     [MaxLength(20)] string ComponentType = "Earning",
     [MaxLength(20)] string CalculationType = "Fixed",
     [Range(0, 100_000_000)] decimal Amount = 0,

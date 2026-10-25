@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -7,7 +8,9 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -264,7 +267,14 @@ public class GradesController : ControllerBase
         return Ok(components.Select(c => c.ToDto()));
     }
 
-    /// <summary>Replace the grade's pay-scale component lines wholesale (the editor sends the full set).</summary>
+    /// <summary>
+    /// Replace the grade's package lines wholesale (the editor sends the full set) and bring the grade's salary structure
+    /// in step with them (<see cref="GradeSalaryStructureSync"/>) in the same save. Each line names a component of the
+    /// grade company's pay component catalogue (<see cref="GradePackageCatalog"/>): its name, type and taxable flag come
+    /// from there; the line sets Fixed or % of basic, the amount or percentage, and the frequency. A row with a blank
+    /// code is ignored. A code that is not in the catalogue is refused (422 unknown_pay_component) — add it as a new
+    /// component first.
+    /// </summary>
     [HttpPut("{id:guid}/pay-scale")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> SetPayScale(Guid id, [FromBody] List<GradePayScaleComponentRequest> components, CancellationToken ct)
@@ -277,40 +287,112 @@ public class GradesController : ControllerBase
         // Release A (R1): benefits by grade live in one place, the matrix. For a tenant with release_a on, this writer is
         // frozen (expand → migrate → contract: the rows stay, are readable and importable, and are dropped in a later
         // release). Tenants without the flag keep the editor exactly as before.
-        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct))
-            return Conflict(new
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+
+        var rows = (components ?? new List<GradePayScaleComponentRequest>())
+            .Where(c => c is not null && !string.IsNullOrWhiteSpace(c.ComponentCode))
+            .ToList();
+        var codes = rows.Select(c => c.ComponentCode!.Trim().ToUpperInvariant()).ToList();
+        if (codes.Count != codes.Distinct().Count())
+            return BadRequest(new { message = "Each pay component can be on a grade only once." });
+
+        var catalogue = (await GradePackageCatalog.OptionsAsync(_db, tenantId.Value, grade.CompanyId, ct))
+            .GroupBy(o => o.Code, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var unknown = codes.Where(c => !catalogue.ContainsKey(c)).ToList();
+        if (unknown.Count > 0)
+            return UnprocessableEntity(new
             {
-                error = "moved_to_benefits_by_grade",
-                message = "Grade benefits are now set in Benefits → Benefits by grade. The old pay-scale lines can be imported there.",
+                error = "unknown_pay_component",
+                message = $"{string.Join(", ", unknown)} {(unknown.Count == 1 ? "is" : "are")} not in this company's pay components. Choose a component from the list, or add it as a new component.",
+                codes = unknown,
             });
 
-        var codes = components.Select(c => c.ComponentCode?.Trim().ToUpperInvariant()).Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
-        if (codes.Count != codes.Distinct().Count())
-            return BadRequest(new { message = "Duplicate ComponentCode within the pay scale." });
-
-        var existing = await _db.GradePayScaleComponents.Where(c => c.TenantId == tenantId && c.GradeId == id).ToListAsync(ct);
-        _db.GradePayScaleComponents.RemoveRange(existing);
-        foreach (var c in components)
+        var lines = new List<GradePayScaleComponent>();
+        for (var i = 0; i < rows.Count; i++)
         {
-            _db.GradePayScaleComponents.Add(new GradePayScaleComponent
+            var row = rows[i];
+            var option = catalogue[codes[i]];
+            var calculation = (row.CalculationType ?? "Fixed").Trim();
+            var percent = string.Equals(calculation, "PercentOfBasic", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(calculation, "Percentage", StringComparison.OrdinalIgnoreCase);
+            if (!percent && !string.Equals(calculation, "Fixed", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = $"{option.NameEn}: choose Fixed or % of basic." });
+            if (percent && string.Equals(option.Code, "BASIC", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = "Basic salary is a fixed amount; it cannot be a percentage of itself." });
+            var frequency = string.Equals(row.Frequency, "Annual", StringComparison.OrdinalIgnoreCase) ? "Annual" : "Monthly";
+            lines.Add(new GradePayScaleComponent
             {
                 TenantId = tenantId.Value,
                 GradeId = id,
-                ComponentCode = (c.ComponentCode ?? string.Empty).Trim().ToUpperInvariant(),
-                ComponentName = (c.ComponentName ?? string.Empty).Trim(),
-                ComponentType = c.ComponentType,
-                CalculationType = c.CalculationType,
-                Amount = c.Amount,
-                Percentage = c.Percentage,
-                IsTaxable = c.IsTaxable,
-                Frequency = c.Frequency,
-                SortOrder = c.SortOrder,
-                IsActive = c.IsActive,
+                ComponentCode = option.Code,
+                ComponentName = option.NameEn,
+                ComponentType = option.ComponentType,
+                CalculationType = percent ? "PercentOfBasic" : "Fixed",
+                Amount = percent ? 0m : row.Amount,
+                Percentage = percent ? row.Percentage : 0m,
+                IsTaxable = option.IsTaxable,
+                Frequency = frequency,
+                SortOrder = i + 1,
+                IsActive = row.IsActive,
             });
         }
+
+        var existing = await _db.GradePayScaleComponents.Where(c => c.TenantId == tenantId && c.GradeId == id).ToListAsync(ct);
+        _db.GradePayScaleComponents.RemoveRange(existing);
+        _db.GradePayScaleComponents.AddRange(lines);
+        var structure = await GradeSalaryStructureSync.StageAsync(_db, grade, lines, this.GetUserId(), createIfMissing: lines.Count > 0, ct);
         await _db.SaveChangesAsync(ct);
-        return Ok(new { count = components.Count });
+        return Ok(new
+        {
+            count = lines.Count,
+            structure = structure is null ? null : new { structure.Id, structure.Code, structure.VersionNumber },
+        });
     }
+
+    /// <summary>The pay components a grade of <paramref name="companyId"/> may put on its package (see <see cref="GradePackageCatalog"/>).</summary>
+    [HttpGet("package-components")]
+    public async Task<IActionResult> PackageComponents([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        return Ok(await GradePackageCatalog.OptionsAsync(_db, tenantId.Value, companyId, ct));
+    }
+
+    /// <summary>
+    /// The grade editor's "+ New component": adds a grade-package component to the company's pay component catalogue.
+    /// Its amount is set on each grade; payroll never pays the catalogue row itself (<see cref="PayComponentCalcMethods.GradePackage"/>).
+    /// </summary>
+    [HttpPost("package-components")]
+    [Authorize(Roles = "Admin,HR Manager")]
+    public async Task<IActionResult> CreatePackageComponent([FromQuery] Guid? companyId, [FromBody] GradePackageComponentCreateRequest request, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (await EntitlementMatrixService.ReleaseAEnabledAsync(_db, tenantId.Value, ct)) return MovedToBenefitsByGrade();
+        Guid owningCompany;
+        try { owningCompany = await _organization.ResolveOwningCompanyAsync(tenantId.Value, companyId, ct); }
+        catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
+
+        var (row, errors) = await GradePackageCatalog.StageCreateAsync(_db, tenantId.Value, owningCompany, request, this.GetUserId(), ct);
+        if (row is null) return UnprocessableEntity(new { error = "invalid_pay_component", errors });
+        // Catalogue changes are payroll configuration: recorded on the payroll audit chain, as the component API records them.
+        _db.PayrollAuditLogs.Add(new PayrollAuditLog
+        {
+            TenantId = tenantId.Value, Action = "payroll.component.created", EntityName = "PayComponent", EntityId = row.Id.ToString(),
+            UserId = this.GetUserId(),
+            MetadataJson = JsonSerializer.Serialize(new { source = "grade_editor", row.Code, row.CompanyId, row.ComponentType, row.CalcMethod, row.IsTaxable }),
+        });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new GradePackageComponentOption(row.Id, row.CompanyId, row.Code, row.NameEn, row.NameAr, row.ComponentType, row.IsTaxable, row.IsSystem));
+    }
+
+    private ConflictObjectResult MovedToBenefitsByGrade() => Conflict(new
+    {
+        error = "moved_to_benefits_by_grade",
+        message = "Grade benefits are now set in Benefits → Benefits by grade. The old pay-scale lines can be imported there.",
+    });
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 }

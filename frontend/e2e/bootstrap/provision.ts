@@ -1134,20 +1134,21 @@ async function ensureEmployeeDocuments(
 // ── Salaries ──────────────────────────────────────────────────────────────────────────────────
 
 /**
- * A salary structure per company, assigned to every one of its employees.
+ * A salary for every employee of every company, on the employee's own default structure.
  *
  * `EmployeeCreateRequest.salaryBreakdown` alone is NOT enough, and the way it fails is silent: the
  * service only materialises an assignment when the employee resolves to a structure (via a grade or
  * an explicit code), so a 14-employee tenant produced a payroll run with `employeeCount: 14` and a
  * gross total of one person's package. Every downstream money assertion would then be comparing
  * numbers that are internally consistent and completely wrong.
+ *
+ * Salary structures are no longer created by hand (a pay package lives on its grade in Setup → Grades,
+ * and POST /api/payroll/salary-structures answers 409). The assignment names no structure, so the server
+ * puts it on the employee's grade package structure — or DIRECT for an employee without a grade.
  */
 async function ensureSalaries(
   adminToken: string, companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<number> {
-  const structures = items(expectOk(
-    await call('GET', '/api/payroll/salary-structures', { token: adminToken }), 'list salary structures',
-  ).body);
   const assigned = new Set(items((await call(
     'GET', '/api/payroll/employee-salary-structures?page=1&pageSize=500', { token: adminToken },
   )).body).map((a: any) => String(a.employeeId ?? a.EmployeeId)));
@@ -1155,19 +1156,6 @@ async function ensureSalaries(
   let count = 0;
   for (const company of companies) {
     const currency = company.countryCode === 'IN' ? 'INR' : 'SAR';
-    const structureCode = `E2E-STD-${company.code}`;
-    let structureId = structures.find((s: any) => (s.code ?? s.Code) === structureCode)?.id;
-    if (!structureId) {
-      const created = await call('POST', '/api/payroll/salary-structures', {
-        token: adminToken, companyId: company.id,
-        body: {
-          code: structureCode, name: `${company.code} standard structure`, currency,
-          effectiveDate: '2024-01-01', companyId: company.id, components: [], isActive: true,
-        },
-      });
-      expectOk(created, `create salary structure '${structureCode}'`, [200, 201]);
-      structureId = created.body.id ?? created.body.Id;
-    }
 
     const employees = await allEmployees(adminToken, { companyId: company.id });
     for (const employee of employees) {
@@ -1177,7 +1165,7 @@ async function ensureSalaries(
       const res = await call('POST', '/api/payroll/employee-salary-structures', {
         token: adminToken, companyId: company.id,
         body: {
-          employeeId: id, salaryStructureId: structureId,
+          employeeId: id,
           basicSalary: 6000 + n * 250, housingAllowance: 1500, transportAllowance: 500,
           foodAllowance: 0, mobileAllowance: 0, otherAllowance: 0, fixedDeduction: 0,
           effectiveDate: '2024-01-01', currency,

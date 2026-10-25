@@ -20,7 +20,7 @@ public interface IEmployeeActivationGuard
     Task<ResolvedReadinessPolicy> ResolvePolicyAsync(
         Guid tenantId, Guid? companyId, string? countryCode, string? nationality, CancellationToken ct);
 
-    EmployeeReadiness Evaluate(EmployeeReadinessSnapshot snapshot, ResolvedReadinessPolicy policy);
+    EmployeeReadiness Evaluate(EmployeeReadinessSnapshot snapshot, ResolvedReadinessPolicy policy, DateOnly? asOf = null);
 
     /// <summary>Resolve policy for the snapshot and throw EmployeeActivationBlockedException if it has
     /// activate-blockers. Returns the readiness on success.</summary>
@@ -64,8 +64,8 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         Guid tenantId, Guid? companyId, string? countryCode, string? nationality, CancellationToken ct)
         => _resolver.ResolveAsync(tenantId, companyId, countryCode, nationality, ct);
 
-    public EmployeeReadiness Evaluate(EmployeeReadinessSnapshot snapshot, ResolvedReadinessPolicy policy)
-        => _evaluator.Evaluate(snapshot, policy);
+    public EmployeeReadiness Evaluate(EmployeeReadinessSnapshot snapshot, ResolvedReadinessPolicy policy, DateOnly? asOf = null)
+        => _evaluator.Evaluate(snapshot, policy, asOf);
 
     public bool ShouldGate(string? oldStatus, string? newStatus)
         => string.Equals(newStatus, EmployeeStatuses.Active, System.StringComparison.OrdinalIgnoreCase)

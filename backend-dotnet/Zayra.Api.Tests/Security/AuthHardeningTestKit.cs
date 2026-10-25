@@ -87,10 +87,10 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
             notifications);
     }
 
-    public MfaService Mfa(ZayraDbContext db, IEmailService? email = null)
+    public MfaService Mfa(ZayraDbContext db, IEmailService? email = null, IConfiguration? config = null)
     {
         var tokens = new JwtTokenService(Jwt);
-        return new MfaService(db, Totp, tokens, new AuditService(db), email);
+        return new MfaService(db, Totp, tokens, new AuditService(db), email, config: config);
     }
 
     /// <summary>
@@ -172,6 +172,19 @@ internal sealed class AuthHardeningTestKit : IAsyncDisposable
         {
             existing.Value = PrivilegedMfaPolicy.FormatDate(enforceFromUtc.Value);
         }
+        await db.SaveChangesAsync();
+    }
+
+    public async Task SetWorkspaceMfaRequiredAsync(bool required)
+    {
+        await using var db = NewDb();
+        var sec = await db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == TenantId);
+        if (sec is null)
+        {
+            sec = new SecuritySetting { TenantId = TenantId };
+            db.SecuritySettings.Add(sec);
+        }
+        sec.MfaRequired = required;
         await db.SaveChangesAsync();
     }
 

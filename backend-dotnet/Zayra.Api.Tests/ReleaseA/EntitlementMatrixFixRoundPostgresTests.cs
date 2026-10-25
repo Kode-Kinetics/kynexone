@@ -248,10 +248,12 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
             Eligible = true, ValueType = "PercentOfBasic", Rate = 0.25m, EffectiveFrom = Today, SourceRule = EntitlementMatrixService.SourceRuleMatrix });
         await db.SaveChangesAsync();
 
-        // Figures supplied: used as they are, exactly as before (no matrix fill, no refusal).
+        // Never the matrix for a tenant without the flag (no 25% fill, no refusal). The blank housing is filled from the
+        // grade's own legacy pay scale, field by field — it used to be dropped (0) as soon as any figure was typed, so the
+        // hire was paid basic only.
         var created = await Employees(db).CreateAsync(seed.TenantId, Request(seed, Salary(8_000m, Today)), Ctx(seed.TenantId), default);
         var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == created.Id && x.IsActive);
-        (assignment.BasicSalary, assignment.HousingAllowance).Should().Be((8_000m, 0m));
+        (assignment.BasicSalary, assignment.HousingAllowance).Should().Be((8_000m, 9_999m));
         (await db.SalaryComponents.AsNoTracking().Where(x => x.SalaryStructureId == assignment.SalaryStructureId).Select(x => x.Amount).ToListAsync())
             .Should().Equal([9_999m], "the legacy scale still describes the structure for a tenant without the flag");
     }

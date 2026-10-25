@@ -21,6 +21,10 @@ interface MockOptions {
   failFirstCreate?: boolean;
   workEmailConflict?: boolean;
   duplicate?: boolean;
+  /** Grade id → its pay-scale lines (GET /api/grades/{id}/pay-scale). Every other grade has none. */
+  payScale?: Record<string, unknown[]>;
+  /** Descriptors GET /api/employees/field-catalog returns (default: none, so the local fallback is used). */
+  fieldCatalog?: unknown[];
   masterData?: Record<string, Array<{
     id: string;
     typeId: string;
@@ -82,7 +86,7 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/designations') return reply(paged([{ id: 'designation-wizard', departmentId: 'department-wizard', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true }]));
     if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }, { ...grade, id: 'grade-retired', code: 'G0', name: 'Retired grade', isActive: false }]));
     if (path === '/api/compensation/benefits/grade-defaults') return reply([]);
-    if (path.endsWith('/pay-scale')) return reply([]);
+    if (path.endsWith('/pay-scale')) return reply(options.payScale?.[path.split('/')[3] ?? ''] ?? []);
     if (path === '/api/organization/cost-centers') return reply(paged([
       { id: 'cost-wizard', companyId: company.id, code: 'OPS', name: 'Operations cost center', isActive: true },
       { id: 'cost-finance', companyId: company.id, code: 'FIN', name: 'Finance cost center', isActive: true },
@@ -92,7 +96,7 @@ async function boot(page: Page, options: MockOptions = {}) {
       { id: 'structure-retired', companyId: company.id, code: 'OPS-OLD', name: 'Retired band', isActive: false },
       { id: 'structure-other', companyId: 'another-company', code: 'OTHER-CO', name: 'Another company band', isActive: true },
     ]);
-    if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: [] });
+    if (path === '/api/employees/field-catalog') return reply({ countryCode: testCompany.countryCode, fields: options.fieldCatalog ?? [] });
     if (path === '/api/localization/transliterate') {
       transliterations.push(body);
       await options.transliteration?.waitFor;
@@ -552,10 +556,8 @@ test('retains entered values across Back and review edits and submits the existi
   await dialog.getByLabel('Housing allowance', { exact: true }).fill('2000');
   await dialog.getByLabel('Fixed deduction', { exact: true }).fill('100');
   await dialog.getByLabel('Effective date', { exact: true }).fill('2026-10-15');
-  // A choice of the company's active structures — never free text; other companies' and retired ones are not offered.
-  const structure = dialog.getByRole('combobox', { name: 'Salary structure', exact: true });
-  await expect(structure.locator('option')).toHaveText(['Default for the grade', 'Operations band (OPS-BAND)']);
-  await structure.selectOption('OPS-BAND');
+  // No structure choice: the grade is the pay package, so the hire goes on the grade's default structure.
+  await expect(dialog.getByRole('combobox', { name: 'Salary structure', exact: true })).toHaveCount(0);
   await evidence(page, info, 'salary');
   await next(dialog, 4);
   await dialog.getByLabel(/^Passport number/i).fill('TEST-PASSPORT-001');
@@ -574,9 +576,11 @@ test('retains entered values across Back and review edits and submits the existi
     personalEmail: 'alex.personal@example.test', workEmail: 'alex.it-issued@example.test', companyId: company.id,
     branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id, costCenterId: 'cost-wizard',
     reportingManagerEmployeeId: 17, jobTitle: 'Operations specialist', joiningDate: '2026-10-15',
-    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true, salaryStructureReference: 'OPS-BAND' },
-    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR', salaryStructureCode: 'OPS-BAND' },
+    payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true },
+    salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR' },
   });
+  expect(creates[0].salaryBreakdown?.salaryStructureCode).toBeUndefined();
+  expect(creates[0].payrollProfile?.salaryStructureReference).toBeUndefined();
   expect(creates[0].complianceRecords).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'passport_number', fieldValue: 'TEST-PASSPORT-001' })]));
   expect(creates[0]).not.toHaveProperty('acknowledgeDuplicate');
   expect(errors).toEqual([]);
@@ -653,6 +657,63 @@ test('keeps salary-band validation on the salary step and allows correction', as
   await next(dialog, 4);
   await next(dialog, 5);
   expect(creates).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+// DEFECT (client demo): the grade's pay scale was printed as text ("Grade defaults: …") while the allowance inputs
+// stayed blank and collapsed, and the gross showed basic only. Choosing the grade now fills the package.
+test('choosing the grade fills basic and every allowance; percent lines follow the basic; exceptions are kept', async ({ page }) => {
+  const payLine = (id: string, componentCode: string, extra: Record<string, unknown>) => ({
+    id, componentCode, componentName: componentCode[0] + componentCode.slice(1).toLowerCase(), componentType: 'Earning', calculationType: 'Fixed',
+    amount: 0, percentage: 0, isTaxable: false, frequency: 'Monthly', sortOrder: 1, isActive: true, ...extra,
+  });
+  const { dialog, creates, errors } = await boot(page, { payScale: { [grade.id]: [
+    payLine('l1', 'BASIC', { amount: 4000 }),
+    payLine('l2', 'HOUSING', { calculationType: 'PercentOfBasic', percentage: 25 }),
+    payLine('l3', 'TRANSPORT', { amount: 500 }),
+    payLine('l4', 'MEDICAL', { componentType: 'Benefit', amount: 300 }),
+    payLine('l5', 'TICKET', { amount: 2400, frequency: 'Annual' }),
+  ] } });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await next(dialog, 1);
+  await dialog.getByRole('textbox', { name: 'Work email', exact: true }).fill('alex.it-issued@example.test');
+  await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
+  // The designation carries the grade, so it fills the salary too.
+  await dialog.getByRole('combobox', { name: 'Designation', exact: true }).selectOption('designation-wizard');
+  await expect(dialog.getByRole('combobox', { name: 'Grade', exact: true })).toHaveValue(grade.id);
+  await next(dialog, 2);
+  await next(dialog, 3);
+  const salaryStep = dialog.locator('[data-employee-step="3"]');
+  await expect(dialog.getByLabel('Basic salary', { exact: true })).toHaveValue('4000');
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toHaveValue('1000');
+  await expect(dialog.getByLabel('Transport allowance', { exact: true })).toHaveValue('500');
+  await expect(dialog.getByLabel('Other allowance', { exact: true })).toHaveValue('');
+  await expect(salaryStep).toContainText('Gross package: SAR 5,500');
+  await expect(salaryStep.getByTestId('grade-salary-note')).toContainText('Filled from grade Professional');
+  await expect(dialog.getByRole('combobox', { name: 'Salary structure', exact: true })).toHaveCount(0);
+  await expect(salaryStep).toContainText('Not part of the monthly salary: Medical · Ticket');
+
+  await dialog.getByLabel('Basic salary', { exact: true }).fill('4800');
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toHaveValue('1200');
+  await expect(dialog.getByLabel('Transport allowance', { exact: true })).toHaveValue('500');
+  await expect(salaryStep).toContainText('Gross package: SAR 6,500');
+
+  // An exception: transport changed by hand stays, while housing keeps following the basic.
+  await dialog.getByLabel('Transport allowance', { exact: true }).fill('650');
+  await dialog.getByLabel('Basic salary', { exact: true }).fill('5000');
+  await expect(dialog.getByLabel('Housing allowance', { exact: true })).toHaveValue('1250');
+  await expect(dialog.getByLabel('Transport allowance', { exact: true })).toHaveValue('650');
+  await expect(salaryStep).toContainText('Gross package: SAR 6,900');
+
+  await next(dialog, 4);
+  await next(dialog, 5);
+  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('6,900');
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates).toHaveLength(1);
+  expect(creates[0].salaryBreakdown).toMatchObject({ basicSalary: 5000, housingAllowance: 1250, transportAllowance: 650 });
+  expect(creates[0].salaryBreakdown?.otherAllowance).toBeUndefined();
   expect(errors).toEqual([]);
 });
 
@@ -854,5 +915,54 @@ test('grade benefits preview follows grade and joining date and appears in revie
   await expect(reviewedBenefits).toContainText('Starts on 2026-11-01');
   await expect(dialog.getByText('Child education: Requires 12 months service.', { exact: true })).toBeVisible();
   expect(previewRequests.some(search => search.includes('companyId=company-wizard'))).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// KSA identity step (owner, 2026-10-24): nothing is required to create the employee. The numbers a new joiner
+// holds on day one (border number, passport) lead; everything the authorities issue after joining sits in its own
+// group with no asterisk — even where the server says it is required before payroll.
+const ksaExpatCatalog = [
+  { key: 'iqamaNumber', countries: ['SA'], label: 'Iqama (residence permit) no.', section: 'identity', complianceFieldKey: 'iqama_number', entityKey: 'iqamaNumber', expiryEntityKey: 'iqamaExpiryDate', required: true, gate: 'activate', issuedAfterHire: true, pattern: '^2\\d{9}$', patternHint: 'Iqama: 10 digits starting with 2' },
+  { key: 'passportNumber', label: 'Passport number', section: 'identity', complianceFieldKey: 'passport_number', entityKey: 'passportNumber', expiryEntityKey: 'passportExpiryDate', required: false, issuedAfterHire: false },
+  { key: 'gosiReference', countries: ['SA'], label: 'GOSI reference', section: 'identity', complianceFieldKey: 'gosi_reference', entityKey: 'gosiReference', required: true, gate: 'pay', issuedAfterHire: true },
+  { key: 'borderNumber', countries: ['SA'], label: 'Border number', section: 'identity', complianceFieldKey: 'border_number', entityKey: 'borderNumber', required: false, issuedAfterHire: false, pattern: '^3\\d{9}$', patternHint: 'Border number: usually 10 digits starting with 3' },
+  { key: 'qiwaContractNumber', countries: ['SA'], label: 'Qiwa contract number', section: 'identity', complianceFieldKey: 'qiwa_contract_reference', entityKey: 'qiwaContractNumber', required: true, gate: 'pay', issuedAfterHire: true },
+];
+
+test('KSA identity step: border number and passport first, post-hire documents grouped without asterisks, create succeeds with only a border number', async ({ page }, info) => {
+  const { dialog, creates, errors } = await boot(page, { fieldCatalog: ksaExpatCatalog });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  for (const index of [1, 2, 3, 4]) await next(dialog, index);
+
+  const now = dialog.locator('fieldset').filter({ has: page.locator('legend', { hasText: 'Identity & compliance' }) });
+  const later = dialog.locator('fieldset').filter({ has: page.locator('legend', { hasText: 'Issued after joining — required before first payroll' }) });
+  await expect(later).toBeVisible();
+  // Order: border number, then passport, in the first group.
+  const nowLabels = await now.locator('label > span').allInnerTexts();
+  expect(nowLabels[0]).toContain('Border number');
+  expect(nowLabels[1]).toContain('Passport number');
+  // The post-hire documents are all in the second group, and none of them carries an asterisk.
+  for (const label of ['Iqama (residence permit) no.', 'GOSI reference', 'Qiwa contract number']) {
+    await expect(later.getByText(label, { exact: true })).toBeVisible();
+    await expect(now.getByText(label, { exact: true })).toHaveCount(0);
+  }
+  await expect(dialog.locator('[data-employee-step="4"] .text-red-500')).toHaveCount(0);
+
+  // Format is advisory: an unusual border number warns but never blocks.
+  const border = now.getByLabel('Border number', { exact: false });
+  await border.fill('12345');
+  await expect(now.getByText('Check this number — it does not look like the usual format. You can still save it.')).toBeVisible();
+  await border.fill('3012345678');
+  await expect(now.getByText('Check this number — it does not look like the usual format. You can still save it.')).toHaveCount(0);
+  await evidence(page, info, 'ksa-identity-step');
+
+  await next(dialog, 5);
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates).toHaveLength(1);
+  const records = creates[0].complianceRecords ?? [];
+  expect(records).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'border_number', fieldValue: '3012345678' })]));
+  // Nothing issued after hire is sent as "required".
+  expect(records.filter(r => ['iqama_number', 'gosi_reference', 'qiwa_contract_reference'].includes(r.fieldKey)).every(r => !r.isRequired)).toBe(true);
   expect(errors).toEqual([]);
 });

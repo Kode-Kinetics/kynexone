@@ -9493,6 +9493,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("bank_name");
 
+                    b.Property<string>("BorderNumber")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("border_number");
+
                     b.Property<string>("Branch")
                         .IsRequired()
                         .HasColumnType("text")
@@ -9976,6 +9981,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("wps_bank_details");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "BorderNumber")
+                        .HasDatabaseName("ix_employees_dup_border_number")
+                        .HasFilter("border_number <> ''");
 
                     b.HasIndex("TenantId", "CivilId")
                         .HasDatabaseName("ix_employees_dup_civil_id")
@@ -11093,6 +11102,11 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("bank_name");
+
+                    b.Property<string>("BorderNumber")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("border_number");
 
                     b.Property<string>("Branch")
                         .IsRequired()

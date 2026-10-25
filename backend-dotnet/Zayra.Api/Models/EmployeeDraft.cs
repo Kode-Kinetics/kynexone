@@ -59,6 +59,8 @@ public class EmployeeDraft : ITenantOwned
     public string VisaNumber { get; set; } = string.Empty;
     public DateOnly? VisaExpiryDate { get; set; }
     public string IqamaNumber { get; set; } = string.Empty;
+    /// <summary>KSA Border Number — carried from the draft onto the employee (see Employee.BorderNumber).</summary>
+    public string BorderNumber { get; set; } = string.Empty;
     public string MuqeemNumber { get; set; } = string.Empty;
     public string GosiReference { get; set; } = string.Empty;
     public string QiwaContractNumber { get; set; } = string.Empty;

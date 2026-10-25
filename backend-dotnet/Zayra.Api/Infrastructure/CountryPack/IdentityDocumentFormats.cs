@@ -13,13 +13,16 @@ public sealed class DefaultIdentityDocumentFormat : IIdentityDocumentFormat
     public (string? Pattern, string? Hint) GetFormat(string fieldKey) => (null, null);
 }
 
-/// <summary>KSA: National ID (Hawiyya) 10 digits starting 1; Iqama 10 digits starting 2.</summary>
+/// <summary>KSA: National ID (Hawiyya) 10 digits starting 1; Iqama 10 digits starting 2; Border number
+/// (pre-Iqama) usually 10 digits starting 3.</summary>
 public sealed class KsaIdentityDocumentFormat : IIdentityDocumentFormat
 {
     public (string? Pattern, string? Hint) GetFormat(string fieldKey) => fieldKey switch
     {
         "IdNumber" => (@"^1\d{9}$", "Saudi National ID: 10 digits starting with 1"),
         "IqamaNumber" => (@"^2\d{9}$", "Iqama: 10 digits starting with 2"),
+        // Advisory only (a warning, never a block): Jawazat border numbers are normally 10 digits starting with 3.
+        "BorderNumber" => (@"^3\d{9}$", "Border number: usually 10 digits starting with 3"),
         _ => (null, null),
     };
 }

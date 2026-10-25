@@ -52,6 +52,8 @@ public sealed class PayrollReadinessPostgresTests
                 // to activate, and the GOSI reference the PAY gate needs. This test is about who cannot be
                 // paid for want of BANK details, so a statutory pay block would confuse what it asserts.
                 CountryCode = "SA", IdNumber = $"10000000{code.Length:00}", GosiReference = $"GOSI-{code}",
+                // KSA also requires the Qiwa contract before payroll (pay-stage, 2026-10-24).
+                QiwaContractNumber = $"QIWA-{code}",
             };
             var e1 = Emp("PAID"); var e2 = Emp("BLANK"); var e3 = Emp("NOPROF");
             seed.Employees.AddRange(e1, e2, e3);

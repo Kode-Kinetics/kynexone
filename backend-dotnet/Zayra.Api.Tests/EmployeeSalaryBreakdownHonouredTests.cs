@@ -377,4 +377,95 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
 
         (await act.Should().ThrowAsync<InactiveSalaryStructureException>()).Which.ErrorCode.Should().Be("inactive_salary_structure");
     }
+
+    /// <summary>A grade with a fixed basic, a percent housing, a fixed transport, and two lines that are not monthly cash.</summary>
+    private static async Task<Grade> PackageGradeAsync(ZayraDbContext db, Guid tenantId, string code, decimal maxSalary = 0m)
+    {
+        var grade = new Grade { TenantId = tenantId, Code = code, Name = $"Grade {code}", Level = 3, MinSalary = 0m, MidSalary = 4_000m, MaxSalary = maxSalary, Currency = "SAR", IsActive = true };
+        db.Grades.Add(grade);
+        GradePayScaleComponent Line(string componentCode, int order, decimal amount = 0m, decimal percentage = 0m, string type = "Earning", string calculation = "Fixed", string frequency = "Monthly") =>
+            new() { TenantId = tenantId, GradeId = grade.Id, ComponentCode = componentCode, ComponentName = componentCode, ComponentType = type,
+                CalculationType = calculation, Amount = amount, Percentage = percentage, Frequency = frequency, IsActive = true, SortOrder = order };
+        db.GradePayScaleComponents.AddRange(
+            Line("BASIC", 1, amount: 4_000m),
+            Line("HOUSING", 2, percentage: 25m, calculation: "PercentOfBasic"),
+            Line("TRANSPORT", 3, amount: 500m),
+            Line("MEDICAL", 4, amount: 300m, type: "Benefit"),
+            Line("TICKET", 5, amount: 2_400m, frequency: "Annual"));
+        await db.SaveChangesAsync();
+        return grade;
+    }
+
+    /// <summary>
+    /// DEFECT (client demo): typing the basic dropped the grade's whole pay scale, so the hire was paid basic only. Every
+    /// blank line is now filled from the grade, the percent housing from the typed basic, and the Benefit and Annual lines
+    /// stay out of the monthly salary payroll reads.
+    /// </summary>
+    [Fact]
+    public async Task ATypedBasic_OnAGradedHire_IsPaidTheGradesWholeMonthlyPackage()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var grade = await PackageGradeAsync(db, tenantId, "G3");
+
+        var created = await Service(db).CreateAsync(tenantId, Request("Typed Basic", new EmployeeSalaryBreakdownRequest(
+            4_800m, null, null, null, null, null, null, null, null, "SAR"), gradeId: grade.Id), Ctx(tenantId), default);
+
+        var assignment = await db.EmployeeSalaryStructures.AsNoTracking()
+            .SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == created.Id && x.IsActive);
+        (assignment.BasicSalary, assignment.HousingAllowance, assignment.TransportAllowance).Should().Be((4_800m, 1_200m, 500m));
+        (assignment.FoodAllowance, assignment.MobileAllowance, assignment.OtherAllowance, assignment.FixedDeduction)
+            .Should().Be((0m, 0m, 0m, 0m), "medical cover (Benefit) and the yearly ticket (Annual) are not monthly cash");
+        (await db.Employees.AsNoTracking().SingleAsync(x => x.Id == created.Id)).Salary.Should().Be(6_500m);
+    }
+
+    [Fact]
+    public async Task AnExplicitZeroAllowance_IsKept_OnAGradedHire()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var grade = await PackageGradeAsync(db, tenantId, "G4");
+
+        var created = await Service(db).CreateAsync(tenantId, Request("Housing In Kind", new EmployeeSalaryBreakdownRequest(
+            4_800m, 0m, null, null, null, null, null, null, null, "SAR"), gradeId: grade.Id), Ctx(tenantId), default);
+
+        var assignment = await db.EmployeeSalaryStructures.AsNoTracking()
+            .SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == created.Id && x.IsActive);
+        (assignment.HousingAllowance, assignment.TransportAllowance).Should().Be((0m, 500m), "0 is an answer, a blank is not");
+    }
+
+    /// <summary>The grade's range is checked against the package that is paid — the merged one — not the typed basic alone.</summary>
+    [Fact]
+    public async Task TheGradeRange_IsCheckedAgainstTheMergedPackage()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var grade = await PackageGradeAsync(db, tenantId, "G5", maxSalary: 6_000m);
+
+        var act = () => Service(db).CreateAsync(tenantId, Request("Over Range", new EmployeeSalaryBreakdownRequest(
+            4_800m, null, null, null, null, null, null, null, null, "SAR"), gradeId: grade.Id), Ctx(tenantId), default);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("exceeds grade G5 maximum");
+    }
+
+    /// <summary>
+    /// A grade change on an EXISTING employee must not silently rewrite their pay: an update that does not send a salary
+    /// writes none (wage changes go through the approved salary-change path). It used to rebuild the salary from the new
+    /// grade's pay scale on any such save.
+    /// </summary>
+    [Fact]
+    public async Task AGradeChangeOnAnExistingEmployee_DoesNotRewriteTheirPay()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var name = $"Regraded {Guid.NewGuid():N}";
+        var created = await Service(db).CreateAsync(tenantId, Request(name, Breakdown(7_000m, 1_000m)), Ctx(tenantId), default);
+        var newGrade = await PackageGradeAsync(db, tenantId, "G6");
+
+        await Service(db).UpdateAsync(tenantId, created.Id, Request(name, salary: null, gradeId: newGrade.Id), Ctx(tenantId), default);
+
+        var active = await db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == created.Id && x.IsActive).ToListAsync();
+        active.Should().ContainSingle().Which.BasicSalary.Should().Be(7_000m, "the pay agreed at hire stands until an approved salary change replaces it");
+        (await db.Employees.AsNoTracking().SingleAsync(x => x.Id == created.Id)).Salary.Should().Be(8_000m);
+    }
 }

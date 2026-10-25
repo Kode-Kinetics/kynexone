@@ -48,6 +48,8 @@ public class EmployeesController : ControllerBase
         "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportExpiryDate", "visaNumber",
         "dateOfBirth", "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportIssueDate",
         "passportExpiryDate", "visaNumber", "visaIssueDate", "visaExpiryDate", "iqamaNumber", "muqeemNumber",
+        // KSA Border Number — the pre-Iqama national-identity number; same approval route as the Iqama.
+        "borderNumber",
         // F02 — the GOSI first-registration date decides which contribution schedule a Saudi national is on,
         // so it takes the same maker-checker route as the GOSI reference beside it.
         "gosiFirstRegisteredOn",
@@ -278,7 +280,7 @@ public class EmployeesController : ControllerBase
         "BasicSalary", "HousingAllowance", "TransportAllowance", "FoodAllowance", "MobileAllowance", "OtherAllowance",
         "FixedDeduction", "PaymentMethod", "IBAN", "AccountNumber", "BankName", "BankRoutingCode", "MolId",
         "SocialInsuranceReference", "PassportNumber", "PassportIssueDate", "PassportExpiryDate", "VisaNumber",
-        "VisaIssueDate", "VisaExpiryDate", "VisaFileNumber", "IqamaNumber", "IqamaExpiry", "MuqeemNumber",
+        "VisaIssueDate", "VisaExpiryDate", "VisaFileNumber", "IqamaNumber", "IqamaExpiry", "BorderNumber", "MuqeemNumber",
         "GosiReference", "QiwaContractNumber", "EmiratesId", "EmiratesIdExpiry", "LaborCardNumber", "Qid",
         "QidExpiry", "CivilId", "CivilIdExpiry", "WorkPermitNumber", "WorkPermitIssueDate", "ResidencyNumber",
         "ResidencyIssueDate", "IdNumber", "SponsorName", "ContractReference", "WorkPermitReference", "QiwaEmployeeReference"
@@ -459,6 +461,7 @@ public class EmployeesController : ControllerBase
                 ["VisaFileNumber"] = e.VisaFileNumber,
                 ["IqamaNumber"] = e.IqamaNumber,
                 ["IqamaExpiry"] = Iso(e.IqamaExpiryDate),
+                ["BorderNumber"] = e.BorderNumber,
                 ["MuqeemNumber"] = e.MuqeemNumber,
                 ["GosiReference"] = e.GosiReference,
                 ["QiwaContractNumber"] = e.QiwaContractNumber,
@@ -563,6 +566,10 @@ public class EmployeesController : ControllerBase
                     visible = true,                                   // CatalogFor already filtered to visible-for-(country,nationality)
                     required = req is not null && req.FailClosed,      // advisory only — server EnsureActivatable is authoritative
                     gate = req?.Gate,                                 // "activate" | "pay" | null
+                    // Issued by the authority only AFTER hire/arrival in this jurisdiction (KSA: Iqama, GOSI, Qiwa,
+                    // Muqeem, sponsor, work permit, visa file) — the create form groups these as "add when available"
+                    // and never marks them as needed up front. UX only; readiness stays authoritative.
+                    issuedAfterHire = Zayra.Api.Infrastructure.Employees.EmployeeFieldRegistry.IsIssuedAfterHire(d, iso2),
                     pattern,
                     patternHint = hint,
                     complianceFieldKey = d.ComplianceFieldKey,
@@ -991,11 +998,12 @@ public class EmployeesController : ControllerBase
                 .IgnoreQueryFilters()
                 .Where(e => e.TenantId == tenantId && !e.IsDeleted)
                 .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.EnglishName, e.ArabicName, e.CompanyId,
-                    e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber })
+                    e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber, e.BorderNumber })
                 .ToListAsync(ct))
             {
                 dupMatcher.Register(DuplicateCandidateBuilder.Build(e.Id, null, e.EmployeeCode, e.FullName, e.EnglishName,
-                    e.ArabicName, e.CompanyId, e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber));
+                    e.ArabicName, e.CompanyId, e.Nationality, e.DateOfBirth, e.IqamaNumber, e.EmiratesId, e.Qid, e.CivilId, e.IdNumber, e.PassportNumber,
+                    e.BorderNumber));
             }
             // Importer's entity scope — masks a matched counterpart in a company the importer can't access so a
             // persisted gap Detail never leaks cross-scope PII (S3).
@@ -2319,6 +2327,7 @@ public class EmployeesController : ControllerBase
             VisaIssueDate = ReadCsvDate(row, "VisaIssueDate", gaps),
             VisaExpiryDate = ReadCsvDate(row, "VisaExpiryDate", gaps),
             IqamaNumber = row.GetValueOrDefault("IqamaNumber", string.Empty).Trim(),
+            BorderNumber = row.GetValueOrDefault("BorderNumber", string.Empty).Trim(),
             MuqeemNumber = row.GetValueOrDefault("MuqeemNumber", string.Empty).Trim(),
             GosiReference = row.GetValueOrDefault("GosiReference", string.Empty).Trim(),
             EmiratesId = row.GetValueOrDefault("EmiratesId", string.Empty).Trim(),
@@ -2411,6 +2420,9 @@ public class EmployeesController : ControllerBase
             PassportNumber = V("PassportNumber"),
             PassportExpiryDate = ReadCsvDate(row, "PassportExpiryDate"),
             IqamaNumber = V("IqamaNumber"),
+            BorderNumber = V("BorderNumber"),
+            VisaFileNumber = V("VisaFileNumber"),
+            SponsorName = V("SponsorName"),
             IqamaExpiryDate = ReadCsvDate(row, "IqamaExpiry"),
             EmiratesIdExpiryDate = ReadCsvDate(row, "EmiratesIdExpiry"),
             QidExpiryDate = ReadCsvDate(row, "QidExpiry"),
@@ -3653,7 +3665,7 @@ public class EmployeesController : ControllerBase
                     _db.Employees.Add(employee);
                     await _db.SaveChangesAsync(ct); // allocate the internal employee key inside tx
                     if (compensation.Salary is not null)
-                        await EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, compensation.Salary, requestContext, ct);
+                        await EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, compensation.Salary, requestContext, ct, fillOmittedFromGrade: true);
                     await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
                         _db, employee, requestContext.UserId, ct);
 
@@ -6016,6 +6028,7 @@ public class EmployeesController : ControllerBase
         ResidencyIssueDate = draft.ResidencyIssueDate,
         WorkPermitIssueDate = draft.WorkPermitIssueDate,
         IqamaNumber = draft.IqamaNumber,
+        BorderNumber = draft.BorderNumber,
         MuqeemNumber = draft.MuqeemNumber,
         GosiReference = draft.GosiReference,
         QiwaContractNumber = draft.QiwaContractNumber,
@@ -6159,6 +6172,7 @@ public class EmployeesController : ControllerBase
         draft.ResidencyIssueDate = request.ResidencyIssueDate ?? draft.ResidencyIssueDate;
         draft.WorkPermitIssueDate = request.WorkPermitIssueDate ?? draft.WorkPermitIssueDate;
         draft.IqamaNumber = request.IqamaNumber ?? draft.IqamaNumber;
+        draft.BorderNumber = request.BorderNumber ?? draft.BorderNumber;
         draft.MuqeemNumber = request.MuqeemNumber ?? draft.MuqeemNumber;
         draft.GosiReference = request.GosiReference ?? draft.GosiReference;
         draft.QiwaContractNumber = request.QiwaContractNumber ?? draft.QiwaContractNumber;
@@ -6341,7 +6355,7 @@ public class EmployeesController : ControllerBase
         "workLocation", "managerEmployeeId", "dateOfBirth", "maritalStatus", "emergencyContactName",
         "emergencyContactPhone", "contractType", "grade", "costCenter", "salary", "bankName", "bankIban",
         "wpsBankDetails", "passportNumber", "passportIssueDate", "passportExpiryDate", "visaNumber",
-        "visaIssueDate", "visaExpiryDate", "iqamaNumber", "iqamaExpiryDate", "muqeemNumber", "gosiReference",
+        "visaIssueDate", "visaExpiryDate", "iqamaNumber", "iqamaExpiryDate", "borderNumber", "muqeemNumber", "gosiReference",
         "gosiFirstRegisteredOn",
         "emiratesId", "emiratesIdExpiryDate", "laborCardNumber", "visaFileNumber", "qid", "qidExpiryDate",
         "workPermitNumber", "workPermitIssueDate", "civilId", "civilIdExpiryDate", "residencyNumber",
@@ -6568,7 +6582,7 @@ public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, J
 public record GroupCountDto(string Name, int Count);
 public record EmployeeReportsDto(int TotalHeadcount, int ActiveEmployees, int NewJoiners, int Exits, int ProbationEmployees, IReadOnlyCollection<GroupCountDto> DepartmentHeadcount, IReadOnlyCollection<GroupCountDto> BranchHeadcount, IReadOnlyCollection<GroupCountDto> NationalityMix, IReadOnlyCollection<GroupCountDto> GenderMix, int ContractExpiringSoon, int VisaOrPassportExpiringSoon, int MissingDocumentsOrIncompleteProfiles);
 public record EmployeeAiResponseDto(string Answer, IReadOnlyCollection<EmployeeListItemDto> Employees);
-public record EmployeeDraftRequest(string? CurrentStep, string? EnglishName, string? ArabicName, string? PersonalEmail, string? WorkEmail, string? Phone, string? Gender, DateOnly? DateOfBirth, string? MaritalStatus, string? EmergencyContactName, string? EmergencyContactPhone, string? Nationality, string? CountryCode, string? Department, string? Designation, string? Branch, string? WorkLocation, int? ManagerEmployeeId, DateTime? JoiningDate, string? ContractType, string? Grade, string? CostCenter, DateOnly? ContractStartDate, DateOnly? ContractEndDate, DateOnly? ProbationEndDate, string? PayrollProfileCode, decimal? Salary, string? BankName, string? BankIban, string? WpsBankDetails, string? ShiftPolicyCode, string? LeavePolicyCode, string? SponsorName, DateOnly? PassportIssueDate, string? PassportNumber, DateOnly? PassportExpiryDate, DateOnly? VisaIssueDate, string? VisaNumber, DateOnly? VisaExpiryDate, string? IqamaNumber, string? MuqeemNumber, string? GosiReference, string? QiwaContractNumber, string? EmiratesId, string? LaborCardNumber, string? VisaFileNumber, string? Qid, string? WorkPermitNumber, DateOnly? WorkPermitIssueDate, string? CivilId, string? ResidencyNumber, DateOnly? ResidencyIssueDate);
+public record EmployeeDraftRequest(string? CurrentStep, string? EnglishName, string? ArabicName, string? PersonalEmail, string? WorkEmail, string? Phone, string? Gender, DateOnly? DateOfBirth, string? MaritalStatus, string? EmergencyContactName, string? EmergencyContactPhone, string? Nationality, string? CountryCode, string? Department, string? Designation, string? Branch, string? WorkLocation, int? ManagerEmployeeId, DateTime? JoiningDate, string? ContractType, string? Grade, string? CostCenter, DateOnly? ContractStartDate, DateOnly? ContractEndDate, DateOnly? ProbationEndDate, string? PayrollProfileCode, decimal? Salary, string? BankName, string? BankIban, string? WpsBankDetails, string? ShiftPolicyCode, string? LeavePolicyCode, string? SponsorName, DateOnly? PassportIssueDate, string? PassportNumber, DateOnly? PassportExpiryDate, DateOnly? VisaIssueDate, string? VisaNumber, DateOnly? VisaExpiryDate, string? IqamaNumber, string? MuqeemNumber, string? GosiReference, string? QiwaContractNumber, string? EmiratesId, string? LaborCardNumber, string? VisaFileNumber, string? Qid, string? WorkPermitNumber, DateOnly? WorkPermitIssueDate, string? CivilId, string? ResidencyNumber, DateOnly? ResidencyIssueDate, string? BorderNumber = null);
 public record EmployeeDocumentUploadRequest(string DocumentType, bool IsRequired, DateOnly? ExpiryDate, IFormFile File);
 public record EmployeeDocumentUploadForm(
     [Required, MaxLength(80)] string DocumentType,

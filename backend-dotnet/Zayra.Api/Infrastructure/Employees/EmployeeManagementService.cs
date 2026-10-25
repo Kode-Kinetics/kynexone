@@ -161,7 +161,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // EMPLOYING company's domain (multi-company req). Sets employee.WorkEmail; may throw
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, context, cancellationToken);
-        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: true);
         // Release A: blank cash allowances are filled from Benefits by grade, or refused with the reason — before anything is saved.
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Reject a bad IBAN BEFORE persisting anything (position/salary already validate pre-save), so a
@@ -188,7 +188,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-                await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
+                await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: true);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
                 // Grade defaults are part of the hire transaction, before any individual HR exceptions.
                 await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
@@ -307,14 +307,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         // run the login-identity rename guard (keeps a linked User in sync; blocks a rename that would collide
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, context, cancellationToken);
-        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: false);
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, context.UserId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-        await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken);
+        await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: false);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
         // actually changed — an unrelated edit (phone number, IBAN, …) can never trip it, and an
@@ -1705,7 +1705,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.WpsBankDetails = profile.PaymentMethod;
     }
 
-    private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken)
+    private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken,
+        bool isNewEmployee)
     {
         if (employee.PositionId is not null)
         {
@@ -1754,7 +1755,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         // refused (422) before anything is staged. The writer re-checks as the backstop for its other callers.
         // Only when a positive salary will actually be written (the request's figures or the grade's pay scale): a save
         // that writes no salary uses no structure, so a retired grade default does not refuse it.
-        await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary, cancellationToken);
+        // It returns the package the writer will pay (for a tenant without release_a, the request merged field by field
+        // with the grade's pay scale), and THAT is what the grade's range is checked against: a typed basic of 4,800 plus
+        // the grade's housing is the salary, not the 4,800 alone.
+        var package = await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary, cancellationToken, fillOmittedFromGrade: isNewEmployee);
 
         if (employee.GradeId is null) return;
 
@@ -1764,7 +1768,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (grade is null) throw new InvalidOperationException("Selected grade is not active.");
         employee.Grade = grade.Code;
 
-        var grossSalary = GrossSalary(salary);
+        var grossSalary = GrossSalary(package);
         if (grossSalary <= 0) return;
         if (grade.MinSalary > 0 && grossSalary < grade.MinSalary)
             throw new InvalidOperationException($"Salary package {grossSalary:N2} is below grade {grade.Code} minimum {grade.MinSalary:N2} {grade.Currency}.");
@@ -1796,8 +1800,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
     }
 
-    private Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken)
-        => EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, request, context, cancellationToken);
+    /// <summary>
+    /// <paramref name="isNewEmployee"/>: only a hire fills an omitted breakdown from the grade. An update that omits it
+    /// writes no salary, so changing an existing employee's grade never rewrites their pay outside the approved
+    /// salary-change path.
+    /// </summary>
+    private Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken,
+        bool isNewEmployee)
+        => EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, request, context, cancellationToken, fillOmittedFromGrade: isNewEmployee);
 
     private static DateOnly SalaryEffectiveDate(Employee employee, EmployeeSalaryBreakdownRequest? request) =>
         request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);
@@ -1808,7 +1818,8 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// amount, or the percentage of the basic salary entered; 0 when the grade gets it in kind or not at all. When the
     /// grade has no value — or a percentage has no basic to apply to — nothing is guessed: the save is refused and the
     /// allowance must be entered. No figures at all is the ordinary empty salary section and is left alone. Tenants
-    /// without the flag are returned unchanged (their prefill is the legacy pay scale, in BuildSalaryBreakdown).
+    /// without the flag are returned unchanged (their prefill is the legacy pay scale, in EmployeeSalaryBreakdownWriter.MergeGradePayScale,
+    /// with the same per-field rule: blank is filled, a supplied figure — 0 included — is kept).
     /// </summary>
     private async Task<EmployeeSalaryBreakdownRequest?> PrefillSalaryFromMatrixAsync(Employee employee, EmployeeSalaryBreakdownRequest? request,
         Guid tenantId, CancellationToken cancellationToken)
@@ -1988,6 +1999,8 @@ public class EmployeeManagementService : IEmployeeManagementService
                 if (record.ExpiryDate.HasValue) employee.IqamaExpiryDate = record.ExpiryDate;
                 break;
             case "iqama_expiry": employee.IqamaExpiryDate = record.ExpiryDate; break;
+            // KSA Border Number — no expiry. Mirrored so readiness (Iqama-or-border rule) and duplicate detection see it.
+            case "border_number": employee.BorderNumber = record.FieldValue; break;
             // Saudi host-national ID (Hawiyya, complianceFieldKey "id_number"). No first-class expiry
             // scalar exists for it, so this is a plain value copy — but it MUST be mirrored, because
             // IdNumber is what the duplicate detector's national-ID pass matches on (BuildCreateProbe →
