@@ -502,7 +502,9 @@ test('the invited company super admin signs in and sees only their company', asy
   });
   expect(visible).toEqual([EN_CO.legalNameEn]);
   await page.goto('/setup?tab=companies');
-  await expect(page.getByText(EN_CO.legalNameEn).first()).toBeVisible({ timeout: 20_000 });
+  // The setup rail also carries a screen-reader-only status line naming the company ("… 6 of 12 setup items done").
+  // Depending on load order it can be the first match, and it is hidden by design, so look at visible matches only.
+  await expect(page.getByText(EN_CO.legalNameEn).filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(starterCompany.legalNameEn, { exact: true })).toHaveCount(0);
   await expect(page.getByText(AR_CO.legalNameEn)).toHaveCount(0);
 });
