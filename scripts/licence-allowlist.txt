@@ -1,0 +1,5 @@
+# Strong-copyleft (GPL/AGPL) dependencies that have been reviewed and approved for distribution in client
+# installations. One package name per line; the reason and the approver in a comment. scripts/licence_report.py
+# refuses any other GPL/AGPL dependency (implementation prompt WP14.3).
+#
+# (none approved)

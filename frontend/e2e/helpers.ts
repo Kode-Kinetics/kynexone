@@ -2,31 +2,27 @@ import { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 // Imported (not merely re-exported) because this module's own helpers use them below: a bare
 // `export … from` re-export does not bring the names into local scope.
-import { MISSING_WORLD, PLATFORM_EMAIL, PLATFORM_PASSWORD } from './world';
+import { MISSING_WORLD } from './world';
 import { resolveTarget } from './identity/env';
 import { stampActor } from './identity/actor';
 
 // ── Identities ────────────────────────────────────────────────────────────────
 // Re-exported from e2e/world.ts, which is the ONE declaration of the fixture world and the same
 // module e2e/bootstrap/provision.ts creates it from. Declaring them here as well is how this file
-// and e2e/security-gate/roles.ts ended up pointing at two different platform operators
-// (`platform@kynexone.com` vs `admin@platform.local`) — a drift no test could catch, because each
-// lane provisioned nothing and simply failed to log in.
+// and e2e/security-gate/roles.ts once ended up pointing at two different operators — a drift no test
+// could catch, because each lane provisioned nothing and simply failed to log in.
 export {
-  PLATFORM_EMAIL, PLATFORM_PASSWORD,
   INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN, INTELLIFLOW_HR_DIR, INTELLIFLOW_HR_MGR,
   INTELLIFLOW_FINANCE, INTELLIFLOW_MANAGER, INTELLIFLOW_SUPERVISOR,
   INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_AUDITOR,
   RASALMANAR_SLUG, RASALMANAR_ADMIN,
-  EVOSTEL_SLUG, EVOSTEL_ADMIN, EVOSTEL_EMP1,
   ALMARAI_SLUG, TATA_SLUG, GROUP_PASSWORD, groupEmail, companyEmail,
 } from './world';
 
 export const BASE_URL = resolveTarget().baseUrl;
 
-// Where auth.setup.ts persists the platform-admin session. Reused by every platform spec so the
-// suite authenticates ONCE rather than once per test — see auth.setup.ts for why that matters.
-export const PLATFORM_STATE = 'e2e/.auth/platform.json';
+// Where auth.setup.ts persists every persona's session, so the suite authenticates ONCE per persona
+// rather than once per test — see auth.setup.ts for why that matters.
 export const TENANT_STATE = 'e2e/.auth/tenants.json';
 
 type TenantSession = { accessToken: string; refreshToken: string };
@@ -56,34 +52,6 @@ export async function tenantSetupSession(email: string, slug: string): Promise<T
   return session;
 }
 
-// ── Platform admin helpers ────────────────────────────────────────────────────
-
-export async function platformLogin(page: Page): Promise<void> {
-  stampActor({ email: PLATFORM_EMAIL, tenantSlug: null, via: 'platform login form' });
-  await page.goto('/platform/login');
-  await page.locator('#pl-em, input[type="email"]').first().fill(PLATFORM_EMAIL);
-  const passwordInput = page.locator('#pl-pw, input[type="password"]').first();
-  await passwordInput.fill(PLATFORM_PASSWORD);
-  // Submit from the input instead of clicking the animated button. The login
-  // surface intentionally replaces the button during its entrance transition,
-  // which makes a pointer click race DOM replacement even though the form is ready.
-  await passwordInput.press('Enter');
-  await page.waitForURL(/\/platform\/dashboard/, { timeout: 15_000 });
-}
-
-export async function platformLogout(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const token = localStorage.getItem('platform_access_token');
-    if (token) {
-      await fetch('/api/platform/auth/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-    }
-    localStorage.removeItem('platform_access_token');
-  });
-}
-
 // ── Tenant login helpers ──────────────────────────────────────────────────────
 
 export async function tenantLoginLive(
@@ -92,12 +60,12 @@ export async function tenantLoginLive(
   password: string,
   slug: string
 ): Promise<void> {
-  stampActor({ email, tenantSlug: slug, via: 'tenant login form' });
-  // The workspace field shows only for a ?workspace= link (or when the API asks for it).
-  await page.goto(`/login?workspace=${encodeURIComponent(slug)}`);
+  stampActor({ email, tenantSlug: slug, via: 'login form' });
+  // One organisation per installation: the form asks for the email and password only. `slug` names
+  // the persona's cluster for the report; it is never typed.
+  await page.goto('/login');
   await page.locator('#li-em, input[type="email"]').first().fill(email);
   await page.locator('#li-pw, input[type="password"]').first().fill(password);
-  await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(slug);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   // Self-service-only employees land on /ess (src/lib/homePath.ts); everyone else on /dashboard.
   await page.waitForURL(/\/(dashboard|app|ess)/, { timeout: 15_000 });
@@ -143,9 +111,9 @@ export async function apiLoginLive(
   password: string,
   slug: string
 ): Promise<string> {
-  stampActor({ email, tenantSlug: slug, via: 'tenant login API' });
+  stampActor({ email, tenantSlug: slug, via: 'login API' });
   const resp = await request.post('/api/auth/login', {
-    data: { email, password, tenantSlug: slug },
+    data: { email, password },
   });
   if (!resp.ok()) throw new Error(`Login failed: ${resp.status()} ${await resp.text()}`);
   const data = await resp.json();
@@ -189,47 +157,6 @@ export async function apiLogin(
   const fresh = await apiLoginLive(request, email, password, slug);
   liveTenantTokens.set(key, fresh);
   return fresh;
-}
-
-/** Read the one platform session created by the setup project. */
-export async function platformSetupToken(): Promise<string> {
-  stampActor({ email: PLATFORM_EMAIL, tenantSlug: null, via: 'platform setup session' });
-  const state = JSON.parse(await readFile(PLATFORM_STATE, 'utf8')) as {
-    origins?: Array<{ localStorage?: Array<{ name: string; value: string }> }>;
-  };
-  const token = state.origins
-    ?.flatMap((origin) => origin.localStorage ?? [])
-    .find((entry) => entry.name === 'platform_access_token')
-    ?.value;
-  if (!token) throw new Error('Platform setup storage state does not contain an access token.');
-  return token;
-}
-
-/** Reuse the setup project's platform session for authenticated API assertions. */
-/** A fresh platform token once the setup one has run out; one per worker, as platform login is rate-limited to 5. */
-let renewedPlatformToken: string | null = null;
-
-export async function apiPlatformLogin(
-  request: import('@playwright/test').APIRequestContext
-): Promise<string> {
-  const setup = await platformSetupToken();
-  if (secondsUntilExpiry(setup) > TOKEN_MARGIN_SECONDS) return setup;
-  if (!renewedPlatformToken || secondsUntilExpiry(renewedPlatformToken) <= TOKEN_MARGIN_SECONDS)
-    renewedPlatformToken = await apiPlatformFreshLogin(request);
-  return renewedPlatformToken;
-}
-
-/** Create a new platform session only when the prior shared session is no longer needed. */
-export async function apiPlatformFreshLogin(
-  request: import('@playwright/test').APIRequestContext
-): Promise<string> {
-  stampActor({ email: PLATFORM_EMAIL, tenantSlug: null, via: 'platform login API' });
-  const resp = await request.post('/api/platform/auth/login', {
-    data: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD },
-  });
-  if (!resp.ok()) throw new Error(`Platform login failed: ${resp.status()} ${await resp.text()}`);
-  const data = await resp.json();
-  return data.token ?? data.accessToken;
 }
 
 // ── Honest render assertions ──────────────────────────────────────────────────

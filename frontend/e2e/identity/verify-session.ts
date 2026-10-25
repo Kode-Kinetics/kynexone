@@ -1,4 +1,4 @@
-import { personaForLogin, tenantBySlug } from '../world';
+import { ALL_COMPANY_CODES, ORGANISATION, personaForLogin } from '../world';
 import { expectedPermissions, loadRoleCatalog } from './role-catalog';
 import { checkPersonaSession } from '../preflight/rules';
 
@@ -9,23 +9,22 @@ import { checkPersonaSession } from '../preflight/rules';
  *
  * Every lane's setup project calls this on the logins it performs anyway, so each session a lane is
  * about to reuse is proven to be the declared persona at the moment it is minted — at no extra request.
- * Personas a lane fixture creates per run (not the bootstrap) are not in a declared tenant and are
- * skipped by callers.
  */
 export function sessionMismatches(email: string, tenantSlug: string, user: any): string[] {
   const persona = personaForLogin(email, tenantSlug);
-  if (!persona || persona.role === null || persona.tenantSlug === null) {
+  if (!persona) {
     return [`${email} @ ${tenantSlug} is not a persona in e2e/world.ts`];
   }
   const findings = checkPersonaSession({
     key: persona.key,
     email: persona.email,
     tenantSlug: persona.tenantSlug,
+    organisationSlug: ORGANISATION.slug,
     role: persona.role,
     scope: persona.scope === 'companies' ? 'companies' : 'group',
     companyCodes: persona.companyCodes,
     employeeLinked: persona.employeeLinked,
-    tenantCompanyCodes: tenantBySlug(persona.tenantSlug).companies.map((c) => c.code),
+    tenantCompanyCodes: ALL_COMPANY_CODES,
     expectedPermissions: expectedPermissions(loadRoleCatalog(), [persona.role]),
   }, {
     status: 200,

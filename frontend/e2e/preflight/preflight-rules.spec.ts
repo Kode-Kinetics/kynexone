@@ -15,13 +15,16 @@ const SHA = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
 
 test.describe('preflight: environment contract', () => {
-  const complete = { PLATFORM_ADMIN_EMAIL: 'owner@example.com', PLATFORM_ADMIN_PASSWORD: 'x' };
+  const complete = {};
 
-  test('refuses a missing platform identity instead of defaulting it (the 28 Sep failure)', () => {
-    expect(failed(checkEnvironment({}))).toEqual([
-      'platform identity: email set', 'platform identity: password set',
-    ]);
+  test('a local run needs no identity variables: the organisation administrator is declared in world.ts', () => {
     expect(failed(checkEnvironment(complete))).toEqual([]);
+  });
+
+  test('refuses the retired platform-owner variables (there is no platform owner)', () => {
+    const findings = checkEnvironment({ PLATFORM_ADMIN_EMAIL: 'owner@example.com', PLATFORM_ADMIN_PASSWORD: 'x' });
+    expect(failed(findings)).toEqual(['no retired identity overrides']);
+    expect(findings.find((f) => !f.ok)!.detail).toContain('PLATFORM_ADMIN_EMAIL is retired');
   });
 
   test('in CI, requires every generated fixture password and the expected commit', () => {
@@ -29,7 +32,7 @@ test.describe('preflight: environment contract', () => {
     expect(failed(checkEnvironment(ci))).toEqual(['fixture passwords generated (CI)', 'expected commit declared (CI)']);
     const full = {
       ...ci, E2E_EXPECTED_COMMIT: SHA, E2E_INTELLIFLOW_PASSWORD: 'p', E2E_RASALMANAR_PASSWORD: 'p',
-      E2E_GROUP_PASSWORD: 'p', E2E_EVOSTEL_PASSWORD: 'p',
+      E2E_GROUP_PASSWORD: 'p',
     };
     expect(failed(checkEnvironment(full))).toEqual([]);
     expect(failed(checkEnvironment({ ...full, E2E_ALLOW_UNVERIFIED_BUILD: '1' })))
@@ -143,6 +146,7 @@ test.describe('preflight: persona sessions', () => {
     key: 'almarai-test|payroll@alm-dairy-ksa.almarai-test.local',
     email: 'payroll@alm-dairy-ksa.almarai-test.local',
     tenantSlug: 'almarai-test',
+    organisationSlug: 'main',
     role: 'Payroll Officer',
     scope: 'companies',
     companyCodes: ['ALM-DAIRY-KSA'],
@@ -151,7 +155,7 @@ test.describe('preflight: persona sessions', () => {
     expectedPermissions: ['payroll.read', 'payroll.write'],
   };
   const good = {
-    status: 200, tenantSlug: 'almarai-test', roles: ['Payroll Officer'], permissions: ['payroll.write', 'payroll.read'],
+    status: 200, tenantSlug: 'main', roles: ['Payroll Officer'], permissions: ['payroll.write', 'payroll.read'],
     companyCodes: ['ALM-DAIRY-KSA'], isGroupScope: false, employeeId: null,
   };
 
@@ -171,17 +175,17 @@ test.describe('preflight: persona sessions', () => {
       .toEqual([`persona ${persona.email} @ almarai-test: is companies-scoped`]);
     expect(failed(checkPersonaSession({ ...persona, employeeLinked: true }, good)))
       .toEqual([`persona ${persona.email} @ almarai-test: is linked to an employee`]);
-    expect(failed(checkPersonaSession(persona, { ...good, tenantSlug: 'intelliflow' })))
-      .toEqual([`persona ${persona.email} @ almarai-test: is in the declared tenant`]);
+    expect(failed(checkPersonaSession(persona, { ...good, tenantSlug: 'another-organisation' })))
+      .toEqual([`persona ${persona.email} @ almarai-test: is in the organisation`]);
   });
 });
 
 test('the report names every failed check and says it is a failure', () => {
   const { ok, report } = formatFindings('target', [
     { check: 'a', ok: true, detail: 'fine' },
-    { check: 'platform owner authenticates', ok: false, detail: 'HTTP 401' },
+    { check: 'organisation administrator authenticates', ok: false, detail: 'HTTP 401' },
   ]);
   expect(ok).toBe(false);
   expect(report).toContain('E2E PREFLIGHT (target) FAILED — 1 of 2 checks');
-  expect(report).toContain('FAIL  platform owner authenticates — HTTP 401');
+  expect(report).toContain('FAIL  organisation administrator authenticates — HTTP 401');
 });

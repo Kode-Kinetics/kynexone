@@ -20,7 +20,7 @@ import { assertDisposableHost } from '../disposable-host.guard';
 import { pageItems } from '../paging';
 import {
   INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_HR_MGR, INTELLIFLOW_SLUG, INTELLIFLOW_SUPERVISOR,
-  PLATFORM_EMAIL, PLATFORM_PASSWORD, RASALMANAR_ADMIN, RASALMANAR_SLUG,
+  ORGANISATION_ADMIN, RASALMANAR_ADMIN, RASALMANAR_SLUG,
 } from '../world';
 import { LEARNING_MANAGER, login, seedLearningWorld } from './learning-seed';
 
@@ -72,21 +72,19 @@ function ok(res: Res, what: string, accept = [200, 201, 204]): Res {
   return res;
 }
 
+/** Switch an opt-in feature on for the one organisation (as its administrator) when any caller still sees it off. */
 async function enableFlag(tokens: Array<{ token: string; tenantId: string }>, key: string) {
-  const off = [];
+  let off = false;
   for (const t of tokens) {
     const disabled = ok(await call('GET', '/api/features/disabled-keys', { token: t.token }), 'read feature flags').body as string[];
-    if (disabled.includes(key)) off.push(t.tenantId);
+    if (disabled.includes(key)) off = true;
   }
-  if (off.length === 0) return;
-  let platformRes = await call('POST', '/api/platform/auth/login', { body: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD } });
-  for (let tries = 0; platformRes.status === 429 && tries < 3; tries++) {
-    await new Promise((r) => setTimeout(r, 61_000));
-    platformRes = await call('POST', '/api/platform/auth/login', { body: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD } });
-  }
-  const platformToken = ok(platformRes, 'platform login').body?.token ?? platformRes.body?.accessToken;
-  for (const tenantId of off)
-    ok(await call('PUT', `/api/platform/tenants/${tenantId}/features/${key}`, { token: platformToken, body: { isEnabled: true } }), `enable ${key}`);
+  if (!off) return;
+  const signIn = ok(await call('POST', '/api/auth/login', {
+    body: { email: ORGANISATION_ADMIN.email, password: ORGANISATION_ADMIN.password },
+  }), 'organisation administrator login');
+  const organisationAdmin = signIn.body?.accessToken ?? signIn.body?.token;
+  ok(await call('PUT', `/api/tenant-admin/features/${key}`, { token: organisationAdmin, body: { isEnabled: true } }), `enable ${key}`);
 }
 
 async function ensurePosition(token: string, companyId: string, code: string, title: string, departmentId?: string): Promise<string> {
@@ -103,7 +101,7 @@ async function ensurePosition(token: string, companyId: string, code: string, ti
 /** A login for an existing employee, through the product's own path: work email → invitation → acceptance. Idempotent. */
 async function ensureLinkedLogin(admin: string, companyId: string, employee: { id: number; code: string },
   persona: { email: string; password: string; role: string }) {
-  const signsIn = await call('POST', '/api/auth/login', { body: { email: persona.email, password: persona.password, tenantSlug: INTELLIFLOW_SLUG } });
+  const signsIn = await call('POST', '/api/auth/login', { body: { email: persona.email, password: persona.password } });
   if (signsIn.status === 200) return;
   ok(await call('POST', '/api/employee-access/work-emails', {
     token: admin, companyId, body: { rows: [{ employeeCode: employee.code, workEmail: persona.email }], dryRun: false },
@@ -115,7 +113,7 @@ async function ensureLinkedLogin(admin: string, companyId: string, employee: { i
   const invitationToken = decodeURIComponent(String(invite.body.invitationUrl ?? '').split('#token=')[1] ?? '');
   if (!invitationToken) throw new Error(`[succession-seed] The ${persona.role} invitation came back without a link.`);
   ok(await call('POST', '/api/auth/accept-invitation', {
-    body: { invitationToken, newPassword: persona.password, tenantSlug: INTELLIFLOW_SLUG },
+    body: { invitationToken, newPassword: persona.password },
   }), `accept the ${persona.role} invitation`, [200, 204]);
 }
 

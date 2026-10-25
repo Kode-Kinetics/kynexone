@@ -17,7 +17,7 @@
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
-  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_HR_MGR, INTELLIFLOW_SLUG, PLATFORM_EMAIL, PLATFORM_PASSWORD,
+  INTELLIFLOW_ADMIN, INTELLIFLOW_EMP1, INTELLIFLOW_EMP2, INTELLIFLOW_HR_MGR, INTELLIFLOW_SLUG, ORGANISATION_ADMIN,
   RASALMANAR_ADMIN, RASALMANAR_SLUG,
 } from '../world';
 
@@ -64,8 +64,9 @@ function ok(res: Res, what: string, accept = [200, 201, 204]): Res {
   return res;
 }
 
+/** `tenantSlug` names the persona's cluster for messages; a client installation's login carries no workspace. */
 export async function login(email: string, password: string, tenantSlug: string): Promise<string> {
-  const res = ok(await call('POST', '/api/auth/login', { body: { email, password, tenantSlug } }), `sign in as ${email}`);
+  const res = ok(await call('POST', '/api/auth/login', { body: { email, password } }), `sign in as ${email} (${tenantSlug})`);
   return (res.body?.accessToken ?? res.body?.token) as string;
 }
 
@@ -94,8 +95,8 @@ function saudiIban(seed: number): string {
 export async function seedLearningWorld(): Promise<LearningWorld> {
   assertDisposableHost(API, 'seed the learning scenario');
 
-  // 1. The opt-in flag, for tenant A and tenant B — switched on through the platform API only when a tenant's own
-  //    feature list still reports it off (the platform login is rate limited per account; re-runs need not spend it).
+  // 1. The opt-in flag. "Tenant A" and "tenant B" are the IntelliFlow and Ras Al-Manar companies of the one
+  //    organisation (e2e/world.ts), so one switch, made by the organisation administrator, covers both.
   const admin = await login(INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
   const adminB = await login(RASALMANAR_ADMIN.email, RASALMANAR_ADMIN.password, RASALMANAR_SLUG);
   const learningOff = async (tok: string) =>
@@ -104,17 +105,9 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
   const meB = ok(await call('GET', '/api/auth/me', { token: adminB }), 'who am I (B)').body;
   const tenantA = { id: String(meA.tenantId), slug: INTELLIFLOW_SLUG };
   const tenantB = { id: String(meB.tenantId), slug: RASALMANAR_SLUG };
-  const needsFlag = [...(await learningOff(admin) ? [tenantA] : []), ...(await learningOff(adminB) ? [tenantB] : [])];
-  if (needsFlag.length > 0) {
-    let platformRes = await call('POST', '/api/platform/auth/login', { body: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD } });
-    for (let tries = 0; platformRes.status === 429 && tries < 3; tries++) {
-      await new Promise((r) => setTimeout(r, 61_000));
-      platformRes = await call('POST', '/api/platform/auth/login', { body: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD } });
-    }
-    const platformToken = ok(platformRes, 'platform login').body?.token ?? platformRes.body?.accessToken;
-    for (const t of needsFlag) {
-      ok(await call('PUT', `/api/platform/tenants/${t.id}/features/learning`, { token: platformToken, body: { isEnabled: true } }), `enable learning on ${t.slug}`);
-    }
+  if (await learningOff(admin) || await learningOff(adminB)) {
+    const organisationAdmin = await login(ORGANISATION_ADMIN.email, ORGANISATION_ADMIN.password, 'organisation');
+    ok(await call('PUT', '/api/tenant-admin/features/learning', { token: organisationAdmin, body: { isEnabled: true } }), 'enable learning');
   }
 
   // 2. IntelliFlow: its company and Operations department (from provision.ts).
@@ -189,7 +182,7 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
     return e;
   };
   const head = byCode(`${COMPANY_CODE}-E1`);
-  const managerSignsIn = await call('POST', '/api/auth/login', { body: { email: LEARNING_MANAGER.email, password: LEARNING_MANAGER.password, tenantSlug: INTELLIFLOW_SLUG } });
+  const managerSignsIn = await call('POST', '/api/auth/login', { body: { email: LEARNING_MANAGER.email, password: LEARNING_MANAGER.password } });
   if (managerSignsIn.status !== 200) {
     // An invitation goes only to the employee's work email, so the head gets one first (the product's backfill path).
     ok(await call('POST', '/api/employee-access/work-emails', {
@@ -202,7 +195,7 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
     const invitationToken = decodeURIComponent(String(invite.body.invitationUrl ?? '').split('#token=')[1] ?? '');
     if (!invitationToken) throw new Error('[learning-seed] The manager invitation came back without a link.');
     ok(await call('POST', '/api/auth/accept-invitation', {
-      body: { invitationToken, newPassword: LEARNING_MANAGER.password, tenantSlug: INTELLIFLOW_SLUG },
+      body: { invitationToken, newPassword: LEARNING_MANAGER.password },
     }), 'accept the manager invitation', [200, 204]);
   }
 

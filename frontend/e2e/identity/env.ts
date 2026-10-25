@@ -3,16 +3,13 @@
  * the suites read, in one place.
  *
  * ── Why this exists (register item F07) ───────────────────────────────────────────────────────
- * On 28 Sep the fixture bootstrap authenticated as `admin@platform.local` because PLATFORM_ADMIN_EMAIL
- * was not exported to the test process, and e2e/world.ts silently fell back to that default. The API
- * under test had been booted with a DIFFERENT platform owner, so the bootstrap got HTTP 401 and the
- * connected all-role run never executed. Nothing had compared the two sides before provisioning.
+ * On 28 Sep the fixture bootstrap authenticated as an operator the API under test had never created,
+ * because the two sides read different settings and nothing compared them before provisioning.
  *
- * The platform owner is the one identity that crosses a process boundary: the API creates it at boot
- * (PlatformOwnerBootstrap) from PLATFORM_ADMIN_EMAIL / PLATFORM_ADMIN_PASSWORD, and the tests then have
- * to present the same pair. So the test side reads the SAME variable names the API reads, and it has
- * NO default: an unset variable is a loud preflight failure, never a guess. Every other identity is
- * created by the bootstrap from e2e/world.ts, so it is consistent with the specs by construction.
+ * There is no such cross-process identity any more. The organisation administrator is ALMARAI_OWNER
+ * in e2e/world.ts; `--setup-organisation` is run with that address and E2E_GROUP_PASSWORD (CI's
+ * "Set up the organisation" step, e2e/bootstrap/setup-organisation.sh locally), and every other
+ * identity is created by the bootstrap from e2e/world.ts — consistent with the specs by construction.
  *
  * This module is pure (it reads an env object, it does not throw at import), so the preflight's
  * decision logic can be unit-tested without a stack.
@@ -22,9 +19,6 @@ export type Env = Record<string, string | undefined>;
 
 /** The variables, by role. Names are part of the contract: CI and docs refer to them. */
 export const E2E_ENV = {
-  /** Same names the API's PlatformOwnerBootstrap reads. Required. No default. */
-  platformEmail: 'PLATFORM_ADMIN_EMAIL',
-  platformPassword: 'PLATFORM_ADMIN_PASSWORD',
   /** The frontend the browser drives. `E2E_BASE_URL` is the accepted alias. */
   baseUrl: 'PLAYWRIGHT_BASE_URL',
   baseUrlAlias: 'E2E_BASE_URL',
@@ -53,7 +47,6 @@ export const FIXTURE_PASSWORD_VARS = [
   'E2E_INTELLIFLOW_PASSWORD',
   'E2E_RASALMANAR_PASSWORD',
   'E2E_GROUP_PASSWORD',
-  'E2E_EVOSTEL_PASSWORD',
 ] as const;
 
 /**
@@ -67,6 +60,9 @@ export const RETIRED_ENV: Record<string, string> = {
   E2E_DEFAULT_ADMIN_EMAIL: 'the pilot lane now uses INTELLIFLOW_ADMIN from e2e/world.ts',
   E2E_DEFAULT_ADMIN_PASSWORD: 'the pilot lane now uses E2E_INTELLIFLOW_PASSWORD via e2e/world.ts',
   E2E_MIN_EMPLOYEES: 'the floor is now the tenant\'s minActiveEmployees in e2e/world.ts',
+  PLATFORM_ADMIN_EMAIL: 'there is no platform owner: the organisation administrator is ALMARAI_OWNER in e2e/world.ts, created by --setup-organisation',
+  PLATFORM_ADMIN_PASSWORD: 'there is no platform owner: the organisation administrator signs in with E2E_GROUP_PASSWORD',
+  E2E_EVOSTEL_PASSWORD: 'the per-run limited tenant is retired: one installation holds one organisation',
 };
 
 export const DEFAULT_BASE_URL = 'http://localhost:5173';
@@ -89,23 +85,6 @@ export function resolveTarget(env: Env = process.env): E2ETarget {
   const baseUrl = trimmed(env[E2E_ENV.baseUrl]) ?? trimmed(env[E2E_ENV.baseUrlAlias]) ?? DEFAULT_BASE_URL;
   const apiBaseUrl = trimmed(env[E2E_ENV.apiBaseUrl]) ?? DEFAULT_API_BASE_URL;
   return { baseUrl: baseUrl.replace(/\/+$/, ''), apiBaseUrl: apiBaseUrl.replace(/\/+$/, '') };
-}
-
-export interface PlatformIdentity {
-  email: string;
-  password: string;
-}
-
-/**
- * The platform owner as the environment states it — empty strings when unset. Deliberately not
- * defaulted: see the header. Callers that need it to authenticate go through the preflight, which
- * turns an empty value into a loud, specific failure.
- */
-export function platformIdentityFromEnv(env: Env = process.env): PlatformIdentity {
-  return {
-    email: trimmed(env[E2E_ENV.platformEmail]) ?? '',
-    password: env[E2E_ENV.platformPassword] ?? '',
-  };
 }
 
 export const csv = (value: string | undefined): string[] =>

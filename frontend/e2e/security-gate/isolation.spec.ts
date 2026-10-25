@@ -63,50 +63,29 @@ async function allEmployeeCodes(api: APIRequestContext): Promise<{ status: numbe
 }
 
 test.describe('Chrome security gate — identity boundaries', () => {
-  test('a tenant user cannot reach platform administration (API and browser)', async ({ browser }) => {
+  test('the retired platform console does not exist (API and browser)', async ({ browser }) => {
+    // A client installation has no vendor console: /api/platform/** and /platform are gone (WP1). Not
+    // "refused" — absent. 404 is the only accepted answer, so a console that came back behind an
+    // authorization check would fail here.
     const api = await apiAs('tenant-owner');
     try {
-      // API: the platform audience gate must refuse a tenant-audience token outright.
-      const resp = await api.get('/api/platform/tenants');
-      // 404 is deliberately NOT accepted: "the route no longer exists" is not "access was denied",
-      // and accepting it would let a renamed or deleted endpoint pass as a security guarantee.
-      expect(
-        [401, 403],
-        `A tenant admin token reached /api/platform/tenants with ${resp.status()}. The platform `
-        + `audience gate is the control that keeps a tenant token out of cross-tenant endpoints.`,
-      ).toContain(resp.status());
+      for (const route of ['/api/platform/tenants', '/api/platform/auth/login', '/api/pricing/plans']) {
+        const resp = route.endsWith('/login') ? await api.post(route, { data: {} }) : await api.get(route);
+        expect(resp.status(), `${route} answered ${resp.status()}; the platform API must not exist`).toBe(404);
+      }
     } finally {
       await api.dispose();
     }
 
-    // Browser: the attacker's ACTUAL move. The platform shell only checks whether
-    // `platform_access_token` is present, so a test that merely omits it proves nothing about the
-    // server — it passes with every backend control deleted. Plant the tenant token under the platform
-    // key and require the SERVER to refuse.
     const ctx = await browser.newContext({ baseURL: BASE_URL, storageState: 'e2e/.auth/tenant-owner.json' });
     const page = await ctx.newPage();
-    await page.goto('/');
-    await page.evaluate(t => localStorage.setItem('platform_access_token', t), tokenFor('tenant-owner'));
-
     const platformApiStatuses: number[] = [];
     page.on('response', r => {
       if (r.url().includes('/api/platform/')) platformApiStatuses.push(r.status());
     });
-
-    await page.goto('/platform/dashboard');
-    await page.waitForLoadState('networkidle');
-
-    const shell = (await page.locator('body').innerText().catch(() => '')) ?? '';
-    // Only a SIBLING tenant is a leak. The caller's own slug can legitimately appear in an account
-    // header, and asserting on it made this fail for a non-security reason — the shell rendering is a
-    // client-side concern; the server refusing is the security property, asserted below.
-    expect(shell, 'a tenant token saw another tenant in the platform console')
-      .not.toMatch(/emaar-test|tata-test/i);
-    // Every platform API call made with a tenant token must have been refused by the server.
-    expect(
-      platformApiStatuses.filter(s => s === 200),
-      `platform API returned 200 to a tenant token: ${platformApiStatuses.join(', ')}`,
-    ).toHaveLength(0);
+    const response = await page.goto('/platform/dashboard');
+    expect(response?.status(), '/platform must not be a page of this product').toBe(404);
+    expect(platformApiStatuses.filter(s => s === 200), 'no platform API answered').toHaveLength(0);
     await ctx.close();
   });
 

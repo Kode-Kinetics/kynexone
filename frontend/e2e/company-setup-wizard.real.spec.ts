@@ -6,7 +6,7 @@ import { translate } from '../src/i18n/translations';
 import { resolveTarget } from './identity/env';
 import { stampActor } from './identity/actor';
 import { assertDisposableHost } from './disposable-host.guard';
-import { PLATFORM_EMAIL, PLATFORM_PASSWORD } from './world';
+import { ORGANISATION_ADMIN } from './world';
 
 /**
  * Create-company wizard against the REAL /api/company-setup — no request is intercepted. The mocked
@@ -32,10 +32,15 @@ const target = resolveTarget();
 const API = target.apiBaseUrl;
 
 const RUN = randomBytes(3).toString('hex');
+/** The persona label for reports. A client installation has one organisation and no workspace. */
 const SLUG = `wizard-e2e-${RUN}`;
 const PASSWORD = `Wz${randomBytes(8).toString('hex')}!aA9`;
 const OWNER_DOMAIN = `wizard-${RUN}.test`;
-const OWNER = { email: `owner@${OWNER_DOMAIN}`, fullName: 'Wizard Group Owner' };
+/**
+ * The group owner is the organisation administrator `--setup-organisation` created (e2e/world.ts). The two
+ * other identities are created per run, as that administrator, through the organisation's own API.
+ */
+const OWNER = { email: ORGANISATION_ADMIN.email, fullName: ORGANISATION_ADMIN.fullName, password: ORGANISATION_ADMIN.password };
 /** Admin role, confined to the starter company: eligible as an existing super admin, refused the wizard. */
 const CO_ADMIN = { email: `coadmin@${OWNER_DOMAIN}`, fullName: 'Starter Company Admin' };
 /** Group HR Manager without Admin: never offered as an existing super admin. */
@@ -74,8 +79,8 @@ function ok<T>(res: { status: number; body: T; text: string }, what: string, acc
 
 const items = (body: any): any[] => Array.isArray(body) ? body : body?.items ?? body?.Items ?? [];
 
-async function tenantToken(email: string, password = PASSWORD): Promise<string> {
-  const body = ok(await call('POST', '/api/auth/login', { body: { email, password, tenantSlug: SLUG } }), `login ${email}`);
+async function tenantToken(email: string, password = passwordOf(email)): Promise<string> {
+  const body = ok(await call('POST', '/api/auth/login', { body: { email, password } }), `login ${email}`);
   return (body as any).accessToken ?? (body as any).token;
 }
 
@@ -88,6 +93,9 @@ async function companiesUsed(token: string): Promise<number> {
   return (ok(await call('GET', '/api/company-setup/context', { token }), 'context') as any).companiesUsed as number;
 }
 
+/** The organisation administrator signs in with its own password; the per-run identities with PASSWORD. */
+const passwordOf = (email: string): string => (email === OWNER.email ? OWNER.password : PASSWORD);
+
 let starterCompany: { id: string; legalNameEn: string };
 let coAdminId: string;
 /** The single-use sign-in link the EN journey's "Send sign-in link" handed back (no SMTP on a disposable stack). */
@@ -99,42 +107,30 @@ test.describe.configure({ mode: 'serial', timeout: 120_000 });
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1440, height: 1000 } });
 
 test.beforeAll(async () => {
-  assertDisposableHost(target.baseUrl, 'create a per-run wizard tenant');
-  const platform = ok(await call('POST', '/api/platform/auth/login', { body: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD } }), 'platform login') as any;
-  const pt = platform.token ?? platform.accessToken;
-  const created = ok(await call('POST', '/api/platform/tenants', {
-    token: pt,
-    body: {
-      name: `Wizard E2E ${RUN}`, slug: SLUG, adminEmail: OWNER.email, adminFullName: OWNER.fullName, adminPassword: PASSWORD,
-      accountType: 'Group', plan: 'Enterprise', maxUsers: 50, maxEmployees: 100, maxCompanies: 10,
-      billingEmail: `billing@${SLUG}.test`, billingCycle: 'Monthly', monthlyAmount: 0, currencyCode: 'SAR', homeCountryCode: 'SA',
-    },
-  }), 'create wizard tenant', [201]) as any;
-  const tenantId = created.tenantId as string;
+  assertDisposableHost(target.baseUrl, 'create per-run wizard identities');
+  // The organisation and its first company exist already (`--setup-organisation`); the wizard adds companies.
   const owner = await tenantToken(OWNER.email);
   const [starter] = items(ok(await call('GET', '/api/companies?page=1&pageSize=100', { token: owner }), 'starter company'));
   starterCompany = { id: starter.id, legalNameEn: starter.legalNameEn };
-  const coAdmin = ok(await call('POST', `/api/platform/tenants/${tenantId}/users`, {
-    token: pt,
-    body: { email: CO_ADMIN.email, password: PASSWORD, fullName: CO_ADMIN.fullName, roleName: 'Admin', entityScope: 'companies', companyIds: [starter.id] },
-  }), 'create company-scoped admin') as any;
+  const coAdmin = ok(await call('POST', '/api/access/users', {
+    token: owner,
+    body: { email: CO_ADMIN.email, password: PASSWORD, fullName: CO_ADMIN.fullName, roles: ['Admin'], companyId: starter.id },
+  }), 'create company-scoped admin', [200, 201]) as any;
   coAdminId = coAdmin.id ?? coAdmin.Id;
-  ok(await call('POST', `/api/platform/tenants/${tenantId}/users`, {
-    token: pt,
-    body: { email: GROUP_HR.email, password: PASSWORD, fullName: GROUP_HR.fullName, roleName: 'HR Manager', entityScope: 'group' },
-  }), 'create group HR manager');
+  ok(await call('POST', '/api/access/users', {
+    token: owner,
+    body: { email: GROUP_HR.email, password: PASSWORD, fullName: GROUP_HR.fullName, roles: ['HR Manager'], isGroupScope: true },
+  }), 'create group HR manager', [200, 201]);
 });
 
 // ── browser helpers ───────────────────────────────────────────────────────────────────────────
 
-async function signIn(page: Page, email: string, locale: Locale = 'en', password = PASSWORD) {
-  stampActor({ email, tenantSlug: SLUG, via: 'wizard lane fixture (per-run tenant)' });
+async function signIn(page: Page, email: string, locale: Locale = 'en', password = passwordOf(email)) {
+  stampActor({ email, tenantSlug: SLUG, via: 'wizard lane fixture (per-run identities)' });
   await page.addInitScript(l => localStorage.setItem('kynexone-locale-choice-v2', l), locale);
-  await page.goto(`/login?workspace=${encodeURIComponent(SLUG)}`);
+  await page.goto('/login');
   await page.locator('#li-em').fill(email);
   await page.locator('#li-pw').fill(password);
-  const workspace = page.locator('#li-ws');
-  if (await workspace.count()) await workspace.fill(SLUG);
   await page.locator('#li-pw').press('Enter');
   await page.waitForURL(url => !url.pathname.startsWith('/login'), { timeout: 20_000 });
 }
@@ -468,7 +464,7 @@ test('the invited company super admin signs in and sees only their company', asy
     ?? (ok(await call('POST', `/api/access/users/${invited.id}/password-reset-link`, { token: owner }), 'reset link') as any).resetUrl;
   const token = decodeURIComponent(new URL(resetUrl).hash.replace(/^#token=/, ''));
   const newPassword = `Sa${randomBytes(8).toString('hex')}!aA9`;
-  ok(await call('POST', '/api/auth/reset-password', { body: { resetToken: token, newPassword, tenantSlug: SLUG } }), 'set password');
+  ok(await call('POST', '/api/auth/reset-password', { body: { resetToken: token, newPassword } }), 'set password');
 
   await signIn(page, INVITED.email, 'en', newPassword);
   const me = await page.evaluate(async () => {

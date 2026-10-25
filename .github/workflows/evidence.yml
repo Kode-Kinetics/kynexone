@@ -73,25 +73,28 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
-      # Generated per run and never committed; see the same step in ci.yml for why, including why
-      # the platform owner's address is generated too.
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      # A licence for this run; only an image built with CI_LICENCE_KEY=true trusts its key.
+      - name: Issue the per-run CI licence
+        run: scripts/ci/ci-licence.sh .ci-licence
+
+      # Generated per run and never committed; see the same step in ci.yml for why.
       - name: Generate per-run fixture credentials
         run: |
           set -euo pipefail
           gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
           {
-            echo "PLATFORM_ADMIN_EMAIL=e2e-platform-$(openssl rand -hex 4)@example.com"
-            echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
             echo "E2E_GROUP_PASSWORD=$(gen)"
             echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
             echo "E2E_RASALMANAR_PASSWORD=$(gen)"
-            echo "E2E_EVOSTEL_PASSWORD=$(gen)"
           } >> "$GITHUB_ENV"
 
       - name: Start a disposable stack (EMPTY database)
         env:
           LOGIN_PERMIT_LIMIT: '200'
-          PLATFORM_LOGIN_PERMIT_LIMIT: '50'
+          CI_LICENCE_KEY: 'true'
           LOGIN_ACCOUNT_IP_ATTEMPT_LIMIT: '1000'
           LOGIN_ACCOUNT_ATTEMPT_LIMIT: '1000'
           LOGIN_IP_FAILURE_LIMIT: '1000'
@@ -111,13 +114,19 @@ jobs:
           docker compose -p kynexone-evidence-ci logs --no-color --tail=200
           exit 1
 
+      # The organisation through the only door (`--setup-organisation`), then the per-run licence.
+      - name: Set up the organisation and import the CI licence
+        env:
+          COMPOSE_PROJECT_NAME: kynexone-evidence-ci
+        run: frontend/e2e/bootstrap/setup-organisation.sh .ci-licence/ci.licence
+
       # F07: before anything writes. Disposable hosts, the expected build on both halves, a
-      # non-production database, and the platform owner this job generated.
-      - name: E2E preflight — target, build, database and platform identity
+      # non-production database, and the organisation administrator.
+      - name: E2E preflight — target, build, database and organisation identity
         working-directory: frontend
         run: npx playwright test -c e2e/preflight/playwright.preflight.config.ts
 
-      - name: Provision and verify the e2e fixture world (platform-admin API only)
+      - name: Provision and verify the e2e fixture world (organisation API only)
         working-directory: frontend
         run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
 

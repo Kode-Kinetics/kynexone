@@ -51,21 +51,6 @@ export function isPrivateHost(host: string): boolean {
 
 export function checkEnvironment(env: Env): Finding[] {
   const findings: Finding[] = [];
-  const email = env[E2E_ENV.platformEmail]?.trim();
-  const password = env[E2E_ENV.platformPassword];
-
-  findings.push(email
-    ? pass('platform identity: email set', `${E2E_ENV.platformEmail}=${email}`)
-    : fail('platform identity: email set',
-      `${E2E_ENV.platformEmail} is not set. It has NO default on purpose: the platform owner is created by `
-      + 'the API process at boot, so the tests must present exactly the value that process was started with. '
-      + `Export the same ${E2E_ENV.platformEmail} and ${E2E_ENV.platformPassword} the API was launched with `
-      + '(docker-compose.yml passes them through to the backend service).'));
-  findings.push(password
-    ? pass('platform identity: password set', `${E2E_ENV.platformPassword} is set (${password.length} chars)`)
-    : fail('platform identity: password set',
-      `${E2E_ENV.platformPassword} is not set. Export the value the API process was started with.`));
-
   if (isCi(env)) {
     const missing = FIXTURE_PASSWORD_VARS.filter((name) => !env[name]?.trim());
     findings.push(missing.length
@@ -131,9 +116,9 @@ export function checkDatabase(
 ): Finding[] {
   if (!identity || (!identity.name && !identity.host)) {
     return [fail('database identity reported',
-      'The API did not report which database it is connected to (GET /api/platform/health → '
-      + 'components.database.name/host). Either the platform login failed, or the API is a build older than '
-      + 'this checkout. Refusing: an unidentified database may be production.')];
+      'The API did not report which database it is connected to (GET /health/ready/details → '
+      + 'database.name/host, organisation administrators only). Either the administrator login failed, or the '
+      + 'API is a build older than this checkout. Refusing: an unidentified database may be production.')];
   }
   const findings: Finding[] = [pass('database identity reported', `${identity.name ?? '?'} on ${identity.host ?? '?'}`)];
   const name = (identity.name ?? '').toLowerCase();
@@ -242,12 +227,15 @@ export function checkBuild(obs: BuildObservation): Finding[] {
 export interface PersonaExpectation {
   key: string;
   email: string;
+  /** The persona's cluster in e2e/world.ts (a name for messages). */
   tenantSlug: string;
+  /** The one organisation every session must belong to. */
+  organisationSlug: string;
   role: string;
   scope: 'group' | 'companies';
   companyCodes: string[];
   employeeLinked: boolean;
-  /** Every company code the tenant declares (a group persona must see exactly these). */
+  /** Every company code of the organisation (a group persona must see exactly these). */
   tenantCompanyCodes: string[];
   /** The role's permission set as the backend catalog defines it. */
   expectedPermissions: string[];
@@ -277,9 +265,9 @@ export function checkPersonaSession(p: PersonaExpectation, s: SessionObservation
   }
   const findings: Finding[] = [pass(check('signs in'), 'HTTP 200')];
 
-  findings.push((s.tenantSlug ?? '').toLowerCase() === p.tenantSlug.toLowerCase()
-    ? pass(check('is in the declared tenant'), s.tenantSlug ?? '')
-    : fail(check('is in the declared tenant'), `session tenant is '${s.tenantSlug}', expected '${p.tenantSlug}'`));
+  findings.push((s.tenantSlug ?? '').toLowerCase() === p.organisationSlug.toLowerCase()
+    ? pass(check('is in the organisation'), s.tenantSlug ?? '')
+    : fail(check('is in the organisation'), `session organisation is '${s.tenantSlug}', expected '${p.organisationSlug}'`));
 
   const roles = [...(s.roles ?? [])].sort();
   findings.push(roles.length === 1 && roles[0] === p.role

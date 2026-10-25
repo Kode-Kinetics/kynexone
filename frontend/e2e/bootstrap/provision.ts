@@ -9,19 +9,22 @@
  * employee. Every e2e lane that logged in as `admin@intelliflow.com` or `owner@almarai-test.local`
  * was authenticating against rows a seeder used to write.
  *
- * This module recreates that world the only sanctioned way: as the platform owner, through
- * `/api/platform/**`, and then as each tenant's own administrator through the tenant API. There is
- * no direct SQL anywhere in it, which is the point — if a path here is missing from the product,
- * that is a product gap, and the bootstrap surfaces it instead of papering over it with an INSERT.
+ * This module recreates that world the only sanctioned way. The organisation, its first company and
+ * its administrator already exist: `--setup-organisation` created them (e2e/bootstrap/
+ * setup-organisation.sh in a local stack, the "Set up the organisation" step in CI) and a licence was
+ * imported. Everything else is created through the organisation's own API — first as its
+ * administrator (companies, users, grants), then as each cluster's administrator (employees, payroll,
+ * leave...). There is no direct SQL anywhere in it, which is the point — if a path here is missing
+ * from the product, that is a product gap, and the bootstrap surfaces it instead of papering over it
+ * with an INSERT.
  *
  * ── Properties ────────────────────────────────────────────────────────────────────────────────
  * IDEMPOTENT — every step reads before it writes and skips what already exists, so it is safe to
  *   run on an already-provisioned stack and safe to re-run after a partial failure.
  * FAIL-LOUD — a step that cannot complete throws with the HTTP status and body. It never returns a
  *   half-built world for the specs to discover as a mystery assertion failure twenty minutes later.
- * NON-DESTRUCTIVE — it creates and updates; it never deletes a tenant. (The per-run Evostel fixture
- *   in e2e/limited-tenant-fixture.ts still owns its own purge, guarded by disposable-host.guard.ts.)
- * DISPOSABLE-HOST GUARDED — it writes tenants and users, so it refuses to run against anything but
+ * NON-DESTRUCTIVE — it creates and updates; it never deletes anything.
+ * DISPOSABLE-HOST GUARDED — it writes companies and users, so it refuses to run against anything but
  *   loopback or an explicitly allowlisted throwaway stack.
  */
 import { writeFile, mkdir } from 'node:fs/promises';
@@ -29,7 +32,7 @@ import { dirname } from 'node:path';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
-  PLATFORM_EMAIL, PLATFORM_PASSWORD, TENANTS, WORLD_MANIFEST,
+  ALL_COMPANY_CODES, ORGANISATION, ORGANISATION_ADMIN, TENANTS, WORLD_MANIFEST,
   type FixtureCompany, type FixtureTenant, type FixtureUser, type WorldManifest,
 } from '../world';
 
@@ -120,28 +123,9 @@ async function allEmployees(
 
 // ── Authentication ────────────────────────────────────────────────────────────────────────────
 
-async function platformLogin(): Promise<string> {
-  const res = await call('POST', '/api/platform/auth/login', {
-    body: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD },
-  });
-  if (res.status !== 200) {
-    throw new Error(
-      `[bootstrap] Platform-owner login failed for ${PLATFORM_EMAIL}: HTTP ${res.status}.\n`
-      + `${res.text.slice(0, 300)}\n\n`
-      + 'The platform owner is created ONCE, at API boot, by PlatformOwnerBootstrap — and only when\n'
-      + 'PLATFORM_ADMIN_PASSWORD is set in the API process (plus PLATFORM_ADMIN_BOOTSTRAP=true on\n'
-      + 'Production/dedicated deployments). Start the backend with:\n'
-      + `  PLATFORM_ADMIN_EMAIL=${PLATFORM_EMAIL} PLATFORM_ADMIN_PASSWORD=<the same value this run uses>\n`
-      + 'See docs/DATA_ENTRY_PATHS.md §1.',
-    );
-  }
-  const token = res.body?.token ?? res.body?.accessToken;
-  if (!token) throw new Error('[bootstrap] Platform login returned no token.');
-  return token as string;
-}
-
-async function tenantLogin(email: string, password: string, slug: string): Promise<string | null> {
-  const res = await call('POST', '/api/auth/login', { body: { email, password, tenantSlug: slug } });
+/** A client installation has no workspace: logins send only the email and password. */
+async function tenantLogin(email: string, password: string): Promise<string | null> {
+  const res = await call('POST', '/api/auth/login', { body: { email, password } });
   if (res.status !== 200) return null;
   return (res.body?.accessToken ?? res.body?.token) as string;
 }
@@ -151,13 +135,13 @@ async function tenantLogin(email: string, password: string, slug: string): Promi
  * conflating the two has cost this repo entire wasted CI runs before.
  */
 async function requireTenantLogin(user: FixtureUser, slug: string): Promise<string> {
-  const token = await tenantLogin(user.email, user.password, slug);
+  const token = await tenantLogin(user.email, user.password);
   if (token) return token;
   const probe = await call('POST', '/api/auth/login', {
-    body: { email: user.email, password: user.password, tenantSlug: slug },
+    body: { email: user.email, password: user.password },
   });
   throw new Error(
-    `[bootstrap] ${user.email} cannot log in to '${slug}' (HTTP ${probe.status}).\n`
+    `[bootstrap] ${user.email} (cluster '${slug}') cannot log in (HTTP ${probe.status}).\n`
     + (probe.status === 429
       ? 'That is the login rate limiter, not a wrong password. Raise RateLimit__LoginPermitLimit on '
         + 'the DISPOSABLE bootstrap stack only, or pace the run.'
@@ -167,86 +151,75 @@ async function requireTenantLogin(user: FixtureUser, slug: string): Promise<stri
   );
 }
 
-// ── Tenants and companies ─────────────────────────────────────────────────────────────────────
+// ── The organisation and its companies ────────────────────────────────────────────────────────
 
-async function ensureTenant(platformToken: string, fixture: FixtureTenant): Promise<string> {
-  const list = expectOk(await call('GET', '/api/platform/tenants', { token: platformToken }), 'list tenants');
-  const existing = items(list.body).find((t: any) => t.slug === fixture.slug);
-  if (existing) return existing.id;
-
-  const created = await call('POST', '/api/platform/tenants', {
-    token: platformToken,
-    body: {
-      name: fixture.name,
-      slug: fixture.slug,
-      adminEmail: fixture.admin.email,
-      adminFullName: fixture.admin.fullName,
-      adminPassword: fixture.admin.password,
-      accountType: fixture.accountType,
-      plan: fixture.plan,
-      maxUsers: fixture.maxUsers,
-      maxEmployees: fixture.maxEmployees,
-      maxCompanies: fixture.maxCompanies,
-      billingEmail: `billing@${fixture.slug}.test`,
-      billingCycle: 'Monthly',
-      monthlyAmount: 0,
-      currencyCode: 'SAR',
-      // The tenant's HOME JURISDICTION, required since platform admins began stating it at
-      // creation. It is what the first company inherits and what the statutory seeders key off,
-      // so the fixture world must name it rather than let the API guess. SA matches the KSA
-      // statutory expectations these suites already assert (GOSI, Iqama, Art. 117).
-      homeCountryCode: fixture.homeCountryCode ?? 'SA',
-    },
-  });
-  expectOk(created, `create tenant '${fixture.slug}'`, [201]);
-  return created.body.tenantId as string;
+/**
+ * The organisation must already exist: `--setup-organisation` is the only door that creates one. Read
+ * its id from the administrator's own session, and say exactly what to run when it is missing.
+ */
+async function requireOrganisation(): Promise<{ organisationId: string; token: string }> {
+  const installation = await call('GET', '/api/public/installation');
+  if (installation.status !== 200 || installation.body?.setupComplete !== true) {
+    throw new Error(
+      `[bootstrap] The installation at ${API_BASE} is not set up (GET /api/public/installation → `
+      + `HTTP ${installation.status} ${installation.text.slice(0, 200)}).\n`
+      + 'Create the organisation first: frontend/e2e/bootstrap/setup-organisation.sh (or, in CI, the\n'
+      + '"Set up the organisation" step). It runs `--setup-organisation` with ORGANISATION and\n'
+      + `ORGANISATION_ADMIN (${ORGANISATION_ADMIN.email}) from e2e/world.ts and imports a licence.`,
+    );
+  }
+  if (installation.body?.licence?.state === 'Missing' || installation.body?.licence?.state === 'Expired') {
+    throw new Error(
+      `[bootstrap] The installation has no valid licence (state ${installation.body.licence.state}); every API call `
+      + 'would answer 402. Import one: e2e/bootstrap/setup-organisation.sh imports the CI licence.',
+    );
+  }
+  const token = await requireTenantLogin(ORGANISATION_ADMIN, 'organisation');
+  const me = expectOk(await call('GET', '/api/auth/me', { token }), 'read the organisation administrator');
+  const organisationId = String(me.body?.tenantId ?? me.body?.TenantId ?? '');
+  if (!organisationId) throw new Error('[bootstrap] /api/auth/me returned no organisation id.');
+  return { organisationId, token };
 }
 
 /**
- * Give the tenant exactly the companies the fixture declares, identified by CODE.
- *
- * CreateTenant now bears the tenant's first company itself, named after the TENANT. The group
- * suites resolve companies by code (`ALM-DAIRY-KSA`), so that first company is RENAMED to the first
- * declared code rather than left beside it — otherwise `almarai-test` would hold six companies and
- * `group-admin.spec.ts`'s `companies.length === 5` would be wrong for a reason that has nothing to
- * do with the product.
+ * Every fixture company of the organisation, identified by CODE, created as the organisation
+ * administrator. Setup created the first one with the code ORGANISATION.firstCompanyCode; a first
+ * company carrying any other name (a database set up by hand) is renamed onto that code rather than
+ * left beside it, so the group cluster holds exactly its five companies.
  */
-async function ensureCompanies(
-  platformToken: string, tenantId: string, adminToken: string, fixture: FixtureTenant,
-): Promise<Array<{ code: string; id: string; countryCode: string }>> {
+async function ensureCompanies(orgToken: string): Promise<Map<string, { id: string; countryCode: string }>> {
   const existing = items(expectOk(
-    await call('GET', '/api/companies?page=1&pageSize=100', { token: adminToken }), 'list companies',
+    await call('GET', '/api/companies?page=1&pageSize=100', { token: orgToken }), 'list companies',
   ).body);
 
-  const byCode = new Map<string, string>();
+  const known = new Set(ALL_COMPANY_CODES);
+  const byCode = new Map<string, { id: string; countryCode: string }>();
   for (const company of existing) {
     const name = String(company.legalNameEn ?? company.LegalNameEn ?? '');
-    if (fixture.companies.some((c) => c.code === name)) byCode.set(name, company.id ?? company.Id);
+    if (known.has(name)) byCode.set(name, { id: company.id ?? company.Id, countryCode: company.countryCode ?? company.CountryCode });
   }
 
-  // Rename the tenant-named starter company onto the first declared code.
-  const starter = existing.find((c: any) => {
-    const name = String(c.legalNameEn ?? c.LegalNameEn ?? '');
-    return !fixture.companies.some((f) => f.code === name);
-  });
-  const first = fixture.companies[0];
-  if (starter && !byCode.has(first.code)) {
+  const clusterOf = (code: string) => TENANTS.find((t) => t.companies.some((c) => c.code === code))!;
+  const fixtureOf = (code: string) => clusterOf(code).companies.find((c) => c.code === code)!;
+
+  const first = ORGANISATION.firstCompanyCode;
+  const starter = existing.find((c: any) => !known.has(String(c.legalNameEn ?? c.LegalNameEn ?? '')));
+  if (starter && !byCode.has(first)) {
     expectOk(await call('PUT', `/api/companies/${starter.id ?? starter.Id}`, {
-      token: adminToken, body: companyBody(first, fixture),
-    }), `rename starter company to '${first.code}'`);
-    byCode.set(first.code, starter.id ?? starter.Id);
+      token: orgToken, body: companyBody(fixtureOf(first), clusterOf(first)),
+    }), `rename the first company to '${first}'`);
+    byCode.set(first, { id: starter.id ?? starter.Id, countryCode: fixtureOf(first).countryCode });
   }
 
-  for (const company of fixture.companies) {
-    if (byCode.has(company.code)) continue;
-    const created = await call('POST', `/api/platform/tenants/${tenantId}/companies`, {
-      token: platformToken, body: companyBody(company, fixture),
-    });
-    expectOk(created, `create company '${company.code}' in '${fixture.slug}'`);
-    byCode.set(company.code, created.body.companyId as string);
+  for (const cluster of TENANTS) {
+    for (const company of cluster.companies) {
+      if (byCode.has(company.code)) continue;
+      const created = await call('POST', '/api/companies', { token: orgToken, body: companyBody(company, cluster) });
+      expectOk(created, `create company '${company.code}' (cluster '${cluster.slug}')`, [200, 201]);
+      byCode.set(company.code, { id: created.body.id ?? created.body.Id ?? created.body.companyId, countryCode: company.countryCode });
+    }
   }
-
-  return fixture.companies.map((c) => ({ code: c.code, id: byCode.get(c.code)!, countryCode: c.countryCode }));
+  return byCode;
 }
 
 function companyBody(company: FixtureCompany, fixture: FixtureTenant) {
@@ -270,75 +243,99 @@ function companyBody(company: FixtureCompany, fixture: FixtureTenant) {
 }
 
 /**
- * The tenant's own locale and currency.
+ * The organisation's own locale and currency.
  *
- * Not cosmetic. Payroll renders a run's gross/net in the TENANT's currency while a payment batch is
- * denominated in the company/assignment currency, so a Saudi tenant left on the USD default produces
- * a run displayed in USD and a WPS batch in SAR — and payroll-run-to-wps.spec.ts fails on the
- * mismatch, correctly. The two have to agree, and the way to make them agree is to tell the tenant
- * which country it operates in.
+ * Not cosmetic. Payroll renders a run's gross/net in the organisation's currency while a payment batch
+ * is denominated in the company/assignment currency, so a Saudi organisation left on the USD default
+ * produces a run displayed in USD and a WPS batch in SAR — and payroll-run-to-wps.spec.ts fails on the
+ * mismatch, correctly. Setup derives both from the home country; this only corrects a stack that
+ * disagrees, keeping every other setting as it is.
  */
-async function ensureLocalization(
-  platformToken: string, tenantId: string, fixture: FixtureTenant,
-): Promise<void> {
-  const home = fixture.companies[0];
-  expectOk(await call('PUT', `/api/platform/tenants/${tenantId}/localization`, {
-    token: platformToken,
-    body: { currencyCode: home.currency, countryCode: home.countryCode, defaultLanguage: 'en' },
-  }), `set localization for '${fixture.slug}'`);
+async function ensureLocalization(orgToken: string): Promise<void> {
+  const current = expectOk(await call('GET', '/api/tenant-admin/localization', { token: orgToken }), 'read localization');
+  const loc = current.body ?? {};
+  if (String(loc.currencyCode ?? '').toUpperCase() === 'SAR' && String(loc.countryCode ?? '').toUpperCase() === 'SA') return;
+  expectOk(await call('PUT', '/api/tenant-admin/localization', {
+    token: orgToken,
+    body: {
+      defaultLanguage: loc.defaultLanguage ?? 'en',
+      rtlEnabled: loc.rtlEnabled ?? false,
+      calendarSystem: loc.calendarSystem ?? 'Gregorian',
+      defaultTimezone: loc.defaultTimezone ?? 'Asia/Riyadh',
+      dateFormat: loc.dateFormat ?? 'dd/MM/yyyy',
+      currencyCode: 'SAR',
+      countryCode: 'SA',
+      weekStartDay: loc.weekStartDay ?? 'Sunday',
+      workWeek: loc.workWeek ?? 'Sun,Mon,Tue,Wed,Thu',
+      hijriDatesEnabled: loc.hijriDatesEnabled ?? false,
+    },
+  }), 'set the organisation localization');
 }
 
-/** Feature flags the fixture tenant must have switched ON. */
-async function ensureFeatures(
-  platformToken: string, tenantId: string, fixture: FixtureTenant,
-): Promise<void> {
-  for (const key of fixture.features ?? []) {
-    expectOk(await call('PUT', `/api/platform/tenants/${tenantId}/features/${key}`, {
-      token: platformToken, body: { isEnabled: true },
-    }), `enable feature '${key}' on '${fixture.slug}'`);
+/**
+ * Opt-in features are switched at /api/tenant-admin/features; every other key is a module, switched at
+ * /api/tenant-modules. The licence grants them all (scripts/ci/ci-licence.sh licenses every module).
+ */
+const OPT_IN_FEATURES = new Set([
+  'release_a', 'selfie_attendance', 'attendance_geofence', 'compensation', 'engagement', 'learning',
+  'succession', 'succession_candidate_visibility', 'policy_intake',
+]);
+
+/** The modules and features every cluster declares, switched ON once for the organisation. */
+async function ensureFeatures(orgToken: string): Promise<void> {
+  const keys = [...new Set(TENANTS.flatMap((t) => t.features ?? []))];
+  for (const key of keys) {
+    const res = OPT_IN_FEATURES.has(key)
+      ? await call('PUT', `/api/tenant-admin/features/${key}`, { token: orgToken, body: { isEnabled: true } })
+      : await call('PUT', `/api/tenant-modules/${key}`, { token: orgToken, body: { enabled: true } });
+    expectOk(res, `switch on '${key}'`);
   }
 }
 
 // ── Users and their company scope ─────────────────────────────────────────────────────────────
 
+/** Every account the organisation holds, by lower-cased email. */
+async function existingUsers(orgToken: string): Promise<Map<string, string>> {
+  const rows = await collectAllPages(async (page, pageSize) => {
+    const res = expectOk(
+      await call('GET', `/api/access/users?page=${page}&pageSize=${pageSize}`, { token: orgToken }), `list users (page ${page})`,
+    );
+    return { items: pageItems(res.body), total: pageTotal(res.body) };
+  });
+  return new Map<string, string>(rows.map((u: any) => [String(u.email ?? u.Email).toLowerCase(), u.id ?? u.Id]));
+}
+
+/**
+ * Create a cluster's accounts as the organisation administrator, each with its scope stated at
+ * creation: group identities with group-wide access, the others in the first company they are entitled
+ * to (ensureEntityGrants adds the rest). Portal logins are left to the invitation flow.
+ */
 async function ensureUsers(
-  platformToken: string, tenantId: string, fixture: FixtureTenant,
+  orgToken: string, fixture: FixtureTenant, byEmail: Map<string, string>,
   companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<Map<string, string>> {
-  const existing = items(expectOk(
-    await call('GET', `/api/platform/tenants/${tenantId}/users`, { token: platformToken }), 'list tenant users',
-  ).body);
-  const byEmail = new Map<string, string>(
-    existing.map((u: any) => [String(u.email ?? u.Email).toLowerCase(), u.id ?? u.Id]),
-  );
-
   const portal = new Set((fixture.employeePortalLogins ?? []).map((e) => e.toLowerCase()));
-  for (const user of fixture.users) {
+  const accounts = fixture.admin.email === ORGANISATION_ADMIN.email ? fixture.users : [fixture.admin, ...fixture.users];
+  for (const user of accounts) {
     // Portal logins are created by the INVITATION flow instead — see ensureEmployeePortalLogins.
     // Creating them here would take the email and leave them with no employee link at all.
     if (portal.has(user.email.toLowerCase())) continue;
     if (byEmail.has(user.email.toLowerCase())) continue;
-    // SAY THE SCOPE OUT LOUD. `POST /api/platform/tenants/{id}/users` now takes the legal-entity
-    // scope as part of the request, because an account created without one used to resolve to zero
-    // companies and be invisible to itself. Group identities follow the tenant; company identities
-    // are confined to the companies they are entitled to, which is what makes the "bakery data is
-    // not visible to the dairy user" assertions mean anything.
+    // SAY THE SCOPE OUT LOUD: an account created without one resolves to zero companies and is
+    // invisible to itself. Group identities hold the organisation; company identities are confined to
+    // the companies they are entitled to, which is what makes "bakery data is not visible to the dairy
+    // user" — and "IntelliFlow staff see only IntelliFlow" — mean anything.
     const codes = user.companyCodes ?? (user.companyCode ? [user.companyCode] : null);
-    const scope = codes === null
-      ? { entityScope: 'group' }
-      : {
-          entityScope: 'companies',
-          companyIds: codes.map((code) => {
-            const company = companies.find((c) => c.code === code);
-            if (!company) throw new Error(`[bootstrap] '${user.email}' is scoped to unknown company '${code}'.`);
-            return company.id;
-          }),
-        };
-    const created = await call('POST', `/api/platform/tenants/${tenantId}/users`, {
-      token: platformToken,
-      body: { email: user.email, password: user.password, fullName: user.fullName, roleName: user.role, ...scope },
+    const firstCompany = codes === null ? null : companies.find((c) => c.code === codes[0]);
+    if (codes !== null && !firstCompany) throw new Error(`[bootstrap] '${user.email}' is scoped to unknown company '${codes[0]}'.`);
+    const created = await call('POST', '/api/access/users', {
+      token: orgToken,
+      body: {
+        email: user.email, password: user.password, fullName: user.fullName, roles: [user.role],
+        ...(firstCompany ? { companyId: firstCompany.id } : { isGroupScope: true }),
+      },
     });
-    expectOk(created, `create user '${user.email}' in '${fixture.slug}'`);
+    expectOk(created, `create user '${user.email}' (cluster '${fixture.slug}')`, [200, 201]);
     byEmail.set(user.email.toLowerCase(), created.body.Id ?? created.body.id);
   }
   return byEmail;
@@ -366,7 +363,8 @@ async function ensureEntityGrants(
   adminToken: string, fixture: FixtureTenant, userIds: Map<string, string>,
   companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<void> {
-  if (fixture.users.length === 0) return;
+  const accounts = fixture.admin.email === ORGANISATION_ADMIN.email ? fixture.users : [fixture.admin, ...fixture.users];
+  if (accounts.length === 0) return;
 
   const current = items(expectOk(
     await call('GET', '/api/access/entity-grants', { token: adminToken }), 'list entity grants',
@@ -374,7 +372,7 @@ async function ensureEntityGrants(
   const held = new Set(current.map((g: any) => `${g.userId ?? g.UserId}|${g.companyId ?? g.CompanyId ?? 'all'}`));
 
   const portal = new Set((fixture.employeePortalLogins ?? []).map((e) => e.toLowerCase()));
-  for (const user of fixture.users) {
+  for (const user of accounts) {
     // The invitation flow issues its own entity grant for these.
     if (portal.has(user.email.toLowerCase())) continue;
     const userId = userIds.get(user.email.toLowerCase());
@@ -616,8 +614,11 @@ const idRecord = (fieldKey: string, fieldLabel: string, fieldValue: string) => {
  * employee it refuses is reported, never forced, and the caller asserts a floor afterwards: silently
  * ending up with zero Active employees is the failure this whole bootstrap exists to prevent.
  */
-async function activateEmployees(adminToken: string, slug: string, floor: number): Promise<number> {
-  const rows = await allEmployees(adminToken);
+async function activateEmployees(
+  adminToken: string, slug: string, floor: number, companies: Array<{ code: string; id: string }>,
+): Promise<number> {
+  // Per company of the cluster: the organisation administrator sees every cluster's employees.
+  const rows = (await Promise.all(companies.map((c) => allEmployees(adminToken, { companyId: c.id })))).flat();
   const blocked: string[] = [];
   let active = 0;
 
@@ -662,7 +663,7 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
  * fallback: matching a login's email to an employee's work or personal email used to stand in for the
  * link, and a personal email can be changed through an approved self-service request.
  *
- * So these accounts are not created by `POST /api/platform/tenants/{id}/users` at all. They are
+ * So these accounts are not created by `POST /api/access/users` at all. They are
  * created the way a real employee login is created: HR invites the employee, and the employee
  * accepts the invitation and sets a password. `POST /api/access/users/{id}/admin-reset-password` is
  * deliberately disabled in this product ("temporary_password_flow_disabled"), so accepting the
@@ -682,7 +683,7 @@ async function ensureEmployeePortalLogins(
     const declared = fixture.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
     if (!declared) throw new Error(`[bootstrap] '${email}' is declared as a portal login but is not a fixture user.`);
     // Already usable from an earlier run — the invitation is single-use, so do not re-issue it.
-    if (await tenantLogin(declared.email, declared.password, fixture.slug)) { linked++; continue; }
+    if (await tenantLogin(declared.email, declared.password)) { linked++; continue; }
 
     // Matched by employee CODE, not by work email: the employee LIST dto does not carry a work
     // email (only the detail one does), so matching on it silently found nothing. The codes are
@@ -718,7 +719,6 @@ async function ensureEmployeePortalLogins(
       body: {
         invitationToken,
         newPassword: declared.password,
-        tenantSlug: fixture.slug,
       },
     });
     expectOk(accepted, `accept the invitation for '${email}'`, [200, 204]);
@@ -823,7 +823,7 @@ async function ensureSaudiEstablishment(
 ): Promise<string> {
   if (!companies.some((c) => c.countryCode === 'SA')) return 'no Saudi company';
   let seq = 0;
-  for (const ch of fixture.slug) seq = (seq * 31 + ch.charCodeAt(0)) % 9_000_000;
+  for (const ch of ORGANISATION.name) seq = (seq * 31 + ch.charCodeAt(0)) % 9_000_000;
   const establishmentId = `7-${1_000_000 + seq}`;
   expectOk(await call('POST', '/api/admin/gcc-settings', {
     token: adminToken,
@@ -1293,52 +1293,59 @@ async function ensurePayrollRuns(
 export interface ProvisionResult extends WorldManifest { employeesCreated: number }
 
 export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> {
-  // Creating tenants and users is a write. Refuse anything that is not a throwaway stack, for the
-  // same reason limited-tenant-fixture.ts refuses: a stale PLAYWRIGHT_BASE_URL plus real platform
-  // credentials would otherwise write fixture accounts into a live environment.
+  // Creating companies and users is a write. Refuse anything that is not a throwaway stack: a stale
+  // PLAYWRIGHT_BASE_URL plus real administrator credentials would otherwise write fixture accounts
+  // into a live installation.
   assertDisposableHost(baseUrl, 'provision the e2e fixture world');
   assertDisposableHost(API_BASE, 'provision the e2e fixture world');
 
   const started = Date.now();
-  const platformToken = await platformLogin();
+  const { organisationId, token: orgToken } = await requireOrganisation();
   const manifest: ProvisionResult = {
     baseUrl, provisionedAtUtc: new Date().toISOString(), tenants: [], employeesCreated: 0,
   };
 
+  // Organisation-wide, once, as its administrator.
+  await ensureLocalization(orgToken);
+  await ensureFeatures(orgToken);
+  const allCompanies = await ensureCompanies(orgToken);
+  const userIds = await existingUsers(orgToken);
+  const defaults = await ensureTenantDefaults(orgToken, 'organisation');
+
   for (const fixture of TENANTS) {
-    const tenantId = await ensureTenant(platformToken, fixture);
-    const adminToken = await requireTenantLogin(fixture.admin, fixture.slug);
-    await ensureLocalization(platformToken, tenantId, fixture);
-    await ensureFeatures(platformToken, tenantId, fixture);
-    const companies = await ensureCompanies(platformToken, tenantId, adminToken, fixture);
-    const userIds = await ensureUsers(platformToken, tenantId, fixture, companies);
-    await ensureEntityGrants(adminToken, fixture, userIds, companies);
+    const companies = fixture.companies.map((c) => ({ code: c.code, ...allCompanies.get(c.code)! }));
+    await ensureUsers(orgToken, fixture, userIds, companies);
+    await ensureEntityGrants(orgToken, fixture, userIds, companies);
+    // Everything else as the cluster's own administrator, who sees exactly the cluster's companies.
+    const adminToken = fixture.admin.email === ORGANISATION_ADMIN.email
+      ? orgToken
+      : await requireTenantLogin(fixture.admin, fixture.slug);
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
-    const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
+    const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees, companies);
     const portalLogins = await ensureEmployeePortalLogins(adminToken, fixture, companies);
     const salaries = await ensureSalaries(adminToken, companies);
     const documents = await ensureEmployeeDocuments(adminToken, companies);
     const hrData = await ensureLeaveAndAttendance(adminToken, fixture, companies);
-    const defaults = await ensureTenantDefaults(adminToken, fixture.slug);
     const profiles = await ensureComplianceProfiles(adminToken, companies);
-    const establishment = await ensureSaudiEstablishment(adminToken, fixture, companies);
+    const establishment = await ensureSaudiEstablishment(orgToken, fixture, companies);
     const payroll = fixture.payroll ? await ensurePayrollRuns(fixture, adminToken, companies) : 'no payroll';
-    manifest.tenants.push({ slug: fixture.slug, tenantId, companies });
+    manifest.tenants.push({ slug: fixture.slug, tenantId: organisationId, companies });
     console.log(
       `[bootstrap] ${fixture.slug}: ${companies.length} compan${companies.length === 1 ? 'y' : 'ies'}, `
       + `${fixture.users.length + 1} users (${portalLogins} employee portal login(s)), `
       + `${active} active employees, `
-      + `${salaries} salary assignment(s), ${defaults}, ${profiles} compliance profile(s), `
+      + `${salaries} salary assignment(s), ${profiles} compliance profile(s), `
       + `${documents}, ${hrData}, ${establishment}, ${payroll}.`,
     );
   }
+  console.log(`[bootstrap] organisation: ${defaults}.`);
 
   await mkdir(dirname(WORLD_MANIFEST), { recursive: true });
   await writeFile(WORLD_MANIFEST, JSON.stringify(manifest, null, 2), { mode: 0o600 });
   console.log(
     `[bootstrap] Fixture world ready in ${((Date.now() - started) / 1000).toFixed(1)}s — `
-    + `${manifest.tenants.length} tenants, ${manifest.employeesCreated} new employees. `
+    + `${manifest.tenants.length} clusters, ${manifest.employeesCreated} new employees. `
     + `Manifest: ${WORLD_MANIFEST}`,
   );
   return manifest;

@@ -81,8 +81,9 @@ export const evidenceTest = base.extend<EvidenceFixtures>({
       const page = await context.newPage();
       attach(page);
       await tenantLoginLive(page, user.email, user.password, tenantSlug);
+      // One organisation per installation: no workspace in the login.
       const login = await api.post('/api/auth/login', {
-        data: { email: user.email, password: user.password, tenantSlug },
+        data: { email: user.email, password: user.password },
       });
       if (!login.ok()) {
         throw new Error(

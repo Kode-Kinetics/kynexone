@@ -1,41 +1,46 @@
 /**
  * THE FIXTURE WORLD — the single source of truth for every identity the e2e suites log in as.
  *
- * ── Why this file exists ──────────────────────────────────────────────────────────────────────
- * Every demo/fixture seeder was deleted (docs/DATA_ENTRY_PATHS.md). A migrated database now starts
- * EMPTY: there is no `intelliflow`, no `almarai-test`, no `admin@platform.local`. Everything the
- * suites authenticate as has to be CREATED, and the only sanctioned way to create it is the
- * platform-admin API.
+ * ── One organisation ──────────────────────────────────────────────────────────────────────────
+ * KynexOne is installed by each client for ONE organisation (implementation prompt WP0/WP2). The
+ * fixture world is therefore one organisation with several companies. What used to be five
+ * separate tenants are now CLUSTERS of companies inside it:
  *
- * Before this file, the same identities were declared independently in three places —
- * `e2e/helpers.ts`, `e2e/security-gate/roles.ts` and `e2e/group-company/helpers.ts` — and they had
- * already drifted: `helpers.ts` defaulted the platform operator to `platform@kynexone.com` while
- * `roles.ts` defaulted it to `admin@platform.local`, so the two lanes were provably authenticating
- * as different accounts. A bootstrap can only provision one world, so there is now one declaration
- * of it and the three modules re-export from here.
+ *   almarai-test  the group cluster — five Saudi/UAE companies; its group identities hold the whole
+ *                 organisation (the organisation administrator, ALMARAI_OWNER, is one of them)
+ *   intelliflow   the single-company workhorse (employees, salary structures, a locked payroll run);
+ *                 its identities are confined to INTELLIFLOW-KSA
+ *   rasalmanar    a second single company; identities confined to RASALMANAR-KSA
+ *   tata-test     an Indian group of five companies; identities confined to those five
+ *
+ * A cluster's `slug` is only a NAME: it keys personas and sessions and appears in reports. Nobody
+ * signs in "to" it — a client installation has no workspace, so logins send no tenant slug.
+ * Scenarios that needed two different organisations (cross-tenant isolation, per-tenant plans) were
+ * SaaS-only and are retired; company-scope isolation inside the organisation is what remains.
+ *
+ * ── How it comes to exist ─────────────────────────────────────────────────────────────────────
+ * Databases start EMPTY (docs/DATA_ENTRY_PATHS.md). The organisation, its first company and its
+ * administrator are created by `--setup-organisation` (the only door), with ALMARAI_OWNER's address
+ * and E2E_GROUP_PASSWORD; a licence is imported (CI issues one per run: scripts/ci/ci-licence.sh).
+ * Everything else — companies, users, grants, employees, payroll — is created by
+ * e2e/bootstrap/provision.ts through the organisation's own APIs, as that administrator.
  *
  * ── Passwords ─────────────────────────────────────────────────────────────────────────────────
  * Every password comes from the environment. In CI they are GENERATED PER RUN (see ci.yml) and a
  * missing variable is a hard failure — CI must never fall back to a value committed to the repo.
- * Outside CI the historical local-stack defaults are kept for the TENANT fixture accounts so
- * `docker compose up && npx playwright test` still works on a developer machine: the bootstrap
- * creates those accounts with the same values the specs use, so they agree by construction, and
- * the preflight refuses any target that is not a disposable stack.
- *
- * The PLATFORM OWNER is different and has no default (register item F07). It is created by the API
- * process, not by the bootstrap, so the test side can only ever match it by reading the same
- * PLATFORM_ADMIN_EMAIL / PLATFORM_ADMIN_PASSWORD the API was started with. The 28 Sep run defaulted
- * the email here, authenticated as an operator the isolated API had never created, and got a 401.
- * The env contract is e2e/identity/env.ts; e2e/preflight/ verifies it before anything runs.
+ * Outside CI the historical local-stack defaults are kept so `docker compose up && npx playwright
+ * test` still works on a developer machine, and the preflight refuses any target that is not a
+ * disposable stack.
  *
  * ── Personas ──────────────────────────────────────────────────────────────────────────────────
  * `PERSONAS` at the bottom is the registry every consumer resolves identities through: the
- * bootstrap provisions `TENANTS`, the preflight logs every persona in and checks its role, scope and
- * permissions, the security gate's roles.ts references these objects instead of re-spelling
- * addresses, and e2e/identity/actor.ts stamps the persona behind every login into the test report.
+ * bootstrap provisions `TENANTS` (the clusters), the preflight logs every persona in and checks its
+ * role, scope and permissions, the security gate's roles.ts references these objects instead of
+ * re-spelling addresses, and e2e/identity/actor.ts stamps the persona behind every login into the
+ * test report.
  */
 
-import { E2E_ENV, isCi, platformIdentityFromEnv } from './identity/env';
+import { isCi } from './identity/env';
 
 const inCi = isCi();
 
@@ -76,21 +81,15 @@ export interface FixtureCompany {
   currency: string;
 }
 
+/**
+ * A CLUSTER of companies inside the one organisation (see the header). Named `FixtureTenant` because
+ * that is what every spec already imports; it no longer describes a tenant of its own.
+ */
 export interface FixtureTenant {
+  /** The cluster's name: keys personas and sessions. Never sent to the API. */
   slug: string;
   name: string;
-  /**
-   * The tenant's HOME JURISDICTION (ISO-2), stated by the platform admin at creation and inherited
-   * by the first company. The statutory seeders key off it, so leaving it out means the fixture
-   * world has no jurisdiction and the API refuses to create the tenant. Defaults to SA in
-   * `provision.ts`, which matches the KSA expectations these suites already assert.
-   */
-  homeCountryCode?: string;
-  accountType: 'SingleCompany' | 'Group';
-  plan: string;
-  maxUsers: number;
-  maxEmployees: number;
-  maxCompanies: number;
+  /** The cluster's administrator. ALMARAI_OWNER, the organisation administrator, is created by setup. */
   admin: FixtureUser;
   companies: FixtureCompany[];
   users: FixtureUser[];
@@ -118,37 +117,36 @@ export interface FixtureTenant {
    */
   employeePortalLogins?: string[];
   /**
-   * Feature flags to switch ON. A tenant is born with none enabled, so the platform tenant-detail
-   * screen shows a feature list where every switch is off — and `platform-tenants.spec.ts` requires
-   * at least one `aria-checked="true"`, which is the honest assertion: a feature panel that can only
-   * ever render "off" proves nothing about the toggle.
+   * Modules and opt-in features to switch ON. The organisation has one set; the bootstrap switches on
+   * the union of every cluster's list (the licence grants them all).
    */
   features?: string[];
 }
 
-// ── Platform operator ─────────────────────────────────────────────────────────────────────────
-// Created by PlatformOwnerBootstrap at API boot from PLATFORM_ADMIN_EMAIL/PLATFORM_ADMIN_PASSWORD,
-// then used by the bootstrap to create everything else. NO DEFAULT: an empty value here is reported
-// by the preflight as "not set", with the variable names to export — see the header.
-const platformIdentity = platformIdentityFromEnv();
-export const PLATFORM_EMAIL = platformIdentity.email;
-export const PLATFORM_PASSWORD = platformIdentity.password;
-/** Names of the two variables, for messages that tell an operator what to export. */
-export const PLATFORM_ENV = { email: E2E_ENV.platformEmail, password: E2E_ENV.platformPassword } as const;
+// ── The organisation ──────────────────────────────────────────────────────────────────────────
+/**
+ * What `--setup-organisation` is run with (CI: ci.yml; locally: e2e/bootstrap/setup-organisation.sh).
+ * The administrator is ALMARAI_OWNER and the first company is ALM-DAIRY-KSA, so setup creates exactly
+ * what the group cluster expects and the bootstrap adds the rest.
+ */
+export const ORGANISATION = {
+  /** The slug setup stores the one organisation under (OrganisationProvisioningService.OrganisationSlug). */
+  slug: 'main',
+  name: 'KynexOne E2E Organisation',
+  homeCountryCode: 'SA',
+  firstCompanyCode: 'ALM-DAIRY-KSA',
+} as const;
 
-// ── Passwords, one per tenant ─────────────────────────────────────────────────────────────────
+// ── Passwords, one per cluster ────────────────────────────────────────────────────────────────
 const INTELLIFLOW_PASSWORD = fixturePassword('E2E_INTELLIFLOW_PASSWORD', 'IntelliFlow@2026!');
 const RASALMANAR_PASSWORD = fixturePassword('E2E_RASALMANAR_PASSWORD', 'RasAlManar@2026!');
 export const GROUP_PASSWORD = fixturePassword('E2E_GROUP_PASSWORD', 'GroupDemo123!x');
-export const EVOSTEL_PASSWORD = fixturePassword('E2E_EVOSTEL_PASSWORD', 'E2E-Demo@1234');
 
 // ── Slugs ─────────────────────────────────────────────────────────────────────────────────────
 export const INTELLIFLOW_SLUG = 'intelliflow';
 export const RASALMANAR_SLUG = 'rasalmanar';
 export const ALMARAI_SLUG = 'almarai-test';
 export const TATA_SLUG = 'tata-test';
-/** Provisioned and purged per run by e2e/limited-tenant-fixture.ts, not by the bootstrap. */
-export const EVOSTEL_SLUG = 'evostel';
 
 export const ALMARAI_COMPANY_CODES = [
   'ALM-DAIRY-KSA', 'ALM-POULTRY-KSA', 'ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE-TRD',
@@ -165,11 +163,13 @@ export const groupEmail = (role: string, slug = ALMARAI_SLUG): string => `${role
 export const companyEmail = (role: string, companyCode: string, slug = ALMARAI_SLUG): string =>
   `${role}@${companyCode.toLowerCase()}.${slug}.local`;
 
-// ── IntelliFlow: the single-company workhorse tenant ──────────────────────────────────────────
+// ── IntelliFlow: the single-company workhorse cluster ─────────────────────────────────────────
 // Carries the employees, salary structures and the locked payroll run that the payroll, GOSI,
-// dashboard and demo-surface specs read.
+// dashboard and demo-surface specs read. Its identities are confined to its one company, so they see
+// what a single-company organisation's people would see.
+export const INTELLIFLOW_COMPANY = 'INTELLIFLOW-KSA';
 const intelliflowUser = (local: string, role: string, fullName: string): FixtureUser => ({
-  email: `${local}@intelliflow.com`, password: INTELLIFLOW_PASSWORD, role, fullName,
+  email: `${local}@intelliflow.com`, password: INTELLIFLOW_PASSWORD, role, fullName, companyCode: INTELLIFLOW_COMPANY,
 });
 
 export const INTELLIFLOW_ADMIN = intelliflowUser('admin', 'Admin', 'IntelliFlow Administrator');
@@ -182,9 +182,10 @@ export const INTELLIFLOW_EMP1 = intelliflowUser('employee1', 'Employee', 'Intell
 export const INTELLIFLOW_EMP2 = intelliflowUser('employee2', 'Employee', 'IntelliFlow Employee Two');
 export const INTELLIFLOW_AUDITOR = intelliflowUser('auditor', 'Auditor', 'IntelliFlow Auditor');
 
+export const RASALMANAR_COMPANY = 'RASALMANAR-KSA';
 export const RASALMANAR_ADMIN: FixtureUser = {
   email: 'admin@rasalmanar.com', password: RASALMANAR_PASSWORD, role: 'Admin',
-  fullName: 'Ras Al-Manar Administrator',
+  fullName: 'Ras Al-Manar Administrator', companyCode: RASALMANAR_COMPANY,
 };
 // A second person who can decide leave. Approvals never route to the requester, so a tenant whose
 // only approver is the admin filing on employees' behalf has nobody who may decide; the leave
@@ -192,21 +193,13 @@ export const RASALMANAR_ADMIN: FixtureUser = {
 // them in a queue nobody can act on.
 export const RASALMANAR_HR: FixtureUser = {
   email: 'hr@rasalmanar.com', password: RASALMANAR_PASSWORD, role: 'HR Manager',
-  fullName: 'Ras Al-Manar HR Manager',
+  fullName: 'Ras Al-Manar HR Manager', companyCode: RASALMANAR_COMPANY,
 };
 
-export const EVOSTEL_ADMIN: FixtureUser = {
-  email: 'admin@evostel.com', password: EVOSTEL_PASSWORD, role: 'Admin',
-  fullName: 'E2E Tenant Administrator',
-};
-export const EVOSTEL_EMP1: FixtureUser = {
-  email: 'employee1@evostel.com', password: EVOSTEL_PASSWORD, role: 'Employee',
-  fullName: 'E2E Tenant Employee',
-};
-
-// ── Almarai: the multi-company group tenant ───────────────────────────────────────────────────
+// ── Almarai: the group cluster ────────────────────────────────────────────────────────────────
 // Its identities are what the Chrome security gate and the group-company suite authorize against,
 // so each one's SCOPE is declared here and granted by the bootstrap through /api/access/entity-grants.
+// Its group identities hold the whole organisation; ALMARAI_OWNER is the organisation administrator.
 const groupUser = (role: string, roleName: string, fullName: string, slug = ALMARAI_SLUG): FixtureUser => ({
   email: groupEmail(role, slug), password: GROUP_PASSWORD, role: roleName, fullName,
 });
@@ -229,7 +222,7 @@ export const ALMARAI_AUDITOR = groupUser('auditor', 'Auditor', 'Almarai Group Au
 // Role-catalog certification personas: one group-scoped holder for each system role the personas
 // above do not already cover, so the security gate's full role matrix (security-gate/
 // full-role-matrix.spec.ts) signs in as a REAL account of every role AuthSeeder installs. Created
-// through the same platform/tenant APIs as every other identity here; no side door.
+// through the organisation's own APIs like every other identity here; no side door.
 export const ALMARAI_PAYROLL_MANAGER = groupUser('payroll.manager', 'Payroll Manager', 'Almarai Payroll Manager');
 export const ALMARAI_HR_OFFICER = groupUser('hr.officer', 'HR Officer', 'Almarai HR Officer');
 export const ALMARAI_RECRUITER = groupUser('recruiter', 'Recruiter', 'Almarai Recruiter');
@@ -263,20 +256,20 @@ export const ALMARAI_USERS: FixtureUser[] = [
   ALMARAI_DAIRY_PAYROLL,
 ];
 
-export const TATA_OWNER = groupUser('owner', 'Admin', 'Tata Group Owner', TATA_SLUG);
-export const TATA_COMPLIANCE = groupUser('compliance', 'Compliance Officer', 'Tata Group Compliance Officer', TATA_SLUG);
+// Tata's identities are confined to its five companies: inside one organisation, "the Tata group" is
+// the set of companies they hold, not a tenant of its own.
+const tataUser = (role: string, roleName: string, fullName: string): FixtureUser => ({
+  ...groupUser(role, roleName, fullName, TATA_SLUG), companyCodes: [...TATA_COMPANY_CODES],
+});
+export const TATA_OWNER = tataUser('owner', 'Admin', 'Tata Group Owner');
+export const TATA_COMPLIANCE = tataUser('compliance', 'Compliance Officer', 'Tata Group Compliance Officer');
 // Same reason as RASALMANAR_HR: someone other than the filing admin who can decide leave.
-export const TATA_HR = groupUser('hr', 'HR Manager', 'Tata Group HR Manager', TATA_SLUG);
+export const TATA_HR = tataUser('hr', 'HR Manager', 'Tata Group HR Manager');
 
 export const TENANTS: FixtureTenant[] = [
   {
     slug: INTELLIFLOW_SLUG,
     name: 'IntelliFlow Systems',
-    accountType: 'SingleCompany',
-    plan: 'Enterprise',
-    maxUsers: 100,
-    maxEmployees: 500,
-    maxCompanies: 1,
     admin: INTELLIFLOW_ADMIN,
     companies: [saCompany('INTELLIFLOW-KSA')],
     users: [
@@ -289,22 +282,15 @@ export const TENANTS: FixtureTenant[] = [
     minActiveEmployees: 12,
     payroll: true,
     employeePortalLogins: [INTELLIFLOW_EMP1.email, INTELLIFLOW_EMP2.email],
-    // The Enterprise tenant that tenant-feature-flags.spec.ts contrasts against the limited Evostel
-    // fixture: these must be ON here and OFF there for either half to mean anything.
     features: ['ai_assistant', 'recruitment', 'performance', 'shifts', 'overtime', 'qiwa_integration'],
   },
   {
     slug: RASALMANAR_SLUG,
     name: 'Ras Al-Manar Trading',
-    accountType: 'SingleCompany',
-    plan: 'Growth',
-    maxUsers: 25,
-    maxEmployees: 100,
-    maxCompanies: 1,
     admin: RASALMANAR_ADMIN,
     companies: [saCompany('RASALMANAR-KSA')],
     users: [RASALMANAR_HR],
-    // Cross-tenant isolation specs compare real employee rows against IntelliFlow's.
+    // Company-scope isolation specs compare real employee rows against IntelliFlow's.
     employeesPerCompany: 4,
     minActiveEmployees: 4,
     payroll: false,
@@ -312,11 +298,6 @@ export const TENANTS: FixtureTenant[] = [
   {
     slug: ALMARAI_SLUG,
     name: 'Almarai Group (E2E)',
-    accountType: 'Group',
-    plan: 'Enterprise',
-    maxUsers: 100,
-    maxEmployees: 500,
-    maxCompanies: 0,
     admin: ALMARAI_OWNER,
     companies: ALMARAI_COMPANY_CODES.map(saCompany),
     users: ALMARAI_USERS,
@@ -326,18 +307,13 @@ export const TENANTS: FixtureTenant[] = [
     // so the gap has to be on an activated one, not on a Draft.
     minActiveEmployees: 15,
     payroll: true,
-    // The security tenant's Enterprise modules are switched ON so the role matrix and navigation
-    // assertions measure RBAC, not an unrelated feature-flag denial.
+    // The modules are switched ON so the role matrix and navigation assertions measure RBAC, not an
+    // unrelated module denial.
     features: ['recruitment', 'performance', 'shifts', 'overtime', 'qiwa_integration'],
   },
   {
     slug: TATA_SLUG,
     name: 'Tata Group (E2E)',
-    accountType: 'Group',
-    plan: 'Enterprise',
-    maxUsers: 100,
-    maxEmployees: 500,
-    maxCompanies: 0,
     admin: TATA_OWNER,
     companies: TATA_COMPANY_CODES.map((code) => ({ code, countryCode: 'IN', currency: 'INR' })),
     users: [TATA_COMPLIANCE, TATA_HR],
@@ -352,40 +328,39 @@ export const TENANTS: FixtureTenant[] = [
 
 export const tenantBySlug = (slug: string): FixtureTenant => {
   const found = TENANTS.find((t) => t.slug === slug);
-  if (!found) throw new Error(`[world] No fixture tenant '${slug}' is declared.`);
+  if (!found) throw new Error(`[world] No fixture cluster '${slug}' is declared.`);
   return found;
 };
 
 // ── The persona registry ──────────────────────────────────────────────────────────────────────
 
-export type PersonaScope = 'platform' | 'group' | 'companies';
+export type PersonaScope = 'group' | 'companies';
 
 /**
  * One identity the suites act as, with everything the preflight needs to verify it and everything a
- * report needs to say who acted. Derived from `TENANTS` (plus the platform owner), never declared a
- * second time.
+ * report needs to say who acted. Derived from `TENANTS`, never declared a second time.
  */
 export interface Persona {
-  /** `<tenant-slug>|<email>` (or `platform|<email>`), lower-case. Unique. */
+  /** `<cluster-slug>|<email>`, lower-case. Unique. */
   key: string;
   label: string;
   email: string;
   password: string;
-  /** null for the platform owner, which signs in to the platform audience. */
-  tenantSlug: string | null;
-  /** The tenant role the account holds; null for the platform owner. */
-  role: string | null;
+  /** The cluster the persona belongs to (a name, not a login workspace). */
+  tenantSlug: string;
+  /** The role the account holds. */
+  role: string;
   scope: PersonaScope;
   /** The companies a 'companies'-scoped persona is confined to. */
   companyCodes: string[];
   /** True when the bootstrap links the login to a real employee record (invitation flow). */
   employeeLinked: boolean;
-  /** Created by the bootstrap (and so verified by the world preflight), or per run by a lane fixture. */
-  provisionedBy: 'api-boot' | 'bootstrap' | 'lane-fixture';
+  /** Created by --setup-organisation (the organisation administrator) or by the bootstrap. */
+  provisionedBy: 'setup' | 'bootstrap';
 }
 
-export const personaKey = (email: string, tenantSlug: string | null): string =>
-  `${(tenantSlug ?? 'platform').toLowerCase()}|${email.toLowerCase()}`;
+export const personaKey = (email: string, tenantSlug: string): string =>
+  `${tenantSlug.toLowerCase()}|${email.toLowerCase()}`;
 
 function toPersona(
   user: FixtureUser,
@@ -413,39 +388,24 @@ function toPersona(
   };
 }
 
-/**
- * The platform owner persona. Its credentials are whatever the environment says (no default); the
- * preflight refuses to go further until they authenticate against the API under test.
- */
-export const PLATFORM_PERSONA: Persona = {
-  key: personaKey(PLATFORM_EMAIL, null),
-  label: 'Platform owner',
-  email: PLATFORM_EMAIL,
-  password: PLATFORM_PASSWORD,
-  tenantSlug: null,
-  role: null,
-  scope: 'platform',
-  companyCodes: [],
-  employeeLinked: false,
-  provisionedBy: 'api-boot',
-};
-
 /** Every identity the suites may act as. */
-export const PERSONAS: Persona[] = [
-  PLATFORM_PERSONA,
-  ...TENANTS.flatMap((tenant) => [tenant.admin, ...tenant.users].map((u) => toPersona(u, tenant, 'bootstrap'))),
-  // The limited tenant is created and purged per run by e2e/limited-tenant-fixture.ts.
-  toPersona(EVOSTEL_ADMIN, { slug: EVOSTEL_SLUG }, 'lane-fixture'),
-];
+export const PERSONAS: Persona[] = TENANTS.flatMap((tenant) => [tenant.admin, ...tenant.users].map((u) =>
+  toPersona(u, tenant, u.email.toLowerCase() === ALMARAI_OWNER.email.toLowerCase() ? 'setup' : 'bootstrap')));
 
-export function personaForLogin(email: string, tenantSlug: string | null): Persona | undefined {
+/** The organisation administrator: created by --setup-organisation, it provisions everything else. */
+export const ORGANISATION_ADMIN = ALMARAI_OWNER;
+
+/** Every company code of the organisation, in cluster order. */
+export const ALL_COMPANY_CODES: string[] = TENANTS.flatMap((tenant) => tenant.companies.map((c) => c.code));
+
+export function personaForLogin(email: string, tenantSlug: string): Persona | undefined {
   const key = personaKey(email, tenantSlug);
   return PERSONAS.find((p) => p.key === key);
 }
 
 export function personaFor(user: FixtureUser, tenantSlug: string): Persona {
   const found = personaForLogin(user.email, tenantSlug);
-  if (!found) throw new Error(`[world] ${user.email} is not a persona of '${tenantSlug}'.`);
+  if (!found) throw new Error(`[world] ${user.email} is not a persona of cluster '${tenantSlug}'.`);
   return found;
 }
 
@@ -458,6 +418,7 @@ export const WORLD_MANIFEST = 'e2e/.auth/world.json';
 export interface WorldManifest {
   baseUrl: string;
   provisionedAtUtc: string;
+  /** One entry per cluster; `tenantId` is the organisation's id, the same for every cluster. */
   tenants: Array<{ slug: string; tenantId: string; companies: Array<{ code: string; id: string }> }>;
 }
 
@@ -472,12 +433,12 @@ export interface WorldManifest {
  */
 export const MISSING_WORLD =
   'THE E2E FIXTURE WORLD IS NOT PROVISIONED.\n'
-  + 'Databases start EMPTY — every demo/fixture seeder was deleted (docs/DATA_ENTRY_PATHS.md), so\n'
-  + 'there is no tenant, user or employee until the bootstrap creates them through the platform-admin\n'
-  + 'API. Run it once, after migrations and before any spec lane:\n'
-  + '    cd frontend && npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts\n'
-  + 'The backend must have been started with PLATFORM_ADMIN_EMAIL/PLATFORM_ADMIN_PASSWORD set so the\n'
-  + 'platform owner exists, and the fixture passwords the bootstrap used must still be exported.\n'
+  + 'Databases start EMPTY (docs/DATA_ENTRY_PATHS.md): there is no organisation, user or employee\n'
+  + 'until they are created. Once, after migrations and before any spec lane:\n'
+  + '  1. create the organisation and import a licence:  e2e/bootstrap/setup-organisation.sh\n'
+  + '  2. provision the world through its own APIs:\n'
+  + '       cd frontend && npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts\n'
+  + 'The fixture passwords the bootstrap used (E2E_*_PASSWORD) must still be exported.\n'
   + 'This is a FAILURE, not a skip: an unprovisioned stack must never produce a green run.';
 
 /**

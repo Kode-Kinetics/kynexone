@@ -117,9 +117,9 @@ for (const fixture of tenantRoles) {
             data: { status: 'Active', effectiveDate: '2026-09-25', reason: 'full-role-matrix authorization probe' },
           }), []);
 
-        // No tenant role reaches platform administration, whatever it holds.
+        // There is no platform administration to reach: the vendor console is gone from the product.
         const platform = await api.get('/api/platform/tenants');
-        expect([401, 403], `${fixture.key} reached /api/platform/tenants`).toContain(platform.status());
+        expect(platform.status(), `${fixture.key}: /api/platform/tenants must not exist`).toBe(404);
       } finally {
         await api.dispose();
       }

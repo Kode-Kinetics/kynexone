@@ -52,7 +52,7 @@ for (const [index, role] of ROLES.entries()) {
     try {
       stampActor({ email: role.email, tenantSlug: role.tenantSlug, via: `security-gate role '${role.key}'` });
       const { token, refreshToken, user } = await login(api, role);
-      if (role.tenantSlug !== null) verifyPersona(role, user);
+      verifyPersona(role, user);
 
       // The browser session. Tokens live in localStorage for this app, so the storage state is
       // seeded through an origin script rather than by driving the login form nine times.
@@ -64,15 +64,11 @@ for (const [index, role] of ROLES.entries()) {
       // of "cross-company data is not visible" tests passes because NO data is visible. That is how
       // the first version of this file produced 22 green tests while proving nothing in the browser.
       await page.evaluate(
-        ([t, r, isPlatform]) => {
-          if (isPlatform) {
-            localStorage.setItem('platform_access_token', t as string);
-          } else {
-            localStorage.setItem('zayra_access_token', t as string);
-            if (r) localStorage.setItem('zayra_refresh_token', r as string);
-          }
+        ([t, r]) => {
+          localStorage.setItem('zayra_access_token', t as string);
+          if (r) localStorage.setItem('zayra_refresh_token', r as string);
         },
-        [token, refreshToken ?? '', role.tenantSlug === null] as [string, string, boolean],
+        [token, refreshToken ?? ''] as [string, string],
       );
 
       fs.mkdirSync(path.dirname(storageStatePath(role.key)), { recursive: true });
@@ -83,7 +79,7 @@ for (const [index, role] of ROLES.entries()) {
       // evaluate above ever no-ops (a renamed key, a navigation failure), every browser context is
       // logged out, and because most browser assertions are NEGATIVE ("sibling data is not visible")
       // they keep passing — because NO data is visible. That is the exact bug this file already had.
-      const expectedKey = role.tenantSlug === null ? 'platform_access_token' : 'zayra_access_token';
+      const expectedKey = 'zayra_access_token';
       const stored = state.origins
         .flatMap(o => o.localStorage)
         .find(e => e.name === expectedKey)?.value;
@@ -106,13 +102,8 @@ for (const [index, role] of ROLES.entries()) {
 }
 
 async function login(api: import('@playwright/test').APIRequestContext, role: RoleFixture) {
-  const isPlatform = role.tenantSlug === null;
-  const url = isPlatform ? '/api/platform/auth/login' : '/api/auth/login';
-  const data = isPlatform
-    ? { email: role.email, password: role.password }
-    : { email: role.email, password: role.password, tenantSlug: role.tenantSlug };
-
-  const resp = await api.post(url, { data });
+  // One organisation per installation: no workspace in the login.
+  const resp = await api.post('/api/auth/login', { data: { email: role.email, password: role.password } });
 
   expect(
     resp.status(),
@@ -138,7 +129,7 @@ async function login(api: import('@playwright/test').APIRequestContext, role: Ro
  */
 function verifyPersona(role: RoleFixture, user: any) {
   expect(
-    sessionMismatches(role.email, role.tenantSlug!, user),
+    sessionMismatches(role.email, role.tenantSlug, user),
     `${role.key} signed in, but not as the persona e2e/world.ts declares`,
   ).toEqual([]);
 }

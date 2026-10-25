@@ -19,7 +19,8 @@ import { personaForLogin, type Persona } from '../world';
 
 export interface ActorLike {
   email: string;
-  tenantSlug: string | null;
+  /** The persona's cluster (e2e/world.ts). */
+  tenantSlug: string;
   /** Optional context the registry cannot know, e.g. the security gate's role key. */
   via?: string;
 }
@@ -28,11 +29,10 @@ export function describeActor(persona: Persona | undefined, who: ActorLike): str
   const via = who.via ? ` via ${who.via}` : '';
   if (!persona) {
     // Still recorded, and flagged: an identity that is not in the registry is exactly what F07 was.
-    return `UNREGISTERED ${who.email} @ ${who.tenantSlug ?? 'platform'}${via}`;
+    return `UNREGISTERED ${who.email} @ ${who.tenantSlug}${via}`;
   }
   const scope = persona.scope === 'companies' ? `companies=${persona.companyCodes.join('+')}` : persona.scope;
-  const role = persona.role ?? 'platform owner';
-  return `${persona.email} @ ${persona.tenantSlug ?? 'platform'} · ${role} · ${scope}`
+  return `${persona.email} @ ${persona.tenantSlug} · ${persona.role} · ${scope}`
     + `${persona.employeeLinked ? ' · employee-linked' : ''}${via}`;
 }
 

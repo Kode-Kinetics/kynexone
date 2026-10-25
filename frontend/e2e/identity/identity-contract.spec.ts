@@ -132,9 +132,25 @@ test.describe('one identity registry', () => {
     }
   });
 
-  test('the platform owner has no default: it is exactly what the environment says', async () => {
+  test('the organisation administrator is a declared persona, created by setup, holding the whole organisation', async () => {
     const { world } = await loadRegistry();
-    expect(world.PLATFORM_EMAIL).toBe((process.env.PLATFORM_ADMIN_EMAIL ?? '').trim());
-    expect(world.PLATFORM_PASSWORD).toBe(process.env.PLATFORM_ADMIN_PASSWORD ?? '');
+    const admin = world.PERSONAS.find((p) => p.email === world.ORGANISATION_ADMIN.email);
+    expect(admin, 'ORGANISATION_ADMIN must be a persona').toBeTruthy();
+    expect(admin!.provisionedBy).toBe('setup');
+    expect(admin!.role).toBe('Admin');
+    expect(admin!.scope).toBe('group');
+    expect(world.PERSONAS.filter((p) => p.provisionedBy === 'setup')).toHaveLength(1);
+  });
+
+  test('setup-organisation.sh creates exactly the organisation and administrator world.ts declares', async () => {
+    const { world } = await loadRegistry();
+    const { readFileSync } = await import('node:fs');
+    const script = readFileSync('e2e/bootstrap/setup-organisation.sh', 'utf8');
+    const value = (name: string) => script.match(new RegExp(`^${name}='([^']*)'`, 'm'))?.[1];
+    expect(value('ORGANISATION_NAME')).toBe(world.ORGANISATION.name);
+    expect(value('FIRST_COMPANY_CODE')).toBe(world.ORGANISATION.firstCompanyCode);
+    expect(value('HOME_COUNTRY')).toBe(world.ORGANISATION.homeCountryCode);
+    expect(value('ADMIN_EMAIL')).toBe(world.ORGANISATION_ADMIN.email);
+    expect(value('ADMIN_FULL_NAME')).toBe(world.ORGANISATION_ADMIN.fullName);
   });
 });

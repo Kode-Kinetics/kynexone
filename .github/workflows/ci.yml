@@ -79,6 +79,10 @@ jobs:
 
       - name: TypeScript typecheck
         run: npx tsc --noEmit
+      # The e2e harness (world, bootstrap, preflight, specs) with Node's types: a fixture world that does not
+      # compile would otherwise surface only when a browser lane loads it.
+      - name: TypeScript typecheck (e2e harness)
+        run: npx tsc --noEmit -p tsconfig.e2e.json
         working-directory: frontend
 
       # No browser, no stack. Includes the e2e preflight's refusal logic and the identity contract:
@@ -272,37 +276,34 @@ jobs:
         working-directory: frontend
         run: npx playwright install --with-deps chromium
 
+      # A licence for this run, signed with a key generated now. Only a build made with
+      # KynexOneCiLicenceKey=true trusts that key (scripts/ci/ci-licence.sh), so it opens nothing else.
+      - name: Issue the per-run CI licence
+        run: scripts/ci/ci-licence.sh .ci-licence
+
       # SourceRevisionId is baked into the assembly and reported by /health/live as `commit`, so the
       # preflight can prove the API under test is this build and not a leftover one.
       - name: Build backend
-        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release -p:SourceRevisionId=${{ github.sha }}
+        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release -p:SourceRevisionId=${{ github.sha }} -p:KynexOneCiLicenceKey=true
 
       # ── Fixture credentials ────────────────────────────────────────────────────────────────────
       # GENERATED PER RUN, never committed. The database is ephemeral and dies with the runner, so
       # these grant nothing anywhere — but a working password in the repository is still a working
       # password, and e2e/world.ts refuses to fall back to one when CI=true. They are exported to
-      # GITHUB_ENV so the backend (which bootstraps the platform owner from them), the bootstrap
-      # step and the spec step all see the SAME values: a mismatch would show up as "wrong password"
-      # against a world that was provisioned correctly.
-      #
-      # The platform owner's EMAIL is generated too, and written here ONLY (no step sets it again).
-      # It used to be the literal admin@platform.local on three separate steps, and the test code
-      # defaulted to the same literal — so a process that never received it still "matched". That is
-      # the F07 failure mode; with a per-run address, anything not reading this contract gets a 401.
+      # GITHUB_ENV so the organisation setup (its administrator signs in with E2E_GROUP_PASSWORD), the
+      # bootstrap step and the spec step all see the SAME values: a mismatch would show up as "wrong
+      # password" against a world that was provisioned correctly.
       - name: Generate per-run fixture credentials
         run: |
           set -euo pipefail
           gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
           {
-            echo "PLATFORM_ADMIN_EMAIL=e2e-platform-$(openssl rand -hex 4)@example.com"
-            echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
             echo "E2E_GROUP_PASSWORD=$(gen)"
             echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
             echo "E2E_RASALMANAR_PASSWORD=$(gen)"
-            echo "E2E_EVOSTEL_PASSWORD=$(gen)"
           } >> "$GITHUB_ENV"
 
-      - name: Start backend (platform owner only — the database starts EMPTY)
+      - name: Start backend (the database starts EMPTY)
         env:
           ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra;Username=postgres;Password=ci'
           Jwt__Issuer: 'Zayra.Api'
@@ -312,15 +313,9 @@ jobs:
           # .eml files, so no gate can reach a real person whatever relay a fixture saves.
           Email__DeliveryMode: 'capture'
           Email__CaptureDirectory: '/tmp/kynexone-captured-mail'
-          # SeedAdmin__* and SEED_ENTERPRISE_TEST_DATA used to live here. Both are gone: every
-          # demo/fixture seeder was deleted (docs/DATA_ENTRY_PATHS.md) and
-          # Zayra.Api.Tests/Security/NoSideDoorDataTests.cs fails the build if one returns. Leaving
-          # the variables set would have been worse than useless — they would read as though this job
-          # still seeds a tenant, while the gate silently authenticated against an empty database.
-          # PLATFORM_ADMIN_* is the ONE sanctioned bootstrap: PlatformOwnerBootstrap creates the first
-          # platform operator, and that operator then creates the whole fixture world over HTTP. Both
-          # values come from GITHUB_ENV (generated above) — deliberately NOT restated here, because a
-          # step-level value would silently override the one every other step reads.
+          # No seeder exists (docs/DATA_ENTRY_PATHS.md; NoSideDoorDataTests fails the build if one
+          # returns). The organisation is created by `--setup-organisation` in the step after this one,
+          # and its administrator creates the rest of the fixture world over HTTP.
           # Higher than the production default ONLY on this disposable stack: the bootstrap
           # authenticates ~12 fixture accounts in a few seconds to provision through their own APIs.
           # The gate's OWN logins are still paced under the production limit by the setup project —
@@ -330,7 +325,6 @@ jobs:
           Auth__LoginThrottle__AccountAttempts: '1000'
           Auth__LoginThrottle__IpFailures: '1000'
           Auth__PasswordVerification__MaxConcurrency: '4'
-          RateLimit__PlatformLoginPermitLimit: '50'
           ASPNETCORE_ENVIRONMENT: 'Development'
           ASPNETCORE_URLS: 'http://localhost:5117'
           # This ephemeral CI database starts EMPTY, so something has to create the schema. Without
@@ -365,6 +359,22 @@ jobs:
           cat /tmp/ready.json 2>/dev/null || echo '(no response body)'
           tail -80 /tmp/api.log
           exit 1
+
+      # The organisation, its first company and its administrator, through the only door
+      # (`--setup-organisation`), then the per-run licence. Both run as one-shot API processes against
+      # the database the server above uses; the server picks the licence up within a minute.
+      - name: Set up the organisation and import the CI licence
+        env:
+          ConnectionStrings__Default: 'Host=localhost;Port=5432;Database=zayra;Username=postgres;Password=ci'
+          Jwt__Issuer: 'Zayra.Api'
+          Jwt__Audience: 'kynexone'
+          Jwt__SigningKey: 'CI_ONLY_EPHEMERAL_SIGNING_KEY_NOT_A_PRODUCTION_SECRET_0123456789'
+          Email__DeliveryMode: 'capture'
+          Email__CaptureDirectory: '/tmp/kynexone-captured-mail'
+          ASPNETCORE_ENVIRONMENT: 'Development'
+          ASPNETCORE_URLS: 'http://localhost:5199'
+          E2E_API_COMMAND: 'dotnet backend-dotnet/Zayra.Api/bin/Release/net8.0/Zayra.Api.dll'
+        run: frontend/e2e/bootstrap/setup-organisation.sh .ci-licence/ci.licence
 
       # THE THIRD FRONTEND BUILD PATH. The other two are frontend/Dockerfile and the Frontend
       # Production Build job below; this one is the easiest to forget and the most expensive to
@@ -405,8 +415,8 @@ jobs:
       # FIRST Playwright step, before anything writes (F07). Fails the job, naming every failed check,
       # unless: the env contract is complete; both hosts are disposable; the API and the frontend are
       # this commit's builds and the frontend proxies to the same API and database; that database is
-      # the expected, non-production one; and the platform owner this job generated authenticates.
-      - name: E2E preflight — target, build, database and platform identity
+      # the expected, non-production one; and the organisation administrator authenticates.
+      - name: E2E preflight — target, build, database and organisation identity
         working-directory: frontend
         run: npx playwright test -c e2e/preflight/playwright.preflight.config.ts
 
@@ -416,7 +426,7 @@ jobs:
       # It re-runs the target preflight, provisions, then runs the WORLD preflight: every tenant,
       # legal entity and employee link exists and every persona signs in with exactly its declared
       # role, scope and AuthSeeder permissions. The verified world is recorded for the gate below.
-      - name: Provision and verify the e2e fixture world (platform-admin API only)
+      - name: Provision and verify the e2e fixture world (organisation API only)
         working-directory: frontend
         run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
 
@@ -791,11 +801,9 @@ jobs:
         working-directory: frontend
         run: npx next build
 
-  # ── Browser: real tenant journey against the production-shaped Compose topology ──
-  # This is intentionally independent of the platform-admin setup project. A missing platform
-  # bootstrap account must never suppress the client-pilot proof for dashboard + HRM modules.
+  # ── Browser: the organisation's journeys against the production-shaped Compose topology ──
   browser-pilot:
-    name: Browser Pilot (seeded tenant, core modules)
+    name: Browser Pilot (fixture organisation, core modules)
     runs-on: ubuntu-latest
     # The production-shaped stack takes about ten minutes to build and provision before the
     # Chromium suite starts (about 1,040 tests since the Setup design wave; 29+ minutes on its own).
@@ -853,36 +861,37 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      # A licence for this run; the API image below is built with CI_LICENCE_KEY=true, which makes it
+      # (and only it) trust the key generated here. See the same step in chrome-security-gate.
+      - name: Issue the per-run CI licence
+        run: scripts/ci/ci-licence.sh .ci-licence
+
       # ── Fixture credentials ────────────────────────────────────────────────────────────────────
       # Generated per run and exported to every later step; see the same step in chrome-security-gate
-      # for why they are not committed, and why the platform owner's EMAIL is generated too.
-      # PLATFORM_ADMIN_EMAIL/PASSWORD also reach the compose stack (docker-compose.yml passes them to
-      # the backend), which is what lets PlatformOwnerBootstrap create the one operator the bootstrap
-      # then works as.
+      # for why they are not committed.
       - name: Generate per-run fixture credentials
         run: |
           set -euo pipefail
           gen() { echo "Ci$(openssl rand -hex 12)!aA9"; }
           {
-            echo "PLATFORM_ADMIN_EMAIL=e2e-platform-$(openssl rand -hex 4)@example.com"
-            echo "PLATFORM_ADMIN_PASSWORD=$(gen)"
             echo "E2E_GROUP_PASSWORD=$(gen)"
             echo "E2E_INTELLIFLOW_PASSWORD=$(gen)"
             echo "E2E_RASALMANAR_PASSWORD=$(gen)"
-            echo "E2E_EVOSTEL_PASSWORD=$(gen)"
           } >> "$GITHUB_ENV"
 
       - name: Start clean stack (EMPTY database — no seeders exist any more)
         env:
           # SEED_DEMO_DATA / SEED_ENTERPRISE_TEST_DATA are deliberately absent: the seeders they
           # switched on were deleted (docs/DATA_ENTRY_PATHS.md) and NoSideDoorDataTests fails the
-          # build if one returns. The fixture world is provisioned two steps below, over HTTP.
-          # PLATFORM_ADMIN_EMAIL/PASSWORD come from GITHUB_ENV (generated above), never restated here.
+          # build if one returns. The organisation is set up and the fixture world provisioned below.
           # Browser setup authenticates twelve distinct personas, and the bootstrap authenticates as
-          # every tenant administrator to provision through the tenant API. This override is isolated
-          # to the disposable CI stack; docker-compose and deployed environments retain the default.
+          # every cluster administrator to provision through the organisation's API. This override is
+          # isolated to the disposable CI stack; docker-compose and deployed environments keep the default.
           LOGIN_PERMIT_LIMIT: '200'
-          PLATFORM_LOGIN_PERMIT_LIMIT: '50'
+          CI_LICENCE_KEY: 'true'
           LOGIN_ACCOUNT_IP_ATTEMPT_LIMIT: '1000'
           LOGIN_ACCOUNT_ATTEMPT_LIMIT: '1000'
           LOGIN_IP_FAILURE_LIMIT: '1000'
@@ -905,16 +914,22 @@ jobs:
           docker compose -p zayra-browser-ci logs --no-color --tail=200
           exit 1
 
+      # The organisation through the only door (`--setup-organisation`), then the per-run licence.
+      - name: Set up the organisation and import the CI licence
+        env:
+          COMPOSE_PROJECT_NAME: zayra-browser-ci
+        run: frontend/e2e/bootstrap/setup-organisation.sh .ci-licence/ci.licence
+
       # FIRST Playwright step, before anything writes (F07); see the same step in chrome-security-gate.
-      - name: E2E preflight — target, build, database and platform identity
+      - name: E2E preflight — target, build, database and organisation identity
         working-directory: frontend
         run: npx playwright test -c e2e/preflight/playwright.preflight.config.ts
 
-      # The stack is up and its database is EMPTY. Provision the fixture world before any spec —
-      # tenants, companies, users and their entity scope, employees, salaries, leave, attendance and
-      # a locked payroll run — entirely through /api/platform/** and the tenants' own APIs. Bracketed
-      # by the target preflight and the WORLD preflight, which verifies every persona and records it.
-      - name: Provision and verify the e2e fixture world (platform-admin API only)
+      # The organisation exists and holds nothing else. Provision the fixture world before any spec —
+      # companies, users and their entity scope, employees, salaries, leave, attendance and a locked
+      # payroll run — entirely through the organisation's own API. Bracketed by the target preflight
+      # and the WORLD preflight, which verifies every persona and records it.
+      - name: Provision and verify the e2e fixture world (organisation API only)
         working-directory: frontend
         run: npx playwright test -c e2e/bootstrap/playwright.bootstrap.config.ts
 
@@ -966,13 +981,143 @@ jobs:
       - name: Remove isolated CI stack
         if: always()
         run: docker compose -p zayra-browser-ci down -v
+  # ── Dependency licences (WP14.3) ──────────────────────────────────────────────────────────
+  # Every NuGet and npm dependency that ships to a client installation, with its licence, as an
+  # artifact; fails on a GPL/AGPL dependency scripts/licence-allowlist.txt has not approved.
+  licence-report:
+    name: Dependency licence report
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: NuGet inventory
+        run: |
+          set -euo pipefail
+          mkdir -p licence-report
+          dotnet tool install --global nuget-license
+          dotnet restore backend-dotnet/Zayra.Api/Zayra.Api.csproj
+          nuget-license -i backend-dotnet/Zayra.Api/Zayra.Api.csproj -o JsonPretty -fo licence-report/nuget.json
+      - name: npm inventories (production dependencies)
+        run: |
+          set -euo pipefail
+          for app in frontend mobile kynexbridge; do
+            if [ -f "$app/package-lock.json" ]; then
+              (cd "$app" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
+            else
+              (cd "$app" && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
+            fi
+            (cd "$app" && npx --yes license-checker-rseidelsohn@4.4.2 --production --json --out "../licence-report/npm-$app.json")
+          done
+      - name: Report and policy
+        run: python3 scripts/licence_report.py licence-report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: licence-report
+          path: licence-report/
+          retention-days: 90
+
+  # ── The client installation kit, end to end (WP9.9, WP10.4) ──────────────────────────────────
+  # The way a client installs and upgrades KynexOne, run unattended on a clean runner: this commit's
+  # images, deploy/client/scripts/install.sh with a per-run licence, sign-in over HTTPS through Caddy,
+  # a backup and a restore, and an upgrade to the next version with maintenance mode. Once a release
+  # exists, the upgrade starts from the oldest supported release's bundle instead of this commit.
+  client-install:
+    name: Client installation, backup/restore and upgrade (deploy/client)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [backend-tests, frontend-build]
+    env:
+      KYNEXONE_DOMAIN: 'kynexone.ci.test'
+      CI_ADMIN_EMAIL: 'admin@ci-install.test'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      - name: Lint the installation scripts
+        run: |
+          shellcheck -x -S warning deploy/client/scripts/*.sh deploy/release/make-bundle.sh \
+            scripts/ci/ci-licence.sh frontend/e2e/bootstrap/setup-organisation.sh
+
+      - name: Issue the per-run CI licence
+        run: scripts/ci/ci-licence.sh .ci-licence
+
+      - name: Generate the administrator password
+        run: echo "CI_ADMIN_PASSWORD=Ci$(openssl rand -hex 12)!aA9" >> "$GITHUB_ENV"
+
+      # The two images a client runs, built from this commit. CI_LICENCE_KEY=true makes the API trust
+      # the per-run licence key; a release build never sets it.
+      - name: Build this commit's images as version 0.0.1
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile --build-arg VERSION=0.0.1 --build-arg BUILD_COMMIT=${{ github.sha }} \
+            --build-arg CI_LICENCE_KEY=true -t kynexone/kynexone-api:0.0.1 .
+          docker build frontend --build-arg VERSION=0.0.1 --build-arg BUILD_COMMIT=${{ github.sha }} -t kynexone/kynexone-web:0.0.1
+
+      - name: Install unattended (scripts/install.sh)
+        working-directory: deploy/client
+        env:
+          KYNEXONE_VERSION: '0.0.1'
+          OrganisationSetup__OrganisationName: 'CI Install Organisation'
+          OrganisationSetup__HomeCountry: 'SA'
+          OrganisationSetup__AdminFullName: 'CI Administrator'
+        run: |
+          set -euo pipefail
+          OrganisationSetup__AdminEmail="$CI_ADMIN_EMAIL" OrganisationSetup__AdminPassword="$CI_ADMIN_PASSWORD" \
+            scripts/install.sh --licence ../../.ci-licence/ci.licence
+
+      - name: Sign in over HTTPS through the proxy
+        run: |
+          set -euo pipefail
+          at="--resolve $KYNEXONE_DOMAIN:443:127.0.0.1"
+          curl -sfk $at "https://$KYNEXONE_DOMAIN/api/public/installation" | tee /tmp/installation.json
+          grep -q '"setupComplete":true' /tmp/installation.json
+          grep -q '"state":"Valid"' /tmp/installation.json
+          code=$(curl -sk $at -o /tmp/login.json -w '%{http_code}' -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$CI_ADMIN_EMAIL\",\"password\":\"$CI_ADMIN_PASSWORD\"}" "https://$KYNEXONE_DOMAIN/api/auth/login")
+          test "$code" = 200 || { echo "login answered $code"; cat /tmp/login.json; exit 1; }
+          # The vendor console is not part of the product.
+          test "$(curl -sk $at -o /dev/null -w '%{http_code}' "https://$KYNEXONE_DOMAIN/api/platform/tenants")" = 404
+          # Only the proxy is published.
+          ! curl -s -m 3 -o /dev/null http://127.0.0.1:5117/health/live
+
+      - name: Back up, then restore onto the same installation
+        working-directory: deploy/client
+        run: |
+          set -euo pipefail
+          scripts/backup.sh
+          docker compose stop backend web
+          scripts/restore.sh "$(cat backups/LATEST)" --yes
+          scripts/status.sh
+
+      - name: Build version 0.0.2 and upgrade to it (scripts/upgrade.sh)
+        working-directory: deploy/client
+        run: |
+          set -euo pipefail
+          docker build -f ../../Dockerfile --build-arg VERSION=0.0.2 --build-arg BUILD_COMMIT=${{ github.sha }} \
+            --build-arg CI_LICENCE_KEY=true -t kynexone/kynexone-api:0.0.2 ../..
+          docker tag kynexone/kynexone-web:0.0.1 kynexone/kynexone-web:0.0.2
+          scripts/upgrade.sh 0.0.2
+          curl -sfk --resolve "$KYNEXONE_DOMAIN:443:127.0.0.1" "https://$KYNEXONE_DOMAIN/health/live" | tee /tmp/live.json
+          grep -q '"version":"0.0.2"' /tmp/live.json
+
+      - name: Installation logs on failure
+        if: failure()
+        working-directory: deploy/client
+        run: docker compose logs --no-color --tail=200 || true
+
   build-image:
     name: Build & push backend image (GHCR)
     runs-on: ubuntu-latest
     # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
     # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
     # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
-    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate]
+    needs: [backend-tests, frontend-typecheck, frontend-build, browser-pilot, schema-gates, secret-scan, dependency-scan, chrome-security-gate, client-install]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
       contents: read
@@ -985,13 +1130,12 @@ jobs:
         run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
       - name: Build & push image
         run: |
-          docker build -f ./Dockerfile -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" .
-          docker push "$IMAGE:latest"
+          # Tagged with the commit only, never `latest`: an installation names an exact version, and
+          # released images (vMAJOR.MINOR.PATCH) come from .github/workflows/release.yml.
+          docker build -f ./Dockerfile --build-arg BUILD_COMMIT=${{ github.sha }} -t "$IMAGE:${{ github.sha }}" .
           docker push "$IMAGE:${{ github.sha }}"
-          echo "Pushed $IMAGE:${{ github.sha }} and :latest"
-          # Immutable digest, recorded so a rollback names an exact artifact rather than a tag that
-          # has since moved. Render currently builds from the branch and does NOT consume this image
-          # — see docs/REPOSITORY_AND_DEPLOYMENT_GOVERNANCE.md, "Known gap: image is built, not deployed".
+          echo "Pushed $IMAGE:${{ github.sha }}"
+          # Immutable digest, recorded so a rollback names an exact artifact rather than a tag.
           digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:${{ github.sha }}" 2>/dev/null || echo "unknown")
           echo "Image digest: $digest"
           echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"

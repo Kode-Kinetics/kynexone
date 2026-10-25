@@ -43,22 +43,22 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
-    // Independent of the `setup` project, so a failing platform-UI login (the setup project drives the
-    // platform login FORM) cannot suppress the tenant browser proof. It is NOT independent of the
-    // platform owner itself any more: the world it logs in to only exists because the bootstrap created
-    // it as that owner, and the global preflight (F07) refuses to run any lane unless the owner this
-    // process presents authenticates against this API and the world is the verified one.
+    // Independent of the `setup` project, so a failing persona login there cannot suppress the
+    // pilot's browser proof. The global preflight (F07) still refuses to run any lane unless the
+    // organisation administrator authenticates against this API and the world is the verified one.
     {
       name: 'tenant-pilot',
       testMatch: /pilot-critical\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },
-    // Authenticates once; every platform spec reuses the session. Prevents the suite from
-    // tripping the API's platform-login rate limit (default 5/window) with a login per test.
-    { name: 'setup', testMatch: /auth\.setup\.ts/, teardown: 'cleanup' },
+    // Authenticates every persona once; specs reuse the sessions. Prevents the suite from tripping
+    // the API's login rate limit with a login per test.
+    // Its teardown, `module-switches`, runs after every browser spec: it switches organisation-wide
+    // modules off and back on, which no concurrently running spec may observe.
+    { name: 'setup', testMatch: /auth\.setup\.ts/, teardown: 'module-switches' },
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'], storageState: 'e2e/.auth/platform.json' },
+      use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
       // A project-level testIgnore REPLACES the top-level one rather than merging with it, so the
       // root `testIgnore: /security-gate\//` above stops applying the moment this array exists.
@@ -66,7 +66,7 @@ export default defineConfig({
       // which depend on fixtures only the dedicated chrome-security-gate job provisions, and they
       // fail in milliseconds. Keep these two lists in sync.
       testIgnore: [
-        /auth\.setup\.ts/, /fixture\.teardown\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//,
+        /auth\.setup\.ts/, /pilot-critical\.spec\.ts/, /security-gate\//, /module-switches\.spec\.ts/,
         // …and e2e/evidence/, which is exactly the bug this comment warns about happening again:
         // the root testIgnore above stops applying here, so without this line the evidence lane's
         // payroll story is collected into THIS project, with retries:1, ahead of gosi-filing.
@@ -92,14 +92,14 @@ export default defineConfig({
     // Opt out with `--project=...` selection; it is NOT in the default critical path for CI gating
     // until it has a clean baseline.
     {
+      name: 'module-switches',
+      testMatch: /module-switches\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
       name: 'mobile-pilot',
       testMatch: /pilot-critical\.spec\.ts/,
       use: { ...devices['Pixel 7'] },
-    },
-    {
-      name: 'cleanup',
-      testMatch: /fixture\.teardown\.ts/,
-      use: { ...devices['Desktop Chrome'], storageState: 'e2e/.auth/platform.json' },
     },
   ],
 });

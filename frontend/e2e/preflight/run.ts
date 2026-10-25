@@ -7,18 +7,18 @@
  *   target  Before anything writes. The environment contract is complete; the frontend and API are
  *           disposable hosts (checked BEFORE any request, so fixture credentials are never sent to a
  *           deployed host); both are up and are the expected build; the frontend proxies to the same
- *           API and database the bootstrap talks to; the database is not production; the platform
- *           owner authenticates. Run by CI as its own first step, and by the bootstrap before it
- *           provisions anything.
+ *           API and database the bootstrap talks to; the database is not production; the organisation
+ *           administrator authenticates. Run by CI as its own first step, and by the bootstrap before
+ *           it provisions anything.
  *
- *   world   After the bootstrap. Everything in `target`, plus: every declared tenant exists with the
- *           id the bootstrap recorded; every legal entity exists; the live role catalog is the one
+ *   world   After the bootstrap. Everything in `target`, plus: the organisation is the one the
+ *           bootstrap recorded; every legal entity exists; the live role catalog is the one
  *           AuthSeeder.cs defines; every bootstrap persona signs in and holds exactly its declared
  *           role, scope, employee link and catalog permissions. Writes e2e/.auth/preflight.json.
  *
  *   lane    The globalSetup of every browser lane. Everything in `target` (so a lane can never start
  *           against a different stack), the old readiness floor, a match against the `world` record,
- *           and a LIVE re-check of the world itself: every declared tenant still exists and was not
+ *           and a LIVE re-check of the world itself: the organisation still exists and was not
  *           re-created after the world was verified, every legal entity exists, and the live role
  *           catalog is still AuthSeeder's. Persona logins are not repeated here; each lane's own setup
  *           project verifies every persona it signs in against the same contract, at the moment it
@@ -26,7 +26,7 @@
  *
  * ── What the record holds, and why only that ─────────────────────────────────────────────────
  * The record is the EXPECTED world, computed from the environment and this checkout alone (URLs,
- * expected commit and database, platform email, the declared tenants and personas, a hash of
+ * expected commit and database, the organisation administrator, the declared clusters and personas, a hash of
  * AuthSeeder.cs) plus the local time the world passed. Nothing a server returned is written to disk.
  * The lane recomputes the expected world and compares; the live stack is then checked against the
  * same expectations directly, so a lane still cannot run against a world other than the one verified.
@@ -41,7 +41,7 @@ import { dirname } from 'node:path';
 import { E2E_ENV, isCi, resolveTarget, type Env } from '../identity/env';
 import { AUTH_SEEDER_PATH, expectedPermissions, loadRoleCatalog, type RoleCatalog } from '../identity/role-catalog';
 import {
-  PERSONAS, PLATFORM_EMAIL, PLATFORM_PASSWORD, TENANTS, WORLD_MANIFEST,
+  ALL_COMPANY_CODES, ORGANISATION, ORGANISATION_ADMIN, PERSONAS, TENANTS, WORLD_MANIFEST,
   type FixtureTenant, type Persona, type WorldManifest,
 } from '../world';
 import {
@@ -64,8 +64,8 @@ export interface ExpectedWorld {
   apiBaseUrl: string;
   expectedCommit: string | null;
   expectedDatabase: string | null;
-  platformEmail: string;
-  /** `<slug>: <company codes>` for every declared tenant. */
+  organisationAdmin: string;
+  /** `<slug>: <company codes>` for every declared cluster. */
   tenants: string[];
   /** Keys of every persona the bootstrap provisions. */
   personas: string[];
@@ -145,7 +145,7 @@ export function expectedWorld(env: Env = process.env): ExpectedWorld {
     apiBaseUrl,
     expectedCommit: expectedCommitFrom(env),
     expectedDatabase: env[E2E_ENV.expectedDatabase]?.trim() || null,
-    platformEmail: PLATFORM_EMAIL,
+    organisationAdmin: ORGANISATION_ADMIN.email,
     tenants: TENANTS.map((t) => `${t.slug}: ${t.companies.map((c) => c.code).join(', ')}`),
     personas: bootstrapPersonas().map((p) => p.key).sort(),
     authSeederSha256,
@@ -170,12 +170,14 @@ interface TargetContext {
   apiCommit: string | null;
   frontendCommit: string | null;
   database: DatabaseIdentity | null;
-  platformToken: string | null;
+  /** The organisation administrator's token: the only identity that may read the readiness details. */
+  adminToken: string | null;
+  organisationId: string | null;
   activeTenants: number | null;
 }
 
-function databaseFrom(health: any): DatabaseIdentity | null {
-  const db = health?.components?.database;
+function databaseFrom(details: any): DatabaseIdentity | null {
+  const db = details?.database;
   if (!db || (db.name == null && db.host == null)) return null;
   return { name: db.name ?? null, host: db.host ?? null };
 }
@@ -184,7 +186,7 @@ async function checkTarget(env: Env): Promise<TargetContext> {
   const { baseUrl, apiBaseUrl } = resolveTarget(env);
   const ctx: TargetContext = {
     findings: [], baseUrl, apiBaseUrl, apiCommit: null, frontendCommit: null, database: null,
-    platformToken: null, activeTenants: null,
+    adminToken: null, organisationId: null, activeTenants: null,
   };
   const f = ctx.findings;
 
@@ -205,8 +207,8 @@ async function checkTarget(env: Env): Promise<TargetContext> {
       `GET ${apiBaseUrl}/health/live → ${describe(live)}. Expected 200 with service "zayra-api".`));
     return ctx;
   }
-  // The anonymous probe answers status + pendingMigrations only. The tenant count is operator
-  // detail and is read from /health/ready/details once the platform owner has signed in (step 6).
+  // The anonymous probe answers status + pendingMigrations only. The organisation count and the
+  // database identity are administrator detail, read from /health/ready/details in step 6.
   const ready = await http('GET', `${apiBaseUrl}/health/ready`);
   const health = ready.json ?? {};
   if (ready.status === 200 && health.status === 'ready' && health.pendingMigrations === 0) {
@@ -240,62 +242,61 @@ async function checkTarget(env: Env): Promise<TargetContext> {
     inCi: isCi(env),
   }));
 
-  // 5. The platform owner authenticates against THIS API — the F07 check.
-  if (!PLATFORM_EMAIL || !PLATFORM_PASSWORD) return ctx; // already reported by checkEnvironment
-  const login = await http('POST', `${apiBaseUrl}/api/platform/auth/login`, {
-    body: { email: PLATFORM_EMAIL, password: PLATFORM_PASSWORD },
+  // 5. The organisation administrator authenticates against THIS API — the F07 check. The
+  //    organisation exists before any lane runs: `--setup-organisation` is the only door.
+  const login = await http('POST', `${apiBaseUrl}/api/auth/login`, {
+    body: { email: ORGANISATION_ADMIN.email, password: ORGANISATION_ADMIN.password },
   });
-  const token = login.json?.token ?? login.json?.accessToken;
+  const token = login.json?.accessToken ?? login.json?.token;
   if (login.status === 200 && token) {
-    ctx.platformToken = token as string;
-    f.push(pass('platform owner authenticates', `${PLATFORM_EMAIL} → 200`));
+    ctx.adminToken = token as string;
+    ctx.organisationId = login.json?.user?.tenantId ?? null;
+    f.push(pass('organisation administrator authenticates', `${ORGANISATION_ADMIN.email} → 200`));
   } else {
-    f.push(fail('platform owner authenticates',
-      `POST ${apiBaseUrl}/api/platform/auth/login as ${PLATFORM_EMAIL} → ${describe(login)}.\n`
+    f.push(fail('organisation administrator authenticates',
+      `POST ${apiBaseUrl}/api/auth/login as ${ORGANISATION_ADMIN.email} → ${describe(login)}.\n`
       + (login.status === 429
-        ? '      That is the platform login limiter, not a wrong password. Wait a minute and retry.'
-        : '      The API under test was started with a different platform owner than this process presents.\n'
-          + `      PlatformOwnerBootstrap creates it once, at API boot, from ${E2E_ENV.platformEmail}/${E2E_ENV.platformPassword}\n`
-          + '      (plus PLATFORM_ADMIN_BOOTSTRAP=true on Production-like deployments). Export the SAME two values to\n'
-          + '      the API process and to this one — in CI they are generated once and written to GITHUB_ENV.')));
+        ? '      That is the login limiter, not a wrong password. Wait a minute and retry.'
+        : '      The organisation does not exist, or was set up with another administrator or password.\n'
+          + '      Set it up with e2e/bootstrap/setup-organisation.sh (CI: "Set up the organisation"), which runs\n'
+          + '      --setup-organisation with ORGANISATION_ADMIN from e2e/world.ts and E2E_GROUP_PASSWORD.')));
     return ctx;
   }
 
-  // 5b. Readiness detail (tenant count) — platform operators only since it stopped being public.
-  const details = await http('GET', `${apiBaseUrl}/health/ready/details`, { token: ctx.platformToken });
+  // 6. Readiness detail: the organisation count and the database the API is connected to (name and
+  //    host only) — organisation administrators only.
+  const details = await http('GET', `${apiBaseUrl}/health/ready/details`, { token: ctx.adminToken });
   ctx.activeTenants = details.status === 200 && typeof details.json?.activeTenants === 'number'
     ? details.json.activeTenants : null;
-
-  // 6. The database the API is connected to — only a platform operator may see its name and host.
-  const platformHealth = await http('GET', `${apiBaseUrl}/api/platform/health`, { token: ctx.platformToken });
-  ctx.database = platformHealth.status === 200 ? databaseFrom(platformHealth.json) : null;
+  ctx.database = details.status === 200 ? databaseFrom(details.json) : null;
   f.push(...checkDatabase(ctx.database, {
     expectedName: env[E2E_ENV.expectedDatabase]?.trim() || undefined,
     hostAllowlist: databaseHostAllowlistFrom(env),
   }));
 
   // 7. The frontend's /api proxy reaches the same API and the same database. A token minted directly
-  //    by the API is only accepted through the proxy when both sides share signing key and session store.
-  const viaProxy = await http('GET', `${baseUrl}/api/platform/health`, { token: ctx.platformToken });
-  const proxied = viaProxy.status === 200 ? databaseFrom(viaProxy.json) : null;
-  f.push(proxied && ctx.database && proxied.name === ctx.database.name && proxied.host === ctx.database.host
-    ? pass('frontend proxies to the same API and database', `${ctx.database.name} on ${ctx.database.host}`)
+  //    by the API is only accepted through the proxy when both sides share the signing key and the
+  //    session store (sessions live in the database), and it must name the same organisation.
+  const viaProxy = await http('GET', `${baseUrl}/api/auth/me`, { token: ctx.adminToken });
+  const proxiedOrganisation = viaProxy.status === 200 ? viaProxy.json?.tenantId ?? null : null;
+  f.push(proxiedOrganisation && proxiedOrganisation === ctx.organisationId
+    ? pass('frontend proxies to the same API and database', `organisation ${proxiedOrganisation}`)
     : fail('frontend proxies to the same API and database',
-      `GET ${baseUrl}/api/platform/health with a token from ${apiBaseUrl} → ${describe(viaProxy)}. `
+      `GET ${baseUrl}/api/auth/me with a token from ${apiBaseUrl} → ${describe(viaProxy)}. `
       + 'The browser would talk to a different API or database from the one the bootstrap provisioned.'));
   return ctx;
 }
 
 // ── World ─────────────────────────────────────────────────────────────────────────────────────
 
-const bootstrapPersonas = (): Persona[] => PERSONAS.filter((p) => p.provisionedBy === 'bootstrap');
+const bootstrapPersonas = (): Persona[] => PERSONAS;
 
 async function login(apiBaseUrl: string, persona: Persona, env: Env): Promise<Response> {
   const pacing = Number(env[E2E_ENV.loginPacingMs] ?? 0) || 0;
   for (let attempt = 1; ; attempt++) {
     if (pacing) await sleep(pacing);
     const res = await http('POST', `${apiBaseUrl}/api/auth/login`, {
-      body: { email: persona.email, password: persona.password, tenantSlug: persona.tenantSlug },
+      body: { email: persona.email, password: persona.password },
     });
     if (res.status !== 429 || attempt >= 8) return res;
     // The limiter is respected, never raised: wait out the window and try again.
@@ -310,22 +311,20 @@ async function readManifest(): Promise<WorldManifest | null> {
 
 interface LiveTenant { id: string; createdAtUtc: string | null }
 
+/**
+ * The one organisation, as each declared cluster sees it: every cluster lives in it, so each maps to
+ * the same id and creation time (read from the installation's licence view).
+ */
 async function liveTenants(ctx: TargetContext, f: Finding[]): Promise<Record<string, LiveTenant>> {
   const found: Record<string, LiveTenant> = {};
-  const res = await http('GET', `${ctx.apiBaseUrl}/api/platform/tenants`, { token: ctx.platformToken! });
-  const rows: any[] = Array.isArray(res.json) ? res.json : res.json?.items ?? [];
-  if (res.status !== 200) {
-    f.push(fail('declared tenants exist', `GET /api/platform/tenants → ${describe(res)}`));
+  if (!ctx.organisationId) {
+    f.push(fail('the organisation exists', 'the administrator session named no organisation'));
     return found;
   }
-  for (const tenant of TENANTS) {
-    const row = rows.find((t) => t.slug === tenant.slug);
-    if (row) found[tenant.slug] = { id: String(row.id), createdAtUtc: row.createdAtUtc ?? null };
-  }
-  const missing = TENANTS.filter((t) => !found[t.slug]).map((t) => t.slug);
-  f.push(missing.length
-    ? fail('declared tenants exist', `missing: ${missing.join(', ')}. Run the bootstrap.`)
-    : pass('declared tenants exist', TENANTS.map((t) => t.slug).join(', ')));
+  const licence = await http('GET', `${ctx.apiBaseUrl}/api/organisation-admin/licence`, { token: ctx.adminToken! });
+  const createdAtUtc = licence.status === 200 ? licence.json?.organisationCreatedAtUtc ?? null : null;
+  for (const tenant of TENANTS) found[tenant.slug] = { id: ctx.organisationId, createdAtUtc };
+  f.push(pass('the organisation exists', `${ORGANISATION.slug} = ${ctx.organisationId}`));
   return found;
 }
 
@@ -354,7 +353,10 @@ function loadCatalog(f: Finding[]): RoleCatalog | null {
 async function checkTenantInstall(
   ctx: TargetContext, tenant: FixtureTenant, token: string, catalog: RoleCatalog, f: Finding[],
 ): Promise<void> {
-  const declaredCodes = tenant.companies.map((c) => c.code);
+  // The cluster administrator sees its cluster's companies; the organisation administrator, all of them.
+  const declaredCodes = tenant.admin.email === ORGANISATION_ADMIN.email
+    ? ALL_COMPANY_CODES
+    : tenant.companies.map((c) => c.code);
   const companies = await http('GET', `${ctx.apiBaseUrl}/api/companies?page=1&pageSize=100`, { token });
   const rows: any[] = Array.isArray(companies.json) ? companies.json : companies.json?.items ?? [];
   const codes = rows.map((c) => String(c.legalNameEn ?? c.LegalNameEn ?? '')).sort();
@@ -413,8 +415,7 @@ async function checkWorld(ctx: TargetContext, env: Env): Promise<boolean> {
   if (!catalog) return false;
 
   for (const tenant of TENANTS) {
-    const personas = bootstrapPersonas().filter((p) => p.tenantSlug === tenant.slug);
-    const declaredCodes = tenant.companies.map((c) => c.code);
+    const personas = PERSONAS.filter((p) => p.tenantSlug === tenant.slug);
     for (const persona of personas) {
       const res = await login(ctx.apiBaseUrl, persona, env);
       const user = res.json?.user ?? {};
@@ -430,15 +431,16 @@ async function checkWorld(ctx: TargetContext, env: Env): Promise<boolean> {
       };
       let expected: string[];
       try {
-        expected = expectedPermissions(catalog, [persona.role!]);
+        expected = expectedPermissions(catalog, [persona.role]);
       } catch (error) {
         f.push(fail(`persona ${persona.email}: role exists in AuthSeeder`, error instanceof Error ? error.message : String(error)));
         continue;
       }
       f.push(...checkPersonaSession({
-        key: persona.key, email: persona.email, tenantSlug: tenant.slug, role: persona.role!,
-        scope: persona.scope === 'companies' ? 'companies' : 'group', companyCodes: persona.companyCodes,
-        employeeLinked: persona.employeeLinked, tenantCompanyCodes: declaredCodes, expectedPermissions: expected,
+        key: persona.key, email: persona.email, tenantSlug: tenant.slug, organisationSlug: ORGANISATION.slug,
+        role: persona.role, scope: persona.scope === 'companies' ? 'companies' : 'group',
+        companyCodes: persona.companyCodes, employeeLinked: persona.employeeLinked,
+        tenantCompanyCodes: ALL_COMPANY_CODES, expectedPermissions: expected,
       }, session));
 
       const token = tokenOf(res);
@@ -467,19 +469,19 @@ async function checkLane(ctx: TargetContext, env: Env): Promise<void> {
   }
 
   // 1. The lane is set up for the same world that passed: same URLs, expected build and database,
-  //    platform owner, tenants, personas and role catalog source.
+  //    organisation administrator, clusters, personas and role catalog source.
   const diff = expectedWorldDiff(record.expected, expectedWorld(env));
   f.push(diff.length
     ? fail('this world passed the world preflight',
       `${PREFLIGHT_RECORD} (verified ${record.verifiedAtUtc}) was verified for a different world:\n      ${diff.join('\n      ')}`)
     : pass('this world passed the world preflight',
       `verified ${record.verifiedAtUtc}: ${record.expected.personas.length} personas across ${record.expected.tenants.length} tenants`));
-  if (diff.length || !ctx.platformToken) return;
+  if (diff.length || !ctx.adminToken) return;
 
   // 2. And the live stack still IS that world. The target checks above already proved the URLs, the
-  //    builds, the database and the platform owner live; here the tenants must still exist and must
-  //    predate the verification (a database re-provisioned since would show newer tenants), and each
-  //    tenant's legal entities and role catalog are re-read from the API.
+  //    builds, the database and the organisation administrator live; here the organisation must still
+  //    exist and must predate the verification (a database re-provisioned since would show a newer one),
+  //    and each cluster's legal entities and the role catalog are re-read from the API.
   const verifiedAt = Date.parse(record.verifiedAtUtc);
   const tenants = await liveTenants(ctx, f);
   const recreated = Object.entries(tenants)

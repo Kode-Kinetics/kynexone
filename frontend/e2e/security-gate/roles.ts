@@ -20,21 +20,21 @@ import {
   ALMARAI_AUDITOR, ALMARAI_BAKERY_HR, ALMARAI_COMPLIANCE, ALMARAI_DAIRY_HR, ALMARAI_DAIRY_PAYROLL,
   ALMARAI_FINANCE, ALMARAI_HR, ALMARAI_HR_ASSISTANT, ALMARAI_HR_OFFICER, ALMARAI_KIOSK, ALMARAI_LOAN_FINANCE, ALMARAI_OWNER,
   ALMARAI_PAYROLL_MANAGER, ALMARAI_RECRUITER, ALMARAI_SCOPED_ADMIN, ALMARAI_SLUG, GROUP_PASSWORD,
-  INTELLIFLOW_EMP1, INTELLIFLOW_MANAGER, INTELLIFLOW_SLUG, INTELLIFLOW_SUPERVISOR, PLATFORM_EMAIL,
-  PLATFORM_PASSWORD, type FixtureUser,
+  INTELLIFLOW_EMP1, INTELLIFLOW_MANAGER, INTELLIFLOW_SLUG, INTELLIFLOW_SUPERVISOR, type FixtureUser,
 } from '../world';
 
 export const BASE_URL = resolveTarget().baseUrl;
 
 /**
- * The multi-company group tenant. It is no longer seeded by anything — e2e/bootstrap/provision.ts
- * creates it, its five companies and every identity below through the platform-admin API, and the
- * declaration lives in e2e/world.ts so this file and e2e/helpers.ts cannot drift apart again.
+ * The group cluster of the one organisation. It is not seeded by anything — `--setup-organisation`
+ * creates the organisation and its administrator, e2e/bootstrap/provision.ts creates its five
+ * companies and every identity below through the organisation's own API, and the declaration lives
+ * in e2e/world.ts so this file and e2e/helpers.ts cannot drift apart again.
  */
 export const GROUP_SLUG = ALMARAI_SLUG;
-export { GROUP_PASSWORD, PLATFORM_EMAIL, PLATFORM_PASSWORD };
+export { GROUP_PASSWORD };
 
-export type Scope = 'group' | 'company' | 'companies' | 'platform';
+export type Scope = 'group' | 'company' | 'companies';
 
 export interface RoleFixture {
   /** Stable key — also the storage-state filename. */
@@ -42,10 +42,10 @@ export interface RoleFixture {
   label: string;
   email: string;
   password: string;
-  /** null for the platform operator, which authenticates against the platform audience. */
-  tenantSlug: string | null;
-  /** The tenant role this identity holds (AuthSeeder name); null for the platform operator. */
-  role: string | null;
+  /** The persona's cluster in e2e/world.ts (a name; logins send no workspace). */
+  tenantSlug: string;
+  /** The role this identity holds (AuthSeeder name). */
+  role: string;
   scope: Scope;
   /** Company code this identity is confined to, when scope === 'company'. */
   companyCode?: string;
@@ -78,50 +78,41 @@ const tenantRole = (
  * "real reporting linkage" for them; the bootstrap has never created one.)
  */
 export const ROLES: RoleFixture[] = [
-  {
-    key: 'platform-admin',
-    label: 'Platform Admin',
-    email: PLATFORM_EMAIL,
-    password: PLATFORM_PASSWORD,
-    tenantSlug: null,
-    role: null,
-    scope: 'platform',
-    mustNotReach: ['tenant HR administration outside controlled impersonation'],
-  },
   tenantRole('tenant-owner', 'Tenant Owner / Admin (group)', ALMARAI_OWNER, GROUP_SLUG, 'group',
-    ['platform administration']),
-  tenantRole('group-hr', 'Group HR Director', ALMARAI_HR, GROUP_SLUG, 'group', ['platform administration']),
+    ['the retired platform console']),
+  tenantRole('group-hr', 'Group HR Director', ALMARAI_HR, GROUP_SLUG, 'group', ['the retired platform console']),
   tenantRole('company-hr-dairy', 'Company HR — ALM-DAIRY-KSA', ALMARAI_DAIRY_HR, GROUP_SLUG, 'company',
-    ['ALM-BAKERY-KSA data', 'platform administration']),
+    ['ALM-BAKERY-KSA data', 'the retired platform console']),
   tenantRole('company-hr-bakery', 'Company HR — ALM-BAKERY-KSA', ALMARAI_BAKERY_HR, GROUP_SLUG, 'company',
-    ['ALM-DAIRY-KSA data', 'platform administration']),
+    ['ALM-DAIRY-KSA data', 'the retired platform console']),
   tenantRole('payroll-maker', 'Payroll Maker (Payroll Officer, ALM-DAIRY-KSA)', ALMARAI_DAIRY_PAYROLL, GROUP_SLUG,
     'company', ['approver/checker actions', 'sibling-company payroll']),
   tenantRole('payroll-checker', 'Payroll Checker / Finance Approver', ALMARAI_FINANCE, GROUP_SLUG, 'group',
-    ['platform administration']),
+    ['the retired platform console']),
   tenantRole('loan-finance', 'Loan Finance Operator', ALMARAI_LOAN_FINANCE, GROUP_SLUG, 'group',
-    ['payroll administration', 'platform administration']),
+    ['payroll administration', 'the retired platform console']),
   tenantRole('auditor', 'Auditor (read-only)', ALMARAI_AUDITOR, GROUP_SLUG, 'group',
-    ['any write', 'platform administration']),
+    ['any write', 'the retired platform console']),
   tenantRole('scoped-admin', 'Selected-companies admin (2 of 5)', ALMARAI_SCOPED_ADMIN, GROUP_SLUG, 'companies',
-    ['the 3 companies not granted', 'platform administration']),
+    ['the 3 companies not granted', 'the retired platform console']),
   // ── The rest of the system-role catalog (full-role-matrix.spec.ts) ──────────────────────────
   tenantRole('payroll-manager', 'Payroll Manager', ALMARAI_PAYROLL_MANAGER, GROUP_SLUG, 'group',
-    ['platform administration', 'HR-only employee mutation']),
+    ['the retired platform console', 'HR-only employee mutation']),
   tenantRole('hr-officer', 'HR Officer', ALMARAI_HR_OFFICER, GROUP_SLUG, 'group',
-    ['payroll approval', 'platform administration']),
+    ['payroll approval', 'the retired platform console']),
   tenantRole('compliance-officer', 'Compliance Officer', ALMARAI_COMPLIANCE, GROUP_SLUG, 'group',
-    ['payroll mutation', 'platform administration']),
+    ['payroll mutation', 'the retired platform console']),
   tenantRole('recruiter', 'Recruiter', ALMARAI_RECRUITER, GROUP_SLUG, 'group',
-    ['payroll administration', 'platform administration']),
+    ['payroll administration', 'the retired platform console']),
   tenantRole('hr-assistant', 'HR Assistant', ALMARAI_HR_ASSISTANT, GROUP_SLUG, 'group',
     ['employee mutation', 'payroll administration']),
   tenantRole('kiosk-operator', 'Kiosk Operator', ALMARAI_KIOSK, GROUP_SLUG, 'group',
     ['general HR administration', 'payroll administration']),
-  tenantRole('manager', 'Manager (IntelliFlow, not employee-linked)', INTELLIFLOW_MANAGER, INTELLIFLOW_SLUG, 'group',
+  // IntelliFlow identities are confined to the INTELLIFLOW-KSA company of the one organisation.
+  tenantRole('manager', 'Manager (IntelliFlow, not employee-linked)', INTELLIFLOW_MANAGER, INTELLIFLOW_SLUG, 'company',
     ['payroll administration', 'tenant administration']),
   tenantRole('supervisor', 'Supervisor (IntelliFlow, not employee-linked)', INTELLIFLOW_SUPERVISOR, INTELLIFLOW_SLUG,
-    'group', ['payroll administration', 'tenant administration']),
+    'company', ['payroll administration', 'tenant administration']),
   tenantRole('employee', 'Employee self-service (IntelliFlow, employee-linked)', INTELLIFLOW_EMP1, INTELLIFLOW_SLUG,
     'company', ['other employee records', 'payroll administration', 'tenant administration']),
 ];

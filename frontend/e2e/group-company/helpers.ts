@@ -11,7 +11,7 @@
  *   a surface is not present yet — callers skip with a clear message.
  * • Where the DOM is uncertain we prefer API assertions via APIRequestContext.
  *
- * Test data: provisioned by e2e/bootstrap/provision.ts through the platform-admin API. There is no
+ * Test data: provisioned by e2e/bootstrap/provision.ts through the organisation's own API. There is no
  * seeder any more — see docs/DATA_ENTRY_PATHS.md and e2e/world.ts, which declares every identity
  * this file names. Run the bootstrap before this suite or it fails, loudly.
  */
@@ -21,7 +21,7 @@ import {
   Page,
   Locator,
 } from '@playwright/test';
-import { platformSetupToken, tenantSetupSession } from '../helpers';
+import { tenantSetupSession } from '../helpers';
 import { collectAllPages, pageTotal } from '../paging';
 import {
   ALMARAI_COMPANY_CODES, ALMARAI_SLUG, GROUP_PASSWORD, INTELLIFLOW_ADMIN, INTELLIFLOW_SLUG,
@@ -62,13 +62,6 @@ export const ALMARAI_SIBLING_CODES = ['ALM-BAKERY-KSA', 'ALM-DIST-KSA', 'ALM-UAE
 export const DEFAULT_TENANT_SLUG = INTELLIFLOW_SLUG;
 export const DEFAULT_ADMIN_EMAIL = INTELLIFLOW_ADMIN.email;
 export const DEFAULT_ADMIN_PASSWORD = INTELLIFLOW_ADMIN.password;
-
-// ── Platform admin ───────────────────────────────────────────────────────────
-// From e2e/world.ts. This file used to default to `platform@kynexone.com` while
-// e2e/security-gate/roles.ts defaulted to `admin@platform.local`, so the two lanes authenticated as
-// different operators and neither could have been provisioned by one bootstrap.
-
-export { PLATFORM_EMAIL, PLATFORM_PASSWORD } from '../world';
 
 // ── Stack probing / suite skipping ────────────────────────────────────────────
 
@@ -167,17 +160,6 @@ export async function assertFixtureWorld(
   throw new Error(
     `Cannot authenticate ${probeEmail} against tenant '${slug}'.\n${MISSING_WORLD}`,
   );
-}
-
-/** Platform admin API login; returns null (with reason) when unavailable. */
-export async function tryPlatformApiLogin(
-  _api: APIRequestContext,
-): Promise<{ token: string } | null> {
-  try {
-    return { token: await platformSetupToken() };
-  } catch {
-    return null;
-  }
 }
 
 // ── Authenticated API helpers ─────────────────────────────────────────────────

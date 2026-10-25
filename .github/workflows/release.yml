@@ -1,0 +1,130 @@
+# A KynexOne release (implementation prompt WP15.4), from a tag vMAJOR.MINOR.PATCH:
+#   - the API, web and KynexBridge images, tagged with the version and the commit (never `latest`), pushed to GHCR;
+#   - the offline installation bundle (deploy/release/make-bundle.sh) with its checksum;
+#   - an SBOM per image, the dependency licence report and release notes;
+# all attached to a GitHub Release. Client installations take the bundle (offline) or the version (registry).
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Version and registry
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::Tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"; exit 1; }
+          {
+            echo "VERSION=$version"
+            echo "REGISTRY=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          } >> "$GITHUB_ENV"
+
+      # A release build NEVER trusts a CI licence key: no CI_LICENCE_KEY build argument here, and the
+      # key folder must be empty (it is git-ignored, so a clean checkout has none).
+      - name: Refuse a CI licence key
+        run: |
+          if ls backend-dotnet/Zayra.Api/Infrastructure/Licensing/Keys/ci/*.pem >/dev/null 2>&1; then
+            echo "::error::A CI licence key is present in the release checkout."; exit 1
+          fi
+
+      - name: Build the images
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile --build-arg VERSION="$VERSION" --build-arg BUILD_COMMIT="$GITHUB_SHA" \
+            -t "$REGISTRY/kynexone-api:$VERSION" -t "$REGISTRY/kynexone-api:sha-$GITHUB_SHA" .
+          docker build frontend --build-arg VERSION="$VERSION" --build-arg BUILD_COMMIT="$GITHUB_SHA" \
+            -t "$REGISTRY/kynexone-web:$VERSION" -t "$REGISTRY/kynexone-web:sha-$GITHUB_SHA"
+          docker build kynexbridge -t "$REGISTRY/kynexbridge:$VERSION" -t "$REGISTRY/kynexbridge:sha-$GITHUB_SHA"
+
+      - name: Push the images
+        run: |
+          set -euo pipefail
+          echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          for image in kynexone-api kynexone-web kynexbridge; do
+            docker push "$REGISTRY/$image:$VERSION"
+            docker push "$REGISTRY/$image:sha-$GITHUB_SHA"
+          done
+
+      - name: Offline installation bundle
+        run: deploy/release/make-bundle.sh "$VERSION" --registry "$REGISTRY" --out dist
+
+      - name: SBOM (API)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/kynexone-api:${{ env.VERSION }}
+          format: spdx-json
+          output-file: dist/kynexone-api-${{ env.VERSION }}.spdx.json
+          upload-artifact: false
+      - name: SBOM (web)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/kynexone-web:${{ env.VERSION }}
+          format: spdx-json
+          output-file: dist/kynexone-web-${{ env.VERSION }}.spdx.json
+          upload-artifact: false
+
+      - name: Dependency licence report
+        run: |
+          set -euo pipefail
+          mkdir -p licence-report
+          dotnet tool install --global nuget-license
+          dotnet restore backend-dotnet/Zayra.Api/Zayra.Api.csproj
+          nuget-license -i backend-dotnet/Zayra.Api/Zayra.Api.csproj -o JsonPretty -fo licence-report/nuget.json
+          for app in frontend mobile kynexbridge; do
+            if [ -f "$app/package-lock.json" ]; then
+              (cd "$app" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
+            else
+              (cd "$app" && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
+            fi
+            (cd "$app" && npx --yes license-checker-rseidelsohn@4.4.2 --production --json --out "../licence-report/npm-$app.json")
+          done
+          python3 scripts/licence_report.py licence-report
+          cp licence-report/licences.md "dist/licences-$VERSION.md"
+
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          if [ -f "docs/releases/$VERSION.md" ]; then
+            cp "docs/releases/$VERSION.md" dist/RELEASE_NOTES.md
+          else
+            previous="$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+            {
+              echo "# KynexOne $VERSION"
+              echo
+              echo "Images: \`$REGISTRY/kynexone-api:$VERSION\`, \`$REGISTRY/kynexone-web:$VERSION\`, \`$REGISTRY/kynexbridge:$VERSION\`."
+              echo "Offline bundle: \`kynexone-$VERSION.tar.gz\` (verify with its .sha256)."
+              echo
+              echo "## Changes"
+              git log --no-merges --format='- %s' "${previous:+$previous..}$GITHUB_REF_NAME"
+            } > dist/RELEASE_NOTES.md
+          fi
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --title "KynexOne $VERSION" --notes-file dist/RELEASE_NOTES.md \
+            dist/kynexone-"$VERSION".tar.gz dist/kynexone-"$VERSION".tar.gz.sha256 \
+            dist/*.spdx.json dist/licences-"$VERSION".md
