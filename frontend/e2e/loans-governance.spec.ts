@@ -82,7 +82,7 @@ test('employee sees own loan statement and can submit an eligible application', 
   });
   await expect(page.getByRole('heading', { name: 'My Loans', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Loan Payments', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Loan Policies', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Loan settings', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'View loan LN-001' }).click();
   await expect(page.getByRole('region', { name: 'Loan statement' })).toContainText('Overdue');
   await expect(page.getByRole('dialog').getByText('Step 1 — HR Manager · Approved · HR Reviewer')).toBeVisible();
@@ -140,7 +140,7 @@ test('HR sets the shortest repayment beside the longest on loan types and policy
     if (path.endsWith('/policies') && method === 'GET') return policy ? [policy] : [];
     if (path.endsWith('/policies') && method === 'POST') { policy = { ...body, id: 'policy-1', version: 1, createdAtUtc: '2026-10-23T00:00:00Z' }; return policy; }
   });
-  await page.getByRole('button', { name: 'Loan Types', exact: true }).click();
+  await page.goto('/setup?tab=loanTypes'); // loan types are configuration: a Setup section
   await page.getByRole('button', { name: 'New Loan Type' }).click();
   const typeDialog = page.getByRole('dialog');
   await typeDialog.getByPlaceholder('PERSONAL_LOAN').fill('HOUSING');
@@ -155,7 +155,7 @@ test('HR sets the shortest repayment beside the longest on loan types and policy
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(createdType.minInstallments).toBe(12); expect(createdType.maxInstallments).toBe(60);
 
-  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await page.goto('/setup?tab=loanPolicies'); // loan policies are configuration: a Setup section
   await page.getByRole('button', { name: 'New Policy Version', exact: true }).click();
   await page.getByLabel('Policy name', { exact: true }).fill('Housing advance policy');
   await page.getByLabel('Longest repayment (instalments)', { exact: true }).fill('48');
@@ -171,7 +171,7 @@ test('HR creates an immutable company policy version with its approval route', a
     if (path.endsWith('/policies') && method === 'GET') return policy ? [policy] : [];
     if (path.endsWith('/policies') && method === 'POST') { policy = { ...body, id: 'policy-1', version: 1, createdAtUtc: '2026-10-04T00:00:00Z' }; return policy; }
   });
-  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await page.goto('/setup?tab=loanPolicies'); // loan policies are configuration: a Setup section
   await expect(page.getByRole('region', { name: 'Loan types offered' })).toContainText('Personal');
   await page.getByRole('button', { name: 'New Policy Version', exact: true }).click();
   await page.getByLabel('Policy name', { exact: true }).fill('Employee welfare');
@@ -194,7 +194,7 @@ test('HR Director sees every loan policy edit control, enabled', async ({ page }
     if (path.endsWith('/policies')) return [];
     if (path === '/api/finance/loans/grade-limits') return [gradeRow];
   });
-  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await page.goto('/setup?tab=loanPolicies'); // loan policies are configuration: a Setup section
   await expect(page.getByRole('button', { name: 'New Policy Version', exact: true })).toBeEnabled();
   const offerings = page.getByRole('region', { name: 'Loan types offered' });
   await expect(offerings.getByRole('checkbox', { name: 'Offered' })).toBeEnabled();
@@ -208,7 +208,11 @@ for (const role of ['Finance', 'Finance Approver']) {
   test(`${role} gets no loan policy edit controls`, async ({ page }) => {
     const errors = await boot(page, role, () => undefined);
     await expect(page.getByRole('button', { name: 'Loans', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Loan Policies', exact: true })).toHaveCount(0);
+    // Finance keeps the loan types, advance policy and bonus types in Setup, but not the HR-owned loan policies.
+    await expect(page.getByRole('link', { name: 'Loan settings', exact: true })).toBeVisible();
+    await page.goto('/setup?tab=loanPolicies');
+    await expect(page.locator('#setup-section-heading')).toBeVisible();
+    await expect(page.locator('[data-module-section="loanPolicies"]')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'New Policy Version', exact: true })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'Loan types offered' })).toHaveCount(0);
     await expect(page.getByRole('region', { name: 'Limits by grade' })).toHaveCount(0);
@@ -334,7 +338,7 @@ test('a malformed offerings response shows the load error, not a false empty lis
     if (path === '/api/finance/loans/offerings') return { items: [] };                 // malformed: not a list
     if (path.endsWith('/policies')) return [];
   });
-  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await page.goto('/setup?tab=loanPolicies'); // loan policies are configuration: a Setup section
   const panel = page.getByRole('region', { name: 'Loan types offered' });
   await expect(panel.getByRole('alert')).toHaveText('Unable to load which loan types this company offers.');
   await expect(panel.getByText('No loan types yet', { exact: true })).toHaveCount(0);
@@ -380,7 +384,7 @@ test('a malformed loan-policies reply shows a failed load with Retry, never "No 
   const errors = await boot(page, 'HR Manager', path => {
     if (path === '/api/finance/loans/policies') return malformed ? { items: [] } : [];   // malformed: not a list
   });
-  await page.getByRole('button', { name: 'Loan Policies', exact: true }).click();
+  await page.goto('/setup?tab=loanPolicies'); // loan policies are configuration: a Setup section
   const failed = page.getByTestId('list-load-failed');
   await expect(failed).toContainText('This list could not be loaded');
   await expect(failed).toContainText('The server sent an unexpected reply.');

@@ -3,6 +3,7 @@ import { RefreshQueue } from './refreshQueue';
 import { isRefreshRefused } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from './clearSession';
 import { setSignInNotice, signInNoticeForRefreshRefusal } from '../lib/signInNotice';
+import { SUBSCRIPTION_ALERT_HREF, isOnPlanAndBilling } from '../lib/subscriptionAlert';
 
 // In the browser, use relative URLs so Next.js proxy handles CORS.
 // On the server (SSR), we need the absolute URL since there's no proxy.
@@ -97,16 +98,14 @@ client.interceptors.response.use(
       return Promise.reject(err);
     }
 
-    // 402 — subscription expired/inactive. Redirect tenant users to the tenant
-    // admin subscription alert, but NEVER from /tenant-admin itself: when the
-    // subscription is inactive the tenant-admin page's own calls also 402, so a
-    // self-redirect would loop infinitely. (Platform routes are already excluded
-    // by the guard above.)
+    // 402 — subscription expired/inactive. Redirect tenant users to Setup → Plan and billing with the subscription
+    // alert, but NEVER from Plan and billing itself: when the subscription is inactive that screen's own calls also
+    // 402, so a self-redirect would loop infinitely. (Platform routes are already excluded by the guard above.)
     const responseError = err.response?.data?.error;
     const isCompanyLimitRefusal = responseError === 'company_limit_reached';
     if (err.response?.status === 402 && !isCompanyLimitRefusal && typeof window !== 'undefined') {
-      if (!window.location.pathname.startsWith('/tenant-admin')) {
-        window.location.href = '/tenant-admin?alert=subscription';
+      if (!isOnPlanAndBilling(window.location.pathname, window.location.search)) {
+        window.location.href = SUBSCRIPTION_ALERT_HREF;
       }
       return Promise.reject(err);
     }

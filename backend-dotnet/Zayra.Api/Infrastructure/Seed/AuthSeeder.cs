@@ -413,6 +413,9 @@ public class AuthSeeder : IAuthSeeder
             ("attendance.kiosk", "Attendance", "Use kiosk-only attendance capture"),
             ("attendance.bulk_import", "Attendance", "Bulk import attendance data"),
             ("attendance.lock", "Attendance", "Lock/unlock attendance periods"),
+            // Setup → Attendance rules: what counts as late, an early exit or a half day. Admin (boot backfill), HR Manager and
+            // HR Director (their attendance.* prefix grant); existing tenants via migration GrantAttendancePolicyManage.
+            ("attendance.policy_manage", "Attendance", "Manage attendance rules (lateness, early exit, half day, working day)"),
             // Selfie attendance v2: HR opens the stored selfie behind a punch (audited, MFA). HR Director and HR Manager
             // get it through their attendance.* grant; the tenant's HR decides who else may.
             ("attendance.evidence.view", "Attendance", "View the stored selfie behind a punch (each view is audited)"),

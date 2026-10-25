@@ -24,8 +24,6 @@ const profile: CompanyProfile = {
   industry: 'Services',
   companySize: '51-200',
   strictEntityScope: true,
-  requireCostCenterForPayroll: true,
-  requireGradeForApprovalPolicy: true,
   sections: {
     org: true,
     leave: true,

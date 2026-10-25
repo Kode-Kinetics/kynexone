@@ -220,6 +220,14 @@ export interface ApprovalAuthority {
   isActive: boolean;
 }
 
+/** Who must use two-step sign-in: each person chooses / payroll, banking and access roles (default) / everyone. */
+export type MfaPolicy = 'Optional' | 'PrivilegedRoles' | 'Everyone';
+
+/** The company policy a settings payload stands for; an older payload with only `mfaRequired` reads the same way the server does. */
+export function effectiveMfaPolicy(settings: Pick<SecuritySetting, 'mfaPolicy' | 'mfaRequired'>): MfaPolicy {
+  return settings.mfaPolicy ?? (settings.mfaRequired ? 'Everyone' : 'PrivilegedRoles');
+}
+
 export interface SecuritySetting {
   id: string;
   tenantId: string;
@@ -235,9 +243,16 @@ export interface SecuritySetting {
   sessionTimeoutMinutes: number;
   refreshTokenExpiryDays: number;
   allowMultipleSessions: boolean;
+  /** Legacy flag, equal to mfaPolicy === 'Everyone'. Still sent so an older API keeps working. */
   mfaRequired: boolean;
+  /** The company two-step policy. Absent from an older API: derived from mfaRequired (see effectiveMfaPolicy). */
+  mfaPolicy?: MfaPolicy;
+  /** Why the company lets each person choose; required by the API when moving to 'Optional'. Write-only. */
+  mfaPolicyReason?: string;
   /** Hard cap: everyone signs in again after this many hours, even if active (1–168, default 12). */
   sessionMaxHours?: number;
+  /** How long a trusted browser skips the two-step code: 0 (off) to 90 days; 30 by default. */
+  mfaTrustedDeviceDays?: number;
   updatedAtUtc: string;
 }
 

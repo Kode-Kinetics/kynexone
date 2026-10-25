@@ -32,6 +32,8 @@ import { companyWizardRules } from './companyWizardRules';
 import { setupDataEntry } from './setupDataEntry';
 import { setupGuidedEntry } from './setupGuidedEntry';
 import { setupReview } from './setupReview';
+import { setupSections } from './setupSections';
+import { attendanceRules } from './attendanceRules';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
 
@@ -56,6 +58,8 @@ const en: Dict = {
   ...setupDataEntry.en,
   ...setupGuidedEntry.en,
   ...setupReview.en,
+  ...setupSections.en,
+  ...attendanceRules.en,
   ...gradePackage.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -1519,6 +1523,8 @@ const ar: Dict = {
   ...setupDataEntry.ar,
   ...setupGuidedEntry.ar,
   ...setupReview.ar,
+  ...setupSections.ar,
+  ...attendanceRules.ar,
   ...gradePackage.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",

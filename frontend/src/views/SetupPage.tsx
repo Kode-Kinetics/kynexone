@@ -4,8 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail } from 'lucide-react';
-import { AiSetupAssistant } from '../components/AiSetupAssistant';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail,
+  AlarmClockCheck, BadgeCheck, Blocks, CalendarClock, CalendarDays, Clock3, CreditCard, DatabaseBackup, FileSignature, Fingerprint, Gift, HeartPulse, HelpCircle, KeyRound, Languages, Lock, Palette, Percent, Scale, ScrollText, Star, Table2, TimerReset, UserCheck, UserCog, Wallet } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
@@ -20,10 +20,9 @@ import { useLocale } from '../contexts/LocaleContext';
 import { CompanyRowActions } from '../components/setup/CompanyRowActions';
 import { CompanyDraftsCard } from '../components/companySetup/CompanyDraftsCard';
 import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChooser';
-import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
+import { SetupEditorState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
-import dynamic from 'next/dynamic';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
 import { usePolicyIntake } from '../lib/policyIntake';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
@@ -94,7 +93,9 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
-import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSettingId, type SetupSettingSection } from '../lib/setupAreas';
+import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
+import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionId } from '../lib/setupModuleSections';
+import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
@@ -103,39 +104,47 @@ import { useReleaseA } from '../lib/releaseA';
 import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
 
-// Load the existing module only when its settings are opened in the workspace.
-const LeaveTypesTab = dynamic(() => import('./LeavePage').then(module => module.LeaveTypesTab));
-const PoliciesTab = dynamic(() => import('./LeavePage').then(module => module.PoliciesTab));
-const HolidayCalendarTab = dynamic(() => import('./LeavePage').then(module => module.HolidayCalendarTab));
-const OnboardingPolicyWorkspace = dynamic(() => import('../components/setup/OnboardingPolicyWorkspace').then(module => module.OnboardingPolicyWorkspace));
-
-type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | SetupSettingId;
-type SettingsTab = SetupSettingId;
-/** A navigation entry: a settings section, a setup tool, or one of the three Setup paths that share tab=aiSetup. */
-type SetupNavId = Exclude<Tab, 'aiSetup'> | 'guidedSetup' | 'allSetupAreas' | 'policyStarter';
+type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | SetupSectionId;
+/** A settings section: Setup's own, or a module's configuration (each module's editor, loaded when opened). */
+type SettingsTab = SetupSectionId;
+/** A navigation entry: a settings section, a setup tool, or one of the two Setup paths that share tab=aiSetup. */
+type SetupNavId = Exclude<Tab, 'aiSetup'> | 'guidedSetup' | 'allSetupAreas';
 function isSettingsTab(id: string): id is SettingsTab { return tabs.some(tab => tab.id === id); }
 
-const settingIcons: Record<SettingsTab, React.ElementType> = {
+const settingIcons: Record<SetupSettingId, React.ElementType> = {
   companies: Building2, branches: GitBranch, locations: MapPin, costCenters: Landmark, departments: Layers,
   grades: Award, designations: Tag, establishment: Users,
   gccSettings: Globe, statutoryRules: ShieldCheck, fiscalYears: Calendar, glMapping: BookOpen,
   masterData: Database, numberingRules: Hash, notificationTemplates: Bell, emailConfig: Mail, systemSettings: Settings, adminAuditLogs: ClipboardList,
 };
+const moduleIcons: Record<SetupModuleSectionId, React.ElementType> = {
+  openingBalances: DatabaseBackup,
+  leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock, attendanceRules: AlarmClockCheck,
+  overtimePolicies: TimerReset, attendanceDevices: Fingerprint,
+  benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText,
+  onboardingChecklists: ListChecks, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
+  taxPolicies: Percent, complianceProfiles: ShieldCheck, saudiCompliance: BadgeCheck, countryPayrollKeys: Globe,
+  users: Users, roles: UserCog, permissionMatrix: Table2, permissions: KeyRound, permissionGrantors: UserCheck,
+  approvalAuthorities: Award, approvalDelegations: GitBranch, signInSecurity: Lock, accessLog: ClipboardList,
+  localization: Languages, branding: Palette, helpText: HelpCircle, modules: Blocks, planBilling: CreditCard,
+};
 
-// Names, descriptions and groups come from the shared catalogue (lib/setupAreas.ts), which All setup areas reads too,
-// so a section has one name in the navigation, its header and the Studio.
-const tabs: (SetupSettingSection & { icon: React.ElementType })[] = SETUP_SETTING_SECTIONS.map(section => ({ ...section, icon: settingIcons[section.id] }));
+// Names, descriptions and groups come from the shared catalogues (lib/setupAreas.ts, lib/setupModuleSections.ts), which
+// All setup areas reads too, so a section has one name in the navigation, its header and the Studio.
+const tabs: (SetupSection & { icon: React.ElementType })[] = [
+  ...SETUP_SETTING_SECTIONS.map(section => ({ ...section, icon: settingIcons[section.id] })),
+  ...SETUP_MODULE_SECTIONS.map(section => ({ ...section, icon: moduleIcons[section.id] })),
+];
 
 /** The setup tools at the top of the navigation, keyed by their entry. */
 const toolSections: Record<Exclude<SetupNavId, SettingsTab>, { label: string; icon: React.ElementType }> = {
   guidedSetup: { label: SETUP_TOOLS.guidedSetup.label, icon: ListChecks },
   allSetupAreas: { label: SETUP_TOOLS.allSetupAreas.label, icon: LayoutGrid },
   importOrganization: { label: SETUP_TOOLS.importOrganization.label, icon: Upload },
-  policyStarter: { label: SETUP_TOOLS.policyStarter.label, icon: FileText },
   policyLibrary: { label: SETUP_TOOLS.policyLibrary.label, icon: ClipboardList },
 };
-const studioPaths: Record<'guidedSetup' | 'allSetupAreas' | 'policyStarter', SetupStudioPath> = {
-  guidedSetup: 'guided', allSetupAreas: 'configuration', policyStarter: 'policyStarter',
+const studioPaths: Record<'guidedSetup' | 'allSetupAreas', SetupStudioPath> = {
+  guidedSetup: 'guided', allSetupAreas: 'configuration',
 };
 
 // Small read-only field for the statutory pack profile panel.
@@ -2562,15 +2571,20 @@ export function SetupPage() {
   // One model decides who sees which section: the navigation, "Find a setting" and the ⌘K palette all read it —
   // including the readers' rules (Companies only when the server lists them for the role, GL & rates for any GL or
   // rates permission), so Payroll Manager and Finance get their section everywhere, not only in the nav.
-  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake });
+  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status });
   const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
   const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
   const tabParam = searchParams?.get('tab');
-  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : canReadGlAndRates ? 'glMapping' : 'companies';
+  // A reader opens on their first section: someone who only configures a module (loans, users, the workspace) lands
+  // on that module's settings, not on a Companies list they cannot read.
+  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : canReadGlAndRates ? 'glMapping'
+    : canReadCompanies ? 'companies' : visibleTabs[0]?.id ?? 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
-    : visibleTabs.some((tab) => tab.id === tabParam)
-      ? (tabParam as SettingsTab)
+    // A known section's address stays on that section even when this reader may not open it (any more): the section
+    // then says so, rather than silently showing another one (access revoked in another session, a shared link).
+    : tabParam && isSettingsTab(tabParam)
+      ? tabParam
       : fallbackTab;
   const [activeTab, setActiveTab] = useState<Tab>(requestedTab);
   const focusDepartmentId = searchParams?.get('department') ?? undefined;
@@ -2579,15 +2593,7 @@ export function SetupPage() {
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [editorDirty, setEditorDirty] = useState(false);
-  const [pendingStarterFiles, setPendingStarterFiles] = useState(false);
-  const clearDirty = useCallback(() => setEditorDirty(false), []);
-  // "Discard and leave" covers the selected-but-unuploaded files as well. Leaving the
-  // pending-file flag set kept the guard armed after the user had confirmed, so the
-  // company sync that follows a confirmed Back/Forward asked the same question again.
-  const discardSetupWork = useCallback(() => {
-    setEditorDirty(false);
-    setPendingStarterFiles(false);
-  }, []);
+  const discardSetupWork = useCallback(() => setEditorDirty(false), []);
   // A Guided setup deep link is the address this Setup visit arrived with, read once here, before the company scope is
   // reconciled into the URL. Every later return to Guided setup (navigation, search, Back) keeps `companyId` only as
   // the scope and opens the chooser.
@@ -2596,7 +2602,7 @@ export function SetupPage() {
   // This arrival has been read: a later visit is classified afresh (a followed link after a Back is a link again).
   useEffect(() => { setupDocumentLandingSeen = true; lastTraversedHref = null; }, []);
   const authorizedCompany = useSetupCompanyQuery();
-  const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, pendingStarterFiles, authorizedCompany);
+  const confirmLeave = useSetupNavigationGuard(editorDirty, discardSetupWork, false, authorizedCompany);
   const setupPath = resolveSetupPath(new URLSearchParams(searchParams?.toString()), {
     authorizedCompanyIds: new Set(authorizedCompanies.map(company => company.id)),
     selectedCompanyId: authorizedCompany,
@@ -2647,6 +2653,10 @@ export function SetupPage() {
     else { params.delete('area'); params.delete('setting'); }
     // Payroll accounting's tab request belongs to the link that made it, never to the next section's address.
     params.delete('glTab');
+    // The same holds for what Users and Plan and billing read from their link: a pre-filled search, the guided
+    // "create a user" dialog and where it returns to, and the subscription alert. Carried on, they would reopen the
+    // dialog or refilter the list when the section is next visited.
+    ['search', 'openCreate', 'purpose', 'returnTo', 'alert'].forEach(key => params.delete(key));
     if (authorizedCompany) params.set('companyId', authorizedCompany); else params.delete('companyId');
     return `/setup?${params.toString()}`;
   };
@@ -2654,6 +2664,8 @@ export function SetupPage() {
     landingCompanyLink.current = null;
     if (tab === activeTab) return;
     if (!confirmLeave()) return;
+    // After a module editor failed to render, leave with a full load (ModuleSetupSection: setupSectionHasFailed).
+    if (setupSectionHasFailed()) { window.location.assign(tabHref(tab)); return; }
     setActiveTab(tab);
     // The tab is shown immediately, so its history entry must exist immediately too.
     // router.push only writes the entry when its server round trip commits; a second
@@ -2667,18 +2679,11 @@ export function SetupPage() {
   // formerly available settings panel visible until the synchronization effect.
   const selectedTab = canWrite
     ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab)
-    : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
+    : isSettingsTab(activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration' && !configurationScopeUnavailable;
-  // Guided setup is the company setup chooser (create, or complete an existing company — Addendum A). The old
-  // studio stays reachable only as the "Policy starter", for what has no screen of its own (A7).
+  // Guided setup is the company setup chooser (create, or complete an existing company — Addendum A).
   const isGuided = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'guided';
-  const isStarter = canWrite && selectedTab === 'aiSetup' && setupPath.path === 'policyStarter';
-  const starterScope = authorizedCompany ?? 'group';
-  const setupPathHref = (path: SetupStudioPath) => {
-    const next = serializeSetupPath({ ...setupPath, path, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
-    return `/setup?${next.toString()}`;
-  };
   const recoverConfigurationScope = (companyId: string | null) => {
     setSelectedCompany(companyId);
     const next = serializeSetupPath({
@@ -2689,48 +2694,27 @@ export function SetupPage() {
     }, new URLSearchParams(searchParams?.toString()));
     router.replace(`/setup?${next.toString()}`, { scroll: false });
   };
-  const selectSetupPath = (path: SetupStudioPath) => {
-    if (path === setupPath.path) return;
-    const href = setupPathHref(path);
-    confirmLeave(href, () => {
-      setActiveTab('aiSetup');
-      router.push(href, { scroll: false });
-    });
-  };
-  const returnToWorkspace = () => {
-    if (pendingStarterFiles) {
-      selectSetupPath('configuration');
-      return;
-    }
-    // AiSetupAssistant invokes this callback only after saveForLater succeeds.
-    // The persisted draft no longer needs the dirty-value blocker.
-    clearDirty();
-    setActiveTab('aiSetup');
-    router.push(setupPathHref('configuration'), { scroll: false });
-  };
   const selectedSetting = tabs.find((tab) => tab.id === selectedTab) ?? tabs[0];
-  // Guided setup, All setup areas and the Policy starter share tab=aiSetup and differ by path. Guided setup and All
-  // setup areas open at their start (no area or setting), which is also where a plain click on the current entry
-  // returns to. The Policy starter keeps the area on screen, so its "Return to workspace" comes back to it.
+  // Guided setup and All setup areas share tab=aiSetup and differ by path. Both open at their start (no area or
+  // setting), which is also where a plain click on the current entry returns to.
   const studioHref = (entry: keyof typeof studioPaths) => {
-    const area = entry === 'policyStarter' ? setupPath.area : 'overview';
-    const next = serializeSetupPath({ ...setupPath, path: studioPaths[entry], area, setting: null, notice: undefined, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
+    const next = serializeSetupPath({ ...setupPath, path: studioPaths[entry], area: 'overview', setting: null, notice: undefined, needsReplace: false }, new URLSearchParams(searchParams?.toString()));
     return `/setup?${next.toString()}`;
   };
   const selectedNavId: SetupNavId = selectedTab === 'aiSetup'
-    ? (setupPath.path === 'guided' ? 'guidedSetup' : setupPath.path === 'policyStarter' ? 'policyStarter' : 'allSetupAreas')
+    ? (setupPath.path === 'guided' ? 'guidedSetup' : 'allSetupAreas')
     : selectedTab;
   const selectNavigation = (id: SetupNavId) => {
     // An in-page move: whatever the arrival named is no longer a deep link.
     landingCompanyLink.current = null;
-    if (id !== 'guidedSetup' && id !== 'allSetupAreas' && id !== 'policyStarter') {
+    if (id !== 'guidedSetup' && id !== 'allSetupAreas') {
       selectTab(id);
       return;
     }
-    if (id === selectedNavId && (id === 'policyStarter' || (setupPath.area === 'overview' && !setupPath.setting))) return;
+    if (id === selectedNavId && setupPath.area === 'overview' && !setupPath.setting) return;
     const href = studioHref(id);
     // The tab follows the address (requestedTab), so no in-between section is shown or announced on the way.
-    confirmLeave(href, () => { router.push(href, { scroll: false }); });
+    confirmLeave(href, () => { if (setupSectionHasFailed()) window.location.assign(href); else router.push(href, { scroll: false }); });
   };
   // Guided setup's own progress (its chooser's "N of M done"), refreshed on a company change, each time Guided setup
   // or All setup areas is opened, and on every move inside All setup areas (an area, an embedded setting and back), the
@@ -2753,15 +2737,16 @@ export function SetupPage() {
       description: t('{company}: {done} of {total} setup items done', { company: guidedCompanyName, done: guidedProgress.done, total: guidedProgress.total }),
     } : undefined,
   });
-  // Get started: the setup paths and tools. The Policy starter is for setup writers, like the rest of this group.
+  // Get started: the setup paths and tools, for setup writers.
   const setupTools: SetupSectionNavItem<SetupNavId>[] = navigationModel.tools.map(navItem);
   const navigationSettings = visibleTabs;
   const navigationGroups: SetupSectionNavGroup<SetupNavId>[] = SETUP_SECTION_GROUPS.map(group => ({
     id: group.id,
     label: t(group.label),
-    items: group.id === 'getStarted'
-      ? setupTools
-      : navigationSettings.filter(tab => tab.group === group.id).map(tab => ({ id: tab.id, label: t(tab.label), icon: tab.icon, href: tabHref(tab.id) })),
+    items: [
+      ...(group.id === 'getStarted' ? setupTools : []),
+      ...navigationSettings.filter(tab => tab.group === group.id).map(tab => ({ id: tab.id, label: t(tab.label), icon: tab.icon, href: tabHref(tab.id) })),
+    ],
   })).filter(group => group.items.length > 0);
   // "Find a setting": the navigation's own sections, All setup areas' destinations and Payroll accounting's tabs, from
   // the same model as the navigation (and the ⌘K palette), so nothing is found that this user cannot open.
@@ -2804,6 +2789,7 @@ export function SetupPage() {
 
   const renderExistingPanel = (id: SettingsTab): React.ReactNode => {
     if (!visibleTabs.some(tab => tab.id === id)) return null;
+    if (isSetupModuleSectionId(id)) return <ModuleSetupSection id={id} onDirtyChange={setEditorDirty} companyId={authorizedCompany} companies={companies} />;
     switch (id) {
       case 'establishment': return <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />;
       case 'companies': return <CompaniesTab />;
@@ -2877,9 +2863,12 @@ export function SetupPage() {
         <header className="setup-page-header min-w-0">
           <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         </header>
-        <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-no-sections">
-          {t('Your role has no Setup sections to open. Ask an administrator if you need one.')}
-        </p>
+        {/* A module's settings are known only once its switch is (moduleSectionAvailable): wait for it, never deny early. */}
+        {flags.status === 'loading'
+          ? <p role="status" aria-busy="true" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-sections-loading">{t('Loading…')}</p>
+          : <p role="status" className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="setup-no-sections">
+            {t('Your role has no Setup sections to open. Ask an administrator if you need one.')}
+          </p>}
       </div>
     );
   }
@@ -2929,24 +2918,23 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Company structure, jobs and grades, payroll and country rules, and workspace settings.')
+            ? t('Every setting in one place: company structure, leave, pay, users and access, and the workspace.')
             : t('Review the setup areas available to your role.')}
         </p>
       </header>
 
       {/* One navigation for the page: the grouped section column beside the selected section from 1280px. Below that
-          (and for the Policy starter, which brings its own step rail) the list folds away under the section header's
-          "All sections" button, so the header comes first, then the list when it is open, then the section. */}
-      <div className={showNavigation && !isStarter
+          the list folds away under the section header's "All sections" button, so the header comes first, then the list
+          when it is open, then the section. */}
+      <div className={showNavigation
         ? 'setup-page-layout grid min-w-0 xl:grid-cols-[15rem_minmax(0,1fr)] xl:grid-rows-[auto_1fr] xl:gap-x-6'
         : 'setup-page-layout grid min-w-0'}>
       {showNavigation && (
-        <div className={`min-w-0 ${isStarter ? '' : 'xl:col-start-1 xl:row-span-2 xl:row-start-1'}`}>
+        <div className="min-w-0 xl:col-start-1 xl:row-span-2 xl:row-start-1">
           <SetupSectionNav
             groups={navigationGroups}
             selectedId={selectedNavId}
             currentLabel={currentSectionLabel}
-            collapsed={isStarter}
             open={sectionListOpen}
             onOpenChange={setSectionListOpen}
             toggleRef={sectionToggle}
@@ -2960,16 +2948,16 @@ export function SetupPage() {
           />
         </div>
       )}
-      <div className={`order-first min-w-0 ${showNavigation && !isStarter ? 'xl:order-none xl:col-start-2 xl:row-start-1' : ''}`}>
+      <div className={`order-first min-w-0 ${showNavigation ? 'xl:order-none xl:col-start-2 xl:row-start-1' : ''}`}>
         <SetupSectionHeader
           icon={currentSection.icon}
           title={currentSectionLabel}
           description={sectionDescription}
           divider={isSettings}
-          action={showNavigation ? <SetupSectionsToggle open={sectionListOpen} onToggle={() => setSectionListOpen(value => !value)} collapsed={isStarter} toggleRef={sectionToggle} /> : undefined}
+          action={showNavigation ? <SetupSectionsToggle open={sectionListOpen} onToggle={() => setSectionListOpen(value => !value)} toggleRef={sectionToggle} /> : undefined}
         />
       </div>
-      <div className={`setup-page-content mt-4 min-w-0 space-y-4 ${showNavigation && !isStarter ? 'xl:col-start-2 xl:row-start-2' : ''}`}>
+      <div className={`setup-page-content mt-4 min-w-0 space-y-4 ${showNavigation ? 'xl:col-start-2 xl:row-start-2' : ''}`}>
 
       {/* Each path owns its mounted subtree; browser drafts plus the guard preserve authored work. */}
       {canWrite && (
@@ -2985,35 +2973,15 @@ export function SetupPage() {
             </section>}
             {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
             {isGuided && <GuidedSetupChooser showHeading={false} linkedCompanyId={landingCompanyLink.current} onLinkedCompanyUsed={() => { landingCompanyLink.current = null; }} />}
-            {isStarter && <div className="flex flex-col">
-              {/* One compact line. On a phone it follows the starter, so the starter's first screen keeps its
-                  own controls (setup-experience: policy entry in the first viewport). */}
-              <p className="order-last mt-3 flex flex-wrap sm:order-first sm:mb-2 sm:mt-0 items-center gap-x-2 gap-y-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400" data-testid="policy-starter-banner">
-                <span className="font-semibold text-slate-900 dark:text-white">{t('Attendance, overtime, benefits and other policies.')}</span>
-                <span>{t('For a company’s structure, use Guided setup.')}</span>
-                <button type="button" className="font-semibold text-sapphire underline-offset-2 hover:underline dark:text-cyanAccent" onClick={() => selectSetupPath('configuration')}>{t('Back to All setup areas')}</button>
-              </p>
-              <div className="min-w-0" onChangeCapture={event => {
-              setEditorDirty(true);
-              const target = event.target;
-              if (target instanceof HTMLInputElement && target.type === 'file') setPendingStarterFiles(Boolean(target.files?.length));
-            }}><SetupPendingFilesState.Provider value={setPendingStarterFiles}><AiSetupAssistant key={starterScope} companies={companies} onOpenLibrary={() => selectTab('policyLibrary')} onReturnToWorkspace={returnToWorkspace} /></SetupPendingFilesState.Provider></div>
-            </div>}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
               guidedCompanies={guidedCompanies}
               confirmLeave={confirmLeave}
               onDirtyChange={setEditorDirty}
               renderSettings={(id, onDirtyChange) => {
+                // Every embedded destination is a Setup section; renderExistingPanel re-checks that this reader may open it.
                 if (isSettingsTab(id)) return renderExistingSettings(id);
-                // Catalogue checks route, feature, scope and editor access before calling this.
-                // Retain the mutation role intersection here as a second composition boundary.
-                if (isCompanyScopedGroup || !(hasRole('Admin') || hasRole('HR Manager'))) return null;
-                if (id === 'onboarding' && hasPermission('recruitment.write') && (hasPermission('recruitment.read') || hasPermission('recruitment.write'))) return <OnboardingPolicyWorkspace companies={companies} onDirtyChange={onDirtyChange} />;
-                if (!(hasPermission('leave.read') || hasPermission('leave.write'))) return null;
-                if (id === 'leaveTypes') return <LeaveTypesTab onDirtyChange={onDirtyChange} />;
-                if (id === 'leavePolicies') return <PoliciesTab onDirtyChange={onDirtyChange} />;
-                if (id === 'holidayCalendars') return <HolidayCalendarTab onDirtyChange={onDirtyChange} />;
+                void onDirtyChange;
                 return null;
               }}
             />}
@@ -3029,7 +2997,11 @@ export function SetupPage() {
       {isSettings && (
         <section id="setup-setting-content" aria-label={t(selectedSetting.label)} className="min-w-0 space-y-4">
           <div className="min-w-0" key={companyVersion}>
-            {isSettingsTab(selectedTab) && renderExistingSettings(selectedTab)}
+            {isSettingsTab(selectedTab) && (visibleTabs.some(tab => tab.id === selectedTab)
+              ? renderExistingSettings(selectedTab)
+              : flags.status === 'loading' && isSetupModuleSectionId(selectedTab)
+                ? <p role="status" aria-busy="true" data-testid="setup-section-loading" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Loading…')}</p>
+                : <p role="status" data-testid="setup-section-no-access" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Your role does not have access')}</p>)}
           </div>
         </section>
       )}

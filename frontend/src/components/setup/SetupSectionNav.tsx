@@ -48,21 +48,17 @@ function isPlainPrimaryClick(event: ReactMouseEvent) {
  * section, so every permitted section is visible at once. Below that the list folds away and the section header's
  * "All sections" button (SetupSectionsToggle) opens it: inline and capped from 640px, as a bottom sheet on a phone.
  *
- * A focused task that brings its own step navigation (the Policy starter) passes `collapsed`, so the list is folded at
- * every width and the task keeps the full width.
- *
  * Entries are real links. A plain click is handled in the page, which keeps the unsaved-changes guard in charge; a
  * modified click opens the section in a new tab. The list stays mounted while closed: the guard resumes a navigation
  * by clicking the original entry again once the user chooses "Discard and leave", so the entry must stay connected.
  */
-export function SetupSectionNav<Id extends string>({ groups, selectedId, currentLabel, collapsed = false, open, onOpenChange, toggleRef, onSelect, search, locationKey = '' }: {
+export function SetupSectionNav<Id extends string>({ groups, selectedId, currentLabel, open, onOpenChange, toggleRef, onSelect, search, locationKey = '' }: {
   groups: SetupSectionNavGroup<Id>[];
   /** The entry for the section on screen, or null when the section has no entry of its own. */
   selectedId: Id | null;
   /** The section on screen, for the skip link and the announcement. */
   currentLabel: string;
   /** Fold the list away at every width. */
-  collapsed?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The "All sections" toggle, where focus returns when the folded list closes. */
@@ -118,7 +114,7 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
     openedResult.current = false;
     const hadFocus = !!list.current?.querySelector('[data-testid="setup-search-results"]')?.contains(document.activeElement);
     setQuery('');
-    if (hadFocus && isWide && !collapsed) window.requestAnimationFrame(() => searchInput.current?.focus());
+    if (hadFocus && isWide) window.requestAnimationFrame(() => searchInput.current?.focus());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the address or the section changes only
   }, [locationKey, selectedId]);
 
@@ -192,7 +188,7 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
   const listClass = sheet
     // While a query shows its few results the sheet keeps its height instead of dropping to the bottom edge.
     ? `${open ? 'flex' : 'hidden'} setup-section-sheet fixed inset-x-0 bottom-0 z-40 max-h-[85dvh] ${searching ? 'min-h-[60dvh]' : ''} flex-col overflow-y-auto overscroll-contain rounded-t-2xl border-t border-slate-200 bg-white pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-2xl dark:border-white/10 dark:bg-[#0d1225]`
-    : `${open ? 'mt-2 grid' : 'hidden'} setup-section-list surface max-h-[60dvh] gap-x-4 gap-y-1 overflow-y-auto overscroll-contain p-2 sm:grid-cols-2 ${collapsed ? 'lg:grid-cols-3' : 'lg:grid-cols-3 xl:mt-0 xl:block xl:max-h-[calc(100vh-10rem)] xl:rounded-none xl:border-0 xl:border-e xl:border-slate-200 xl:bg-transparent xl:p-0 xl:pe-4 xl:shadow-none xl:dark:border-white/10 xl:dark:bg-transparent'}`;
+    : `${open ? 'mt-2 grid' : 'hidden'} setup-section-list surface max-h-[60dvh] gap-x-4 gap-y-1 overflow-y-auto overscroll-contain p-2 sm:grid-cols-2 lg:grid-cols-3 xl:mt-0 xl:block xl:max-h-[calc(100vh-10rem)] xl:rounded-none xl:border-0 xl:border-e xl:border-slate-200 xl:bg-transparent xl:p-0 xl:pe-4 xl:shadow-none xl:dark:border-white/10 xl:dark:bg-transparent`;
 
   // The sheet is portalled to <body>: <main> keeps a stacking context from its entry animation, which held a fixed
   // sheet under the app's bottom bar and assistant button (z-30). It stays under dialogs (z-50), so the
@@ -228,9 +224,9 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
           )}
           {groups.map((group, index) => (
             // Hidden, not removed, while a query shows its results: the unsaved-changes guard may replay an entry.
-            <div key={group.id} hidden={searching || undefined} className={`setup-section-group min-w-0 py-1 ${collapsed ? '' : 'xl:py-0.5'} ${index > 0 && !collapsed ? 'xl:mt-1 xl:border-t xl:border-slate-200/70 xl:pt-1 xl:dark:border-white/[0.06]' : ''}`}>
-              <p id={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`px-3 pb-1 pt-1.5 ${collapsed ? '' : 'xl:pb-0.5 xl:pt-1'} text-[11px] font-semibold uppercase leading-4 tracking-[0.08em] text-slate-500 rtl:normal-case rtl:text-[13px] rtl:tracking-normal dark:text-slate-400`}>{group.label}</p>
-              <ul aria-labelledby={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`space-y-0.5 ${collapsed ? '' : 'xl:space-y-0'}`}>
+            <div key={group.id} hidden={searching || undefined} className={`setup-section-group min-w-0 py-1 xl:py-0.5 ${index > 0 ? 'xl:mt-1 xl:border-t xl:border-slate-200/70 xl:pt-1 xl:dark:border-white/[0.06]' : ''}`}>
+              <p id={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`px-3 pb-1 pt-1.5 xl:pb-0.5 xl:pt-1 text-[11px] font-semibold uppercase leading-4 tracking-[0.08em] text-slate-500 rtl:normal-case rtl:text-[13px] rtl:tracking-normal dark:text-slate-400`}>{group.label}</p>
+              <ul aria-labelledby={`${SETUP_SECTION_LIST_ID}-${group.id}`} className={`space-y-0.5 xl:space-y-0`}>
                 {group.items.map(({ id, label, icon: Icon, href, status }) => {
                   const active = id === selectedId;
                   const statusId = status ? `${SETUP_SECTION_LIST_ID}-${id}-status` : undefined;
@@ -245,7 +241,7 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
                           event.preventDefault();
                           onSelect(id);
                         }}
-                        className={`relative flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-start text-sm leading-5 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire ${collapsed ? '' : 'xl:min-h-7 xl:py-1'} ${
+                        className={`relative flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-start text-sm leading-5 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sapphire xl:min-h-7 xl:py-1 ${
                           active
                             ? 'bg-sapphire/10 font-semibold text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent'
                             : 'text-slate-700 hover:bg-slate-100 hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/[0.06] dark:hover:text-white'
@@ -273,7 +269,7 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
     <nav
       ref={nav}
       aria-label={t('Setup sections')}
-      className={`setup-page-nav relative min-w-0 ${collapsed ? '' : 'xl:sticky xl:top-[4.75rem] xl:self-start'}`}
+      className={`setup-page-nav relative min-w-0 xl:sticky xl:top-[4.75rem] xl:self-start`}
       onKeyDown={event => {
         if (event.key !== 'Tab' || !sheetOpen || !list.current) return;
         const focusable = Array.from(list.current.querySelectorAll<HTMLElement>(FOCUSABLE));
@@ -304,10 +300,9 @@ export function SetupSectionNav<Id extends string>({ groups, selectedId, current
  * "All sections ⌄", at the end of the section header row while the list is folded (below 1280px, or at every width
  * for a focused task). "Setup section" stays in its accessible name for assistive tech.
  */
-export function SetupSectionsToggle({ open, onToggle, collapsed = false, toggleRef }: {
+export function SetupSectionsToggle({ open, onToggle, toggleRef }: {
   open: boolean;
   onToggle: () => void;
-  collapsed?: boolean;
   toggleRef: RefObject<HTMLButtonElement | null>;
 }) {
   const t = useT();
@@ -319,7 +314,7 @@ export function SetupSectionsToggle({ open, onToggle, collapsed = false, toggleR
       aria-expanded={open}
       aria-controls={SETUP_SECTION_LIST_ID}
       onClick={onToggle}
-      className={`setup-sections-toggle btn-secondary h-9 shrink-0 ${collapsed ? '' : 'xl:hidden'}`}
+      className={`setup-sections-toggle btn-secondary h-9 shrink-0 xl:hidden`}
     >
       <span className="sr-only">{t('Setup section')}</span>
       {t('All sections')}

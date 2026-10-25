@@ -20,16 +20,18 @@ import { SetupEditorState } from '../setup/SetupEditorState';
  * destination (same path, permission and scope as All setup areas), so the list never offers a screen the viewer
  * cannot open. Settings with an editor that fits beside the wizard open in place (a side panel, or the Leave &
  * holidays part); the rest open their own page, which then offers "Back to company setup" (setup/SetupWorkspaceReturn).
- * What has no screen of its own yet (attendance rules, HR approval rules) is set up by the group super admin.
+ * HR approval rules have no screen of their own yet and are set up by the group super admin.
  */
 type Panel = 'leave' | 'statutory';
 type Target = { kind: 'page'; href: string } | { kind: 'panel'; panel: Panel } | { kind: 'part'; part: RulesPartId };
 interface Row { key: string; label: string; what: string; target: Target }
 
-const GROUPS: { id: string; label: string; items: { id: string; label?: string; what: string }[] }[] = [
+const GROUPS: { id: string; label: string; items: { id: string; /** The Setup destination it opens, when it is not `id`. */ dest?: string; label?: string; what: string }[] }[] = [
   { id: 'time', label: msg('Time & attendance'), items: [
-    { id: 'shifts', what: msg('Shift definitions and roster rules') },
-    { id: 'overtime', what: msg('Overtime policies: add a policy and its rates') },
+    // Shift definitions and overtime policies are Setup sections now; Shifts and Overtime keep rosters and requests.
+    { id: 'shifts', dest: 'shiftDefinitions', what: msg('Shift definitions and roster rules') },
+    { id: 'attendanceRules', what: msg('Grace period, early leaving, half day and working day') },
+    { id: 'overtime', dest: 'overtimePolicies', what: msg('Overtime policies: add a policy and its rates') },
   ] },
   { id: 'leave', label: msg('Leave & holidays'), items: [
     { id: 'leave', label: msg('Leave policies, holidays and leave types'), what: msg('Leave types, extra leave policies and holiday calendars') },
@@ -46,8 +48,8 @@ const GROUPS: { id: string; label: string; items: { id: string; label?: string; 
 
 const destinations = new Map<string, SetupDestination>(SETUP_AREAS.flatMap(area => area.destinations.map(d => [d.id, d] as const)));
 
-/** Workspace localisation (language, time zone, working week) lives in Tenant Admin, outside the Setup areas. */
-const LOCALISATION = { href: '/tenant-admin', permission: 'security.manage', label: msg('Language, time zone and working week'), what: msg('Workspace-wide display and calendar settings, in Tenant Admin') };
+/** Workspace localisation (language, time zone, working week) is its own Setup section, outside the Setup areas. */
+const LOCALISATION = { href: '/setup?tab=localization', permission: 'security.manage', label: msg('Language, time zone and working week'), what: msg('Workspace-wide display and calendar settings, in Setup') };
 
 const PANEL_COPY: Record<Panel, { title: string; description: string }> = {
   leave: { title: msg('Leave policies, holidays and leave types'), description: msg('This company’s own leave policies, holidays and leave types. Changes save as you edit.') },
@@ -82,8 +84,8 @@ export function MoreSettingsLinks({ companyId, onOpenPart, returnTo, beforeLeave
 
   const groups = GROUPS.map(group => ({
     ...group,
-    rows: group.items.flatMap<Row>(({ id, label, what }) => {
-      const d = destinations.get(id);
+    rows: group.items.flatMap<Row>(({ id, dest, label, what }) => {
+      const d = destinations.get(dest ?? id);
       if (id === 'leave' && access.canEditLeave) return [{ key: id, label: label ?? d?.label ?? id, what, target: onOpenPart ? { kind: 'part', part: 'leave' } : { kind: 'panel', panel: 'leave' } }];
       if (id === 'statutoryRules' && access.canReadStatutoryRules) return [{ key: id, label: d?.label ?? id, what, target: { kind: 'panel', panel: 'statutory' } }];
       if (!allowed(d)) return [];
@@ -146,7 +148,7 @@ export function MoreSettingsLinks({ companyId, onOpenPart, returnTo, beforeLeave
           </ul>
         </section>
       ))}
-      <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Attendance rules and HR approval rules have no screen of their own yet. Ask your group super admin to set these up.')}</p>
+      <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{t('HR approval rules have no screen of their own yet. Ask your group super admin to set these up.')}</p>
       <SettingsDrawer open={panelOpen} wide={panel === 'statutory'} title={t(PANEL_COPY[panel].title)} description={t(PANEL_COPY[panel].description)} onClose={() => setPanelOpen(false)}>
         {panel === 'leave' && <LeaveEditors companyId={companyId ?? undefined} idPrefix="more-leave" />}
         {panel === 'statutory' && <SetupEditorState.Provider value={reportStatutory}><EmbeddedStatutoryRules /></SetupEditorState.Provider>}

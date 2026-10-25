@@ -109,7 +109,7 @@ public class SetupAssistantTemplateTests
         string? overtimeHandling = null, string? attendanceCapture = null, string? payCycle = null,
         string? timeZone = null, string? defaultLanguage = null)
         => new(country, industry, size, currency, notes, "Evostel", null,
-               "Functional", "GradeBased", "HRFinal", true, true, true,
+               "Functional", "GradeBased", "HRFinal", true,
                sections ?? new SetupSections(Org: true, Leave: true, Shifts: true, Payroll: true, Entity: true, Governance: true),
                workPattern, weekendPattern, leaveYearBasis, probationMonths, noticePeriodDays,
                workforceMix, overtimeHandling, attendanceCapture, payCycle, timeZone, defaultLanguage);

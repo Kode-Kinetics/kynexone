@@ -116,13 +116,26 @@ test('a missing approval route directs an HR officer to their administrator', as
   expect(directWrites()).toBe(0);
 });
 
-test('nested approval setup traps focus and Escape preserves the underlying proposal', async ({ page }) => {
+test('the missing-route link opens approval setup in Setup in a new tab, so the proposal being written is kept', async ({ page }) => {
   const { errors, directWrites } = await boot(page, { missingRoute: true, manage: true });
   const proposal = await fillAdditional(page);
   await proposal.getByLabel('Review due', { exact: false }).fill('2027-01-01');
   await proposal.getByRole('button', { name: 'Save changes', exact: true }).click();
-  const configure = proposal.getByRole('link', { name: 'Configure approval workflow', exact: true });
-  await configure.click();
+  // The API names /benefits#additional-benefit-approval; that editor is in Setup → Benefit plans now.
+  const configure = proposal.getByRole('link', { name: /^Configure approval workflow/ }); // its name ends with the hidden "(opens in a new tab)"
+  await expect(configure).toHaveAttribute('href', '/setup?tab=benefitPlans#additional-benefit-approval');
+  await expect(configure).toHaveAttribute('target', '_blank');
+  await expect(configure).toHaveAttribute('rel', /noopener/);
+  await expect(page).toHaveURL(/\/benefits$/);
+  await expect(proposal).toBeVisible();
+  await expect(proposal.getByLabel('Reason for changes', { exact: false })).toHaveValue('Approved retention package for a specialist.');
+  expect(directWrites()).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('approval setup in Setup traps focus and Escape closes it', async ({ page }) => {
+  const { errors, directWrites } = await boot(page, { missingRoute: true, manage: true });
+  await page.goto('/setup?tab=benefitPlans#additional-benefit-approval');
   const setup = page.getByRole('dialog', { name: 'Additional benefit approvals', exact: true });
   const save = setup.getByRole('button', { name: 'Save approval route', exact: true });
   await expect(save).toBeEnabled();
@@ -134,24 +147,13 @@ test('nested approval setup traps focus and Escape preserves the underlying prop
   await expect(save).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(setup).toHaveCount(0);
-  await expect(proposal).toBeVisible();
-  await expect(proposal.getByLabel('Reason for changes', { exact: false })).toHaveValue('Approved retention package for a specialist.');
-  await expect(proposal.getByRole('button', { name: 'Close', exact: true }).first()).toBeFocused();
-  await expect(page).toHaveURL(/\/benefits$/);
-  await configure.click();
-  await expect(save).toBeEnabled();
-  await page.keyboard.press('Escape');
-  await expect(setup).toHaveCount(0);
-  await expect(proposal).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(proposal).toHaveCount(0);
+  await expect(page).toHaveURL(/\/setup\?tab=benefitPlans(&companyId=[^#]*)?$/); // closing the dialog drops the hash
   expect(directWrites()).toBe(0);
   expect(errors).toEqual([]);
 });
 
 test('an existing additional benefit can only be amended through approval', async ({ page }) => {
   const { submitted, directWrites } = await boot(page, { extra: true });
-  await page.getByRole('tab', { name: 'Enrolments (2)' }).click();
   await page.getByRole('row').filter({ hasText: 'Education Allowance' }).click();
   const drawer = page.getByRole('dialog', { name: 'Enrolment detail', exact: true });
   await expect(drawer.getByRole('button', { name: 'Adjust existing benefit' })).toHaveCount(0);
@@ -352,10 +354,11 @@ test('benefit request review displays its frozen salary policy instead of the li
 
 test('benefit catalogue finds custom plans by name, code and category', async ({ page }) => {
   await boot(page);
+  await page.goto('/setup?tab=benefitPlans'); // the plan catalogue is in Setup → Benefit plans
   const search = page.getByLabel('Find a benefit plan', { exact: false });
   await search.fill('medical'); await expect(page.getByText('Medical Gold', { exact: true })).toBeVisible(); await expect(page.getByText('Education Allowance', { exact: true })).toHaveCount(0);
   await search.fill('TRN'); await expect(page.getByText('Transport Allowance', { exact: true })).toBeVisible(); await expect(page.getByText('Medical Gold', { exact: true })).toHaveCount(0);
   await search.fill('Education'); await expect(page.getByText('Education Allowance', { exact: true })).toBeVisible();
-  await search.fill('unmatched'); await expect(page.getByRole('status')).toHaveText('No benefit plans match your search.');
+  await search.fill('unmatched'); await expect(page.locator('[data-module-section="benefitPlans"]').getByRole('status')).toHaveText('No benefit plans match your search.');
   await search.fill(''); await expect(page.getByText('Medical Gold', { exact: true })).toBeVisible();
 });

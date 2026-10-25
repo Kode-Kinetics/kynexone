@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-10-23",
+  "pinnedAt": "2026-10-25",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -73,14 +73,24 @@
         "src/views/employees/EmployeeWorkspaceShell.tsx  hardcoded: 0 → 4",
         "src/views/employees/EmployeeWorkspaceShell.tsx  rawStatus: 0 → 1"
       ]
+    },
+    {
+      "pinnedAt": "2026-10-25",
+      "reason": "Setup consolidation (2026-10-24): device management and benefit plans moved unchanged from AttendancePage and BenefitsPage into their Setup panels (AttendanceDevicesPanel, BenefitPlansPanel and their shared ui helpers); the source pages fall by the same strings. No new copy.",
+      "increases": [
+        "src/components/attendance/AttendanceDevicesPanel.tsx  hardcoded: 0 → 131",
+        "src/components/attendance/attendanceUi.tsx  locale: 0 → 1",
+        "src/components/benefits/BenefitPlansPanel.tsx  hardcoded: 0 → 65",
+        "src/components/benefits/benefitUi.tsx  locale: 0 → 1"
+      ]
     }
   ],
   "totals": {
-    "hardcoded": 5322,
+    "hardcoded": 5191,
     "rawStatus": 59,
     "locale": 211,
     "icons": 0,
-    "files": 132
+    "files": 135
   },
   "fragmentKeys": [
     "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
@@ -109,19 +119,12 @@
     "your grade's total outstanding maximum"
   ],
   "files": {
-    "app/(dashboard)/compliance-profiles/page.tsx": {
-      "hardcoded": 11
-    },
     "app/(dashboard)/group/page.tsx": {
       "hardcoded": 14,
       "rawStatus": 1
     },
     "app/(dashboard)/people/page.tsx": {
       "hardcoded": 2
-    },
-    "app/(dashboard)/tax-policies/page.tsx": {
-      "hardcoded": 25,
-      "rawStatus": 1
     },
     "app/access-denied/page.tsx": {
       "hardcoded": 3
@@ -255,9 +258,6 @@
     "app/terms/page.tsx": {
       "hardcoded": 46
     },
-    "src/components/AiSetupAssistant.tsx": {
-      "hardcoded": 96
-    },
     "src/components/CompanySwitcher.tsx": {
       "hardcoded": 3
     },
@@ -322,6 +322,18 @@
     "src/components/SubscriptionGate.tsx": {
       "hardcoded": 12,
       "locale": 2
+    },
+    "src/components/attendance/AttendanceDevicesPanel.tsx": {
+      "hardcoded": 131
+    },
+    "src/components/attendance/attendanceUi.tsx": {
+      "locale": 1
+    },
+    "src/components/benefits/BenefitPlansPanel.tsx": {
+      "hardcoded": 65
+    },
+    "src/components/benefits/benefitUi.tsx": {
+      "locale": 1
     },
     "src/components/charts/dashboard/DashboardPayrollByEntityChart.tsx": {
       "locale": 1
@@ -427,17 +439,18 @@
       "locale": 2
     },
     "src/views/AttendancePage.tsx": {
-      "hardcoded": 228,
-      "locale": 1
+      "hardcoded": 99
     },
     "src/views/BenefitsPage.tsx": {
-      "hardcoded": 107,
-      "locale": 1
+      "hardcoded": 44
     },
     "src/views/CompliancePage.tsx": {
       "hardcoded": 75,
       "rawStatus": 5,
       "locale": 3
+    },
+    "src/views/ComplianceProfilesPage.tsx": {
+      "hardcoded": 10
     },
     "src/views/DashboardPage.tsx": {
       "hardcoded": 2
@@ -461,12 +474,12 @@
       "locale": 3
     },
     "src/views/HrLettersPage.tsx": {
-      "hardcoded": 58,
+      "hardcoded": 56,
       "rawStatus": 1,
       "locale": 3
     },
     "src/views/LeavePage.tsx": {
-      "hardcoded": 238,
+      "hardcoded": 236,
       "locale": 3
     },
     "src/views/LoansPage.tsx": {
@@ -478,7 +491,7 @@
       "hardcoded": 2
     },
     "src/views/MigrationImportPage.tsx": {
-      "hardcoded": 53,
+      "hardcoded": 52,
       "rawStatus": 1,
       "locale": 2
     },
@@ -512,7 +525,7 @@
       "locale": 32
     },
     "src/views/PayslipTemplatesPage.tsx": {
-      "hardcoded": 44,
+      "hardcoded": 42,
       "rawStatus": 1,
       "locale": 1
     },
@@ -546,11 +559,15 @@
       "locale": 3
     },
     "src/views/ShiftsPage.tsx": {
-      "hardcoded": 113,
+      "hardcoded": 112,
       "locale": 8
     },
+    "src/views/TaxPoliciesPage.tsx": {
+      "hardcoded": 24,
+      "rawStatus": 1
+    },
     "src/views/TenantAdminPage.tsx": {
-      "hardcoded": 87,
+      "hardcoded": 64,
       "rawStatus": 1,
       "locale": 12
     },
@@ -560,7 +577,7 @@
       "locale": 5
     },
     "src/views/UserManagementPage.tsx": {
-      "hardcoded": 201,
+      "hardcoded": 195,
       "locale": 3
     },
     "src/views/employees/EmployeeAccessOnboardingSection.tsx": {

@@ -19,8 +19,6 @@ export interface CompanyProfile {
   payrollModel?: string;
   approvalModel?: string;
   strictEntityScope: boolean;
-  requireCostCenterForPayroll: boolean;
-  requireGradeForApprovalPolicy: boolean;
   sections: SetupSections;
 
   // Operating choices. Each one lands in a column the product already reads; see
@@ -58,7 +56,6 @@ export interface DraftAttendancePolicy { code: string; name: string; graceMinute
 export interface DraftOvertimeMultiplier { dayCategory: string; multiplier: number; }
 export interface DraftOvertimePolicy { code: string; name: string; hourlyRateBasis: string; standardMonthlyHours: number; minimumMinutes: number; maximumMinutesPerDay: number; monthlyCapMinutes: number; roundingRule: string; requiresApproval: boolean; allowCompOffConversion: boolean; multipliers: DraftOvertimeMultiplier[]; }
 export interface DraftLocalization { defaultLanguage: string; rtlEnabled: boolean; calendarSystem: string; defaultTimezone: string; dateFormat: string; hijriDatesEnabled: boolean; }
-export interface DraftHrConfig { useDeptHeadApproval: boolean; useHrFinalApproval: boolean; useSupervisorBeforeManager: boolean; allowDottedLineApproval: boolean; autoCreateDeptOnImport: boolean; autoCreateDesignationOnImport: boolean; requireImportPreviewBeforeCommit: boolean; allowCrossDeptManager: boolean; allowCrossLocationManager: boolean; requireCostCenterForPayroll: boolean; requireGradeForApprovalPolicy: boolean; }
 
 export interface DraftBenefitPlan {
   code: string; name: string; planType: string; currency: string;
@@ -71,7 +68,6 @@ export interface SetupConfiguration {
   overtimePolicy?: DraftOvertimePolicy;
   grades?: DraftGrade[] | null;
   leavePolicies?: DraftLeavePolicy[] | null;
-  hrConfig?: DraftHrConfig;
   benefitPlans?: DraftBenefitPlan[] | null;
   policySourceText?: string;
   policyDocumentId?: string;
@@ -106,7 +102,6 @@ export interface SetupDraft {
   payComponents: DraftPayComponent[];
   statutoryRules: DraftStatutoryRule[];
   employeeIdRule: DraftEmployeeIdRule | null;
-  hrConfig: DraftHrConfig | null;
   leavePolicies: DraftLeavePolicy[];
   holidayCalendar: DraftHolidayCalendar | null;
   attendancePolicy: DraftAttendancePolicy | null;
@@ -143,7 +138,6 @@ export function normalizeDraft(raw: unknown): SetupDraft {
     payComponents: asArray<DraftPayComponent>(d.payComponents),
     statutoryRules: asArray<DraftStatutoryRule>(d.statutoryRules),
     employeeIdRule: d.employeeIdRule ?? null,
-    hrConfig: d.hrConfig ?? null,
     leavePolicies: asArray<DraftLeavePolicy>(d.leavePolicies),
     // The calendar's own holiday list is mapped over during render, so it gets the same
     // treatment as every top-level list: a calendar with a null list must not blank the page.

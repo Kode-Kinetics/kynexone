@@ -11,6 +11,10 @@ export const SECONDARY = 'flex items-center gap-1.5 rounded-lg border border-sla
 export const CARD = 'rounded-2xl border border-slate-200/80 bg-white dark:border-white/[0.06] dark:bg-white/[0.03]';
 
 export const COVERAGE_TIERS = ['Employee', 'Employee + Spouse', 'Employee + Children', 'Family'];
+export const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export const range = (from: string, to: string | null) => `${from} → ${to ?? 'open-ended'}`;
+/** The API names its approval-route setup page as /benefits#…; that editor is in Setup → Benefit plans now. */
+export const benefitSetupHref = (url: string) => url.startsWith('/benefits#') ? `/setup?tab=benefitPlans${url.slice('/benefits'.length)}` : url;
 export const today = () => new Date().toISOString().slice(0, 10);
 export const enrollmentStatus = (enrollment: Pick<BenefitEnrollment, 'status' | 'effectiveFrom' | 'effectiveTo'>) =>
   enrollment.status !== 'Active' ? enrollment.status : enrollment.effectiveFrom > today() ? 'Scheduled' : enrollment.effectiveTo && enrollment.effectiveTo < today() ? 'Ended' : 'Active';

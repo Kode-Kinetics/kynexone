@@ -13,7 +13,8 @@ const policies = [
   { id: 'policy-b', name: 'Beta annual', leaveTypeId: 'annual-b', companyId: B.id, countryCode: 'UAE', annualEntitlementDays: 30, accrualMethod: 'Monthly', status: 'Active', payrollImpact: 'Full' },
 ];
 
-async function boot(page: Page, url: string) {
+// Leave types, policies and holidays are Setup sections now (/setup?tab=leaveTypes …); the old Leave tabs redirect there.
+async function boot(page: Page, url: string, section = 'Leave types') {
   const writes: { path: string; body: unknown }[] = [];
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -40,18 +41,17 @@ async function boot(page: Page, url: string) {
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
   await page.goto(url);
-  // The dev server compiles the Leave view on first visit.
-  await expect(page.getByRole('heading', { name: 'Leave & Absence Management' })).toBeVisible({ timeout: 90_000 });
+  // The dev server compiles the Setup view on first visit.
+  await expect(page.locator('#setup-section-heading')).toHaveText(section, { timeout: 90_000 });
   return { writes, errors };
 }
 
 test('leave types show their company, filter by company incl. unassigned, and a legacy type is assigned from its card', async ({ page }) => {
-  const { writes, errors } = await boot(page, '/leave');
-  await page.getByRole('tab', { name: 'Leave Types' }).click();
+  const { writes, errors } = await boot(page, '/setup?tab=leaveTypes');
   const cards = page.getByTestId('leave-type-card');
   await expect(cards).toHaveCount(3);
   await expect(page.getByText('1 rows have no company yet', { exact: false })).toBeVisible();
-  const filter = page.getByRole('tabpanel').getByRole('combobox', { name: 'Filter by company' });
+  const filter = page.locator('[data-module-section="leaveTypes"]').getByRole('combobox', { name: 'Filter by company' });
   await filter.selectOption(B.id);
   await expect(cards).toHaveCount(1);
   await expect(cards.first()).toContainText('Beta Gulf LLC');
@@ -63,8 +63,9 @@ test('leave types show their company, filter by company incl. unassigned, and a 
   expect(errors).toEqual([]);
 });
 
-test('/leave?companyId= opens that company\'s policies, and a new policy asks for the company preselected', async ({ page }) => {
-  const { writes, errors } = await boot(page, `/leave?companyId=${B.id}`);
+test('the old /leave?tab=policies&companyId= address opens that company\'s policies in Setup, and a new policy asks for the company preselected', async ({ page }) => {
+  const { writes, errors } = await boot(page, `/leave?tab=policies&companyId=${B.id}`, 'Leave policies');
+  await expect(page).toHaveURL(/\/setup\?tab=leavePolicies&companyId=company-b/);
   const rows = page.getByTestId('leave-policy-row');
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('Beta annual');
@@ -83,7 +84,7 @@ test('/leave?companyId= opens that company\'s policies, and a new policy asks fo
 });
 
 test('editing a policy shows its company locked', async ({ page }) => {
-  await boot(page, `/leave?companyId=${A.id}`);
+  await boot(page, `/setup?tab=leavePolicies&companyId=${A.id}`, 'Leave policies');
   await page.getByTestId('leave-policy-row').first().getByRole('button', { name: 'Edit' }).click();
   const company = page.getByRole('dialog').getByRole('combobox', { name: 'Company' });
   await expect(company).toBeDisabled();

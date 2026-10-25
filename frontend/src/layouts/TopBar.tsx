@@ -1,6 +1,8 @@
 'use client';
 
-import { Bell, BellOff, CheckCheck, Globe, LogOut, Menu, Moon, ShieldCheck, Sun, Trash2, UserCircle2, X } from 'lucide-react';
+import { Bell, BellOff, CheckCheck, Globe, LogOut, Menu, Moon, Settings2, ShieldCheck, Sun, Trash2, UserCircle2, X } from 'lucide-react';
+import Link from 'next/link';
+import { useCanOpenSetup } from '../hooks/useCanOpenSetup';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Avatar } from '../components/Avatar';
@@ -220,6 +222,8 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navi
   const ThemeIcon = theme === 'dark' ? Sun : Moon;
   const { user, logout } = useAuth();
   const { t } = useLocale();
+  // Setup's gear, where administrators expect it (BambooHR, HiBob, Personio): for anyone who can open a Setup section.
+  const canOpenSetup = useCanOpenSetup();
   const router = useRouter();
   const navigationGuard = useNavigationGuard();
   const [notifOpen, setNotifOpen] = useState(false);
@@ -290,6 +294,17 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navi
       <CompanySwitcher />
 
       <div className="ms-auto flex shrink-0 items-center gap-1.5">
+        {canOpenSetup && (
+          <Link
+            href="/setup"
+            aria-label={t('Setup')}
+            title={t('Setup')}
+            data-testid="topbar-setup"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200/80 bg-white/60 text-slate-500 backdrop-blur-sm transition hover:border-slate-300 hover:bg-white/90 hover:text-slate-900 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-slate-400 dark:hover:bg-white/[0.10] dark:hover:text-white"
+          >
+            <Settings2 className="h-4 w-4" aria-hidden="true" />
+          </Link>
+        )}
         <button
           type="button"
           aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}

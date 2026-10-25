@@ -55,10 +55,10 @@ test('payroll and compliance map their Guided setup items to their destinations'
     { destinationId: 'glMapping', done: true, source: 'guided' },
     { destinationId: 'payroll', done: false, source: 'guided' },
   ]);
-  expect(areaProgressItems('compliance', ['gccSettings', 'statutoryRules', 'saudiCompliance', 'gosiFiling'], items, { gccSettings: 0 })).toEqual([
+  expect(areaProgressItems('compliance', ['gccSettings', 'statutoryRules', 'saudiCompliance', 'saudiComplianceDashboard', 'gosiFiling'], items, { gccSettings: 0 })).toEqual([
     { destinationId: 'gccSettings', done: false, source: 'guided' },
     { destinationId: 'statutoryRules', done: true, source: 'guided' },
-    { destinationId: 'saudiCompliance', done: false, source: 'guided' },
+    { destinationId: 'saudiComplianceDashboard', done: false, source: 'guided' },
   ]);
 });
 

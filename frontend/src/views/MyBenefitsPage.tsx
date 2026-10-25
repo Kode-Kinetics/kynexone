@@ -70,7 +70,7 @@ export function MyBenefitsPage() {
           </p>
           {canManageUsers && (
             <div className="flex flex-wrap justify-center gap-2">
-              <Link href="/user-management" className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 dark:bg-white/[0.1] dark:hover:bg-white/[0.16]">{t("Link an employee in User Management")}</Link>
+              <Link href="/setup?tab=users" className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 dark:bg-white/[0.1] dark:hover:bg-white/[0.16]">{t("Link an employee in User Management")}</Link>
               <Link href="/benefits" className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-white/[0.1] dark:text-slate-200 dark:hover:bg-white/[0.06]">{t("Manage company benefits")}</Link>
             </div>
           )}
