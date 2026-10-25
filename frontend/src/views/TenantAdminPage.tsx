@@ -62,6 +62,11 @@ interface SubscriptionUsage {
 
 type MfaPolicy = 'Optional' | 'PrivilegedRoles' | 'Everyone';
 
+/** The company policy a settings payload stands for; an older payload with only `mfaRequired` reads the same way the server does. */
+function effectiveMfaPolicy(settings: Pick<SecuritySettings, 'mfaPolicy' | 'mfaRequired'>): MfaPolicy {
+  return settings.mfaPolicy ?? (settings.mfaRequired ? 'Everyone' : 'PrivilegedRoles');
+}
+
 interface SecuritySettings {
   passwordMinLength: number;
   passwordRequireUppercase: boolean;
@@ -174,14 +179,17 @@ function Toggle({ id, checked, onChange }: { id: string; checked: boolean; onCha
  * skips the code. Writes `mfaPolicy` (+ `mfaPolicyReason` when moving to "Each person chooses"), the legacy
  * `mfaRequired` and `mfaTrustedDeviceDays` of PUT /api/access/security-settings with the rest of the form.
  */
-function TwoStepPolicyGroup({ security, onChange }: {
+function TwoStepPolicyGroup({ security, savedPolicy, onChange }: {
   security: SecuritySettings;
+  /** The policy as last saved (on load and after each successful save), not as the form first opened. */
+  savedPolicy: MfaPolicy;
   onChange: (patch: Partial<SecuritySettings>) => void;
 }) {
   const { t } = useLocale();
-  const policy: MfaPolicy = security.mfaPolicy ?? (security.mfaRequired ? 'Everyone' : 'PrivilegedRoles');
-  // What was saved when the form opened: a reason is only asked for when moving AWAY from it to "Each person chooses".
-  const [originalPolicy] = useState<MfaPolicy>(policy);
+  const policy: MfaPolicy = effectiveMfaPolicy(security);
+  // A reason is only asked for when moving AWAY from the saved policy to "Each person chooses". The baseline follows
+  // every save, so going Optional → Privileged roles (saved) → Optional on the same tab asks for a reason again.
+  const originalPolicy = savedPolicy;
   const policyOptions: { value: MfaPolicy; title: string; hint: string }[] = [
     {
       value: 'Optional',
@@ -384,6 +392,7 @@ export default function TenantAdminPage() {
 
   // Security
   const [security, setSecurity] = useState<SecuritySettings | null>(null);
+  const [savedMfaPolicy, setSavedMfaPolicy] = useState<MfaPolicy>('PrivilegedRoles');
   const [securitySaving, setSecuritySaving] = useState(false);
   const [securitySaved, setSecuritySaved] = useState(false);
   const [securityError, setSecurityError] = useState('');
@@ -457,6 +466,7 @@ export default function TenantAdminPage() {
     try {
       const data = await client.get<SecuritySettings>('/api/access/security-settings').then(r => r.data);
       setSecurity(data);
+      setSavedMfaPolicy(effectiveMfaPolicy(data));
     } catch {}
   }
 
@@ -530,6 +540,9 @@ export default function TenantAdminPage() {
     setSecurityError('');
     try {
       await client.put('/api/access/security-settings', security);
+      // The saved policy is the new baseline, and the reason belonged to that one change.
+      setSavedMfaPolicy(effectiveMfaPolicy(security));
+      setSecurity(p => p ? { ...p, mfaPolicyReason: undefined } : p);
       setSecuritySaved(true);
       setTimeout(() => setSecuritySaved(false), 2000);
     } catch (err) {
@@ -1212,7 +1225,7 @@ export default function TenantAdminPage() {
 
               <SessionLimitsGroup security={security} onChange={(patch) => setSecurity(p => p ? { ...p, ...patch } : p)} />
 
-              <TwoStepPolicyGroup security={security} onChange={(patch) => setSecurity(p => p ? { ...p, ...patch } : p)} />
+              <TwoStepPolicyGroup security={security} savedPolicy={savedMfaPolicy} onChange={(patch) => setSecurity(p => p ? { ...p, ...patch } : p)} />
 
               {securityError && (
                 <p className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{securityError}</p>

@@ -364,6 +364,28 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
     await expect(page.getByText('Give a reason for letting each person choose two-step sign-in.')).toBeVisible();
   });
 
+  test('starting on "Each person chooses": tightening, saving, then choosing it again asks for a fresh reason', async ({ page }) => {
+    const api = await mockApi(page, { security: { mfaPolicy: 'Optional' } });
+    await openSecurity(page);
+    const group = page.getByTestId('two-step-policy');
+    const optional = group.getByRole('radio', { name: /Each person chooses/ });
+    const privileged = group.getByRole('radio', { name: /Required for people who can see or change payroll, banking or access/ });
+    await expect(group.getByLabel('Reason (required)')).toHaveCount(0);
+
+    await privileged.check();
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => api.calls.filter((c) => c.method === 'PUT' && c.path === '/api/access/security-settings').at(-1)?.body)
+      .toMatchObject({ mfaPolicy: 'PrivilegedRoles' });
+
+    // The saved policy is now the baseline, so going back to "Each person chooses" is a relaxation again.
+    await optional.check();
+    await group.getByLabel('Reason (required)').fill('Second test round');
+    await page.getByRole('button', { name: 'Save Settings' }).click();
+    await expect.poll(() => api.calls.filter((c) => c.method === 'PUT' && c.path === '/api/access/security-settings').at(-1)?.body)
+      .toMatchObject({ mfaPolicy: 'Optional', mfaPolicyReason: 'Second test round' });
+    expect(api.errors).toEqual([]);
+  });
+
   test('the special-character rule is read from and saved to the field the API uses', async ({ page }) => {
     // The form used to send passwordRequireSpecialChar, which the server ignores, so this rule never saved from here.
     const api = await mockApi(page, { security: { passwordRequireSpecial: false } });

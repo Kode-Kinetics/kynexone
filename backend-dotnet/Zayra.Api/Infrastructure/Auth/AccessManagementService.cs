@@ -2525,10 +2525,12 @@ public class AccessManagementService : IAccessManagementService
                     setting.Id.ToString(),
                     context with { TenantId = tenant.Id },
                     meta));
+                // The free-text reason stays in the audit row only: written into a log line it would let the caller
+                // forge log entries (CodeQL cs/log-forging). Everything logged here is server-side.
                 if (movedToOptional)
                     _logger?.LogWarning(
-                        "[MFA-POLICY] Tenant {TenantId} moved two-step sign-in to \"each person chooses\" ({From} -> Optional) by {UserId}. Reason: {Reason}",
-                        tenant.Id, policyBefore, context.UserId, policyReason);
+                        "[MFA-POLICY] Tenant {TenantId} moved two-step sign-in to \"each person chooses\" ({From} -> Optional) by {UserId}. The reason is in the audit log.",
+                        tenant.Id, policyBefore, context.UserId);
             }
             await _db.SaveChangesAsync(ct);
             result = ToSecuritySettingDto(setting);
