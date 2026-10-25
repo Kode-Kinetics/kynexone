@@ -8,7 +8,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 
 function Requirement({ item, tone }: { item: ReadinessItem; tone: 'activation' | 'pay' | 'recommendation' }) {
-  const label = tone === 'activation' ? 'Blocks activation' : tone === 'pay' ? 'Blocks payroll' : 'Recommended';
+  const label = tone === 'activation' ? 'Blocks activation' : tone === 'pay' ? 'Required before payroll' : 'Recommended';
   return (
     <li className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/[0.03]">
       {tone === 'pay' ? <CircleDollarSign className="mt-0.5 h-5 w-5 text-amber-600" /> : <AlertTriangle className={`mt-0.5 h-5 w-5 ${tone === 'recommendation' ? 'text-blue-500' : 'text-rose-600'}`} />}

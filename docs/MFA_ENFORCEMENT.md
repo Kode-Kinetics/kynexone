@@ -163,3 +163,21 @@ branch's Vercel **preview** deployment (pointed at a non-production API), confir
 
 If any of 1–3 fails, narrow the middleware matcher to the sign-in routes (`/api/auth/:path*`,
 `/api/platform/auth/:path*`), which are the only ones that need the client IP.
+
+## Testing-phase off switch
+
+`Auth__Mfa__DisabledForTesting=true` (config `Auth:Mfa:DisabledForTesting`, default false) turns tenant
+two-step sign-in off while the product is in testing with no customer. For **tenant users only**: password
+sign-in issues a session directly (no TOTP challenge, no enrolment challenge, whether the user is enrolled,
+privileged or in a workspace that requires MFA); refresh-token rotation is not stopped by privileged
+enforcement; `GET /api/auth/mfa/status` reports not required with `disabledForTesting: true` (the app shows no
+enrolment prompt and /account/security shows a notice); ERP API keys and the self-disable rules
+(`ERR_MFA_REQUIRED_FOR_ROLE` / `_BY_WORKSPACE`) do not refuse. Enrolled factors and trusted browsers are NOT
+deleted, so unsetting the variable restores everything as it was. **Platform-operator MFA is unaffected.**
+
+It has no expiry (unlike break-glass), so it is loud: a boot warning, a `[MFA-DISABLED-FOR-TESTING]` warning on
+every tenant sign-in, `"mfaDisabledForTesting": true` in the PlatformAdmin-only `/health/ready/details` (omitted
+when off; never in the anonymous `/health/ready`, which must not tell outsiders MFA is off), and a non-failing
+CI warning when the key exists on the Render service.
+
+**`Auth__Mfa__DisabledForTesting` must be unset before the first customer goes live.**

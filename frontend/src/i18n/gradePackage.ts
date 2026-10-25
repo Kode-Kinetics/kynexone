@@ -1,0 +1,78 @@
+/**
+ * Grade pay packages: the package editor in Setup → Grades (src/components/setup/GradePackageEditor.tsx) and the
+ * read-only Payroll → Grade packages view (src/views/PayrollPage.tsx).
+ * Terms: pay component = بند الأجر; pay package = حزمة الأجر; gross monthly cash = إجمالي الأجر النقدي الشهري;
+ * salary structure = هيكل الراتب (as in ./setupStudio); Benefits by grade = المزايا حسب الدرجة.
+ */
+const ar: Record<string, string> = {
+  // Setup → Grades: the package editor
+  "Pay package": "حزمة الأجر",
+  "Pick each line from this company's pay components, then set a fixed amount or a percentage of basic.": "اختر كل بند من بنود الأجر الخاصة بهذه الشركة، ثم حدّد مبلغاً ثابتاً أو نسبة من الراتب الأساسي.",
+  "No lines yet. Add Basic first, then the allowances this grade gets.": "لا توجد بنود بعد. أضف الراتب الأساسي أولاً، ثم البدلات التي تستحقها هذه الدرجة.",
+  "Add line": "إضافة بند",
+  "New component": "بند جديد",
+  "Pay component": "بند الأجر",
+  "Choose a component…": "اختر بنداً…",
+  "Earnings": "الاستحقاقات",
+  "Benefits": "المزايا",
+  "Deductions": "الاستقطاعات",
+  "Earning": "استحقاق",
+  "Benefit": "ميزة",
+  "Deduction": "استقطاع",
+  "{code}: not in the list": "{code}: غير موجود في القائمة",
+  "{code} is not one of this company's pay components. Choose a component, or add it as a new one.": "{code} ليس من بنود الأجر الخاصة بهذه الشركة. اختر بنداً، أو أضفه بنداً جديداً.",
+  "Add as new component": "إضافته بنداً جديداً",
+  "Taxable": "خاضع للضريبة",
+  "Amount": "المبلغ",
+  "Annual": "سنوي",
+  "Gross monthly cash: {amount}": "إجمالي الأجر النقدي الشهري: {amount}",
+  "Monthly deductions: {amount}": "الاستقطاعات الشهرية: {amount}",
+  "Below this grade's minimum of {amount}.": "أقل من الحد الأدنى لهذه الدرجة البالغ {amount}.",
+  "Above this grade's maximum of {amount}.": "أعلى من الحد الأقصى لهذه الدرجة البالغ {amount}.",
+  "Benefits and annual lines are not counted in the monthly total.": "لا تُحتسب المزايا والبنود السنوية ضمن الإجمالي الشهري.",
+  "Pay components could not be loaded. Close the grade and open it again.": "تعذّر تحميل بنود الأجر. أغلق الدرجة ثم افتحها مرة أخرى.",
+  "Each pay component can be on a grade only once.": "لا يمكن إضافة بند الأجر إلى الدرجة أكثر من مرة.",
+  "Choose a listed component for every line, or remove the line, before saving.": "اختر بنداً من القائمة لكل سطر، أو احذف السطر، قبل الحفظ.",
+  "Payroll uses this package for the grade's salary structure. It is updated when you save.": "تستخدم الرواتب هذه الحزمة لهيكل راتب الدرجة، ويُحدَّث عند الحفظ.",
+  // The inline "+ New component"
+  "New pay component": "بند أجر جديد",
+  "Name (English)": "الاسم (بالإنجليزية)",
+  "Name (Arabic, optional)": "الاسم (بالعربية، اختياري)",
+  "Type": "النوع",
+  "Taxable income": "دخل خاضع للضريبة",
+  "Add to the list": "إضافة إلى القائمة",
+  "Adding…": "جارٍ الإضافة…",
+  "Enter the component's name in English.": "أدخل اسم البند بالإنجليزية.",
+  "The component could not be added. Try again.": "تعذّرت إضافة البند. حاول مرة أخرى.",
+  "It is added to this company's pay components, so other grades can use it too. Each grade sets its own amount.": "يُضاف إلى بنود الأجر الخاصة بهذه الشركة لتستخدمه الدرجات الأخرى أيضاً. وتحدّد كل درجة مبلغها.",
+  // Payroll → Grade packages
+  "Grade packages": "حزم أجر الدرجات",
+  "Pay packages are set on each grade in Setup. Payroll uses them as they are shown here.": "تُحدَّد حزم الأجر لكل درجة في الإعداد، وتستخدمها الرواتب كما تظهر هنا.",
+  "Grade benefits are set in Benefits by grade. This shows the cash lines payroll uses for each grade.": "تُحدَّد مزايا الدرجات في المزايا حسب الدرجة. تعرض هذه الصفحة البنود النقدية التي تستخدمها الرواتب لكل درجة.",
+  "Open Setup → Grades": "فتح الإعداد ← الدرجات",
+  "Open Benefits by grade": "فتح المزايا حسب الدرجة",
+  "Edit in Setup": "التعديل في الإعداد",
+  "No grades yet": "لا توجد درجات بعد",
+  "Add grades and their pay packages in Setup → Grades.": "أضف الدرجات وحزم أجرها من الإعداد ← الدرجات.",
+  "Grade packages could not be loaded.": "تعذّر تحميل حزم أجر الدرجات.",
+  "No package lines": "لا توجد بنود في الحزمة",
+  "Gross monthly": "الإجمالي الشهري",
+  "Range {range}": "النطاق {range}",
+  "Outside the grade's range": "خارج نطاق الدرجة",
+  "{count, plural, one {# employee} other {# employees}}": "{count, plural, zero {لا يوجد موظفون} one {موظف واحد} two {موظفان} few {# موظفين} many {# موظفًا} other {# موظف}}",
+  "Salary structure {code} · version {version}": "هيكل الراتب {code} · الإصدار {version}",
+  "No salary structure yet": "لا يوجد هيكل راتب بعد",
+  "Inactive": "غير نشط",
+  "Older structures (read-only)": "الهياكل القديمة (للعرض فقط)",
+  "These structures are not a grade's package but still have employees on them. They keep working and are not changed. Move people onto a grade to retire them.": "هذه الهياكل ليست حزمة أجر لأي درجة لكن ما زال عليها موظفون. تبقى تعمل ولا تتغير. انقل الموظفين إلى درجة لإيقافها.",
+  "{count, plural, one {# component} other {# components}}": "{count, plural, zero {لا توجد بنود} one {بند واحد} two {بندان} few {# بنود} many {# بندًا} other {# بند}}",
+  "Shared by all companies": "مشترك بين جميع الشركات",
+  // Payroll → Employee salary: the automatic structure
+  "Salary structure": "هيكل الراتب",
+  "The employee's grade package (automatic)": "حزمة أجر درجة الموظف (تلقائياً)",
+};
+
+export const gradePackage = {
+  en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) as Record<string, string>,
+  ar,
+};

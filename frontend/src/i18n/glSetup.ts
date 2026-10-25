@@ -236,6 +236,7 @@ const ar: Record<string, string> = {
   'A new value starts a new dated row. The current row closes the day before, so payroll already run keeps its original value.': 'القيمة الجديدة تبدأ سجلًا جديدًا مؤرخًا، ويُغلق السجل الحالي في اليوم السابق، فتحتفظ مسيرات الرواتب المنفذة بقيمتها الأصلية.',
   'The rate itself cannot be changed. Add a new rate instead.': 'لا يمكن تغيير المعدل نفسه. أضف معدلًا جديدًا بدلًا من ذلك.',
   'Choose a rate…': 'اختر معدلًا…',
+  'Choose a value…': 'اختر قيمة…',
   'Choose a rate.': 'اختر معدلًا.',
   'Enter a value.': 'أدخل قيمة.',
   'Enter the date the rate takes effect.': 'أدخل تاريخ سريان المعدل.',

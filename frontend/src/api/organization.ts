@@ -326,6 +326,27 @@ export interface GradePayScaleComponentDto {
 
 export type GradePayScaleComponentRequest = Omit<GradePayScaleComponentDto, 'id'>;
 
+/** A pay component a grade's package line may use (GET /api/grades/package-components): from the company's catalogue. */
+export interface GradePackageComponentOption {
+  id: string | null;
+  companyId: string | null;
+  code: string;
+  nameEn: string;
+  nameAr: string;
+  componentType: 'Earning' | 'Benefit' | 'Deduction';
+  isTaxable: boolean;
+  isSystem: boolean;
+}
+
+/** The grade editor's "+ New component". A blank code is derived from the English name. */
+export interface GradePackageComponentCreate {
+  code?: string;
+  nameEn: string;
+  nameAr?: string;
+  componentType: 'Earning' | 'Benefit' | 'Deduction';
+  isTaxable: boolean;
+}
+
 export const gradesApi = {
   list: (page = 1, pageSize = 100) =>
     client.get<PagedResult<GradeDto>>('/api/grades', { params: { page, pageSize } }).then((r) => r.data),
@@ -339,8 +360,13 @@ export const gradesApi = {
   remove: (id: string) => client.delete(`/api/grades/${id}`),
   getPayScale: (id: string) =>
     client.get<GradePayScaleComponentDto[]>(`/api/grades/${id}/pay-scale`).then((r) => r.data),
+  /** Replaces the grade's package lines; the grade's salary structure is brought in step in the same save. */
   setPayScale: (id: string, components: GradePayScaleComponentRequest[]) =>
-    client.put<{ count: number }>(`/api/grades/${id}/pay-scale`, components).then((r) => r.data),
+    client.put<{ count: number; structure: { id: string; code: string; versionNumber: number } | null }>(`/api/grades/${id}/pay-scale`, components).then((r) => r.data),
+  packageComponents: (companyId?: string | null) =>
+    client.get<GradePackageComponentOption[]>('/api/grades/package-components', { params: companyId ? { companyId } : undefined }).then((r) => r.data),
+  createPackageComponent: (companyId: string | null | undefined, body: GradePackageComponentCreate) =>
+    client.post<GradePackageComponentOption>('/api/grades/package-components', body, { params: companyId ? { companyId } : undefined }).then((r) => r.data),
   export: () => client.get<string>('/api/grades/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/grades/import-template', { responseType: 'text' }).then((r) => r.data),
   /** companyId: the company the file's rows belong to (required when the tenant has several). */

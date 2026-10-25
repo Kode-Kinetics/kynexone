@@ -35,7 +35,7 @@ public class EmployeeSelfServiceController : ControllerBase
 {
     private static readonly HashSet<string> SensitiveProfileFields = new(StringComparer.OrdinalIgnoreCase)
     {
-        "passportNumber", "visaNumber", "iqamaNumber", "emiratesId", "bankName", "bankIban", "medicalInformation"
+        "passportNumber", "visaNumber", "iqamaNumber", "borderNumber", "emiratesId", "bankName", "bankIban", "medicalInformation"
     };
     private static readonly HashSet<string> AllowedSelfServiceProfileFields = new(StringComparer.OrdinalIgnoreCase)
     {

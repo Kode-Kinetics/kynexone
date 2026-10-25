@@ -159,6 +159,11 @@ def fetch_present_keys(service_id: str, api_key: str) -> set[str]:
 # Reporting
 # ──────────────────────────────────────────────────────────────────────────────
 def report(required: list[str], present: set[str], source: str) -> int:
+    if "Auth__Mfa__DisabledForTesting" in present:
+        # Key NAME only (this gate never reads values): present means someone set it. Not blocking.
+        print(f"::warning::check_render_env: Auth__Mfa__DisabledForTesting is set on {source}. If it is "
+              f"'true', tenant two-step sign-in is OFF. It must be unset before the first customer goes live. "
+              f"Not blocking the deploy.")
     for key in find_recommended_missing(present):
         print(f"::warning::check_render_env: recommended key {key} is not set on {source}: "
               f"{RECOMMENDED_KEYS[key]}. Not blocking the deploy.")

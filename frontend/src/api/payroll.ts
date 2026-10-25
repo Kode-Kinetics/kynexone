@@ -25,6 +25,49 @@ export interface SalaryStructure {
   components: SalaryComponent[];
 }
 
+export interface GradePackageLine {
+  code: string;
+  name: string;
+  componentType: string;
+  calculationType: string;
+  amount: number;
+  percentage: number;
+  isTaxable: boolean;
+  frequency: string;
+  /** The line's amount for its frequency (a % line resolved against the package's basic). */
+  periodAmount: number;
+}
+
+export interface GradePackage {
+  gradeId: string;
+  gradeCode: string;
+  gradeName: string;
+  gradeNameAr: string | null;
+  companyId: string | null;
+  companyName: string | null;
+  currency: string;
+  minSalary: number;
+  maxSalary: number;
+  isActive: boolean;
+  lines: GradePackageLine[];
+  monthlyGross: number;
+  monthlyDeductions: number;
+  outsideRange: boolean;
+  /** Active employees whose grade this is. */
+  employeeCount: number;
+  structureCode: string | null;
+  structureVersion: number | null;
+  salariesOnStructure: number;
+}
+
+export interface GradePackagesView {
+  /** GradePayScale (Setup → Grades) or BenefitsByGrade (Release A tenants). */
+  source: 'GradePayScale' | 'BenefitsByGrade';
+  grades: GradePackage[];
+  /** Structures that are not a grade's package and still have employees on them. */
+  olderStructures: SalaryStructure[];
+}
+
 export interface SalaryComponent {
   id: string;
   salaryStructureId: string | null;
@@ -840,14 +883,9 @@ export const payrollApi = {
   getSalaryStructure: (id: string) =>
     client.get<SalaryStructure>(`/api/payroll/salary-structures/${id}`).then((r) => r.data),
 
-  createSalaryStructure: (payload: unknown) =>
-    client.post<SalaryStructure>('/api/payroll/salary-structures', payload).then((r) => r.data),
-
-  updateSalaryStructure: (id: string, payload: unknown) =>
-    client.put<SalaryStructure>(`/api/payroll/salary-structures/${id}`, payload).then((r) => r.data),
-
-  deleteSalaryStructure: (id: string) =>
-    client.delete(`/api/payroll/salary-structures/${id}`).then((r) => r.data),
+  /** Payroll → Grade packages (read-only). Structures are derived from grades; there is no structure editor. */
+  gradePackages: (companyId?: string) =>
+    client.get<GradePackagesView>('/api/payroll/grade-packages', { params: companyId ? { companyId } : undefined }).then((r) => r.data),
 
   listEmployeeSalaryStructures: (employeeId?: number) =>
     client.get<EmployeeSalaryStructure[]>('/api/payroll/employee-salary-structures', { params: employeeId ? { employeeId } : undefined }).then((r) => r.data),

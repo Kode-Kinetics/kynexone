@@ -53,7 +53,8 @@ public static class ProductionReadinessEvidence
             tenantCounts?.Total ?? 0,
             tenantCounts?.Active ?? 0,
             pendingMigrations,
-            queues);
+            queues,
+            Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(config) ? true : null);
     }
 
     /// <summary>Pure status rule: ready iff the DB is reachable AND no migrations are pending.</summary>
@@ -403,7 +404,9 @@ public sealed record ReadinessEvidence(
     int Tenants,
     int ActiveTenants,
     int PendingMigrations,
-    QueueHealthEvidence Queues);
+    QueueHealthEvidence Queues,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    bool? MfaDisabledForTesting = null);
 
 /// <summary>
 /// The ONLY body the anonymous <c>/health/ready</c> returns. Render's health check reads the status
@@ -414,6 +417,8 @@ public sealed record ReadinessEvidence(
 /// </summary>
 public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations)
 {
+    // MfaDisabledForTesting is deliberately NOT here: telling an anonymous caller that tenant MFA is off
+    // is reconnaissance. It is reported only at the PlatformAdmin-gated /health/ready/details.
     public static PublicReadiness From(ReadinessEvidence evidence)
         => new(evidence.Status, evidence.Utc, evidence.PendingMigrations);
 }

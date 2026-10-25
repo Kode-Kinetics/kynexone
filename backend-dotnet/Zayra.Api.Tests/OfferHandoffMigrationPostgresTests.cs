@@ -68,6 +68,7 @@ public sealed class OfferHandoffMigrationPostgresTests
         await FluentActions.Awaiting(() => db.SaveChangesAsync()).Should().ThrowAsync<InvalidOperationException>().WithMessage("*handoff_immutable*");
         db.ChangeTracker.Clear();
         await FluentActions.Awaiting(() => migrator.MigrateAsync("20261019152813_OfferDispatch")).Should().ThrowAsync<PostgresException>();
+        await migrator.MigrateAsync(); /* the refused rollback first undid the later additive migrations (each commits on its own); restore them so the rows below use the CURRENT model */
         var t = await db.Tenants.SingleAsync(t => t.Id == tenant); t.IsActive = false; t.Slug += "__deleted_handoff"; await db.SaveChangesAsync();
         await db.Database.ExecuteSqlRawAsync("CREATE FUNCTION handoff_test_fail_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected downstream erase failure'; END $$; CREATE TRIGGER handoff_test_fail AFTER DELETE ON offer_letters FOR EACH ROW EXECUTE FUNCTION handoff_test_fail_delete();");
         await FluentActions.Awaiting(() => OfferArtifactErasure.EraseAsync(db, new OfferMemoryStorage(), tenant, default)).Should().ThrowAsync<PostgresException>();

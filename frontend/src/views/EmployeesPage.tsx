@@ -18,6 +18,7 @@ import { EmployeePackagePanel } from '../components/entitlements/EmployeePackage
 import { EmployeeBenefitsPanel } from '../components/benefits/EmployeeBenefitsPanel';
 import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeductionsPanel';
 import { useReleaseA } from '../lib/releaseA';
+import { SALARY_AMOUNT_FIELDS, applyGradeSalaryDefaults, grossPackage, mergeGradeSalary, monthlySalaryField, type SalaryAmountField, type SalaryAmounts } from '../lib/gradeSalaryDefaults';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { DevelopmentPlanPanel } from '../components/succession/DevelopmentPlanPanel';
 import { useSuccessionAccess } from '../components/succession/SuccessionParts';
@@ -90,7 +91,6 @@ import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFie
 import { EMPLOYEE_REFERENCE_TYPES, EMPTY_EMPLOYEE_REFERENCE_LISTS, loadEmployeeReferenceLists, type EmployeeReferenceKey, type EmployeeReferenceLists } from '../hooks/useReferenceLists';
 import { referenceCode, referenceDefault, referenceLabel, referenceOptions, type ReferenceOption } from '../lib/referenceLists';
 import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
-import { SalaryStructureSelect } from '../components/SalaryStructureSelect';
 import { useLiveGrades } from '../hooks/useLiveGrades';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
@@ -123,7 +123,7 @@ function employeeEditStep(field: EditField): number {
 
 // GET masks these values independently of whether changing them requires approval.
 const MASKED_EMPLOYEE_EDIT_KEYS = new Set([
-  'salary', 'bankName', 'bankIban', 'wpsBankDetails', 'passportNumber', 'iqamaNumber',
+  'salary', 'bankName', 'bankIban', 'wpsBankDetails', 'passportNumber', 'iqamaNumber', 'borderNumber',
   'medicalInformation', 'disciplinaryRecords', 'terminationReason', 'passportIssueDate',
   'passportExpiryDate', 'visaIssueDate', 'visaExpiryDate', 'residencyIssueDate',
   'workPermitIssueDate', 'visaNumber', 'visaFileNumber', 'muqeemNumber', 'gosiReference',
@@ -134,6 +134,15 @@ const MASKED_EMPLOYEE_EDIT_KEYS = new Set([
 ]);
 const EXTENDED_PAYROLL_EDIT_KEYS = new Set(['molId', 'salaryCurrency', 'payrollGroup', 'salaryStructureReference', 'paymentMethod']);
 const OPTIONAL_EXPIRY_EDIT_KEYS = new Set(['iqamaExpiryDate', 'emiratesIdExpiryDate', 'qidExpiryDate', 'civilIdExpiryDate']);
+
+// Identity step: the numbers a new joiner already holds on day one lead the list (KSA border number,
+// then passport); everything else keeps the catalog's order.
+const IDENTITY_FIRST_FIELD_KEYS = ['border_number', 'passport_number'];
+
+/** The country pack's format regex, or null when it cannot be compiled (an advisory hint must never throw). */
+function safeRegExp(pattern: string): RegExp | null {
+  try { return new RegExp(pattern); } catch { return null; }
+}
 
 const statusOptions: StatusFilter[] = ['', 'Draft', 'Pre-boarding', 'Active', 'Probation', 'Confirmed', 'On leave', 'Suspended', 'Resigned', 'Notice period', 'Terminated', 'Retired', 'Absconded', 'Inactive', 'Blacklisted'];
 // Filter dropdown for the ACTIVE People list: drop 'Terminated' — the backend now excludes former
@@ -439,6 +448,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [gradeBenefitsError, setGradeBenefitsError] = useState<string | null>(null);
   const [gradeBenefitsRefresh, setGradeBenefitsRefresh] = useState(0);
   const [gradePayScale, setGradePayScale] = useState<GradePayScaleComponentDto[]>([]);
+  // Which grade `gradePayScale` belongs to: while a newly chosen grade's lines load, the old ones must not fill the form.
+  const [gradePayScaleGradeId, setGradePayScaleGradeId] = useState('');
+  // What the grade last put in each salary field. A field still holding that value (or blank) follows the grade; any
+  // other value is the user's exception and is never overwritten (see lib/gradeSalaryDefaults).
+  const [gradeSalaryFill, setGradeSalaryFill] = useState<SalaryAmounts>({});
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
   // Employee reference values come from tenant-wide Master Data. The constants remain a deliberate
@@ -987,11 +1001,20 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     },
     [grades, selectedDesignation, form.gradeId],
   );
-  const salaryTotal = useMemo(() => {
-    const s = form.salaryBreakdown;
-    return Number(s?.basicSalary ?? 0) + Number(s?.housingAllowance ?? 0) + Number(s?.transportAllowance ?? 0)
-      + Number(s?.foodAllowance ?? 0) + Number(s?.mobileAllowance ?? 0) + Number(s?.otherAllowance ?? 0);
-  }, [form.salaryBreakdown]);
+  const gradePayScaleReady = !releaseA && !!form.gradeId && gradePayScaleGradeId === form.gradeId;
+  // The package that will be PAID: what is on the form, with any line left blank filled from the grade exactly as the
+  // server fills it (EmployeeSalaryBreakdownWriter.MergeGradePayScale). The gross, the range check and the review all
+  // read this, so they never show less than payroll pays.
+  const effectiveSalary = useMemo<SalaryAmounts>(() => {
+    const typed: SalaryAmounts = {};
+    for (const field of SALARY_AMOUNT_FIELDS) typed[field] = form.salaryBreakdown?.[field] ?? undefined;
+    return gradePayScaleReady ? mergeGradeSalary(typed, gradePayScale) : typed;
+  }, [form.salaryBreakdown, gradePayScaleReady, gradePayScale]);
+  const salaryTotal = useMemo(() => grossPackage(effectiveSalary), [effectiveSalary]);
+  const gradeFilledSalary = gradePayScaleReady && Object.keys(gradeSalaryFill).length > 0;
+  const gradeLinesOutsideMonthlySalary = gradePayScaleReady
+    ? gradePayScale.filter((line) => line.isActive && monthlySalaryField(line) === null).map((line) => line.componentName || line.componentCode)
+    : [];
 
   useEffect(() => {
     setGradeBenefits([]);
@@ -1012,12 +1035,41 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     // frozen legacy pay scale is not read here.
     if (!form.gradeId || releaseA) {
       setGradePayScale([]);
+      setGradePayScaleGradeId('');
       return;
     }
-    gradesApi.getPayScale(form.gradeId)
-      .then(setGradePayScale)
-      .catch(() => setGradePayScale([]));
+    const gradeId = form.gradeId;
+    let cancelled = false;
+    const loaded = (lines: GradePayScaleComponentDto[]) => {
+      if (cancelled) return;
+      setGradePayScale(lines);
+      setGradePayScaleGradeId(gradeId);
+    };
+    gradesApi.getPayScale(gradeId)
+      .then(loaded)
+      .catch(() => loaded([]));
+    return () => { cancelled = true; };
   }, [form.gradeId, releaseA]);
+
+  // Choosing the grade (directly, or through the designation) fills basic and every allowance and deduction from the
+  // grade's pay scale — the same pattern as department → line manager and cost centre. Changing the grade replaces what
+  // the previous grade filled; a line the user changed is kept. Clearing the grade clears what it filled.
+  useEffect(() => {
+    if (!formOpen) {
+      setGradeSalaryFill({});
+      return;
+    }
+    if (releaseA) return;
+    if (form.gradeId && gradePayScaleGradeId !== form.gradeId) return; // the new grade's lines are still loading
+    const current: SalaryAmounts = {};
+    for (const field of SALARY_AMOUNT_FIELDS) current[field] = form.salaryBreakdown?.[field] ?? undefined;
+    const { values, filled } = applyGradeSalaryDefaults(current, gradeSalaryFill, form.gradeId ? gradePayScale : []);
+    setGradeSalaryFill(filled);
+    if (SALARY_AMOUNT_FIELDS.every((field) => values[field] === current[field])) return;
+    setForm((prior) => ({ ...prior, salaryBreakdown: { ...prior.salaryBreakdown, ...values } }));
+    // Runs when the grade or its lines change, not on every keystroke: typing is handled in setSalaryField.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formOpen, releaseA, form.gradeId, gradePayScaleGradeId, gradePayScale]);
 
   useEffect(() => {
     if (!formOpen) return;
@@ -1164,21 +1216,31 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const setPayrollField = (key: string, value: string | boolean) =>
     setForm((current) => ({ ...current, payrollProfile: { ...current.payrollProfile!, [key]: value } }));
 
-  const setSalaryField = (key: string, value: string) =>
-    setForm((current) => ({
-      ...current,
-      salaryBreakdown: {
-        ...current.salaryBreakdown,
-        [key]: ['salaryStructureCode', 'effectiveDate', 'currency'].includes(key) ? value : (value === '' ? undefined : Number(value)),
-      },
-    }));
-
-  const setSalaryStructure = useCallback((code: string) =>
-    setForm((current) => ({
-      ...current,
-      salaryBreakdown: { ...current.salaryBreakdown, salaryStructureCode: code },
-      payrollProfile: { ...current.payrollProfile!, salaryStructureReference: code },
-    })), []);
+  const setSalaryField = (key: string, value: string) => {
+    if (!(SALARY_AMOUNT_FIELDS as readonly string[]).includes(key)) {
+      setForm((current) => ({ ...current, salaryBreakdown: { ...current.salaryBreakdown, [key]: value } }));
+      return;
+    }
+    const field = key as SalaryAmountField;
+    const amount = value === '' ? undefined : Number(value);
+    // A figure the user types is their exception and stays (an emptied line is blank again: the server fills it from
+    // the grade, and the gross shows that). A new basic re-computes the percent-of-basic lines the user has not overridden.
+    const nextFill: SalaryAmounts = { ...gradeSalaryFill };
+    delete nextFill[field];
+    let updates: SalaryAmounts = { [field]: amount };
+    if (field === 'basicSalary' && gradePayScaleReady) {
+      const current: SalaryAmounts = {};
+      for (const f of SALARY_AMOUNT_FIELDS) current[f] = form.salaryBreakdown?.[f] ?? undefined;
+      current.basicSalary = amount;
+      const { values, filled } = applyGradeSalaryDefaults(current, nextFill, gradePayScale);
+      updates = { ...values, basicSalary: amount };
+      delete filled.basicSalary;
+      Object.assign(nextFill, filled);
+      for (const f of SALARY_AMOUNT_FIELDS) if (f !== 'basicSalary' && !(f in filled)) delete nextFill[f];
+    }
+    setGradeSalaryFill(nextFill);
+    setForm((current) => ({ ...current, salaryBreakdown: { ...current.salaryBreakdown, ...updates } }));
+  };
 
   const setComplianceValue = (index: number, key: string, value: string | boolean) =>
     setForm((current) => {
@@ -1194,6 +1256,43 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       }
       return { ...current, complianceRecords };
     });
+
+  // Identity step layout. Documents the authority issues only AFTER the hire (KSA: Iqama, GOSI, Qiwa,
+  // Muqeem, sponsor, work permit, visa file — flagged per jurisdiction by the field catalog) sit in their
+  // own "add when available" group with no asterisk: none is needed to create the employee. Of the rest,
+  // the numbers a new joiner already holds on day one (border number, passport) come first.
+  const identityRecordEntries = (form.complianceRecords ?? []).map((record, index) => ({
+    record,
+    index,
+    field: formComplianceFields.find((f) => f.fieldKey === record.fieldKey),
+  }));
+  const identityRecordsLater = identityRecordEntries.filter((entry) => entry.field?.issuedAfterHire);
+  const identityRecordsNow = identityRecordEntries
+    .filter((entry) => !entry.field?.issuedAfterHire)
+    .map((entry, order) => ({ entry, order, rank: IDENTITY_FIRST_FIELD_KEYS.indexOf(entry.record.fieldKey) }))
+    .sort((a, b) => (a.rank === -1 ? Number.MAX_SAFE_INTEGER : a.rank) - (b.rank === -1 ? Number.MAX_SAFE_INTEGER : b.rank) || a.order - b.order)
+    .map(({ entry }) => entry);
+  const renderIdentityRecord = ({ record, index, field }: (typeof identityRecordEntries)[number]) => {
+    const value = (record.fieldValue ?? '').trim();
+    // Format is ADVISORY: an unusual number is flagged, never refused (the server never blocks on it either).
+    const formatWarning = !!field?.pattern && value.length > 0 && !safeRegExp(field.pattern)?.test(value);
+    return (
+      <div key={record.fieldKey} className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+        <Input
+          label={t(record.fieldLabel)}
+          required={record.isRequired && !field?.issuedAfterHire}
+          placeholder={field?.patternHint ? t(field.patternHint) : undefined}
+          value={record.fieldValue ?? ''}
+          onChange={(v) => setComplianceValue(index, 'fieldValue', v)}
+          ltr
+        />
+        {formatWarning && (
+          <p className="text-xs text-amber-700 dark:text-amber-300">{t('Check this number — it does not look like the usual format. You can still save it.')}</p>
+        )}
+        {(field?.expiryEntityKey || record.expiryDate) && <Input label={t('Expiry date')} value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />}
+      </div>
+    );
+  };
 
   // Step checks reuse the create rules. Activation-only requirements remain advisory.
   const validateCreateStep = (step: number) => {
@@ -1303,11 +1402,10 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       ['Payroll group', form.payrollProfile?.payrollGroup],
     ] },
     { title: 'Salary', rows: [
-      ['Basic salary', form.salaryBreakdown?.basicSalary], ['Housing allowance', form.salaryBreakdown?.housingAllowance],
-      ['Transport allowance', form.salaryBreakdown?.transportAllowance], ['Food allowance', form.salaryBreakdown?.foodAllowance],
-      ['Mobile allowance', form.salaryBreakdown?.mobileAllowance], ['Other allowance', form.salaryBreakdown?.otherAllowance],
-      ['Fixed deduction', form.salaryBreakdown?.fixedDeduction],
-      ['Salary structure', form.salaryBreakdown?.salaryStructureCode || t('Default for the grade')],
+      ['Basic salary', effectiveSalary.basicSalary], ['Housing allowance', effectiveSalary.housingAllowance],
+      ['Transport allowance', effectiveSalary.transportAllowance], ['Food allowance', effectiveSalary.foodAllowance],
+      ['Mobile allowance', effectiveSalary.mobileAllowance], ['Other allowance', effectiveSalary.otherAllowance],
+      ['Fixed deduction', effectiveSalary.fixedDeduction],
       ['Currency', form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode],
       ['Effective date', form.salaryBreakdown?.effectiveDate || form.joiningDate],
       ['Gross package', `${form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} ${wizardFormat.number(salaryTotal)}`],
@@ -2744,20 +2842,15 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <Input label="Basic salary" type="number" value={String(form.salaryBreakdown?.basicSalary ?? '')} onChange={(v) => setSalaryField('basicSalary', v)} />
             <Select label="Breakdown currency" value={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode} onChange={(v) => setSalaryField('currency', v)} options={SALARY_CURRENCY_OPTIONS} />
             <Input label="Effective date" type="date" value={form.salaryBreakdown?.effectiveDate ?? form.joiningDate ?? ''} onChange={(v) => setSalaryField('effectiveDate', v)} />
-            {/* A choice of the company's active structures, never free text (an unknown code is refused, 422). The
-                payroll profile's reference follows the choice. */}
-            <SalaryStructureSelect
-              companyId={form.companyId}
-              value={form.salaryBreakdown?.salaryStructureCode ?? ''}
-              retainCurrent={false}
-              onChange={setSalaryStructure}
-            />
+            {/* No salary-structure choice: the grade is the pay package. A hire goes on their grade's default structure
+                (DIRECT without a grade); the server still accepts a code from the import and the API. */}
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
               <p className="font-semibold text-slate-800 dark:text-white">Gross package: {(form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode)} {salaryTotal.toLocaleString()}</p>
               {releaseA && form.gradeId && <p className="mt-1">{t('Leave an allowance blank to fill it from Benefits by grade for this grade on the effective date. If the grade has no value there, you will be asked to enter it.')}</p>}
-              {gradePayScale.length > 0 && <p className="mt-1">Grade defaults: {gradePayScale.map((line) => `${line.componentName} ${line.amount || `${line.percentage}%`}`).join(' · ')}</p>}
+              {gradeFilledSalary && <p className="mt-1" data-testid="grade-salary-note">{t('Filled from grade {grade}. Change any line for an exception; a blank line is also taken from the grade, so enter 0 for none.', { grade: selectedGrade?.name || selectedGrade?.code || '' })}</p>}
+              {gradeLinesOutsideMonthlySalary.length > 0 && <p className="mt-1">{t('Not part of the monthly salary: {lines}', { lines: gradeLinesOutsideMonthlySalary.join(' · ') })}</p>}
             </div>
-            <EmployeeAdditionalDetails title="Add allowances and deductions">
+            <EmployeeAdditionalDetails title="Add allowances and deductions" open={gradeFilledSalary}>
             <Input label="Housing allowance" type="number" value={String(form.salaryBreakdown?.housingAllowance ?? '')} onChange={(v) => setSalaryField('housingAllowance', v)} />
             <Input label="Transport allowance" type="number" value={String(form.salaryBreakdown?.transportAllowance ?? '')} onChange={(v) => setSalaryField('transportAllowance', v)} />
             <Input label="Food allowance" type="number" value={String(form.salaryBreakdown?.foodAllowance ?? '')} onChange={(v) => setSalaryField('foodAllowance', v)} />
@@ -2785,22 +2878,16 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                 <p className="text-xs text-slate-400">Select the employing company and nationality to see the required identity documents.</p>
               )
             )}
-            {(form.complianceRecords ?? []).map((record, index) => {
-              const field = formComplianceFields.find((f) => f.fieldKey === record.fieldKey);
-              return (
-                <div key={record.fieldKey} className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
-                  <Input
-                    label={record.fieldLabel}
-                    required={record.isRequired}
-                    placeholder={field?.patternHint}
-                    value={record.fieldValue ?? ''}
-                    onChange={(v) => setComplianceValue(index, 'fieldValue', v)}
-                  />
-                  {(field?.expiryEntityKey || record.expiryDate) && <Input label="Expiry date" value={record.expiryDate ?? ''} onChange={(v) => setComplianceValue(index, 'expiryDate', v)} type="date" />}
-                </div>
-              );
-            })}
+            {identityRecordsNow.map(renderIdentityRecord)}
           </Section>
+          {identityRecordsLater.length > 0 && (
+            <div className="mt-4">
+              <Section title={t('Issued after joining — required before first payroll')}>
+                <p className="text-xs text-slate-500 dark:text-slate-400 sm:col-span-2">{t('These are issued after the employee joins, through the labour ministry and Jawazat. None is needed to create or activate the employee; each one is required before their first payroll. Add them to the profile as they are issued.')}</p>
+                {identityRecordsLater.map(renderIdentityRecord)}
+              </Section>
+            </div>
+          )}
           </EmployeeCreatePanel>
           <EmployeeCreatePanel step={5} activeStep={formStep}>
             <EmployeeCreateReview sections={createReviewSections} onEdit={changeCreateStep} busy={saving} />
@@ -3017,7 +3104,9 @@ function cleanPayload(form: EmployeeCreateRequest): EmployeeCreateRequest {
   const salaryBreakdown = form.salaryBreakdown
     ? {
         ...form.salaryBreakdown,
-        salaryStructureCode: emptyToUndefined(form.salaryBreakdown.salaryStructureCode),
+        // The wizard never chooses a structure (the grade is the package): a code left over in a restored draft
+        // must not put the hire on a structure nobody can see.
+        salaryStructureCode: undefined,
         effectiveDate: emptyToUndefined(form.salaryBreakdown.effectiveDate),
         currency: emptyToUndefined(form.salaryBreakdown.currency || form.payrollProfile?.salaryCurrency),
       }

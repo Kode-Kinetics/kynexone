@@ -501,7 +501,7 @@ test('workspace overview distinguishes blockers from recommendations and present
   await expect(page.getByText('Contract document', { exact: true })).toBeVisible();
   await expect(page.getByText('Blocks activation', { exact: true })).toBeVisible();
   await expect(page.getByText('IBAN', { exact: true })).toBeVisible();
-  await expect(page.getByText('Blocks payroll', { exact: true })).toBeVisible();
+  await expect(page.getByText('Required before payroll', { exact: true })).toBeVisible();
 });
 
 test('a missing government ID opens the Identity step of Edit Employee, and Compliance offers Edit identity', async ({ page }) => {

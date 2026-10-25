@@ -180,7 +180,8 @@ public sealed class ErpApiKeysController : ControllerBase
             });
         var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == uid && u.TenantId == tid, ct);
         if (user is null || !user.IsActive) return Unauthorized();
-        if (!PrivilegedMfaPolicy.IsTenantUserEnrolled(user))
+        if (!PrivilegedMfaPolicy.IsDisabledForTesting(HttpContext.RequestServices.GetService<IConfiguration>())
+            && !PrivilegedMfaPolicy.IsTenantUserEnrolled(user))
             return StatusCode(StatusCodes.Status403Forbidden, new
             {
                 error = "mfa_required",

@@ -524,22 +524,12 @@ async function activateEmployees(adminToken: string, byCode: Map<string, any>): 
 
 /** A salary assignment per employee, effective from 1 Jan 2026 or the joining date if later. */
 async function ensureSalaries(adminToken: string, companyIds: Record<CompanyKey, string>, byCode: Map<string, any>): Promise<void> {
-  const structures = items(ok(await call('GET', '/api/payroll/salary-structures', { token: adminToken }), 'list salary structures').body);
+  // No structure is named: structures follow grades now (POST salary-structures answers 409), so each salary goes on
+  // the employee's grade package structure, which the server creates from the grade when needed.
   const assigned = new Set((await allPages(adminToken, '/api/payroll/employee-salary-structures'))
     .map((a: any) => String(a.employeeId ?? a.EmployeeId)));
   let count = 0;
   for (const c of COMPANIES) {
-    const code = `MASAR-${c.key}-STD`;
-    let structureId = idOf(structures.find((s: any) => (s.code ?? s.Code) === code));
-    if (!structureId) {
-      structureId = idOf(ok(await call('POST', '/api/payroll/salary-structures', {
-        token: adminToken, companyId: companyIds[c.key],
-        body: {
-          code, name: `${c.tradeName} standard structure`, currency: 'SAR', effectiveDate: '2018-01-01',
-          companyId: companyIds[c.key], components: [], isActive: true,
-        },
-      }), `create salary structure ${code}`).body);
-    }
     for (const e of EMPLOYEES.filter((x) => x.company === c.key)) {
       const row = byCode.get(e.code);
       const id = row.id ?? row.Id;
@@ -548,7 +538,7 @@ async function ensureSalaries(adminToken: string, companyIds: Record<CompanyKey,
       ok(await call('POST', '/api/payroll/employee-salary-structures', {
         token: adminToken, companyId: companyIds[c.key],
         body: {
-          employeeId: id, salaryStructureId: structureId, basicSalary: e.basic,
+          employeeId: id, basicSalary: e.basic,
           housingAllowance: housing, transportAllowance: transport, foodAllowance: 0, mobileAllowance: 0,
           otherAllowance: 0, fixedDeduction: 0,
           effectiveDate: joiningDate(e) > '2026-01-01' ? joiningDate(e) : '2026-01-01', currency: 'SAR',

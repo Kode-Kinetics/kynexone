@@ -57,6 +57,17 @@ public static class PrivilegedMfaPolicy
     public static readonly TimeSpan MaxBreakGlassWindow = TimeSpan.FromDays(7);
 
     /// <summary>
+    /// TESTING-PHASE off switch (env <c>Auth__Mfa__DisabledForTesting=true</c>). While true, TENANT users are
+    /// never challenged, enrolled or refused for lack of MFA; enrolled factors and trusted browsers are kept
+    /// untouched. Platform-operator MFA is NOT affected. Unlike break-glass it has no expiry, so it is reported
+    /// loudly: boot warning, a warning per sign-in, /health/ready. Must be unset before the first customer.
+    /// </summary>
+    public const string DisabledForTestingConfigKey = "Auth:Mfa:DisabledForTesting";
+
+    public static bool IsDisabledForTesting(IConfiguration? config)
+        => bool.TryParse(config?[DisabledForTestingConfigKey], out var on) && on;
+
+    /// <summary>
     /// "Privileged" is decided by what a user can DO, never by a role's name: seeded roles are
     /// editable and renameable, tenants create custom roles, and the migration importer marks
     /// imported roles editable.
@@ -368,6 +379,7 @@ public static class PrivilegedMfaPolicy
     public static async Task<PrivilegedMfaState> ForTenantUserAsync(
         ZayraDbContext db, IConfiguration? config, User user, SecuritySetting? policy, DateTime nowUtc, CancellationToken ct)
     {
+        if (IsDisabledForTesting(config)) return new(PrivilegedMfaStatus.NotRequired, null, false);
         var required = await IsPrivilegedTenantUserAsync(db, user, ct);
         if (!required) return new(PrivilegedMfaStatus.NotRequired, null, false);
         var enforceFrom = policy?.PrivilegedMfaEnforceFromUtc ?? await LoadPlatformEnforceFromAsync(db, ct);

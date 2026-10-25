@@ -54,6 +54,8 @@ export interface RateRegistryEntry {
   minValue: number | null;
   maxValue: number | null;
   description: string;
+  /** Closed list of admissible words for a text-valued key (shown as a dropdown); absent for free text. */
+  allowedValues?: string[] | null;
   /** False = recorded only: payroll never reads this key, so the server refuses a new value (422 COMPANY_RATE_NOT_APPLIED). */
   appliedByPayroll?: boolean | null;
   /** Plain-language reason, set when appliedByPayroll is false. */

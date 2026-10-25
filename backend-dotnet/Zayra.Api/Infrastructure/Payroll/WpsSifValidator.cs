@@ -103,7 +103,8 @@ public static class WpsSifValidator
         IReadOnlyList<PayrollSlip>       slips,
         IReadOnlyList<EmployeePayrollProfile> profiles,
         IReadOnlyList<Employee>          employees,
-        IReadOnlySet<int>?               payBlockedEmployeeIds = null)
+        IReadOnlySet<int>?               payBlockedEmployeeIds = null,
+        IReadOnlyDictionary<int, Zayra.Api.Infrastructure.Employees.BorderNumberRule.WageFileBorderId>? borderNumberIds = null)
     {
         var errors   = new List<WpsValidationIssue>();
         var warnings = new List<WpsValidationIssue>();
@@ -190,8 +191,22 @@ public static class WpsSifValidator
             else
             {
                 if (string.IsNullOrWhiteSpace(emp.IdNumber))
-                    errors.Add(EmpError("MISSING_ID_NUMBER", empId, empCode,
-                        $"Employee {empCode} is missing a government ID number required for WPS regulatory reporting."));
+                {
+                    // KSA: a new arrival inside the border-number window has no Iqama yet. Per the company's
+                    // setting the Border Number is written as the ID (a warning naming them), or they are held.
+                    if (borderNumberIds is not null && borderNumberIds.TryGetValue(empId, out var border))
+                    {
+                        if (border.Allowed)
+                            warnings.Add(EmpWarning(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberUsedAsIdCode, empId, empCode,
+                                $"Employee {empCode} has no Iqama yet; their Border Number is written as the employee ID in this file."));
+                        else
+                            errors.Add(EmpError(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberNotAllowedAsIdCode, empId, empCode,
+                                $"Employee {empCode} has no Iqama yet and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates."));
+                    }
+                    else
+                        errors.Add(EmpError("MISSING_ID_NUMBER", empId, empCode,
+                            $"Employee {empCode} is missing a government ID number required for WPS regulatory reporting."));
+                }
 
                 // A row that could never have been payable (never activated, or fully closed out) is a
                 // BLOCKING error: it is a data defect, not a payment.

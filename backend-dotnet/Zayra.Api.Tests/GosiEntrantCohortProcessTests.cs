@@ -142,6 +142,42 @@ public class GosiEntrantCohortProcessTests
             .Should().BeFalse();
     }
 
+    /// <summary>
+    /// The pay interlock, named on the Validation tab: Process (and /validate, which rebuilds the results) writes
+    /// one READINESS_PAY_BLOCKED finding per held employee naming the person and every missing document. It is a
+    /// WARNING — the hold itself stays where it always was (the WPS / bank file), so Approve is unaffected.
+    /// </summary>
+    [Fact]
+    public async Task Process_NamesEachPayHeldEmployeeAndTheMissingDocuments_OnTheValidationTab()
+    {
+        await using var db = _fx.CreateDb();
+        var w = await World.SeedAsync(db);
+        var ctrl = Controller(db, w.TenantId, Rules());
+
+        (await ctrl.Process(w.Run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+
+        async Task<PayrollValidationResult> FindingFor(Employee e) =>
+            (await db.PayrollValidationResults.AsNoTracking()
+                .Where(r => r.PayrollRunId == w.Run.Id && r.Code == "READINESS_PAY_BLOCKED" && r.EmployeeId == e.Id)
+                .ToListAsync()).Should().ContainSingle().Subject;
+
+        var expat = await FindingFor(w.Expat);
+        expat.Severity.Should().Be("Warning");
+        expat.Message.Should().StartWith($"{w.Expat.FullName} ({w.Expat.EmployeeCode}): required before payroll — ");
+        foreach (var doc in new[] { "GOSI reference", "Qiwa contract number", "Muqeem number", "Sponsor name",
+                                    "Work permit number", "Visa number", "Visa file number", "Iqama or border number" })
+            expat.Message.Should().Contain(doc);
+        expat.Message.Should().Contain("explicit acknowledgement", "an Active employee is included in the bank file only on acknowledgement");
+
+        var saudi = await FindingFor(w.Existing);
+        saudi.Message.Should().Contain("GOSI reference").And.Contain("Qiwa contract number");
+        saudi.Message.Should().NotContain("Muqeem").And.NotContain("Sponsor").And.NotContain("Visa");
+
+        // /validate rebuilds the stored results wholesale — the finding must survive it.
+        (await ctrl.Validate(w.Run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await FindingFor(w.Expat)).Message.Should().Be(expat.Message);
+    }
+
     // ── World ─────────────────────────────────────────────────────────────────────────────────────
 
     private sealed record World(Guid TenantId, PayrollRun Run, Employee Unknown, Employee Existing, Employee Entrant, Employee Expat)

@@ -105,6 +105,7 @@ public static class EmployeeChangeApplier
                 case "visaIssueDate": employee.VisaIssueDate = ReadDateOnly(value); break;
                 case "visaExpiryDate": employee.VisaExpiryDate = ReadDateOnly(value); break;
                 case "iqamaNumber": employee.IqamaNumber = value.GetString() ?? employee.IqamaNumber; break;
+                case "borderNumber": employee.BorderNumber = value.GetString() ?? employee.BorderNumber; break;
                 // IqamaExpiry was readable and CSV-importable but had no edit path: it is exported at
                 // the employee-detail projection and read by both CSV importers, yet the applier had
                 // no case for it. GccReadinessFloor treats it as a fail-closed PAY gate for non-GCC

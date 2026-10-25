@@ -25,12 +25,14 @@ public class MfaService : IMfaService
     private readonly ITokenService _tokenService;
     private readonly IAuditService _audit;
 
+    private readonly IConfiguration? _config;
     private readonly IEmailService? _email;
     private readonly ILogger<MfaService>? _log;
 
     public MfaService(ZayraDbContext db, TotpService totp, ITokenService tokenService, IAuditService audit,
-        IEmailService? email = null, ILogger<MfaService>? log = null)
+        IEmailService? email = null, ILogger<MfaService>? log = null, IConfiguration? config = null)
     {
+        _config = config;
         _email = email;
         _log = log;
         _db = db;
@@ -519,18 +521,20 @@ public class MfaService : IMfaService
 
             if (!privilegedRecovery)
             {
+                // Testing switch: the mandatory rules do not refuse (the code check below still applies).
+                var mfaRulesOff = PrivilegedMfaPolicy.IsDisabledForTesting(_config);
                 // The mandatory rules stay: a privileged role, or a company that requires two-step for everyone,
                 // cannot switch it off (platform recovery, the lost-device path, is not this method's caller).
                 var graph = await LoadCompleteTenantGraphAsync(user.Id, user.TenantId, cancellationToken);
                 if (graph is null) return false;
-                if (await PrivilegedMfaPolicy.IsPrivilegedTenantUserAsync(_db, graph, cancellationToken))
+                if (!mfaRulesOff && await PrivilegedMfaPolicy.IsPrivilegedTenantUserAsync(_db, graph, cancellationToken))
                 {
                     outcome = MfaDisableOutcome.RequiredForRole;
                     return false;
                 }
                 var policy = await _db.SecuritySettings.AsNoTracking()
                     .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, cancellationToken);
-                if (policy?.MfaRequired == true)
+                if (!mfaRulesOff && policy?.MfaRequired == true)
                 {
                     outcome = MfaDisableOutcome.RequiredByWorkspace;
                     return false;

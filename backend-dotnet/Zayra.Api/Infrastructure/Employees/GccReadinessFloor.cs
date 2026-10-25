@@ -43,6 +43,10 @@ public static class GccReadinessFloor
 {
     /// <summary>The retained compliance disclaimer, mirrored on every readiness response
     /// (CompanyGovernanceController.cs:200).</summary>
+    // KSA Border Number: the window after joining during which it may stand in for the Iqama at PAY is NOT a code
+    // constant — it is the dated statutory row ksa.border_number_grace_days (default 90) with a per-company override,
+    // resolved by BorderNumberRule. Activation accepts the border number with no time limit.
+
     public const string Disclaimer =
         "Compliance profiles are configurable readiness tools — not legal certification. Country rule packs require legal validation.";
 
@@ -95,8 +99,18 @@ public static class GccReadinessFloor
                 // (hard), just enforced where contributions are actually computed.
                 items.Add(Req("GosiReference", "identity", true, "pay", iso2));                               // all residents (nationals full, expats OH)
                 items.Add(Req("IdNumber", "identity", true, "activate", iso2, nationality: "SA"));            // National ID (Hawiyya) — host national
-                items.Add(Req("IqamaNumber", "identity", true, "activate", iso2, nonGccExpat: true));         // residence permit — non-GCC expat
+                // Iqama — non-GCC expat. Activation: Iqama OR border number. Pay: the border number is accepted
+                // for the configured window after joining, then the Iqama itself (the registry getter decides).
+                items.Add(Req("IqamaNumber", "identity", true, "activate", iso2, nonGccExpat: true));
                 items.Add(Req("IqamaExpiry", "identity", true, "pay", iso2, nonGccExpat: true));
+                // Issued AFTER the hire, through the labour ministry / Jawazat — so never needed to create or to
+                // activate (same reasoning as GOSI above), but required before the employee's first payroll.
+                items.Add(Req("QiwaContractNumber", "identity", true, "pay", iso2));                         // Qiwa documents every private-sector contract
+                items.Add(Req("MuqeemNumber", "identity", true, "pay", iso2, nonGccExpat: true));             // Jawazat residents' record — expats only
+                items.Add(Req("SponsorName", "identity", true, "pay", iso2, nonGccExpat: true));
+                items.Add(Req("WorkPermitNumber", "identity", true, "pay", iso2, nonGccExpat: true));
+                items.Add(Req("VisaNumber", "identity", true, "pay", iso2, nonGccExpat: true));
+                items.Add(Req("VisaFileNumber", "identity", true, "pay", iso2, nonGccExpat: true));
                 break;
             case "AE":
                 items.Add(Req("EmiratesId", "identity", true, "activate", iso2));                             // all residents

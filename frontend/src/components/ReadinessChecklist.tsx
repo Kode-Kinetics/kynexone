@@ -37,6 +37,7 @@ function whyLabel(item: ReadinessItem): string | null {
   const parts: string[] = [];
   if (item.jurisdiction) parts.push(`Required by ${item.jurisdiction} policy`);
   else if (item.reason === 'statutory') parts.push('Statutory requirement');
+  else if (item.reason === 'provisional') parts.push('Due — an interim number is on file');
   else if (item.reason) parts.push(item.reason);
   return parts.length > 0 ? parts.join(' · ') : null;
 }
@@ -230,7 +231,7 @@ export function ReadinessChecklist({
       </div>
 
       <Section title="Required to activate" icon={<AlertTriangle className="h-3.5 w-3.5 text-rose-500" aria-hidden="true" />} items={readiness.blocking} accent="rose" {...handlers} />
-      <Section title="Required to pay" icon={<Wallet className="h-3.5 w-3.5 text-amber-500" aria-hidden="true" />} items={readiness.payBlocking} accent="amber" {...handlers} />
+      <Section title="Required before payroll" icon={<Wallet className="h-3.5 w-3.5 text-amber-500" aria-hidden="true" />} items={readiness.payBlocking} accent="amber" {...handlers} />
       <Section title="Expiring soon" icon={<Clock className="h-3.5 w-3.5 text-amber-500" aria-hidden="true" />} items={readiness.expiringSoon ?? []} accent="amber" {...handlers} />
       <Section title="Recommended" icon={<Circle className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />} items={readiness.recommended} accent="slate" {...handlers} />
 

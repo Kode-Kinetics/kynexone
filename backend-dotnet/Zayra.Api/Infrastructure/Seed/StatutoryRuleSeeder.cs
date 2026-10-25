@@ -584,6 +584,12 @@ public static class StatutoryRuleSeeder
             "contracts.qiwa_gate_lead_days", "7", "int", eff07,
             "[PRODUCT] Days before the contract ends by which the Qiwa outcome must be evidenced so the new term can be applied."));
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "ksa.border_number_grace_days", "90", "int", eff07,
+            "[PRODUCT] Days after the joining date during which a new arrival's Border Number stands in for the Iqama "
+            + "(and its expiry) at the 'pay' readiness stage and, by company setting, as the employee ID in the Saudi wage "
+            + "file. The rule always applies; a company may change the number from 0 (Iqama needed at first payroll) to 180 "
+            + "(Company rates: payparameter.ksa_border_number_grace_days)."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "contracts.default_non_renewal_notice_days", "60", "int", eff07,
             "[COUNSEL] Default notice, in days before the end date, for not renewing a fixed-term contract when the contract "
             + "states none. Without notice served by then the contract renews on its terms (Art.74(2))."));
