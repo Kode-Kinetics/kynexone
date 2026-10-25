@@ -502,6 +502,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         // The audit row is staged, not written: it commits in the same SaveChanges as the cost centre.
         _audit.Stage("organization.cost_center_created", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
             CostCentreAuditJson(null, costCenter, request.Reason), costCenter.CompanyId);
+        if (functionalClass is not null) StageClassChanged(tenantId, context, costCenter, null, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
         return costCenter.ToDto();
     }
@@ -549,6 +550,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         costCenter.UpdatedBy = context.UserId;
         _audit.Stage("organization.cost_center_updated", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
             CostCentreAuditJson(before, costCenter, request.Reason), costCenter.CompanyId);
+        if (classChanged) StageClassChanged(tenantId, context, costCenter, before.FunctionalClass, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
         return costCenter.ToDto();
     }
@@ -567,6 +569,17 @@ public class OrganizationSetupService : IOrganizationSetupService
         await _db.SaveChangesAsync(cancellationToken);
         return true;
     }
+
+    /// <summary>The audit action finance's separation-of-duties check reads: who changed a cost centre's functional class, in which company, from what to what.</summary>
+    private void StageClassChanged(Guid tenantId, RequestContext context, CostCenter costCenter, string? beforeClass, string? reason) =>
+        _audit.Stage("organization.costcenter.class_changed", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                before = new { functionalClass = beforeClass },
+                after = new { functionalClass = costCenter.FunctionalClass },
+                reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim(),
+            }, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)),
+            costCenter.CompanyId);
 
     /// <summary>Null = the request did not mention the field (leave it alone); empty = clear it.</summary>
     private static string? NormalizeClass(string? value, out bool given)

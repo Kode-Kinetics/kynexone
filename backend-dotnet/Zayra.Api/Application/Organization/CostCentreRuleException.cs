@@ -69,8 +69,8 @@ public sealed class CostCentreRuleException(string code, int status, string mess
     /// <summary>M-7 (corrected by AM-9): names the real way out, which is Reopen or Lock. SendBack exists only from PendingFinanceReview.
     /// Discloses nothing about the run.</summary>
     public static CostCentreRuleException LockedIntoApprovedRun() => new("locked_into_approved_run", 409,
-        "A payroll run for this company is awaiting finance review or lock. This change would alter what it posts. Reopen the run, or lock it, first.",
-        "هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل. هذا التغيير سيغيّر ما ستقوم بترحيله. أعد فتح المسيرة أو اقفلها أولًا.");
+        "A payroll run for this company is awaiting finance review or lock; reopen it first.",
+        "هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتحها أولًا.");
 
     /// <summary>M-9.</summary>
     public static CostCentreRuleException CodeLocked(string costCentreCode) => new("cost_centre_code_locked", 409,

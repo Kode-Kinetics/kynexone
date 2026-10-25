@@ -250,7 +250,7 @@ public class CostCentreMasterServiceTests
         await w.Svc.DeleteCostCenterAsync(w.Tenant, cc.Id, Ctx(w.Tenant), default);
 
         var rows = await w.Db.AuditLogs.Where(x => x.EntityName == "CostCenter").OrderBy(x => x.CreatedAtUtc).ToListAsync();
-        rows.Select(r => r.Action).Should().Equal("organization.cost_center_created", "organization.cost_center_updated", "organization.cost_center_deleted");
+        rows.Select(r => r.Action).Should().Equal("organization.cost_center_created", "organization.cost_center_updated", "organization.costcenter.class_changed", "organization.cost_center_deleted");
         rows.Should().OnlyContain(r => r.CompanyId == w.A.Id && r.TenantId == w.Tenant);
 
         var update = JsonDocument.Parse(rows[1].Metadata!).RootElement;

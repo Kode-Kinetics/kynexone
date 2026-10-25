@@ -256,6 +256,16 @@ public static class EmployeeOrgFieldResolver
         var after = AttributionState.Of(employee);
         if (before == after) return;
 
+        // The audit action finance's separation-of-duties check reads: an override was set, removed or re-pointed.
+        if (before.IsOverride != after.IsOverride || (after.IsOverride && before.CostCenterId != after.CostCenterId))
+            new AuditService(db).Stage("employee.cost_centre_override.changed", nameof(Employee), employee.Id.ToString(),
+                new RequestContext(null, null, actorUserId, tenantId),
+                JsonSerializer.Serialize(new
+                {
+                    before = new { @override = before.IsOverride, costCenterId = before.CostCenterId },
+                    after = new { @override = after.IsOverride, costCenterId = after.CostCenterId },
+                }), employee.CompanyId);
+
         Guid? resolvedBefore = null, resolvedAfter = null;
         string? sourceBefore = null, sourceAfter = null;
         if (employee.CompanyId is Guid companyId)

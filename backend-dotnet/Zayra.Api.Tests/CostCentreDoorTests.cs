@@ -8,6 +8,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.Timesheets;
 using Zayra.Api.Controllers;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Employees;
@@ -341,7 +342,7 @@ public class CostCentreDoorTests
         var d2 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D2", NameEn = "Second Dept" };
         w.Db.AddRange(d1, d2); await w.Db.SaveChangesAsync();
         var emp = await EmployeeIn(w, department: d1.Id);
-        emp.CostCenterId = w.Other.Id; emp.CostCenterIsOverride = true; await w.Db.SaveChangesAsync();
+        emp.CostCenterId = w.OtherCompany.Id; emp.CostCenterIsOverride = true; await w.Db.SaveChangesAsync();
 
         await EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("jobTitle", "Analyst")), Guid.NewGuid(), default);
         await w.Db.SaveChangesAsync();
