@@ -43,6 +43,7 @@ const ar: Record<string, string> = {
   "Required for your role, because you can see or change payroll, banking or access.":
     "مطلوب لدورك، لأنك تستطيع الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها.",
   "Required by your company for everyone.": "تشترطه شركتك على جميع المستخدمين.",
+  "Two-step sign-in is switched off while the product is in testing": "التحقق بخطوتين متوقف أثناء مرحلة اختبار المنتج.",
   "Your sign-in settings could not be loaded.": "تعذّر تحميل إعدادات تسجيل الدخول.",
   "Two-step sign-in is on. You were signed out everywhere else.": "تم تفعيل التحقق بخطوتين. سُجّل خروجك من كل الأجهزة الأخرى.",
   "Two-step sign-in is off. You were signed out everywhere else.": "تم إيقاف التحقق بخطوتين. سُجّل خروجك من كل الأجهزة الأخرى.",

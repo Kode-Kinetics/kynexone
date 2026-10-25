@@ -31,7 +31,8 @@ internal static class AuthCurrentEligibility
         bool ssoOnly,
         SecuritySetting? policy,
         DateTime nowUtc,
-        bool ignoreFailureLockout = false) => Evaluate(user, ssoOnly, policy, requireSessionMfa: true, nowUtc, ignoreFailureLockout);
+        bool ignoreFailureLockout = false,
+        bool mfaDisabledForTesting = false) => Evaluate(user, ssoOnly, policy, requireSessionMfa: !mfaDisabledForTesting, nowUtc, ignoreFailureLockout);
 
     /// <summary>True while a failed-password lockout is in force.</summary>
     public static bool IsFailureLockoutActive(User user, DateTime nowUtc)

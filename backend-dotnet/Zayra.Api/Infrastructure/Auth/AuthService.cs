@@ -29,6 +29,13 @@ public class AuthService : IAuthService
     private readonly ILogger<AuthService> _log;
     private readonly string _appUrl;
     private readonly IConfiguration? _configuration;
+
+    private bool MfaOffForTesting => PrivilegedMfaPolicy.IsDisabledForTesting(_configuration);
+
+    /// <summary>ForSession, with the testing-phase MFA switch applied (no "mfa_enrollment_required" denial).</summary>
+    private AuthEligibilityDecision SessionEligibility(
+        User? user, bool ssoOnly, SecuritySetting? policy, DateTime nowUtc, bool ignoreFailureLockout = false)
+        => AuthCurrentEligibility.ForSession(user, ssoOnly, policy, nowUtc, ignoreFailureLockout, MfaOffForTesting);
     private readonly PasswordVerificationGate? _passwordGate;
     private readonly LoginAbuseGuard? _abuse;
     private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
@@ -239,7 +246,14 @@ public class AuthService : IAuthService
         // Phase 4b — MFA challenge: if the user has TOTP enabled, issue a short-lived challenge
         // token instead of full session tokens. Full tokens are only issued after the TOTP code
         // is verified via POST /api/auth/mfa/challenge/verify.
-        if (user.MFAEnabled && !string.IsNullOrEmpty(user.MfaSecretEncrypted))
+        if (MfaOffForTesting)
+            _log.LogWarning(
+                "[MFA-DISABLED-FOR-TESTING] Tenant user {UserId} (tenant {TenantId}) signed in with NO two-step check "
+                + "(enrolled={Enrolled}, workspaceRequires={Workspace}). {Key}=true; unset it before go-live.",
+                user.Id, user.TenantId, PrivilegedMfaPolicy.IsTenantUserEnrolled(user), sec?.MfaRequired == true,
+                PrivilegedMfaPolicy.DisabledForTestingConfigKey);
+
+        if (!MfaOffForTesting && user.MFAEnabled && !string.IsNullOrEmpty(user.MfaSecretEncrypted))
         {
             // Trusted browser (MfaTrustedDevices): the password is proven and a code would be asked for now. A valid
             // kx_mfa_trust row for THIS tenant and user skips the code only; it is re-checked under the issuance lock,
@@ -269,7 +283,7 @@ public class AuthService : IAuthService
         // user hasn't enrolled TOTP, do NOT issue a session. Signal that enrollment is required so
         // the client forces setup. Without this, a tenant enabling "require MFA for all" got no
         // actual enforcement — password-only login still worked for un-enrolled users.
-        if (sec?.MfaRequired == true)
+        if (!MfaOffForTesting && sec?.MfaRequired == true)
         {
             var enrollmentToken = await _mfaService.CreateEnrollmentChallengeAsync(
                 user.Id, user.TenantId, context.IpAddress ?? string.Empty, cancellationToken);
@@ -494,7 +508,7 @@ public class AuthService : IAuthService
             var policy = await LoadSecuritySettingAsync(presentedTenantId, ct);
             var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
                 .FirstOrDefaultAsync(x => x.TenantId == presentedTenantId, ct);
-            var eligibility = AuthCurrentEligibility.ForSession(
+            var eligibility = SessionEligibility(
                 token.User,
                 AuthCurrentEligibility.IsSsoOnly(token.User, identity),
                 policy,
@@ -652,7 +666,7 @@ public class AuthService : IAuthService
         var committedPolicy = await LoadSecuritySettingAsync(presentedTenantId, cancellationToken);
         var committedIdentity = await _db.TenantIdentityProviderSettings.AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == presentedTenantId, cancellationToken);
-        if (!AuthCurrentEligibility.ForSession(
+        if (!SessionEligibility(
                 committedUser,
                 AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
                 committedPolicy,
@@ -1272,7 +1286,7 @@ public class AuthService : IAuthService
                 return false;
             var policy = await _db.SecuritySettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
             var identity = await _db.TenantIdentityProviderSettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
-            if (!AuthCurrentEligibility.ForSession(user, AuthCurrentEligibility.IsSsoOnly(user, identity), policy, issuedAtUtc).Allowed)
+            if (!SessionEligibility(user, AuthCurrentEligibility.IsSsoOnly(user, identity), policy, issuedAtUtc).Allowed)
                 return false;
             // Once: setup revoked every refresh token, so any token created since is this method's own earlier result.
             if (await _db.RefreshTokens.AnyAsync(x => x.UserId == userId && x.CreatedAtUtc >= configuredAtUtc, ct))
@@ -1413,7 +1427,7 @@ public class AuthService : IAuthService
                 .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
             var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
-            var eligibility = AuthCurrentEligibility.ForSession(
+            var eligibility = SessionEligibility(
                 user,
                 AuthCurrentEligibility.IsSsoOnly(user, identity),
                 policy,
@@ -1716,7 +1730,7 @@ public class AuthService : IAuthService
         var committedPolicy = await LoadSecuritySettingAsync(committedUser.TenantId, cancellationToken);
         var committedIdentity = await _db.TenantIdentityProviderSettings.AsNoTracking()
             .SingleOrDefaultAsync(x => x.TenantId == committedUser.TenantId, cancellationToken);
-        if (!AuthCurrentEligibility.ForSession(
+        if (!SessionEligibility(
                 committedUser,
                 AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
                 committedPolicy,
@@ -1866,7 +1880,7 @@ public class AuthService : IAuthService
                 .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
             var identity = await _db.TenantIdentityProviderSettings.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.TenantId == user.TenantId, ct);
-            var eligibility = AuthCurrentEligibility.ForSession(
+            var eligibility = SessionEligibility(
                 user,
                 AuthCurrentEligibility.IsSsoOnly(user, identity),
                 policy,
@@ -1875,7 +1889,7 @@ public class AuthService : IAuthService
             if (!eligibility.Allowed
                 // Password-only: the user must have no factor and no rule demanding one. Trusted browser: the user
                 // must still have the factor (the row is checked below); a tenant mandate is already satisfied.
-                || (trustedMode ? !PrivilegedMfaPolicy.IsTenantUserEnrolled(user) : user.MFAEnabled || policy?.MfaRequired == true)
+                || (!MfaOffForTesting && (trustedMode ? !PrivilegedMfaPolicy.IsTenantUserEnrolled(user) : user.MFAEnabled || policy?.MfaRequired == true))
                 || (await PrivilegedMfaPolicy.ForTenantUserAsync(_db, _configuration, user, policy, issuedAtUtc, ct)).BlocksSession
                 // The presented password was verified against this exact stored hash before the
                 // lock. Ordinal equality under the lock proves it is still the credential — the
@@ -2061,15 +2075,15 @@ public class AuthService : IAuthService
         var committedPolicy = await LoadSecuritySettingAsync(committedUser.TenantId, cancellationToken);
         var committedIdentity = await _db.TenantIdentityProviderSettings.AsNoTracking()
             .SingleOrDefaultAsync(x => x.TenantId == committedUser.TenantId, cancellationToken);
-        if (!AuthCurrentEligibility.ForSession(
+        if (!SessionEligibility(
                 committedUser,
                 AuthCurrentEligibility.IsSsoOnly(committedUser, committedIdentity),
                 committedPolicy,
                 DateTime.UtcNow,
                 ignoreFailureLockout: bypassLockout).Allowed
-            || (trustedMode
+            || (!MfaOffForTesting && (trustedMode
                 ? !PrivilegedMfaPolicy.IsTenantUserEnrolled(committedUser)
-                : committedUser.MFAEnabled || committedPolicy?.MfaRequired == true)
+                : committedUser.MFAEnabled || committedPolicy?.MfaRequired == true))
             || (await PrivilegedMfaPolicy.ForTenantUserAsync(
                 _db, _configuration, committedUser, committedPolicy, DateTime.UtcNow, cancellationToken)).BlocksSession)
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");

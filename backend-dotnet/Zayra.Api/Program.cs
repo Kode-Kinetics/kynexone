@@ -288,7 +288,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                     context.Fail("Platform session is revoked or its authorization is stale.");
                 }
                 else if (!await TenantSessionSecurity.IsCurrentAsync(
-                             context.Principal!, db, context.HttpContext.RequestAborted))
+                             context.Principal!, db, context.HttpContext.RequestAborted,
+                             Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(
+                                 context.HttpContext.RequestServices.GetRequiredService<IConfiguration>())))
                 {
                     context.Fail("Tenant session is revoked or its authorization is stale.");
                 }
@@ -1127,6 +1129,11 @@ using (var scope = app.Services.CreateScope())
     // and loudly when the variable is set but ignored (unparseable, past, or beyond the 7-day cap).
     var (breakGlassWarn, breakGlassMessage) = Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy
         .DescribeBreakGlass(app.Configuration, DateTime.UtcNow);
+    if (Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(app.Configuration))
+        logger.LogWarning(
+            "[MFA-DISABLED-FOR-TESTING] {Key}=true: tenant users are NOT asked for two-step sign-in, enrolment or "
+            + "enforcement. Platform-operator MFA is unaffected. Unset this before the first customer goes live.",
+            Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.DisabledForTestingConfigKey);
     if (breakGlassWarn) logger.LogWarning("{BreakGlass}", breakGlassMessage);
     else logger.LogInformation("{BreakGlass}", breakGlassMessage);
 
