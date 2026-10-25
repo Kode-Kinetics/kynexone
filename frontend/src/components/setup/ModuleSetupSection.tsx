@@ -1,7 +1,8 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import type { ComponentType } from 'react';
+import { Component, type ComponentType, type ReactNode } from 'react';
+import { useT } from '../../hooks/useT';
 import type { CompanyDto } from '../../api/organization';
 import type { SetupModuleSectionId } from '../../lib/setupModuleSections';
 import {
@@ -132,7 +133,30 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   planBilling: PlanBilling,
 };
 
+function SectionFailed({ onRetry }: { onRetry: () => void }) {
+  const t = useT();
+  return (
+    <div role="alert" className="surface flex flex-wrap items-center justify-between gap-3 p-6 text-sm text-slate-700 dark:text-slate-200">
+      <p>{t('This section could not be shown. Try again, or reload the page.')}</p>
+      <button type="button" className="btn-secondary" onClick={onRetry}>{t('Try again')}</button>
+    </div>
+  );
+}
+
+/**
+ * Each module's editor fails on its own: an error while one renders is shown in its section, with Try again, and the
+ * rest of Setup (its navigation, the other sections) keeps working instead of the whole page falling over.
+ */
+class SectionBoundary extends Component<{ children: ReactNode }, { failed: boolean; attempt: number }> {
+  state = { failed: false, attempt: 0 };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    if (this.state.failed) return <SectionFailed onRetry={() => this.setState(state => ({ failed: false, attempt: state.attempt + 1 }))} />;
+    return <div key={this.state.attempt} className="min-w-0">{this.props.children}</div>;
+  }
+}
+
 export function ModuleSetupSection({ id, ...props }: ModuleSetupPanelProps & { id: SetupModuleSectionId }) {
   const Panel = PANELS[id];
-  return <div data-module-section={id} className="min-w-0"><Panel {...props} /></div>;
+  return <div data-module-section={id} className="min-w-0"><SectionBoundary key={id}><Panel {...props} /></SectionBoundary></div>;
 }

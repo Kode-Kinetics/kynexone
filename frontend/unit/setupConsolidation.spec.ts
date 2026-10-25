@@ -220,8 +220,8 @@ test('setup_is_offered_only_to_someone_with_a_section_to_open', () => {
   // An employee reads their own leave and attendance: those permissions alone open no Setup section.
   const employee = { ...base, hasPermission: (key: string) => ['ess.read', 'leave.read', 'attendance.read', 'loans.self'].includes(key), hasRole: (role: string) => role === 'Employee' };
   expect(setupHasEntries(employee)).toBe(false);
-  const hrOfficer = { ...base, hasPermission: (key: string) => key === 'leave.read', hasRole: (role: string) => role === 'HR Officer' };
-  expect(setupHasEntries(hrOfficer)).toBe(true);
+  const hrManager = { ...base, hasPermission: (key: string) => key === 'leave.read', hasRole: (role: string) => role === 'HR Manager' };
+  expect(setupHasEntries(hrManager)).toBe(true);
   // The menu entry asks the same question, not only "holds one of the permissions".
   expect(navigationItems.find(item => item.path === '/setup')?.requiresSetupSection).toBe(true);
 });

@@ -416,9 +416,9 @@ test('Find a setting matches names, descriptions and synonyms, and opens a resul
   await expectFound('WPS', ['Country rules']);
   // Diacritics are ignored.
   await expectFound('Câlendär', ['Holiday calendars']);
-  // All setup areas destinations and Payroll accounting tabs, each with its caption.
+  // Modules' settings are Setup sections, captioned with their navigation group; Payroll accounting tabs keep theirs.
   await box.fill('leave types');
-  await expect(list.getByRole('link', { name: /^Leave types/ })).toContainText('Leave and absence');
+  await expect(list.getByRole('link', { name: /^Leave types/ })).toContainText('Time & leave');
   await box.fill('company rates');
   await expect(list.getByRole('link', { name: /^Company Rates/ })).toContainText('Payroll accounting');
   // Opening a result goes to its section and clears the search.

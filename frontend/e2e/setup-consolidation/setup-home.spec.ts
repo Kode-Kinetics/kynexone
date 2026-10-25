@@ -29,3 +29,22 @@ test('an employee is offered no Setup: no gear, no menu entry', async ({ page })
   await expect(page.getByTestId('topbar-setup')).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Primary navigation' }).getByText('Setup', { exact: true })).toHaveCount(0);
 });
+
+test('a module panel that fails is contained: Setup keeps its menu and offers Retry', async ({ page }) => {
+  // The holiday calendars list answered in a shape the editor does not expect: HolidayCalendarTab throws while rendering.
+  const consoleErrors: string[] = [];
+  page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  await boot(page, { persona: ADMIN, url: '/setup?tab=holidayCalendars', mocks: { '/api/leave/holidays/calendars': { items: [] } } });
+  const failed = page.locator('[data-module-section="holidayCalendars"]').getByRole('alert');
+  await expect(failed).toContainText('This section could not be shown', { timeout: 30_000 });
+  await expect(failed.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
+  // The rest of Setup still works.
+  await expect(page.getByRole('heading', { name: 'Something went wrong' })).toHaveCount(0);
+  await expect(page.locator('#setup-section-heading')).toHaveText('Holiday calendars');
+  await expect(page.getByRole('navigation', { name: 'Setup sections' }).getByRole('link', { name: 'Leave types', exact: true })).toBeVisible();
+  // Try again re-mounts the editor (here it fails again, and is contained again).
+  await failed.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(page.locator('[data-module-section="holidayCalendars"]').getByRole('alert')).toContainText('This section could not be shown');
+  // The render error is still reported (React logs what a boundary caught), never swallowed.
+  expect(consoleErrors.some(message => message.includes('calendars.filter'))).toBe(true);
+});

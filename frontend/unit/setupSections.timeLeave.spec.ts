@@ -25,23 +25,25 @@ const hrManager = persona(['HR Manager'], ['leave.read', 'leave.write', 'attenda
 const lineManager = persona(['Manager'], ['leave.read', 'attendance.read', 'overtime.read']);
 const employee = persona(['Employee'], ['ess.read', 'leave.read', 'attendance.read']);
 
-test('leave_types_policies_and_holidays_open_for_HR_and_not_for_a_line_manager', () => {
+test('leave_types_policies_and_holidays_open_for_whoever_can_change_them', () => {
   // Reading is open to any signed-in caller: LeaveTypesController.cs:18,36 / LeavePoliciesController.cs:15,27 /
   // HolidayCalendarController.cs:12,19 (class [Authorize], no role on the GET). Writing is Admin, HR Manager only
   // (LeaveTypesController.cs:84, LeavePoliciesController.cs:86, HolidayCalendarController.cs:37). The old Leave tabs were
-  // `isAdmin` in LeavePage (Admin, HR Manager, HR Officer), so an HR Officer reads them and a Manager never did.
+  // `isAdmin` in LeavePage (Admin, HR Manager, HR Officer). A settings section opens for whoever can change it (Setup's
+  // rule for these three before the move): an HR Officer read them but had every save refused.
   for (const id of ['leaveTypes', 'leavePolicies', 'holidayCalendars']) {
-    expect(canOpen(id, hrOfficer), `${id} for HR Officer`).toBe(true);
+    expect(canOpen(id, hrOfficer), `${id} for HR Officer`).toBe(false);
     expect(canOpen(id, hrManager), `${id} for HR Manager`).toBe(true);
     expect(canOpen(id, lineManager), `${id} for Manager`).toBe(false);
     expect(canOpen(id, employee), `${id} for Employee`).toBe(false);
   }
 });
 
-test('shift_definitions_open_for_HR_and_not_for_a_line_manager', () => {
+test('shift_definitions_open_for_whoever_can_change_them', () => {
   // ShiftsController.cs:18,37: the definitions list needs only a signed-in caller; writes are Admin, HR Manager
-  // (ShiftsController.cs:49). The old tab was `isAdmin` in ShiftsPage (Admin, HR Manager, HR Officer).
-  expect(canOpen('shiftDefinitions', hrOfficer)).toBe(true);
+  // (ShiftsController.cs:49). The old tab was `isAdmin` in ShiftsPage (Admin, HR Manager, HR Officer); as a settings
+  // section it opens for whoever can change it, so not for an HR Officer.
+  expect(canOpen('shiftDefinitions', hrOfficer)).toBe(false);
   expect(canOpen('shiftDefinitions', hrManager)).toBe(true);
   expect(canOpen('shiftDefinitions', lineManager)).toBe(false);
   expect(canOpen('shiftDefinitions', employee)).toBe(false);

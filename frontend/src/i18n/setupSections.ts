@@ -10,6 +10,8 @@ const ar: Record<string, string> = {
   'Users & access': 'المستخدمون والوصول',
   'Every setting in one place: company structure, leave, pay, users and access, and the workspace.': 'كل الإعدادات في مكان واحد: هيكل الشركة والإجازات والرواتب والمستخدمون والوصول ومساحة العمل.',
 
+  'This section could not be shown. Try again, or reload the page.': 'تعذّر عرض هذا القسم. حاول مرة أخرى، أو أعد تحميل الصفحة.',
+
   // Each module's door to its settings in Setup (components/setup/ModuleSettingsLink.tsx)
   'Leave settings': 'إعدادات الإجازات',
   'Shift settings': 'إعدادات الورديات',

@@ -2599,8 +2599,10 @@ export function SetupPage() {
     : canReadCompanies ? 'companies' : visibleTabs[0]?.id ?? 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
-    : visibleTabs.some((tab) => tab.id === tabParam)
-      ? (tabParam as SettingsTab)
+    // A known section's address stays on that section even when this reader may not open it (any more): the section
+    // then says so, rather than silently showing another one (access revoked in another session, a shared link).
+    : tabParam && isSettingsTab(tabParam)
+      ? tabParam
       : fallbackTab;
   const [activeTab, setActiveTab] = useState<Tab>(requestedTab);
   const focusDepartmentId = searchParams?.get('department') ?? undefined;
@@ -2701,7 +2703,7 @@ export function SetupPage() {
   // formerly available settings panel visible until the synchronization effect.
   const selectedTab = canWrite
     ? (activeTab === 'policyLibrary' && !canManagePolicies ? 'aiSetup' : activeTab)
-    : visibleTabs.some((tab) => tab.id === activeTab) ? activeTab : fallbackTab;
+    : isSettingsTab(activeTab) ? activeTab : fallbackTab;
   const isSettings = selectedTab !== 'aiSetup' && selectedTab !== 'importOrganization' && selectedTab !== 'policyLibrary';
   const isWorkspace = selectedTab === 'aiSetup' && setupPath.path === 'configuration' && !configurationScopeUnavailable;
   // Guided setup is the company setup chooser (create, or complete an existing company — Addendum A). The old
@@ -2965,7 +2967,7 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Company structure, jobs and grades, payroll and country rules, and workspace settings.')
+            ? t('Every setting in one place: company structure, leave, pay, users and access, and the workspace.')
             : t('Review the setup areas available to your role.')}
         </p>
       </header>
@@ -3059,7 +3061,9 @@ export function SetupPage() {
       {isSettings && (
         <section id="setup-setting-content" aria-label={t(selectedSetting.label)} className="min-w-0 space-y-4">
           <div className="min-w-0" key={companyVersion}>
-            {isSettingsTab(selectedTab) && renderExistingSettings(selectedTab)}
+            {isSettingsTab(selectedTab) && (visibleTabs.some(tab => tab.id === selectedTab)
+              ? renderExistingSettings(selectedTab)
+              : <p role="status" data-testid="setup-section-no-access" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Your role does not have access')}</p>)}
           </div>
         </section>
       )}

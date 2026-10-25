@@ -284,9 +284,10 @@ test('unknown_area_resolves_to_overview', () => {
 });
 
 test('canonical_editors_require_route_editor_feature_and_scope_authority', () => {
-  // A module's configuration opens in All setup areas for exactly whom its Setup section opens for (the Leave page's
-  // own rule: Admin, HR Manager or HR Officer with a leave permission), and follows the module's switch.
-  expect(destinationAvailability(destination('leavePolicies'), { ...context, hasRole: role => role === 'HR Officer' })).toBe('available');
+  // A module's configuration opens in All setup areas for exactly whom its Setup section opens for (whoever may change
+  // leave policies: Admin or HR Manager with a leave permission), and follows the module's switch.
+  expect(destinationAvailability(destination('leavePolicies'), { ...context, hasRole: role => role === 'HR Manager' })).toBe('available');
+  expect(destinationAvailability(destination('leavePolicies'), { ...context, hasRole: role => role === 'HR Officer' })).toBe('restricted');
   expect(destinationAvailability(destination('leavePolicies'), { ...context, hasRole: role => role === 'Manager' })).toBe('restricted');
   expect(destinationAvailability(destination('leavePolicies'), { ...context, hasPermission: key => key === 'organization.write' })).toBe('restricted');
   expect(destinationAvailability(destination('leavePolicies'), { ...context, verdictForPath: path => ({ allowed: path !== '/leave' }) })).toBe('unavailable');

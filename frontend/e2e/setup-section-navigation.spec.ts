@@ -13,7 +13,12 @@ const WRITER_SECTIONS = {
   'Get started': ['Guided setup', 'All setup areas', 'Import organization', 'Policy starter', 'Policy library'],
   'Company structure': ['Companies', 'Branches', 'Locations', 'Cost centres', 'Departments'],
   'Jobs & headcount': ['Grades', 'Designations', 'Headcount & budget'],
-  'Payroll & compliance': ['Country rules', 'Statutory rules', 'Fiscal years', 'Payroll accounting'],
+  // 2026-10-24: every module's configuration is a Setup section; this fixture's administrator holds leave, recruitment
+  // and payroll read, so those modules' settings are listed in their groups (lib/setupModuleSections.ts).
+  'Time & leave': ['Leave types', 'Leave policies', 'Holiday calendars'],
+  'Pay & benefits': ['Payslip templates'],
+  'Talent & employee services': ['Onboarding checklists'],
+  'Payroll & compliance': ['Country rules', 'Statutory rules', 'Fiscal years', 'Payroll accounting', 'Tax policies'],
   Workspace: ['Drop-down lists', 'Record numbering', 'Notifications', 'Email delivery', 'Workspace settings', 'Audit log'],
 } as const;
 const ALL_WRITER_SECTIONS = Object.values(WRITER_SECTIONS).flat();
@@ -65,6 +70,8 @@ async function boot(page: Page, options: { url?: string; arabic?: boolean; dark?
     if (path === '/api/dashboard/full') return route.fulfill({ status: 503, json: { message: 'Dashboard fixture unavailable' } });
     if (path === '/api/recruitment/onboarding/summary') return reply({ total: 0, pending: 0, completed: 0, blocked: 0, completionPct: 0 });
     if (path === '/api/companies') return reply({ items: companies, total: companies.length, page: 1, pageSize: 100 });
+    // Modules' settings listed for this administrator (lib/setupModuleSections.ts): their lists are plain arrays.
+    if (path === '/api/leave/types' || path.startsWith('/api/leave/holidays/') || path === '/api/payslip-templates' || path === '/api/company-tax-policies') return reply([]);
     // policy_intake is on in this fixture (absent from the disabled keys), so the Policy library is a section.
     if (path === '/api/features/disabled-keys') return reply(['release_a']);
     if (path.includes('/features/')) return reply([]);
@@ -129,9 +136,15 @@ test('every permitted section is listed under its group and reachable without si
   expect(await page.locator('nav.setup-page-nav, #setup-section-list').evaluateAll(roots => roots.every(root => Array.from(root.querySelectorAll('*')).every(child => child.clientWidth <= 1 || child.scrollWidth <= child.clientWidth + 1 || getComputedStyle(child).overflowX === 'visible')))).toBe(true);
   expect(await noPageOverflow(page)).toBe(true);
   if (info.project.name === 'desktop') {
-    // At 1440x1000 with the app sidebar open, the whole list is on screen at once.
+    // 2026-10-24: with every module's settings in Setup the list is longer than a screen, so (as in BambooHR's or
+    // Salesforce's settings) the column scrolls on its own beside the section: each entry is brought fully on screen by
+    // scrolling the column, with the page itself at the top, and "Find a setting" stays the quick way in.
     await page.evaluate(() => window.scrollTo(0, 0));
-    for (const link of await sectionLinks(page, ALL_WRITER_SECTIONS)) await expect(link).toBeInViewport({ ratio: 1 });
+    for (const link of await sectionLinks(page, ALL_WRITER_SECTIONS)) {
+      await link.scrollIntoViewIfNeeded();
+      await expect(link).toBeInViewport({ ratio: 1 });
+      expect(await page.evaluate(() => window.scrollY), 'reached by scrolling the column, not the page').toBe(0);
+    }
   }
   if (isWide(page)) {
     // The column is not a card: no background, border or padding, only an inline-end divider.
@@ -512,7 +525,9 @@ test('a company-scoped group administrator sees only company-owned settings, Cos
   await boot(page, { companyScoped: true, url: '/setup?tab=companies' });
   const nav = setupSectionEntries(page);
   await showList(page);
-  await expect(nav.getByRole('listitem').getByRole('link')).toHaveText(['Guided setup', 'All setup areas', 'Policy starter', 'Policy library', 'Companies', 'Branches', 'Cost centres', 'Payroll accounting', 'Audit log']);
+  await expect(nav.getByRole('listitem').getByRole('link')).toHaveText(['Guided setup', 'All setup areas', 'Policy starter', 'Policy library', 'Companies', 'Branches', 'Cost centres',
+    // Modules' configuration keeps each module page's own rule, which company scope never narrowed.
+    'Leave types', 'Leave policies', 'Holiday calendars', 'Payslip templates', 'Onboarding checklists', 'Payroll accounting', 'Tax policies', 'Audit log']);
   await openSetupSection(page, 'Cost centres');
   await expect(sectionHeading(page)).toHaveText('Cost centres');
   await expect(page).toHaveURL(/[?&]tab=costCenters(&|$)/);

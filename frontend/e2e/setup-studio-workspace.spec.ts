@@ -223,7 +223,7 @@ test('company_actions_read_only_has_no_mutation_controls', async ({ page }) => {
 });
 
 test('manual_leave_edit_uses_existing_put', async ({ page }, info) => {
-  const { writes } = await boot(page, { section: 'leavePolicies' });
+  const { writes } = await boot(page, { area: 'leave', setting: 'leavePolicies' });
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.locator('div.fixed').filter({ has: page.getByRole('heading', { name: 'Edit Leave Policy', exact: true }) });
   await expect(dialog.locator('input[type=number]').first()).toHaveValue('28');
@@ -240,7 +240,7 @@ test('manual_leave_edit_uses_existing_put', async ({ page }, info) => {
 async function maintenancePolicy(page: Page, options: { arabic?: boolean; failFirst?: boolean } = {}) {
   let saved = { id: 'existing-policy', companyId: 'fixture-company', name: 'Annual leave policy for regional operations and extended service teams', leaveTypeId: 'annual-type', countryCode: 'KSA', annualEntitlementDays: 28, accrualMethod: 'Monthly', status: 'Active', payrollImpact: 'Full' };
   let attempts = 0;
-  await boot(page, { section: 'leavePolicies', arabic: options.arabic, intercept: async route => {
+  await boot(page, { area: 'leave', setting: 'leavePolicies', arabic: options.arabic, intercept: async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/leave/types') { await route.fulfill({ json: [{ id: 'annual-type', code: 'ANNUAL', nameEn: 'Annual leave for regional operations and extended service teams', category: 'Annual', isPaid: true, isActive: true }] }); return true; }
     if (path === '/api/leave/policies') { await route.fulfill({ json: { items: [saved], total: 1 } }); return true; }
@@ -258,7 +258,7 @@ async function maintenancePolicy(page: Page, options: { arabic?: boolean; failFi
 
 test('leave_policy_takes_several_employment_types_locals_or_expats_service_and_encashment_cap', async ({ page }) => {
   let saved: Record<string, unknown> = { id: 'existing-policy', companyId: 'fixture-company', name: 'Annual leave', leaveTypeId: 'annual-type', countryCode: 'KSA', annualEntitlementDays: 22, accrualMethod: 'Monthly', status: 'Active', payrollImpact: 'Full', employmentType: '' };
-  await boot(page, { section: 'leavePolicies', intercept: async route => {
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/admin/master-data/values') {
       // The tenant's reference list: codes are stored, labels shown.
@@ -311,7 +311,7 @@ test('tenant_admin_can_revisit_and_edit_saved_settings', async ({ page }) => {
 });
 
 test('read_only_user_cannot_edit', async ({ page }) => {
-  const { writes, reads } = await boot(page, { readOnly: true, section: 'leavePolicies' });
+  const { writes, reads } = await boot(page, { readOnly: true, area: 'leave', setting: 'leavePolicies' });
   await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Add Company|Create company|New Policy|Edit/, exact: true })).toHaveCount(0);
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
@@ -465,7 +465,7 @@ for (const failCurrent of [false, true]) {
 }
 
 test('shared_leave_modal_preserves_holiday_and_source_page_editors', async ({ page }) => {
-  await boot(page, { section: 'holidayCalendars' });
+  await boot(page, { area: 'leave', setting: 'holidayCalendars' });
   await page.getByText('Calendars', { exact: true }).locator('..').getByRole('button').click();
   const calendar = page.getByRole('dialog', { name: 'New Holiday Calendar', exact: true });
   await calendar.getByLabel('Calendar Name *', { exact: true }).fill('Local holiday fixture');
@@ -478,7 +478,7 @@ test('shared_leave_modal_preserves_holiday_and_source_page_editors', async ({ pa
 });
 
 test('existing_record_identity_survives_edit', async ({ page }) => {
-  await boot(page, { section: 'leavePolicies' });
+  await boot(page, { area: 'leave', setting: 'leavePolicies' });
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(page.getByPlaceholder('e.g. UAE Annual Leave — Full-Time')).toHaveValue('Saved annual policy');
   await page.getByPlaceholder('e.g. UAE Annual Leave — Full-Time').fill('Renamed annual policy');
@@ -488,13 +488,13 @@ test('existing_record_identity_survives_edit', async ({ page }) => {
 });
 
 test('unauthorized_editor_does_not_mount', async ({ page }) => {
-  const { reads } = await boot(page, { officer: true, section: 'leavePolicies' });
+  const { reads } = await boot(page, { officer: true, area: 'leave', setting: 'leavePolicies' });
   await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
 });
 
 test('tenant_wide_onboarding_not_labelled_company_only', async ({ page }) => {
-  const { reads } = await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  const { reads } = await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   await expect(page.getByRole('button', { name: 'Checklist Templates', exact: true })).toBeVisible();
   await expect(page.getByTestId('setup-focused-workspace').getByText('Applies to all companies', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create Checklist', exact: true })).toBeVisible();
@@ -617,7 +617,7 @@ test('direct_settings_company_switch_decline_preserves_draft_and_accept_refreshe
 });
 
 test('unsaved_template_blocks_area_and_company_switch_when_declined', async ({ page }) => {
-  await boot(page, { group: true, area: 'onboarding', setting: 'onboarding' });
+  await boot(page, { group: true, area: 'onboarding', setting: 'onboardingChecklists' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep this draft');
   const guard = trackLeaveGuard(page);
   await selectArea(page, 'Payroll');
@@ -762,7 +762,7 @@ test('manual_areas_do_not_claim_document_prefill', async ({ page }) => {
 
 for (const fallback of [false, true]) test(`${fallback ? 'fallback_' : ''}declined_forward_keeps_editor_and_url`, async ({ page }) => {
   if (fallback) await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined, configurable: true }));
-  await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   await selectArea(page, 'Payroll');
   await expect(page).toHaveURL(/area=payroll/);
   await page.evaluate(() => history.back());
@@ -890,7 +890,7 @@ test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ 
 
 test('fallback_multiple_pre_setup_entries_restore_exact_url_and_history', async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined, configurable: true }));
-  await boot(page, { beforeSetup: true, area: 'onboarding', setting: 'onboarding' });
+  await boot(page, { beforeSetup: true, area: 'onboarding', setting: 'onboardingChecklists' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep multi-entry draft');
   const before = page.url();
   const guard = trackLeaveGuard(page);
@@ -1453,7 +1453,7 @@ test('canonical_save_clears_dirty_navigation_state', async ({ page }) => {
 for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) test(`shell_${destination}_protects_authored_values`, async ({ page }) => {
   // TopBar's user menu is intentionally desktop-only.
   if (destination !== 'palette') await page.setViewportSize({ width: 1440, height: 1000 });
-  await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Retain shell draft');
   const originalUrl = page.url();
   const guard = trackLeaveGuard(page);
@@ -1975,9 +1975,9 @@ test('restricted_unknown_or_disabled_destination_never_mounts_editor', async ({ 
     const context = await browser.newContext();
     const page = await context.newPage();
     const options = mode === 'restricted'
-      ? { restricted: true, area: 'onboarding', setting: 'onboarding' }
+      ? { restricted: true, area: 'onboarding', setting: 'onboardingChecklists' }
       : mode === 'unknown'
-        ? { flagError: true, area: 'onboarding', setting: 'onboarding' }
+        ? { flagError: true, area: 'onboarding', setting: 'onboardingChecklists' }
         : { disabled: true, area: 'learning', setting: 'learning' };
     const { reads } = await boot(page, options);
 
@@ -1992,7 +1992,7 @@ test('restricted_unknown_or_disabled_destination_never_mounts_editor', async ({ 
 
 test('permission_loss_in_another_session_revalidates_on_focus_and_stops_reads', async ({ browser, page }) => {
   let allowed = true;
-  const { reads } = await boot(page, { section: 'leavePolicies', intercept: async route => {
+  const { reads } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
     await route.fulfill({ json: {
       id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: allowed ? ['Admin'] : [],
@@ -2025,7 +2025,7 @@ test('permission_loss_in_another_session_revalidates_on_focus_and_stops_reads', 
 
 test('protected_403_revalidates_authoritative_permissions_and_unmounts_editor', async ({ page }) => {
   let allowed = true;
-  const { reads } = await boot(page, { section: 'leavePolicies', intercept: async route => {
+  const { reads } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/auth/me') {
       await route.fulfill({ json: {
@@ -2056,11 +2056,68 @@ test('protected_403_revalidates_authoritative_permissions_and_unmounts_editor', 
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
 });
 
+// The same guarantees on a module's own Setup section (`/setup?tab=leavePolicies`), the main way in since every module's
+// configuration moved into Setup: losing access unmounts the editor, stops its reads, and says why.
+test('section_view_permission_loss_on_focus_unmounts_the_editor_and_says_why', async ({ page }) => {
+  let allowed = true;
+  const { reads } = await boot(page, { section: 'leavePolicies', intercept: async route => {
+    if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
+    await route.fulfill({ json: {
+      id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: allowed ? ['Admin'] : [],
+      permissions: ['organization.read', 'organization.write', ...(allowed ? ['leave.read'] : [])],
+      accountType: 'Group', isGroupScope: true,
+      companies: [{ id: 'fixture-company', name: 'Workspace Fixture LLC', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
+    } });
+    return true;
+  } });
+  const editor = page.locator('[data-module-section="leavePolicies"]');
+  await expect(editor.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  allowed = false;
+  reads.length = 0;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(editor).toHaveCount(0);
+  await expect(page.locator('#setup-section-heading')).toHaveText('Leave policies');
+  await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
+  await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
+  expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
+});
+
+test('section_view_protected_403_revalidates_and_unmounts_the_editor', async ({ page }) => {
+  let allowed = true;
+  const { reads } = await boot(page, { section: 'leavePolicies', intercept: async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill({ json: {
+        id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: allowed ? ['Admin'] : [],
+        permissions: ['organization.read', 'organization.write', ...(allowed ? ['leave.read'] : [])],
+        accountType: 'Group', isGroupScope: true,
+        companies: [{ id: 'fixture-company', name: 'Workspace Fixture LLC', code: 'fixture-company', countryCode: 'SAU', isActive: true }],
+      } });
+      return true;
+    }
+    if (path === '/api/leave/policies/existing-policy' && route.request().method() === 'PUT' && !allowed) {
+      await route.fulfill({ status: 403, json: { message: 'Setup access was revoked.' } });
+      return true;
+    }
+    return false;
+  } });
+  const editor = page.locator('[data-module-section="leavePolicies"]');
+  await editor.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true });
+  allowed = false;
+  reads.length = 0;
+  await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
+  await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
+  expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
+});
+
 test('stale_authorization_refresh_cannot_restore_revoked_permissions', async ({ page }) => {
   let authCall = 0;
   let releaseStale!: () => void;
   const staleResponse = new Promise<void>(resolve => { releaseStale = resolve; });
-  await boot(page, { section: 'leavePolicies', intercept: async route => {
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
     authCall += 1;
     const allowed = authCall < 3;
@@ -2111,7 +2168,7 @@ test('public_auth_routes_ignore_focus_and_visibility_revalidation', async ({ bro
 
 test('arabic_authorization_unavailable_status_and_retry_are_translated', async ({ page }) => {
   let unavailable = false;
-  await boot(page, { arabic: true, section: 'leavePolicies', intercept: async route => {
+  await boot(page, { arabic: true, area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me' || !unavailable) return false;
     await route.fulfill({ status: 500, json: { message: 'Identity service unavailable.' } });
     return true;
@@ -2128,7 +2185,7 @@ test('arabic_authorization_unavailable_status_and_retry_are_translated', async (
 
 test('transient_background_auth_failure_preserves_dirty_editor_and_blocks_actions_until_success', async ({ page }) => {
   let authState: 'allowed' | 'unavailable' = 'allowed';
-  const { writes } = await boot(page, { section: 'leavePolicies', intercept: async route => {
+  const { writes } = await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me') return false;
     if (authState === 'unavailable') {
       await route.fulfill({ status: 500, json: { message: 'Identity service unavailable.' } });
@@ -2171,7 +2228,7 @@ test('authorization_revalidation_hands_focus_to_status_and_retry_then_restores_t
   let authState: 'allowed' | 'pending' = 'allowed';
   let releasePending!: () => void;
   const pendingResponse = new Promise<void>(resolve => { releasePending = resolve; });
-  await boot(page, { section: 'leavePolicies', intercept: async route => {
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me' || authState === 'allowed') return false;
     await pendingResponse;
     await route.fulfill({ status: 500, json: { message: 'Identity service unavailable.' } });
@@ -2199,7 +2256,7 @@ test('authorization_revalidation_hands_focus_to_status_and_retry_then_restores_t
 
 test('a_quick_authorization_check_freezes_the_page_without_flashing_the_banner', async ({ page }) => {
   let delayMe = false;
-  await boot(page, { section: 'leavePolicies', intercept: async route => {
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     if (new URL(route.request().url()).pathname !== '/api/auth/me' || !delayMe) return false;
     // A typical answer: well under the banner delay.
     await new Promise(resolve => setTimeout(resolve, 150));
@@ -2227,7 +2284,7 @@ for (const arabic of [false, true]) {
     let pending = false;
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    await boot(page, { arabic, section: 'leavePolicies', intercept: async route => {
+    await boot(page, { arabic, area: 'leave', setting: 'leavePolicies', intercept: async route => {
       if (new URL(route.request().url()).pathname !== '/api/auth/me' || !pending) return false;
       await held;
       return false;
@@ -2261,7 +2318,7 @@ for (const arabic of [false, true]) {
 
 test('background_401_clears_the_established_session', async ({ page }) => {
   let revoke = false;
-  await boot(page, { section: 'leavePolicies', intercept: async route => {
+  await boot(page, { area: 'leave', setting: 'leavePolicies', intercept: async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/auth/me' && revoke) {
       await route.fulfill({ status: 401, json: { message: 'Session revoked.' } });
@@ -2280,7 +2337,7 @@ test('background_401_clears_the_established_session', async ({ page }) => {
 });
 
 test('onboarding_checklists_mount_the_tracked_canonical_editor_and_api', async ({ page }) => {
-  const { reads } = await boot(page, { area: 'onboarding', setting: 'onboarding', intercept: async route => {
+  const { reads } = await boot(page, { area: 'onboarding', setting: 'onboardingChecklists', intercept: async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/recruitment/onboarding/checklists') {
       await route.fulfill({ json: [{
@@ -2306,7 +2363,7 @@ test('onboarding_checklists_mount_the_tracked_canonical_editor_and_api', async (
 
 for (const locale of [{ name: 'en', arabic: false }, { name: 'ar', arabic: true }]) {
   test(`onboarding_configuration_editor_axe_${locale.name}`, async ({ page }) => {
-    await boot(page, { arabic: locale.arabic, area: 'onboarding', setting: 'onboarding', intercept: async route => {
+    await boot(page, { arabic: locale.arabic, area: 'onboarding', setting: 'onboardingChecklists', intercept: async route => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/recruitment/onboarding/checklists') {
         await route.fulfill({ json: [{
@@ -2576,7 +2633,7 @@ test('four_hundred_percent_reflow_has_no_two_axis_scroll', async ({ page }, test
 });
 
 test('dirty_cancel_preserves_url_values_scroll_and_focus', async ({ page }) => {
-  const { writes } = await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  const { writes } = await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   const taskTitle = page.getByLabel('Task title', { exact: true });
   await taskTitle.fill('Preserve this authored onboarding task');
   const back = page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Back to Onboarding and confirmation', exact: true });
@@ -2594,7 +2651,7 @@ test('dirty_cancel_preserves_url_values_scroll_and_focus', async ({ page }) => {
 });
 
 test('dirty_confirm_navigates_once', async ({ page }) => {
-  const { writes } = await boot(page, { area: 'onboarding', setting: 'onboarding' });
+  const { writes } = await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   await page.getByLabel('Task title', { exact: true }).fill('Discard this onboarding task once');
   const beforeHistory = await page.evaluate(() => history.length);
   await page.getByTestId('focused-navigation-top').getByRole('button', { name: 'Back to Onboarding and confirmation', exact: true }).click();

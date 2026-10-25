@@ -45,7 +45,8 @@ export interface SetupModuleAccess {
   flagStatus: 'loading' | 'ready' | 'error';
 }
 
-const HR_ADMINS = ['Admin', 'HR Manager', 'HR Officer'] as const;
+/** Who may change leave and shift settings (the APIs' writes); a settings section opens for whoever can change it. */
+const HR_SETTINGS_EDITORS = ['Admin', 'HR Manager'] as const;
 const LEAVE = ['leave.read', 'leave.write'] as const;
 const LOANS = ['loans.read', 'loans.write'] as const;
 // Users & access and the workspace are served by security.manage alone (AccessController.cs:23, TenantAdminController.cs:17):
@@ -58,10 +59,10 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   { id: 'openingBalances', group: 'getStarted', label: msg('Opening balances'), description: msg('Load leave, loan and end-of-service balances when going live.'), permissions: ['employees.write', 'payroll.write'], roles: ['Admin', 'HR Manager'], modulePath: '/opening-balances' },
 
   // Time & leave
-  { id: 'leaveTypes', group: 'timeLeave', label: msg('Leave types'), description: msg('The kinds of leave people can take, with their entitlement and pay rules.'), permissions: LEAVE, roles: HR_ADMINS, modulePath: '/leave' },
-  { id: 'leavePolicies', group: 'timeLeave', label: msg('Leave policies'), description: msg('Who gets which leave, accrual, carry-forward and encashment.'), permissions: LEAVE, roles: HR_ADMINS, modulePath: '/leave' },
-  { id: 'holidayCalendars', group: 'timeLeave', label: msg('Holiday calendars'), description: msg('Public holidays for each country and company.'), permissions: LEAVE, roles: HR_ADMINS, modulePath: '/leave' },
-  { id: 'shiftDefinitions', group: 'timeLeave', label: msg('Shifts'), description: msg('Shift times, breaks and grace periods.'), permissions: ['attendance.read'], roles: HR_ADMINS, modulePath: '/shifts', featureKey: 'shifts' },
+  { id: 'leaveTypes', group: 'timeLeave', label: msg('Leave types'), description: msg('The kinds of leave people can take, with their entitlement and pay rules.'), permissions: LEAVE, roles: HR_SETTINGS_EDITORS, modulePath: '/leave' },
+  { id: 'leavePolicies', group: 'timeLeave', label: msg('Leave policies'), description: msg('Who gets which leave, accrual, carry-forward and encashment.'), permissions: LEAVE, roles: HR_SETTINGS_EDITORS, modulePath: '/leave' },
+  { id: 'holidayCalendars', group: 'timeLeave', label: msg('Holiday calendars'), description: msg('Public holidays for each country and company.'), permissions: LEAVE, roles: HR_SETTINGS_EDITORS, modulePath: '/leave' },
+  { id: 'shiftDefinitions', group: 'timeLeave', label: msg('Shifts'), description: msg('Shift times, breaks and grace periods.'), permissions: ['attendance.read'], roles: HR_SETTINGS_EDITORS, modulePath: '/shifts', featureKey: 'shifts' },
   { id: 'shiftPolicy', group: 'timeLeave', label: msg('Shift policy'), description: msg('Rotation, rest-day and roster rules.'), permissions: ['attendance.read'], roles: ['Admin', 'HR Manager'], modulePath: '/shifts', featureKey: 'shifts' }, // GET /api/shifts/policy is Admin, HR Manager only
   { id: 'overtimePolicies', group: 'timeLeave', label: msg('Overtime policies'), description: msg('Overtime rates, caps and approval rules.'), permissions: ['overtime.read', 'overtime.write'], roles: ['Admin', 'HR Manager'], modulePath: '/overtime', featureKey: 'overtime' },
   { id: 'attendanceDevices', group: 'timeLeave', label: msg('Attendance devices'), description: msg('Biometric devices and other punch sources, and their connection keys.'), permissions: ['attendance.read', 'attendance.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Auditor'], modulePath: '/attendance' },
