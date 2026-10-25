@@ -103,12 +103,14 @@ public sealed class CompanySetupPlanner
     public const int MaxBodyBytes = 131072;
     private const string Why = "Create-company wizard planning: uniqueness and reuse of tenant-wide codes and the company register must be judged across every legal entity of the tenant, including soft-deleted rows that still hold a unique code.";
 
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
     private readonly ZayraDbContext _db;
     private readonly IAccessManagementService _access;
     private readonly IWorkWeekService _workWeek;
 
-    public CompanySetupPlanner(ZayraDbContext db, IAccessManagementService access, IWorkWeekService workWeek)
+    public CompanySetupPlanner(ZayraDbContext db, IAccessManagementService access, IWorkWeekService workWeek, Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _access = access;
         _workWeek = workWeek;
@@ -285,12 +287,9 @@ public sealed class CompanySetupPlanner
                 c.Problem(1, "companySwitcher", "company_switcher_selected",
                     "A company is selected in the company switcher. Switch it to all companies before creating a new company.",
                     "تم اختيار شركة في مبدّل الشركات. اختر جميع الشركات قبل إنشاء شركة جديدة.");
-            var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+            var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, licence: _licence);
             if (!gate.Allowed)
                 c.Problem(1, "creation", gate.ErrorCode, gate.Message);
-            else if (gate.AsDraft)
-                c.Problem(1, "creation", CompanySetupGates.PlatformActivationDisabledCode, CompanySetupGates.PlatformActivationDisabledMessage,
-                    CompanySetupGates.PlatformActivationDisabledMessageAr);
         }
         var stored = ex?.Company;
 

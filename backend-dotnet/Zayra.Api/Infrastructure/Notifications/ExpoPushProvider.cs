@@ -53,10 +53,16 @@ public sealed class ExpoPushProvider : IPushProvider
     private readonly INotificationProviderConfigReader _config;
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<ExpoPushProvider> _log;
+    private readonly bool _enabled;
 
+    /// <param name="configuration">
+    /// <c>Notifications:Push:Enabled</c> (default true). The client deployment kit sets it false: push needs outbound
+    /// HTTPS to exp.host, which an installation enables only on purpose.
+    /// </param>
     public ExpoPushProvider(INotificationProviderConfigReader config, IHttpClientFactory httpFactory,
-        ILogger<ExpoPushProvider> log)
+        ILogger<ExpoPushProvider> log, IConfiguration? configuration = null)
     {
+        _enabled = configuration is null || Zayra.Api.Controllers.Public.PublicInstallationController.IsPushEnabled(configuration);
         _config = config;
         _httpFactory = httpFactory;
         _log = log;
@@ -75,12 +81,19 @@ public sealed class ExpoPushProvider : IPushProvider
     /// </summary>
     public async Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken ct)
     {
+        if (!_enabled) return false;
         var cfg = await _config.GetAsync(tenantId, ct);
         return string.Equals(cfg.Get("Push.Provider"), ProviderKey, StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<ProviderSendResult> SendAsync(ProviderMessage message, CancellationToken ct)
     {
+        // Switched off for the installation: one durable, countable row, no outbound call and nothing to retry.
+        if (!_enabled)
+            return new ProviderSendResult(ProviderSendStatus.NotConfigured,
+                ErrorCode: "push_disabled",
+                ErrorMessage: "Push notifications are switched off on this installation (Notifications__Push__Enabled=false).");
+
         var cfg = await _config.GetAsync(message.TenantId, ct);
         var declared = cfg.Get("Push.Provider");
 

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
@@ -12,7 +13,9 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Licensing;
 using Zayra.Api.Models;
+using Zayra.Api.Tests.Licensing;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -28,6 +31,10 @@ namespace Zayra.Api.Tests.Security;
 [Collection("Integration")]
 public sealed class MigrationImportSeatLockRaceTests
 {
+    /// <summary>The licence allows two administrators (WP3): the caller holds one, the race is for the other.</summary>
+    private static readonly IServiceProvider AdminSeatLicence = new ServiceCollection()
+        .AddSingleton<ILicenceService>(FixedLicenceService.WithLimits(maxAdminUsers: 2)).BuildServiceProvider();
+
     private readonly PostgresFixture _fx;
     private readonly ITestOutputHelper _out;
     public MigrationImportSeatLockRaceTests(PostgresFixture fx, ITestOutputHelper o) { _fx = fx; _out = o; }
@@ -58,7 +65,6 @@ public sealed class MigrationImportSeatLockRaceTests
             var admin = new Role { TenantId = tenant, Name = "Admin", NormalizedName = "ADMIN", IsSystem = true, IsEditable = false, IsActive = true };
             admin.RolePermissions.Add(new RolePermission { RoleId = admin.Id, PermissionId = perm.Id });
             seed.Roles.Add(admin);
-            seed.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenant, Status = SubscriptionStatuses.Active, MaxAdminUsers = 2 });
             var caller = new User { TenantId = tenant, Email = "caller@probe.test", NormalizedEmail = "CALLER@PROBE.TEST", FullName = "Caller", PasswordHash = "x", Status = "Active", IsActive = true, IsEmailConfirmed = true };
             seed.Users.Add(caller);
             seed.UserRoles.Add(new UserRole { UserId = caller.Id, RoleId = admin.Id });
@@ -84,7 +90,7 @@ public sealed class MigrationImportSeatLockRaceTests
         await using var db = new ZayraDbContext(options);
         var controller = new MigrationImportController(db, new Pbkdf2PasswordHasher(1_000), new AuditService(db))
         {
-            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = AdminSeatLicence, User = new ClaimsPrincipal(new ClaimsIdentity(new[]
             {
                 new Claim("tenant_id", tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, callerId.ToString()), new Claim("sub", callerId.ToString()),
                 new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "security.manage"),
@@ -151,7 +157,7 @@ public sealed class MigrationImportSeatLockRaceTests
         await using var db = new ZayraDbContext(options);
         var controller = new MigrationImportController(db, new Pbkdf2PasswordHasher(1_000), new AuditService(db))
         {
-            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = AdminSeatLicence, User = new ClaimsPrincipal(new ClaimsIdentity(new[]
             {
                 new Claim("tenant_id", tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, callerId.ToString()), new Claim("sub", callerId.ToString()),
                 new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "security.manage"),

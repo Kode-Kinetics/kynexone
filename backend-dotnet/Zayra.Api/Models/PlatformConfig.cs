@@ -6,7 +6,7 @@ namespace Zayra.Api.Models;
 // It keeps its historical name until WP5 moves it to installation_settings.
 
 // ── Platform Configuration Entries ──────────────────────────────────────────────
-// Persistent key-value store for mutable platform settings (e.g. maintenance mode).
+// Persistent key-value store for mutable installation settings (e.g. maintenance mode).
 // Keys are simple ASCII strings; values are free-form strings (booleans as "true"/"false").
 
 public class PlatformConfigEntry
@@ -24,10 +24,8 @@ public static class PlatformConfigKeys
     public const string MaintenanceMessage = "maintenance_message";
 
     /// <summary>
-    /// Where a public pricing-quote request is announced: exactly one address. The public wizard
-    /// tells the buyer "our team will contact you within 1 business day", so a quote that reaches
-    /// nobody is a broken promise. Falls back to Sales:NotificationEmail, then to the platform
-    /// relay's From address. Never taken from the request.
+    /// This installation's identity (a UUID), created once at organisation setup. A licence may be bound to it,
+    /// so the client sends it to the vendor to receive a licence that works on this installation only.
     /// </summary>
-    public const string SalesNotificationAddress = "sales_notification_address";
+    public const string InstallationId = "installation.id";
 }

@@ -24,11 +24,13 @@ public class AccessManagementService : IAccessManagementService
     private readonly ITokenService _tokenService;
     private readonly string _appUrl;
     private readonly ILogger<AccessManagementService>? _logger;
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
 
     public AccessManagementService(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService auditService, ITokenService tokenService, IConfiguration? configuration = null,
-        ILogger<AccessManagementService>? logger = null)
+        ILogger<AccessManagementService>? logger = null, Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
         _db = db;
+        _licence = licence;
         _logger = logger;
         _passwordHasher = passwordHasher;
         _auditService = auditService;
@@ -157,7 +159,7 @@ public class AccessManagementService : IAccessManagementService
             // both pass it. Every create here holds the tenant row FOR UPDATE from this point to its commit, and under
             // READ COMMITTED the count below runs after the lock is granted, so it sees the previous holder's user.
             // (Invitations and ESS provisioning write inactive logins, which the count leaves out.)
-            if (await UserSeatLimit.CheckAsync(_db, tenantId, ct) is { } seatRefusal)
+            if (await UserSeatLimit.CheckAsync(_db, tenantId, Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxUsers(_licence), ct) is { } seatRefusal)
                 throw new UserSeatLimitReachedException(seatRefusal);
             if (request.CompanyId.HasValue)
             {
@@ -3277,20 +3279,15 @@ public class AccessManagementService : IAccessManagementService
 
     private async Task EnsureAdminCapacityAsync(Guid tenantId, CancellationToken cancellationToken)
     {
-        var limit = await _db.TenantSubscriptions.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Status == SubscriptionStatuses.Active
-                && (x.ExpiresAtUtc == null || x.ExpiresAtUtc > DateTime.UtcNow))
-            .OrderByDescending(x => x.StartedAtUtc)
-            .Select(x => (int?)x.MaxAdminUsers)
-            .FirstOrDefaultAsync(cancellationToken) ?? 10;
-        if (limit == 0) return; // Enterprise/unlimited convention used by platform provisioning.
+        var limit = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxAdminUsers(_licence);
+        if (limit == 0) return; // 0 = unlimited, as the licence states it.
 
         var activeAdmins = await _db.Users.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted
                 && x.UserRoles.Any(ur => ur.Role != null && ur.Role.NormalizedName == "ADMIN"))
             .CountAsync(cancellationToken);
         if (activeAdmins >= limit)
-            throw new InvalidOperationException($"The tenant subscription allows at most {limit} active administrator user(s).");
+            throw new InvalidOperationException($"The licence allows at most {limit} active administrator user(s).");
     }
 
     /// <summary>

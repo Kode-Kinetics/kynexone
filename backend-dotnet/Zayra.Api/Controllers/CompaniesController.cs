@@ -268,7 +268,7 @@ public class CompaniesController : ControllerBase
                 {
                     // Dry-run the same gates the commit will apply, counting the rows this batch has
                     // already spent, so "would create 4" cannot become "created 1, refused 3".
-                    var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, wouldCreate);
+                    var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, wouldCreate, Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
                     if (gate.Allowed) wouldCreate++;
                     else errors.Add(gate.Message);
                 }
@@ -315,9 +315,9 @@ public class CompaniesController : ControllerBase
                     }
                     else
                     {
-                        var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+                        var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, licence: Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
                         if (!gate.Allowed) errors.Add(gate.Message);
-                        else { await _organization.CreateCompanyAsync(tenantId, row.Request!, context, ct, gate.AsDraft); created++; }
+                        else { await _organization.CreateCompanyAsync(tenantId, row.Request!, context, ct); created++; }
                     }
                 }
                 catch (InvalidOperationException ex) { errors.Add(ex.Message); }

@@ -451,8 +451,12 @@ public class SaudiComplianceController : ControllerBase
     private async Task<bool> HasAnyGatingFeatureAsync(Guid tenantId, CancellationToken ct)
     {
         var explicitlyDisabled = await _db.TenantFeatureFlags
-            .CountAsync(f => f.TenantId == tenantId && GatingFeatures.Contains(f.FeatureKey) && !f.IsEnabled, ct);
-        return explicitlyDisabled < GatingFeatures.Length;
+            .Where(f => f.TenantId == tenantId && GatingFeatures.Contains(f.FeatureKey) && !f.IsEnabled)
+            .Select(f => f.FeatureKey)
+            .ToListAsync(ct);
+        // A gating module the licence does not grant counts as off, like one switched off.
+        var licence = Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this);
+        return GatingFeatures.Any(key => !explicitlyDisabled.Contains(key) && licence?.IsModuleLicensed(key) != false);
     }
 
     private Guid RequireTenant()

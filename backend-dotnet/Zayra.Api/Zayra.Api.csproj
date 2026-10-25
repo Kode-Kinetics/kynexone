@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
+    <!-- The release version; the release build passes -p:Version=MAJOR.MINOR.PATCH (WP10). -->
+    <Version>0.0.0-dev</Version>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -17,6 +19,13 @@
   <ItemGroup>
     <EmbeddedResource Include="Assets\Fonts\NotoSansArabic-Regular.ttf" LogicalName="Zayra.Api.Assets.Fonts.NotoSansArabic-Regular.ttf" />
     <EmbeddedResource Include="Assets\Fonts\NotoSansArabic-Bold.ttf" LogicalName="Zayra.Api.Assets.Fonts.NotoSansArabic-Bold.ttf" />
+    <!-- Licence verification keys: public halves only. The vendor keeps the private keys outside this repository.
+         The logical name keeps the kid intact: Licensing.Keys.<kid>.pub.pem. -->
+    <EmbeddedResource Include="Infrastructure\Licensing\Keys\*.pub.pem" LogicalName="Licensing.Keys.%(Filename)%(Extension)" />
+    <!-- CI only: a public key generated per CI run (scripts/ci/ci-licence.sh), trusted when the build is made with
+         -p:KynexOneCiLicenceKey=true so the browser suites can import a licence. Release builds never set it, and the
+         folder is git-ignored. -->
+    <EmbeddedResource Include="Infrastructure\Licensing\Keys\ci\*.pub.pem" Condition="'$(KynexOneCiLicenceKey)' == 'true'" LogicalName="Licensing.Keys.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <!-- Migration id manifest. Written by ./Dockerfile immediately BEFORE it deletes Migrations/ to

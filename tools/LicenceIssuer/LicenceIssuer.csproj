@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The VENDOR's licence-issuing tool. Never shipped to clients and never referenced by Zayra.Api.
+
+    It compiles the product's own payload record and key catalogs as linked source, so the issuer and the
+    verifier cannot disagree about a field, a rule or a module key.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>kynexone-licence-issuer</AssemblyName>
+    <RootNamespace>KynexOne.LicenceIssuer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\backend-dotnet\Zayra.Api\Infrastructure\Licensing\LicencePayload.cs" Link="Shared\LicencePayload.cs" />
+    <Compile Include="..\..\backend-dotnet\Zayra.Api\Models\FeatureKeys.cs" Link="Shared\FeatureKeys.cs" />
+    <Compile Include="..\..\backend-dotnet\Zayra.Api\Infrastructure\Modules\ModuleKeys.cs" Link="Shared\ModuleKeys.cs" />
+    <Compile Include="..\..\backend-dotnet\Zayra.Api\Infrastructure\Modules\OptInFeatures.cs" Link="Shared\OptInFeatures.cs" />
+  </ItemGroup>
+
+</Project>

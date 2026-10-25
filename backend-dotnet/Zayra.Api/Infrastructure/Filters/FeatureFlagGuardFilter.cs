@@ -29,7 +29,7 @@ namespace Zayra.Api.Infrastructure.Filters;
 /// action filter this refused a switched-off upload only after the whole multipart body had been received and
 /// buffered into an IFormFile (and a JSON body deserialized). Resource filters run after authentication and
 /// authorization and before model binding, so a refused request's body is never read. Registered right after
-/// <see cref="SubscriptionGuardFilter"/>, which moved with it, so the order of the two refusals is unchanged.</para>
+/// <see cref="LicenceGuardFilter"/>, which moved with it, so the order of the two refusals is unchanged.</para>
 /// </summary>
 public class FeatureFlagGuardFilter : IAsyncResourceFilter
 {

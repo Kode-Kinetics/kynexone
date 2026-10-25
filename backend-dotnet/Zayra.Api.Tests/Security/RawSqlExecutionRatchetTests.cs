@@ -72,6 +72,15 @@ public class RawSqlExecutionRatchetTests
         // proves the guarded setup writes remain separate for tenants sharing the same codes;
         // CompanySetupPostgresTests.ConcurrentCommits_* proves the wizard's commit serializes on it.
         ["Infrastructure/Setup/SetupTenantLock.cs"] = 1,
+        // Parameterized pg_advisory_xact_lock only, on the constant key "organisation-setup": two
+        // `--setup-organisation` runs racing on an empty database serialise, and the second sees the first's
+        // organisation and is refused (one organisation per installation). Writes no row.
+        // OrganisationProvisioningPostgresTests proves the single organisation.
+        ["Infrastructure/Provisioning/OrganisationProvisioningService.cs"] = 1,
+        // Parameterized pg_advisory_xact_lock only, keyed "employee-seats:{tenant}": every door that makes an
+        // employee Active serialises on it inside its transaction and re-counts, so two requests cannot both take
+        // the licence's last employee seat. Writes no row. LicenceImportAndEnforcementTests covers the count.
+        ["Infrastructure/Employees/EmployeeSeatLimit.cs"] = 1,
         // Parameterized transaction-scoped advisory lock only: the key is derived from the
         // authenticated tenant ID and serializes overlapping statutory-rule mutations. It writes
         // no table row; StatutoryRuleSafeguardPostgresTests.ConcurrentOverlappingCreatesProduceOneVersionAndOneConflict

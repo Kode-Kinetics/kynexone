@@ -1292,6 +1292,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<PlatformComplianceControl> PlatformComplianceControls => Set<PlatformComplianceControl>();
     public DbSet<PlatformSecurityIncident> PlatformSecurityIncidents => Set<PlatformSecurityIncident>();
     public DbSet<PlatformConfigEntry> PlatformConfigEntries => Set<PlatformConfigEntry>();
+    public DbSet<InstallationLicence> InstallationLicences => Set<InstallationLicence>();
     // ── AI Intelligence ────────────────────────────────────────────────────────
     public DbSet<AIModelConfig> AIModelConfigs => Set<AIModelConfig>();
     public DbSet<AIInsight> AIInsights => Set<AIInsight>();
@@ -3940,6 +3941,30 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Key).HasMaxLength(100);
             entity.Property(x => x.Value).HasMaxLength(2000);
             entity.HasIndex(x => x.Key).IsUnique();
+        });
+
+        // Signed licence evidence (implementation prompt §4.2, WP3). Never purged: it is the installation's proof
+        // of what it was entitled to. At most one Active row.
+        modelBuilder.Entity<InstallationLicence>(entity =>
+        {
+            entity.ToTable("installation_licences", t =>
+                t.HasCheckConstraint("ck_installation_licences__status",
+                    "status IN ('Active','Superseded','Rejected')"));
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.LicenceId).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Kid).HasMaxLength(50).IsRequired();
+            entity.Property(x => x.Payload).IsRequired();
+            entity.Property(x => x.Signature).HasMaxLength(500).IsRequired();
+            entity.Property(x => x.Fingerprint).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Licensee).HasMaxLength(300).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.HasIndex(x => x.LicenceId).IsUnique();
+            entity.HasIndex(x => x.Status).IsUnique()
+                .HasDatabaseName("ux_installation_licences__one_active")
+                .HasFilter("status = 'Active'");
+            entity.HasIndex(x => x.ImportedAtUtc);
+            entity.HasOne<Zayra.Api.Domain.Entities.User>().WithMany().HasForeignKey(x => x.ImportedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         // ── AI Intelligence ────────────────────────────────────────────────────

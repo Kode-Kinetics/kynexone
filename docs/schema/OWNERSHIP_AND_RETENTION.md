@@ -393,6 +393,15 @@ filter).
 |---|---|---|
 | `mfa_trusted_devices` | T | `retention_policies` row: `rule_key = auth.mfa-trusted-device-expired`, `trigger_event = RecordDate` (the row's `expires_at_utc`, or `revoked_at_utc` when earlier), `minimum_retention_months = 0`, `disposition = HardDelete`. A credential, not a business record (like `refresh_tokens`): deleted by `MfaTrustedDeviceRetentionRule` **30 days** after it expired or was revoked, a forensic grace matching refresh tokens. It holds a browser User-Agent and an IP address, which have no purpose once the trust is over. The `auth.mfa.*` audit rows naming it are kept with the audit log. |
 
+### W. Signed licence evidence (client-installed product)
+
+**Owner:** Platform / Licensing Engineering · **Approved by:** Product owner. RLS: grant-only (installation-wide: one
+organisation per database, no `tenant_id`).
+
+| Table | Class | Note |
+|---|---|---|
+| `installation_licences` | S | Kept for the **life of the installation**, never purged: it is the evidence of what the installation was entitled to and when (an audit or licence dispute needs every superseded licence, not only the current one). No `IRetentionRule` selects it (`InstallationLicenceRetentionTests`). It holds the licensee's legal name and no personal data. |
+
 ---
 
 ## 4. What the DPO must still decide

@@ -826,17 +826,16 @@ public class EmployeesController : ControllerBase
 
         async Task<IActionResult> RunImportAsync()
         {
-            // Enforce employee limit before processing any rows.
-            var sub = await _db.TenantSubscriptions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+            // Enforce the licensed employee limit before processing any rows.
+            var maxEmployees = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxEmployees(
+                Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
 
             // Active-seat budget (P1-4): MaxEmployees caps ACTIVE employees, so only rows that will land Active
             // consume a seat. Draft/incomplete rows import freely (they occupy no seat until completed+activated),
             // matching the "imported inactive until complete" model — the whole file is NOT rejected upfront.
             // A complete row that would land Active with no seat left is downgraded to Draft + warning below.
-            int activeSeatsBudget = sub is not null && sub.MaxEmployees > 0
-                ? Math.Max(0, sub.MaxEmployees - await _db.Employees.CountAsync(e => e.TenantId == tenantId && e.Status == EmployeeStatuses.Active && !e.IsDeleted, ct))
+            int activeSeatsBudget = maxEmployees > 0
+                ? Math.Max(0, maxEmployees - await _db.Employees.CountAsync(e => e.TenantId == tenantId && e.Status == EmployeeStatuses.Active && !e.IsDeleted, ct))
                 : int.MaxValue;
             int activeSeatsConsumed = 0;
 
@@ -1213,7 +1212,7 @@ public class EmployeesController : ControllerBase
                     else
                     {
                         rowStatus = EmployeeStatuses.Draft;
-                        RowWarn(rowNum, $"{name} imported as Draft — active seat limit reached ({sub?.MaxEmployees}); activate once an active seat is available.");
+                        RowWarn(rowNum, $"{name} imported as Draft — active seat limit reached ({maxEmployees}); activate once an active seat is available.");
                     }
                 }
 
@@ -2886,24 +2885,12 @@ public class EmployeesController : ControllerBase
         {
             var tenantId = RequireTenant();
 
-            // Enforce employee limit
-            var sub = await _db.TenantSubscriptions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.TenantId == tenantId, cancellationToken);
-
-            if (sub is not null && sub.MaxEmployees > 0)
-            {
-                var count = await _db.Employees.CountAsync(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted, cancellationToken);
-                if (count >= sub.MaxEmployees)
-                    return StatusCode(402, new
-                    {
-                        error           = "employee_limit_reached",
-                        currentCount    = count,
-                        maxAllowed      = sub.MaxEmployees,
-                        message         = $"Your plan allows up to {sub.MaxEmployees} active employees. You have {count}. Upgrade your plan to add more.",
-                        upgradeRequired = true,
-                    });
-            }
+            // Enforce the licensed employee limit (422, the same body as every other seat door). A preflight: the
+            // seat that holds is taken when the record becomes Active (EmployeeSeatLimit.EnsureSeatAsync).
+            if (await Zayra.Api.Infrastructure.Employees.EmployeeSeatLimit.CheckAsync(_db, tenantId,
+                    Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxEmployees(
+                        Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this)), cancellationToken) is { } seats)
+                return UnprocessableEntity(seats.Body);
 
             // CanViewSensitive() — the write response is a read of the record and obeys the same mask
             // gate as GET {id}; see IEmployeeManagementService.CreateAsync.
@@ -2911,6 +2898,7 @@ public class EmployeesController : ControllerBase
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex) { return UnprocessableEntity(ex.Refusal.Body); }
         // HOME JURISDICTION: the employing company has no country, so nothing can be required and nothing
         // saved. The Add Employee modal disables its submit button on the same condition — this is the
         // authoritative refusal behind that affordance, and it names the company and where the fix lives
@@ -3644,6 +3632,12 @@ public class EmployeesController : ControllerBase
             employee.ActivationBlockersCount = draftReadiness.Blocking.Count;
             employee.ReadinessEvaluatedAtUtc = approvedAtUtc;
 
+            // LICENCE SEAT (WP3.7): an approved draft becomes an Active employee, so it takes a licensed seat,
+            // recounted under the organisation's seat lock inside this transaction.
+            await Zayra.Api.Infrastructure.Employees.EmployeeSeatLimit.EnsureSeatAsync(_db, tenantId,
+                Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxEmployees(
+                    Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this)), employeeId: 0, ct);
+
             // The caller-owned transaction is deliberately outside EstablishmentGuard. The guard
             // joins it on lockable paths; Off/unclassified paths are now atomic too.
             await _establishmentGuard.EnforceAndExecuteAsync(
@@ -3753,6 +3747,11 @@ public class EmployeesController : ControllerBase
         {
             _db.ChangeTracker.Clear();
             return UnprocessableEntity(new { message = ex.Message });
+        }
+        catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return UnprocessableEntity(ex.Refusal.Body);
         }
         catch (SalaryStructureRefusedException ex)
         {
@@ -4140,6 +4139,7 @@ public class EmployeesController : ControllerBase
             return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()) with { LoginUsernameDiffers = loginUsernameDiffers });
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex) { return UnprocessableEntity(ex.Refusal.Body); }
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }
         catch (WorkEmailRejectedException ex) { return WorkEmailRejected(ex); }
         catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
@@ -4197,6 +4197,7 @@ public class EmployeesController : ControllerBase
         // structured body into a generic 400) — EmployeeActivationBlockedException is standalone (§5.6).
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex) { return UnprocessableEntity(ex.Refusal.Body); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         // PATCH /status reaches the identical separation insert whenever the target is an exit status, so
         // two concurrent calls hit the same partial unique index. Without this it surfaced as a 500 — the
@@ -4294,6 +4295,7 @@ public class EmployeesController : ControllerBase
         }
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex) { return UnprocessableEntity(ex.Refusal.Body); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -4308,6 +4310,7 @@ public class EmployeesController : ControllerBase
             return employee is null ? NotFound() : Ok(employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex) { return UnprocessableEntity(ex.Refusal.Body); }
         // The closed separation-type vocabulary and the joining-date bound both refuse deliberately.
         // Without this they left the service as 500 internal_error, which reads as a product fault
         // rather than a rejected command.
@@ -4386,6 +4389,7 @@ public class EmployeesController : ControllerBase
                 blocked.Add(new { id, blocking = ex.Readiness.Blocking.Select(ReadinessItemDto) });
             }
             catch (EstablishmentBudgetExceededException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = "establishment_budget_exceeded" }); }
+            catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = Zayra.Api.Infrastructure.Employees.EmployeeSeatLimit.Refusal.Code }); }
             catch (InvalidOperationException ex) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = ex.Message }); }
         }
         _db.ChangeTracker.Clear();
@@ -4576,6 +4580,12 @@ public class EmployeesController : ControllerBase
             {
                 _db.ChangeTracker.Clear(); // discard this row's tracked-but-rolled-back mutation
                 items.Add(new(id, code, name, "skipped", "establishment_budget_exceeded", null));
+                skipped++;
+            }
+            catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException)
+            {
+                _db.ChangeTracker.Clear();
+                items.Add(new(id, code, name, "skipped", Zayra.Api.Infrastructure.Employees.EmployeeSeatLimit.Refusal.Code, null));
                 skipped++;
             }
             catch (InvalidOperationException ex)

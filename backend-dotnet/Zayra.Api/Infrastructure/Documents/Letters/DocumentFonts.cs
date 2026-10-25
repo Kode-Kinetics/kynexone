@@ -37,6 +37,43 @@ public static class DocumentFonts
     private static readonly object Gate = new();
     private static bool _initialised;
 
+    public const string LicenceConfigKey = "QuestPdf:License";
+
+    /// <summary>
+    /// The QuestPDF licence documents are rendered under, set once at startup by <see cref="ConfigureLicence"/>.
+    /// Community until then (tests and Development).
+    /// </summary>
+    public static QuestPDF.Infrastructure.LicenseType Licence { get; private set; } = QuestPDF.Infrastructure.LicenseType.Community;
+
+    /// <summary>
+    /// Reads <c>QuestPdf:License</c> (<c>QuestPdf__License</c>): <c>Professional</c> or <c>Enterprise</c>, the commercial
+    /// licence the vendor holds for client installations. The Community licence does not cover redistributing the
+    /// product to clients, so outside Development a missing value or <c>Community</c> refuses to start, before any
+    /// document can be issued under the wrong licence. Development falls back to Community.
+    /// </summary>
+    public static QuestPDF.Infrastructure.LicenseType ConfigureLicence(string? configured, bool isDevelopment)
+    {
+        var value = configured?.Trim();
+        QuestPDF.Infrastructure.LicenseType licence;
+        if (string.Equals(value, "Professional", StringComparison.OrdinalIgnoreCase))
+            licence = QuestPDF.Infrastructure.LicenseType.Professional;
+        else if (string.Equals(value, "Enterprise", StringComparison.OrdinalIgnoreCase))
+            licence = QuestPDF.Infrastructure.LicenseType.Enterprise;
+        else if (isDevelopment && (string.IsNullOrEmpty(value) || string.Equals(value, "Community", StringComparison.OrdinalIgnoreCase)))
+            licence = QuestPDF.Infrastructure.LicenseType.Community;
+        else
+            throw new InvalidOperationException(
+                $"[QuestPDF] {LicenceConfigKey} is '{value}'. Set QuestPdf__License to Professional or Enterprise: the Community " +
+                "licence does not cover client installations.");
+
+        lock (Gate)
+        {
+            Licence = licence;
+            if (_initialised) QuestPDF.Settings.License = licence;
+        }
+        return licence;
+    }
+
     /// <summary>
     /// Idempotent. Safe to call from a static constructor, from Program.cs, and from a test
     /// fixture; the first caller wins and the rest are a lock acquisition.
@@ -48,7 +85,7 @@ public static class DocumentFonts
         {
             if (_initialised) return;
 
-            QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
+            QuestPDF.Settings.License = Licence;
 
             // Deterministic rendering: never silently borrow a host font. See the type comment.
             QuestPDF.Settings.UseEnvironmentFonts = false;

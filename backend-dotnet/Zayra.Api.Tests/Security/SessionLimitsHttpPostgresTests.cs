@@ -848,6 +848,8 @@ internal sealed class SessionLimitsHost : WebApplicationFactory<Program>
         builder.UseSetting("RateLimit:RefreshPermitLimit", "10000");
         builder.ConfigureTestServices(services =>
         {
+            // Not a licence test: an unlimited licence, so no request is refused 402 for want of one.
+            Zayra.Api.Tests.Licensing.LicenceTestServices.UseUnlimitedLicence(services);
             var apiAssembly = typeof(ZayraDbContext).Assembly;
             foreach (var worker in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType?.Assembly == apiAssembly).ToList())
                 services.Remove(worker);

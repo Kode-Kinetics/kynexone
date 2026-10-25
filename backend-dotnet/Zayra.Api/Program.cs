@@ -58,6 +58,11 @@ using Zayra.Api.Models;
 if (MigrateOnlyEntryPoint.ShouldHandle(args))
     return await MigrateOnlyEntryPoint.RunAsync(args);
 
+// `--maintenance on|off [--message "..."]` (upgrade.sh): like --migrate it needs only a connection string, so it
+// works from either the old or the new image, before or after migrating. See MaintenanceCommand.
+if (MaintenanceCommand.ShouldHandle(args))
+    return await MaintenanceCommand.RunAsync(args, Console.Out, Console.Error);
+
 var builder = WebApplication.CreateBuilder(args);
 
 // JSON console logs (traceId + tenantId via scopes) outside Development; OpenTelemetry OTLP export
@@ -164,6 +169,17 @@ builder.Services.Configure<HostOptions>(options =>
     }
 }
 
+// The PDF engine's commercial licence (WP14): outside Development a missing or Community value refuses to start.
+Zayra.Api.Infrastructure.Documents.Letters.DocumentFonts.ConfigureLicence(
+    builder.Configuration[Zayra.Api.Infrastructure.Documents.Letters.DocumentFonts.LicenceConfigKey],
+    builder.Environment.IsDevelopment());
+
+// AI is off unless chosen (AI_PROVIDER unset = the deterministic fallback). A cloud provider sends employee data
+// outside the client's environment: say so where an operator reading the boot log will see it.
+if (builder.Configuration["AI_PROVIDER"]?.Trim().ToLowerInvariant() is "anthropic" or "openai")
+    Console.Error.WriteLine("[AI] WARNING: AI_PROVIDER is a cloud provider; employee data in AI requests will be sent to an "
+        + "external AI service. Use AI_PROVIDER=ollama for a local model, or unset it to keep AI off.");
+
 // Railway injects PORT; fall back to ASPNETCORE_URLS, then local default.
 var port = Environment.GetEnvironmentVariable("PORT");
 var listenUrl = !string.IsNullOrEmpty(port)
@@ -194,8 +210,8 @@ builder.Services.AddControllers(options =>
 {
     // Both are RESOURCE filters: they run after authentication/authorization and before model binding, so a
     // refused request's body (a multipart upload, a JSON payload) is never read. Order matters: a request both
-    // would refuse gets the subscription answer first, as it did when they were action filters.
-    options.Filters.Add<SubscriptionGuardFilter>();
+    // would refuse gets the licence answer first, as it did when they were action filters.
+    options.Filters.Add<LicenceGuardFilter>();
     options.Filters.Add<FeatureFlagGuardFilter>();
 })
 .AddJsonOptions(options =>
@@ -211,12 +227,22 @@ builder.Services.AddControllers(options =>
     options.JsonSerializerOptions.Converters.Add(new Zayra.Api.Infrastructure.Json.UtcDateTimeConverter());
     options.JsonSerializerOptions.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString;
 });
-// CORS: explicit allowlist from config + optional CORS_EXTRA_ORIGINS env var for production deployments
-var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-    ?? new[] { "http://localhost:5173" };
+// CORS: an explicit allowlist from config (Cors__AllowedOrigins__0…) plus optional CORS_EXTRA_ORIGINS. Development
+// gets the local dev servers from appsettings.Development.json. Outside Development the installation's own public
+// address (APP_URL) must be on the list — a deployment that forgot it would refuse its own web app.
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 var extraOrigins = (builder.Configuration["CORS_EXTRA_ORIGINS"] ?? string.Empty)
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-allowedOrigins = allowedOrigins.Concat(extraOrigins).Distinct().ToArray();
+allowedOrigins = allowedOrigins.Concat(extraOrigins).Where(o => !string.IsNullOrWhiteSpace(o)).Distinct().ToArray();
+if (builder.Environment.IsDevelopment() && allowedOrigins.Length == 0)
+    allowedOrigins = ["http://localhost:5173"];
+if (!builder.Environment.IsDevelopment())
+{
+    var publicOrigin = (builder.Configuration["APP_URL"] ?? string.Empty).Trim().TrimEnd('/');
+    if (!allowedOrigins.Any(o => string.Equals(o.Trim().TrimEnd('/'), publicOrigin, StringComparison.OrdinalIgnoreCase)))
+        throw new InvalidOperationException(
+            $"[Cors] APP_URL ({publicOrigin}) is not in Cors:AllowedOrigins. Set Cors__AllowedOrigins__0={publicOrigin}.");
+}
 builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => policy
     .WithOrigins(allowedOrigins)
     .AllowAnyMethod()
@@ -370,6 +396,12 @@ builder.Services.AddScoped<IApprovalWorkflowService, ApprovalWorkflowService>();
 builder.Services.AddScoped<IApprovalRouter, ApprovalRouter>();
 builder.Services.AddScoped<Zayra.Api.Application.Timesheets.ITimesheetService, Zayra.Api.Infrastructure.Timesheets.TimesheetService>();
 builder.Services.AddScoped<IAuthSeeder, AuthSeeder>();
+// Licensing (WP3): the vendor-signed licence is the only source of limits, optional modules and opt-in features.
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Licensing.LicenceVerifier>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Licensing.ILicenceService, Zayra.Api.Infrastructure.Licensing.LicenceService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Licensing.LicenceImporter>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Operations.IMaintenanceState, Zayra.Api.Infrastructure.Operations.MaintenanceState>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.Licensing.LicenceRefreshWorker>();
 // The one door through which the installation's organisation is created (--setup-organisation).
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Provisioning.IOrganisationProvisioningService,
                            Zayra.Api.Infrastructure.Provisioning.OrganisationProvisioningService>();
@@ -757,6 +789,18 @@ builder.Services.AddRateLimiter(o =>
                 QueueLimit               = 0,
             }));
 
+    // Anonymous installation facts (GET /api/public/installation): the web app and the mobile app read it on start.
+    o.AddPolicy("public_info", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            RateLimitPartitionKey(ctx),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("PublicInfoPermitLimit", 60),
+                Window                   = TimeSpan.FromSeconds(rl.GetValue("PublicInfoWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
     o.AddPolicy("auth_refresh", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
             RateLimitPartitionKey(ctx),
@@ -880,6 +924,9 @@ app.UseCors("kynexone");
 // action is refused here, before rate limiting, authentication or the action.
 app.Use(ErpApiKeyRequestGuard.BeforeAuthentication);
 app.UseRateLimiter();
+// Maintenance mode (WP8): while an upgrade runs, /api/* answers 503 except health, sign-in, the public
+// installation endpoint and the maintenance switch itself.
+app.Use(Zayra.Api.Infrastructure.Operations.MaintenanceModeGate.InvokeAsync);
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -896,10 +943,9 @@ app.MapGet("/health/live", () => Results.Ok(new
     status = "live",
     utc = DateTime.UtcNow,
     service = "zayra-api",
-    // Deployed-commit marker for deploy verification. Render injects RENDER_GIT_COMMIT into
-    // the running instance, so this reflects exactly which commit is live. Off Render it is the
-    // commit baked into the build (SourceRevisionId), which the e2e preflight compares with the
-    // commit under test; "local" only when neither is known. See BuildInfo.
+    // The release version and the commit baked into the build (SourceRevisionId), which the e2e
+    // preflight and upgrade.sh compare with what they expect; "local" when the commit is unknown.
+    version = BuildInfo.Version,
     commit = BuildInfo.Commit
 })).AllowAnonymous();
 
@@ -1099,6 +1145,12 @@ using (var scope = app.Services.CreateScope())
     // CountryCode = "", which resolves an EMPTY statutory/identity requirement set and blocks employee
     // creation. Nothing is guessed and nothing is written — a country inferred from a currency or a
     // slug would seed the wrong labour law in silence. Kill switch: MissingCountryAudit:Enabled=false.
+    // Load and verify the licence before the first request, so the guard never answers from an empty snapshot.
+    try { await scope.ServiceProvider.GetRequiredService<Zayra.Api.Infrastructure.Licensing.ILicenceService>().RefreshAsync(CancellationToken.None); }
+    catch (Exception ex) { logger.LogError(ex, "[Licence] Loading the licence at startup failed; the installation is treated as unlicensed until the next refresh."); }
+    logger.LogInformation("[Licence] State at startup: {LicenceState}.",
+        scope.ServiceProvider.GetRequiredService<Zayra.Api.Infrastructure.Licensing.ILicenceService>().State);
+
     if (!string.Equals(app.Configuration["MissingCountryAudit:Enabled"], "false", StringComparison.OrdinalIgnoreCase))
     {
         await TrySeedAsync("MissingCountryAudit",
@@ -1112,6 +1164,10 @@ using (var scope = app.Services.CreateScope())
 // administrator, then exits without serving traffic. It runs here — after the boot sequence and its
 // global reference-data seeders, before the server starts — so the organisation is provisioned against
 // the same reference data a running API sees. See OrganisationSetupCommand.
+// `--import-licence <file>` / `--licence-status`: install or inspect the vendor-signed licence, then exit.
+if (Zayra.Api.Infrastructure.Licensing.LicenceCommands.ShouldHandle(args))
+    return await Zayra.Api.Infrastructure.Licensing.LicenceCommands.RunAsync(app.Services, args, Console.Out, Console.Error);
+
 if (Zayra.Api.Infrastructure.Provisioning.OrganisationSetupCommand.ShouldHandle(args))
     return await Zayra.Api.Infrastructure.Provisioning.OrganisationSetupCommand.RunAsync(
         app.Services, args, Console.Out, Console.Error);

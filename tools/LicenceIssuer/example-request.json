@@ -1,0 +1,18 @@
+{
+  "licenceId": "EXAMPLE-2026-0001",
+  "licensee": "Example Trading Company LLC",
+  "installationId": null,
+  "edition": "Standard",
+  "expiresAtUtc": "2027-12-31T23:59:59Z",
+  "graceDays": 30,
+  "supportExpiresAtUtc": "2027-12-31T23:59:59Z",
+  "accountType": "Group",
+  "maxEmployees": 500,
+  "maxUsers": 100,
+  "maxCompanies": 5,
+  "maxAdminUsers": 10,
+  "aiMonthlyTokenLimit": 200000,
+  "modules": ["recruitment", "performance", "finance", "shifts", "overtime", "ai_assistant", "mobile_app"],
+  "optInFeatures": ["learning", "succession", "engagement", "compensation", "release_a"],
+  "countries": null
+}

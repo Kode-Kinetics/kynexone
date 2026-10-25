@@ -1,0 +1,28 @@
+# KynexOne reverse proxy. KYNEXONE_DOMAIN and CADDY_TLS come from .env:
+#   CADDY_TLS=internal                         Caddy's own CA (LAN installs; install its root on client PCs)
+#   CADDY_TLS=admin@example.sa                 a public certificate from Let's Encrypt (needs ports 80/443 from the internet)
+#   CADDY_TLS=/certs/cert.pem /certs/key.pem   the organisation's own certificate, placed in ./certs
+{$KYNEXONE_DOMAIN} {
+	tls {$CADDY_TLS}
+	encode zstd gzip
+
+	# The API: browser calls, the mobile app, attendance devices and KynexBridge.
+	@api path /api/* /health/live /health/ready
+	handle @api {
+		request_body {
+			max_size 60MB
+		}
+		reverse_proxy api:5117
+	}
+
+	handle {
+		reverse_proxy web:5173
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

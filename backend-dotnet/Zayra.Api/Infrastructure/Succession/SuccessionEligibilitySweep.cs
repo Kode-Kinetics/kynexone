@@ -35,11 +35,15 @@ public sealed record SuccessionSweepResult(int Withdrawn, int Appointed, int Fla
 /// Notices never mention a nomination or a slate: they speak of the development plan only.
 /// </summary>
 public sealed class SuccessionSweepService(ZayraDbContext db, TimeProvider clock, INotificationService notifications, IAuditService audit,
-    SuccessionPositionService positions, DevelopmentPlanService plans, ILogger<SuccessionSweepService> log)
+    SuccessionPositionService positions, DevelopmentPlanService plans, ILogger<SuccessionSweepService> log,
+    Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
 {
+    /// <summary>Organisations with succession on — and licensed: a stored flag the licence does not grant sweeps nothing.</summary>
     public async Task<IReadOnlyList<Guid>> EnabledTenantsAsync(CancellationToken ct) =>
-        await db.TenantFeatureFlags.AsNoTracking().Where(f => f.FeatureKey == FeatureKeys.Succession && f.IsEnabled)
-            .Select(f => f.TenantId).Distinct().ToListAsync(ct);
+        licence?.IsOptInLicensed(FeatureKeys.Succession) == false
+            ? []
+            : await db.TenantFeatureFlags.AsNoTracking().Where(f => f.FeatureKey == FeatureKeys.Succession && f.IsEnabled)
+                .Select(f => f.TenantId).Distinct().ToListAsync(ct);
 
     public async Task<SuccessionSweepResult> RunTenantAsync(Guid tenantId, CancellationToken ct)
     {

@@ -6,6 +6,8 @@ import { FeatureFlagProvider } from '@/src/contexts/FeatureFlagContext';
 import { HelpTextProvider } from '@/src/contexts/HelpTextContext';
 import { AppToastProvider } from '@/src/components/ui/AppToast';
 import { ChunkErrorReloader } from '@/src/components/ChunkErrorReloader';
+import { LicenceGraceBanner } from '@/src/components/LicenceGraceBanner';
+import { MaintenanceNotice } from '@/src/components/MaintenanceNotice';
 
 /**
  * Public credential routes mount no auth stack; /login and /welcome mount only AuthProvider; every
@@ -22,6 +24,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <AppToastProvider>
       <ChunkErrorReloader />
+      <MaintenanceNotice />
       {isPublicCredentialRoute ? (
         children
       ) : isLogin ? (
@@ -32,7 +35,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
       ) : (
         <AuthProvider>
           <FeatureFlagProvider>
-            <HelpTextProvider>{children}</HelpTextProvider>
+            <HelpTextProvider>
+              <LicenceGraceBanner />
+              {children}
+            </HelpTextProvider>
           </FeatureFlagProvider>
         </AuthProvider>
       )}

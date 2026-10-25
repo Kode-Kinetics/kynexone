@@ -55,7 +55,6 @@ internal static class CompanyEndpoints
             message = gate.Message,
             upgradeRequired = true,
         }),
-        CompanyCreationVerdict.PlatformControlled => c.StatusCode(403, new { error = gate.ErrorCode, message = gate.Message }),
         CompanyCreationVerdict.SingleCompanyAccount => c.Conflict(new { error = gate.ErrorCode, message = gate.Message }),
         _ => c.Unauthorized(new { error = gate.ErrorCode, message = gate.Message }),
     };
@@ -85,18 +84,18 @@ internal static class CompanyEndpoints
                     message = "Only a group administrator can create another company."
                 });
 
-            // The subscription limit and the three governance gates live in CompanyCreationGate so
+            // The licence limit and the account-type gate live in CompanyCreationGate so
             // that the CSV importer passes exactly the same four checks this form does. They are read
             // and the company written under the tenant setup lock (SETUP:{tenantId}, the same lock the
             // setup assistant and the create-company wizard take), so two concurrent creates cannot both
-            // see room under the plan limit, or both pass the CR-number uniqueness check.
+            // see room under the licence limit, or both pass the CR-number uniqueness check.
             Guid? committing = null;
             async Task<ActionResult<CompanyDto>> GateAndCreateAsync()
             {
-                var gate = await CompanyCreationGate.EvaluateAsync(db, tenantId.Value, ct);
+                var gate = await CompanyCreationGate.EvaluateAsync(db, tenantId.Value, ct, licence: Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(c));
                 if (!gate.Allowed) return GateRefusal(c, gate);
                 if (EmailDomainNeedsSecurityAdmin(c, null, request.EmailDomain)) return EmailDomainForbidden(c);
-                var company = await organization.CreateCompanyAsync(tenantId.Value, request, context, ct, gate.AsDraft);
+                var company = await organization.CreateCompanyAsync(tenantId.Value, request, context, ct);
                 committing = company.Id;
                 return created(company);
             }

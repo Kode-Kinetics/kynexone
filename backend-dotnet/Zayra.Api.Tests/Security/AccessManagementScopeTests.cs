@@ -6,7 +6,9 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Licensing;
 using Zayra.Api.Models;
+using Zayra.Api.Tests.Licensing;
 
 namespace Zayra.Api.Tests.Security;
 
@@ -152,29 +154,23 @@ public class AccessManagementScopeTests
     }
 
     [Fact]
-    public async Task ConcurrentAdminCreation_EnforcesSubscriptionSeatLimitAcrossDbContexts()
+    public async Task ConcurrentAdminCreation_EnforcesLicenceAdminSeatLimitAcrossDbContexts()
     {
         var w = await SeedWorld();
         await using (var seed = _fx.CreateDb())
         {
             await EnsureRoleAsync(seed, w.TenantId, "Admin");
-            // Two seats: the acting Admin holds one (only an Admin may give the Admin role), the race is for the other.
-            seed.TenantSubscriptions.Add(new TenantSubscription
-            {
-                TenantId = w.TenantId,
-                Plan = "Starter",
-                Status = SubscriptionStatuses.Active,
-                MaxAdminUsers = 2
-            });
             await seed.SaveChangesAsync();
         }
+        // Two seats: the acting Admin holds one (only an Admin may give the Admin role), the race is for the other.
+        var licence = FixedLicenceService.WithLimits(maxAdminUsers: 2);
         var callerId = await SeedAdminCallerAsync(w.TenantId);
 
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task<Exception?> Create(string email)
         {
             await using var db = _fx.CreateDb();
-            var service = CreateService(db);
+            var service = CreateService(db, licence);
             await gate.Task;
             try
             {
@@ -610,8 +606,8 @@ public class AccessManagementScopeTests
         await db.SaveChangesAsync();
     }
 
-    private static AccessManagementService CreateService(ZayraDbContext db) =>
-        new(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService());
+    private static AccessManagementService CreateService(ZayraDbContext db, ILicenceService? licence = null) =>
+        new(db, new Pbkdf2PasswordHasher(), new NullAuditService(), new FakeTokenService(), licence: licence);
 
     private sealed class FakeTokenService : ITokenService
     {

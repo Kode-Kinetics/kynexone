@@ -319,16 +319,14 @@ public class TenantAdminController : ControllerBase
         var activeUsers = await _db.Users
             .CountAsync(u => u.TenantId == tenantId && u.IsActive && !u.IsDeleted, ct);
 
-        var sub = await _db.TenantSubscriptions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        var licence = Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this);
 
         return Ok(new
         {
             activeEmployees,
-            maxEmployees = sub?.MaxEmployees ?? 0,
+            maxEmployees = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxEmployees(licence),
             activeUsers,
-            maxUsers = sub?.MaxUsers ?? 0,
+            maxUsers = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxUsers(licence),
             storageUsedMb = 0.0f  // placeholder — real value requires blob storage integration
         });
     }
@@ -368,7 +366,7 @@ public class TenantAdminController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        pageSize = Math.Clamp(pageSize, 1, 200);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         page     = Math.Max(1, page);
 
         var q = _db.LoginActivities.AsNoTracking().Where(a => a.TenantId == tenantId);
@@ -395,11 +393,9 @@ public class TenantAdminController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var sub = await _db.TenantSubscriptions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
-        var plan = sub?.Plan ?? "Starter";
-        var limit = AiPlanLimits.GetMonthlyTokenLimit(plan);
+        var licence = Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this);
+        var plan = licence?.Current.Payload?.Edition ?? "Unlicensed";
+        var limit = licence?.Current.AiMonthlyTokenLimit ?? 0;
         var ym = yearMonth ?? int.Parse(DateTime.UtcNow.ToString("yyyyMM"));
 
         var usage = await _db.TenantAiUsages
@@ -414,7 +410,9 @@ public class TenantAdminController : ControllerBase
             requestCount = usage?.RequestCount ?? 0,
             blockedCount = usage?.BlockedCount ?? 0,
             monthlyTokenLimit = limit,
-            isUnlimited = limit == 0,
+            // 0 in the licence means AI is not licensed, never unlimited.
+            isUnlimited = false,
+            aiLicensed = limit > 0,
             usagePct = limit > 0 ? Math.Min(100.0, (double)(usage?.TokensUsed ?? 0) / limit * 100) : 0.0
         });
     }

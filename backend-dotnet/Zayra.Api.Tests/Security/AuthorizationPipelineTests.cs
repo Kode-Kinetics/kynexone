@@ -174,7 +174,7 @@ public sealed class AuthorizationPipelineTests
         var token = AuthorizationPipelineFixture.ReissueWith(
             _fixture.TenantTokenWithPermission,
             _fixture.Jwt.Issuer,
-            _fixture.Jwt.TenantAudience,
+            _fixture.Jwt.Audience,
             _fixture.Jwt.SigningKey,
             DateTime.UtcNow.AddMinutes(30));
 
@@ -202,7 +202,7 @@ public sealed class AuthorizationPipelineTests
         var token = AuthorizationPipelineFixture.ReissueWith(
             _fixture.TenantTokenWithPermission,
             _fixture.Jwt.Issuer,
-            _fixture.Jwt.TenantAudience,
+            _fixture.Jwt.Audience,
             ForeignSigningKey,                       // ← the only change
             DateTime.UtcNow.AddMinutes(30));
 
@@ -219,7 +219,7 @@ public sealed class AuthorizationPipelineTests
         var token = AuthorizationPipelineFixture.ReissueWith(
             _fixture.TenantTokenWithPermission,
             _fixture.Jwt.Issuer,
-            _fixture.Jwt.TenantAudience,
+            _fixture.Jwt.Audience,
             _fixture.Jwt.SigningKey,
             DateTime.UtcNow.AddMinutes(-30));       // ← the only change (ClockSkew is 1 minute)
 
@@ -237,7 +237,7 @@ public sealed class AuthorizationPipelineTests
         var token = AuthorizationPipelineFixture.ReissueWith(
             _fixture.TenantTokenWithPermission,
             "https://issuer.that.is.not.this.api",   // ← the only change
-            _fixture.Jwt.TenantAudience,
+            _fixture.Jwt.Audience,
             _fixture.Jwt.SigningKey,
             DateTime.UtcNow.AddMinutes(30));
 

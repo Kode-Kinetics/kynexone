@@ -51,6 +51,7 @@ public sealed class CompanySetupService
     /// <summary>The audit row written when the company super admin could not be written after the commit.</summary>
     public const string AdminFailedAction = "company.setup_admin_failed";
 
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
     private readonly ZayraDbContext _db;
     private readonly IOrganizationSetupService _organization;
     private readonly IAccessManagementService _access;
@@ -58,14 +59,15 @@ public sealed class CompanySetupService
     private readonly IWorkWeekService _workWeek;
 
     public CompanySetupService(ZayraDbContext db, IOrganizationSetupService organization, IAccessManagementService access,
-        IWorkWeekService workWeek, IEmailService email)
+        IWorkWeekService workWeek, IEmailService email, Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _organization = organization;
         _access = access;
         _workWeek = workWeek;
         _email = email;
-        Planner = new CompanySetupPlanner(db, access, workWeek);
+        Planner = new CompanySetupPlanner(db, access, workWeek, licence);
     }
 
     public CompanySetupPlanner Planner { get; }
@@ -77,9 +79,9 @@ public sealed class CompanySetupService
         var tenantId = caller.TenantId;
         var tenant = await _db.Tenants.AsNoTracking().Where(t => t.Id == tenantId)
             .Select(t => new { t.AccountType, t.CompanyCreationMode }).FirstOrDefaultAsync(ct);
-        var sub = await _db.TenantSubscriptions.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        var maxCompanies = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxCompanies(_licence);
         var used = await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).CountAsync(c => !c.IsDeleted, ct);
-        var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+        var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, licence: _licence);
         var (canCreate, code, message, _) = Refusal(caller, gate);
         // The same role ceiling User Management applies (and the planner's step 6 uses).
         AccessCeilingDto? ceiling;
@@ -110,9 +112,9 @@ public sealed class CompanySetupService
         return new CompanySetupContext(
             canCreate, code, message,
             tenant?.CompanyCreationMode ?? string.Empty,
-            tenant?.AccountType ?? string.Empty,
+            Zayra.Api.Infrastructure.Licensing.LicenceLimits.AccountType(_licence, tenant?.AccountType ?? string.Empty),
             used,
-            sub is { MaxCompanies: > 0 } ? sub.MaxCompanies : null,
+            maxCompanies > 0 ? maxCompanies : null,
             caller.IsGroupScope,
             sisters,
             new CompanySetupSharedCatalog(departments, designations, grades),
@@ -165,8 +167,6 @@ public sealed class CompanySetupService
     {
         if (!caller.IsGroupScope) return (false, CompanySetupGates.GroupScopeRequiredCode, CompanySetupGates.GroupScopeRequiredMessage, CompanySetupGates.GroupScopeRequiredMessageAr);
         if (!gate.Allowed) return (false, gate.ErrorCode, gate.Message, null);
-        if (gate.AsDraft) return (false, CompanySetupGates.PlatformActivationDisabledCode, CompanySetupGates.PlatformActivationDisabledMessage,
-            CompanySetupGates.PlatformActivationDisabledMessageAr);
         return (true, null, null, null);
     }
 
@@ -493,7 +493,7 @@ public sealed class CompanySetupService
     {
         if (body?.ExistingCompanyId is Guid target) return await CreateExistingDraftAsync(caller, body, target, ct);
         // No stranded drafts (Decision 12): a tenant that cannot create a company now cannot start one.
-        var gate = await CompanyCreationGate.EvaluateAsync(_db, caller.TenantId, ct);
+        var gate = await CompanyCreationGate.EvaluateAsync(_db, caller.TenantId, ct, licence: _licence);
         var (canCreate, code, message, messageAr) = Refusal(caller, gate);
         if (!canCreate) return CompanySetupOutcome<CompanySetupDraft>.Fail(409, code!, message!, messageAr, step: 1);
         if (body is null) return CompanySetupOutcome<CompanySetupDraft>.Fail(400, "body_required", "The draft body is required.");
@@ -878,7 +878,7 @@ public sealed class CompanySetupService
         else
         {
             // Decision 2: the ONE authoritative create path, with all its validations, inside this transaction.
-            companyId = (await _organization.CreateCompanyAsync(tenantId, m.CompanyRequest, ctx, ct, asDraft: false)).Id;
+            companyId = (await _organization.CreateCompanyAsync(tenantId, m.CompanyRequest, ctx, ct)).Id;
         }
 
         var branchIds = new Dictionary<string, Guid>(m.ExistingBranchIds, StringComparer.Ordinal);
@@ -1064,7 +1064,7 @@ public sealed class CompanySetupService
         {
             if (admin.Mode == V.AdminInvite)
             {
-                if (await UserSeatLimit.CheckAsync(_db, caller.TenantId, ct) is { } seats) { failure = seats.Message; code = UserSeatLimit.Refusal.Code; }
+                if (await UserSeatLimit.CheckAsync(_db, caller.TenantId, Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxUsers(_licence), ct) is { } seats) { failure = seats.Message; code = UserSeatLimit.Refusal.Code; }
                 else
                 {
                     var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)) + "aA1!";

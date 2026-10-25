@@ -23,13 +23,16 @@ public sealed class BackgroundJobWorker : BackgroundService
     private readonly BackgroundJobOptions _options;
     private readonly ILogger<BackgroundJobWorker> _log;
     private readonly WorkerHeartbeatReporter? _heartbeat;
+    private readonly Zayra.Api.Infrastructure.Operations.IMaintenanceState? _maintenance;
     private readonly CancellationTokenSource _abort = new();
     private readonly string _workerId = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private DateTime _lastReportUtc = DateTime.MinValue;
 
     public BackgroundJobWorker(BackgroundJobRunner runner, BackgroundJobOptions options,
-        ILogger<BackgroundJobWorker> log, WorkerHeartbeatReporter? heartbeat = null)
+        ILogger<BackgroundJobWorker> log, WorkerHeartbeatReporter? heartbeat = null,
+        Zayra.Api.Infrastructure.Operations.IMaintenanceState? maintenance = null)
     {
+        _maintenance = maintenance;
         _runner = runner;
         _options = options;
         _log = log;
@@ -61,8 +64,15 @@ public sealed class BackgroundJobWorker : BackgroundService
             var worked = false;
             try
             {
-                worked = await _runner.RunNextAsync(slotId, stoppingToken, _abort.Token);
-                await ReportHealthyAsync(stoppingToken);
+                // MAINTENANCE (WP8): an upgrade or restore is in progress. Claim nothing new — queued jobs wait and
+                // run after it — but keep the heartbeat fresh, so readiness does not read an idle fleet as a dead one.
+                if (_maintenance is not null && (await _maintenance.GetAsync(stoppingToken)).On)
+                    await ReportHealthyAsync(stoppingToken);
+                else
+                {
+                    worked = await _runner.RunNextAsync(slotId, stoppingToken, _abort.Token);
+                    await ReportHealthyAsync(stoppingToken);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)

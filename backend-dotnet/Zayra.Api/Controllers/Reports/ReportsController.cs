@@ -339,8 +339,9 @@ public class ReportsController : ControllerBase
     {
         // Nothing to show is said in words, never as an empty table that reads as "no results".
         static object Note(string text) => new { summary = new[] { new { metric = "Note", value = text } } };
-        var enabled = await _db.TenantFeatureFlags.AsNoTracking()
-            .AnyAsync(f => f.TenantId == tid && f.FeatureKey == FeatureKeys.Engagement && f.IsEnabled, ct);
+        var enabled = Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this)?.IsOptInLicensed(FeatureKeys.Engagement) != false
+            && await _db.TenantFeatureFlags.AsNoTracking()
+                .AnyAsync(f => f.TenantId == tid && f.FeatureKey == FeatureKeys.Engagement && f.IsEnabled, ct);
         if (!enabled) return Note("Engagement surveys are not enabled for this account.");
         if (req.Filters?.SurveyId is not Guid surveyId) return Note("Choose the survey whose results to show (filters.surveyId).");
         var survey = await _db.EngagementSurveys.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tid && s.Id == surveyId, ct);

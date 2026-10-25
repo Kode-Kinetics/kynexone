@@ -43,9 +43,9 @@ public class CompanySetupController : ControllerBase
     private readonly CompanySetupService _setup;
 
     public CompanySetupController(ZayraDbContext db, IOrganizationSetupService organization, IAccessManagementService access,
-        IWorkWeekService workWeek, IEmailService email)
+        IWorkWeekService workWeek, IEmailService email, Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
-        _setup = new CompanySetupService(db, organization, access, workWeek, email);
+        _setup = new CompanySetupService(db, organization, access, workWeek, email, licence);
     }
 
     [HttpGet("context")]

@@ -178,7 +178,7 @@ public sealed partial class MigrationImportController
 
         if (newAdminRows.Count > 0 && await AdminSeatsLeftAsync(tenantId, ct) is int left && newAdminRows.Count > left)
             refusals.AddRange(newAdminRows.Select(a => new AccessRefusal("users", a.Index, a.Email,
-                $"The plan allows {left} more active administrator(s) and this package adds {newAdminRows.Count}.")));
+                $"The licence allows {left} more active administrator(s) and this package adds {newAdminRows.Count}.")));
 
         // One entry per row, every reason on it.
         return refusals
@@ -188,15 +188,12 @@ public sealed partial class MigrationImportController
             .ToList();
     }
 
-    /// <summary>Admin seats left on the plan (null = unlimited), counted the way the Access screen counts them.</summary>
+    /// <summary>Admin seats left on the licence (null = unlimited), counted the way the Access screen counts them.</summary>
     private async Task<int?> AdminSeatsLeftAsync(Guid tenantId, CancellationToken ct)
     {
-        var limit = await _db.TenantSubscriptions.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.Status == SubscriptionStatuses.Active
-                && (x.ExpiresAtUtc == null || x.ExpiresAtUtc > DateTime.UtcNow))
-            .OrderByDescending(x => x.StartedAtUtc)
-            .Select(x => (int?)x.MaxAdminUsers)
-            .FirstOrDefaultAsync(ct) ?? 10;
+        var limit = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxAdminUsers(
+            HttpContext?.RequestServices?.GetService(typeof(Zayra.Api.Infrastructure.Licensing.ILicenceService))
+                as Zayra.Api.Infrastructure.Licensing.ILicenceService);
         if (limit == 0) return null;
         var activeAdmins = await _db.Users.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted
@@ -256,7 +253,7 @@ public sealed partial class MigrationImportController
                 $"SELECT pg_advisory_xact_lock({AccessManagementService.AdminSeatLockKey(tenantId)})", ct);
             if (_pendingNewAdmins > 0 && await AdminSeatsLeftAsync(tenantId, ct) is int left && _pendingNewAdmins > left)
                 throw new InvalidOperationException(
-                    $"The plan allows {left} more active administrator(s) and this package adds {_pendingNewAdmins}. Nothing in the users section was saved.");
+                    $"The licence allows {left} more active administrator(s) and this package adds {_pendingNewAdmins}. Nothing in the users section was saved.");
             // THE LAST OPERATIONAL ADMIN, re-counted under the SAME lock (as the Access screen's LockAdminCohortAsync
             // counts it under its own): the gate counted before the import started, and an Admin demoted or blocked
             // elsewhere since then could make this row remove the last one.

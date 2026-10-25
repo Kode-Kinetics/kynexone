@@ -22,7 +22,8 @@ public sealed record AiOptions(
             => int.TryParse(configuration[key], out var value) && value > 0 ? value : fallback;
 
         return new AiOptions(
-            Provider: string.IsNullOrWhiteSpace(Read(configuration, "AI_PROVIDER"))
+            // Unset or "none" (the client kit's default): AI off, the deterministic fallback answers.
+            Provider: Read(configuration, "AI_PROVIDER").Trim().ToLowerInvariant() is "" or "none"
                 ? "fallback"
                 : Read(configuration, "AI_PROVIDER").Trim().ToLowerInvariant(),
             Model: Read(configuration, "AI_MODEL").Trim(),

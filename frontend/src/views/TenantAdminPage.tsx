@@ -15,8 +15,10 @@ import { StatutoryRulesPanel } from '../components/StatutoryRulesPanel';
 import { useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useLocale } from '../contexts/LocaleContext';
+import { LicencePanel } from '../components/LicencePanel';
+import { InstallationPanel } from '../components/InstallationPanel';
 
-type Tab = 'usage' | 'modules' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
+type Tab = 'licence' | 'usage' | 'modules' | 'localization' | 'branding' | 'security' | 'country-rules' | 'statutory-rules' | 'help-text';
 
 // The module list is no longer hard-coded here. It used to be an eight-key array that named
 // mostly sub-features with no runtime reader (resume_screening, risk_scores, payroll_ai_validation,
@@ -293,7 +295,12 @@ export default function TenantAdminPage() {
   const { refresh: refreshFeatureFlags, isFeatureEnabled } = useFeatureFlags();
   const [featureBusy, setFeatureBusy] = useState<string | null>(null);
   const [featureError, setFeatureError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('usage');
+  // ?tab=licence is where a 402 (no usable licence) sends people; the licence is also the first thing shown.
+  const [tab, setTab] = useState<Tab>(() => {
+    if (typeof window === 'undefined') return 'licence';
+    const requested = new URLSearchParams(window.location.search).get('tab');
+    return requested === 'usage' || requested === 'modules' ? requested : 'licence';
+  });
   const [modules, setModules] = useState<TenantModuleList | null>(null);
   const [modulesLoading, setModulesLoading] = useState(false);
   const [modulesError, setModulesError] = useState<string | null>(null);
@@ -499,6 +506,7 @@ export default function TenantAdminPage() {
   }, {});
 
   const tabs: { id: Tab; label: string }[] = [
+    { id: 'licence', label: 'Licence' },
     { id: 'usage', label: 'Usage' },
     { id: 'modules', label: 'Modules' },
     { id: 'localization', label: 'Localization' },
@@ -513,7 +521,7 @@ export default function TenantAdminPage() {
     <div className="p-6 max-w-4xl mx-auto space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Tenant Administration</h1>
-        <p className="text-sm text-gray-500">Manage usage, modules, localization, and branding</p>
+        <p className="text-sm text-gray-500">Manage the licence, modules, localization, and branding</p>
       </div>
 
       <div className="flex gap-1 border-b border-gray-200 flex-wrap">
@@ -530,6 +538,9 @@ export default function TenantAdminPage() {
           </button>
         ))}
       </div>
+
+      {/* Licence */}
+      {tab === 'licence' && (<><LicencePanel /><InstallationPanel /></>)}
 
       {/* Usage */}
       {tab === 'usage' && (
@@ -702,6 +713,11 @@ export default function TenantAdminPage() {
                                 Locked on
                               </span>
                             )}
+                            {m.licensed === false && (
+                              <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800">
+                                Not in your licence
+                              </span>
+                            )}
                           </div>
                           <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{m.description}</p>
                           {!m.canDisable && m.lockReason && (
@@ -713,7 +729,20 @@ export default function TenantAdminPage() {
                           {moduleBusy === m.key && (
                             <span className="text-xs text-gray-400">Saving…</span>
                           )}
-                          {m.canDisable ? (
+                          {m.licensed === false ? (
+                            // Unlicensed: off, and switching it on is refused (module_not_licensed).
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked="false"
+                              aria-label={`${m.labelEn} is not in your licence`}
+                              disabled
+                              title="Not included in this installation's licence"
+                              className="relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed items-center rounded-full bg-gray-200 opacity-60"
+                            >
+                              <span className="inline-block h-4 w-4 translate-x-1 transform rounded-full bg-white shadow rtl:-translate-x-1" />
+                            </button>
+                          ) : m.canDisable ? (
                             <Toggle
                               id={`module-${m.key}`}
                               checked={m.enabled}

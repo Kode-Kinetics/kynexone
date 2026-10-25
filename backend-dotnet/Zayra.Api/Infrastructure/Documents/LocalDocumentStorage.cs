@@ -49,11 +49,12 @@ public sealed class DocumentDeletionNotConfirmedException(string message) : IOEx
 
 public class LocalDocumentStorage : IDocumentStorage
 {
-    private readonly IWebHostEnvironment _environment;
+    /// <summary>The directory stored keys (<c>storage/documents/…</c>) are relative to: Storage:LocalRoot when set, else the content root.</summary>
+    private readonly string _baseDirectory;
 
-    public LocalDocumentStorage(IWebHostEnvironment environment)
+    public LocalDocumentStorage(IWebHostEnvironment environment, StorageOptions? options = null)
     {
-        _environment = environment;
+        _baseDirectory = string.IsNullOrWhiteSpace(options?.LocalRoot) ? environment.ContentRootPath : options!.LocalRoot;
     }
 
     public async Task<StoredDocument> SaveAsync(Guid tenantId, IFormFile file, CancellationToken cancellationToken)
@@ -62,7 +63,7 @@ public class LocalDocumentStorage : IDocumentStorage
         if (file.Length > 10 * 1024 * 1024) throw new InvalidOperationException("Document file exceeds the 10MB limit.");
         var safeName = Path.GetFileName(file.FileName).Replace(' ', '_');
         var relative = Path.Combine("storage", "documents", tenantId.ToString("N"), $"{Guid.NewGuid():N}_{safeName}");
-        var absolute = Path.Combine(_environment.ContentRootPath, relative);
+        var absolute = Path.Combine(_baseDirectory, relative);
         Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
         await using var stream = File.Create(absolute);
         await file.CopyToAsync(stream, cancellationToken);
@@ -115,8 +116,8 @@ public class LocalDocumentStorage : IDocumentStorage
         if (string.IsNullOrWhiteSpace(storageUrl) || Path.IsPathRooted(storageUrl))
             throw new InvalidOperationException("Invalid document path.");
 
-        var fullPath = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, storageUrl));
-        var storageRoot = Path.GetFullPath(Path.Combine(_environment.ContentRootPath, "storage"));
+        var fullPath = Path.GetFullPath(Path.Combine(_baseDirectory, storageUrl));
+        var storageRoot = Path.GetFullPath(Path.Combine(_baseDirectory, "storage"));
         if (!IsChildPath(storageRoot, fullPath)) throw new InvalidOperationException("Invalid document path.");
         return fullPath;
     }
@@ -125,7 +126,7 @@ public class LocalDocumentStorage : IDocumentStorage
     {
         var fullPath = ResolvePath(storageUrl);
         var tenantRoot = Path.GetFullPath(Path.Combine(
-            _environment.ContentRootPath, "storage", "documents", tenantId.ToString("N")));
+            _baseDirectory, "storage", "documents", tenantId.ToString("N")));
 
         if (!IsChildPath(tenantRoot, fullPath))
             throw new InvalidOperationException(

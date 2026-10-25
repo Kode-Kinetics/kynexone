@@ -38,7 +38,7 @@ public sealed record LearningSweepResult(int RulesApplied, int AssignedByRules, 
 /// </summary>
 public sealed class LearningSweepService(ZayraDbContext db, TimeProvider clock, ITenantClock tenantClock, IOptions<LearningOptions> options,
     INotificationService notifications, INotificationRecipientResolver recipients, LearningAssignmentService assignments, LearningCmi5Service cmi5,
-    IAuditService audit, ILogger<LearningSweepService> log)
+    IAuditService audit, ILogger<LearningSweepService> log, Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
 {
     /// <summary>Statuses of people who have left: their open training is closed, never chased.</summary>
     public static readonly string[] LeftStatuses =
@@ -46,9 +46,12 @@ public sealed class LearningSweepService(ZayraDbContext db, TimeProvider clock, 
 
     private int _routed, _noRecipient;
 
+    /// <summary>Organisations with learning on — and licensed: a stored flag the licence does not grant sweeps nothing.</summary>
     public async Task<IReadOnlyList<Guid>> EnabledTenantsAsync(CancellationToken ct) =>
-        await db.TenantFeatureFlags.AsNoTracking().Where(f => f.FeatureKey == FeatureKeys.Learning && f.IsEnabled)
-            .Select(f => f.TenantId).Distinct().ToListAsync(ct);
+        licence?.IsOptInLicensed(FeatureKeys.Learning) == false
+            ? []
+            : await db.TenantFeatureFlags.AsNoTracking().Where(f => f.FeatureKey == FeatureKeys.Learning && f.IsEnabled)
+                .Select(f => f.TenantId).Distinct().ToListAsync(ct);
 
     private int Page => Math.Clamp(options.Value.SweepPageSize, 1, 5000);
 

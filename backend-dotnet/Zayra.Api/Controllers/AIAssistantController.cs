@@ -97,14 +97,15 @@ public class AIAssistantController : ControllerBase
 
     private async Task<IActionResult?> CheckUsageLimitAsync(Guid tenantId, CancellationToken ct)
     {
-        var sub = await _db.TenantSubscriptions
-            .AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.Status == "Active")
-            .OrderByDescending(s => s.StartedAtUtc)
-            .FirstOrDefaultAsync(ct);
-        var plan = sub?.Plan ?? "Starter";
-        var limit = AiPlanLimits.GetMonthlyTokenLimit(plan);
-        if (limit == 0) return null; // Enterprise = unlimited
+        var allowance = Zayra.Api.Infrastructure.Licensing.AiAllowance.For(
+            Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
+        if (!allowance.Licensed)
+            return StatusCode(403, new
+            {
+                error = Zayra.Api.Infrastructure.Licensing.AiAllowance.NotLicensedCode,
+                message = Zayra.Api.Infrastructure.Licensing.AiAllowance.NotLicensedMessage,
+            });
+        var limit = allowance.MonthlyTokenLimit;
 
         var yearMonth = int.Parse(DateTime.UtcNow.ToString("yyyyMM"));
         var usage = await _db.TenantAiUsages
@@ -116,7 +117,7 @@ public class AIAssistantController : ControllerBase
             return StatusCode(429, new
             {
                 error = "ai_usage_limit_exceeded",
-                message = $"Your {plan} plan has reached its monthly AI token limit ({limit:N0} tokens). Upgrade your plan to continue.",
+                message = $"This installation has reached its licensed monthly AI token limit ({limit:N0} tokens). Contact your KynexOne supplier to extend it.",
                 tokensUsed = usage.TokensUsed,
                 monthlyLimit = limit
             });

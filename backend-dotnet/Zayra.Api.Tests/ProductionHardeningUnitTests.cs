@@ -27,10 +27,10 @@ public class ProductionHardeningUnitTests
             .AddInMemoryCollection(kv.ToDictionary(x => x.Key, x => (string?)x.Value)).Build();
 
     [Fact]
-    public void Storage_Production_WithoutS3_FailsFast()
+    public void Storage_Production_WithoutDurableStorage_FailsFast()
     {
         var act = () => DocumentStorageRegistration.ResolveAndValidate(Config(), isDevelopment: false);
-        act.Should().Throw<InvalidOperationException>().WithMessage("*durable object storage*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*durable document storage*Storage__LocalRoot is not set*");
     }
 
     [Fact]
@@ -38,7 +38,23 @@ public class ProductionHardeningUnitTests
     {
         var cfg = Config(("Storage:Provider", "local"), ("Storage:AllowEphemeral", "true"));
         var act = () => DocumentStorageRegistration.ResolveAndValidate(cfg, isDevelopment: false);
-        act.Should().Throw<InvalidOperationException>().WithMessage("*durable object storage*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*durable document storage*");
+    }
+
+    /// <summary>A client installation keeps documents on a durable volume (the kit's default): allowed in production.</summary>
+    [Fact]
+    public void Storage_Production_LocalOnADurableVolume_IsAllowed()
+    {
+        var root = Directory.CreateTempSubdirectory("kynexone-documents-");
+        try
+        {
+            var cfg = Config(("Storage:Provider", "local"), ("Storage:LocalRoot", root.FullName));
+            DocumentStorageRegistration.ResolveAndValidate(cfg, isDevelopment: false).LocalRoot.Should().Be(root.FullName);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
     }
 
     [Fact]

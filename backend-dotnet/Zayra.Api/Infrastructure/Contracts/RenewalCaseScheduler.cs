@@ -79,6 +79,8 @@ public sealed class RenewalCaseScheduler : BackgroundService
             .Select(f => f.TenantId)
             .Distinct()
             .ToListAsync(ct);
+        // The licence caps release_a: a stored flag the licence does not grant schedules nothing.
+        if (scope.ServiceProvider.GetService<Zayra.Api.Infrastructure.Licensing.ILicenceService>()?.IsOptInLicensed(FeatureKeys.ReleaseA) == false) tenants.Clear();
 
         var created = 0;
         foreach (var tenantId in tenants)

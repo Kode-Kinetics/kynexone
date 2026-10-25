@@ -8,7 +8,7 @@ public interface IOrganizationSetupService
     /// <param name="accessibleCompanyIds">null = every company of the tenant (group scope); otherwise only these.</param>
     Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null);
     Task<CompanyDto?> GetCompanyAsync(Guid tenantId, Guid id, CancellationToken cancellationToken);
-    Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken, bool asDraft = false);
+    Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<CompanyDto?> UpdateCompanyAsync(Guid tenantId, Guid id, CompanyRequest request, RequestContext context, CancellationToken cancellationToken);
 
     /// <param name="accessibleCompanyIds">null = every company of the tenant (group scope); otherwise only

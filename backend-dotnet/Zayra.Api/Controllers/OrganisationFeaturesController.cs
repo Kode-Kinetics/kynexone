@@ -60,6 +60,15 @@ public sealed class OrganisationFeaturesController : ControllerBase
                 message = $"'{featureKey}' is not an opt-in feature. Modules are switched at /api/tenant-modules.",
             });
 
+        // LICENCE CAP (WP3.6): an opt-in feature the licence does not grant cannot be switched on (off always can).
+        if (req.IsEnabled && Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this)?.IsOptInLicensed(featureKey) == false)
+            return Conflict(new
+            {
+                code = "feature_not_licensed",
+                feature = featureKey,
+                message = $"'{featureKey}' is not included in this installation's licence. Contact your KynexOne supplier to add it.",
+            });
+
         var actorEmail = await _db.Users.AsNoTracking()
             .Where(u => u.Id == userId.Value)
             .Select(u => u.Email)

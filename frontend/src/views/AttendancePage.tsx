@@ -29,6 +29,7 @@ import {
   Webhook,
 } from 'lucide-react';
 import { attendanceApi } from '../api/attendance';
+import { useDeviceIngestUrl } from '../api/publicInstallation';
 import type {
   AttendanceAIInsight,
   AttendanceDailyRecord,
@@ -161,6 +162,8 @@ const statusTone = (status: string): 'emerald' | 'rose' | 'amber' | 'blue' | 'sl
 
 
 export function AttendancePage() {
+  // The public address devices post to — never the API's internal container address.
+  const deviceIngestUrl = useDeviceIngestUrl();
   // Devices and CSV import are `attendance.bulk_import`; processing is `attendance.write`
   // (AttendanceController). Read-only attendance roles (HR Assistant, payroll, managers, auditors)
   // used to be offered these and only ever got a 403.
@@ -750,7 +753,7 @@ export function AttendancePage() {
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-white/10 dark:bg-white/[0.04]">
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 flex items-center gap-1.5"><Webhook className="h-3.5 w-3.5" />Biometric Device Configuration</p>
               <p className="text-xs text-slate-600 dark:text-slate-300 mb-2">Configure your device to POST attendance punches to:</p>
-              <code className="block rounded border bg-white px-3 py-2 font-mono text-xs dark:bg-black/20 dark:border-white/10">{process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest</code>
+              <code className="block rounded border bg-white px-3 py-2 font-mono text-xs dark:bg-black/20 dark:border-white/10">{deviceIngestUrl}</code>
               <p className="mt-3 text-xs text-slate-500 mb-1">Required HTTP header:</p>
               <code className="block rounded border bg-white px-3 py-2 font-mono text-xs dark:bg-black/20 dark:border-white/10">X-Device-Key: {deviceKeyResult.key}</code>
               <p className="mt-3 text-xs text-slate-500 mb-1">Example JSON body:</p>
@@ -910,6 +913,7 @@ function DeviceTable({
   onGenerateKey: (device: AttendanceDevice) => void;
   onViewLogs: (device: AttendanceDevice) => void;
 }) {
+  const deviceIngestUrl = useDeviceIngestUrl();
   if (devices.length === 0) return <Empty text="No devices found. Add a connector-backed attendance source." />;
   return (
     <div className="space-y-3">
@@ -933,7 +937,7 @@ function DeviceTable({
                   <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Webhook endpoint</p>
                     <code className="text-xs font-mono text-slate-700 dark:text-slate-300 break-all">
-                      POST {process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest
+                      POST {deviceIngestUrl}
                     </code>
                     <p className="mt-1 text-[11px] text-slate-400">
                       Header: <span className="font-mono">X-Device-Key: {hasKey ? '••••••••••' : '[generate a key below]'}</span>
@@ -1070,6 +1074,7 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
   onClose: () => void;
   saving: boolean;
 }) {
+  const deviceIngestUrl = useDeviceIngestUrl();
   const f = form;
   const set = (patch: Partial<DeviceFormState>) => setForm({ ...f, ...patch });
   const isPush = f.syncMethod?.toLowerCase().includes('push');
@@ -1151,7 +1156,7 @@ function DeviceFormModal({ title, form, setForm, onSubmit, onClose, saving }: {
           {isPush && (
             <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
               <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-1 flex items-center gap-1.5"><Webhook className="h-3.5 w-3.5" />Push API — configure this device to POST to:</p>
-              <code className="block text-xs font-mono text-blue-800 dark:text-blue-200">{process.env.NEXT_PUBLIC_API_BASE_URL || '[API Base URL]'}/api/attendance/ingest</code>
+              <code className="block text-xs font-mono text-blue-800 dark:text-blue-200">{deviceIngestUrl}</code>
               <p className="mt-1 text-xs text-blue-600 dark:text-blue-300">Required header: <span className="font-mono">X-Device-Key: [generate after saving]</span></p>
             </div>
           )}

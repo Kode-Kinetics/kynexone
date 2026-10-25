@@ -62,14 +62,17 @@ public sealed class WelcomeCodeRedeemer
     private const string Why =
         "Welcome-code redeem: the presenting employee's own login, link, employee row and the tenant's seat and failure counts are read inside the resolved tenant; the tenant is re-applied on every read.";
 
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
     private readonly ZayraDbContext _db;
     private readonly IPasswordHasher _hasher;
     private readonly byte[] _key;
     private readonly LoginAbuseGuard? _abuse;
     private readonly PasswordVerificationGate? _gate;
 
-    public WelcomeCodeRedeemer(ZayraDbContext db, IPasswordHasher hasher, string serverSecret, LoginAbuseGuard? abuse = null, PasswordVerificationGate? gate = null)
+    public WelcomeCodeRedeemer(ZayraDbContext db, IPasswordHasher hasher, string serverSecret, LoginAbuseGuard? abuse = null, PasswordVerificationGate? gate = null,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _hasher = hasher;
         _key = WelcomeCodes.DeriveKey(serverSecret);
@@ -219,8 +222,8 @@ public sealed class WelcomeCodeRedeemer
             // Seats (F9), under the tenant lock: a login that is not yet active takes one now.
             if (!user.IsActive)
             {
-                var max = await _db.TenantSubscriptions.AsNoTracking().Where(s => s.TenantId == tenant.Id).Select(s => (int?)s.MaxUsers).FirstOrDefaultAsync(token);
-                if (max is > 0 && await EmployeeAccessService.CountSeatsAsync(_db, tenant.Id, at, user.Id, token) >= max.Value)
+                var max = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxUsers(_licence);
+                if (max > 0 && await EmployeeAccessService.CountSeatsAsync(_db, tenant.Id, at, user.Id, token) >= max)
                 { verdict = Verdict.SeatLimit; return; }
             }
 

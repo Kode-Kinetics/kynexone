@@ -2,6 +2,8 @@ using System.Data.Common;
 using System.Security.Claims;
 using System.Text.Json;
 using FluentAssertions;
+using Zayra.Api.Infrastructure.Licensing;
+using Zayra.Api.Tests.Licensing;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -20,7 +22,7 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Tests;
 
 /// <summary>
-/// The plan's user allowance under concurrency. AccessController checks the seat count before it calls the
+/// The licence's user allowance under concurrency. AccessController checks the seat count before it calls the
 /// service, outside any lock, so two creates racing for the last seat both passed it and both committed. The service
 /// now recounts after it has locked the tenant row FOR UPDATE; the loser is refused with the same 422
 /// <c>user_limit_reached</c> the preflight returns. Real Postgres: the in-memory provider has no row locks.
@@ -30,6 +32,8 @@ namespace Zayra.Api.Tests;
 public sealed class UserSeatLimitConcurrencyPostgresTests(PostgresFixture fixture)
 {
     private static readonly string[] AdminKeys = ["security.manage", "profile.read"];
+
+    private ILicenceService _licence = FixedLicenceService.Unlimited();
 
     [Fact]
     public async Task Two_creates_racing_for_the_last_seat_make_exactly_one_user_and_the_loser_gets_user_limit_reached()
@@ -69,7 +73,7 @@ public sealed class UserSeatLimitConcurrencyPostgresTests(PostgresFixture fixtur
         // The wizard's company super admin and any future door call the service directly: the service itself holds.
         var (tenantId, adminId) = await SeedAsync(maxUsers: 1);
         await using var db = fixture.CreateDb();
-        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new NoTokens());
+        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new NoTokens(), licence: _licence);
         var act = () => service.CreateUserAsync(tenantId,
             new CreateUserRequest("over.limit@seats.example", "Over Limit", "Sufficiently-Strong-9!", ["Employee"]),
             new RequestContext("127.0.0.1", "tests", adminId, tenantId), CancellationToken.None);
@@ -84,10 +88,8 @@ public sealed class UserSeatLimitConcurrencyPostgresTests(PostgresFixture fixtur
         await using var db = fixture.CreateDb();
         var tenantId = Guid.NewGuid();
         db.Tenants.Add(new Tenant { Id = tenantId, Name = "Seat Race Tenant", Slug = $"seats-{tenantId:N}" });
-        db.TenantSubscriptions.Add(new TenantSubscription
-        {
-            TenantId = tenantId, Plan = "Starter", Status = SubscriptionStatuses.Active, MaxUsers = maxUsers, MaxAdminUsers = 0,
-        });
+        // The user allowance is the licence's (WP3): the services below are built with it.
+        _licence = FixedLicenceService.WithLimits(maxUsers: maxUsers);
         var adminRole = new Role
         {
             Id = Guid.NewGuid(), TenantId = tenantId, Name = "Admin", NormalizedName = "ADMIN", Description = "Admin",
@@ -130,7 +132,7 @@ public sealed class UserSeatLimitConcurrencyPostgresTests(PostgresFixture fixtur
             .AddInterceptors(RowLockingInterceptor.Instance, AdvisoryXactLockGuardInterceptor.Instance, interceptor)
             .Options);
 
-    private static AccessController Controller(ZayraDbContext db, Guid tenantId, Guid callerId)
+    private AccessController Controller(ZayraDbContext db, Guid tenantId, Guid callerId)
     {
         var claims = new List<Claim>
         {
@@ -139,8 +141,8 @@ public sealed class UserSeatLimitConcurrencyPostgresTests(PostgresFixture fixtur
             new("permission", "security.manage"),
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
-        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new NoTokens());
-        return new AccessController(service, db, null!)
+        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new NoTokens(), licence: _licence);
+        return new AccessController(service, db, null!, licence: _licence)
         {
             ControllerContext = new ControllerContext
             {

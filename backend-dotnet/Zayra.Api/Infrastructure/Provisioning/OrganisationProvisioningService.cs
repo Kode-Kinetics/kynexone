@@ -50,7 +50,8 @@ public interface IOrganisationProvisioningService
 /// The steps and their order are exactly those the retired platform console ran for a new tenant:
 /// the organisation row, its localisation (country, operating currency and TIME ZONE from the home
 /// country), the first company, roles, GL defaults, pay components, the provisioning bundle, the
-/// administrator, the bridging subscription row and the two audit rows — in one transaction.
+/// administrator, the installation id and the two audit rows — in one transaction. Commercial limits come from
+/// the licence imported afterwards (<c>--import-licence</c>), never from a row written here.
 /// Until the database restructure the organisation is still stored as the single <c>tenants</c> row.
 /// </remarks>
 public sealed class OrganisationProvisioningService : IOrganisationProvisioningService
@@ -254,21 +255,10 @@ public sealed class OrganisationProvisioningService : IOrganisationProvisioningS
         admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
         _db.Users.Add(admin);
 
-        // BRIDGE, removed in WP3: the limit readers (seat checks, company gate, subscription guard)
-        // still read tenant_subscriptions until the licence replaces them. 0 = unlimited, so the
-        // installation is not limited by a placeholder; the licence becomes the only source of limits.
-        _db.TenantSubscriptions.Add(new TenantSubscription
-        {
-            TenantId = organisation.Id,
-            Plan = "Enterprise",
-            Status = SubscriptionStatuses.ManualContract,
-            MaxUsers = 0,
-            MaxEmployees = 0,
-            MaxCompanies = 0,
-            MaxAdminUsers = 0,
-            BillingEmail = admin.Email,
-            CurrencyCode = operatingCurrency,
-        });
+        // The installation's identity: a licence may be bound to it, so the client sends it to the vendor.
+        // Created here, once, in the same transaction as the organisation.
+        if (!await _db.PlatformConfigEntries.AnyAsync(e => e.Key == PlatformConfigKeys.InstallationId, ct))
+            _db.PlatformConfigEntries.Add(new PlatformConfigEntry { Key = PlatformConfigKeys.InstallationId, Value = Guid.NewGuid().ToString() });
 
         _db.AdminAuditLogs.Add(new AdminAuditLog
         {

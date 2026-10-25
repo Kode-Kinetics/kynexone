@@ -89,6 +89,8 @@ public sealed class AuthorizationPipelineHost : WebApplicationFactory<Program>
         // container is built, so these three edits land on the finished production registration set.
         builder.ConfigureTestServices(services =>
         {
+            // Not a licence test: an unlimited licence, so no request is refused 402 for want of one.
+            Zayra.Api.Tests.Licensing.LicenceTestServices.UseUnlimitedLicence(services);
             ReplacePostgresWithSqlite(services, _sqliteConnectionString);
             RemoveApplicationBackgroundWorkers(services);
             AddFallbackPolicyProbeController(services);

@@ -44,11 +44,17 @@ public sealed class SetupPolicyExtractionController(IPolicyDocumentService docum
         }
         if (!extraction.IsValidChunkIndex(source.Text, request.ChunkIndex))
             return BadRequest(new { message = "This policy section no longer exists. Restart extraction from the first section." });
-        var subscription = await db.TenantSubscriptions.AsNoTracking().Where(s => s.TenantId == tenantId && s.Status == "Active")
-            .OrderByDescending(s => s.StartedAtUtc).FirstOrDefaultAsync(ct);
-        var limit = AiPlanLimits.GetMonthlyTokenLimit(subscription?.Plan ?? "Starter");
+        var allowance = Zayra.Api.Infrastructure.Licensing.AiAllowance.For(
+            Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
+        if (!allowance.Licensed)
+            return StatusCode(403, new
+            {
+                error = Zayra.Api.Infrastructure.Licensing.AiAllowance.NotLicensedCode,
+                message = Zayra.Api.Infrastructure.Licensing.AiAllowance.NotLicensedMessage,
+            });
+        var limit = allowance.MonthlyTokenLimit;
         var yearMonth = DateTime.UtcNow.Year * 100 + DateTime.UtcNow.Month;
-        if (limit > 0 && await db.TenantAiUsages.AnyAsync(u => u.TenantId == tenantId && u.YearMonth == yearMonth && u.TokensUsed >= limit, ct))
+        if (await db.TenantAiUsages.AnyAsync(u => u.TenantId == tenantId && u.YearMonth == yearMonth && u.TokensUsed >= limit, ct))
             return StatusCode(429, new { message = "Your workspace AI usage limit has been reached." });
         return Ok(await extraction.ExtractAsync(new(tenantId, userId,
             string.Join(",", User.FindAll(ClaimTypes.Role).Select(c => c.Value))), request.DocumentId,

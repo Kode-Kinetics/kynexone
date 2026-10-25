@@ -13,10 +13,12 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Licensing;
 using Zayra.Api.Infrastructure.CompanySetup;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
+using Zayra.Api.Tests.Licensing;
 using V = Zayra.Api.Application.CompanySetup.CompanySetupVocabulary;
 
 namespace Zayra.Api.Tests;
@@ -37,6 +39,9 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     /// <param name="SisterId">A bare company (one branch, one cost centre) whose company-scoped Admin is <paramref name="CompanyAdminId"/>.</param>
     private sealed record World(Guid TenantId, Guid AdminId, Guid SisterId, Guid CompanyAdminId, Guid CompanyId, Guid HrManagerId, Guid HrManagerRoleId);
 
+    /// <summary>The organisation's licence (WP3): up to 10 companies, users unlimited.</summary>
+    private static readonly ILicenceService Licence = FixedLicenceService.WithLimits(maxCompanies: 10);
+
     // ── seed ────────────────────────────────────────────────────────────────────────────────────────────
 
     private async Task<World> SeedAsync()
@@ -47,10 +52,6 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         {
             Id = tenantId, Name = "Existing Group", Slug = $"existing-{tenantId:N}",
             AccountType = TenantAccountTypes.Group, CompanyCreationMode = CompanyCreationModes.GroupSelfServiceWithinLimit,
-        });
-        db.TenantSubscriptions.Add(new TenantSubscription
-        {
-            TenantId = tenantId, Plan = "Group", Status = SubscriptionStatuses.Active, MaxCompanies = 10, MaxUsers = 0, MaxAdminUsers = 0,
         });
         var permissionIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
         foreach (var key in AdminKeys)
@@ -156,7 +157,8 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     {
         var audit = new AuditService(db);
         return new CompanySetupService(db, new OrganizationSetupService(db, audit),
-            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail());
+            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService(), licence: Licence),
+            new WorkWeekService(db), new NoEmail(), Licence);
     }
 
     /// <summary>A group admin (<paramref name="userId"/> null), or a company-scoped caller limited to <paramref name="companies"/>.</summary>
@@ -1034,7 +1036,8 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         };
         var audit = new AuditService(db);
         return new CompanySetupController(db, new OrganizationSetupService(db, audit),
-            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail())
+            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService(), licence: Licence),
+            new WorkWeekService(db), new NoEmail(), Licence)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } },
         };

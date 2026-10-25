@@ -77,10 +77,28 @@ function isRetryableGetFailure(err: { code?: string; config?: any; response?: { 
   return RETRYABLE_GATEWAY_STATUSES.has(err.response.status ?? 0);
 }
 
+/** Fired when the API answers 503 { error: 'maintenance' }: an upgrade or restore is in progress. */
+export const MAINTENANCE_EVENT = 'kynexone:maintenance';
+
+/** Fired when the API says the licence is past its expiry but inside its grace days (X-Licence-Status: Grace). */
+export const LICENCE_GRACE_EVENT = 'kynexone:licence-grace';
+
 client.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    if (typeof window !== 'undefined' && res.headers?.['x-licence-status'] === 'Grace') {
+      window.dispatchEvent(new CustomEvent(LICENCE_GRACE_EVENT));
+    }
+    return res;
+  },
   async (err) => {
     const original = err.config;
+
+    // Maintenance (an upgrade in progress) is a state of the whole installation, not of this request:
+    // tell the app once and never retry into it.
+    if (err.response?.status === 503 && err.response?.data?.error === 'maintenance' && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(MAINTENANCE_EVENT, { detail: err.response.data.message }));
+      return Promise.reject(err);
+    }
 
     if (isRetryableGetFailure(err)) {
       original._getRetried = true;
@@ -88,15 +106,14 @@ client.interceptors.response.use(
       return client(original);
     }
 
-    // 402 — subscription expired/inactive. Redirect tenant users to the tenant
-    // admin subscription alert, but NEVER from /tenant-admin itself: when the
-    // subscription is inactive the tenant-admin page's own calls also 402, so a
-    // self-redirect would loop infinitely.
+    // 402 — no usable licence (licence_missing / licence_expired). Send the user to the
+    // Licence tab, where an administrator can import one, but NEVER from /tenant-admin itself:
+    // that page's other calls also 402, so a self-redirect would loop.
     const responseError = err.response?.data?.error;
     const isCompanyLimitRefusal = responseError === 'company_limit_reached';
     if (err.response?.status === 402 && !isCompanyLimitRefusal && typeof window !== 'undefined') {
       if (!window.location.pathname.startsWith('/tenant-admin')) {
-        window.location.href = '/tenant-admin?alert=subscription';
+        window.location.href = '/tenant-admin?tab=licence';
       }
       return Promise.reject(err);
     }

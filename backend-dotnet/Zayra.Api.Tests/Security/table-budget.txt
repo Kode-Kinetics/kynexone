@@ -179,6 +179,7 @@ HRRequestSLAs
 HRRequests
 HrLetterTemplates
 IncrementRecommendations
+InstallationLicences
 InterviewFeedbacks
 InterviewSchedules
 IssuedLetters

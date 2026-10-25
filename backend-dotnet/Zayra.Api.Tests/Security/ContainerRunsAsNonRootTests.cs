@@ -3,8 +3,8 @@ using FluentAssertions;
 namespace Zayra.Api.Tests.Security;
 
 /// <summary>
-/// Both API images (the root <c>Dockerfile</c> Render builds, and the compose/CI one under
-/// <c>backend-dotnet/Zayra.Api</c>) used to run the process as root. They now drop to the base
+/// The API image (the root <c>Dockerfile</c>: client installations, compose and CI) used to run the process as
+/// root. It now drops to the base
 /// image's unprivileged <c>app</c> user. This pins that the switch happens in the FINAL stage (a
 /// <c>USER</c> in the build stage changes nothing at runtime), never names root, and that the one
 /// writable path under /app is created before the switch.
@@ -13,7 +13,6 @@ public sealed class ContainerRunsAsNonRootTests
 {
     [Theory]
     [InlineData("Dockerfile")]
-    [InlineData("backend-dotnet/Zayra.Api/Dockerfile")]
     public void FinalStage_DropsToANonRootUserBeforeTheEntrypoint(string relativePath)
     {
         var path = ResolveRepoFile(relativePath);

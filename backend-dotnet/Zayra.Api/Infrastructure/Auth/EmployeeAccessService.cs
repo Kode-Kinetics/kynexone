@@ -143,13 +143,16 @@ public sealed class EmployeeAccessService
     private const string Why =
         "Employee access: an in-scope employee's own login, links and reset links, and the tenant's seat count are read across legal entities; the tenant is re-applied and the employee was scope-checked against the caller.";
 
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
     private readonly ZayraDbContext _db;
     private readonly IEmailService _email;
     private readonly byte[] _codeKey;
     private readonly string _appUrl;
 
-    public EmployeeAccessService(ZayraDbContext db, IEmailService email, IOptions<JwtOptions> jwt, IConfiguration? configuration = null)
+    public EmployeeAccessService(ZayraDbContext db, IEmailService email, IOptions<JwtOptions> jwt, IConfiguration? configuration = null,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _email = email;
         _codeKey = WelcomeCodes.DeriveKey(jwt.Value.SigningKey);
@@ -465,10 +468,10 @@ public sealed class EmployeeAccessService
     /// <summary>F9: active logins + live codes on logins not yet active ≥ MaxUsers. <paramref name="targetUserId"/> is excluded (a reissue takes no extra seat).</summary>
     private async Task<bool> SeatsFullAsync(Guid tenantId, Guid targetUserId, DateTime nowUtc, CancellationToken ct)
     {
-        var max = await _db.TenantSubscriptions.AsNoTracking().Where(s => s.TenantId == tenantId).Select(s => (int?)s.MaxUsers).FirstOrDefaultAsync(ct);
-        if (max is not > 0) return false;
+        var max = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxUsers(_licence);
+        if (max <= 0) return false;
         var used = await CountSeatsAsync(_db, tenantId, nowUtc, excludeUserId: targetUserId, ct);
-        return used >= max.Value;
+        return used >= max;
     }
 
     /// <summary>Seats in use: active logins, plus logins holding a live welcome code (they will be active).</summary>

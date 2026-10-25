@@ -13,10 +13,12 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Licensing;
 using Zayra.Api.Infrastructure.CompanySetup;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
+using Zayra.Api.Tests.Licensing;
 using V = Zayra.Api.Application.CompanySetup.CompanySetupVocabulary;
 
 namespace Zayra.Api.Tests;
@@ -36,6 +38,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
 
     private sealed record World(Guid TenantId, Guid AdminId, Guid SisterId, Guid SisterDepartmentId, Guid SisterBranchId, Guid CompanyAdminId);
 
+    private ILicenceService _licence = FixedLicenceService.Unlimited();
+
     // ── seed ────────────────────────────────────────────────────────────────────────────────────────────
 
     private async Task<World> SeedAsync(string mode = CompanyCreationModes.GroupSelfServiceWithinLimit, int maxCompanies = 5,
@@ -48,10 +52,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
             Id = tenantId, Name = "Wizard Group", Slug = $"wizard-{tenantId:N}",
             AccountType = TenantAccountTypes.Group, CompanyCreationMode = mode,
         });
-        db.TenantSubscriptions.Add(new TenantSubscription
-        {
-            TenantId = tenantId, Plan = "Group", Status = SubscriptionStatuses.Active, MaxCompanies = maxCompanies, MaxUsers = 0, MaxAdminUsers = 0,
-        });
+        // The company limit is the licence's (WP3): the service and controller below are built with it.
+        _licence = FixedLicenceService.WithLimits(maxCompanies: maxCompanies);
         var permissionIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
         foreach (var key in AdminKeys)
         {
@@ -122,11 +124,12 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         return id;
     }
 
-    private static CompanySetupService Service(ZayraDbContext db)
+    private CompanySetupService Service(ZayraDbContext db)
     {
         var audit = new AuditService(db);
         return new CompanySetupService(db, new OrganizationSetupService(db, audit),
-            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail());
+            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService(), licence: _licence),
+            new WorkWeekService(db), new NoEmail(), _licence);
     }
 
     private static CompanySetupCaller Caller(World w, bool group = true, Guid? userId = null)
@@ -598,13 +601,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
     public async Task A_super_admin_refused_by_the_user_limit_keeps_its_code_and_readiness_says_what_to_do()
     {
         var w = await SeedAsync();
-        await using (var db = fixture.CreateDb())
-        {
-            // Every seat is taken: the two seeded logins fill a two-user plan.
-            var sub = await db.TenantSubscriptions.SingleAsync(s => s.TenantId == w.TenantId);
-            sub.MaxUsers = 2;
-            await db.SaveChangesAsync();
-        }
+        // Every seat is taken: the two seeded logins fill a two-user licence.
+        _licence = FixedLicenceService.WithLimits(maxUsers: 2, maxCompanies: 5);
         var admin = new CompanySetupCompanyAdmin(V.AdminInvite, null, "Noor Admin", null, "noor.admin@seatfull.sa");
         var draft = await NewDraftAsync(w, Body(emailDomain: "seatfull.sa", admin: admin));
         var outcome = await CommitAsync(w, draft);
@@ -741,7 +739,7 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         (await db.AuditLogs.CountAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.SetupCreatedAction)).Should().Be(0);
     }
 
-    private static CompanySetupController Controller(ZayraDbContext db, Guid tenantId, Guid userId, Guid? scopedCompany = null)
+    private CompanySetupController Controller(ZayraDbContext db, Guid tenantId, Guid userId, Guid? scopedCompany = null)
     {
         var claims = new List<Claim>
         {
@@ -753,7 +751,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         };
         var audit = new AuditService(db);
         return new CompanySetupController(db, new OrganizationSetupService(db, audit),
-            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail())
+            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService(), licence: _licence),
+            new WorkWeekService(db), new NoEmail(), _licence)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } },
         };

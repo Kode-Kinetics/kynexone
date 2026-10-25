@@ -492,10 +492,14 @@ public sealed class AttendanceVerificationService
     /// <param name="configuration">Read for <see cref="RequirePlatformHeaderForUnsupportedKey"/> (absent = false), and for the
     /// <see cref="SelfieDemoExceptionOptions.SectionName"/> section when <paramref name="demoException"/> is not given.</param>
     /// <param name="demoException">The bound demo exception (Program.cs registers it); absent = none.</param>
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
+
     public AttendanceVerificationService(ZayraDbContext db, StorageResidency? residency = null,
         Microsoft.Extensions.Configuration.IConfiguration? configuration = null,
-        SelfieDemoExceptionOptions? demoException = null, ILogger<AttendanceVerificationService>? log = null)
+        SelfieDemoExceptionOptions? demoException = null, ILogger<AttendanceVerificationService>? log = null,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _residency = residency ?? StorageResidency.Unconfigured;
         _configuration = configuration;
@@ -517,6 +521,8 @@ public sealed class AttendanceVerificationService
                         && (f.FeatureKey == FeatureKeys.SelfieAttendance || f.FeatureKey == FeatureKeys.PunchGeofence))
             .Select(f => new { f.FeatureKey, f.ConfigJson })
             .ToListAsync(ct);
+        // The licence caps both opt-ins: a stored flag the licence does not grant is off.
+        flags = flags.Where(f => _licence?.IsOptInLicensed(f.FeatureKey) != false).ToList();
         var selfie = flags.FirstOrDefault(f => f.FeatureKey == FeatureKeys.SelfieAttendance);
         var geofence = flags.FirstOrDefault(f => f.FeatureKey == FeatureKeys.PunchGeofence);
 
@@ -532,7 +538,7 @@ public sealed class AttendanceVerificationService
                 offReason = "Selfie attendance is treated as off: " + verdict.Reason;
             else if (!string.Equals(SelfieAttendanceConfig.StampedStorageLocation(selfie.ConfigJson), verdict.Location, StringComparison.OrdinalIgnoreCase))
                 offReason = $"Selfie attendance is treated as off: document storage has moved since it was switched on (now {verdict.Location}, "
-                            + $"then {SelfieAttendanceConfig.StampedStorageLocation(selfie.ConfigJson) ?? "not recorded"}). A platform Owner must switch it on again.";
+                            + $"then {SelfieAttendanceConfig.StampedStorageLocation(selfie.ConfigJson) ?? "not recorded"}). An administrator must switch it on again.";
         }
         var selfieOn = selfie is not null && offReason is null;
 

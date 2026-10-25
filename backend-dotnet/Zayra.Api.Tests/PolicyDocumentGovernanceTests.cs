@@ -179,7 +179,9 @@ public sealed class PolicyDocumentGovernanceTests
         var svc = new PolicyDocumentService(db, new NeverLlm(),
             new AiOptions("ollama", "test-model", "", "", "https://ollama.test", "", 4096, true, false), new Recorder(), NullLogger<PolicyDocumentService>.Instance,
             // The quota branch sits behind the policy-content gate; open it (test-only) so the branch keeps its coverage.
-            OpenPolicyContentGateForTests.Instance);
+            OpenPolicyContentGateForTests.Instance,
+            // The licence's monthly allowance (WP3), already used up by the 50,000 tokens above.
+            Zayra.Api.Tests.Licensing.FixedLicenceService.WithLimits(aiMonthlyTokenLimit: 50_000));
         var result = await svc.AskAsync(tenant, Guid.NewGuid(), "Employee", "annual leave allowance", new(false, false, [company], null), default);
         result.Provider.Should().Be("fallback");
         result.DegradedReason.Should().Contain("monthly AI allowance");

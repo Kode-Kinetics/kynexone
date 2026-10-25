@@ -112,6 +112,25 @@ public class OrphanEntityRatchetTests
         // nothing; the table is deliberately kept so the migrated data survives.
         "ApprovalPolicyStep",
 
+        // ── Retired with the SaaS platform (client-only WP1/WP3) ──────────────────────────────
+        // The platform console, pricing, billing and subscriptions are gone; licensing replaced the
+        // subscription. Their tables stay mapped (Models/RetiredVendorTables.cs, Models/Subscriptions.cs)
+        // so no release drops a table in the same change that stops using it (expand → migrate → contract),
+        // and so the legacy-data converter (WP13) can still read a hosted database. The database
+        // restructure (WP5) removes them; each name leaves this list then.
+        "PlatformAnnouncement",
+        "PlatformComplianceControl",
+        "PlatformLead",
+        "PlatformSecurityIncident",
+        "PlatformSupportSession",
+        "PricingConfig",
+        "PricingModuleConfig",
+        "PricingQuote",
+        "TenantInvoice",
+        "TenantInvoiceLine",
+        "TenantPayment",
+        "TenantSubscription",
+
         // ── Other ────────────────────────────────────────────────────────────────────────────
         "ESSDashboardPreference",
 

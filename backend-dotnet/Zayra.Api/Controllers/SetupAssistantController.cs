@@ -784,7 +784,7 @@ public class SetupAssistantController : ControllerBase
         var creatingCompany = company is not null && _db.Entry(company).State == EntityState.Added;
         if (creatingCompany && _db.Database.IsRelational())
         {
-            var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+            var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, licence: Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
             if (!creation.Allowed) return RefuseConfiguration([creation.Message]);
         }
         await _db.SaveChangesAsync(ct);
@@ -1215,9 +1215,8 @@ public class SetupAssistantController : ControllerBase
                     problems.Add("Only a group-scope administrator can create a legal entity.");
                 else
                 {
-                    var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
+                    var creation = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, licence: Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
                     if (!creation.Allowed) problems.Add(creation.Message);
-                    createAsDraft = creation.AsDraft;
                 }
             }
         }

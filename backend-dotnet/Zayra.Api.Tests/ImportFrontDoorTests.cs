@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
@@ -13,7 +14,9 @@ using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Licensing;
 using Zayra.Api.Models;
+using Zayra.Api.Tests.Licensing;
 
 namespace Zayra.Api.Tests;
 
@@ -109,14 +112,13 @@ public sealed class ImportFrontDoorTests
         Assert.True((await evaluator.AuthorizeAsync(Principal("Admin"), null, import!)).Succeeded);
     }
 
-    // ── (b) An import may not exceed the subscription's company limit ────────────────────────
+    // ── (b) An import may not exceed the licence's company limit ─────────────────────────────
 
     [Fact]
-    public async Task CompanyImport_CannotExceedTheSubscriptionCompanyLimit()
+    public async Task CompanyImport_CannotExceedTheLicenceCompanyLimit()
     {
         await using var db = CreateDb();
         var tenantId = SeedTenant(db, accountType: TenantAccountTypes.Group);
-        db.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenantId, MaxCompanies = 1 });
         db.Companies.Add(new Company
         {
             TenantId = tenantId, LegalNameEn = "First Company Ltd", CountryCode = "SA",
@@ -124,7 +126,7 @@ public sealed class ImportFrontDoorTests
         });
         await db.SaveChangesAsync();
 
-        var result = await CompaniesFor(db, tenantId).Import(
+        var result = await CompaniesFor(db, tenantId, FixedLicenceService.WithLimits(maxCompanies: 1)).Import(
             new CompanyImportRequest(CompanyCsv(
                 "Second Company Ltd,,,SA,,REG-SECOND,,,,,SAR,true")),
             CancellationToken.None);
@@ -135,15 +137,19 @@ public sealed class ImportFrontDoorTests
 
         var row = Assert.Single(commit.Rows);
         Assert.Equal(ImportRowStatus.Error, row.Status);
-        Assert.Contains(row.Errors, e => e.Contains("plan", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(row.Errors, e => e.Contains("licence", StringComparison.OrdinalIgnoreCase));
 
-        // The plan said one company. There is one company.
+        // The licence said one company. There is one company.
         Assert.Equal(1, await db.Companies.CountAsync(c => c.TenantId == tenantId));
     }
 
-    /// <summary>The other three governance gates the form enforces and the importer used to skip.</summary>
+    /// <summary>
+    /// The other governance gates the form enforces and the importer used to skip. A client installation has no
+    /// platform team, so the hosted product's PlatformControlled mode no longer blocks the organisation: a stored value
+    /// left over from a converted database must not lock it out of creating its first company.
+    /// </summary>
     [Fact]
-    public async Task CompanyImport_ObeysPlatformControlledCreationMode()
+    public async Task CompanyImport_IsNotBlockedByTheRetiredPlatformControlledMode()
     {
         await using var db = CreateDb();
         var tenantId = SeedTenant(db, creationMode: CompanyCreationModes.PlatformControlled);
@@ -153,10 +159,8 @@ public sealed class ImportFrontDoorTests
             new CompanyImportRequest(CompanyCsv("Any Company Ltd,,,SA,,REG-ANY,,,,,SAR,true")),
             CancellationToken.None);
 
-        var commit = Commit(result);
-        Assert.Equal(0, commit.Created);
-        Assert.Equal(ImportRowStatus.Error, Assert.Single(commit.Rows).Status);
-        Assert.Empty(await db.Companies.Where(c => c.TenantId == tenantId).ToListAsync());
+        Assert.Equal(1, Commit(result).Created);
+        Assert.Single(await db.Companies.Where(c => c.TenantId == tenantId).ToListAsync());
     }
 
     [Fact]
@@ -411,10 +415,12 @@ public sealed class ImportFrontDoorTests
         return tenant.Id;
     }
 
-    private static ControllerContext ContextFor(Guid tenantId) => new()
+    private static ControllerContext ContextFor(Guid tenantId, ILicenceService? licence = null) => new()
     {
         HttpContext = new DefaultHttpContext
         {
+            // No licence = no limits and the organisation's stored account type (a test licence would say Group).
+            RequestServices = licence is null ? null! : new ServiceCollection().AddSingleton(licence).BuildServiceProvider(),
             User = new ClaimsPrincipal(new ClaimsIdentity(
             [
                 new Claim("tenant_id", tenantId.ToString()),
@@ -426,8 +432,8 @@ public sealed class ImportFrontDoorTests
     private static IOrganizationSetupService Service(ZayraDbContext db) =>
         new OrganizationSetupService(db, new AuditService(db));
 
-    private static CompaniesController CompaniesFor(ZayraDbContext db, Guid tenantId) =>
-        new(Service(db), db) { ControllerContext = ContextFor(tenantId) };
+    private static CompaniesController CompaniesFor(ZayraDbContext db, Guid tenantId, ILicenceService? licence = null) =>
+        new(Service(db), db) { ControllerContext = ContextFor(tenantId, licence) };
 
     private static BranchesController BranchesFor(ZayraDbContext db, Guid tenantId) =>
         new(Service(db), db) { ControllerContext = ContextFor(tenantId) };

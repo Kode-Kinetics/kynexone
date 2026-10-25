@@ -26,12 +26,15 @@ public class AccessController : ControllerBase
     private readonly IAccessManagementService _accessManagement;
     private readonly ZayraDbContext _db;
     private readonly IEmailService _emailService;
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
 
     public AccessController(
         IAccessManagementService accessManagement,
         ZayraDbContext db,
-        IEmailService emailService)
+        IEmailService emailService,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _accessManagement = accessManagement;
         _db = db;
         _emailService = emailService;
@@ -242,7 +245,7 @@ public class AccessController : ControllerBase
 
             // Enforce user limit (shared with the create-company wizard's company super admin). A preflight: the
             // service recounts under the tenant row lock, and a seat lost to a concurrent create answers the same 422.
-            if (await UserSeatLimit.CheckAsync(_db, tenantId.Value, cancellationToken) is { } seats)
+            if (await UserSeatLimit.CheckAsync(_db, tenantId.Value, Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxUsers(_licence), cancellationToken) is { } seats)
                 return UnprocessableEntity(seats.Body);
 
             var user = await _accessManagement.CreateUserAsync(tenantId.Value, request, GetContext(), cancellationToken);
@@ -559,23 +562,10 @@ public class AccessController : ControllerBase
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
 
-            // Enforce seat limit — inviting an employee creates or reactivates a login user.
-            var sub = await _db.TenantSubscriptions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.TenantId == tenantId, cancellationToken);
-
-            if (sub is not null && sub.MaxUsers > 0)
-            {
-                var count = await _db.Users.CountAsync(u => u.TenantId == tenantId && u.IsActive && !u.IsDeleted, cancellationToken);
-                if (count >= sub.MaxUsers)
-                    return UnprocessableEntity(new
-                    {
-                        error = "user_limit_reached",
-                        message = $"You have reached your user limit ({count}/{sub.MaxUsers}). Please contact your administrator to upgrade.",
-                        current = count,
-                        limit = sub.MaxUsers
-                    });
-            }
+            // Enforce the licensed seat limit — inviting an employee creates or reactivates a login user. The same
+            // shared check, code and body as User Management's create-user door.
+            if (await UserSeatLimit.CheckAsync(_db, tenantId.Value, Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxUsers(_licence), cancellationToken) is { } seats)
+                return UnprocessableEntity(seats.Body);
 
             var invite = await _accessManagement.InviteEmployeeLoginAsync(
                 tenantId.Value,

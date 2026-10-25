@@ -32,9 +32,12 @@ public class AuthService : IAuthService
     private readonly PasswordVerificationGate? _passwordGate;
     private readonly LoginAbuseGuard? _abuse;
     private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
 
-    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null, LoginAbuseGuard? abuse = null, Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
+    public AuthService(ZayraDbContext db, IPasswordHasher passwordHasher, ITokenService tokenService, IAuditService auditService, IEmailService emailService, IOptions<JwtOptions> jwtOptions, IMfaService mfaService, TotpService totp, ILogger<AuthService> log, IConfiguration? configuration = null, PasswordVerificationGate? passwordGate = null, LoginAbuseGuard? abuse = null, Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _abuse = abuse;
         _notifications = notifications;
         _passwordGate = passwordGate;
@@ -2437,7 +2440,7 @@ public class AuthService : IAuthService
     /// <inheritdoc />
     public Task<WelcomeRedeemResponse> RedeemWelcomeCodeAsync(WelcomeRedeemRequest request, RequestContext context,
         WelcomeCodeRedeemer.Presenter presenter, CancellationToken cancellationToken) =>
-        new WelcomeCodeRedeemer(_db, _passwordHasher, _jwtOptions.SigningKey, _abuse, _passwordGate)
+        new WelcomeCodeRedeemer(_db, _passwordHasher, _jwtOptions.SigningKey, _abuse, _passwordGate, _licence)
             .RedeemAsync(request, context, presenter, cancellationToken);
 
     /// <inheritdoc />

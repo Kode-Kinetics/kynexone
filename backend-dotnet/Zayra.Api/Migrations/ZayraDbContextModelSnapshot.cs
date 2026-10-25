@@ -16847,6 +16847,86 @@ namespace Zayra.Api.Migrations
                     b.ToTable("increment_recommendations", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.InstallationLicence", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("fingerprint");
+
+                    b.Property<DateTime>("ImportedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("imported_at_utc");
+
+                    b.Property<Guid?>("ImportedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("imported_by_user_id");
+
+                    b.Property<string>("Kid")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("kid");
+
+                    b.Property<string>("LicenceId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("licence_id");
+
+                    b.Property<string>("Licensee")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("licensee");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("payload");
+
+                    b.Property<string>("Signature")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("signature");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ImportedAtUtc");
+
+                    b.HasIndex("ImportedByUserId");
+
+                    b.HasIndex("LicenceId")
+                        .IsUnique();
+
+                    b.HasIndex("Status")
+                        .IsUnique()
+                        .HasDatabaseName("ux_installation_licences__one_active")
+                        .HasFilter("status = 'Active'");
+
+                    b.ToTable("installation_licences", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_installation_licences__status", "status IN ('Active','Superseded','Rejected')");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.InterviewFeedback", b =>
                 {
                     b.Property<Guid>("Id")
@@ -32605,6 +32685,14 @@ namespace Zayra.Api.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.InstallationLicence", b =>
+                {
+                    b.HasOne("Zayra.Api.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("ImportedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.JobApplication", b =>

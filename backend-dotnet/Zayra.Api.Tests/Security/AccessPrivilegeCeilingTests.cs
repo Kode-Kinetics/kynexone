@@ -9,7 +9,9 @@ using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Licensing;
 using Zayra.Api.Models;
+using Zayra.Api.Tests.Licensing;
 
 namespace Zayra.Api.Tests.Security;
 
@@ -738,7 +740,9 @@ public sealed class AccessPrivilegeCeilingTests
         return body;
     }
 
-    private static AccessController Controller(ZayraDbContext db, World w, Guid callerId, Zayra.Api.Infrastructure.Email.IEmailService? email = null)
+    private ILicenceService _licence = FixedLicenceService.Unlimited();
+
+    private AccessController Controller(ZayraDbContext db, World w, Guid callerId, Zayra.Api.Infrastructure.Email.IEmailService? email = null)
     {
         var claims = new List<Claim>
         {
@@ -747,8 +751,9 @@ public sealed class AccessPrivilegeCeilingTests
             new("permission", "security.manage"),
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
-        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db), new FakeTokenService());
-        return new AccessController(service, db, email!)
+        var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db),
+            new FakeTokenService(), licence: _licence);
+        return new AccessController(service, db, email!, licence: _licence)
         {
             ControllerContext = new ControllerContext
             {
@@ -796,11 +801,8 @@ public sealed class AccessPrivilegeCeilingTests
         // Custom (unreserved) roles: one above the Console Admin, one inside it.
         var payrollLead = AddRole("Payroll Lead", isSystem: false, isEditable: true, "employees.read", "payroll.approve");
         var reporting = AddRole("Reporting", isSystem: false, isEditable: true, "employees.read");
-        if (maxAdminUsers is int limit)
-            db.TenantSubscriptions.Add(new TenantSubscription
-            {
-                TenantId = tenantId, Plan = "Starter", Status = SubscriptionStatuses.Active, MaxAdminUsers = limit,
-            });
+        // The administrator cap is the licence's (WP3); Controller() builds the service with it.
+        _licence = maxAdminUsers is int limit ? FixedLicenceService.WithLimits(maxAdminUsers: limit) : FixedLicenceService.Unlimited();
         await db.SaveChangesAsync();
 
         var adminId = await AddUserAsync(tenantId, "Admin");

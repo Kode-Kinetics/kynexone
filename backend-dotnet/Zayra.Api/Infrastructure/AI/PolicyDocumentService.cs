@@ -11,6 +11,7 @@ namespace Zayra.Api.Infrastructure.AI;
 
 public class PolicyDocumentService : IPolicyDocumentService
 {
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
     private readonly ZayraDbContext _db;
     private readonly ILlmClient _llm;
     private readonly AiOptions _aiOptions;
@@ -24,8 +25,10 @@ public class PolicyDocumentService : IPolicyDocumentService
         AiOptions aiOptions,
         IAiCallRecorder recorder,
         ILogger<PolicyDocumentService> logger,
-        IPolicyContentModelGate gate)
+        IPolicyContentModelGate gate,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _gate = gate;
         _db = db;
         _llm = llm;
@@ -274,7 +277,7 @@ public class PolicyDocumentService : IPolicyDocumentService
 
         if (scope is not null && await MonthlyLimitReached(tenantId, ct))
         {
-            const string reason = "Your workspace has reached its monthly AI allowance. Matching policy excerpts are available below.";
+            const string reason = "The organisation has reached its monthly AI allowance. Matching policy excerpts are available below.";
             await RecordAsync(tenantId, userId, userRole, promptSummary, null, null, 0,
                 "monthly AI token limit reached; no model call attempted", ct);
             return Deterministic(relevantChunks, sources, reason);
@@ -353,11 +356,9 @@ public class PolicyDocumentService : IPolicyDocumentService
 
     private async Task<bool> MonthlyLimitReached(Guid tenantId, CancellationToken ct)
     {
-        var plan = await _db.TenantSubscriptions.AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.Status == "Active").OrderByDescending(s => s.StartedAtUtc)
-            .Select(s => s.Plan).FirstOrDefaultAsync(ct) ?? "Starter";
-        var limit = AiPlanLimits.GetMonthlyTokenLimit(plan);
-        if (limit == 0) return false;
+        var allowance = Zayra.Api.Infrastructure.Licensing.AiAllowance.For(_licence);
+        if (!allowance.Licensed) return true;
+        var limit = allowance.MonthlyTokenLimit;
         var now = DateTime.UtcNow;
         var yearMonth = now.Year * 100 + now.Month;
         var usage = await _db.TenantAiUsages.AsNoTracking()

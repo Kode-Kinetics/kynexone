@@ -70,13 +70,18 @@ public sealed class TenantModuleService : ITenantModuleService
     private readonly ZayraDbContext _db;
     private readonly IMemoryCache _cache;
     private readonly Zayra.Api.Infrastructure.Attendance.SelfieDemoExceptionOptions? _selfieDemoException;
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
 
     /// <param name="selfieDemoException">The owner's time-boxed selfie demo exception (Program.cs registers it): a listed
     /// tenant sees <c>selfie_attendance</c> on until the expiry, so the global guard lets its upload route through (the
     /// upload still applies the full policy itself). Absent = none.</param>
+    /// <param name="licence">Caps what may be on: an optional module or opt-in feature the licence does not grant is off,
+    /// whatever <c>tenant_feature_flags</c> says. Null only for a test that built the service by hand (no cap).</param>
     public TenantModuleService(ZayraDbContext db, IMemoryCache cache,
-        Zayra.Api.Infrastructure.Attendance.SelfieDemoExceptionOptions? selfieDemoException = null)
+        Zayra.Api.Infrastructure.Attendance.SelfieDemoExceptionOptions? selfieDemoException = null,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _cache = cache;
         _selfieDemoException = selfieDemoException;
@@ -139,7 +144,9 @@ public sealed class TenantModuleService : ITenantModuleService
             .Select(l => l.CountryCode)
             .FirstOrDefaultAsync(ct);
 
-        var state = Build(storedDisabled, countryCode, enabledOptIn);
+        var state = Build(storedDisabled, countryCode, enabledOptIn,
+            _licence is null ? null : _licence.IsModuleLicensed,
+            _licence is null ? null : _licence.IsOptInLicensed);
 
         // Only cache if the generation still holds. If a write landed while this read was in
         // flight, this result is already stale and must not be published.
@@ -154,8 +161,11 @@ public sealed class TenantModuleService : ITenantModuleService
     /// without a database — the in-memory/Postgres divergence that has bitten this codebase before
     /// cannot reach a function that touches neither.
     /// </summary>
+    /// <param name="moduleLicensed">Whether the licence grants a module (core and statutory always answer yes). Null = no cap.</param>
+    /// <param name="optInLicensed">Whether the licence grants an opt-in feature. Null = no cap.</param>
     public static TenantModuleState Build(
-        IEnumerable<string> storedDisabledKeys, string? countryCode, IEnumerable<string>? enabledOptInKeys = null)
+        IEnumerable<string> storedDisabledKeys, string? countryCode, IEnumerable<string>? enabledOptInKeys = null,
+        Func<string, bool>? moduleLicensed = null, Func<string, bool>? optInLicensed = null)
     {
         var stored = new HashSet<string>(storedDisabledKeys, StringComparer.Ordinal);
         var enabledOptIn = new HashSet<string>(enabledOptInKeys ?? [], StringComparer.Ordinal);
@@ -184,10 +194,21 @@ public sealed class TenantModuleService : ITenantModuleService
             // else: locked — the stored `false` is deliberately not honoured.
         }
 
-        // An opt-in feature (OptInFeatures) is disabled unless its row says IsEnabled = true.
+        // An opt-in feature (OptInFeatures) is disabled unless its row says IsEnabled = true — and the licence grants it.
         foreach (var key in OptInFeatures.Keys)
         {
-            if (!enabledOptIn.Contains(key)) effective.Add(key);
+            if (!enabledOptIn.Contains(key) || optInLicensed?.Invoke(key) == false) effective.Add(key);
+        }
+
+        // LICENCE CAP (WP3.6): an optional module the licence does not grant is off, whatever is stored. Core and
+        // statutory modules are never capped (IsModuleLicensed answers yes for them): a licence must never switch
+        // off a legal obligation or something the rest of the product depends on.
+        if (moduleLicensed is not null)
+        {
+            foreach (var module in ModuleCatalog.All)
+            {
+                if (!moduleLicensed(module.Key)) effective.Add(module.Key);
+            }
         }
 
         return new TenantModuleState

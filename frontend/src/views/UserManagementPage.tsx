@@ -166,7 +166,7 @@ function UsersTab() {
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } })?.response?.status;
       if (status === 402) {
-        setSubscriptionBanner('Your subscription is inactive or expired. Please contact support.');
+        setSubscriptionBanner('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
       }
     }
   }, []);
@@ -1183,10 +1183,10 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number; data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.status;
       const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number } } })?.response?.data;
-      if (status === 402) {
-        setErr('Your subscription is inactive or expired. Please contact support.');
-      } else if (status === 422 && data?.error === 'user_limit_reached') {
-        setErr(data.message ?? `User limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
+      if (status === 422 && data?.error === 'user_limit_reached') {
+        setErr(data.message ?? `User limit reached (${data.current}/${data.limit}). Contact your KynexOne supplier to extend your licence.`);
+      } else if (status === 402) {
+        setErr('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
       } else {
         setErr(localizedRefusal(e, locale) ?? 'Failed to create user.');
       }

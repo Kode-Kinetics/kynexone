@@ -142,10 +142,11 @@ public sealed class QiwaSyncWorker : BackgroundService
             // SYSTEM CONTEXT: tenant scope intentionally bypassed; explicit TenantId predicate above.
             var featureFlag = await db.TenantFeatureFlags.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(f => f.TenantId == tenantId && f.FeatureKey == FeatureKeys.QiwaIntegration, ct);
-            if (featureFlag is { IsEnabled: false })
+            if (featureFlag is { IsEnabled: false }
+                || scope.ServiceProvider.GetService<Zayra.Api.Infrastructure.Licensing.ILicenceService>()?.IsModuleLicensed(FeatureKeys.QiwaIntegration) == false)
             {
                 _log.LogDebug(
-                    "QiwaSyncWorker: qiwa_integration disabled for tenant {TenantId} — skipping.",
+                    "QiwaSyncWorker: qiwa_integration disabled or not licensed for tenant {TenantId} — skipping.",
                     tenantId);
                 continue;
             }

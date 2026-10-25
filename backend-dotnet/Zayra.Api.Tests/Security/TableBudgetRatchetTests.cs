@@ -142,7 +142,12 @@ public class TableBudgetRatchetTests
         // are sessions that rotate and die on sign-out (a trusted browser must outlive them), mfa_challenge_tokens are
         // single-use five-minute credentials, and the known-device cookie is a stateless lockout hint nobody can revoke.
         // Retention: expired or revoked rows deleted after 30 days (MfaTrustedDeviceRetentionRule).
-        DeclaredDbSets().Should().HaveCount(375,
+        // Signed licence evidence (AddInstallationLicences; implementation prompt WP3; owner Platform/Licensing). One
+        // table, 375 -> 376. InstallationLicences: the vendor-signed licence exactly as received, re-verified on every
+        // load, so commercial limits come from something the client cannot edit. No existing table can carry it:
+        // tenant_subscriptions and tenant_feature_flags were editable rows, which is the defect the licence fixes.
+        // Retention: kept for the life of the installation (InstallationLicenceRetentionTests).
+        DeclaredDbSets().Should().HaveCount(376,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

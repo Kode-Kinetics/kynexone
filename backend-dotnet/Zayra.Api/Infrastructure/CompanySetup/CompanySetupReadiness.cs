@@ -96,7 +96,7 @@ public static class CompanySetupReadiness
             var wanted = mode is V.AdminInvite or V.AdminExisting;
             var seatLimit = wanted && await LastAdminFailureCodeAsync(db, tenantId, id, ct) == UserSeatLimit.Refusal.Code;
             items.Add(new ReadinessItem("companyAdmin",
-                seatLimit ? "Company super admin not set up: your plan's user limit is reached. Free a seat or upgrade, then add them in User Management"
+                seatLimit ? "Company super admin not set up: the licence's user limit is reached. Free a seat or extend the licence, then add them in User Management"
                     : wanted ? "Company super admin could not be set up — retry from User Management" : "Company super admin (recommended)",
                 seatLimit ? "لم يُعَدّ مسؤول الشركة: بلغت حد المستخدمين في اشتراكك. حرّر مقعدًا أو قم بالترقية، ثم أضفه من إدارة المستخدمين"
                     : wanted ? "تعذر إعداد مسؤول الشركة — أعد المحاولة من إدارة المستخدمين" : "مسؤول الشركة الأعلى (موصى به)",

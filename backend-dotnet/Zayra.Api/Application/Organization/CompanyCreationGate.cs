@@ -10,7 +10,6 @@ public enum CompanyCreationVerdict
     Allowed,
     TenantUnknown,
     SubscriptionLimitReached,
-    PlatformControlled,
     SingleCompanyAccount,
 }
 
@@ -23,7 +22,6 @@ public sealed record CompanyCreationGateDecision(
     CompanyCreationVerdict Verdict,
     string ErrorCode,
     string Message,
-    bool AsDraft = false,
     int CurrentCount = 0,
     int MaxAllowed = 0)
 {
@@ -48,56 +46,50 @@ public static class CompanyCreationGate
     /// writes a row at a time and re-counts, so it passes 0; the preview path writes nothing, so it
     /// passes the running total and gets the same answer the commit will give.
     /// </param>
+    /// <param name="licence">
+    /// The installation's licence: the company limit and the account type. Null only for a test that built the
+    /// caller by hand; it then imposes no company limit and reads the organisation's stored account type.
+    /// </param>
     public static async Task<CompanyCreationGateDecision> EvaluateAsync(
-        ZayraDbContext db, Guid tenantId, CancellationToken cancellationToken, int pendingCreates = 0)
+        ZayraDbContext db, Guid tenantId, CancellationToken cancellationToken, int pendingCreates = 0,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
-        // ── Subscription limit (commercial) ───────────────────────────────────
-        var sub = await db.TenantSubscriptions.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId, cancellationToken);
-        if (sub is not null && sub.MaxCompanies > 0)
+        // ── Licence limit (commercial) ────────────────────────────────────────
+        var maxCompanies = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxCompanies(licence);
+        if (maxCompanies > 0)
         {
             var companyCount = await db.Companies.CountAsync(c => c.TenantId == tenantId, cancellationToken) + pendingCreates;
-            if (companyCount >= sub.MaxCompanies)
+            if (companyCount >= maxCompanies)
                 return new CompanyCreationGateDecision(
                     CompanyCreationVerdict.SubscriptionLimitReached,
                     "company_limit_reached",
-                    $"Your plan allows up to {sub.MaxCompanies} legal compan{(sub.MaxCompanies == 1 ? "y" : "ies")}. Upgrade your plan to add more.",
+                    $"Your licence allows up to {maxCompanies} legal compan{(maxCompanies == 1 ? "y" : "ies")}. Contact your KynexOne supplier to extend it.",
                     CurrentCount: companyCount,
-                    MaxAllowed: sub.MaxCompanies);
+                    MaxAllowed: maxCompanies);
         }
 
-        // ── Governance gates (product behaviour) ──────────────────────────────
-        var tenant = await db.Tenants.AsNoTracking()
+        // ── Account type (from the licence) ───────────────────────────────────
+        var storedAccountType = await db.Tenants.AsNoTracking()
             .Where(t => t.Id == tenantId)
-            .Select(t => new { t.AccountType, t.CompanyCreationMode })
+            .Select(t => t.AccountType)
             .FirstOrDefaultAsync(cancellationToken);
-        if (tenant is null)
+        if (storedAccountType is null)
             return new CompanyCreationGateDecision(
                 CompanyCreationVerdict.TenantUnknown,
                 "tenant_unknown",
-                "Tenant not found.");
+                "Organisation not found.");
+        var accountType = Zayra.Api.Infrastructure.Licensing.LicenceLimits.AccountType(licence, storedAccountType);
 
-        // PlatformControlled: only platform admins create companies for this tenant.
-        if (tenant.CompanyCreationMode == CompanyCreationModes.PlatformControlled)
-            return new CompanyCreationGateDecision(
-                CompanyCreationVerdict.PlatformControlled,
-                "company_creation_platform_controlled",
-                "Company creation for this account is managed by the platform. Contact your account manager.");
-
-        // Account type: only Group tenants operate multiple active legal entities.
+        // Only Group organisations operate multiple active legal entities.
         var existingCount = await db.Companies.CountAsync(c => c.TenantId == tenantId, cancellationToken) + pendingCreates;
-        if (existingCount >= 1 && tenant.AccountType != TenantAccountTypes.Group)
+        if (existingCount >= 1 && accountType != TenantAccountTypes.Group)
             return new CompanyCreationGateDecision(
                 CompanyCreationVerdict.SingleCompanyAccount,
                 "account_type_single_company",
-                "This account is configured as a single-company account. Ask your platform administrator to enable the Group account type to manage multiple legal entities.",
+                "This organisation is licensed as a single company. A Group licence is needed to manage multiple legal entities.",
                 CurrentCount: existingCount);
 
-        // Draft-approval mode: group admins submit drafts; a platform admin activates.
-        return new CompanyCreationGateDecision(
-            CompanyCreationVerdict.Allowed,
-            string.Empty,
-            string.Empty,
-            AsDraft: tenant.CompanyCreationMode == CompanyCreationModes.GroupDraftPlatformApproval);
+        // Company creation is always self-service within the licence: there is no platform team to approve a draft.
+        return new CompanyCreationGateDecision(CompanyCreationVerdict.Allowed, string.Empty, string.Empty);
     }
 }

@@ -1014,6 +1014,17 @@ public class OffboardingController : ControllerBase
                         tenantId, graph.Employee.CompanyId, snapshot, context, token);
             }
 
+            // LICENCE SEAT (WP3.7): a rescinded offboarding returns the employee to Active, which takes a seat.
+            if (!string.Equals(graph.Employee.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                try { await Zayra.Api.Infrastructure.Employees.EmployeeSeatLimit.EnsureSeatAsync(_db, tenantId, Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxEmployees(Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this)), graph.Employee.Id, token); }
+                catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex)
+                {
+                    refusal = UnprocessableEntity(ex.Refusal.Body);
+                    return false;
+                }
+            }
+
             graph.Employee.Status = "Active";
             graph.Employee.UpdatedAtUtc = cancelledAtUtc;
             off.Status = "Cancelled";
@@ -1151,6 +1162,16 @@ public class OffboardingController : ControllerBase
                 _db.ChangeTracker.Clear();
                 await _audit.WriteAsync("employee.activation_blocked", "Employee", emp.Id.ToString(), ctx, null, ct);
                 return this.NotActivatable(ex);
+            }
+            // LICENCE SEAT (WP3.7): a withdrawn resignation returns the employee to Active, which takes a seat.
+            if (!string.Equals(emp.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                try { await Zayra.Api.Infrastructure.Employees.EmployeeSeatLimit.EnsureSeatAsync(_db, off.TenantId, Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxEmployees(Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this)), emp.Id, ct); }
+                catch (Zayra.Api.Infrastructure.Employees.EmployeeSeatLimitReachedException ex)
+                {
+                    _db.ChangeTracker.Clear();
+                    return UnprocessableEntity(ex.Refusal.Body);
+                }
             }
             emp.Status = "Active";
             emp.UpdatedAtUtc = DateTime.UtcNow;

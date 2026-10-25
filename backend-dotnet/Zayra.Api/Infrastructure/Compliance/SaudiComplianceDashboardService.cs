@@ -25,8 +25,9 @@ public sealed class SaudiComplianceDashboardService
     /// "not known to be live", which is reported as a simulation — the safe reading (F09).
     /// </param>
     public SaudiComplianceDashboardService(ZayraDbContext db, GosiReconciliationService reconciliation,
-        IQiwaApiAdapter? qiwaAdapter = null, IStatutoryRuleReader? rules = null)
+        IQiwaApiAdapter? qiwaAdapter = null, IStatutoryRuleReader? rules = null, Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _reconciliation = reconciliation;
         _qiwaAdapter = qiwaAdapter;
@@ -36,6 +37,7 @@ public sealed class SaudiComplianceDashboardService
     }
 
     private readonly IStatutoryRuleReader _rules;
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
 
     public async Task<SaudiComplianceDashboard> BuildAsync(Guid tenantId, CancellationToken ct)
     {
@@ -536,7 +538,8 @@ public sealed class SaudiComplianceDashboardService
         // Absent flag = feature enabled by default (matches HasAnyGatingFeatureAsync pattern).
         var flag = await _db.TenantFeatureFlags.AsNoTracking()
             .FirstOrDefaultAsync(f => f.TenantId == tenantId && f.FeatureKey == featureKey, ct);
-        return flag?.IsEnabled ?? true;
+        // A module the licence does not grant is off, whatever its row says.
+        return (flag?.IsEnabled ?? true) && _licence?.IsModuleLicensed(featureKey) != false;
     }
 }
 

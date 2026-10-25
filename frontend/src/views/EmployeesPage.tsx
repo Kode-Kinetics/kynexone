@@ -647,7 +647,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       .catch((e: unknown) => {
         const status = (e as { response?: { status?: number } })?.response?.status;
         if (status === 402) {
-          setSubscriptionBanner('Your subscription is inactive or expired. Please contact support.');
+          setSubscriptionBanner('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
         }
       });
   }, [canReadUsage]);
@@ -1430,16 +1430,16 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       }
       const status = (e as { response?: { status?: number; data?: { error?: string; message?: string; current?: number; limit?: number; attempted?: string; suggestion?: string } } })?.response?.status;
       const data = (e as { response?: { data?: { error?: string; message?: string; current?: number; limit?: number; attempted?: string; suggestion?: string } } })?.response?.data;
-      if (status === 402) {
-        setFormError('Your subscription is inactive or expired. Please contact support.');
+      if (status === 422 && data?.error === 'employee_limit_reached') {
+        setFormError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Contact your KynexOne supplier to extend your licence.`);
+      } else if (status === 402) {
+        setFormError('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
       } else if (status === 409 && data?.error === 'work_email_conflict' && data.attempted && data.suggestion) {
         setFormError(`Work email ${data.attempted} is already used. Enter a different address issued by IT. Suggested available address: ${data.suggestion}.`);
       } else if (workEmailProblemKey(workEmailErrorCode(e))) {
         setFormError(t(workEmailProblemKey(workEmailErrorCode(e))!));
       } else if (workEmailErrorCode(e) === 'work_email_wrong_domain' && selectedFormCompany?.emailDomain) {
         setFormError(t('Work email must end in @{domain}.', { domain: selectedFormCompany.emailDomain }));
-      } else if (status === 422 && data?.error === 'employee_limit_reached') {
-        setFormError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
       } else {
         // Surface the server's actual validation details instead of a generic banner.
         const errors = (data as { errors?: Record<string, string[]> })?.errors;

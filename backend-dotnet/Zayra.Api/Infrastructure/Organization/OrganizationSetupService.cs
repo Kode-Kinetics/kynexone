@@ -46,7 +46,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         return company?.ToDto();
     }
 
-    public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken, bool asDraft = false)
+    public async Task<CompanyDto> CreateCompanyAsync(Guid tenantId, CompanyRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         ValidateCountryCode(request.CountryCode);
         ValidateEmailDomain(request.EmailDomain);
@@ -57,12 +57,6 @@ public class OrganizationSetupService : IOrganizationSetupService
         await EnsureErpCompanyCodeAllowedAsync(tenantId, null, null, request.ErpCompanyCode, context, cancellationToken);
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
-        if (asDraft)
-        {
-            // GroupDraftPlatformApproval mode: created inactive, awaiting platform approval.
-            company.ApprovalStatus = CompanyApprovalStatuses.Draft;
-            company.IsActive = false;
-        }
         _db.Companies.Add(company);
         await EnsureExportedCompanyCodeUniqueAsync(tenantId, company, cancellationToken);
         await SaveCompanyAsync(company.ErpCompanyCode, cancellationToken);

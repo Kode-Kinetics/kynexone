@@ -276,6 +276,8 @@ export interface TenantModule {
   lockClass: string;
   /** Present only when canDisable is false. Shown to the administrator verbatim. */
   lockReason: string | null;
+  /** Whether the installation's licence grants this module. An unlicensed module is off and cannot be switched on. */
+  licensed?: boolean;
 }
 
 export interface TenantModuleList {

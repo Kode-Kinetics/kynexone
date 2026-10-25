@@ -324,7 +324,7 @@ public class OrganizationStructureImportController : ControllerBase
             {
                 // Last line of defence behind validation (a concurrent create between preview and commit): the
                 // form's gate, re-asked inside the transaction; a refusal rolls back the whole package.
-                var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, pendingCompanyCreates);
+                var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, pendingCompanyCreates, Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
                 if (!gate.Allowed) throw new InvalidOperationException(gate.Message);
                 pendingCompanyCreates++;
                 company = new Company
@@ -344,12 +344,6 @@ public class OrganizationStructureImportController : ControllerBase
                     IsActive = active,
                     CreatedBy = GetUserId()
                 };
-                if (gate.AsDraft)
-                {
-                    // Draft-approval tenants: created inactive, awaiting platform approval — exactly as the form does.
-                    company.ApprovalStatus = CompanyApprovalStatuses.Draft;
-                    company.IsActive = false;
-                }
                 _db.Companies.Add(company);
                 Audit("organization.company_created", nameof(Company), company.Id, name);
                 companies[name.ToUpperInvariant()] = company;
@@ -818,7 +812,7 @@ public class OrganizationStructureImportController : ControllerBase
             if (existingId == Guid.Empty && name.Length > 0 && seenNames.Add(name))
             {
                 // Counts the companies this file has already created, so "creates 4" cannot become "created 1, refused 3".
-                var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, pendingCreates);
+                var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, pendingCreates, Zayra.Api.Infrastructure.Licensing.LicenceControllerExtensions.Licence(this));
                 if (gate.Allowed) pendingCreates++;
                 else errors.Add(gate.Message);
             }

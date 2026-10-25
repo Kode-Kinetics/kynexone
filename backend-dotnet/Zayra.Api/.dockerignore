@@ -1,5 +1,0 @@
-bin/
-obj/
-Migrations/*ModelSnapshot.cs
-*.user
-*.suo

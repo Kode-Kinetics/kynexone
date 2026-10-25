@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -221,6 +222,27 @@ public class MobilePushEnablementTests
         var result = await provider.SendAsync(Msg(), CancellationToken.None);
         result.Status.Should().Be(ProviderSendStatus.NotConfigured);
         result.ErrorCode.Should().Be("provider_not_configured");
+        handler.Calls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// An offline installation switches push off (Notifications__Push__Enabled=false): even a configured Expo
+    /// answers not_configured push_disabled and never calls out to exp.host.
+    /// </summary>
+    [Fact]
+    public async Task Installation_with_push_switched_off_never_calls_expo()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{}");
+        var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Notifications:Push:Enabled"] = "false" })
+            .Build();
+        var provider = new ExpoPushProvider(new StubConfigReader(ExpoEnabled()), new StubHttpClientFactory(handler),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ExpoPushProvider>.Instance, configuration);
+
+        var result = await provider.SendAsync(Msg(), CancellationToken.None);
+
+        result.Status.Should().Be(ProviderSendStatus.NotConfigured);
+        result.ErrorCode.Should().Be("push_disabled");
         handler.Calls.Should().Be(0);
     }
 

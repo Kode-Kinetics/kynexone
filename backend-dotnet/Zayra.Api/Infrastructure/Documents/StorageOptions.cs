@@ -4,6 +4,11 @@ public sealed class StorageOptions
 {
     public const string SectionName = "Storage";
     public string Provider { get; set; } = "local";        // "local" | "s3"
+    /// <summary>
+    /// Provider "local" only: an absolute directory on a durable volume (the client kit mounts one). Required outside
+    /// Development, where the default — the app's own content root — does not survive a container being replaced.
+    /// </summary>
+    public string LocalRoot { get; set; } = string.Empty;
     public string Bucket { get; set; } = string.Empty;     // S3/R2 bucket name
     public string Endpoint { get; set; } = string.Empty;   // R2: https://<acct>.r2.cloudflarestorage.com; leave empty for AWS
     public string AccessKey { get; set; } = string.Empty;

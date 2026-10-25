@@ -1,0 +1,111 @@
+# KynexOne — client installation (WP9). One organisation, one server, four containers:
+#   caddy (HTTPS, the only published ports) -> web (Next.js) and api (ASP.NET Core) -> postgres.
+# Everything is configured from .env (copy .env.example; scripts/install.sh fills in the secrets).
+# Nothing but caddy is reachable from outside the host: postgres, the API and the web server listen on the
+# internal `kynexone` network only.
+name: kynexone
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-kynexone}
+      POSTGRES_USER: ${POSTGRES_USER:-kynexone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [kynexone]
+
+  api:
+    image: ${KYNEXONE_REGISTRY:-kynexone}/kynexone-api:${KYNEXONE_VERSION:?set KYNEXONE_VERSION in .env}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      APP_URL: https://${KYNEXONE_DOMAIN:?set KYNEXONE_DOMAIN in .env}
+      Cors__AllowedOrigins__0: https://${KYNEXONE_DOMAIN}
+      AllowedHosts: ${KYNEXONE_DOMAIN}
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB:-kynexone};Username=${POSTGRES_USER:-kynexone};Password=${POSTGRES_PASSWORD}
+      # Migrations are applied by install.sh / upgrade.sh (`--migrate`), never by a serving process.
+      Database__RunMigrationsOnStartup: "false"
+      Jwt__Issuer: ${JWT_ISSUER:-KynexOne}
+      Jwt__Audience: ${JWT_AUDIENCE:?set JWT_AUDIENCE in .env}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY in .env}
+      # Caddy terminates TLS; trust its X-Forwarded-* headers and nobody else's.
+      Proxy__TrustForwardedHeaders: "true"
+      Proxy__KnownNetworks: ${KYNEXONE_SUBNET:-172.30.50.0/24}
+      Storage__Provider: ${STORAGE_PROVIDER:-local}
+      Storage__LocalRoot: /var/lib/kynexone/documents
+      Storage__Bucket: ${STORAGE_BUCKET:-}
+      Storage__Endpoint: ${STORAGE_ENDPOINT:-}
+      Storage__AccessKey: ${STORAGE_ACCESS_KEY:-}
+      Storage__SecretKey: ${STORAGE_SECRET_KEY:-}
+      Storage__Region: ${STORAGE_REGION:-auto}
+      Email__DeliveryMode: ${EMAIL_DELIVERY_MODE:-smtp}
+      Smtp__Host: ${SMTP_HOST:-}
+      Smtp__Port: ${SMTP_PORT:-587}
+      Smtp__Username: ${SMTP_USERNAME:-}
+      Smtp__Password: ${SMTP_PASSWORD:-}
+      Smtp__UseSsl: ${SMTP_USE_SSL:-true}
+      Smtp__FromEmail: ${SMTP_FROM_EMAIL:-}
+      Smtp__FromName: ${SMTP_FROM_NAME:-KynexOne}
+      # AI is off unless chosen. `ollama` keeps employee data on the client's network; a cloud provider does not.
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_MODEL: ${AI_MODEL:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Mobile push goes through Expo's service on the internet; switch it off for an offline installation.
+      Notifications__Push__Enabled: ${PUSH_ENABLED:-true}
+    volumes:
+      - documents:/var/lib/kynexone/documents
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEMORY_LIMIT:-4g}
+    networks: [kynexone]
+
+  web:
+    image: ${KYNEXONE_REGISTRY:-kynexone}/kynexone-web:${KYNEXONE_VERSION}
+    restart: unless-stopped
+    depends_on: [api]
+    # The image is built with NEXT_PUBLIC_API_BASE_URL=http://api:5117: the browser calls /api on the same
+    # origin and caddy sends it straight to the API.
+    networks: [kynexone]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [api, web]
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      KYNEXONE_DOMAIN: ${KYNEXONE_DOMAIN}
+      CADDY_TLS: ${CADDY_TLS:-internal}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [kynexone]
+
+networks:
+  kynexone:
+    ipam:
+      config:
+        - subnet: ${KYNEXONE_SUBNET:-172.30.50.0/24}
+
+volumes:
+  postgres-data:
+  documents:
+  caddy-data:
+  caddy-config:

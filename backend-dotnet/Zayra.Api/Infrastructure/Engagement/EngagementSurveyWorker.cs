@@ -109,6 +109,8 @@ public sealed class EngagementSurveyWorker : BackgroundService
                 "Engagement worker lists the tenants that have the opt-in engagement flag on; nothing else is read here.",
                 f => f.FeatureKey == FeatureKeys.Engagement && f.IsEnabled, f => f.TenantId)
             .Select(f => f.TenantId).ToListAsync(ct)).ToHashSet();
+        // The licence caps the opt-in: a stored flag the licence does not grant runs nothing.
+        if (scope.ServiceProvider.GetService<Zayra.Api.Infrastructure.Licensing.ILicenceService>()?.IsOptInLicensed(FeatureKeys.Engagement) == false) enabledTenants.Clear();
         if (enabledTenants.Count == 0) return new SweepOutcome(false, 0, 0, 0, 0, 0);
 
         int opened = 0, closed = 0, cycles = 0, reminded = 0, actionReminders = 0;

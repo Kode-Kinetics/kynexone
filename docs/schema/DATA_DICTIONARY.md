@@ -907,6 +907,25 @@ cookie is stateless and cannot be revoked. RLS is a target rule — the live bri
 ### `security_settings.mfa_trusted_device_days` (column)
 - `integer NOT NULL DEFAULT 30`, `ck_security_settings__mfa_trusted_device_days` (`BETWEEN 0 AND 90`). How long a browser stays trusted after a two-step code; 0 = the tenant does not offer it. Read by sign-in (`rememberDeviceDays` on the challenge), `GET /api/auth/mfa/status`, and written by `PUT /api/access/security-settings` (`mfaTrustedDeviceDays`, out of range → 400 `ERR_MFA_TRUST_DAYS_RANGE`).
 
+
+## W. Signed licence evidence (client-installed product)
+
+Not part of the 76. One table shipped on the **live** EF schema (migration `AddInstallationLicences`, implementation
+prompt WP3). Capability: commercial limits, optional modules and opt-in features come only from a vendor-signed licence
+that the client cannot alter. No existing table can hold it: `tenant_subscriptions` and `tenant_feature_flags` were
+editable rows, which is exactly what a licence must not be. The installation id the licence may be bound to lives in
+`platform_config_entries` (`installation.id`) until WP5 moves that store to `installation_settings`.
+
+### `installation_licences`
+- **Purpose** — every licence imported into this installation, as the exact signed bytes. The `Active` row is the licence in force; `LicenceService` re-verifies its signature on every load (boot, after an import, every 15 minutes), so editing a stored row unlicenses the installation rather than raising its limits.
+- **Tier** S · **Domain** Installation · **RLS** grant-only (installation-wide: one organisation per database, no `tenant_id`)
+- **Keys** — `licence_id varchar(200)` (vendor's id, unique), `kid varchar(50)` (signing key id), `payload text` (the signed payload exactly as received, base64url), `signature varchar(500)` (ECDSA P-256 / SHA-256, base64url), `fingerprint varchar(64)` (SHA-256 of the payload bytes, lower-case hex), `licensee varchar(300)`, `expires_at_utc` (NULL = perpetual; a copy for display — the payload is authoritative), `status`, `imported_at_utc`, `imported_by_user_id`
+- **Rel** — `imported_by_user_id → users` (N:1, SET NULL: the evidence outlives the login)
+- **Constraint** — `ck_installation_licences__status` (`Active`,`Superseded`,`Rejected`); `IX_installation_licences_licence_id` (UNIQUE: re-importing the same id is a no-op, the same id with other content is refused); `ux_installation_licences__one_active` (UNIQUE on `status` WHERE `status = 'Active'`: at most one licence in force).
+- **Indexes** — the two unique indexes above (the import's idempotency lookup by `licence_id`; the licence service's read of the active row), `IX_installation_licences_imported_at_utc` (the licence history, newest first), `IX_installation_licences_imported_by_user_id` (EF FK index: the SET NULL action).
+- **Lifecycle** — inserted `Active` by `LicenceImporter` (Organisation Admin → Licence, `--import-licence`, or `Licence__Path` at boot) in the same transaction that marks the previous `Active` row `Superseded`; never updated otherwise, never deleted by the product. Every import attempt — accepted, unchanged or rejected — writes an `admin_audit_logs` row with the actor.
+- **Retention** `S` — kept for the life of the installation (the evidence of what it was entitled to). No `IRetentionRule` selects it.
+
 ## W. Session length and session epoch (live bridge)
 
 Not part of the 76. Four columns, no table, shipped on the **live** EF schema (migration

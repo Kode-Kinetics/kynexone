@@ -11,6 +11,8 @@ using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Modules;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Licensing;
+
 namespace Zayra.Api.Controllers;
 
 /// <summary>
@@ -84,7 +86,8 @@ public class TenantModulesController : ControllerBase
                 Enabled: state.IsEnabled(m.Key),
                 CanDisable: decision.IsAllowed,
                 LockClass: m.Lock.ToString(),
-                LockReason: decision.IsAllowed ? null : decision.Reason);
+                LockReason: decision.IsAllowed ? null : decision.Reason,
+                Licensed: this.Licence()?.IsModuleLicensed(m.Key) != false);
         }).ToList();
 
         return Ok(new TenantModuleListDto(
@@ -126,6 +129,16 @@ public class TenantModulesController : ControllerBase
                 replacement = "/api/tenant-modules",
             });
         }
+
+        // LICENCE CAP (WP3.6): an optional module the licence does not grant cannot be switched on. Switching one off
+        // is always allowed under the catalog's own rules below.
+        if (req.Enabled && this.Licence()?.IsModuleLicensed(module.Key) == false)
+            return Conflict(new
+            {
+                code = "module_not_licensed",
+                module = module.Key,
+                message = $"{module.LabelEn} is not included in this installation's licence. Contact your KynexOne supplier to add it.",
+            });
 
         var state = await _modules.GetStateAsync(tenantId.Value, ct);
 
@@ -204,7 +217,8 @@ public class TenantModulesController : ControllerBase
             Enabled: refreshed.IsEnabled(module.Key),
             CanDisable: refreshedDecision.IsAllowed,
             LockClass: module.Lock.ToString(),
-            LockReason: refreshedDecision.IsAllowed ? null : refreshedDecision.Reason));
+            LockReason: refreshedDecision.IsAllowed ? null : refreshedDecision.Reason,
+            Licensed: this.Licence()?.IsModuleLicensed(module.Key) != false));
     }
 }
 
@@ -218,7 +232,9 @@ public record TenantModuleDto(
     bool Enabled,
     bool CanDisable,
     string LockClass,
-    string? LockReason);
+    string? LockReason,
+    // Whether the installation's licence grants the module. An unlicensed module is off and cannot be switched on.
+    bool Licensed = true);
 
 public record TenantModuleListDto(
     string? CountryCode,

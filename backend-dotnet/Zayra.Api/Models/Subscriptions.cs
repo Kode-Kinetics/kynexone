@@ -2,25 +2,9 @@ using Zayra.Api.Domain.Entities;
 
 namespace Zayra.Api.Models;
 
-// BRIDGE until WP3: the limit and module readers still read these rows. The signed licence replaces
-// tenant_subscriptions and tenant_feature_flags, and AiPlanLimits becomes a licence field.
-
-// ── Subscription status constants ─────────────────────────────────────────────
-
-public static class SubscriptionStatuses
-{
-    public const string Trial          = "Trial";
-    public const string Active         = "Active";
-    public const string PastDue        = "PastDue";
-    public const string Suspended      = "Suspended";
-    public const string Cancelled      = "Cancelled";
-    public const string ManualContract = "ManualContract";
-
-    public static readonly IReadOnlySet<string> All = new HashSet<string>
-    {
-        Trial, Active, PastDue, Suspended, Cancelled, ManualContract
-    };
-}
+// tenant_subscriptions: no reader since WP3 (the signed licence holds the limits); kept mapped only until WP5
+// drops the table. tenant_feature_flags: what the organisation has switched on, capped by the licence
+// (TenantModuleService); it becomes organisation_modules in WP5.
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────
 
@@ -55,16 +39,4 @@ public class TenantFeatureFlag : ITenantOwned
     public string? ConfigJson { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UpdatedBy { get; set; }
-}
-
-public static class AiPlanLimits
-{
-    // Monthly token limits per plan. 0 = unlimited.
-    public static long GetMonthlyTokenLimit(string plan) => plan switch
-    {
-        "Starter"    => 50_000,
-        "Growth"     => 200_000,
-        "Enterprise" => 0,
-        _            => 50_000
-    };
 }

@@ -30,6 +30,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         "Offer Letter", "NDA"
     ];
 
+    private readonly Zayra.Api.Infrastructure.Licensing.ILicenceService? _licence;
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
     private readonly IDocumentStorage _documents;
@@ -38,8 +39,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null,
+        Zayra.Api.Infrastructure.Licensing.ILicenceService? licence = null)
     {
+        _licence = licence;
         _db = db;
         _audit = audit;
         _documents = documents;
@@ -423,6 +426,13 @@ public class EmployeeManagementService : IEmployeeManagementService
             if (gateSnapshot is not null)
                 await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, ct);
         }
+        // LICENCE SEAT (WP3.7): every transition INTO Active — activation, draft approval, rehire, reinstatement —
+        // takes a licensed seat. Recounted under the organisation's seat lock inside this transaction, so two
+        // activations racing for the last seat cannot both commit.
+        if (string.Equals(request.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(oldStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase))
+            await EmployeeSeatLimit.EnsureSeatAsync(_db, tenantId,
+                Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxEmployees(_licence), id, ct);
         employee.Status = request.Status;
         employee.UpdatedAtUtc = changedAtUtc;
         employee.UpdatedBy = context.UserId;
