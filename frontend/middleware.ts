@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { legacySetupHref } from './src/lib/setupLegacyRoutes';
 
 /** Must match backend ClientIpResolver. */
 const CLIENT_IP_HEADER = 'x-kynexone-client-ip';
@@ -43,6 +44,11 @@ function forwardClientIp(request: NextRequest): NextResponse {
 export function middleware(request: NextRequest) {
   if (request.nextUrl.pathname.startsWith('/api/')) return forwardClientIp(request);
 
+  // A screen that moved into Setup (src/lib/setupLegacyRoutes.ts): old links, bookmarks and server-sent links arrive at
+  // its Setup section, keeping their company and other parameters.
+  const moved = legacySetupHref(request.nextUrl.pathname, request.nextUrl.searchParams);
+  if (moved) return NextResponse.redirect(new URL(moved, request.nextUrl), 307);
+
   const url = request.nextUrl.clone();
   if (!url.searchParams.has('impersonate')) return NextResponse.next();
 
@@ -51,5 +57,10 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/login', '/api/:path*'],
+  // Static by Next's rules: keep the old addresses in step with SETUP_LEGACY_PATHS (unit/setupConsolidation.spec.ts).
+  matcher: [
+    '/login', '/api/:path*',
+    '/payroll/templates', '/tax-policies', '/compliance-profiles', '/opening-balances', '/tenant-admin', '/user-management',
+    '/leave', '/shifts', '/overtime', '/attendance', '/benefits', '/loans', '/performance', '/hr-letters', '/engagement', '/saudi-compliance',
+  ],
 };

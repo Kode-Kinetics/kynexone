@@ -2,8 +2,10 @@ import { expect, test } from '@playwright/test';
 import {
   SETUP_MODULE_SECTIONS, SETUP_ROUTE_PERMISSIONS, moduleSectionAvailable, type SetupModuleSection, type SetupModuleAccess,
 } from '../src/lib/setupModuleSections';
-import { SETUP_LEGACY_ROUTES, legacySetupHref } from '../src/lib/setupLegacyRoutes';
-import { SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, setupNavigationModel } from '../src/lib/setupAreas';
+import { SETUP_LEGACY_PATHS, SETUP_LEGACY_ROUTES, legacySetupHref } from '../src/lib/setupLegacyRoutes';
+import { NextRequest } from 'next/server';
+import { config, middleware } from '../middleware';
+import { SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, setupHasEntries, setupNavigationModel } from '../src/lib/setupAreas';
 import { navigationItems } from '../src/routes/navigation';
 
 /**
@@ -201,4 +203,25 @@ test('old_addresses_lead_to_their_setup_section', () => {
   for (const [path, query, expected] of cases) {
     expect(legacySetupHref(path, new URLSearchParams(query)), `${path}?${query}`).toBe(expected);
   }
+});
+
+test('the_edge_redirect_runs_on_every_old_address', () => {
+  for (const path of SETUP_LEGACY_PATHS) expect(config.matcher, path).toContain(path);
+  const moved = middleware(new NextRequest('https://app.example/tenant-admin?tab=branding'));
+  // Temporary (307): a browser never caches it, so a section can still move again while the product is in testing.
+  expect(moved.status).toBe(307);
+  expect(moved.headers.get('location')).toBe('https://app.example/setup?tab=branding');
+  const kept = middleware(new NextRequest('https://app.example/leave?companyId=c1'));
+  expect(kept.headers.get('location')).toBeNull();
+});
+
+test('setup_is_offered_only_to_someone_with_a_section_to_open', () => {
+  const base = { isCompanyScopedGroup: false, policyIntake: false, isFeatureEnabled: () => true, verdictForPath: () => ({ allowed: true }), flagStatus: 'ready' as const };
+  // An employee reads their own leave and attendance: those permissions alone open no Setup section.
+  const employee = { ...base, hasPermission: (key: string) => ['ess.read', 'leave.read', 'attendance.read', 'loans.self'].includes(key), hasRole: (role: string) => role === 'Employee' };
+  expect(setupHasEntries(employee)).toBe(false);
+  const hrOfficer = { ...base, hasPermission: (key: string) => key === 'leave.read', hasRole: (role: string) => role === 'HR Officer' };
+  expect(setupHasEntries(hrOfficer)).toBe(true);
+  // The menu entry asks the same question, not only "holds one of the permissions".
+  expect(navigationItems.find(item => item.path === '/setup')?.requiresSetupSection).toBe(true);
 });

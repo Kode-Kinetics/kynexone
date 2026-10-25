@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail } from 'lucide-react';
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail,
+  BadgeCheck, Blocks, CalendarClock, CalendarDays, Clock3, CreditCard, DatabaseBackup, FileSignature, Fingerprint, Gift, HeartPulse, HelpCircle, KeyRound, Languages, Lock, Palette, Percent, Scale, ScrollText, Star, Table2, TimerReset, UserCheck, UserCog, Wallet } from 'lucide-react';
 import { AiSetupAssistant } from '../components/AiSetupAssistant';
 import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
@@ -23,7 +24,6 @@ import { GuidedSetupChooser } from '../components/companySetup/GuidedSetupChoose
 import { SetupEditorState, SetupPendingFilesState, useSetupEditorState } from '../components/setup/SetupEditorState';
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
-import dynamic from 'next/dynamic';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
 import { usePolicyIntake } from '../lib/policyIntake';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
@@ -91,7 +91,9 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
-import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSettingId, type SetupSettingSection } from '../lib/setupAreas';
+import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
+import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionId } from '../lib/setupModuleSections';
+import { ModuleSetupSection } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
@@ -100,28 +102,37 @@ import { useReleaseA } from '../lib/releaseA';
 import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
 
-// Load the existing module only when its settings are opened in the workspace.
-const LeaveTypesTab = dynamic(() => import('./LeavePage').then(module => module.LeaveTypesTab));
-const PoliciesTab = dynamic(() => import('./LeavePage').then(module => module.PoliciesTab));
-const HolidayCalendarTab = dynamic(() => import('./LeavePage').then(module => module.HolidayCalendarTab));
-const OnboardingPolicyWorkspace = dynamic(() => import('../components/setup/OnboardingPolicyWorkspace').then(module => module.OnboardingPolicyWorkspace));
-
-type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | SetupSettingId;
-type SettingsTab = SetupSettingId;
+type Tab = 'aiSetup' | 'importOrganization' | 'policyLibrary' | SetupSectionId;
+/** A settings section: Setup's own, or a module's configuration (each module's editor, loaded when opened). */
+type SettingsTab = SetupSectionId;
 /** A navigation entry: a settings section, a setup tool, or one of the three Setup paths that share tab=aiSetup. */
 type SetupNavId = Exclude<Tab, 'aiSetup'> | 'guidedSetup' | 'allSetupAreas' | 'policyStarter';
 function isSettingsTab(id: string): id is SettingsTab { return tabs.some(tab => tab.id === id); }
 
-const settingIcons: Record<SettingsTab, React.ElementType> = {
+const settingIcons: Record<SetupSettingId, React.ElementType> = {
   companies: Building2, branches: GitBranch, locations: MapPin, costCenters: Landmark, departments: Layers,
   grades: Award, designations: Tag, establishment: Users,
   gccSettings: Globe, statutoryRules: ShieldCheck, fiscalYears: Calendar, glMapping: BookOpen,
   masterData: Database, numberingRules: Hash, notificationTemplates: Bell, emailConfig: Mail, systemSettings: Settings, adminAuditLogs: ClipboardList,
 };
+const moduleIcons: Record<SetupModuleSectionId, React.ElementType> = {
+  openingBalances: DatabaseBackup,
+  leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock,
+  overtimePolicies: TimerReset, attendanceDevices: Fingerprint,
+  benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText,
+  onboardingChecklists: ListChecks, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
+  taxPolicies: Percent, complianceProfiles: ShieldCheck, saudiCompliance: BadgeCheck, countryPayrollKeys: Globe,
+  users: Users, roles: UserCog, permissionMatrix: Table2, permissions: KeyRound, permissionGrantors: UserCheck,
+  approvalAuthorities: Award, approvalDelegations: GitBranch, signInSecurity: Lock, accessLog: ClipboardList,
+  localization: Languages, branding: Palette, helpText: HelpCircle, modules: Blocks, planBilling: CreditCard,
+};
 
-// Names, descriptions and groups come from the shared catalogue (lib/setupAreas.ts), which All setup areas reads too,
-// so a section has one name in the navigation, its header and the Studio.
-const tabs: (SetupSettingSection & { icon: React.ElementType })[] = SETUP_SETTING_SECTIONS.map(section => ({ ...section, icon: settingIcons[section.id] }));
+// Names, descriptions and groups come from the shared catalogues (lib/setupAreas.ts, lib/setupModuleSections.ts), which
+// All setup areas reads too, so a section has one name in the navigation, its header and the Studio.
+const tabs: (SetupSection & { icon: React.ElementType })[] = [
+  ...SETUP_SETTING_SECTIONS.map(section => ({ ...section, icon: settingIcons[section.id] })),
+  ...SETUP_MODULE_SECTIONS.map(section => ({ ...section, icon: moduleIcons[section.id] })),
+];
 
 /** The setup tools at the top of the navigation, keyed by their entry. */
 const toolSections: Record<Exclude<SetupNavId, SettingsTab>, { label: string; icon: React.ElementType }> = {
@@ -2582,7 +2593,10 @@ export function SetupPage() {
   const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
   const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
   const tabParam = searchParams?.get('tab');
-  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : canReadGlAndRates ? 'glMapping' : 'companies';
+  // A reader opens on their first section: someone who only configures a module (loans, users, the workspace) lands
+  // on that module's settings, not on a Companies list they cannot read.
+  const fallbackTab: Tab = canWrite ? 'aiSetup' : canReadStatutoryRules ? 'statutoryRules' : canReadGlAndRates ? 'glMapping'
+    : canReadCompanies ? 'companies' : visibleTabs[0]?.id ?? 'companies';
   const requestedTab: Tab = canWrite && (tabParam === 'aiSetup' || (!isCompanyScopedGroup && tabParam === 'importOrganization') || (tabParam === 'policyLibrary' && canManagePolicies))
     ? tabParam
     : visibleTabs.some((tab) => tab.id === tabParam)
@@ -2775,9 +2789,10 @@ export function SetupPage() {
   const navigationGroups: SetupSectionNavGroup<SetupNavId>[] = SETUP_SECTION_GROUPS.map(group => ({
     id: group.id,
     label: t(group.label),
-    items: group.id === 'getStarted'
-      ? setupTools
-      : navigationSettings.filter(tab => tab.group === group.id).map(tab => ({ id: tab.id, label: t(tab.label), icon: tab.icon, href: tabHref(tab.id) })),
+    items: [
+      ...(group.id === 'getStarted' ? setupTools : []),
+      ...navigationSettings.filter(tab => tab.group === group.id).map(tab => ({ id: tab.id, label: t(tab.label), icon: tab.icon, href: tabHref(tab.id) })),
+    ],
   })).filter(group => group.items.length > 0);
   // "Find a setting": the navigation's own sections, All setup areas' destinations and Payroll accounting's tabs, from
   // the same model as the navigation (and the ⌘K palette), so nothing is found that this user cannot open.
@@ -2820,6 +2835,7 @@ export function SetupPage() {
 
   const renderExistingPanel = (id: SettingsTab): React.ReactNode => {
     if (!visibleTabs.some(tab => tab.id === id)) return null;
+    if (isSetupModuleSectionId(id)) return <ModuleSetupSection id={id} onDirtyChange={setEditorDirty} companyId={authorizedCompany} companies={companies} />;
     switch (id) {
       case 'establishment': return <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />;
       case 'companies': return <CompaniesTab />;
@@ -3021,15 +3037,9 @@ export function SetupPage() {
               confirmLeave={confirmLeave}
               onDirtyChange={setEditorDirty}
               renderSettings={(id, onDirtyChange) => {
+                // Every embedded destination is a Setup section; renderExistingPanel re-checks that this reader may open it.
                 if (isSettingsTab(id)) return renderExistingSettings(id);
-                // Catalogue checks route, feature, scope and editor access before calling this.
-                // Retain the mutation role intersection here as a second composition boundary.
-                if (isCompanyScopedGroup || !(hasRole('Admin') || hasRole('HR Manager'))) return null;
-                if (id === 'onboarding' && hasPermission('recruitment.write') && (hasPermission('recruitment.read') || hasPermission('recruitment.write'))) return <OnboardingPolicyWorkspace companies={companies} onDirtyChange={onDirtyChange} />;
-                if (!(hasPermission('leave.read') || hasPermission('leave.write'))) return null;
-                if (id === 'leaveTypes') return <LeaveTypesTab onDirtyChange={onDirtyChange} />;
-                if (id === 'leavePolicies') return <PoliciesTab onDirtyChange={onDirtyChange} />;
-                if (id === 'holidayCalendars') return <HolidayCalendarTab onDirtyChange={onDirtyChange} />;
+                void onDirtyChange;
                 return null;
               }}
             />}

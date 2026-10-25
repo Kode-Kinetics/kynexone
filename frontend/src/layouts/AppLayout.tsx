@@ -29,7 +29,7 @@ import { permissionAccessDescription } from '../lib/permissionAreas';
 import { useLocale } from '../contexts/LocaleContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { setupNavigationModel } from '../lib/setupAreas';
-import { SETUP_ROUTE_PERMISSIONS } from '../lib/setupModuleSections';
+import { useCanOpenSetup } from '../hooks/useCanOpenSetup';
 import { buildSetupSearchIndex, matchSetupEntries } from '../components/setup/setupSearch';
 
 /** Setup's own route gate (app/(dashboard)/setup/page.tsx): any one of these opens /setup. */
@@ -78,6 +78,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
     router.replace('/login');
   }, [beginMfaEnrollment, router]);
   const featureFlags = useFeatureFlags();
+  const canOpenSetup = useCanOpenSetup();
   const { isFeatureEnabled } = featureFlags;
   const { t, locale } = useLocale();
   // ess.read alone opens the assistant only for policy questions, which exist only while policy intake is on.
@@ -127,11 +128,12 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
       const navMatch = commandNavigationItems.find((nav) => nav.path === item.path);
       // A feature-flagged screen (e.g. Release A, off unless enabled) is offered only when its flag is on.
       if (navMatch?.requiredFeatureKey && !isFeatureEnabled(navMatch.requiredFeatureKey)) return false;
+      if (navMatch?.requiresSetupSection && !canOpenSetup) return false;
       if (!navMatch?.requiredPermissions?.length) return true;
       // Any one of them, as the sidebar, ProtectedRoute and the page gates read the same list.
       return navMatch.requiredPermissions.some((permission) => hasPermission(permission));
     }),
-    [commandItems, hasPermission, mayUseAssistant, isFeatureEnabled],
+    [commandItems, hasPermission, mayUseAssistant, isFeatureEnabled, canOpenSetup],
   );
 
   const filteredCommands = useMemo(() => {
@@ -150,14 +152,14 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
   // Settings: Setup's own "Find a setting" entries, from the same model as Setup's navigation, so the palette never
   // offers a section the navigation would hide from this user.
   const setupEntries = useMemo(() => {
-    if (!SETUP_ROUTE_PERMISSIONS.some(permission => hasPermission(permission)) || !featureFlags.verdictForPath('/setup').allowed) return [];
+    if (!canOpenSetup || !featureFlags.verdictForPath('/setup').allowed) return [];
     const isCompanyScopedGroup = accountType === 'Group' && !isGroupScope;
     const model = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake: isFeatureEnabled(POLICY_INTAKE_FLAG), isFeatureEnabled, verdictForPath: featureFlags.verdictForPath, flagStatus: featureFlags.status });
     return buildSetupSearchIndex({
       model,
       access: { hasPermission, hasRole, isFeatureEnabled, verdictForPath: featureFlags.verdictForPath, flagStatus: featureFlags.status, isCompanyScopedGroup },
     });
-  }, [accountType, featureFlags.status, featureFlags.verdictForPath, hasPermission, hasRole, isFeatureEnabled, isGroupScope]);
+  }, [accountType, canOpenSetup, featureFlags.status, featureFlags.verdictForPath, hasPermission, hasRole, isFeatureEnabled, isGroupScope]);
   const settingResults = useMemo(
     () => (commandQuery.trim() ? matchSetupEntries(setupEntries, commandQuery, t).slice(0, 6) : []),
     [commandQuery, setupEntries, t],

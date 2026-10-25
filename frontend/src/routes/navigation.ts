@@ -101,7 +101,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
       { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       // The one home for configuration: every module's settings, users and access, and the workspace (lib/setupModuleSections.ts).
-      { label: 'Setup', icon: Settings2, path: '/setup', requiredPermissions: [...SETUP_ROUTE_PERMISSIONS] },
+      { label: 'Setup', icon: Settings2, path: '/setup', requiredPermissions: [...SETUP_ROUTE_PERMISSIONS], requiresSetupSection: true },
       // The other half of a go-live: reconciling a run against the register the OUTGOING system
       // produced for the same month. The engine was built and unit-proven with no caller.
       { label: 'Parallel Run Variance', icon: Scale, path: '/payroll/variance', requiredPermissions: ['payroll.read'] },

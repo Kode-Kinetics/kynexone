@@ -385,3 +385,12 @@ export function setupNavigationModel(access: SetupNavigationAccess): SetupNaviga
   ] : [];
   return { canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates, canManagePolicies, tools, settings };
 }
+
+/**
+ * Whether Setup has anything for this user. The route's permissions are alternatives and some are broad (an employee
+ * reads their own leave and attendance), so the menu entry, the top-bar gear and the ⌘K palette ask this instead.
+ */
+export function setupHasEntries(access: SetupNavigationAccess): boolean {
+  const model = setupNavigationModel(access);
+  return model.tools.length > 0 || model.settings.length > 0;
+}
