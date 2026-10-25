@@ -17,6 +17,21 @@ public static class AccessModes
     public const string NoLogin = "NoLogin";
 }
 
+/// <summary>The three company two-step sign-in policies (security_settings.mfa_policy).</summary>
+public static class MfaPolicies
+{
+    /// <summary>"Each person chooses": nobody is forced, privileged roles included.</summary>
+    public const string Optional = "Optional";
+    /// <summary>Required for people who can see or change payroll, banking or access (the default).</summary>
+    public const string PrivilegedRoles = "PrivilegedRoles";
+    /// <summary>Required for every tenant user.</summary>
+    public const string Everyone = "Everyone";
+    public static readonly IReadOnlyList<string> All = new[] { Optional, PrivilegedRoles, Everyone };
+    public static bool IsValid(string? value) => value is not null && All.Contains(value, StringComparer.Ordinal);
+    /// <summary>The policy in force for a company with (or without) a settings row.</summary>
+    public static string For(SecuritySetting? s) => s?.EffectiveMfaPolicy ?? PrivilegedRoles;
+}
+
 public class SecuritySetting : ITenantOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -45,7 +60,15 @@ public class SecuritySetting : ITenantOwned
     public int RefreshTokenExpiryDays { get; set; } = 30;
     public bool AllowMultipleSessions { get; set; } = true;
     // MFA policy — when true all tenant users must complete TOTP at login
+    // Kept in step with MfaPolicy: true exactly when MfaPolicy is Everyone (existing readers keep working).
     public bool MfaRequired { get; set; }
+    /// <summary>The company's two-step sign-in policy: one of <see cref="MfaPolicies"/>. Default PrivilegedRoles.</summary>
+    public string MfaPolicy { get; set; } = MfaPolicies.PrivilegedRoles;
+    /// <summary>The policy in force. mfa_required wins, so a row written by older code (or a test) that only set
+    /// the flag still reads as Everyone.</summary>
+    public string EffectiveMfaPolicy => MfaRequired ? MfaPolicies.Everyone
+        : string.Equals(MfaPolicy, MfaPolicies.Optional, StringComparison.Ordinal) ? MfaPolicies.Optional
+        : MfaPolicies.PrivilegedRoles;
     // Mandatory MFA for privileged users (PrivilegedMfaPolicy.PrivilegedPermissions) starts at this instant for
     // this tenant. Null = use the platform-wide date (platform_config_entries
     // 'auth.privileged_mfa_enforce_from_utc'). Set by platform Owner/Admin only.

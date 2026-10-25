@@ -4770,6 +4770,7 @@ public class PlatformController : ControllerBase
                 subscriptionStatus = sub?.Status,
                 hasMfaEnabled = sec?.MfaRequired ?? false,
                 mfaStatus = sec?.MfaRequired == true ? "required_for_all" : "optional",
+                mfaPolicy = MfaPolicies.For(sec),
                 hasCustomPasswordPolicy = sec is not null && (sec.PasswordMinLength != 10 || !sec.PasswordRequireUppercase),
                 maxFailedLoginAttempts = sec?.MaxFailedLoginAttempts ?? 5,
                 sessionTimeoutMinutes = sec?.SessionTimeoutMinutes ?? 480,

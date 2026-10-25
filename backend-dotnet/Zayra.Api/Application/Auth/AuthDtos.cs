@@ -395,7 +395,8 @@ public record SecuritySettingDto(
     bool MfaRequired,
     DateTime UpdatedAtUtc,
     int MfaTrustedDeviceDays = Zayra.Api.Models.SecuritySetting.DefaultMfaTrustedDeviceDays,
-    int SessionMaxHours = Zayra.Api.Models.SecuritySetting.DefaultSessionMaxHours);
+    int SessionMaxHours = Zayra.Api.Models.SecuritySetting.DefaultSessionMaxHours,
+    string MfaPolicy = Zayra.Api.Models.MfaPolicies.PrivilegedRoles);
 
 // ── MFA DTOs ──────────────────────────────────────────────────────────────────
 
@@ -424,7 +425,9 @@ public record MfaStatusDto(
     // Tenant users only (wave 2): unused backup codes of the current factor; 0 when two-step is off.
     int BackupCodesRemaining = 0,
     // True while Auth__Mfa__DisabledForTesting is on: two-step sign-in is not asked for or enforced.
-    bool DisabledForTesting = false);
+    bool DisabledForTesting = false,
+    // The company policy in force: Optional, PrivilegedRoles or Everyone. Optional + !Required = this user may choose.
+    string Policy = "PrivilegedRoles");
 
 /// <summary>Result from LoginAsync — one of: Tokens (success), Challenge (MFA code needed),
 /// or RequiresMfaEnrollment (tenant mandates MFA but this user hasn't set it up yet).</summary>
@@ -525,7 +528,18 @@ public static class MfaErrorCodes
     public const string CodeRequired = "ERR_MFA_CODE_REQUIRED";
     public const string ResetReason = "ERR_MFA_RESET_REASON";
     public const string ResetSelf = "ERR_MFA_RESET_SELF";
+    public const string PolicyInvalid = "ERR_MFA_POLICY_INVALID";
+    public const string PolicyReasonRequired = "ERR_MFA_POLICY_REASON";
 }
+
+/// <summary>A refused two-step policy change (invalid value, or "each person chooses" without a reason). Maps to 400.</summary>
+public sealed class MfaPolicyException(string code, string message) : Exception(message)
+{
+    public string Code { get; } = code;
+}
+
+/// <summary>Self-disable: exactly one of a current app code or one backup code.</summary>
+public record MfaSelfDisableRequest(string? TotpCode = null, string? BackupCode = null);
 
 public record MfaDisableRequest(
     [System.ComponentModel.DataAnnotations.Required] string TotpCode);
@@ -582,7 +596,11 @@ public record UpdateSecuritySettingRequest(
     bool? AllowMultipleSessions,
     bool? MfaRequired = null,
     int? MfaTrustedDeviceDays = null,
-    int? SessionMaxHours = null);
+    int? SessionMaxHours = null,
+    // "Optional" | "PrivilegedRoles" | "Everyone". Wins over the legacy MfaRequired flag when both are sent.
+    string? MfaPolicy = null,
+    // Required when moving to "Optional".
+    string? MfaPolicyReason = null);
 
 /// <summary>The coded errors of the session policy (security settings and refresh).</summary>
 public static class SessionErrorCodes

@@ -482,7 +482,7 @@ public sealed class MfaBackupCodesAndAdminResetTests
         var who = await EnrolAsync(kit, await SeedStaffAsync(kit));
         await ForgetStepAsync(kit, who.UserId);
         await using (var db = kit.NewDb())
-            (await SignedIn(kit, db, who.UserId).Disable(new MfaDisableRequest(Totp.Now(who.Secret)), CancellationToken.None)).Should().BeOfType<NoContentResult>();
+            (await SignedIn(kit, db, who.UserId).Disable(new MfaSelfDisableRequest(Totp.Now(who.Secret)), CancellationToken.None)).Should().BeOfType<NoContentResult>();
         (await UserAsync(kit, who.UserId)).MfaRecoveryCodeHashes.Should().BeNull();
         (await StatusAsync(kit, who.UserId)).GetProperty("backupCodesRemaining").GetInt32().Should().Be(0);
 
