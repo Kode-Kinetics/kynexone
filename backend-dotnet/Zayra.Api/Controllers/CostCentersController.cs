@@ -51,20 +51,17 @@ public class CostCentersController : ControllerBase
 
     [HttpPost]
     [Authorize(Roles = "Admin,HR Manager")]
-    [HasPermission("organization.costcenter.manage")]
     public Task<ActionResult<CostCenterDto>> Create(CostCenterRequest request, CancellationToken cancellationToken)
         => CostCenterEndpoints.CreateAsync(this, _organization, request, Context(),
             costCenter => CreatedAtAction(nameof(Get), new { id = costCenter.Id }, costCenter), cancellationToken);
 
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    [HasPermission("organization.costcenter.manage")]
     public Task<ActionResult<CostCenterDto>> Update(Guid id, CostCenterRequest request, CancellationToken cancellationToken)
         => CostCenterEndpoints.UpdateAsync(this, _organization, _db, id, request, Context(), cancellationToken);
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    [HasPermission("organization.costcenter.manage")]
     public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
         => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), cancellationToken);
 
@@ -86,9 +83,9 @@ public class CostCentersController : ControllerBase
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager")]
-    [HasPermission("organization.costcenter.manage")]
     public async Task<IActionResult> ImportPreview([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
+        if (!OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;
@@ -99,9 +96,9 @@ public class CostCentersController : ControllerBase
 
     [HttpPost("import")]
     [Authorize(Roles = "Admin,HR Manager")]
-    [HasPermission("organization.costcenter.manage")]
     public async Task<IActionResult> Import([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
+        if (!OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;

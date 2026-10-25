@@ -32,6 +32,7 @@ internal static class CostCenterEndpoints
     {
         var tenantId = c.GetTenantId();
         if (tenantId is null) return c.Unauthorized();
+        if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
         if (!OrgWriteRules.MayWriteCompany(c, request.CompanyId)) return c.Forbid();
         // The functional class routes expense to P&L lines: a finance decision, not an HR one (AM-10).
         if (!string.IsNullOrWhiteSpace(request.FunctionalClass) && !OrgWriteRules.MayDecideFunctionalClass(c)) return c.Forbid();
@@ -46,6 +47,7 @@ internal static class CostCenterEndpoints
     {
         var tenantId = c.GetTenantId();
         if (tenantId is null) return c.Unauthorized();
+        if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
         var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
         if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return c.NotFound();
         if (!OrgWriteRules.MayWriteCompany(c, request.CompanyId)) return c.Forbid();
@@ -70,6 +72,7 @@ internal static class CostCenterEndpoints
     {
         var tenantId = c.GetTenantId();
         if (tenantId is null) return c.Unauthorized();
+        if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
         var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
         if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return c.NotFound();
         try { return await organization.DeleteCostCenterAsync(tenantId.Value, id, context, ct) ? c.NoContent() : c.NotFound(); }

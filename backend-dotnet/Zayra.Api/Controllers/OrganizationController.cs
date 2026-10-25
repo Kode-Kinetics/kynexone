@@ -119,7 +119,6 @@ public class OrganizationController : ControllerBase
 
     [HttpPost("cost-centers")]
     [Authorize(Roles = "Admin,HR Manager")]
-    [HasPermission("organization.costcenter.manage")]
     public Task<ActionResult<CostCenterDto>> CreateCostCenter(CostCenterRequest request, CancellationToken cancellationToken)
         => CostCenterEndpoints.CreateAsync(this, _organization, request, Context(),
             costCenter => Created($"/api/organization/cost-centers/{costCenter.Id}", costCenter), cancellationToken);

@@ -44,23 +44,32 @@ public class CostCentrePermissionTests
 
     // ── T-044 doors that carry it as an attribute ─────────────────────────────
 
-    public static IEnumerable<object[]> AttributeDoors() =>
-    [
-        [typeof(CostCentersController), nameof(CostCentersController.Create)],
-        [typeof(CostCentersController), nameof(CostCentersController.Update)],
-        [typeof(CostCentersController), nameof(CostCentersController.Delete)],
-        [typeof(CostCentersController), nameof(CostCentersController.ImportPreview)],
-        [typeof(CostCentersController), nameof(CostCentersController.Import)],
-        [typeof(OrganizationController), nameof(OrganizationController.CreateCostCenter)],
-    ];
-
-    [Theory]
-    [MemberData(nameof(AttributeDoors))]
-    public void T044_EveryCostCentreWriteAction_RequiresThePermission(Type controller, string action)
+    [Fact]
+    public async Task T044_EveryCostCentreWriteDoor_RefusesACallerWithoutThePermission_AndAdmitsOneWithIt()
     {
-        var method = controller.GetMethod(action)!;
-        method.GetCustomAttributes<HasPermissionAttribute>(inherit: true)
-            .SelectMany(a => a.Permissions).Should().Contain(Manage);
+        var w = await Seed();
+        var svc = new OrganizationSetupService(w.Db, new AuditService(w.Db));
+        CostCentersController Ctl(params string[] p) => new(svc, w.Db) { ControllerContext = As(w.Tenant, p) };
+        OrganizationController Org(params string[] p) => new(svc, w.Db) { ControllerContext = As(w.Tenant, p) };
+        var body = new CostCenterRequest(w.A.Id, "NEWCC", "New");
+        var import = new CostCenterImportRequest("Code,Name\nIMP,Imported\n", w.A.Id);
+
+        // A caller who can write organization data but may not re-point cost: refused at every door, nothing written.
+        var plain = new[] { "organization.write", "organization.read" };
+        (await Ctl(plain).Create(body, default)).Result.Should().BeOfType<ForbidResult>();
+        (await Ctl(plain).Update(w.Cc.Id, new CostCenterRequest(w.A.Id, "OPS", "Renamed"), default)).Result.Should().BeOfType<ForbidResult>();
+        (await Ctl(plain).Delete(w.Other.Id, default)).Should().BeOfType<ForbidResult>();
+        (await Ctl(plain).ImportPreview(import, default)).Should().BeOfType<ForbidResult>();
+        (await Ctl(plain).Import(import, default)).Should().BeOfType<ForbidResult>();
+        (await Org(plain).CreateCostCenter(body, default)).Result.Should().BeOfType<ForbidResult>();
+        (await w.Db.CostCenters.CountAsync()).Should().Be(2);
+
+        // A custom role with only the permission succeeds.
+        var only = new[] { Manage };
+        (await Ctl(only).Create(body, default)).Result.Should().BeOfType<CreatedAtActionResult>();
+        (await Ctl(only).Update(w.Cc.Id, new CostCenterRequest(w.A.Id, "OPS", "Renamed"), default)).Result.Should().BeOfType<OkObjectResult>();
+        (await Ctl(only).Import(import, default)).Should().BeOfType<OkObjectResult>();
+        (await Ctl(only).Delete(w.Other.Id, default)).Should().BeOfType<NoContentResult>();
     }
 
     [Fact]
@@ -211,7 +220,7 @@ public class CostCentrePermissionTests
     /// <summary>Source file that writes an attribution column → the door files that must carry the permission for it. A door file is asserted to contain the key.</summary>
     private static readonly Dictionary<string, string[]> CoveredBy = new(StringComparer.Ordinal)
     {
-        ["Infrastructure/Organization/OrganizationSetupService.cs"] = ["Controllers/CostCentersController.cs", "Controllers/DepartmentsController.cs", "Controllers/OrganizationController.cs"],
+        ["Infrastructure/Organization/OrganizationSetupService.cs"] = ["Controllers/CostCenterEndpoints.cs", "Controllers/CostCentersController.cs", "Controllers/DepartmentsController.cs"],
         ["Application/Employees/EmployeeOrgFieldResolver.cs"] = ["Controllers/EmployeesController.cs"],
         ["Infrastructure/Employees/EmployeeManagementService.cs"] = ["Controllers/EmployeesController.cs"],
         ["Controllers/EmployeesController.cs"] = ["Controllers/EmployeesController.cs"],
