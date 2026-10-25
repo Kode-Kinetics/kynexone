@@ -40,13 +40,11 @@ internal static class CostAccountingModelConfiguration
             {
                 t.HasCheckConstraint("ck_cost_centers__functional_class", "functional_class IS NULL OR functional_class IN " + FunctionalClasses);
                 t.HasCheckConstraint("ck_cost_centers__parent_not_self", "parent_id IS NULL OR parent_id <> id");
-                // Regex CHECKs are PostgreSQL-only (the SQLite unit-test databases have no ~ operator). code_format is
-                // created NOT VALID by the migration: existing codes are audited and repaired first (v1-spec 1.1).
+                // Regex CHECKs are PostgreSQL-only (the SQLite unit-test databases have no ~ operator). gl_segment is a new,
+                // all-NULL column, so this can never reject a legacy row. The code-format CHECK on `code` is NOT here: even
+                // NOT VALID it would reject an UPDATE of a legacy row, so it waits for M3 (docs/schema/M3_COST_ACCOUNTING_VALIDATION.md).
                 if (isNpgsql)
-                {
                     t.HasCheckConstraint("ck_cost_centers__gl_segment_format", "gl_segment IS NULL OR gl_segment ~ " + CodePattern);
-                    t.HasCheckConstraint("ck_cost_centers__code_format", "code ~ " + CodePattern);
-                }
             });
         });
 
@@ -113,14 +111,8 @@ internal static class CostAccountingModelConfiguration
             {
                 t.HasCheckConstraint("ck_finance_gl_entries__cost_center_pair", "(cost_center_id IS NULL) = (cost_center_code IS NULL)");
                 t.HasCheckConstraint("ck_finance_gl_entries__cost_center_needs_company", "cost_center_id IS NULL OR company_id IS NOT NULL");
-                // NOT VALID in the migration: they bind new and updated rows, never the legacy ledger at upgrade time.
-                // PostgreSQL-only so the SQLite unit-test databases (which never had them) are unchanged.
-                if (isNpgsql)
-                {
-                    t.HasCheckConstraint("ck_finance_gl_entries__amount_nonnegative", "amount >= 0");
-                    t.HasCheckConstraint("ck_finance_gl_entries__has_account", "(debit_account <> '' OR credit_account <> '')");
-                    t.HasCheckConstraint("ck_finance_gl_entries__currency_format", "currency ~ '^[A-Z]{3}$'");
-                }
+                // amount_nonnegative, has_account and currency_format are NOT here: even NOT VALID they reject an UPDATE
+                // (for example an erp_* status change) of a legacy row, so they wait for M3.
             });
         });
 

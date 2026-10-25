@@ -54,6 +54,21 @@ public sealed class CostAccountingSchemaDocsTests
         text.Should().Contain("NOT VALID").And.Contain("CostAccountingFoundation");
     }
 
+    [Fact]
+    public void M3Document_RecordsTheExactSqlOfTheFourHeldBackChecks_AndTheForeignKeyValidation()
+    {
+        var path = Path.Combine(Path.GetDirectoryName(DictionaryPath())!, "M3_COST_ACCOUNTING_VALIDATION.md");
+        File.Exists(path).Should().BeTrue();
+        var text = File.ReadAllText(path);
+        foreach (var fragment in new[]
+        {
+            "ck_cost_centers__code_format", "ck_finance_gl_entries__amount_nonnegative", "ck_finance_gl_entries__has_account",
+            "ck_finance_gl_entries__currency_format", "VALIDATE CONSTRAINT fk_departments__cost_center",
+            "scripts/cost-accounting-preflight-audit.sql", "NOT VALID",
+        })
+            text.Should().Contain(fragment);
+    }
+
     private static string DictionaryPath()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

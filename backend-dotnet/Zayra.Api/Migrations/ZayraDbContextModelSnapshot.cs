@@ -8725,7 +8725,6 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("cost_centers", null, t =>
                         {
-                            t.HasCheckConstraint("ck_cost_centers__code_format", "code ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$'");
 
                             t.HasCheckConstraint("ck_cost_centers__functional_class", "functional_class IS NULL OR functional_class IN ('COGS', 'SELLING', 'G_AND_A', 'R_AND_D', 'OPERATIONS', 'CAPITALISABLE')");
 
@@ -15123,15 +15122,12 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("finance_gl_entries", null, t =>
                         {
-                            t.HasCheckConstraint("ck_finance_gl_entries__amount_nonnegative", "amount >= 0");
 
                             t.HasCheckConstraint("ck_finance_gl_entries__cost_center_needs_company", "cost_center_id IS NULL OR company_id IS NOT NULL");
 
                             t.HasCheckConstraint("ck_finance_gl_entries__cost_center_pair", "(cost_center_id IS NULL) = (cost_center_code IS NULL)");
 
-                            t.HasCheckConstraint("ck_finance_gl_entries__currency_format", "currency ~ '^[A-Z]{3}$'");
 
-                            t.HasCheckConstraint("ck_finance_gl_entries__has_account", "(debit_account <> '' OR credit_account <> '')");
                         });
                 });
 

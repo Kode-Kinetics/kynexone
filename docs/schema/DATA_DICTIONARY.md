@@ -943,7 +943,7 @@ car loan recovered over at least 12 instalments). Generic for every loan type an
 
 ## Y. Cost-centre accounting foundation (live bridge)
 
-Not part of the 76. Columns, CHECKs, keys and four indexes, **no table**, on the **live** EF schema (migration
+Not part of the 76. Columns, CHECKs that read only new columns, keys and four indexes, **no table**, on the **live** EF schema (migration
 `CostAccountingFoundation`, "M1" of the cost-accounting v1 contract: expand-only, no behaviour change). Capability: a company can
 post payroll, bonus, settlement and EOSB journal lines to a cost centre, and the cost centre travels with the line into the
 ERP export. Nothing here is read yet by posting: every default keeps today's behaviour, and nothing is stamped or enforced
@@ -955,13 +955,13 @@ to add; every table below already has one.
 are `NOT VALID` (existing rows may hold dangling ids; a later migration, M3, validates them once the pre-migration audit query
 is clean), and EF would add an index beside each one where the contract lists them as deliberately unindexed. The targets are
 `uq_cost_centers__tenant_id (tenant_id, id)` and `uq_cost_centers__tenant_company_id (tenant_id, company_id, id)`. `NOT VALID`
-binds every new or **updated** row, not only inserts: a legacy row that fails a NOT VALID CHECK cannot be UPDATEd until repaired.
+re-checks a row whenever its reference column is written, so the production deploy is gated on `scripts/cost-accounting-preflight-audit.sql` returning zero (or a repair first); that is also why the CHECKs that read existing columns are held back for M3.
 
 ### `cost_centers` — cost accounting
 - `parent_id uuid NULL` — the roll-up tree. `fk_cost_centers__parent (tenant_id, parent_id) → cost_centers (tenant_id, id)`, `ck_cost_centers__parent_not_self`. A cycle and depth guard is a trigger in M2.
 - `functional_class varchar(24) NULL` — `COGS`, `SELLING`, `G_AND_A`, `R_AND_D`, `OPERATIONS`, `CAPITALISABLE` (`ck_cost_centers__functional_class`). `CAPITALISABLE` is stored but refused for posting in v1.
 - `gl_segment varchar(30) NULL` — the client's ERP cost-centre value, sent on exports instead of `code`. `ck_cost_centers__gl_segment_format`; `ux_cost_centers_scope_gl_segment` unique `(tenant_id, company_id, gl_segment) NULLS NOT DISTINCT WHERE gl_segment IS NOT NULL AND NOT is_deleted` (serves the export column and the duplicate check).
-- `ck_cost_centers__code_format` (`code ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$'`) is **NOT VALID**: existing codes are audited and repaired first, and a legacy offender cannot be edited until its code is repaired.
+- The code-format CHECK on `code` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$`) is **not in M1**: even NOT VALID it would reject an UPDATE of a legacy row. It ships in M3 (`M3_COST_ACCOUNTING_VALIDATION.md`) after `scripts/cost-accounting-preflight-audit.sql` returns zero.
 
 ### `gl_accounts` — cost accounting
 - `cost_center_rule varchar(12) NOT NULL DEFAULT 'Optional'` — `Required` | `Optional` | `NotAllowed` (`ck_gl_accounts__cost_center_rule`). The default backfills every account, so no tenant changes behaviour. `Required` on an Asset, Liability or Equity account is refused by the API, not the database.
@@ -1009,7 +1009,7 @@ binds every new or **updated** row, not only inserts: a legacy row that fails a 
 - `cost_center_code varchar(30)`, `cost_center_name varchar(200)`, `cost_center_gl_segment varchar(30)` — snapshots at post time, so history survives a rename; `ck_finance_gl_entries__cost_center_pair` ties the id to its code.
 - `posting_key varchar(64) NULL` — the idempotency key (SHA-256 hex). `ux_finance_gl_entries_posting_key` unique `(tenant_id, posting_key) WHERE posting_key IS NOT NULL` (NULL never conflicts: loans, advances and all history).
 - `ix_finance_gl_entries_cc_period` `(tenant_id, cost_center_id, period) WHERE cost_center_id IS NOT NULL` — the cost-centre trial balance and the in-use guard's lookup.
-- **NOT VALID** CHECKs `ck_finance_gl_entries__amount_nonnegative`, `__has_account` (`debit_account <> '' OR credit_account <> ''`), `__currency_format` (`currency ~ '^[A-Z]{3}$'`): they bind new and updated rows only, so a legacy row that fails one cannot take even an `erp_*` status update until repaired. The append-only trigger is M2.
+- CHECKs `amount >= 0`, `debit_account <> '' OR credit_account <> ''` and `currency ~ '^[A-Z]{3}$'` are **not in M1** (they would reject an UPDATE, including an `erp_*` status change, of a legacy row even if NOT VALID); they ship in M3 after the pre-deploy audit returns zero. The append-only trigger is M2.
 
 ### `gl_journal_export_lines` — cost accounting
 - `cost_center_code varchar(30)`, `cost_center_name varchar(200)`, `cost_center_gl_segment varchar(30)` — frozen verbatim as emitted, like `external_account_code`; NULL on every pre-existing line, so a regenerated export is byte-identical.

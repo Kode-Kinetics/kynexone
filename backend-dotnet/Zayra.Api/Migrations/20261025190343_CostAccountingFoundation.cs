@@ -281,9 +281,9 @@ namespace Zayra.Api.Migrations
             // The keys every cost-centre foreign key points at. EF cannot model (tenant_id, company_id, id): company_id is nullable.
             migrationBuilder.Sql(UniqueKeysSql);
 
-            // NOT VALID CHECKs: bind every new or updated row, never the rows that exist at upgrade time. Legacy offenders
-            // are listed by the pre-migration audit query and repaired before M3 validates them.
-            migrationBuilder.Sql(NotValidChecksSql);
+            // The four CHECKs that read existing columns (cost_centers.code format; finance_gl_entries amount, accounts, currency)
+            // are deliberately NOT here: even NOT VALID, PostgreSQL re-checks a row on every UPDATE, so a legacy offender would
+            // fail unrelated edits. They ship in M3 (docs/schema/M3_COST_ACCOUNTING_VALIDATION.md) after the audit returns zero.
 
             // Foreign keys: composite and tenant-first, ON DELETE RESTRICT, MATCH SIMPLE (a NULL cost centre is skipped).
             // Keys over columns that may already hold dangling ids, and over the new payroll columns, are NOT VALID until M3;
@@ -485,20 +485,6 @@ DO $$ BEGIN
   END IF;
 END $$;";
 
-        private const string NotValidChecksSql = @"
-DO $$ DECLARE r record; BEGIN
-  FOR r IN SELECT * FROM (VALUES
-    ('cost_centers',      'ck_cost_centers__code_format',               $e$code ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$'$e$),
-    ('finance_gl_entries','ck_finance_gl_entries__amount_nonnegative',  $e$amount >= 0$e$),
-    ('finance_gl_entries','ck_finance_gl_entries__has_account',         $e$(debit_account <> '' OR credit_account <> '')$e$),
-    ('finance_gl_entries','ck_finance_gl_entries__currency_format',     $e$currency ~ '^[A-Z]{3}$'$e$)
-  ) AS v(tbl, name, expr) LOOP
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = r.name AND conrelid = r.tbl::regclass) THEN
-      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I CHECK (%s) NOT VALID', r.tbl, r.name, r.expr);
-    END IF;
-  END LOOP;
-END $$;";
-
         private const string ForeignKeysSql = @"
 DO $$ DECLARE r record; BEGIN
   FOR r IN SELECT * FROM (VALUES
@@ -537,10 +523,6 @@ DO $$ DECLARE r record; BEGIN
     ('cost_centers',             'fk_cost_centers__parent'),
     ('finance_gl_entries',       'fk_finance_gl_entries__cost_center'),
     ('companies',                'fk_companies__default_cost_center'),
-    ('finance_gl_entries',       'ck_finance_gl_entries__amount_nonnegative'),
-    ('finance_gl_entries',       'ck_finance_gl_entries__has_account'),
-    ('finance_gl_entries',       'ck_finance_gl_entries__currency_format'),
-    ('cost_centers',             'ck_cost_centers__code_format'),
     ('cost_centers',             'uq_cost_centers__tenant_company_id'),
     ('cost_centers',             'uq_cost_centers__tenant_id')
   ) AS v(tbl, name) LOOP
