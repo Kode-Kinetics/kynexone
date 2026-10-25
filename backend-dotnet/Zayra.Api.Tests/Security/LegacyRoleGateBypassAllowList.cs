@@ -106,6 +106,13 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("PATCH Assessments.RecordResult", "HR Director", SeniorHr),
         ("POST Assessments.Send", "HR Director", SeniorHr),
         ("POST Attendance.CreateDevice", "HR Director", SeniorHr),
+        // Setup → Attendance rules: every action needs attendance.policy_manage, held only by Admin, HR Manager and HR Director.
+        ("GET AttendancePolicies.Get", "HR Director", SeniorHr),
+        ("GET AttendancePolicies.List", "HR Director", SeniorHr),
+        ("POST AttendancePolicies.Create", "HR Director", SeniorHr),
+        ("POST AttendancePolicies.Deactivate", "HR Director", SeniorHr),
+        ("POST AttendancePolicies.Reactivate", "HR Director", SeniorHr),
+        ("PUT AttendancePolicies.Update", "HR Director", SeniorHr),
         ("GET Attendance.Dashboard", "Payroll Manager,Payroll Officer,HR Assistant", OrgReadByDesign),
         ("DELETE Attendance.DeleteDevice", "HR Director", SeniorHr),
         ("GET Attendance.Device", "Payroll Manager,Payroll Officer,Manager,Supervisor,HR Assistant", DeviceReadMasked),
