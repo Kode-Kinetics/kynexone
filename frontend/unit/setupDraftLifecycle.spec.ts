@@ -48,7 +48,7 @@ function memoryStorage() {
 }
 const profile: CompanyProfile = {
   countryCode: 'SA', currencyCode: 'SAR', industry: 'Services', companySize: '500+',
-  strictEntityScope: true, requireCostCenterForPayroll: true, requireGradeForApprovalPolicy: true,
+  strictEntityScope: true,
   sections: { entity: true, org: true, leave: true, shifts: true, payroll: true, governance: true, leavePolicies: true, holidays: true, attendance: true, localization: true },
   configuration: { policySources: [{ documentId: 'doc-1', contentSha256: 'hash-1', name: 'Policy 4' }], attendanceMethods: ['BiometricDevice'] },
 };

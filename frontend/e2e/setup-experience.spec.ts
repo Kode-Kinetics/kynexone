@@ -77,7 +77,7 @@ const draft: SetupDraft = {
   departments: [{ code: 'OPS', nameEn: 'Operations' }],
   grades: [{ code: 'G1', name: 'Professional', band: 'P', level: 1, minSalary: 5000, midSalary: 7500, maxSalary: 10000, currency: 'SAR' }],
   costCenters: [], designations: [], gradePayComponents: [], leaveTypes: [], shifts: [], payComponents: [],
-  statutoryRules: [], leavePolicies: [], workingWeek: null, employeeIdRule: null, hrConfig: null,
+  statutoryRules: [], leavePolicies: [], workingWeek: null, employeeIdRule: null,
   holidayCalendar: null, attendancePolicy: null, overtimePolicy: null, localization: null,
 };
 

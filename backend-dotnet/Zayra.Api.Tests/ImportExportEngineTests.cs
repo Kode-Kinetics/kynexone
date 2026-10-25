@@ -53,9 +53,10 @@ public class ImportExportEngineTests
         return ctrl;
     }
 
-    private static ControllerContext MakeContext(Guid tenantId)
+    private static ControllerContext MakeContext(Guid tenantId, bool withEstablishmentWrite = false)
     {
-        var claims = new[] { new Claim("tenant_id", tenantId.ToString()), new Claim(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()) };
+        var claims = new List<Claim> { new("tenant_id", tenantId.ToString()), new(System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()) };
+        if (withEstablishmentWrite) { claims.Add(new Claim("permission", "organization.establishment.write")); claims.Add(new Claim("is_group_scope", "true")); }
         var identity = new ClaimsIdentity(claims, "test");
         var principal = new ClaimsPrincipal(identity);
         return new ControllerContext { HttpContext = new DefaultHttpContext { User = principal } };
@@ -460,13 +461,11 @@ public class ImportExportEngineTests
         var result = await ctrl.Get(CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);
-        var config = Assert.IsType<TenantHrConfig>(ok.Value);
-        // Verify safe defaults
-        Assert.True(config.UseDeptHeadApproval);
-        Assert.True(config.UseHrFinalApproval);
-        Assert.False(config.UseSupervisorBeforeManager);
-        Assert.True(config.RequireImportPreviewBeforeCommit);
-        Assert.Equal(tenantId, config.TenantId);
+        var config = Assert.IsType<TenantHrConfigDto>(ok.Value);
+        // The live settings and their safe defaults
+        Assert.Equal("Enforced", config.EstablishmentEnforcementMode);
+        Assert.Equal(5, config.EngagementMinCohortSize);
+        Assert.Equal(24, config.EngagementFreeTextRetentionMonths);
         // Should NOT have been persisted
         Assert.Equal(0, await db.TenantHrConfigs.CountAsync());
     }
@@ -479,45 +478,21 @@ public class ImportExportEngineTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var ctrl = new TenantHrConfigController(db);
-        ctrl.ControllerContext = MakeContext(tenantId);
+        ctrl.ControllerContext = MakeContext(tenantId, withEstablishmentWrite: true);
 
-        // PUT with custom values
-        var req = new TenantHrConfigRequest(
-            UseDeptHeadApproval: false,
-            UseHrFinalApproval: false,
-            UseSupervisorBeforeManager: true,
-            AllowDottedLineApproval: true,
-            AutoCreateDeptOnImport: true,
-            AutoCreateDesignationOnImport: false,
-            RequireImportPreviewBeforeCommit: false,
-            AllowCrossDeptManager: false,
-            AllowCrossLocationManager: false,
-            RequireCostCenterForPayroll: true,
-            RequireGradeForApprovalPolicy: true);
-
-        var putResult = await ctrl.Upsert(req, CancellationToken.None);
+        // PUT a changed enforcement mode (needs a reason)
+        var putResult = await ctrl.Upsert(new TenantHrConfigRequest("Advisory", "pilot roll-out"), CancellationToken.None);
         Assert.IsType<OkObjectResult>(putResult);
 
-        // GET again — should see persisted values
-        var getResult = await ctrl.Get(CancellationToken.None);
-        var ok = Assert.IsType<OkObjectResult>(getResult);
-        var config = Assert.IsType<TenantHrConfig>(ok.Value);
+        // GET again — should see the persisted value
+        var ok = Assert.IsType<OkObjectResult>(await ctrl.Get(CancellationToken.None));
+        Assert.Equal("Advisory", Assert.IsType<TenantHrConfigDto>(ok.Value).EstablishmentEnforcementMode);
 
-        Assert.False(config.UseDeptHeadApproval);
-        Assert.True(config.UseSupervisorBeforeManager);
-        Assert.True(config.AutoCreateDeptOnImport);
-        Assert.False(config.RequireImportPreviewBeforeCommit);
-        Assert.True(config.RequireCostCenterForPayroll);
-
-        // Second PUT — should update (not insert again)
-        var req2 = req with { UseDeptHeadApproval = true };
-        await ctrl.Upsert(req2, CancellationToken.None);
+        // Second PUT with nothing to change — updates (not inserts again) and keeps the mode
+        await ctrl.Upsert(new TenantHrConfigRequest(), CancellationToken.None);
         Assert.Equal(1, await db.TenantHrConfigs.CountAsync());
-
-        var getResult2 = await ctrl.Get(CancellationToken.None);
-        var ok2 = Assert.IsType<OkObjectResult>(getResult2);
-        var config2 = Assert.IsType<TenantHrConfig>(ok2.Value);
-        Assert.True(config2.UseDeptHeadApproval);
+        var ok2 = Assert.IsType<OkObjectResult>(await ctrl.Get(CancellationToken.None));
+        Assert.Equal("Advisory", Assert.IsType<TenantHrConfigDto>(ok2.Value).EstablishmentEnforcementMode);
     }
 
     // ── Test 12: Department preview — missing required Code → error ───────────

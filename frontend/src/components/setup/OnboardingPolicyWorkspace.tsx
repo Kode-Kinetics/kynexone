@@ -71,7 +71,6 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
     companyId: company?.id, legalEntityName: company?.legalNameEn,
     countryCode: company?.countryCode ?? '', currencyCode: company?.defaultCurrency ?? '',
     industry: '', companySize: '', strictEntityScope: true,
-    requireCostCenterForPayroll: false, requireGradeForApprovalPolicy: false,
     sections: { org: false, leave: false, shifts: false, payroll: false, entity: false, governance: false,
       leavePolicies: false, holidays: false, attendance: false, localization: false, benefits: false },
   }), [company?.id, company?.legalNameEn, company?.countryCode, company?.defaultCurrency]);
