@@ -107,7 +107,9 @@ test('approved loan moves through a separate payment batch and repayment receipt
   expect(errors).toEqual([]);
   if (process.env.LOAN_EVIDENCE_DIR) await page.screenshot({ path: `${process.env.LOAN_EVIDENCE_DIR}/loan-receipt-${info.project.name}.png` });
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).last().click();
-  await page.getByRole('button', { name: 'Loan Types', exact: true }).click();
+  // Loan types are configuration: the Loans page links to them in Setup.
+  await page.getByRole('link', { name: 'Loan settings', exact: true }).click();
+  await expect(page).toHaveURL(/\/setup\?tab=loanTypes/);
   await page.getByRole('button', { name: 'New Loan Type', exact: true }).click();
   await expect(page.getByTitle('Repayment Frequency').locator('option')).toHaveText(['Monthly', 'Weekly', 'BiWeekly', 'Quarterly']);
   expect(errors).toEqual([]);

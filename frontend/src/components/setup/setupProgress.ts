@@ -26,7 +26,9 @@ export const READINESS_DESTINATION: Readonly<Record<string, { areaId: SetupAreaI
   notificationTemplates: { areaId: 'services', destinationId: 'notificationTemplates' },
   gccSettings: { areaId: 'compliance', destinationId: 'gccSettings' },
   statutoryRules: { areaId: 'compliance', destinationId: 'statutoryRules' },
-  nitaqat: { areaId: 'compliance', destinationId: 'saudiCompliance' },
+  // The Nitaqat establishment profile is set on the Saudization tab of the Saudi compliance dashboard, not in Setup's
+  // Saudi compliance section (Qiwa, GOSI, WPS), so this item leads to the dashboard.
+  nitaqat: { areaId: 'compliance', destinationId: 'saudiComplianceDashboard' },
 };
 
 /** The settings whose list endpoint answers "is there at least one active record". */
@@ -52,7 +54,7 @@ export const NEXT_ACTION_LABEL: Readonly<Record<string, string>> = {
   notificationTemplates: msg('Add your first notification'),
   gccSettings: msg('Set up country rules'),
   statutoryRules: msg('Set up statutory rules'),
-  saudiCompliance: msg('Set up the Nitaqat profile'),
+  saudiComplianceDashboard: msg('Set up the Nitaqat profile'),
 };
 
 export interface AreaProgressItem {

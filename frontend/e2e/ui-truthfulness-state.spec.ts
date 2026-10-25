@@ -47,7 +47,8 @@ test.describe('browserless UI truthfulness contracts', () => {
 
     expect(attendance).toContain("dashboardUnavailable ? <DomainUnavailable");
     expect(attendance).toContain("deviceSyncUnavailable ? <DomainUnavailable");
-    expect(attendance).toContain("devicesUnavailable ? <DomainUnavailable");
+    // The device list moved to Setup (Attendance devices); a failed load still never reads as "no devices".
+    expect(read('src/components/attendance/AttendanceDevicesPanel.tsx')).toContain("devicesUnavailable ? <DomainUnavailable");
     expect(attendance).toContain("dailyUnavailable ? 'Unavailable' : minutes(totalWorked)");
     expect(attendance).toContain("dashboardUnavailable ? 'Unavailable' : (summary?.overtimeEmployees ?? 0)");
     expect(attendance).toContain("action={insightsUnavailable ? 'Unavailable' : `${insights.length} open`}");

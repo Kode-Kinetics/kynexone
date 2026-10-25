@@ -110,7 +110,7 @@ function validZone(tz: string | undefined): string | undefined {
   } catch {
     if (!warnedZones.has(tz)) {
       warnedZones.add(tz);
-      console.warn(`[format] The tenant time zone "${tz}" is not a valid IANA zone; showing times in the viewer's own zone instead. Fix it in Tenant Admin → Localization.`);
+      console.warn(`[format] The tenant time zone "${tz}" is not a valid IANA zone; showing times in the viewer's own zone instead. Fix it in Setup → Language and region.`);
     }
     return undefined;
   }

@@ -11,7 +11,7 @@ import { BenefitExceptionForm } from './BenefitExceptionForm';
 import { AdditionalBenefitRequestDetail } from './AdditionalBenefitRequestDetail';
 import { COST_FREQUENCY_LABELS, PERIOD_LABELS, TREATMENT_LABELS } from './AdditionalBenefitSummary';
 import { BenefitPolicySummary, policyTreatment } from './BenefitPaymentPolicy';
-import { COVERAGE_TIERS, FormError, INPUT, LABEL, Modal, PRIMARY, SECONDARY, today } from './benefitUi';
+import { COVERAGE_TIERS, FormError, INPUT, LABEL, Modal, PRIMARY, SECONDARY, today, benefitSetupHref } from './benefitUi';
 
 type Selection = {
   selected: boolean; effectiveFrom: string; effectiveTo: string; reviewDate: string; limit: string;
@@ -153,7 +153,7 @@ export function BenefitChecklist({ plans, employee: fixedEmployee, initialPlanId
         onChanged();
       } catch (err) {
         const data = (err as { response?: { data?: { code?: string; setupUrl?: string } } }).response?.data;
-        if (data?.code === 'approval_route_not_configured' && data.setupUrl?.startsWith('/') && !data.setupUrl.startsWith('//')) setSetupUrl(data.setupUrl);
+        if (data?.code === 'approval_route_not_configured' && data.setupUrl?.startsWith('/') && !data.setupUrl.startsWith('//')) setSetupUrl(benefitSetupHref(data.setupUrl));
         setSelections(current => ({ ...current, [plan.id]: { ...current[plan.id], error: benefitsErrorMessage(err, t('Could not submit the additional benefit.')) } }));
       }
     }
@@ -164,7 +164,7 @@ export function BenefitChecklist({ plans, employee: fixedEmployee, initialPlanId
         onChanged();
       } catch (err) {
         const data = (err as { response?: { data?: { code?: string; setupUrl?: string } } }).response?.data;
-        if (data?.code === 'approval_route_not_configured' && data.setupUrl?.startsWith('/') && !data.setupUrl.startsWith('//')) setSetupUrl(data.setupUrl);
+        if (data?.code === 'approval_route_not_configured' && data.setupUrl?.startsWith('/') && !data.setupUrl.startsWith('//')) setSetupUrl(benefitSetupHref(data.setupUrl));
         setEndings(current => ({ ...current, [enrollment.id]: { ...current[enrollment.id], error: benefitsErrorMessage(err, t('Could not submit the benefit removal.')) } }));
       }
     }
@@ -228,7 +228,7 @@ export function BenefitChecklist({ plans, employee: fixedEmployee, initialPlanId
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('Changes are sent for approval separately. Current coverage stays unchanged until approval.')}</p>
       </>}
       {submitted && !saving && <p role="status" className="rounded-lg bg-slate-50 p-3 text-sm text-slate-700 dark:bg-white/5 dark:text-slate-200">{t('{count} benefit requests sent for approval.', { count: completed.length })}{(chosen.some(plan => selections[plan.id].error) || chosenEnds.some(item => endings[item.id].error)) ? ` ${t('Correct the failed rows and submit them again. Successful requests will not be sent again.')}` : ''}</p>}
-      {setupUrl && <p className="text-xs text-slate-600 dark:text-slate-300">{canConfigure ? <a href={setupUrl} className="font-semibold text-sapphire underline">{t('Configure approval workflow')}</a> : t('Contact an administrator to configure additional benefit approvals.')}</p>}
+      {setupUrl && <p className="text-xs text-slate-600 dark:text-slate-300">{canConfigure ? <a href={setupUrl} target="_blank" rel="noopener noreferrer" className="font-semibold text-sapphire underline">{t('Configure approval workflow')}<span className="sr-only"> {t('(opens in a new tab)')}</span></a> : t('Contact an administrator to configure additional benefit approvals.')}</p>}
       <div className="flex flex-wrap justify-end gap-2"><button type="button" className={SECONDARY} disabled={saving} onClick={onClose}>{t(completed.length ? 'Done' : 'Cancel')}</button><button type="submit" className={PRIMARY} disabled={saving || loading || checking || (!chosen.length && !chosenEnds.length) || chosen.some(plan => !checks[plan.id] || checkErrors[plan.id] || blocked(plan.id).length || checks[plan.id]?.alreadyEnrolled)}>{t(saving ? 'Saving…' : 'Save changes')}</button></div>
     </form>
     {adjustingId && active.find(item => item.id === adjustingId) && <Modal title={t('Adjust existing benefit')} onClose={() => setAdjustingId(null)} wide><BenefitExceptionForm enrollment={active.find(item => item.id === adjustingId)!} mandatory={active.find(item => item.id === adjustingId)!.classification === 'Mandatory'} currency={active.find(item => item.id === adjustingId)!.currency} onCancel={() => setAdjustingId(null)} onSaved={() => { setAdjustingId(null); if (employee) void benefitsApi.employeePackage(employee.id).then(setEmployeePackage); onChanged(); }} /></Modal>}

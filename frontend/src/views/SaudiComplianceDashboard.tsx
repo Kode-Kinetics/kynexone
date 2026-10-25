@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   ShieldCheck, AlertTriangle, CheckCircle, XCircle, RefreshCw, Banknote,
-  FileWarning, Settings, Users, Wifi, TrendingUp, ExternalLink, Info,
+  FileWarning, Users, Wifi, TrendingUp, ExternalLink, Info,
   AlertCircle, Clock, MinusCircle, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import client from '../api/client';
@@ -13,7 +13,8 @@ import {
   READINESS_UNKNOWN_LABEL, formatReadinessPercent, readinessCaption, readinessToneClass,
 } from '../lib/complianceDisplay';
 import { qiwaConnectionLabel, qiwaModeLabel } from '../lib/integrationDeliveryState';
-import { SaudiComplianceConfig } from './SaudiComplianceConfig';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
+import { msg } from '../i18n/translations';
 import { NitaqatPanel } from './NitaqatPanel';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -795,7 +796,7 @@ function DashboardTab() {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-type Tab = 'dashboard' | 'nitaqat' | 'configure';
+type Tab = 'dashboard' | 'nitaqat';
 
 // Saudization sits beside QIWA/WPS/GOSI rather than inside the dashboard grid: a
 // Nitaqat band carries its own scenario modelling, trend and working, and squeezing
@@ -804,7 +805,6 @@ type Tab = 'dashboard' | 'nitaqat' | 'configure';
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'dashboard', label: 'Dashboard',   icon: ShieldCheck },
   { id: 'nitaqat',   label: 'Saudization', icon: Users },
-  { id: 'configure', label: 'Configure',   icon: Settings },
 ];
 
 export function SaudiComplianceDashboard() {
@@ -812,9 +812,12 @@ export function SaudiComplianceDashboard() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-2">
-        <ShieldCheck className="h-6 w-6 text-sapphire dark:text-cyanAccent" />
-        <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Saudi Compliance Command Center</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-6 w-6 text-sapphire dark:text-cyanAccent" />
+          <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Saudi Compliance Command Center</h1>
+        </div>
+        <ModuleSettingsLink sections={['saudiCompliance']} label={msg('Saudi compliance settings')} />
       </div>
 
       <div className="flex gap-1 border-b border-slate-200 dark:border-white/[0.08]">
@@ -837,7 +840,6 @@ export function SaudiComplianceDashboard() {
 
       {tab === 'dashboard' && <DashboardTab />}
       {tab === 'nitaqat'   && <NitaqatPanel />}
-      {tab === 'configure' && <SaudiComplianceConfig />}
     </div>
   );
 }

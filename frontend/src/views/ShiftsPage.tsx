@@ -1,12 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Pencil, Trash2, Clock, X, Wand2, CheckCircle2, Coffee, CalendarDays } from 'lucide-react';
 import { shiftsApi } from '../api/shifts';
 import type { ShiftDefinition, RosterEmployee, RosterAssignment } from '../api/shifts';
 import { essApi } from '../api/ess';
 import type { EssRosterEntry } from '../api/ess';
 import { useAuth } from '../contexts/AuthContext';
+import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { msg } from '../i18n/translations';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -935,11 +938,14 @@ function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
 interface DefinitionsTabProps {
   definitions: ShiftDefinition[];
   onRefresh: () => void;
+  /** Unsaved edits (the shift form is open): Setup asks before the section is left. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
-function DefinitionsTab({ definitions, onRefresh }: DefinitionsTabProps) {
+export function DefinitionsTab({ definitions, onRefresh, onDirtyChange }: DefinitionsTabProps) {
   const [modal, setModal] = useState<{ open: boolean; editing: ShiftDefinition | null }>({ open: false, editing: null });
   const [deleting, setDeleting] = useState<string | null>(null);
+  useLayoutEffect(() => { onDirtyChange?.(modal.open); return () => onDirtyChange?.(false); }, [modal.open, onDirtyChange]);
 
   const deleteDefinition = async (id: string) => {
     setDeleting(id);
@@ -1020,9 +1026,13 @@ function DefinitionsTab({ definitions, onRefresh }: DefinitionsTabProps) {
 
 // ── Rostering Policy Tab ───────────────────────────────────────────────────────
 
-function PolicyTab({ definitions }: { definitions: ShiftDefinition[] }) {
+export function PolicyTab({ definitions, onDirtyChange }: { definitions: ShiftDefinition[]; onDirtyChange?: (dirty: boolean) => void }) {
   const active = definitions.filter(d => d.isActive);
   const [policy, setPolicy] = useState<import('../api/shifts').ShiftPolicy | null>(null);
+  // The policy as last loaded or saved: edits are unsaved while the form differs from it.
+  const [stored, setStored] = useState('');
+  const dirty = policy !== null && JSON.stringify(policy) !== stored;
+  useLayoutEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1031,7 +1041,7 @@ function PolicyTab({ definitions }: { definitions: ShiftDefinition[] }) {
   useEffect(() => {
     setLoading(true);
     shiftsApi.getPolicy()
-      .then(setPolicy)
+      .then(loaded => { setPolicy(loaded); setStored(JSON.stringify(loaded)); })
       .catch(() => setError('Could not load the rostering policy.'))
       .finally(() => setLoading(false));
   }, []);
@@ -1044,6 +1054,7 @@ function PolicyTab({ definitions }: { definitions: ShiftDefinition[] }) {
     try {
       const updated = await shiftsApi.savePolicy(policy);
       setPolicy(updated);
+      setStored(JSON.stringify(updated));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
@@ -1207,7 +1218,32 @@ function PolicyTab({ definitions }: { definitions: ShiftDefinition[] }) {
   );
 }
 
-type Tab = 'roster' | 'definitions' | 'autoPlan' | 'schedule' | 'policy';
+/**
+ * Setup's Shifts and Shift policy sections. The page loads the definitions for the roster; Setup has no roster, so these
+ * load them themselves, and say so when they cannot (a failed load is not "no shifts defined").
+ */
+export function ShiftSetupPanel({ section, onDirtyChange }: { section: 'definitions' | 'policy'; onDirtyChange?: (dirty: boolean) => void }) {
+  const [definitions, setDefinitions] = useState<ShiftDefinition[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const load = () => {
+    setFailed(false);
+    shiftsApi.listDefinitions().then(setDefinitions).catch(() => setFailed(true));
+  };
+  useEffect(load, []);
+
+  if (failed) return <div className="surface"><LoadFailedNotice onRetry={load} /></div>;
+  if (!definitions) {
+    return (
+      <div role="status" className="flex justify-center py-12">
+        <span className="sr-only">Loading…</span>
+        <div aria-hidden="true" className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" />
+      </div>
+    );
+  }
+  return section === 'policy'
+    ? <PolicyTab definitions={definitions} onDirtyChange={onDirtyChange} />
+    : <DefinitionsTab definitions={definitions} onRefresh={load} onDirtyChange={onDirtyChange} />;
+}
 
 export function ShiftsPage() {
   const { user } = useAuth();
@@ -1215,7 +1251,6 @@ export function ShiftsPage() {
   const isManager = !isAdmin && (user?.roles.some(r => ['Manager', 'Supervisor'].includes(r)) ?? false);
   const isEmployee = !isAdmin && !isManager;
 
-  const [tab, setTab] = useState<Tab>(() => isEmployee ? 'schedule' : 'roster');
   const [definitions, setDefinitions] = useState<ShiftDefinition[]>([]);
   const [defsLoading, setDefsLoading] = useState(true);
   const [autoPlanOpen, setAutoPlanOpen] = useState(false);
@@ -1236,7 +1271,7 @@ export function ShiftsPage() {
     ? 'Your weekly schedule and upcoming shifts.'
     : isManager
     ? 'View and manage your team\'s roster and shift assignments.'
-    : 'Manage shift definitions, assign employees to rosters, and auto-plan schedules.';
+    : 'Assign employees to rosters and auto-plan schedules. Shift definitions and the rostering policy are in Shift settings.';
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -1248,6 +1283,7 @@ export function ShiftsPage() {
         </div>
         {isAdmin && (
           <div className="flex items-center gap-2">
+            <ModuleSettingsLink sections={['shiftDefinitions', 'shiftPolicy']} label={msg('Shift settings')} />
             <button type="button" onClick={() => setAutoPlanOpen(true)}
               className="btn-secondary flex items-center gap-1.5 text-sm">
               <Wand2 className="h-3.5 w-3.5" />
@@ -1262,34 +1298,15 @@ export function ShiftsPage() {
         )}
       </div>
 
-      {/* Tabs — role-scoped */}
-      <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
-        {isEmployee ? (
+      {/* Shift definitions and the rostering policy are Setup sections; the roster is this page. */}
+      {isEmployee && (
+        <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
           <button type="button"
             className="rounded-lg px-4 py-1.5 text-sm font-medium bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">
             My Schedule
           </button>
-        ) : (
-          <>
-            <button type="button" onClick={() => setTab('roster')}
-              className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${tab === 'roster' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>
-              {isManager ? 'Team Roster' : 'Weekly Roster'}
-            </button>
-            {isAdmin && (
-              <button type="button" onClick={() => setTab('definitions')}
-                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${tab === 'definitions' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>
-                Shift Definitions
-              </button>
-            )}
-            {isAdmin && (
-              <button type="button" onClick={() => setTab('policy')}
-                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${tab === 'policy' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>
-                Rostering Policy
-              </button>
-            )}
-          </>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Content */}
       {defsLoading ? (
@@ -1298,26 +1315,22 @@ export function ShiftsPage() {
         </div>
       ) : isEmployee ? (
         <MyScheduleTab definitions={definitions} />
-      ) : tab === 'roster' ? (
-        <RosterTab key={rosterRefreshKey} definitions={definitions} />
-      ) : tab === 'policy' ? (
-        <PolicyTab definitions={definitions} />
       ) : (
-        <DefinitionsTab definitions={definitions} onRefresh={loadDefinitions} />
+        <RosterTab key={rosterRefreshKey} definitions={definitions} />
       )}
 
       {autoPlanOpen && (
         <AutoPlanModal
           definitions={definitions}
           onClose={() => setAutoPlanOpen(false)}
-          onDone={() => { setTab('roster'); setAutoPlanOpen(false); }}
+          onDone={() => setAutoPlanOpen(false)}
         />
       )}
 
       {aiPlanOpen && (
         <AiPlanModal
           onClose={() => setAiPlanOpen(false)}
-          onDone={() => { setTab('roster'); setRosterRefreshKey(k => k + 1); setAiPlanOpen(false); }}
+          onDone={() => { setRosterRefreshKey(k => k + 1); setAiPlanOpen(false); }}
         />
       )}
     </div>

@@ -17,6 +17,8 @@ export interface NavItem {
   requiredFeatureKey?: string;
   /** Show only for Group account tenants (multi-company). */
   groupAccountOnly?: boolean;
+  /** Shown only when Setup has a section this user may open (lib/setupAreas.ts setupHasEntries), not on a permission alone. */
+  requiresSetupSection?: boolean;
 }
 
 export interface NavGroup {

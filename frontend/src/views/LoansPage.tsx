@@ -24,7 +24,8 @@ import { employeesApi } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
 import { canDecideLoan, loanApprovalRole, loanErrorMessage, localDateToday, repaymentMethodLabels } from '../lib/loanWorkflow';
 import { LoanPaymentsTab } from '../components/loans/LoanPaymentsTab';
-import { LoanPoliciesTab } from '../components/loans/LoanPoliciesTab';
+import { msg } from '../i18n/translations';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { LoanLifecyclePanel } from '../components/loans/LoanLifecyclePanel';
 import { LoanAccountSummary, LoanStatement } from '../components/loans/LoanStatement';
 import { loanGovernanceApi, loanOfferingsApi, type LoanEligibility, type OfferedLoanType } from '../api/loanGovernance';
@@ -38,16 +39,13 @@ import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '.
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { useFormat } from '../hooks/useFormat';
-type Tab = 'loans' | 'loanPayments' | 'loanPolicies' | 'loanTypes' | 'advances' | 'advancePolicy' | 'bonusTypes' | 'bonusBatches' | 'auditReport';
+// Loan types, loan policies, the advance policy and bonus types are configuration: they are Setup sections now.
+type Tab = 'loans' | 'loanPayments' | 'advances' | 'bonusBatches' | 'auditReport';
 
 const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'loans', label: 'Loans', icon: CreditCard },
   { id: 'loanPayments', label: 'Loan Payments', icon: DollarSign },
-  { id: 'loanPolicies', label: 'Loan Policies', icon: ShieldCheck },
-  { id: 'loanTypes', label: 'Loan Types', icon: DollarSign },
   { id: 'advances', label: 'Salary Advances', icon: DollarSign },
-  { id: 'advancePolicy', label: 'Advance Policy', icon: DollarSign },
-  { id: 'bonusTypes', label: 'Bonus Types', icon: Gift },
   { id: 'bonusBatches', label: 'Bonus Batches', icon: Gift },
   { id: 'auditReport', label: 'Audit Report', icon: ShieldCheck },
 ];
@@ -168,7 +166,7 @@ function AuditTrailTable({ logs }: { logs: AuditLogEntry[] }) {
 
 // ── Loan Types ────────────────────────────────────────────────────────────────
 
-function LoanTypesTab() {
+export function LoanTypesTab() {
   const { currencyCode } = useTenantSettings();
   const { t: tr } = useLocale();
   const [items, setItems] = useState<LoanType[]>([]);
@@ -704,7 +702,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
 // ── Advance Policy ────────────────────────────────────────────────────────────
 
-function AdvancePolicyTab() {
+export function AdvancePolicyTab() {
   const [policy, setPolicy] = useState<AdvancePolicy | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -949,7 +947,7 @@ const TAX_REGION_DESCRIPTIONS: Record<string, string> = {
   Custom: 'Apply a custom fixed percentage. Enter the rate below.',
 };
 
-function BonusTypesTab() {
+export function BonusTypesTab() {
   const [items, setItems] = useState<BonusType[]>([]);
   const [loading, setLoading] = useState(true);
   const [includeInactive, setIncludeInactive] = useState(false);
@@ -1778,7 +1776,6 @@ function AuditReportTab() {
 export function LoansPage() {
   const { user } = useAuth();
   const { companyVersion } = useCompany();
-  const canConfigurePolicies = user?.roles.some(role => ['Admin', 'HR Manager', 'HR Director'].includes(role)) ?? false;
   const canViewFinanceModules = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'].includes(role)) ?? false;
   const canViewTeam = canViewFinanceModules || !!user?.roles.includes('Manager');
   const [mine, setMine] = useState(false);
@@ -1813,14 +1810,17 @@ export function LoansPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{ownAccounts ? 'My Loans' : canViewFinanceModules ? 'Loans, Advances & Bonuses' : 'Team Loans'}</h1>
-        <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          {ownAccounts ? 'Apply for a loan, follow approvals and view your repayment statement.' : 'Review scoped employee loans, approval routes and repayment history.'}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{ownAccounts ? 'My Loans' : canViewFinanceModules ? 'Loans, Advances & Bonuses' : 'Team Loans'}</h1>
+          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+            {ownAccounts ? 'Apply for a loan, follow approvals and view your repayment statement.' : 'Review scoped employee loans, approval routes and repayment history.'}
+          </p>
+        </div>
+        {!ownAccounts && <ModuleSettingsLink sections={['loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes']} label={msg('Loan settings')} />}
       </div>
 
-      {summary && canViewFinanceModules && !ownAccounts && !['loans', 'loanPayments', 'loanPolicies'].includes(activeTab) && (
+      {summary && canViewFinanceModules && !ownAccounts && !['loans', 'loanPayments'].includes(activeTab) && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <SummaryCard label="Active Obligations" value={summary.activeLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" sub="loans + advances" />
           <SummaryCard label="Total Outstanding" value={fmt(summary.totalOutstanding)} icon={DollarSign} color="text-amber-600 dark:text-amber-400" sub="loans + advances" />
@@ -1832,7 +1832,7 @@ export function LoansPage() {
       {activeTab === 'loans' && <LoanAccountSummary key={companyVersion} mine={ownAccounts} version={summaryVersion} />}
 
       <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 dark:border-white/[0.08]">
-        {tabs.filter(tab => tab.id === 'loans' || (!ownAccounts && (tab.id === 'loanPolicies' ? canConfigurePolicies : tab.id === 'loanPayments' ? canManagePayments : canViewFinanceModules))).map(({ id, label, icon: Icon }) => (
+        {tabs.filter(tab => tab.id === 'loans' || (!ownAccounts && (tab.id === 'loanPayments' ? canManagePayments : canViewFinanceModules))).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -1852,11 +1852,7 @@ export function LoansPage() {
       <div>
         {activeTab === 'loans' && <LoansTab key={`${companyVersion}-${ownAccounts}`} mine={ownAccounts} loanTypes={loanTypes} onPayments={() => setActiveTab('loanPayments')} onChanged={refreshSummary} />}
         {activeTab === 'loanPayments' && canManagePayments && <LoanPaymentsTab key={companyVersion} onChanged={refreshSummary} />}
-        {activeTab === 'loanPolicies' && canConfigurePolicies && <LoanPoliciesTab key={companyVersion} loanTypes={loanTypes} onGradeLimitedChanged={(id, gradeLimited) => setLoanTypes(list => list.map(type => (type.id === id ? { ...type, gradeLimited } : type)))} />}
-        {activeTab === 'loanTypes' && <LoanTypesTab />}
         {activeTab === 'advances' && <AdvancesTab />}
-        {activeTab === 'advancePolicy' && <AdvancePolicyTab />}
-        {activeTab === 'bonusTypes' && <BonusTypesTab />}
         {activeTab === 'bonusBatches' && <BonusBatchesTab bonusTypes={bonusTypes} />}
         {activeTab === 'auditReport' && <AuditReportTab />}
       </div>

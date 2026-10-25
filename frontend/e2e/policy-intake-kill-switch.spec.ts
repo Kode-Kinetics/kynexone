@@ -44,7 +44,7 @@ async function boot(page: Page, url: string, options: { policyIntake: boolean })
   return { policyCalls, writes, errors };
 }
 
-const onboardingUrl = '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboarding';
+const onboardingUrl = '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboardingChecklists';
 const studioUrl = '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=leave';
 
 test('flag off: Setup → Onboarding is the manual editor only, with no Fill from policy', async ({ page }) => {
@@ -78,14 +78,10 @@ test('flag off: Setup shows no policy library, guide or upload', async ({ page }
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('heading', { level: 2, name: 'Policy library', exact: true })).toHaveCount(0);
 
-  // Policy starter (the old studio, its own Setup section since Guided setup became the company chooser): manual
-  // setup works; the policy guide, upload and library entry are gone.
+  // The old studio's address is retired: it lands on All setup areas, which offers no policy guide, upload or library.
   await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company');
-  await expect(page.getByRole('heading', { name: 'Start with your company', exact: true })).toBeVisible();
-  await expect(page.getByLabel(/^Industry/)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Save for later', exact: true })).toBeVisible();
+  await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: 'Add your HR policy', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('region', { name: 'Existing HR policy', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Policy library / updates', exact: true })).toHaveCount(0);
   await expect(page.locator('input[type=file]')).toHaveCount(0);
   expect(state.policyCalls).toEqual([]);
@@ -103,7 +99,4 @@ test('flag on: the policy entry points come back', async ({ page }) => {
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   // The library is a Setup section of its own while policy intake is on (the Studio's duplicate button is gone).
   await expect(await setupSection(page, 'Policy library')).toBeVisible();
-  await page.goto('/setup?tab=aiSetup&path=policyStarter&companyId=fixture-company');
-  await expect(page.getByRole('button', { name: 'Add your HR policy', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Policy library / updates', exact: true })).toBeVisible();
 });

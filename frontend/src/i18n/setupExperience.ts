@@ -20,7 +20,6 @@ const ar: Record<string, string> = {
   'Payroll & compliance': 'الرواتب والامتثال',
   'Workspace': 'مساحة العمل',
   'All setup areas': 'كل مجالات الإعداد',
-  'Policy starter': 'بادئ السياسات',
   'Company structure, jobs and grades, payroll and country rules, and workspace settings.': 'هيكل الشركة، والوظائف والدرجات، والرواتب وقواعد الدول، وإعدادات مساحة العمل.',
   'Cost-centre codes used by departments, payroll and reporting.': 'رموز مراكز التكلفة التي تستخدمها الإدارات والرواتب والتقارير.',
   'Headcount & budget': 'القوى العاملة والميزانية',

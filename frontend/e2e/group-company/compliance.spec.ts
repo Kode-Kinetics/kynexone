@@ -1,6 +1,6 @@
 /**
  * Compliance profiles — per-company statutory profile page:
- *   • compliance@almarai-test.local → /compliance-profiles → ALM-DAIRY-KSA:
+ *   • compliance@almarai-test.local → Setup → Compliance profiles → ALM-DAIRY-KSA:
  *     KSA profile (country SA), required-field rows incl. IqamaNumber with a
  *     missing count > 0, and the "not legal certification" disclaimer
  *   • contrast: compliance@tata-test.local → TATA-TCS-IN shows country IN
@@ -26,12 +26,20 @@ const TATA_COMPLIANCE = groupUser('compliance', TATA.slug);
 
 
 /**
- * Best-effort company selection on /compliance-profiles without fabricating
+ * Compliance profiles are Setup → Compliance profiles now (the old /compliance-profiles address redirects there).
+ * Everything below is scoped to that section's editor: Setup's own chrome has a company selector too, and picking
+ * the company there would change Setup's scope, not the profile shown.
+ */
+const profilesPanel = (page: Page) => page.locator('[data-module-section="complianceProfiles"]');
+
+/**
+ * Best-effort company selection in the compliance profiles editor without fabricating
  * selectors: native <select>, visible code text (tab/card/row), or combobox.
  */
 async function selectCompanyOnPage(page: Page, code: string): Promise<boolean> {
+  const panel = profilesPanel(page);
   // 1. Native <select> whose options mention the code.
-  for (const select of await page.locator('select').all()) {
+  for (const select of await panel.locator('select').all()) {
     if (!(await select.isVisible().catch(() => false))) continue;
     const options = await select.locator('option').allInnerTexts().catch(() => [] as string[]);
     const label = options.find((o) => o.includes(code));
@@ -42,10 +50,10 @@ async function selectCompanyOnPage(page: Page, code: string): Promise<boolean> {
     }
   }
   // 2. ARIA combobox → option.
-  const combo = page.getByRole('combobox').first();
+  const combo = panel.getByRole('combobox').first();
   if (await combo.isVisible().catch(() => false)) {
     await combo.click().catch(() => {});
-    const opt = page.getByRole('option', { name: new RegExp(code, 'i') }).first();
+    const opt = page.getByRole('option', { name: new RegExp(code, 'i') }).first(); // a listbox is portalled out of the panel
     if (await opt.isVisible({ timeout: 3_000 }).catch(() => false)) {
       await opt.click();
       await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
@@ -54,7 +62,7 @@ async function selectCompanyOnPage(page: Page, code: string): Promise<boolean> {
     await page.keyboard.press('Escape').catch(() => {});
   }
   // 3. Clickable code text (tab / card / list row).
-  const el = page.getByText(code, { exact: false }).first();
+  const el = panel.getByText(code, { exact: false }).first();
   if (await el.isVisible({ timeout: 5_000 }).catch(() => false)) {
     await el.click().catch(() => {});
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
@@ -70,15 +78,16 @@ async function selectCompanyOnPage(page: Page, code: string): Promise<boolean> {
  * by the chrome rather than by the profile.
  */
 function profileRow(page: Page, label: string) {
-  return page
+  return profilesPanel(page)
     .locator('dl > div')
     .filter({ has: page.locator('dt', { hasText: new RegExp(`^${label}$`) }) })
     .first();
 }
 
 async function openComplianceProfiles(page: Page): Promise<void> {
-  await page.goto('/compliance-profiles', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.goto('/setup?tab=complianceProfiles', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+  await expect(profilesPanel(page), 'Setup → Compliance profiles must open its editor').toBeVisible({ timeout: 30_000 });
 }
 
 test.describe('Group→Company: compliance profiles', () => {
@@ -91,12 +100,12 @@ test.describe('Group→Company: compliance profiles', () => {
     await uiLogin(page, ALM_COMPLIANCE, ALMARAI.slug);
     await openComplianceProfiles(page);
     // A mid-test skip on the surface under test is one more way to prove nothing:
-    // a /compliance-profiles route that 404s, or a company selector that stopped
+    // the Compliance profiles section that 404s, or a company selector that stopped
     // rendering, silently turned this compliance check into a no-op. Assert both.
-    expect(await looksLikeNotFound(page), '/compliance-profiles must render, not 404').toBe(false);
+    expect(await looksLikeNotFound(page), 'Setup → Compliance profiles must render, not 404').toBe(false);
 
     const selected = await selectCompanyOnPage(page, 'ALM-DAIRY-KSA');
-    expect(selected, 'the company selector on /compliance-profiles must offer ALM-DAIRY-KSA').toBe(true);
+    expect(selected, 'the company selector in Setup → Compliance profiles must offer ALM-DAIRY-KSA').toBe(true);
 
     const text = await bodyText(page);
     expect(crashIndicators(text)).toEqual([]);
@@ -109,7 +118,7 @@ test.describe('Group→Company: compliance profiles', () => {
     await expect(countryRow.locator('dd'), 'ALM-DAIRY-KSA must resolve to the KSA (SA) profile').toHaveText('SA');
 
     // Required-field row for IqamaNumber must be present…
-    const row = page.locator('table tbody tr').filter({ hasText: /iqama/i }).first();
+    const row = profilesPanel(page).locator('table tbody tr').filter({ hasText: /iqama/i }).first();
     await expect(row, 'the required-fields table must contain an IqamaNumber row').toBeVisible({ timeout: 30_000 });
 
     // …with a missing count > 0 (seed data intentionally has gaps).
@@ -126,16 +135,16 @@ test.describe('Group→Company: compliance profiles', () => {
     ).toBeGreaterThan(0);
 
     // Advisory disclaimer — the profile is guidance, not legal certification.
-    await expect(page.getByText(/not legal certification/i).first()).toBeVisible({ timeout: 15_000 });
+    await expect(profilesPanel(page).getByText(/not legal certification/i).first()).toBeVisible({ timeout: 15_000 });
   });
 
   test('contrast: TATA-TCS-IN profile shows country IN', async ({ page }) => {
     await uiLogin(page, TATA_COMPLIANCE, TATA.slug);
     await openComplianceProfiles(page);
-    expect(await looksLikeNotFound(page), '/compliance-profiles must render, not 404').toBe(false);
+    expect(await looksLikeNotFound(page), 'Setup → Compliance profiles must render, not 404').toBe(false);
 
     const selected = await selectCompanyOnPage(page, 'TATA-TCS-IN');
-    expect(selected, 'the company selector on /compliance-profiles must offer TATA-TCS-IN').toBe(true);
+    expect(selected, 'the company selector in Setup → Compliance profiles must offer TATA-TCS-IN').toBe(true);
 
     const text = await bodyText(page);
     expect(crashIndicators(text)).toEqual([]);

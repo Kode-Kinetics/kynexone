@@ -66,7 +66,7 @@ async function bootNavigationFixture(page: Page, options: { locale?: 'en' | 'ar'
     if (path === '/api/admin/system-settings' || path === '/api/country-packs/available') return reply([]);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
-  await page.goto('/setup?tab=aiSetup&companyId=fixture-company&source=retained&area=onboarding&setting=onboarding');
+  await page.goto('/setup?tab=aiSetup&companyId=fixture-company&source=retained&area=onboarding&setting=onboardingChecklists');
   await expect(page.getByTestId('setup-studio-workspace')).toBeVisible({ timeout: 30_000 });
   // Setup canonicalises its URL (serializeSetupPath adds path=) after first render. Wait for that replace,
   // or a history entry a test pushes in the meantime is overwritten by it and the guard assertions race.

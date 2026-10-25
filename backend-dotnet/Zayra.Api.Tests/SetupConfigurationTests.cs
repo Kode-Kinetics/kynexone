@@ -27,7 +27,7 @@ public sealed class SetupConfigurationTests
         "MEDICAL", "Medical plan", "Medical", "SAR", "2026-01-01", null, true, grade is null ? [] : [grade]);
     internal static CompanyProfile Profile(SetupConfiguration? configuration = null) => new(
         "SA", "Retail", "51-200", "SAR", null, "Policy Co", "Riyadh", "Functional", "GradeBased", "HRFinal",
-        true, true, true, new(true, true, true, true, true, true, Benefits: true), Configuration: configuration);
+        true, new(true, true, true, true, true, true, Benefits: true), Configuration: configuration);
     private sealed class Model : ILlmClient
     {
         public LlmRequest? Request { get; private set; }
@@ -346,8 +346,7 @@ public sealed class SetupConfigurationApplyTests(PostgresFixture fixture)
     {
         var (tenant, company) = await Seed();
         var attendance = new DraftAttendancePolicy("CUSTOM_ATT", "Attendance", 5, 10, 15, 240, 120, 480, 60, "NearestMinute", true, true);
-        var governance = new DraftHrConfig(true, true, false, false, false, false, true, false, false, true, true);
-        foreach (var draft in new[] { SetupDraft.Empty() with { AttendancePolicy = attendance }, SetupDraft.Empty() with { HrConfig = governance } })
+        foreach (var draft in new[] { SetupDraft.Empty() with { AttendancePolicy = attendance } })
         {
             await using var db = fixture.CreateDb();
             var result = await Controller(db, tenant, scopedCompany: company).Apply(Request(draft), CancellationToken.None);

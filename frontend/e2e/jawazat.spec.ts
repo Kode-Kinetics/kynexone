@@ -138,7 +138,8 @@ test('late evaluation cannot restore a stale preview', async ({ page }) => {
 test('policy review retains existing compliance fields and stamps the actual reviewer', async ({ page }) => {
   const profile = { id: 'profile-1', companyId: 'company-1', countryCode: 'SA', jurisdiction: 'Existing jurisdiction', compliancePack: 'Existing pack', effectiveFrom: '2026-01-01', effectiveTo: null, status: 'Active', requiredFieldsJson: '[{"field":"IqamaNumber","failClosed":true}]', notes: 'Retain this evidence', jawazatPolicyJson: '' };
   let saved: any;
-  const errors = await boot(page, '/compliance-profiles', 'Compliance Officer', (path, method, body) => {
+  // Compliance profiles moved into Setup (the old /compliance-profiles address redirects there).
+  const errors = await boot(page, '/setup?tab=complianceProfiles', 'Compliance Officer', (path, method, body) => {
     if (path.endsWith('/company-compliance-profiles/readiness')) return { profile, totalEmployees: 1, requiredFields: [], disclaimer: '' };
     if (path.endsWith('/company-compliance-profiles/profile-1/jawazat-policy') && method === 'PATCH') { saved = body; return { ...profile, notes: 'Concurrent administrator edit', jawazatPolicyJson: body.jawazatPolicyJson }; }
   });
@@ -151,7 +152,7 @@ test('policy review retains existing compliance fields and stamps the actual rev
   await expect(page.getByRole('button', { name: 'Save Jawazat policy' })).toBeDisabled();
   await page.getByLabel('I have reviewed this company policy and its rule version.').check();
   await page.getByRole('button', { name: 'Save Jawazat policy' }).click();
-  await expect(page.getByRole('status')).toContainText('Jawazat policy saved');
+  await expect(page.locator('[data-module-section="complianceProfiles"]').getByRole('status')).toContainText('Jawazat policy saved');
   expect(Object.keys(saved)).toEqual(['jawazatPolicyJson']);
   expect(saved.requiredFieldsJson).toBeUndefined();
   expect(saved.notes).toBeUndefined(); expect(saved.jurisdiction).toBeUndefined();

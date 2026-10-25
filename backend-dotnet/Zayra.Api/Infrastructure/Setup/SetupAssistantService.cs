@@ -77,11 +77,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         if (profile.Sections.Shifts)
             draft = draft with { WorkingWeek = WorkingWeekFor(profile, iso3) };
         if (profile.Sections.Governance)
-            draft = draft with
-            {
-                EmployeeIdRule = EmployeeIdRuleFor(profile, iso3),
-                HrConfig = HrConfigFor(profile)
-            };
+            draft = draft with { EmployeeIdRule = EmployeeIdRuleFor(profile, iso3) };
         if (profile.Sections.Payroll)
         {
             draft = draft with { StatutoryRules = StatutoryFor(profile, iso3) };
@@ -139,8 +135,6 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 draft = draft with { Grades = configuration.Grades };
             if (profile.Sections.LeavePolicies && configuration.LeavePolicies is not null)
                 draft = draft with { LeavePolicies = configuration.LeavePolicies };
-            if (profile.Sections.Governance && configuration.HrConfig is not null)
-                draft = draft with { HrConfig = configuration.HrConfig };
             if (profile.Sections.Attendance && configuration.AttendancePolicy is not null)
                 draft = draft with { AttendancePolicy = configuration.AttendancePolicy };
             if (profile.Sections.Attendance && configuration.OvertimePolicy is not null)
@@ -375,7 +369,6 @@ public sealed class SetupAssistantService : ISetupAssistantService
                 null,
                 Arr<DraftPayComponent>("payComponents"),
                 new(),
-                null,
                 null,
                 // Not parsed from the model by design — see GenerateAsync step 2. These are filled
                 // from the country's own rules, so a model that invents them is ignored.
@@ -753,7 +746,6 @@ public sealed class SetupAssistantService : ISetupAssistantService
             WorkingWeek = s.Shifts ? d.WorkingWeek : null,
             StatutoryRules = s.Payroll ? d.StatutoryRules : new(),
             EmployeeIdRule = s.Governance ? d.EmployeeIdRule : null,
-            HrConfig = s.Governance ? d.HrConfig : null,
             LeavePolicies = leavePolicies,
             HolidayCalendar = calendar,
             AttendancePolicy = attendance,
@@ -1472,8 +1464,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         var notes = new List<string>();
         var profile = new CompanyProfile(countryCode, Industry: "General", CompanySize: "1-50", CurrencyCode: currencyCode,
             Notes: null, LegalEntityName: legalEntityName, BranchCity: null, OperatingModel: null, PayrollModel: null,
-            ApprovalModel: null, StrictEntityScope: false, RequireCostCenterForPayroll: false, RequireGradeForApprovalPolicy: false,
-            Sections: new SetupSections(Org: true, Leave: false, Shifts: true, Payroll: false, Entity: true, Governance: true));
+            ApprovalModel: null, StrictEntityScope: false, Sections: new SetupSections(Org: true, Leave: false, Shifts: true, Payroll: false, Entity: true, Governance: true));
         var draft = DeterministicTemplate(profile, iso3, notes);
         return draft with { WorkingWeek = WorkingWeekFor(iso3), HolidayCalendar = HolidayCalendarFor(iso3, notes) };
     }
@@ -1614,7 +1605,7 @@ public sealed class SetupAssistantService : ISetupAssistantService
         // The five trailing members are filled by GenerateAsync from country data, never here:
         // entitlements, holidays, attendance, overtime and localization are not industry guesses.
         return new SetupDraft(branches, depts, costCenters, desigs, grades, gradePay, leaves, shifts, null, pay, new(),
-            EmployeeIdRuleFor(p, iso3), HrConfigFor(p), new(), null, null, null, null);
+            EmployeeIdRuleFor(p, iso3), new(), null, null, null, null);
     }
 
     /// <summary>"Riyadh" was the hard-coded head-office city for every country on earth.</summary>
@@ -1637,20 +1628,6 @@ public sealed class SetupAssistantService : ISetupAssistantService
         if (string.IsNullOrWhiteSpace(prefix)) prefix = "EMP";
         return new DraftEmployeeIdRule(prefix, true, true, true, true, 4, 1, false);
     }
-
-    private static DraftHrConfig HrConfigFor(CompanyProfile profile)
-        => new(
-            UseDeptHeadApproval: true,
-            UseHrFinalApproval: true,
-            UseSupervisorBeforeManager: string.Equals(profile.ApprovalModel, "SupervisorFirst", StringComparison.OrdinalIgnoreCase),
-            AllowDottedLineApproval: string.Equals(profile.OperatingModel, "Matrix", StringComparison.OrdinalIgnoreCase),
-            AutoCreateDeptOnImport: false,
-            AutoCreateDesignationOnImport: false,
-            RequireImportPreviewBeforeCommit: true,
-            AllowCrossDeptManager: !profile.StrictEntityScope,
-            AllowCrossLocationManager: !profile.StrictEntityScope,
-            RequireCostCenterForPayroll: profile.RequireCostCenterForPayroll,
-            RequireGradeForApprovalPolicy: profile.RequireGradeForApprovalPolicy);
 
     // ── Provider/model resolution (mirrors AiAdvisoryService) ────────────────
 

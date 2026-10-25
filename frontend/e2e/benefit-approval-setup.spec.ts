@@ -18,8 +18,10 @@ async function boot(page: Page, manage = true, rejectSave = false) {
     if (path === '/api/compensation/benefits/plans' || path === '/api/compensation/benefits/enrollments' || path.includes('/features/') || path === '/api/notifications') return reply([]);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
-  await page.goto('/benefits');
-  await expect(page.getByRole('heading', { name: 'Benefits Administration' })).toBeVisible();
+  // Approval routes are benefit configuration: they are edited in Setup → Benefit plans.
+  await page.goto('/setup?tab=benefitPlans');
+  await expect(page.locator('#setup-section-heading')).toHaveText('Benefit plans');
+  await expect(page.locator('[data-module-section="benefitPlans"]')).toBeVisible();
   return saves;
 }
 

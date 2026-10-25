@@ -40,9 +40,10 @@ const btnPrimary = 'inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-4
 const btnGhost = 'inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5';
 const btnDanger = 'inline-flex items-center gap-1.5 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 dark:border-rose-500/20 dark:text-rose-400 dark:hover:bg-rose-500/10';
 
-// ── Main page ─────────────────────────────────────────────────────────────────
+// ── Setup panel ───────────────────────────────────────────────────────────────
 
-export function PayslipTemplatesPage() {
+/** The payslip layouts, as the Setup → Payslip templates section (Setup shows the section title). */
+export function PayslipTemplatesPanel() {
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
   const [registry, setRegistry] = useState<SectionDef[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,15 +91,9 @@ export function PayslipTemplatesPage() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-6 p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900 dark:text-white">Payslip Templates</h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            Configure branded, compliance-checked payslip layouts for your organisation.
-          </p>
-        </div>
+    <div className="flex flex-col gap-6">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-end gap-3">
         <div className="flex gap-2">
           <button type="button" className={btnGhost} onClick={reload}>
             <RefreshCw className="h-3.5 w-3.5" />

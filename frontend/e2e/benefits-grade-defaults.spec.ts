@@ -38,7 +38,6 @@ async function boot(page: Page, authorized: boolean, mandatory = false) {
   await expect(page).toHaveURL(/\/benefits$/);
   await expect(page).not.toHaveTitle('');
   await expect(page.getByRole('heading', { name: 'Benefits Administration' })).toBeVisible();
-  await page.getByRole('tab', { name: 'Enrolments (1)' }).click();
   await expect(page.getByTestId('enrollments-table')).toContainText('Grade default');
   await page.getByRole('cell', { name: 'Alex Morgan', exact: true }).click();
   const drawer = page.getByRole('dialog', { name: 'Enrolment detail' });
@@ -136,13 +135,28 @@ test('plan enrolment count includes scheduled assignments and excludes ended, wa
     { ...initialEnrollment, id: 'superseded-enrollment', status: 'Superseded', employeeId: 43 },
   ];
   await page.route('**/api/compensation/benefits/enrollments', route => route.fulfill({ json: rows }));
-  await page.reload();
+  // The plan list (with its enrolled count) is in Setup → Benefit plans; the enrolments table stays on the Benefits page.
+  await page.goto('/setup?tab=benefitPlans');
   await expect(page.getByTestId('benefit-plan-list')).toContainText('1 enrolled');
-  await page.getByRole('tab', { name: 'Enrolments (5)' }).click();
+  await page.goto('/benefits');
   const table = page.getByTestId('enrollments-table');
   await expect(table.getByText('Scheduled', { exact: true })).toHaveCount(2);
   await expect(table.getByText('Ended', { exact: true })).toBeVisible();
   await expect(table.getByText('Waived', { exact: true })).toBeVisible();
   await expect(table.getByText('Replaced', { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('"Enrol in this plan" in Setup opens the Benefits enrolment form on that plan, once', async ({ page }) => {
+  const { errors } = await boot(page, true);
+  await page.route(`**${base}/plans/medical/eligibility`, route => route.fulfill({ json: [] }));
+  await page.goto('/setup?tab=benefitPlans');
+  await page.getByTestId('benefit-plan-list').getByRole('button', { name: /Medical Gold/ }).click();
+  await page.getByTestId('benefit-plan-detail').getByRole('link', { name: 'Enrol in this plan' }).click();
+  await expect(page).toHaveURL(/\/benefits\?enrol=medical$/);
+  const dialog = page.getByRole('dialog', { name: 'Enrol employee' });
+  await expect(dialog.getByLabel('Plan', { exact: true })).toHaveValue('medical');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);
 });

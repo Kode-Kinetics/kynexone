@@ -45,8 +45,6 @@ export function stepCopy(step: StepId, mode: WizardMode): { title: string; descr
 
 /** The chooser on Setup → Guided setup (Addendum A). */
 export const GUIDED_SETUP_HREF = '/setup?tab=aiSetup&path=guided';
-/** The Policy starter entry for the old studio (A7): attendance, overtime, benefits and HR rules starters. */
-export const POLICY_STARTER_HREF = '/setup?tab=aiSetup&path=policyStarter';
 
 /**
  * The company a Setup arrival names as a Guided setup deep link, or null. Only the address a Setup visit arrives with

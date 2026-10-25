@@ -23,11 +23,15 @@ test('legacy_mode_starter_opens_the_guided_chooser_and_is_rewritten', () => {
   expect(next.get('companyId')).toBe('fixture-company');
 });
 
-test('path_policy_starter_opens_the_old_studio_under_configuration_center', () => {
+test('the_retired_policy_starter_path_lands_on_all_setup_areas_and_is_rewritten', () => {
+  // The old studio ("Policy starter") is gone: everything it configured has a Setup section of its own, so a saved link
+  // or bookmark to it opens All setup areas, which lists them, and the address is rewritten to say so.
   expect(resolveSetupPath(new URLSearchParams('tab=aiSetup&path=policyStarter&companyId=fixture-company'), context)).toEqual({
-    path: 'policyStarter', area: 'overview', setting: null, companyId: 'fixture-company', needsReplace: false,
+    path: 'configuration', area: 'overview', setting: null, companyId: 'fixture-company', needsReplace: true,
   });
-  expect(serializeSetupPath(resolveSetupPath(new URLSearchParams('tab=aiSetup&path=policyStarter'), context), new URLSearchParams()).get('path')).toBe('policyStarter');
+  const next = serializeSetupPath(resolveSetupPath(new URLSearchParams('tab=aiSetup&path=policyStarter'), context), new URLSearchParams());
+  expect(next.get('path')).toBe('configuration');
+  expect(next.get('area')).toBeNull();
 });
 
 test('path_configuration_opens_configuration', () => {

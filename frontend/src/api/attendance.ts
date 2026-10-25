@@ -1,6 +1,24 @@
 import client from './client';
 import type { PagedResult } from './organization';
 
+/** One attendance rule set: what counts as late, an early exit or a half day, and the length of the working day. */
+export interface AttendancePolicy {
+  id: string;
+  code: string;
+  name: string;
+  branchId: string | null;
+  departmentId: string | null;
+  gradeId: string | null;
+  graceMinutes: number;
+  earlyExitThresholdMinutes: number;
+  halfDayThresholdMinutes: number;
+  standardWorkMinutes: number;
+  breakMinutes: number;
+  isActive: boolean;
+}
+
+export type AttendancePolicyRequest = Omit<AttendancePolicy, 'id' | 'isActive'>;
+
 /** The day an attendance exception is about (GET /api/attendance/exceptions). */
 export interface AttendanceExceptionDay {
   status: string;
@@ -254,6 +272,15 @@ export const attendanceApi = {
 
   reprocess: (data: { fromDate: string; toDate: string; employeeId?: number }) =>
     client.post<number>('/api/attendance/reprocess', data).then((r) => r.data),
+
+  /** Setup → Attendance rules (AttendancePoliciesController). Admin and HR Manager only. */
+  policies: {
+    list: () => client.get<AttendancePolicy[]>('/api/attendance/policies').then((r) => r.data),
+    create: (data: AttendancePolicyRequest) => client.post<AttendancePolicy>('/api/attendance/policies', data).then((r) => r.data),
+    update: (id: string, data: AttendancePolicyRequest) => client.put<AttendancePolicy>(`/api/attendance/policies/${id}`, data).then((r) => r.data),
+    deactivate: (id: string) => client.post<AttendancePolicy>(`/api/attendance/policies/${id}/deactivate`).then((r) => r.data),
+    reactivate: (id: string) => client.post<AttendancePolicy>(`/api/attendance/policies/${id}/reactivate`).then((r) => r.data),
+  },
 
   devices: {
     list: (params: { page?: number; pageSize?: number } = {}) =>

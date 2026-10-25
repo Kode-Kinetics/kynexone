@@ -39,7 +39,7 @@ test.describe('Performance — who sees what', () => {
   test('a line manager reviews their team and sets goals, but is never offered calibration, publishing or set-up', () => {
     const tabs = tabsFor('Manager');
     expect(tabs).toEqual(['cycles', 'my-reviews', 'team-reviews', 'goals', 'pip', 'feedback']);
-    for (const hrOnly of ['overview', 'calibration', 'recommendations', 'analytics', 'templates'] as const) {
+    for (const hrOnly of ['overview', 'calibration', 'recommendations', 'analytics'] as const) {
       expect(tabs).not.toContain(hrOnly);
     }
     expect(landingPerformanceTab(as('Manager'))).toBe('team-reviews');

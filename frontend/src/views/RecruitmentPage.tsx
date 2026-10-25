@@ -9,6 +9,7 @@ import {
   Target, BookOpen, Award, TrendingUp, LayoutGrid, Wand2, Sparkles,
 } from 'lucide-react';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
+import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
 
 // ── Recruitment import/export helpers ─────────────────────────────────────────
@@ -57,6 +58,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
+import { msg } from '../i18n/translations';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
 import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFormDraft, retainPolicyFormDraft, type PolicyFormDraftBundle, type PolicyTemplateTaskForm } from '../lib/policyFormDrafts';
@@ -2386,7 +2388,8 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
   const currentPolicyScope = useRef(policyScope); currentPolicyScope.current = policyScope;
 
   useEffect(() => {
-    const requested = policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1';
+    // The policy draft belongs to the checklist editor, which is Setup → Onboarding checklists.
+    const requested = configurationOnly && (policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1');
     setPolicyRequested(requested); setPolicyBundle(null); setPolicyTaskId(''); setActivePolicyTaskId(''); setPolicyNotice('');
     setTemplateForm({ taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueOffsetDays: 0, orderIndex: 0, isMandatory: true, applicabilityConfirmed: false, overwriteConfirmed: false, checklistId: '' });
     if (!requested || !user || !policyCompanyId) return;
@@ -2437,7 +2440,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
     try {
       const items = await onboardingApi.listChecklists();
       setChecklists(items);
-      setSelectedChecklistId(current => current || ((policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1') ? '' : items[0]?.id) || '');
+      setSelectedChecklistId(current => current || ((configurationOnly && (policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1')) ? '' : items[0]?.id) || '');
     } catch (e) { notifyApiError(e); }
   };
 
@@ -2567,8 +2570,8 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
       )}
 
       <div className="surface p-4">
-        {policyRequested && !policyBundle && <p role="status" className="mb-3 text-sm text-amber-800 dark:text-amber-200">{t('No policy task draft is available for this signed-in user and selected company. Return to Setup to prepare it.')}</p>}
-        {policyBundle && <section aria-label={t('Policy task drafts')} className="mb-4 space-y-2 rounded-lg border border-blue-200 p-3 dark:border-blue-700">
+        {configurationOnly && policyRequested && !policyBundle && <p role="status" className="mb-3 text-sm text-amber-800 dark:text-amber-200">{t('No policy task draft is available for this signed-in user and selected company. Return to Setup to prepare it.')}</p>}
+        {configurationOnly && policyBundle && <section aria-label={t('Policy task drafts')} className="mb-4 space-y-2 rounded-lg border border-blue-200 p-3 dark:border-blue-700">
           <p className="text-sm font-semibold">{t('Policy task drafts')} · {policyBundle.companyName}</p>
           <p className="text-xs text-slate-600 dark:text-slate-300">{t('Checklist templates are tenant-wide, not company-specific. This draft does not generate employee tasks. Policy evidence is kept in this browser draft; saves use the standard template workflow.')}</p>
           {!policyScopeWritable && <p className="text-sm text-amber-800 dark:text-amber-200">{t('Draft only: company-specific policy cannot be saved to tenant-wide templates in a group workspace.')}</p>}
@@ -2590,11 +2593,31 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
               {templateTasks.length} template tasks
             </span>
           )}
-          <button type="button" onClick={() => setShowTemplate(v => !v)}
-            className="ms-auto flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
-            <ClipboardList className="h-3.5 w-3.5" />Checklist Templates
-          </button>
+          {configurationOnly ? (
+            <button type="button" onClick={() => setShowTemplate(v => !v)}
+              className="ms-auto flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
+              <ClipboardList className="h-3.5 w-3.5" />Checklist Templates
+            </button>
+          ) : <ModuleSettingsLink className="ms-auto" sections={['onboardingChecklists']} label={msg('Onboarding settings')} />}
         </div>
+
+        {!configurationOnly && (
+          <div className="mt-4 space-y-2">
+            <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Generate tasks from the selected checklist')}</p>
+            <div className="grid grid-cols-3 gap-2">
+              <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Employee ID"
+                value={generateForm.employeeId} onChange={e => setGenerateForm(f => ({ ...f, employeeId: e.target.value }))} />
+              <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Application ID"
+                value={generateForm.applicationId} onChange={e => setGenerateForm(f => ({ ...f, applicationId: e.target.value }))} />
+              <input type="date" title="Start date" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                value={generateForm.startDate} onChange={e => setGenerateForm(f => ({ ...f, startDate: e.target.value }))} />
+            </div>
+            <button type="button" onClick={generateFromChecklist} disabled={templateSaving || !selectedChecklistId}
+              className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/30 dark:text-emerald-400">
+              Generate Tasks From Checklist
+            </button>
+          </div>
+        )}
 
         {showTemplate && (
           <div className="mt-4 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
@@ -2667,18 +2690,6 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
                   ))}
                 </div>
               )}
-              {!configurationOnly && <><div className="grid grid-cols-3 gap-2">
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Employee ID"
-                  value={generateForm.employeeId} onChange={e => setGenerateForm(f => ({ ...f, employeeId: e.target.value }))} />
-                <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Application ID"
-                  value={generateForm.applicationId} onChange={e => setGenerateForm(f => ({ ...f, applicationId: e.target.value }))} />
-                <input type="date" title="Start date" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                  value={generateForm.startDate} onChange={e => setGenerateForm(f => ({ ...f, startDate: e.target.value }))} />
-              </div>
-              <button type="button" onClick={generateFromChecklist} disabled={templateSaving || !selectedChecklistId}
-                className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/30 dark:text-emerald-400">
-                Generate Tasks From Checklist
-              </button></>}
             </div>
           </div>
         )}

@@ -52,8 +52,9 @@ test.describe('Benefits administration — UI', () => {
     const code = `E2E-${uid()}`;
     const name = `Medical ${code}`;
     await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
-    await page.goto('/benefits');
-    await expect(page.getByRole('heading', { name: 'Benefits Administration' })).toBeVisible({ timeout: 15_000 });
+    // Plans are configuration: they are created and edited in Setup → Benefit plans; enrolling stays on the Benefits page.
+    await page.goto('/setup?tab=benefitPlans');
+    await expect(page.locator('#setup-section-heading')).toHaveText('Benefit plans', { timeout: 15_000 });
 
     // Either the guided first-plan state or the populated list: both must offer plan creation.
     const firstPlan = page.getByRole('button', { name: 'Create your first plan' });
@@ -81,7 +82,9 @@ test.describe('Benefits administration — UI', () => {
     await expect(detail.getByTestId('rules-list')).toContainText(grade.name);
 
     // Enrol: the eligibility result must be visible BEFORE the submit is possible.
-    await detail.getByRole('button', { name: 'Enrol in this plan' }).click();
+    // The link opens the Benefits page with the enrolment form on this plan.
+    await detail.getByRole('link', { name: 'Enrol in this plan' }).click();
+    await expect(page.getByRole('heading', { name: 'Benefits Administration' })).toBeVisible();
     const enrol = page.getByRole('dialog', { name: 'Enrol employee' });
     await enrol.getByLabel('Search employee').fill(employee.employeeCode);
     await enrol.getByRole('option', { name: new RegExp(employee.fullName) }).click();
@@ -95,7 +98,7 @@ test.describe('Benefits administration — UI', () => {
     await enrol.getByRole('button', { name: 'Enrol', exact: true }).click();
     await expect(enrol).toBeHidden();
 
-    await expect(page.getByRole('tab', { name: /Enrolments/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('heading', { name: 'Benefits Administration' })).toBeVisible();
     const table = page.getByTestId('enrollments-table');
     await expect(table.getByRole('row', { name: new RegExp(`${employee.fullName}.*${name}`) })).toBeVisible();
 
@@ -127,9 +130,9 @@ test.describe('Benefits administration — UI', () => {
     expect((await request.post(`${BASE}/plans/${planId}/eligibility`, { headers: h, data: { companyId: null, gradeId, effectiveFrom: '2026-01-01', effectiveTo: null } })).status()).toBe(200);
 
     await tenantLogin(page, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
-    await page.goto('/benefits');
+    await page.goto('/setup?tab=benefitPlans');
     await page.getByTestId('benefit-plan-list').getByRole('button', { name: new RegExp(`Executive ${code}`) }).click();
-    await page.getByTestId('benefit-plan-detail').getByRole('button', { name: 'Enrol in this plan' }).click();
+    await page.getByTestId('benefit-plan-detail').getByRole('link', { name: 'Enrol in this plan' }).click();
     const enrol = page.getByRole('dialog', { name: 'Enrol employee' });
     await enrol.getByLabel('Search employee').fill(employee.employeeCode);
     await enrol.getByRole('option', { name: new RegExp(employee.fullName) }).click();

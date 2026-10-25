@@ -126,8 +126,9 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string; cr
       || pathname === '/api/access/permissions' || pathname.includes('help-text')) return json([]);
     return json({ items: [], total: 0 });
   });
-  await page.goto('/user-management');
-  await expect(page.getByRole('heading', { name: 'User Management & Access Control' })).toBeVisible();
+  // User Management moved into Setup → Users; the section's header names it.
+  await page.goto('/setup?tab=users');
+  await expect(page.locator('#setup-section-heading')).toHaveText('Users');
   return { writes, errors };
 }
 

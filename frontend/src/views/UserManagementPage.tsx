@@ -1,14 +1,14 @@
 'use client';
 
-import { InfoTip } from '../components/InfoTip';
-import { useEffect, useState, useCallback, useId } from 'react';
+import { useHelpTexts } from '../contexts/HelpTextContext';
+import { useEffect, useLayoutEffect, useState, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  Shield, Users, Key, GitBranch, Award, Lock, CheckCircle, XCircle,
+  Shield, Lock, CheckCircle, XCircle,
   RefreshCw, Plus, Search, ChevronLeft, ChevronRight, Eye, EyeOff,
-  UserCheck, UserX, Unlock, RotateCcw, ClipboardList, UserCog,
-  CheckSquare, MinusSquare, Square, Edit2, Power, PowerOff, Table2, Trash2,
+  UserCheck, UserX, Unlock, RotateCcw,
+  CheckSquare, MinusSquare, Square, Edit2, Power, PowerOff, Trash2,
   Building2, Circle,
 } from 'lucide-react';
 import {
@@ -33,22 +33,10 @@ import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginD
 import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppToast } from '../components/ui/AppToast';
+import { Toggle } from '../components/ui/Toggle';
+import { requestFailureReason } from '../lib/requestFailure';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
-
-type Tab = 'users' | 'roles' | 'permissionMatrix' | 'permissions' | 'grantors' | 'delegations' | 'authorities' | 'security' | 'auditLogs';
-
-const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'users', label: 'Users', icon: Users },
-  { id: 'roles', label: 'Roles', icon: Shield },
-  { id: 'permissionMatrix', label: 'Permission Matrix', icon: Table2 },
-  { id: 'permissions', label: 'Permissions', icon: Key },
-  { id: 'grantors', label: 'Permission Grantors', icon: UserCog },
-  { id: 'delegations', label: 'Approval Delegations', icon: GitBranch },
-  { id: 'authorities', label: 'Approval Authorities', icon: Award },
-  { id: 'security', label: 'Security Settings', icon: Lock },
-  { id: 'auditLogs', label: 'Audit Logs', icon: ClipboardList },
-];
 
 const ACCESS_MODES = [
   'FullPortal', 'ESSOnly', 'ManagerPortal', 'HRPortal',
@@ -112,7 +100,7 @@ interface UsageData {
   storageUsedMb: number;
 }
 
-function UsersTab() {
+export function UsersTab() {
   const { t } = useLocale();
   const { user: me, hasPermission } = useAuth();
   const toast = useAppToast();
@@ -1331,7 +1319,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
 
 // ── Roles Tab ──────────────────────────────────────────────────────────────────
 
-function RolesTab() {
+export function RolesTab() {
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [allPermissions, setAllPermissions] = useState<PermissionItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1600,7 +1588,7 @@ function RolesTab() {
 
 // ── Permissions Tab ────────────────────────────────────────────────────────────
 
-function PermissionsTab() {
+export function PermissionsTab() {
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -1646,7 +1634,7 @@ function PermissionsTab() {
 
 // ── Permission Matrix Tab ─────────────────────────────────────────────────────
 
-function PermissionMatrixTab() {
+export function PermissionMatrixTab() {
   const [matrix, setMatrix] = useState<PermissionMatrix | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1776,7 +1764,7 @@ function PermissionMatrixTab() {
 
 // ── Permission Grantors Tab ────────────────────────────────────────────────────
 
-function PermissionGrantorsTab() {
+export function PermissionGrantorsTab() {
   const [grantors, setGrantors] = useState<PermissionGrantorRecord[]>([]);
   const [users, setUsers] = useState<UserListItem[]>([]);
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
@@ -1956,7 +1944,7 @@ function PermissionGrantorsTab() {
 
 // ── Delegations Tab ────────────────────────────────────────────────────────────
 
-function DelegationsTab() {
+export function DelegationsTab() {
   const [items, setItems] = useState<ApprovalDelegation[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -2057,7 +2045,7 @@ function DelegationsTab() {
 
 // ── Authorities Tab ────────────────────────────────────────────────────────────
 
-function AuthoritiesTab() {
+export function AuthoritiesTab() {
   const [items, setItems] = useState<ApprovalAuthority[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -2152,88 +2140,248 @@ function AuthoritiesTab() {
   );
 }
 
-// ── Security Settings Tab ──────────────────────────────────────────────────────
+// ── Sign-in security ───────────────────────────────────────────────────────────
+// ONE editor of /api/access/security-settings (it was two: this tab, and Tenant Admin → Security). It offers every field
+// either had: the password rules, expiry and history, the lockout, the idle timeout, the maximum session length, the
+// remembered sign-in and concurrent sessions, and the two-step policy with trusted browsers.
 
-function SecurityTab() {
-  const [settings, setSettings] = useState<SecuritySetting | null>(null);
-  const [form, setForm] = useState<Partial<SecuritySetting>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState('');
+/** The trusted-browser lifetimes offered; 0 = off. A stored value outside these is shown as well. */
+const TRUST_DAY_CHOICES = [0, 7, 14, 30, 90] as const;
+const DEFAULT_TRUST_DAYS = 30;
 
-  useEffect(() => {
-    securitySettingsApi.get().then(s => { setSettings(s); setForm(s); }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+/** The maximum session lengths offered, in hours. A stored value outside these is shown as well. */
+const SESSION_MAX_HOUR_CHOICES = [4, 8, 12, 24, 72, 168] as const;
+const DEFAULT_SESSION_MAX_HOURS = 12;
 
-  const save = async () => {
-    setSaving(true); setMsg('');
-    try {
-      const updated = await securitySettingsApi.update(form);
-      setSettings(updated); setForm(updated); setMsg('Security settings saved.');
-    } catch { setMsg('Failed to save settings.'); }
-    setSaving(false);
-  };
+type SecurityPatch = (patch: Partial<SecuritySetting>) => void;
 
-  if (loading) return <p className="text-sm text-slate-500">Loading…</p>;
+const GROUP_CLASS = 'space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900';
+const GROUP_HEADING_CLASS = 'border-b border-slate-100 pb-2 text-sm font-semibold text-slate-700 dark:border-slate-800 dark:text-slate-200';
+const LABEL_CLASS = 'block text-xs font-medium text-slate-600 dark:text-slate-400 rtl:text-[13px]';
+const HINT_CLASS = 'mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-[13px]';
 
-  const numField = (key: keyof SecuritySetting, label: string, min: number, max: number, info?: string) => (
-    <div key={key} className="flex flex-col gap-1">
-      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400">{label}{info && <InfoTip text={info} fieldKey={`security.${String(key)}`} />}</label>
-      <input type="number" min={min} max={max} title={label} className={inp('w-full')}
-        value={form[key] as number ?? settings?.[key] as number ?? 0}
-        onChange={e => setForm(f => ({ ...f, [key]: +e.target.value }))} />
+function SecurityNumberField({ id, label, unit, range, hint, infoKey, value, min, max, onChange }: {
+  id: string; label: string; unit?: string; range?: string; hint?: string; infoKey?: string;
+  value: number | undefined; min: number; max?: number; onChange: (value: number) => void;
+}) {
+  // A company's own wording for this field (Setup → Field help text, key `infoKey`) replaces the built-in hint.
+  const { overrides } = useHelpTexts();
+  const shown = (infoKey && overrides[infoKey]) || hint;
+  return (
+    <div>
+      <label htmlFor={id} className={`${LABEL_CLASS} mb-1`}>
+        {label}{unit && <> <span className="text-slate-400">{unit}</span></>}{range && <> <bdi dir="ltr" className="text-slate-400">{range}</bdi></>}
+      </label>
+      <input id={id} type="number" min={min} max={max} value={value ?? ''} aria-describedby={shown ? `${id}-hint` : undefined}
+        onChange={event => onChange(Number(event.target.value))} className={inp('w-full')} />
+      {shown && <p id={`${id}-hint`} className={HINT_CLASS}>{shown}</p>}
     </div>
   );
+}
 
-  const boolField = (key: keyof SecuritySetting, label: string) => (
-    <label key={key} className="flex items-center gap-3 cursor-pointer">
-      <input type="checkbox" checked={!!(form[key] ?? settings?.[key])}
-        onChange={e => setForm(f => ({ ...f, [key]: e.target.checked }))} />
-      <span className="text-sm text-slate-700 dark:text-slate-300">{label}</span>
-    </label>
+function SecuritySwitch({ id, label, checked, onChange }: { id: string; label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <Toggle id={id} checked={checked} onChange={onChange} />
+      <label htmlFor={id} className="cursor-pointer text-sm text-slate-700 dark:text-slate-300">{label}</label>
+    </div>
   );
+}
+
+function PasswordPolicyGroup({ security, onChange }: { security: SecuritySetting; onChange: SecurityPatch }) {
+  const { t } = useLocale();
+  return (
+    <section className={GROUP_CLASS} aria-labelledby="sec-password-heading" data-testid="password-policy">
+      <h3 id="sec-password-heading" className={GROUP_HEADING_CLASS}>{t('Password policy')}</h3>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <SecurityNumberField id="sec-minlen" label={t('Minimum length')} range="(6–64)" min={6} max={64} value={security.passwordMinLength}
+          infoKey="security.passwordMinLength" hint={t('Fewest characters a password may have. 10-12+ recommended; applies to new passwords only.')}
+          onChange={value => onChange({ passwordMinLength: value })} />
+        <SecurityNumberField id="sec-pw-expiry" label={t('Password expiry')} unit={t('(days, 0 = never)')} min={0} max={365} value={security.passwordExpiryDays}
+          infoKey="security.passwordExpiryDays" hint={t('Days until staff must change their password. 0 turns off forced rotation.')}
+          onChange={value => onChange({ passwordExpiryDays: value })} />
+        <SecurityNumberField id="sec-pw-history" label={t('Password history count')} min={0} max={24} value={security.passwordHistoryCount}
+          infoKey="security.passwordHistoryCount" hint={t('How many previous passwords are remembered and blocked from reuse. 0 allows reuse.')}
+          onChange={value => onChange({ passwordHistoryCount: value })} />
+      </div>
+      <div className="flex flex-wrap gap-x-6 gap-y-3">
+        <SecuritySwitch id="sec-upper" label={t('Require uppercase letter')} checked={security.passwordRequireUppercase === true} onChange={value => onChange({ passwordRequireUppercase: value })} />
+        <SecuritySwitch id="sec-lower" label={t('Require lowercase letter')} checked={security.passwordRequireLowercase === true} onChange={value => onChange({ passwordRequireLowercase: value })} />
+        <SecuritySwitch id="sec-digit" label={t('Require digit')} checked={security.passwordRequireDigit === true} onChange={value => onChange({ passwordRequireDigit: value })} />
+        {/* The API field is passwordRequireSpecial; a form once sent passwordRequireSpecialChar, which the server ignored. */}
+        <SecuritySwitch id="sec-special" label={t('Require special character')} checked={security.passwordRequireSpecial === true} onChange={value => onChange({ passwordRequireSpecial: value })} />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Sessions and lockout. Two limits end a session: inactivity (`sessionTimeoutMinutes`, the idle timeout) and the maximum
+ * session length (`sessionMaxHours`, counted from sign-in, active or not); a shorter maximum applies to sessions already
+ * open at their next refresh. The remembered sign-in and concurrent sessions are written with them.
+ */
+function SessionLimitsGroup({ security, onChange }: { security: SecuritySetting; onChange: SecurityPatch }) {
+  const { t } = useLocale();
+  const hours = Number.isInteger(security.sessionMaxHours) ? (security.sessionMaxHours as number) : DEFAULT_SESSION_MAX_HOURS;
+  const choices: number[] = (SESSION_MAX_HOUR_CHOICES as readonly number[]).includes(hours)
+    ? [...SESSION_MAX_HOUR_CHOICES]
+    : [...SESSION_MAX_HOUR_CHOICES, hours].sort((a, b) => a - b);
+  const label = (h: number) => {
+    if (h === 4) return t('4 hours');
+    if (h === 8) return t('8 hours');
+    if (h === DEFAULT_SESSION_MAX_HOURS) return t('12 hours (default)');
+    if (h === 24) return t('24 hours');
+    if (h === 72) return t('72 hours (3 days)');
+    if (h === 168) return t('168 hours (7 days)');
+    return t('{hours, plural, one {# hour (current)} other {# hours (current)}}', { hours: h });
+  };
+  return (
+    <section className={GROUP_CLASS} aria-labelledby="sec-sessions-heading" data-testid="session-limits">
+      <h3 id="sec-sessions-heading" className={GROUP_HEADING_CLASS}>{t('Sessions and lockout')}</h3>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <SecurityNumberField id="sec-timeout" label={t('Sign out after inactivity')} unit={t('(minutes)')} min={15} max={1440} value={security.sessionTimeoutMinutes}
+          infoKey="security.sessionTimeoutMinutes" hint={t('Ends a session nobody has used for this long.')}
+          onChange={value => onChange({ sessionTimeoutMinutes: value })} />
+        <div>
+          <label htmlFor="sec-max-hours" className={`${LABEL_CLASS} mb-1`}>{t('Maximum session length')}</label>
+          <select id="sec-max-hours" value={hours} aria-describedby="sec-max-hours-hint"
+            onChange={event => onChange({ sessionMaxHours: Number(event.target.value) })} className={inp('w-full')}>
+            {choices.map(h => <option key={h} value={h}>{label(h)}</option>)}
+          </select>
+          <p id="sec-max-hours-hint" className={HINT_CLASS}>{t('Everyone signs in again after this long, even if they are active. Shorter is safer.')}</p>
+        </div>
+        <SecurityNumberField id="sec-maxfail" label={t('Maximum failed attempts')} range="(1–20)" min={1} max={20} value={security.maxFailedLoginAttempts}
+          infoKey="security.maxFailedLoginAttempts" hint={t('Wrong-password tries allowed before the account is temporarily locked. 5 is a common default.')}
+          onChange={value => onChange({ maxFailedLoginAttempts: value })} />
+        <SecurityNumberField id="sec-lockout" label={t('Lockout duration')} unit={t('(minutes)')} min={5} max={1440} value={security.lockoutDurationMinutes}
+          infoKey="security.lockoutDurationMinutes" hint={t('How long a locked account stays locked before it can try again. Admins can unlock earlier from Users.')}
+          onChange={value => onChange({ lockoutDurationMinutes: value })} />
+        <SecurityNumberField id="sec-refresh" label={t('Remembered sign-in')} unit={t('(days)')} min={1} max={90} value={security.refreshTokenExpiryDays}
+          infoKey="security.refreshTokenExpiryDays" hint={t('The longest a sign-in is remembered without asking for the password again. Shorter is safer, and means more sign-ins.')}
+          onChange={value => onChange({ refreshTokenExpiryDays: value })} />
+      </div>
+      <SecuritySwitch id="sec-multi" label={t('Allow multiple concurrent sessions')} checked={security.allowMultipleSessions === true} onChange={value => onChange({ allowMultipleSessions: value })} />
+    </section>
+  );
+}
+
+/**
+ * Two-step sign-in: who must use it, and how long a trusted browser skips the code. People who can see or change payroll,
+ * banking or access always need it (the server's privileged-role rule), so that line is a fact, not a switch.
+ */
+function TwoStepPolicyGroup({ security, onChange }: { security: SecuritySetting; onChange: SecurityPatch }) {
+  const { t } = useLocale();
+  const days = Number.isInteger(security.mfaTrustedDeviceDays) ? (security.mfaTrustedDeviceDays as number) : DEFAULT_TRUST_DAYS;
+  const choices: number[] = (TRUST_DAY_CHOICES as readonly number[]).includes(days) ? [...TRUST_DAY_CHOICES] : [...TRUST_DAY_CHOICES, days].sort((a, b) => a - b);
+  const label = (d: number) => {
+    if (d === 0) return t('Off');
+    if (d === 7) return t('7 days');
+    if (d === 14) return t('14 days');
+    if (d === DEFAULT_TRUST_DAYS) return t('30 days (default)');
+    if (d === 90) return t('90 days');
+    return t('{days, plural, one {# day (current)} other {# days (current)}}', { days: d });
+  };
+  return (
+    <section className={GROUP_CLASS} aria-labelledby="sec-two-step-heading" data-testid="two-step-policy">
+      <h3 id="sec-two-step-heading" className={GROUP_HEADING_CLASS}>{t('Two-step sign-in')}</h3>
+
+      <fieldset className="space-y-3">
+        <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400 rtl:text-[13px]">{t('Who must use two-step sign-in')}</legend>
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800/60" data-testid="two-step-always">
+          <p className="text-sm text-slate-700 dark:text-slate-300">{t('People who can see or change payroll, banking or access')}</p>
+          <span className="shrink-0 rounded-full bg-slate-200 px-2 py-0.5 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200 rtl:text-[13px]">{t('Always required')}</span>
+        </div>
+        <div className="flex items-start gap-3 px-1">
+          <Toggle id="sec-mfa-everyone" checked={security.mfaRequired === true} onChange={value => onChange({ mfaRequired: value })} />
+          <div className="min-w-0">
+            <label htmlFor="sec-mfa-everyone" className="cursor-pointer text-sm text-slate-700 dark:text-slate-300">{t('Also require it for everyone else')}</label>
+            <p id="sec-mfa-everyone-hint" className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-[13px]">
+              {t("When you turn this on and save, everyone who hasn't set it up yet is signed out, and sets it up the next time they sign in.")}
+            </p>
+          </div>
+        </div>
+      </fieldset>
+
+      <div className="max-w-xs">
+        <label htmlFor="sec-trust-days" className={`${LABEL_CLASS} mb-1`}>{t('Trusted browsers')}</label>
+        <select id="sec-trust-days" value={days} aria-describedby="sec-trust-days-hint"
+          onChange={event => onChange({ mfaTrustedDeviceDays: Number(event.target.value) })} className={inp('w-full')}>
+          {choices.map(d => <option key={d} value={d}>{label(d)}</option>)}
+        </select>
+        <p id="sec-trust-days-hint" className={HINT_CLASS}>{t('Shorter is safer. Shortening it also shortens browsers already trusted.')}</p>
+      </div>
+    </section>
+  );
+}
+
+export function SignInSecurityTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
+  const { t } = useLocale();
+  const [saved, setSaved] = useState<SecuritySetting | null>(null);
+  const [form, setForm] = useState<SecuritySetting | null>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setLoadError(null);
+    try {
+      const settings = await securitySettingsApi.get();
+      setSaved(settings); setForm(settings);
+    } catch (error) { setLoadError(error); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const dirty = form !== null && saved !== null && JSON.stringify(form) !== JSON.stringify(saved);
+  useLayoutEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
+
+  const patch: SecurityPatch = changes => { setForm(current => (current ? { ...current, ...changes } : current)); setJustSaved(false); setSaveError(''); };
+
+  const save = async () => {
+    if (!form) return;
+    setSaving(true); setSaveError(''); setJustSaved(false);
+    try {
+      const updated = await securitySettingsApi.update(form);
+      const next = { ...form, ...updated };
+      setSaved(next); setForm(next); setJustSaved(true);
+    } catch (error) {
+      const response = (error as { response?: { status?: number; data?: { code?: unknown } } } | null)?.response;
+      setSaveError(response?.data?.code === 'ERR_SESSION_MAX_HOURS_RANGE' ? t('Maximum session length must be between 1 and 168 hours.')
+        : response?.data?.code === 'ERR_MFA_TRUST_DAYS_RANGE' ? t('Trusted browser days must be between 0 (off) and 90.')
+        : response?.status === 403 ? t('Settings for the whole organisation can only be viewed and changed by an administrator with access to all companies.')
+        : t('The sign-in security settings could not be saved. Please try again.'));
+    } finally { setSaving(false); }
+  };
+
+  if (loading) return <p role="status" className="text-sm text-slate-500">{t('Loading…')}</p>;
+  if (!form) {
+    const forbidden = (loadError as { response?: { status?: number } } | null)?.response?.status === 403;
+    return (
+      <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+        <p>{forbidden
+          ? t('Settings for the whole organisation can only be viewed and changed by an administrator with access to all companies.')
+          : t('The sign-in security settings could not be loaded.')}</p>
+        {!forbidden && <p className="mt-1 text-rose-600 dark:text-rose-400">{t(requestFailureReason(loadError))}</p>}
+        {!forbidden && <button type="button" onClick={() => void load()} className="btn-secondary mt-3 h-8 px-3 text-sm">{t('Retry')}</button>}
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6 max-w-2xl">
-      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-5 space-y-4">
-        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Password Policy</h4>
-        <div className="grid grid-cols-2 gap-4">
-          {numField('passwordMinLength', 'Minimum Length', 6, 64, 'Fewest characters a password may have. 10-12+ recommended; applies to new passwords only.')}
-          {numField('passwordExpiryDays', 'Expiry Days (0 = never)', 0, 365, 'Days until staff must change their password. 0 disables forced rotation.')}
-          {numField('passwordHistoryCount', 'Password History Count', 0, 24, 'How many previous passwords are remembered and blocked from reuse. 0 allows reuse.')}
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          {boolField('passwordRequireUppercase', 'Require Uppercase')}
-          {boolField('passwordRequireLowercase', 'Require Lowercase')}
-          {boolField('passwordRequireDigit', 'Require Digit')}
-          {boolField('passwordRequireSpecial', 'Require Special Character')}
-        </div>
-      </div>
+    <div className="max-w-3xl space-y-5">
+      <PasswordPolicyGroup security={form} onChange={patch} />
+      <SessionLimitsGroup security={form} onChange={patch} />
+      <TwoStepPolicyGroup security={form} onChange={patch} />
 
-      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-5 space-y-4">
-        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Lockout Policy</h4>
-        <div className="grid grid-cols-2 gap-4">
-          {numField('maxFailedLoginAttempts', 'Max Failed Login Attempts', 1, 20, 'Wrong-password tries allowed before the account is temporarily locked. 5 is a common default.')}
-          {numField('lockoutDurationMinutes', 'Lockout Duration (minutes)', 5, 1440, 'How long a locked account stays locked before it can try again. Admins can unlock earlier from the Users tab.')}
-        </div>
-      </div>
+      {saveError && <p role="alert" className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-600 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">{saveError}</p>}
 
-      <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-5 space-y-4">
-        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Session Policy</h4>
-        <div className="grid grid-cols-2 gap-4">
-          {numField('sessionTimeoutMinutes', 'Sign out after inactivity (minutes)', 15, 1440, 'Ends a session nobody has used for this long.')}
-          {numField('sessionMaxHours', 'Maximum session length (hours)', 1, 168, 'Everyone signs in again after this long, even if they are active. Shorter is safer. Default 12.')}
-          {numField('refreshTokenExpiryDays', 'Refresh Token Expiry (days)', 1, 90, 'Maximum days a login can stay remembered without re-entering the password. Lower = more secure, more frequent logins.')}
-        </div>
-        {boolField('allowMultipleSessions', 'Allow Multiple Concurrent Sessions')}
-      </div>
-
-      {msg && <p className={`text-sm ${msg.includes('Failed') ? 'text-red-500' : 'text-green-600'}`}>{msg}</p>}
-
-      <div className="flex justify-end">
-        <button type="button" onClick={save} disabled={saving} className="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-60">
-          {saving ? 'Saving…' : 'Save Settings'}
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={save} disabled={saving} className="rounded-lg bg-violet-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50">
+          {saving ? t('Saving…') : t('Save Settings')}
         </button>
+        {justSaved && <span role="status" className="text-sm font-medium text-green-600">{t('Saved!')}</span>}
       </div>
     </div>
   );
@@ -2241,7 +2389,7 @@ function SecurityTab() {
 
 // ── Audit Logs Tab ─────────────────────────────────────────────────────────────
 
-function AuditLogsTab() {
+export function AuditLogsTab() {
   const [logs, setLogs] = useState<AuditLogItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -2281,47 +2429,6 @@ function AuditLogsTab() {
             ))}
           </tbody>
         </table>
-      </div>
-    </div>
-  );
-}
-
-// ── Main Page ─────────────────────────────────────────────────────────────────
-
-export function UserManagementPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('users');
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-slate-100">User Management & Access Control</h1>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Manage users, roles, permissions, delegation, and security policy.</p>
-      </div>
-
-      {/* Tab bar */}
-      <div className="overflow-x-auto">
-        <div className="flex items-center gap-1 border-b border-slate-200 dark:border-slate-700 min-w-max">
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button type="button" key={id} onClick={() => setActiveTab(id)}
-              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === id ? 'border-violet-500 text-violet-600 dark:text-violet-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Tab content */}
-      <div className="min-h-[400px]">
-        {activeTab === 'users' && <UsersTab />}
-        {activeTab === 'roles' && <RolesTab />}
-        {activeTab === 'permissionMatrix' && <PermissionMatrixTab />}
-        {activeTab === 'permissions' && <PermissionsTab />}
-        {activeTab === 'grantors' && <PermissionGrantorsTab />}
-        {activeTab === 'delegations' && <DelegationsTab />}
-        {activeTab === 'authorities' && <AuthoritiesTab />}
-        {activeTab === 'security' && <SecurityTab />}
-        {activeTab === 'auditLogs' && <AuditLogsTab />}
       </div>
     </div>
   );

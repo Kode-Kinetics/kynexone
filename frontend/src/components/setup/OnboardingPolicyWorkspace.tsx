@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
 import type { CompanyDto } from '../../api/organization';
 import type { CompanyProfile, SetupConfiguration } from '../../api/setupAssistant';
 import { useAuth } from '../../contexts/AuthContext';
@@ -44,6 +45,12 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
   const [pendingFiles, setPendingFiles] = useState(false);
   const [revision, setRevision] = useState(0);
   const [policyDraft, setPolicyDraft] = useState(false);
+  // /setup?tab=onboardingChecklists&policyDraft=1 is where an accepted policy extraction lands: open the draft it saved.
+  const draftRequested = useSearchParams().get('policyDraft') === '1';
+  useEffect(() => {
+    if (!policyIntake || !draftRequested) return;
+    setPolicyDraft(true); setRevision(value => value + 1);
+  }, [policyIntake, draftRequested]);
   useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(storageKey) ?? 'null');
@@ -64,7 +71,6 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
     companyId: company?.id, legalEntityName: company?.legalNameEn,
     countryCode: company?.countryCode ?? '', currencyCode: company?.defaultCurrency ?? '',
     industry: '', companySize: '', strictEntityScope: true,
-    requireCostCenterForPayroll: false, requireGradeForApprovalPolicy: false,
     sections: { org: false, leave: false, shifts: false, payroll: false, entity: false, governance: false,
       leavePolicies: false, holidays: false, attendance: false, localization: false, benefits: false },
   }), [company?.id, company?.legalNameEn, company?.countryCode, company?.defaultCurrency]);

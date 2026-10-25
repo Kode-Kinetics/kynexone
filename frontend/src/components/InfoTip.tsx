@@ -8,7 +8,7 @@ import { useHelpTexts } from '../contexts/HelpTextContext';
  * labels to explain what the field is for and what input is expected.
  *
  * `text` is the built-in default. When a `fieldKey` is given and the tenant
- * admin has saved a custom help text for that key (Tenant Admin → Help Text),
+ * admin has saved a custom help text for that key (Setup → Field help text),
  * the custom text replaces the default — letting each company describe the
  * field per its own policies.
  *
