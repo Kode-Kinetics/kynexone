@@ -210,7 +210,7 @@ public class CostAttributionRunGuardTests
         var ex = (await FluentActions.Awaiting(() => Svc(w).UpdateDepartmentAsync(w.Tenant, w.Dept1.Id, Dept(w, w.Dept1, null, w.Y.Id), Ctx(w.Tenant), default))
             .Should().ThrowAsync<CostCentreRuleException>()).Which;
 
-        ex.Message.Should().Contain("awaiting finance review or lock").And.Contain("Reopen");
+        ex.Message.Should().Be("A payroll run for this company is awaiting finance review or lock; reopen it first.");
         ex.Message.Should().NotContain("send back", "SendBack only exists from PendingFinanceReview; the real paths are Reopen or Lock");
         ex.MessageAr.Should().NotBeNullOrWhiteSpace();
         // Everything the caller is told: code, both messages and the counts. None of it can carry the run's id, period, totals or a person.

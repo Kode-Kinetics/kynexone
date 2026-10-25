@@ -272,4 +272,34 @@ public class CostCentreMasterServiceTests
         await Refused(() => w.Svc.DeleteCostCenterAsync(w.Tenant, cc.Id, Ctx(w.Tenant), default));
         (await w.Db.AuditLogs.CountAsync()).Should().Be(before);
     }
+
+    // ── Coordinator: the audit action WP-B's separation-of-duties check reads ──────────────────────
+
+    [Fact]
+    public async Task Sod_AClassChange_WritesOrganizationCostcenterClassChanged_WithCompanyBeforeAfterAndReason()
+    {
+        var w = await Seed();
+        var cc = await w.Svc.CreateCostCenterAsync(w.Tenant, Req(w.A, "OPS", "Operations"), Ctx(w.Tenant), default);
+        (await w.Db.AuditLogs.CountAsync(a => a.Action == "organization.costcenter.class_changed")).Should().Be(0, "no class was set");
+
+        await w.Svc.UpdateCostCenterAsync(w.Tenant, cc.Id, Req(w.A, "OPS", cls: "COGS", reason: "finance review"), Ctx(w.Tenant), default);
+        var row = await w.Db.AuditLogs.SingleAsync(a => a.Action == "organization.costcenter.class_changed");
+        (row.CompanyId, row.EntityName, row.EntityId, row.TenantId).Should().Be((w.A.Id, "CostCenter", cc.Id.ToString(), w.Tenant));
+        var json = JsonDocument.Parse(row.Metadata!).RootElement;
+        json.GetProperty("before").GetProperty("functionalClass").ValueKind.Should().Be(JsonValueKind.Null);
+        json.GetProperty("after").GetProperty("functionalClass").GetString().Should().Be("COGS");
+        json.GetProperty("reason").GetString().Should().Be("finance review");
+
+        // Resending the same class, or renaming, is not a class change.
+        await w.Svc.UpdateCostCenterAsync(w.Tenant, cc.Id, Req(w.A, "OPS", "Renamed", cls: "COGS"), Ctx(w.Tenant), default);
+        (await w.Db.AuditLogs.CountAsync(a => a.Action == "organization.costcenter.class_changed")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Sod_CreatingACostCentreWithAClass_AlsoWritesTheClassChangedRow()
+    {
+        var w = await Seed();
+        await w.Svc.CreateCostCenterAsync(w.Tenant, Req(w.A, "SEL", "Selling", cls: "SELLING"), Ctx(w.Tenant), default);
+        (await w.Db.AuditLogs.CountAsync(a => a.Action == "organization.costcenter.class_changed" && a.CompanyId == w.A.Id)).Should().Be(1);
+    }
 }

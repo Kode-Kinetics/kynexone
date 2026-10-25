@@ -305,6 +305,67 @@ public class CostCentreDoorTests
         await w.Db.SaveChangesAsync();
         (await w.Db.AuditLogs.CountAsync(a => a.Action == "employee.cost_attribution_changed")).Should().Be(0);
     }
+
+    // ── Coordinator: the audit action WP-B's separation-of-duties check reads ──────────────────────
+
+    private static async Task<List<AuditLog>> OverrideRows(World w) =>
+        await w.Db.AuditLogs.Where(a => a.Action == "employee.cost_centre_override.changed").OrderBy(a => a.CreatedAtUtc).ToListAsync();
+
+    [Fact]
+    public async Task Sod_SettingAndRemovingAnOverrideByPatch_EachWriteAnOverrideChangedRow_WithCompanyAndBeforeAfter()
+    {
+        var w = await Seed();
+        var emp = await EmployeeIn(w);
+        var actor = Guid.NewGuid();
+
+        await EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("costCenter", "OWN")), actor, default);
+        await w.Db.SaveChangesAsync();
+        await EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("costCenter", "")), actor, default);
+        await w.Db.SaveChangesAsync();
+
+        var rows = await OverrideRows(w);
+        rows.Should().HaveCount(2);
+        rows.Should().OnlyContain(r => r.CompanyId == w.A.Id && r.UserId == actor && r.EntityName == "Employee" && r.EntityId == emp.Id.ToString());
+        var set = JsonDocument.Parse(rows[0].Metadata!).RootElement;
+        (set.GetProperty("before").GetProperty("override").GetBoolean(), set.GetProperty("after").GetProperty("override").GetBoolean()).Should().Be((false, true));
+        set.GetProperty("after").GetProperty("costCenterId").GetGuid().Should().Be(w.Own.Id);
+        var removed = JsonDocument.Parse(rows[1].Metadata!).RootElement;
+        (removed.GetProperty("before").GetProperty("override").GetBoolean(), removed.GetProperty("after").GetProperty("override").GetBoolean()).Should().Be((true, false));
+    }
+
+    [Fact]
+    public async Task Sod_ADepartmentMoveThatDropsAnOverride_WritesAnOverrideChangedRow_ButOtherEditsDoNot()
+    {
+        var w = await Seed();
+        var d1 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D1", NameEn = "First", CostCenterId = w.Own.Id };
+        var d2 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D2", NameEn = "Second Dept" };
+        w.Db.AddRange(d1, d2); await w.Db.SaveChangesAsync();
+        var emp = await EmployeeIn(w, department: d1.Id);
+        emp.CostCenterId = w.Other.Id; emp.CostCenterIsOverride = true; await w.Db.SaveChangesAsync();
+
+        await EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("jobTitle", "Analyst")), Guid.NewGuid(), default);
+        await w.Db.SaveChangesAsync();
+        (await OverrideRows(w)).Should().BeEmpty();
+
+        await EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("department", "Second Dept")), Guid.NewGuid(), default);
+        await w.Db.SaveChangesAsync();
+        (await OverrideRows(w)).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Sod_TheFormDoor_SettingAnExplicitCostCentre_WritesAnOverrideChangedRow()
+    {
+        var w = await Seed();
+        var created = await Employees(w.Db).CreateAsync(w.Tenant, EmployeeBody("E-SOD", w.A.Id, w.Own.Id), Ctx(w.Tenant), default);
+        var rows = await OverrideRows(w);
+        rows.Should().ContainSingle();
+        rows[0].CompanyId.Should().Be(w.A.Id);
+        JsonDocument.Parse(rows[0].Metadata!).RootElement.GetProperty("after").GetProperty("override").GetBoolean().Should().BeTrue();
+
+        // Sending the same cost centre again changes nothing and writes nothing.
+        await Employees(w.Db).UpdateAsync(w.Tenant, created.Id, EmployeeBody("E-SOD", w.A.Id, w.Own.Id), Ctx(w.Tenant), default);
+        (await OverrideRows(w)).Should().HaveCount(1);
+    }
 }
 
 file sealed class DoorTestStorage : Zayra.Api.Infrastructure.Documents.IDocumentStorage
