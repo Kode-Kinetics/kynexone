@@ -215,7 +215,8 @@ public class CostAccountingSwitchTests
         var ctrl = Gl(db, tid, ManagePerms);
 
         Status(await ctrl.SetCostAccounting(co.Id, On(), default)).Should().Be(409);
-        run.Status = "Locked"; await db.SaveChangesAsync();
+        // The controller call cleared the change tracker (it runs inside the company lock), so lock the run set-based.
+        await db.PayrollRuns.Where(r => r.Id == run.Id).ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, "Locked"));
         Status(await ctrl.SetCostAccounting(co.Id, On(), default)).Should().Be(200);
     }
 

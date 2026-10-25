@@ -120,7 +120,8 @@ public class GlResolutionContextCostCentreTests
         await Map(db, f.Tid, f.Co.Id, f.CoSelling, "SELLING");
         var ctx = await GlAccountResolver.LoadAsync(db, f.Tid, f.Co.Id, default);
 
-        ctx.Overrides.ContainsKey(Driver).Should().BeFalse("a class-only mapping must not become the driver's plain override");
+        // (the seeded tenant default may supply a plain override; the class-only company row must not become one)
+        if (ctx.Overrides.TryGetValue(Driver, out var plain)) plain.Code.Should().NotBe("5031", "a class-only mapping must not become the driver's plain override");
         ctx.ClassOverrides.Should().ContainKey((Driver, "SELLING"));
         GlAccountResolver.AccountLabel(Driver, ctx).Should().StartWith("5001", "the classless label is unchanged");
     }

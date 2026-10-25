@@ -338,8 +338,7 @@ public class GlMappingFunctionalClassTests
         var ctrl = Gl(db, f.Tid, ManagePerms);
 
         Status(await ctrl.SetMappings(f.Co.Id, new() { Plain(f.Basic.Id) }, default, "x")).Should().Be(409);
-        run.Status = "Locked";
-        await db.SaveChangesAsync();
+        await db.PayrollRuns.Where(r => r.Id == run.Id).ExecuteUpdateAsync(s => s.SetProperty(r => r.Status, "Locked"));
         Status(await ctrl.SetMappings(f.Co.Id, new() { Plain(f.Basic.Id) }, default, "x")).Should().Be(200);
     }
 
