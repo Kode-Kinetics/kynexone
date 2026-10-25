@@ -1,3 +1,6 @@
+import { employeeWorkspaceHref } from './peopleRoutes';
+import type { ReadinessCheck, ReadinessSample } from '../api/financeGl';
+
 /**
  * Cost accounting v1 (WP-F): the pure rules behind the GL screens. Kept free of React so the rules that decide what a
  * user may pick, and which sentence they read, are unit-tested on their own (unit/glCostAccounting.spec.ts).
@@ -179,4 +182,69 @@ export const setClassRuleAccount = (d: DriverDraft, cls: string, accountId: stri
 /** The class the base row and a class rule both claim, if any: the server would refuse the pair. */
 export function duplicateClass(d: DriverDraft): string | null {
   return d.cls && d.classRules.some((r) => r.cls === d.cls) ? d.cls : null;
+}
+
+// ═══════════════════════════ Cost accounting readiness and the switch ═══════════════════════════
+
+/** Display order: the design's six, then the checks the server adds. Unknown keys go last. */
+export const CHECK_ORDER = [
+  'employees-unresolved', 'invalid-reference', 'accounts-no-rule', 'no-company', 'rounding-default', 'mapping-invisible',
+  'employees-no-company', 'currency-scale', 'small-cell', 'rules-not-enforced',
+] as const;
+
+export function orderChecks<T extends { key: string }>(checks: readonly T[]): T[] {
+  const rank = (key: string) => {
+    const i = (CHECK_ORDER as readonly string[]).indexOf(key);
+    return i < 0 ? CHECK_ORDER.length : i;
+  };
+  return [...checks].sort((a, b) => rank(a.key) - rank(b.key));
+}
+
+export function readinessAllClear(checks: readonly ReadinessCheck[]): boolean {
+  return checks.length > 0 && checks.every((c) => c.severity === 'ok' && c.count === 0);
+}
+
+export type FixTarget = { kind: 'link'; href: string } | { kind: 'tab'; tab: 'coa' } | { kind: 'default' };
+
+/** Where a check is fixed. Null when there is nothing for the user to fix (a currency, a privacy note). */
+export function checkFixTarget(key: string): FixTarget | null {
+  switch (key) {
+    case 'employees-unresolved': return { kind: 'link', href: '/setup?tab=departments' };
+    case 'invalid-reference':
+    case 'no-company': return { kind: 'link', href: '/setup?tab=costCenters' };
+    case 'accounts-no-rule':
+    case 'mapping-invisible':
+    case 'rules-not-enforced': return { kind: 'tab', tab: 'coa' };
+    case 'rounding-default': return { kind: 'default' };
+    case 'employees-no-company': return { kind: 'link', href: '/people' };
+    default: return null;
+  }
+}
+
+/** The record behind one example row, when it has a page of its own. */
+export function sampleHref(key: string, sample: ReadinessSample): string | null {
+  const employeeId = typeof sample.employeeId === 'number' ? sample.employeeId : typeof sample.id === 'number' ? sample.id : null;
+  if (key === 'employees-unresolved' || (key === 'invalid-reference' && sample.kind === 'employee')) {
+    return employeeId && employeeId > 0 ? employeeWorkspaceHref(employeeId) : null;
+  }
+  if (key === 'invalid-reference' && sample.kind === 'department') return `/setup?tab=departments&department=${encodeURIComponent(String(sample.id))}`;
+  if (key === 'invalid-reference' && sample.kind === 'position') return '/setup?tab=designations';
+  return null;
+}
+
+export interface TurnOnGate {
+  /** Blocking checks that have something counted. */
+  hard: ReadinessCheck[];
+  /** Cost centres with so few employees that their totals could point at one person. */
+  exposure: number;
+  /** The server refuses without `acknowledgeBlockers` when there are blockers or exposure. */
+  needsAck: boolean;
+  canConfirm: boolean;
+}
+
+export function turnOnGate(r: { checks: readonly ReadinessCheck[]; smallCellExposure: { count: number } }, ack: boolean, reason: string): TurnOnGate {
+  const hard = orderChecks(r.checks.filter((c) => c.severity === 'blocker' && c.count > 0));
+  const exposure = r.smallCellExposure.count;
+  const needsAck = hard.length > 0 || exposure > 0;
+  return { hard, exposure, needsAck, canConfirm: reason.trim().length > 0 && (!needsAck || ack) };
 }

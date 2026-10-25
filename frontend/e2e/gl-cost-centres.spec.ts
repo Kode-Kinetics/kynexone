@@ -259,7 +259,7 @@ const chart = (page: Page) => page.getByRole('region', { name: /^(Chart of Accou
 const search = (w: Recorded) => new URL(`http://x${w.search}`).searchParams;
 const axeSeriousOrWorse = async (page: Page, scope: string) => {
   const result = await new AxeBuilder({ page }).include(scope).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze();
-  return result.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`);
+  return result.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.map((n) => `${n.target.join(' ')} ${n.any.map((a) => a.message).join(';')} ${n.html.slice(0, 120)}`).join(' | ')}`);
 };
 
 // ═════════════════════════════ Screen 2: GL accounts, Cost centre rule ═════════════════════════════
@@ -599,7 +599,7 @@ test('the Cost accounting tab names the company, shows the switch as text as wel
   await expect(tid(page, 'cc-ready-company')).toBeVisible();
   await expect(switchEl(page)).toHaveAttribute('role', 'switch');
   await expect(switchEl(page)).toHaveAttribute('aria-checked', 'false');
-  await expect(page.getByTestId('cc-ready-state')).toHaveText('Off');
+  await expect(page.getByTestId('cc-ready-state')).toHaveText('Cost accounting is off');
   expect(state.reads.some((r) => r.path === '/api/finance/gl/cost-accounting/readiness' && search(r).get('companyId') === 'co-sa')).toBe(true);
   await expect(tid(page, 'cc-ready-check-count-employees-unresolved')).toHaveText('12');
   await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('Employees with no cost centre');
@@ -666,7 +666,7 @@ test('turning on with blockers: the dialog lists them, and Turn on anyway needs 
   expect(search(put).get('companyId')).toBe('co-sa');
   expect(put.body).toEqual({ enabled: true, reason: 'Pilot with the Sales team', acknowledgeBlockers: true });
   await expect(switchEl(page)).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByTestId('cc-ready-state')).toHaveText('On');
+  await expect(page.getByTestId('cc-ready-state')).toHaveText('Cost accounting is on');
 });
 
 test('"Fix first" closes the dialog and leaves the switch off', async ({ page }) => {

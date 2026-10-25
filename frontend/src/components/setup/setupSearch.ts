@@ -61,6 +61,7 @@ const PAYROLL_ACCOUNTING_TABS: readonly { id: string; label: string; visible: (h
   { id: 'drivers', label: msg('Posting Drivers'), visible: has => has('finance.gl.read') || has('finance.gl.manage') || has('finance.gl.drivers.manage') },
   { id: 'companyRates', label: msg('Company Rates'), visible: has => has('payroll.rates.read') || has('payroll.rates.manage') },
   { id: 'statutory', label: msg('Statutory Rates'), visible: has => has('payroll.rates.read') || has('payroll.rates.manage') || has('payroll.rates.statutory_override') },
+  { id: 'costAccounting', label: msg('Cost accounting'), visible: has => has('finance.gl.read') || has('finance.gl.manage') },
   { id: 'periods', label: msg('Accounting periods'), visible: has => has('finance.gl.read') || has('finance.gl.manage') },
   { id: 'eosb', label: msg('End-of-service provision'), visible: has => has('finance.gl.read') || has('finance.gl.manage') },
   { id: 'erpApi', label: msg('ERP API access'), visible: (_has, hasRole) => hasRole('Admin') },
