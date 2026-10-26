@@ -480,3 +480,143 @@ test('Arabic: the preview and the blocker banner read right to left with codes a
   await shot(page, info, 'cc-ar-lock-blocked');
   await tid(page, 'cc-lock-recheck').scrollIntoViewIfNeeded();
 });
+
+// ═════════════════════════════ Screen 7: Payroll journal by cost centre ═════════════════════════════
+
+const report = (page: Page) => tid(page, 'cc-report');
+const openReport = async (page: Page, runId = 'run-may') => {
+  await expect(report(page)).toBeVisible();
+  await tid(page, 'cc-report-run').selectOption(runId);
+};
+
+test('the report shows each cost centre with headcount, gross, employer cost, net and journal net, a total, and says it reconciles', async ({ page }, info) => {
+  await boot(page, {}, 'reports');
+  await openReport(page);
+  await expect(tid(page, 'cc-report-chip')).toHaveText('Locked');
+  const sales = tid(page, 'cc-report-row-SALES');
+  await expect(sales).toContainText('Sales');
+  await expect(sales).toContainText('14');
+  await expect(sales).toContainText('1,000.00');
+  await expect(sales).toContainText('100.00');
+  await expect(sales).toContainText('900.00');
+  await expect(sales).toContainText('1,050.00');
+  await expect(tid(page, 'cc-report-total')).toContainText('23');
+  await expect(tid(page, 'cc-report-total')).toContainText('1,500.00');
+  await expect(tid(page, 'cc-report-reconciles')).toHaveText('Reconciles with the journal.');
+  await expect(tid(page, 'cc-report-reconciles')).toHaveAttribute('role', 'status');
+  await expect(tid(page, 'cc-report-diff')).toHaveCount(0);
+  await expect(report(page).getByRole('table')).toHaveAccessibleName('Payroll journal by cost centre');
+  await expect(report(page).getByRole('columnheader', { name: 'Cleared against accrual' })).toBeVisible();
+  // never an employee on this report
+  await expect(report(page)).not.toContainText(/E-\d{4}/);
+  expect(await axeSeriousOrWorse(page, '[data-testid="cc-report"]')).toEqual([]);
+  await shot(page, info, 'cc-en-report');
+});
+
+test('when journal net and the stamps disagree the report says so with the difference', async ({ page }) => {
+  const state = await boot(page, {}, 'reports');
+  const a = allocation({ reconciles: false });
+  (a.allocations as Array<Record<string, unknown>>)[0].journalNet = 1100;
+  state.state.allocationResponse = a;
+  await openReport(page);
+  await expect(tid(page, 'cc-report-reconciles')).toContainText('Does not reconcile with the journal.');
+  await expect(tid(page, 'cc-report-diff')).toHaveText('Difference: 50.00');
+});
+
+test('a run that is not locked is a preview and does not claim to reconcile', async ({ page }) => {
+  const state = await boot(page, {}, 'reports');
+  const a = allocation({ basis: 'Preview', label: 'Preview', reconciles: null });
+  (a.allocations as Array<Record<string, unknown>>).forEach((r) => { r.journalNet = null; r.clearedAgainstAccrual = null; });
+  state.state.allocationResponse = a;
+  await openReport(page, 'run-jun');
+  await expect(tid(page, 'cc-report-chip')).toHaveText('Preview — this run is not locked');
+  await expect(tid(page, 'cc-report-reconciles')).toHaveText('Reconciliation with the journal is available once the run is locked.');
+  await expect(tid(page, 'cc-report-row-SALES')).toBeVisible();
+});
+
+test('a run locked before cost centres is one Not recorded bucket with the server note', async ({ page }) => {
+  const state = await boot(page, {}, 'reports');
+  state.state.allocationResponse = allocation({
+    basis: 'NotRecorded', reconciles: null, label: 'Not recorded (run locked before cost centres)',
+    allocations: [{ costCenterId: null, costCenterCode: '—', costCenterName: 'Not recorded (run locked before cost centres)', employeeCount: 23, grossSalary: 1500, netSalary: 1350, employerCost: 150, totalCost: 1650, journalNet: null, clearedAgainstAccrual: null }],
+  });
+  await openReport(page);
+  await expect(tid(page, 'cc-report-not-recorded')).toContainText('Not recorded (run locked before cost centres)');
+  await expect(tid(page, 'cc-report-retro-note')).toContainText('Reports show where cost was booked at the time.');
+  await expect(tid(page, 'cc-report-row-SALES')).toHaveCount(0);
+});
+
+test('a row opens to its accounts, read from the run journal', async ({ page }) => {
+  const state = await boot(page, {}, 'reports');
+  await openReport(page);
+  await tid(page, 'cc-report-row-SALES').getByRole('button', { name: /Show accounts/ }).click();
+  const drill = tid(page, 'cc-report-drill-SALES');
+  await expect(drill).toContainText('5001');
+  await expect(drill).toContainText('180,000.00');
+  await expect(drill).toContainText('5009');
+  await expect(drill).not.toContainText('OPS');
+  expect(state.reads.some((r) => r.path === '/api/payroll/runs/run-may/gl-journal')).toBe(true);
+});
+
+test('Export CSV downloads exactly the table on screen', async ({ page }) => {
+  await boot(page, {}, 'reports');
+  await openReport(page);
+  const [download] = await Promise.all([page.waitForEvent('download'), tid(page, 'cc-report-export').click()]);
+  expect(download.suggestedFilename()).toBe('payroll-journal-by-cost-centre-2026-05.csv');
+  const text = fs.readFileSync((await download.path())!, 'utf8').replace(/^﻿/, '');
+  const lines = text.split('\r\n');
+  expect(lines[0]).toBe('"Cost centre","Headcount","Gross","Employer cost","Net","Journal net","Cleared against accrual"');
+  expect(lines[1]).toBe('"SALES — Sales","14","1000.00","100.00","900.00","1050.00","0.00"');
+  expect(lines[lines.length - 1]).toBe('"Total","23","1500.00","150.00","1350.00","1600.00","0.00"');
+});
+
+test('small cost centres rolled up to protect groups are noted', async ({ page }) => {
+  const state = await boot(page, {}, 'reports');
+  const a = allocation();
+  (a.allocations as Array<Record<string, unknown>>)[1].smallCell = true;
+  state.state.allocationResponse = a;
+  await openReport(page);
+  await expect(tid(page, 'cc-report-rolled-note')).toHaveText('Includes cost centres rolled up to protect small groups.');
+});
+
+test('no costed lines is an empty state, and a failed load is an error with Retry, never the empty text', async ({ page }) => {
+  const state = await boot(page, {}, 'reports');
+  state.state.allocationDown = true;
+  await openReport(page);
+  await expect(report(page).getByRole('alert').filter({ hasText: 'The report service is down.' })).toBeVisible();
+  await expect(tid(page, 'cc-report-empty')).toHaveCount(0);
+  state.state.allocationDown = false;
+  state.state.allocationResponse = allocation({ allocations: [], totalEmployees: 0, reconciles: null });
+  await report(page).getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(tid(page, 'cc-report-empty')).toHaveText('No costed lines for this run.');
+});
+
+test('the company filter limits the runs, and the report is hidden without finance.gl.read', async ({ page }) => {
+  await boot(page, { twoCompanies: true }, 'reports');
+  await expect(report(page)).toBeVisible();
+  await tid(page, 'cc-report-company').selectOption('co-ae');
+  await expect(tid(page, 'cc-report-run').locator('option')).toHaveCount(2); // placeholder + the one UAE run
+  await tid(page, 'cc-report-company').selectOption('co-sa');
+  await expect(tid(page, 'cc-report-run').locator('option')).toHaveCount(4);
+});
+
+test('the report is hidden from a user without finance.gl.read', async ({ page }) => {
+  await boot(page, { glRead: false }, 'reports');
+  await expect(page.getByText('Payroll Register')).toBeVisible();
+  await expect(report(page)).toHaveCount(0);
+});
+
+test('Arabic: the report reads right to left, codes and amounts stay left to right, and the CSV headers are Arabic', async ({ page }, info) => {
+  await boot(page, { locale: 'ar' }, 'reports');
+  await openReport(page);
+  await expect(report(page).getByRole('heading', { level: 2 })).toHaveText('قيد الرواتب حسب مركز التكلفة');
+  await expect(tid(page, 'cc-report-chip')).toHaveText('مقفلة');
+  await expect(tid(page, 'cc-report-reconciles')).toHaveText('يتطابق مع قيد اليومية.');
+  await expect(tid(page, 'cc-report-total')).toContainText('الإجمالي الكلي');
+  await expect(tid(page, 'cc-report-row-SALES').locator('bdi').first()).toHaveAttribute('dir', 'ltr');
+  await expect(tid(page, 'cc-report-export')).toContainText('تصدير CSV');
+  await shot(page, info, 'cc-ar-report');
+  const [download] = await Promise.all([page.waitForEvent('download'), tid(page, 'cc-report-export').click()]);
+  const text = fs.readFileSync((await download.path())!, 'utf8');
+  expect(text).toContain('"مركز التكلفة","عدد الموظفين"');
+});
