@@ -465,7 +465,7 @@ public class EmployeeFieldWiringTests
         await Controller(db, tenantId).Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
         db.ChangeTracker.Clear();
         (await db.Employees.AsNoTracking().SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-PV-1"))
-            .IqamaNumber.Should().Be("2000000001");
+            .IqamaNumber.Should().Be(TestIds.ValidIqama(1));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

@@ -63,7 +63,7 @@ public class EmployeeInputGuardTests
         await using var db = CreateDb(); var (t, c) = Seed(db);
         var r = Req(c) with { JoiningDate = Today.AddDays(-45), ProbationStartDate = DateOnly.FromDateTime(Today), ProbationEndDate = DateOnly.FromDateTime(Today).AddDays(200) };
         var ex = await Assert.ThrowsAsync<EmployeeWarningsRequireAckException>(() => Guard(db).EnforceCreateAsync(t, r, Ctx(t), default));
-        ex.Warnings.Select(w => w.Code).Should().Contain([EmployeeWarningCodes.JoiningBackdated, EmployeeWarningCodes.ProbationOver180]);
+        ex.Warnings.Select(w => w.Code).Should().Contain([EmployeeWarningCodes.JoiningBackdated, EmployeeWarningCodes.ProbationOverLimit]);
 
         var ack = ex.Warnings.Select(w => new AcknowledgedWarning(w.Code, "Approved by the director, signed contract on file")).ToList();
         var o = await Guard(db).EnforceCreateAsync(t, r with { AcknowledgedWarnings = ack }, Ctx(t), default);

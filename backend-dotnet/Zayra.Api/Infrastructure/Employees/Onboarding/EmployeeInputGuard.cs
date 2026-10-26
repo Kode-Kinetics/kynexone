@@ -39,6 +39,15 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
     public Task<EmployeeCreateRequest> EnforceDraftAsync(Guid tenantId, int? employeeId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct) =>
         RunAsync(tenantId, employeeId, request, EmployeeGuardMode.Draft, context, ct);
 
+    public async Task EnforceActivationAsync(Guid tenantId, int employeeId, RequestContext context, CancellationToken ct)
+    {
+        var errors = await EmployeeStoredDataCheck.ErrorsAsync(_db, tenantId, employeeId, _clock, ct);
+        if (errors.Count > 0)
+            throw new EmployeeValidationException(400, EmployeeProblemCodes.ValidationFailed,
+                errors.ToDictionary(k => k.Key, k => k.Value.ToArray()),
+                "Some fields need attention before activation: " + string.Join(", ", errors.Keys) + ".");
+    }
+
     private async Task<EmployeeCreateRequest> RunAsync(
         Guid tenantId, int? employeeId, EmployeeCreateRequest request, EmployeeGuardMode mode, RequestContext context, CancellationToken ct)
     {
@@ -108,9 +117,29 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
             consumed[EmployeeWarningCodes.GradeBandOutOfRange] = bandAck;
         }
         var normalised = result.Normalised with { AcknowledgedWarnings = consumed.Values.ToList() };
+        normalised = await ApplyEligibilityDefaultsAsync(tenantId, employeeId, normalised, mode, country, ct);
         if (request.CompanyId is null && mode != EmployeeGuardMode.Update) normalised = normalised with { CompanyId = refResult.Company.Id };
         _lastEnforced = normalised;
         return normalised;
+    }
+
+    // CD30: wps/eosb come from the employing company's country when the caller did not state them. A create with no
+    // payroll block still gets one, so the flags never depend on an IBAN or MOL id having been typed. An update keeps
+    // whatever the stored profile says; a hire that has no profile row yet gets the country default.
+    private async Task<EmployeeCreateRequest> ApplyEligibilityDefaultsAsync(
+        Guid tenantId, int? employeeId, EmployeeCreateRequest r, EmployeeGuardMode mode, string? country, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(country)) return r;
+        var p = r.PayrollProfile;
+        if (p is { WpsEligible: not null, EosbEligible: not null }) return r;
+        if (mode != EmployeeGuardMode.Create && employeeId is int id
+            && await _db.EmployeePayrollProfiles.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted, ct))
+            return r;
+        if (p is null && mode != EmployeeGuardMode.Create) return r;
+        var iso = CountryCodeStandard.NormalizeToIso2(country) ?? country;
+        var (wps, eosb) = PayrollEligibilityPolicy.DefaultsFor(iso);
+        p ??= new EmployeePayrollProfileRequest(null, null, null, null, null, null, null, null, null, null, null, null);
+        return r with { PayrollProfile = p with { WpsEligible = p.WpsEligible ?? wps, EosbEligible = p.EosbEligible ?? eosb } };
     }
 
     private static void RequireReason(AcknowledgedWarning ack)

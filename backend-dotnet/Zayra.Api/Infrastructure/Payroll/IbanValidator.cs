@@ -8,6 +8,13 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class IbanValidator
 {
+    /// <summary>Total IBAN length per country (ISO 13616 registry) for the GCC and the common remittance countries.</summary>
+    private static readonly IReadOnlyDictionary<string, int> CountryLengths = new Dictionary<string, int>(StringComparer.Ordinal)
+    {
+        ["SA"] = 24, ["AE"] = 23, ["QA"] = 29, ["KW"] = 30, ["BH"] = 22, ["OM"] = 23,
+        ["JO"] = 30, ["EG"] = 29, ["PK"] = 24, ["GB"] = 22, ["DE"] = 22, ["FR"] = 27, ["TR"] = 26,
+    };
+
     public static bool IsValid(string? iban)
     {
         if (string.IsNullOrWhiteSpace(iban)) return false;
@@ -19,6 +26,8 @@ public static class IbanValidator
         // account body. A shorter SA value can still be made to satisfy mod-97, so checksum alone is
         // not sufficient and previously allowed 22-character demo accounts into WPS readiness.
         if (iban.StartsWith("SA", StringComparison.Ordinal) && !HasSaudiStructure(iban)) return false;
+        // CD29: other countries fix their own total length (ISO 13616 registry). An unlisted country keeps the 15-34 range.
+        if (CountryLengths.TryGetValue(iban[..2], out var expected) && iban.Length != expected) return false;
 
         // Move the first 4 chars to the end, map letters → numbers, then mod-97 must equal 1.
         var rearranged = iban[4..] + iban[..4];

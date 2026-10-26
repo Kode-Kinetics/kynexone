@@ -56,6 +56,8 @@ public static class DuplicateMatchTypes
 {
     public const string Strong = "strong";
     public const string Probable = "probable";
+    /// <summary>CD26: the same full name in the tenant with nothing else to corroborate it. Advisory only: it never refuses a commit.</summary>
+    public const string Possible = "possible";
 }
 
 /// <summary>The identity fieldKey → Employee column mapping and the STRONG/weak weighting. National IDs
@@ -173,11 +175,52 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
             }
         }
 
+        // ── NAME-ONLY pass (CD26): the same normalised full name, English or Arabic, with no ID or DOB behind it. A sentinel
+        // or absent DOB corroborates nothing, so this stays "possible" and is advisory (it never blocks a commit).
+        foreach (var e in await FindByNameOnlyAsync(tenantId, probeNorm, probeArabic, probe.ExcludeEmployeeId, ct))
+            if (!acc.ContainsKey(e.Id)) Add(acc, e, DuplicateMatchTypes.Possible, "name");
+
         return acc.Values
             .Select(m => new DuplicateMatch(m.Employee.Id, m.Employee.EmployeeCode, m.Employee.FullName,
                 m.Employee.Branch, m.Employee.CompanyId, m.Employee.Status, m.MatchType, m.Signals.ToList()))
             .OrderByDescending(m => m.MatchType == DuplicateMatchTypes.Strong)
             .ToList();
+    }
+
+    private async Task<List<Employee>> FindByNameOnlyAsync(
+        System.Guid tenantId, string probeNorm, string? probeArabic, int? excludeId, CancellationToken ct)
+    {
+        // A single word is not a name match; two or more words are required on either side.
+        var englishKey = probeNorm.Split(' ', System.StringSplitOptions.RemoveEmptyEntries).Length >= 2 ? probeNorm : null;
+        var arabicKey = CollapseSpaces(probeArabic);
+        if (arabicKey is not null && arabicKey.Split(' ').Length < 2) arabicKey = null;
+        if (englishKey is null && arabicKey is null) return [];
+
+        // Tenant-wide for the same reason as the other passes; scope masking happens in the controller. Case-insensitive
+        // equality is a cheap pre-filter; the exact normalised comparison below decides.
+        var q = _db.Employees.AsNoTracking().IgnoreQueryFilters().Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        if (excludeId is int ex) q = q.Where(x => x.Id != ex);
+        // Pre-filter: both the first and the last word must appear (a lone common first name must not flood the set).
+        string? enFirst = null, enLast = null, arFirst = null, arLast = null;
+        if (englishKey is not null) { var t = englishKey.Split(' '); enFirst = t[0]; enLast = t[^1]; }
+        if (arabicKey is not null) { var t = arabicKey.Split(' '); arFirst = t[0]; arLast = t[^1]; }
+        var candidates = await q.Where(x =>
+                (enFirst != null && (
+                    (x.EnglishName.ToLower().Contains(enFirst) && x.EnglishName.ToLower().Contains(enLast!))
+                    || (x.FullName.ToLower().Contains(enFirst) && x.FullName.ToLower().Contains(enLast!))))
+                || (arFirst != null && x.ArabicName.Contains(arFirst) && x.ArabicName.Contains(arLast!)))
+            .Take(200).ToListAsync(ct);
+        return candidates.Where(e =>
+                (englishKey is not null
+                    && (NameNormalizer.Normalize(e.EnglishName) == englishKey || NameNormalizer.Normalize(e.FullName) == englishKey))
+                || (arabicKey is not null && CollapseSpaces(e.ArabicName) == arabicKey))
+            .Take(10).ToList();
+    }
+
+    private static string? CollapseSpaces(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return string.Join(' ', value.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries));
     }
 
     private async Task<List<Employee>> QueryByColumnAsync(
@@ -234,11 +277,12 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
     {
         if (!acc.TryGetValue(e.Id, out var m))
         {
-            m = new MatchAccumulator(e);
+            m = new MatchAccumulator(e) { MatchType = matchType };
             acc[e.Id] = m;
         }
-        // Strong always wins over probable.
+        // Strong always wins over probable, and probable over a name-only possible.
         if (matchType == DuplicateMatchTypes.Strong) m.MatchType = DuplicateMatchTypes.Strong;
+        else if (matchType == DuplicateMatchTypes.Probable && m.MatchType == DuplicateMatchTypes.Possible) m.MatchType = DuplicateMatchTypes.Probable;
         if (!m.Signals.Contains(signal)) m.Signals.Add(signal);
     }
 

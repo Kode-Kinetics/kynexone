@@ -21,6 +21,7 @@ public static class ImportRowValidation
         // A class/nationality disagreement lands as a warning in an import (messy nationality cells are common); the form refuses it.
         EmployeeFieldErrors.IdFormatInvalid, EmployeeFieldErrors.IdChecksumInvalid,
         EmployeeFieldErrors.Required, EmployeeFieldErrors.ProbationOrder,
+        EmployeeFieldErrors.ContractEndBeforeStart, EmployeeFieldErrors.ContractEndWithoutFixedTerm,   // CD17 / CD26
     };
 
     /// <summary>
@@ -59,6 +60,7 @@ public static class ImportRowValidation
             new EmployeePayrollProfileRequest(null, V("IBAN").NullIfEmpty(), null, null, null, null, null, false, false, null, null, null),
             salary, records);
 
+        request = request with { ContractType = V("ContractType").NullIfEmpty(), ContractEndDate = Date("ContractEndDate") };   // CD26
         var result = EmployeeInputValidator.Validate(request, new EmployeeInputValidationContext(country, today, EmployeeGuardMode.Create, zone));
 
         foreach (var (field, codes) in result.Errors)
@@ -104,7 +106,7 @@ public static class ImportRowValidation
         return field switch
         {
             "englishName" => "FullName", "dateOfBirth" => "DateOfBirth", "joiningDate" => "JoiningDate", "mobileNumber" => "Phone",
-            "personalEmail" => "PersonalEmail", "payrollProfile.iban" => "IBAN",
+            "personalEmail" => "PersonalEmail", "contractEndDate" => "ContractEndDate", "payrollProfile.iban" => "IBAN",
             _ when field.StartsWith("salaryBreakdown.", StringComparison.Ordinal) => char.ToUpperInvariant(field[16]) + field[17..],
             _ => field,
         };
@@ -123,6 +125,8 @@ public static class ImportRowValidation
         EmployeeFieldErrors.IdPrefixNationalityMismatch => "identity number class does not match the nationality",
         EmployeeFieldErrors.Required => "value is required",
         EmployeeFieldErrors.ProbationOrder => "dates are out of order",
+        EmployeeFieldErrors.ContractEndBeforeStart => "contract end date must be after the start",
+        EmployeeFieldErrors.ContractEndWithoutFixedTerm => "an end date needs a fixed-term contract",
         EmployeeFieldErrors.PhoneInvalid => "phone number is not a valid number",
         EmployeeFieldErrors.EmailInvalid => "e-mail address is not valid",
         EmployeeFieldErrors.IbanInvalid => "IBAN is not valid",

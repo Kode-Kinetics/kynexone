@@ -1006,6 +1006,8 @@ public class OffboardingController : ControllerBase
 
             var context = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
                 Request.Headers.UserAgent.ToString(), this.GetUserId(), tenantId);
+            if (HttpContext?.RequestServices?.GetService(typeof(Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard)) is Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard inputGuard)
+                await inputGuard.EnforceActivationAsync(tenantId, graph.Employee.Id, context, token);   // CD28: reinstatement re-validates stored data
             if (_activationGuard.ShouldGate(graph.Employee.Status, "Active"))
             {
                 var snapshot = await _activationGuard.BuildSnapshotAsync(tenantId, graph.Employee.Id, token);
@@ -1137,6 +1139,8 @@ public class OffboardingController : ControllerBase
             // refused); the guard is still consulted so no Active write bypasses it.
             var ctx = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(),
                 Request.Headers.UserAgent.ToString(), this.GetUserId(), off.TenantId);
+            if (HttpContext?.RequestServices?.GetService(typeof(Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard)) is Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard inputGuard2)
+                await inputGuard2.EnforceActivationAsync(off.TenantId, emp.Id, ctx, ct);   // CD28
             try
             {
                 if (_activationGuard.ShouldGate(emp.Status, "Active"))

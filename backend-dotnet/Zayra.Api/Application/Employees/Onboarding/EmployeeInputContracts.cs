@@ -65,4 +65,10 @@ public interface IEmployeeInputGuard
 
     Task<EmployeeCreateRequest> EnforceDraftAsync(
         Guid tenantId, int? employeeId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct);
+
+    /// <summary>
+    /// CD28: re-runs the hard (400) rules over what is STORED, before a Draft becomes Active. Autosave accepts invalid
+    /// values; this is where they are refused, with the same field codes. Warnings are not re-asked here.
+    /// </summary>
+    Task EnforceActivationAsync(Guid tenantId, int employeeId, RequestContext context, CancellationToken ct) => Task.CompletedTask;
 }
