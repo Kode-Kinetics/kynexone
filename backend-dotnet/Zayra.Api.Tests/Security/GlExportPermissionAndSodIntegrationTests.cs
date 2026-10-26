@@ -79,6 +79,28 @@ public class GlExportPermissionAndSodIntegrationTests
         Ctrl(db, Caller("finance.gl.read")).Download(id, default).Result.Should().BeOfType<ForbidResult>();
     }
 
+    [Fact]
+    public async Task AnErpApiKeyWithTheReadScope_StillDownloads_WithoutTheExportKey_AndTheAuditNamesKeyAndCreator()
+    {
+        var (db, tenantId) = await TenantAsync(costAccounting: true);
+        SeedChart(db, tenantId);
+        db.Add(Row(tenantId, "Accrual", "5000 - Salaries", "", 10_000m, "July payroll"));
+        db.Add(Row(tenantId, "Accrual", "", "2100 - Salaries Payable", 10_000m, "July payroll"));
+        db.SaveChanges();
+        var id = IdOf(await CreateAsync(db, await CallerAsync(db, tenantId, "Payroll Manager")));
+        var key = new ErpApiKey
+        {
+            TenantId = tenantId, Name = "ERP pull", Prefix = "kx_live_ab", Scopes = ErpApiKeyScopes.ExportsRead,
+            CreatedByUserId = Guid.NewGuid(), CompanyId = null,
+        };
+
+        var result = await Ctrl(db, ErpApiKeyPrincipal.Build(key)).Download(id, default);
+
+        result.Should().BeOfType<FileContentResult>("AM-20: the key's exports.read scope is the grant, not finance.gl.export");
+        var audit = await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Action == "finance.gl.journal_export.downloaded");
+        audit.Metadata.Should().Contain(key.Id.ToString()).And.Contain(key.CreatedByUserId.ToString());
+    }
+
     // ── AM-22 / AM-26: the adapter ────────────────────────────────────────────────────────────
 
     private static async Task<(Guid Tid, Company Co)> SeedCompany(ZayraDbContext db, bool costing)
