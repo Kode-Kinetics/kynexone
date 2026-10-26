@@ -248,3 +248,12 @@ export function turnOnGate(r: { checks: readonly ReadinessCheck[]; smallCellExpo
   const needsAck = hard.length > 0 || exposure > 0;
   return { hard, exposure, needsAck, canConfirm: reason.trim().length > 0 && (!needsAck || ack) };
 }
+
+/**
+ * The direction a mixed label ("5002 — Housing Allowance Expense") reads in: that of its first strong letter. A native
+ * select cuts a long label at its end, so on an RTL page a Latin label must be set left to right or its beginning is lost.
+ */
+export function textDir(text: string): 'ltr' | 'rtl' {
+  const m = /[A-Za-zÀ-ɏ֐-ࣿיִ-﷿ﹰ-﻿]/.exec(text);
+  return m && /[֐-ࣿיִ-﷿ﹰ-﻿]/.test(m[0]) ? 'rtl' : 'ltr';
+}

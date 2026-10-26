@@ -36,6 +36,7 @@ import {
   setBaseClass,
   setClassRuleAccount,
   setFixedCostCentre,
+  textDir,
   toMappingInputs,
   unusedClasses,
   type CostCentreRule,
@@ -195,6 +196,13 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   );
 
   const draftList = useMemo(() => baseDrafts.map((b) => drafts[b.driverKey] ?? b), [baseDrafts, drafts]);
+  // What a select currently shows, to set its direction (see textDir).
+  const selectedAccountText = (id: string, placeholder: string) => accountLabel(id) ?? placeholder;
+  const selectedCostCentreText = (id: string) => {
+    const c = fixedOptions.find((x) => x.id === id);
+    return c ? `${c.code} — ${c.name}` : t('None');
+  };
+
   const dirty = useMemo(() => mappingsChanged(baseDrafts, draftList), [baseDrafts, draftList]);
   const hasDuplicate = draftList.some((d) => duplicateClass(d) !== null);
 
@@ -1037,6 +1045,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                         <td className="px-2 py-2">
                           <select
                             aria-label={t('Account for {line}', { line: r.label })}
+                            dir={textDir(selectedAccountText(d.accountId, inCompanyView ? t('Inherit group mapping') : t('Use the fallback account')))}
                             value={d.accountId}
                             disabled={!mapEditable}
                             onChange={(ev) => updateDraft(r.driverKey, (x) => setBaseAccount(x, ev.target.value))}
@@ -1079,6 +1088,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                         <td className="px-2 py-2">
                           <select
                             aria-label={t('Fixed cost centre for {line}', { line: r.label })}
+                            dir={textDir(selectedCostCentreText(d.fixedCostCentreId))}
                             value={d.fixedCostCentreId}
                             disabled={!mapEditable || ex.fixedDisabled}
                             aria-describedby={ex.why === 'group' ? 'cc-map-group-hint' : ex.why === 'class' ? hintId : ex.why === 'account' ? 'cc-map-account-first-hint' : undefined}
@@ -1141,6 +1151,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                           <td className="px-2 py-2">
                             <select
                               aria-label={t('Class rule for {line}: {class}', { line: r.label, class: classLabel(rule.cls) })}
+                              dir={textDir(selectedAccountText(rule.accountId, rule.inherited ? t('Inherit group mapping') : t('Use the fallback account')))}
                               value={rule.accountId}
                               disabled={!mapEditable}
                               onChange={(ev) => updateDraft(r.driverKey, (x) => setClassRuleAccount(x, rule.cls, ev.target.value))}

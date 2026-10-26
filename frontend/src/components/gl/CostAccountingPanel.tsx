@@ -13,6 +13,7 @@ import {
   orderChecks,
   readinessAllClear,
   sampleHref,
+  textDir,
   turnOnGate,
 } from '../../lib/glCostAccounting';
 import { Modal } from '../Modal';
@@ -240,6 +241,7 @@ export function CostAccountingPanel({ companies, scope, costCenters, canManage, 
           <Field label={t('Default cost centre')} hint={t('Used when an employee has no cost centre at any level, and for rounding differences.')}>
             <select
               value={defaultId}
+              dir={textDir((() => { const c = defaultOptions.find((x) => x.id === defaultId); return c ? `${c.code} — ${c.name}` : t('None'); })())}
               onChange={(e) => setDefaultId(e.target.value)}
               disabled={!canChange}
               data-testid="cc-ready-default-cc"
