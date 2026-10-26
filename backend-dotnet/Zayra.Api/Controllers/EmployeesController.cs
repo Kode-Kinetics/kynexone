@@ -519,6 +519,7 @@ public class EmployeesController : ControllerBase
     [HttpGet("field-catalog")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
     [HasPermission("employees.read")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("field-catalog")]
     public async Task<IActionResult> FieldCatalog(
         [FromQuery] Guid? companyId, [FromQuery] string? countryCode, [FromQuery] string? nationality,
         CancellationToken ct = default,
@@ -2893,8 +2894,13 @@ public class EmployeesController : ControllerBase
 
     [HttpPost]
     [HasPermission("employees.write")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("employee-create")]
+    [RequestSizeLimit(65_536)]
+    [Zayra.Api.Infrastructure.Employees.Onboarding.IdempotentEmployeeCreate]
     public async Task<ActionResult<EmployeeDetailDto>> CreateEmployee(EmployeeCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Refusal(request.AcknowledgeDuplicate, request.DuplicateOverrideReason,
+                User.HasPermission(Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Permission)) is { } overrideRefused) return overrideRefused;
         try
         {
             var tenantId = RequireTenant();
@@ -2971,6 +2977,8 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpPost("duplicate-check")]
     [HasPermission("employees.write")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("duplicate-check")]
+    [Zayra.Api.Infrastructure.Employees.Onboarding.BoundDuplicateCheck]
     public async Task<ActionResult<DuplicateCheckResponse>> DuplicateCheck([FromBody] DuplicateCheckRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -3012,6 +3020,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpPost("derive-work-email")]
     [HasPermission("employees.write")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("derive-work-email")]
     public async Task<ActionResult<DeriveWorkEmailResponse>> DeriveWorkEmail([FromBody] DeriveWorkEmailRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();

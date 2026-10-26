@@ -634,6 +634,8 @@ Zayra.Api.Infrastructure.Engagement.EngagementServiceCollectionExtensions.AddEng
 builder.Services.AddHttpClient<ILlmClient, LlmClient>(c => c.Timeout = TimeSpan.FromSeconds(120));
 builder.Services.AddHttpContextAccessor();
 
+Zayra.Api.Infrastructure.Employees.Onboarding.OnboardingServiceRegistration.AddOnboardingServices(builder.Services);
+
 // Country pack framework — scoped per request (strategies depend on scoped IStatutoryRuleReader).
 // Default (no-op) pack registered as the non-keyed fallback for each interface.
 // Country packs registered as keyed scoped services; the resolver checks keyed registrations
