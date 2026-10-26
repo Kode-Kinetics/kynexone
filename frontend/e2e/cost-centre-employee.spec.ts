@@ -54,8 +54,9 @@ async function boot(page: Page, options: Options = {}) {
       ...(manage ? ['organization.costcenter.manage'] : []), ...(finance ? ['finance.gl.read'] : [])],
   });
   const state = {
-    costCenterId: options.override ? 'cc-sales' : options.invalidInherited ? 'cc-old' : 'cc-admin',
-    costCenter: options.override ? 'SALES' : options.invalidInherited ? 'OLD-OPS' : 'ADMIN',
+    // The stored copy of the department's own cost centre: none when only the parent has one.
+    costCenterId: options.override ? 'cc-sales' : options.invalidInherited ? 'cc-old' : options.parentSupplies ? null : 'cc-admin' as string | null,
+    costCenter: options.override ? 'SALES' : options.invalidInherited ? 'OLD-OPS' : options.parentSupplies ? '' : 'ADMIN',
     refusal: options.refusal ?? null as null | { status: number; body: unknown },
     writes: [] as Array<{ method: string; path: string; body: any }>,
     departments: [
@@ -115,7 +116,7 @@ const open = async (page: Page) => {
 };
 const axeSeriousOrWorse = async (page: Page, scope: string) => {
   const result = await new AxeBuilder({ page }).include(scope).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze();
-  return result.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.map((n) => n.html.slice(0, 100)).join(' | ')}`);
+  return result.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.map((n) => `${n.html.slice(0, 100)} ${n.any.map((a) => a.message).join(';')}`).join(' | ')}`);
 };
 
 // ═════════════════════════════ Screen 6: the field and its source ═════════════════════════════
@@ -175,7 +176,7 @@ test('an inactive inherited cost centre is a rose chip naming the level and code
 
 test('with nothing anywhere: the company default when there is one', async ({ page }) => {
   await boot(page, { parentSupplies: true });
-  await page.route('**/api/departments', (route) => route.fulfill({ json: { items: [
+  await page.route('**/api/departments*', (route) => route.fulfill({ json: { items: [
     { id: 'qa-finance', code: 'QA-FIN', nameEn: 'QA Finance', nameAr: '', isActive: true, companyId: CO },
   ], total: 1, page: 1, pageSize: 100 } }));
   await open(page);
@@ -332,6 +333,8 @@ test('axe: the field, with the Why panel and the Override dialog open, has no se
   await tid(page, 'cc-emp-why').click();
   expect(await axeSeriousOrWorse(page, '[data-testid="cc-emp-field"]')).toEqual([]);
   await tid(page, 'cc-emp-override-open').click();
+  await expect(page.getByRole('dialog', { name: 'Change cost centre override' })).toBeVisible();
+  await page.waitForTimeout(600); // the dialog fades in; axe measures contrast on the settled colours
   expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
 });
 

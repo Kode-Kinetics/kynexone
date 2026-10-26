@@ -1000,11 +1000,13 @@ test('AM-30: the department\'s own cost centre is a plain copy (no reason); a di
   await expect(dialog.getByTestId('cc-create-reason')).toHaveCount(0);
   await select.selectOption('cost-finance');
   await expect(dialog.getByTestId('cc-create-reason')).toBeVisible();
+  // The step will not advance without the reason, and the error is on the step that owns the field.
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
-  expect(creates).toHaveLength(0);
   await expect(dialog.getByText('Enter a reason for this change.')).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  expect(creates).toHaveLength(0);
   await dialog.getByTestId('cc-create-reason').fill(' Cross-charged to finance ');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
   await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
   await finishCreated(dialog);
   expect(creates[0]).toMatchObject({ departmentId: 'department-wizard', costCenterId: 'cost-finance', costCenterReason: 'Cross-charged to finance' });

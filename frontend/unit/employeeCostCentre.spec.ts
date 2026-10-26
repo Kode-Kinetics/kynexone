@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { buildEmployeeEditChanges } from '../src/lib/employeeEditDraft';
 import {
   NO_COST_CENTRE,
   costCentreErrorKind,
@@ -67,7 +68,7 @@ test.describe('resolveCostCentre follows the server order: employee, position, d
   test('an inactive, deleted or other-company cost centre at a level is invalid and never falls through to the next level', () => {
     const i = base();
     i.departments[0].costCenterId = 'old';
-    expect(resolveCostCentre(i)).toMatchObject({ kind: 'invalid', level: 'department', code: 'old' });
+    expect(resolveCostCentre(i)).toMatchObject({ kind: 'invalid', level: 'department', code: 'OLD' });
     i.departments[0].costCenterId = 'other';
     expect(resolveCostCentre(i)).toMatchObject({ kind: 'invalid', level: 'department' });
     i.departments[0].costCenterId = 'gone';
@@ -144,8 +145,7 @@ test.describe('costCentreErrorKind', () => {
 });
 
 test.describe('the shared edit-draft change set never carries the cost centre (AM-30)', () => {
-  test('a changed costCenter key is dropped: a department change must not turn into an override', async () => {
-    const { buildEmployeeEditChanges } = await import('../src/lib/employeeEditDraft');
+  test('a changed costCenter key is dropped: a department change must not turn into an override', () => {
     const fields = [{ section: 'Employment', key: 'department', label: 'Department' }, { section: 'Employment', key: 'costCenter', label: 'Cost center' }];
     const changes = buildEmployeeEditChanges({ department: 'Ops', costCenter: 'OPS' }, fields as never, ['department', 'costCenter']);
     expect(changes).toEqual({ department: 'Ops' });

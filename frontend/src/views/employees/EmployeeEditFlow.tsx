@@ -229,7 +229,8 @@ export function EmployeeEditFlow({
                     />;
                     if (field.key === 'costCenter') return <label key={field.key} htmlFor="edit-field-costCenter" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                       <span>{t('Cost center')}</span>
-                      <input id="edit-field-costCenter" value={draft.form.costCenter ?? ''} readOnly className="input mt-1.5 w-full bg-slate-50 dark:bg-white/5" />
+                      <input id="edit-field-costCenter" value={draft.form.costCenter ?? ''} readOnly aria-describedby="edit-field-costCenter-hint" className="input mt-1.5 w-full bg-slate-50 dark:bg-white/5" />
+                      <span id="edit-field-costCenter-hint" className="mt-1 block text-xs font-normal text-slate-500">{t('Managed on the Employment tab of the profile, with a reason.')}</span>
                     </label>;
                     if (field.key === 'managerEmployeeId') {
                       const current = draft.form.managerEmployeeId ?? '';

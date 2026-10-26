@@ -383,6 +383,11 @@ export interface CostCenterDto {
   /** Optional Arabic name; readers fall back to name. */
   nameAr?: string | null;
   isActive: boolean;
+  parentId?: string | null;
+  /** COGS | SELLING | G_AND_A | R_AND_D | OPERATIONS | CAPITALISABLE. */
+  functionalClass?: string | null;
+  /** The cost-centre value in the customer's ERP. */
+  glSegment?: string | null;
 }
 
 export interface CostCenterRequest {
@@ -391,7 +396,30 @@ export interface CostCenterRequest {
   name: string;
   nameAr?: string | null;
   isActive: boolean;
+  /** null/absent leaves it alone on an update; the empty Guid clears it. */
+  parentId?: string | null;
+  /** null/absent leaves it alone; '' clears it. Needs finance.gl.manage and a reason. */
+  functionalClass?: string | null;
+  /** null/absent leaves it alone; '' clears it. */
+  glSegment?: string | null;
+  /** Required when the functional class changes; recorded in the audit row. */
+  reason?: string;
 }
+
+export interface PositionDto {
+  id: string;
+  companyId?: string | null;
+  departmentId?: string | null;
+  code?: string;
+  title?: string;
+  costCenterId?: string | null;
+}
+
+export const positionsApi = {
+  /** The positions of a company (the employee's cost centre can come from the position). */
+  list: (companyId?: string | null) =>
+    client.get<PositionDto[]>('/api/positions', { params: companyId ? { companyId } : undefined }).then((r) => r.data),
+};
 
 export const costCentersApi = {
   list: (companyId?: string, page = 1, pageSize = 100) =>
