@@ -102,12 +102,12 @@ public class HrmHierarchyService : IHrmHierarchyService
     {
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted, ct)
-            ?? throw new InvalidOperationException($"Employee {employeeId} not found.");
+            ?? throw new HierarchyRefusedException($"Employee {employeeId} not found.");
 
         if (managerEmployeeId.HasValue)
         {
             if (managerEmployeeId.Value == employeeId)
-                throw new InvalidOperationException("An employee cannot be their own manager.");
+                throw new HierarchyRefusedException("An employee cannot be their own manager.");
 
             await ValidateNoCircularManagerAsync(tenantId, employeeId, managerEmployeeId.Value, ct);
             await EnsureSameCompanyEmployeesAsync(tenantId, employeeId, managerEmployeeId.Value, ct);
@@ -155,11 +155,11 @@ public class HrmHierarchyService : IHrmHierarchyService
         Guid tenantId, int employeeId, AddReportingLineRequest req, RequestContext context, CancellationToken ct)
     {
         if (req.ManagerEmployeeId == employeeId)
-            throw new InvalidOperationException("An employee cannot report to themselves.");
+            throw new HierarchyRefusedException("An employee cannot report to themselves.");
 
         var allowedTypes = new HashSet<string> { "SolidLine", "DottedLine", "Temporary", "Functional" };
         if (!allowedTypes.Contains(req.RelationshipType))
-            throw new InvalidOperationException($"Invalid RelationshipType '{req.RelationshipType}'. Use: SolidLine, DottedLine, Temporary, Functional.");
+            throw new HierarchyRefusedException($"Invalid RelationshipType '{req.RelationshipType}'. Use: SolidLine, DottedLine, Temporary, Functional.");
 
         if (req.RelationshipType == "SolidLine")
             await ValidateNoCircularManagerAsync(tenantId, employeeId, req.ManagerEmployeeId, ct);
@@ -228,7 +228,7 @@ public class HrmHierarchyService : IHrmHierarchyService
             .ToDictionaryAsync(e => e.Id, ct);
 
         if (!employees.TryGetValue(employeeId, out var employee))
-            throw new InvalidOperationException($"Employee {employeeId} not found.");
+            throw new HierarchyRefusedException($"Employee {employeeId} not found.");
 
         var chain = new List<HierarchyPersonDto>();
         var visited = new HashSet<int> { employeeId };
@@ -237,7 +237,7 @@ public class HrmHierarchyService : IHrmHierarchyService
         while (current.HasValue && level <= maxDepth)
         {
             if (!visited.Add(current.Value))
-                throw new InvalidOperationException("Circular reporting chain detected.");
+                throw new HierarchyRefusedException("Circular reporting chain detected.");
             if (!employees.TryGetValue(current.Value, out var manager))
                 break;
 
@@ -323,7 +323,7 @@ public class HrmHierarchyService : IHrmHierarchyService
         while (current.HasValue)
         {
             if (current.Value == employeeId)
-                throw new InvalidOperationException(
+                throw new HierarchyRefusedException(
                     $"Setting employee {newManagerId} as manager of {employeeId} would create a circular reporting chain.");
             if (visited.Contains(current.Value))
                 break; // existing circular loop in data — stop but don't throw (that's a data integrity issue)
@@ -388,11 +388,19 @@ public class HrmHierarchyService : IHrmHierarchyService
             .ToListAsync(ct);
 
         var employee = people.FirstOrDefault(e => e.Id == employeeId)
-            ?? throw new InvalidOperationException($"Employee {employeeId} not found.");
+            ?? throw new HierarchyRefusedException($"Employee {employeeId} not found.");
         var manager = people.FirstOrDefault(e => e.Id == managerEmployeeId)
-            ?? throw new InvalidOperationException($"Manager employee {managerEmployeeId} not found in this tenant.");
+            ?? throw new HierarchyRefusedException($"Manager employee {managerEmployeeId} not found in this tenant.");
 
         if (employee.CompanyId.HasValue && manager.CompanyId.HasValue && employee.CompanyId != manager.CompanyId)
-            throw new InvalidOperationException("Cross-company reporting relationships are not allowed. Use an audited transfer or matrix-assignment flow.");
+            throw new HierarchyRefusedException("Cross-company reporting relationships are not allowed. Use an audited transfer or matrix-assignment flow.");
     }
+}
+
+/// <summary>A reporting-line change the rules refuse. Its message is authored text (no stack or storage detail), and it
+/// stays an <see cref="InvalidOperationException"/> so existing callers keep working.</summary>
+public sealed class HierarchyRefusedException : InvalidOperationException
+{
+    public const string Code = "invalid_hierarchy_change";
+    public HierarchyRefusedException(string message) : base(message) { }
 }

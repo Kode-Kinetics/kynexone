@@ -2806,7 +2806,7 @@ public class EmployeesController : ControllerBase
             await hierarchy.SetManagerAsync(RequireTenant(), id, req.ManagerEmployeeId, Context(), ct);
             return NoContent();
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     // ── Reporting lines ───────────────────────────────────────────────────────
@@ -2839,7 +2839,7 @@ public class EmployeesController : ControllerBase
             var line = await hierarchy.AddReportingLineAsync(RequireTenant(), id, req, Context(), ct);
             return Created($"/api/employees/{id}/reporting-lines/{line.Id}", line);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     [HttpDelete("{id:int}/reporting-lines/{lineId:guid}")]
@@ -2868,7 +2868,7 @@ public class EmployeesController : ControllerBase
         {
             return Ok(await hierarchy.ResolveHierarchyAsync(RequireTenant(), id, maxDepth, ct));
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     [HttpGet("{id:int}/workflow-approvers")]
@@ -2885,7 +2885,7 @@ public class EmployeesController : ControllerBase
         {
             return Ok(await hierarchy.ResolveWorkflowApproversAsync(RequireTenant(), id, workflowType, ct));
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     public record SetManagerRequest(int? ManagerEmployeeId);
@@ -6468,7 +6468,7 @@ public class EmployeesController : ControllerBase
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
-    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
+    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant(), Permissions: User.EffectivePermissions());
     private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
