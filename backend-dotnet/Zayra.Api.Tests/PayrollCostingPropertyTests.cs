@@ -146,4 +146,26 @@ public class PayrollCostingPropertyTests
         lines.Select(l => l.PostingKey).Should().OnlyHaveUniqueItems().And.NotContainNulls();
         snapshots.Select(s => s.CostCenterId).Should().Equal(a, b, a);
     }
+
+    [Fact]
+    public void AnEmployeeWithNoCostCentre_OnAnOptionalAccount_PostsOneUncostedBucket_InThePlannerAndTheBonusAccrual()
+    {
+        Guid a = Guid.NewGuid();
+        var gl = new GlResolutionContext(new Dictionary<string, (string, string)>(), new Dictionary<string, (string, string)>(), Array.Empty<GlDriverRow>())
+        {
+            CostAccountingEnabled = true,
+            CostCentres = new Dictionary<Guid, GlCostCentreInfo> { [a] = new("CC-A", "A", null, null, null, true) },
+        };
+        var (lines, _) = EosbProvisionPlanner.Build(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "2026-09", new DateOnly(2026, 9, 30), "SAR",
+            "5110 - End of Service Benefit Expense", "2310 - End of Service Benefit Provision",
+            new[] { new EosbObligation(1, "E1", 100m, 0m, true, 1m, 1m, "r", a), new EosbObligation(2, "E2", 40m, 0m, true, 1m, 1m, "r", null) },
+            null, "t", new DateOnly(2026, 9, 30), new EosbCostContext(gl));
+        lines.Where(l => l.DebitAccount.StartsWith("5110")).Select(l => (l.CostCenterCode, l.Amount)).OrderBy(x => x.CostCenterCode)
+            .Should().Equal(((string?)null, 40m), ("CC-A", 100m));
+
+        var accrual = BonusCostSplit.BuildAccrual(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BON-1", "B", "2026-09", "SAR", 300m,
+            new[] { (1, 200m), (2, 100m) }, new Dictionary<int, Guid?> { [1] = a, [2] = null }, gl, new DateOnly(2026, 9, 1), null, "t");
+        accrual.Select(l => (l.CostCenterCode, l.Amount)).OrderBy(x => x.CostCenterCode).Should().Equal(((string?)null, 100m), ("CC-A", 200m));
+        accrual.Select(l => l.PostingKey).Should().OnlyHaveUniqueItems().And.NotContainNulls();
+    }
 }
