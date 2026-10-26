@@ -464,10 +464,10 @@ test('Arabic: RTL, translated headings, classes and refusals; codes stay left to
   await tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'تعديل', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'تعديل مركز التكلفة SALES' })).toBeVisible();
   await shot(page, info, 'cc-ar-master-form');
-  ctl.refuse = { status: 409, body: { error: 'locked_into_approved_run', message: 'x', messageAr: 'هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتحها أولًا.' } };
+  ctl.refuse = { status: 409, body: { error: 'locked_into_approved_run', message: 'x', messageAr: 'يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتح المسير أولًا.' } };
   await tid(page, 'cc-form-name').fill('مبيعات');
   await tid(page, 'cc-form-save').click();
-  await expect(tid(page, 'cc-form-error')).toHaveText('هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتحها أولًا.');
+  await expect(tid(page, 'cc-form-error')).toHaveText('يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتح المسير أولًا.');
 });
 
 test('Arabic: the in-use dialog is translated, with plural counts', async ({ page }, info) => {

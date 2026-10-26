@@ -22,13 +22,13 @@ const run = (over: Record<string, unknown>) => ({
 });
 
 const M1_EN = '12 employee(s) have no cost centre, and account 5001 Basic salary requires one. Assign a cost centre to each employee, their position, their department, or set a company default cost centre, then lock again.';
-const M1_AR = 'لدى 12 موظف/موظفين لا يوجد مركز تكلفة، والحساب 5001 Basic salary يتطلب مركز تكلفة. عيّن مركز تكلفة للموظف أو لمنصبه أو لقسمه، أو حدّد مركز تكلفة افتراضيًا للشركة، ثم أعد القفل.';
+const M1_AR = 'عدد الموظفين بلا مركز تكلفة: 12، والحساب 5001 — Basic salary يتطلب مركز تكلفة. عيّن مركز تكلفة للموظف أو لمنصبه أو لقسمه، أو حدّد مركز تكلفة افتراضيًا للشركة، ثم أعد قفل مسير الرواتب.';
 const M2_EN = 'The cost centre set at the Position level is inactive, deleted or belongs to another company, so cost cannot be assigned. Fix it in Setup, then lock again.';
-const M2_AR = 'مركز التكلفة المحدد على مستوى المنصب غير نشط أو محذوف أو يتبع شركة أخرى، لذا لا يمكن توزيع التكلفة. صحّحه من الإعدادات ثم أعد القفل.';
+const M2_AR = 'مركز التكلفة المحدد في مستوى المنصب غير نشط أو محذوف أو يتبع شركة أخرى، لذا لا يمكن توزيع التكلفة. صحّحه من الإعدادات ثم أعد قفل مسير الرواتب.';
 const M6_EN = 'Cost-centre assignments or posting rules changed after this run was approved, so it was sent back for approval. Process and approve it again.';
-const M6_AR = 'تغيّرت تعيينات مراكز التكلفة أو قواعد الترحيل بعد اعتماد هذه المسيرة، لذا أُعيدت للاعتماد. أعد المعالجة والاعتماد.';
+const M6_AR = 'تغيّرت تعيينات مراكز التكلفة أو قواعد الترحيل بعد اعتماد هذا المسير، لذا أُعيد المسير إلى حالة الاعتماد. أعد معالجة المسير ثم اعتمده.';
 const SOD_EN = 'You changed cost-accounting settings for this company since the last lock, so someone else must lock or export this run.';
-const SOD_AR = 'لقد غيّرت إعدادات محاسبة التكلفة لهذه الشركة منذ آخر قفل، لذا يجب أن يقوم مستخدم آخر بقفل هذه المسيرة أو تصديرها.';
+const SOD_AR = 'غيّرتَ إعدادات محاسبة التكلفة لهذه الشركة منذ آخر قفل، وتطبيقًا لمبدأ الفصل بين المهام يجب أن يتولى مستخدم آخر قفل هذا المسير أو تصديره.';
 
 interface Options {
   locale?: 'en' | 'ar';

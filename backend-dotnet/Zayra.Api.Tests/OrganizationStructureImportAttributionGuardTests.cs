@@ -101,7 +101,7 @@ public class OrganizationStructureImportAttributionGuardTests
         preview.HasBlockingErrors.Should().BeTrue();
         var row = preview.Rows.Single(r => r.Status == ImportRowStatus.Error);
         row.Errors.Should().Contain(e => e.Contains(Locked));
-        row.ErrorsAr.Should().NotBeNull().And.Contain(e => e != null && e.Contains("أعد فتحها"));
+        row.ErrorsAr.Should().NotBeNull().And.Contain(e => e != null && e.Contains("أعد فتح المسير"));
         row.RowNumber.Should().Be(2);
 
         (await Controller(w.Db, w.Tenant).Commit(request, default)).Result.Should().NotBeOfType<OkObjectResult>();

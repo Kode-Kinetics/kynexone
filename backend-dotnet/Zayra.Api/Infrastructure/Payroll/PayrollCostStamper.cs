@@ -308,8 +308,8 @@ public static class PayrollCostStamper
 
     private static string LevelLabelAr(string level) => level switch
     {
-        "employee" => "الموظف", "position" => "المنصب", "department" => "القسم",
-        "parentDepartment" => "القسم الأعلى", "company" => "الشركة", "mapping" => "قاعدة الترحيل", _ => level,
+        "employee" => "مستوى الموظف", "position" => "مستوى المنصب", "department" => "مستوى القسم",
+        "parentDepartment" => "مستوى القسم الأعلى", "company" => "المركز الافتراضي للشركة", "mapping" => "مستوى قاعدة الترحيل", _ => level,
     };
 
     /// <summary>The 422 body (M-1, M-2, M-5): AM-1 blockers (no amounts) plus per-account / per-level aggregate groups.</summary>
@@ -324,7 +324,7 @@ public static class PayrollCostStamper
         {
             var employees = g.GroupBy(b => b.EmployeeId).OrderBy(x => x.First().EmployeeCode, StringComparer.Ordinal).ToList();
             var message = $"The cost centre set at the {LevelLabel(g.Key)} level is inactive, deleted or belongs to another company, so cost cannot be assigned. Fix it in Setup, then lock again.";
-            var messageAr = $"مركز التكلفة المحدد على مستوى {LevelLabelAr(g.Key)} غير نشط أو محذوف أو يتبع شركة أخرى، لذا لا يمكن توزيع التكلفة. صحّحه من الإعدادات ثم أعد القفل.";
+            var messageAr = $"مركز التكلفة المحدد في {LevelLabelAr(g.Key)} غير نشط أو محذوف أو يتبع شركة أخرى، لذا لا يمكن توزيع التكلفة. صحّحه من الإعدادات ثم أعد قفل مسير الرواتب.";
             groups.Add((InvalidCode, message, messageAr, new
             {
                 error = InvalidCode, level = LevelLabel(g.Key), employeeCount = employees.Count,
@@ -337,7 +337,7 @@ public static class PayrollCostStamper
         {
             var employees = g.GroupBy(b => b.EmployeeId).OrderBy(x => x.First().EmployeeCode, StringComparer.Ordinal).ToList();
             var message = $"{employees.Count} employee(s) have no cost centre, and account {g.Key.AccountCode} {g.Key.AccountName} requires one. Assign a cost centre to each employee, their position, their department, or set a company default cost centre, then lock again.";
-            var messageAr = $"لدى {employees.Count} موظف/موظفين لا يوجد مركز تكلفة، والحساب {g.Key.AccountCode} {g.Key.AccountName} يتطلب مركز تكلفة. عيّن مركز تكلفة للموظف أو لمنصبه أو لقسمه، أو حدّد مركز تكلفة افتراضيًا للشركة، ثم أعد القفل.";
+            var messageAr = $"عدد الموظفين بلا مركز تكلفة: {employees.Count}، والحساب {g.Key.AccountCode} — {g.Key.AccountName} يتطلب مركز تكلفة. عيّن مركز تكلفة للموظف أو لمنصبه أو لقسمه، أو حدّد مركز تكلفة افتراضيًا للشركة، ثم أعد قفل مسير الرواتب.";
             groups.Add((RequiredCode, message, messageAr, new
             {
                 error = RequiredCode, accountCode = g.Key.AccountCode, accountName = g.Key.AccountName, employeeCount = employees.Count,
@@ -349,7 +349,7 @@ public static class PayrollCostStamper
         foreach (var g in blockers.Where(b => b.Reason == ReservedClassCode).GroupBy(b => b.AccountCode).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
             const string message = "A cost centre uses a functional class that is reserved and cannot be used for posting yet.";
-            const string messageAr = "مركز تكلفة يستخدم تصنيفًا وظيفيًا محجوزًا لا يمكن استخدامه في الترحيل بعد.";
+            const string messageAr = "يستخدم أحد مراكز التكلفة تصنيفًا وظيفيًا للتكلفة محجوزًا لا يمكن استخدامه في الترحيل حاليًا.";
             groups.Add((ReservedClassCode, message, messageAr, new
             {
                 error = ReservedClassCode, accountCode = g.Key, employeeCount = g.Select(b => b.EmployeeId).Distinct().Count(),
@@ -380,7 +380,7 @@ public static class PayrollCostStamper
     {
         error = RoundingCode,
         message = $"A rounding difference of {amount.ToString("0.00", CultureInfo.InvariantCulture)} {currency} must be posted to account {accountCode}, which requires a cost centre. Set a default cost centre for the company, then lock again.",
-        messageAr = $"يجب ترحيل فرق تقريب مقداره {amount.ToString("0.00", CultureInfo.InvariantCulture)} {currency} إلى الحساب {accountCode} الذي يتطلب مركز تكلفة. حدّد مركز تكلفة افتراضيًا للشركة ثم أعد القفل.",
+        messageAr = $"يجب ترحيل فرق تقريب مقداره {amount.ToString("0.00", CultureInfo.InvariantCulture)} {currency} إلى الحساب {accountCode} الذي يتطلب مركز تكلفة. حدّد مركز تكلفة افتراضيًا للشركة ثم أعد قفل المسير.",
         accountCode, accountName, amount, currency,
     };
 
@@ -388,7 +388,7 @@ public static class PayrollCostStamper
     {
         error = ChangedAfterApprovalCode,
         message = "Cost-centre assignments or posting rules changed after this run was approved, so it was sent back for approval. Process and approve it again.",
-        messageAr = "تغيّرت تعيينات مراكز التكلفة أو قواعد الترحيل بعد اعتماد هذه المسيرة، لذا أُعيدت للاعتماد. أعد المعالجة والاعتماد.",
+        messageAr = "تغيّرت تعيينات مراكز التكلفة أو قواعد الترحيل بعد اعتماد هذا المسير، لذا أُعيد المسير إلى حالة الاعتماد. أعد معالجة المسير ثم اعتمده.",
         status,
     };
 

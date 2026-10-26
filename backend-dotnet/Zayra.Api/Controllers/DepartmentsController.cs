@@ -255,7 +255,7 @@ public class DepartmentsController : ControllerBase
             {
                 error = "links_clear_not_acknowledged",
                 message = $"This file would clear {linksToClear} existing cost-centre or parent link(s). Review the preview and confirm to continue.",
-                messageAr = $"سيؤدي هذا الملف إلى مسح {linksToClear} من روابط مركز التكلفة أو القسم الأب الحالية. راجع المعاينة ثم أكد للمتابعة.",
+                messageAr = $"سيؤدي هذا الملف إلى إزالة {linksToClear} من ارتباطات مركز التكلفة أو القسم الأعلى الحالية. راجع المعاينة ثم أكد للمتابعة.",
                 linksToClear,
             });
         if (linksToClear > 0 && string.IsNullOrWhiteSpace(reason))

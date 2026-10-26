@@ -424,18 +424,18 @@ public partial class FinanceGlController : ControllerBase
             if (!accounts.TryGetValue(m.AccountId, out var account)) return BadRequest(new { message = $"Account '{m.AccountId}' is not visible to this scope." });
             if (cls is not null && !FunctionalClasses.Contains(cls, StringComparer.Ordinal))
                 return UnprocessableEntity(CostAccountingGuards.Error("functional_class_invalid", $"'{cls}' is not a functional class. Use one of {string.Join(", ", FunctionalClasses.Where(c => c != ReservedFunctionalClass))}.",
-                    "التصنيف الوظيفي غير صالح."));
+                    "التصنيف الوظيفي للتكلفة غير صالح."));
             if (cls == ReservedFunctionalClass)
                 return UnprocessableEntity(CostAccountingGuards.Error("functional_class_reserved", "The Capitalisable class is reserved and cannot be used for posting yet.",
-                    "التصنيف الوظيفي «قابل للرسملة» محجوز ولا يمكن استخدامه في الترحيل بعد."));
+                    "التصنيف «قابلة للرسملة» محجوز لاستخدام لاحق ولا يمكن استخدامه في الترحيل حاليًا."));
             if (m.SegmentCostCenterId is { } cc)
             {
                 if (cls is not null)
                     return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_with_class", "A posting rule is either for one functional class or fixed to one cost centre, not both.",
-                        "قاعدة الترحيل إما لتصنيف وظيفي واحد أو مثبّتة على مركز تكلفة واحد، وليس كلاهما."));
+                        "تُحدَّد قاعدة الترحيل إما بتصنيف وظيفي للتكلفة واحد أو بمركز تكلفة ثابت واحد، وليس بكليهما."));
                 if (companyId is null)
                     return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_requires_company", "Fixed cost centres are set per company. Switch to a company to set one.",
-                        "تُحدَّد مراكز التكلفة الثابتة لكل شركة. انتقل إلى شركة لتحديد مركز."));
+                        "تُحدَّد مراكز التكلفة الثابتة لكل شركة. اختر شركة معيّنة لتحديد مركز."));
                 if (!fixedRows.TryGetValue(cc, out var row) || row.CompanyId != companyId || !row.IsActive || row.IsDeleted)
                     return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_invalid", "The fixed cost centre must be an active cost centre of this company.",
                         "يجب أن يكون مركز التكلفة الثابت مركزًا نشطًا تابعًا لهذه الشركة."));
@@ -893,7 +893,7 @@ public partial class FinanceGlController : ControllerBase
         if (!CostCenterRules.Contains(rule, StringComparer.Ordinal))
             return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_rule_invalid",
                 $"The cost centre rule must be one of {string.Join(", ", CostCenterRules)}.",
-                "يجب أن تكون قاعدة مركز التكلفة إحدى القيم: Required أو Optional أو NotAllowed."));
+                "يجب أن تكون قاعدة مركز التكلفة أحد الخيارات: إلزامي (Required) أو اختياري (Optional) أو غير مسموح (NotAllowed)."));
         if (rule == "Required" && !IsProfitAndLossType(accountType))
             return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_rule_invalid_for_type",
                 "Only expense and income accounts can require a cost centre.",

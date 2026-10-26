@@ -23,7 +23,7 @@ const companyAe = {
 };
 
 const M7_EN = 'A payroll run for this company is awaiting finance review or lock, and this change would alter what it posts. Lock the run, or reopen it first.';
-const M7_AR = 'هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل، وهذا التغيير سيغيّر ما ستقوم بترحيله. اقفل المسيرة أو أعد فتحها أولًا.';
+const M7_AR = 'يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل، وسيغيّر هذا التعديل ما سيُرحَّل. اقفل المسير أو أعد فتحه أولًا.';
 const lockedBody = { error: 'locked_into_approved_run', code: 'locked_into_approved_run', message: M7_EN, messageAr: M7_AR };
 
 interface Account { id: string; companyId: string | null; code: string; name: string; accountType: string; isActive: boolean; costCenterRule: string; externalCode?: string | null }
