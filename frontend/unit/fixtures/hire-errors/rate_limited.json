@@ -1,0 +1,1 @@
+{ "status": 429, "contentType": "application/json", "headers": { "retry-after": "17" }, "body": { "error": "rate_limited", "message": "Too many requests. Try again shortly." } }
