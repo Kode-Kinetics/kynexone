@@ -252,7 +252,8 @@ public class PayrollCostingLockTests
         groups[0].GetProperty("employees").EnumerateArray().Select(x => x.GetProperty("code").GetString()).Should().BeEquivalentTo("E2", "E3");
         groups[0].GetProperty("message").GetString().Should().Be(
             "2 employee(s) have no cost centre, and account 5001 Basic Salary Expense requires one. Assign a cost centre to each employee, their position, their department, or set a company default cost centre, then lock again.");
-        groups[1].GetProperty("amount").GetDecimal().Should().Be(300m);
+        groups[1].GetProperty("amount").ValueKind.Should().Be(JsonValueKind.Null, "a group of one employee carries no amount: it would be that person's pay");
+        groups[1].GetProperty("amountWithheld").GetBoolean().Should().BeTrue();
         // AM-1 blocker shape: one entry per employee and account, no amounts
         var blockers = body.GetProperty("blockers").EnumerateArray().ToList();
         blockers.Should().HaveCount(3);

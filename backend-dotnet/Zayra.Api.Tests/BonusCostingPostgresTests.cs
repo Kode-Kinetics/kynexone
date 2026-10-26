@@ -182,4 +182,57 @@ public sealed class BonusCostingPostgresTests
         accrual[1].IsReversed.Should().BeFalse("a partial contra leaves the row visible to the payable sub-ledger");
         contras.Should().OnlyContain(c => c.CostCenterId != null);
     }
+
+    [Fact]
+    public async Task TwoPartialCancels_OfTheSameAccrualRow_EachPostTheirOwnContra_UnderDistinctPostingKeys()
+    {
+        // Final ledger review P3-6: reversal rows always carry a posting key, so a SECOND partial reversal of one original (which the
+        // ledger permits: the contras only have to add up to the row) must not collide with the first on ux_finance_gl_entries_posting_key.
+        await using var k = await KitAsync();
+        var batch = await PendingBatchAsync(k, ("E1", 1000m));   // one accrual row: CC-200 1000
+        (await Bonuses(k, k.Db).ApproveBatch(batch.Id, new BatchApproveRequest("ok"), default)).Should().BeOfType<OkObjectResult>();
+        k.Db.ChangeTracker.Clear();
+        Guid clearingId;
+        await using (var seed = k.K.NewContext())
+        {
+            var clearing = new FinanceGlEntry
+            {
+                TenantId = k.TenantId, CompanyId = k.CompanyId, SourceModule = "Payroll", SourceEntityId = Guid.NewGuid(),
+                SourceEntityRef = BonusGlLedger.BatchRef(batch.Id), EventType = GlEventTypes.BonusPayrollClearing,
+                DebitAccount = "2300 - Bonus Payable", Amount = 700m, Currency = "SAR", Period = "2026-09", Description = "payroll clearing",
+            };
+            seed.FinanceGlEntries.Add(clearing);
+            await seed.SaveChangesAsync();
+            clearingId = clearing.Id;
+        }
+        await using (var db = k.K.NewContext())
+            (await Bonuses(k, db).RejectBatch(batch.Id, new RejectRequest("first"), default)).Should().BeOfType<OkObjectResult>();   // a contra of the 300 still outstanding
+
+        // The payroll run that cleared 700 is voided (its clearing line is contra'd), and finance re-opens the cancelled batch.
+        await using (var db = k.K.NewContext())
+        {
+            var clearing = await db.FinanceGlEntries.SingleAsync(x => x.Id == clearingId);
+            db.FinanceGlEntries.Add(new FinanceGlEntry
+            {
+                TenantId = k.TenantId, CompanyId = k.CompanyId, SourceModule = "Payroll", SourceEntityId = clearing.SourceEntityId, SourceEntityRef = clearing.SourceEntityRef,
+                EventType = GlEventTypes.Void, DebitAccount = string.Empty, CreditAccount = "2300 - Bonus Payable", Amount = 700m, Currency = "SAR", Period = "2026-09",
+                Description = "void", ReversalOfEntryId = clearing.Id,
+            });
+            clearing.IsReversed = true;
+            await db.SaveChangesAsync();
+        }
+        await using (var db = k.K.NewContext())
+            await db.BonusBatches.Where(b => b.Id == batch.Id).ExecuteUpdateAsync(s => s.SetProperty(b => b.Status, "Approved"));
+
+        await using (var db = k.K.NewContext())
+            (await Bonuses(k, db).RejectBatch(batch.Id, new RejectRequest("second"), default)).Should().BeOfType<OkObjectResult>();
+
+        var gl = await BonusLedgerAsync(k, batch.Id);
+        var accrual = gl.Where(l => l.EventType == GlEventTypes.BonusAccrual).ToList();
+        accrual.Should().ContainSingle();
+        var contrasOfTheSmallerRow = gl.Where(l => l.EventType == GlEventTypes.BonusAccrualReversal && l.ReversalOfEntryId == accrual[0].Id).OrderBy(l => l.Amount).ToList();
+        contrasOfTheSmallerRow.Select(c => c.Amount).Should().Equal(300m, 700m);
+        contrasOfTheSmallerRow.Select(c => c.PostingKey).Should().OnlyHaveUniqueItems().And.OnlyContain(key => key != null);
+        accrual[0].IsReversed.Should().BeTrue("the second contra closes the row out");
+    }
 }

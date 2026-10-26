@@ -310,7 +310,7 @@ public static class PayrollCostStamper
     };
 
     /// <summary>The 422 body (M-1, M-2, M-5): AM-1 blockers (no amounts) plus per-account / per-level aggregate groups.</summary>
-    public static (string Error, object Body, IReadOnlyList<object> Groups) BuildRefusal(IReadOnlyList<CostBlocker> blockers)
+    public static (string Error, object Body, IReadOnlyList<object> Groups) BuildRefusal(IReadOnlyList<CostBlocker> blockers, int smallCellMin = 0)
     {
         var groups = new List<(string Error, string Message, string MessageAr, object Group)>();
 

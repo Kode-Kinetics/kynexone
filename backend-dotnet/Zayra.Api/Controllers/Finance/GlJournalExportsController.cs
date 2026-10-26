@@ -1103,6 +1103,9 @@ public class GlJournalExportsController : ControllerBase
         return this.GetEntityScope().IsGroupLevel ? null : Forbid();
     }
 
+    /// <summary>Placeholder until the redaction lands.</summary>
+    internal object RedactTieOutDetail(object payload) => payload;
+
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 

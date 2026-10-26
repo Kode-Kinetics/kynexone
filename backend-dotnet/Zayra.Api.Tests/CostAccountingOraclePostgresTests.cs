@@ -246,7 +246,9 @@ public sealed class CostAccountingOraclePostgresTests
             g.GetProperty("employeeCount").GetInt32().Should().Be(int.Parse(row["n_employees"]));
             g.GetProperty("employees").EnumerateArray().Select(e => e.GetProperty("code").GetString()).Order()
                 .Should().Equal(row["employee_codes(max10)"].Split(';', StringSplitOptions.RemoveEmptyEntries).Order());
-            if (row["aggregate_amount"] != "") g.GetProperty("amount").GetDecimal().Should().Be(OracleFiles.D(row["aggregate_amount"]));
+            // The oracle states the aggregate; the response withholds it for a group of one employee (it would be that person's pay).
+            if (int.Parse(row["n_employees"]) == 1) { g.GetProperty("amount").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null); g.GetProperty("amountWithheld").GetBoolean().Should().BeTrue(); }
+            else if (row["aggregate_amount"] != "") g.GetProperty("amount").GetDecimal().Should().Be(OracleFiles.D(row["aggregate_amount"]));
             g.GetProperty("message").GetString().Should().Be(row["message_en"]);
         }
     }
