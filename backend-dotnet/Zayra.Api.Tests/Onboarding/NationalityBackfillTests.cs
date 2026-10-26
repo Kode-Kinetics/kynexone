@@ -74,4 +74,12 @@ public class NationalityBackfillTests
         guard.ShouldGate("Active", "Active").Should().BeFalse();
         guard.ShouldGate("Draft", "Active").Should().BeTrue();
     }
+
+    [Fact]
+    public async Task StartupSweep_OnAnEmptyDatabase_IsANoOp_AndRepeatable()
+    {
+        await using var db = CreateDb();
+        (await NationalityBackfill.RunAllAsync(db, default)).Should().Be(0);
+        (await NationalityBackfill.RunAllAsync(db, default)).Should().Be(0);
+    }
 }
