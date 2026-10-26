@@ -10,7 +10,7 @@ function zone(tz?: string | null): string {
 
 /** The calendar date (YYYY-MM-DD) it is right now in the company's zone. Never a UTC slice. */
 export function todayInZone(tz?: string | null, now: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone(tz), year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const parts = new Intl.DateTimeFormat(dateLocale('en'), { timeZone: zone(tz), year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
   const get = (t: string) => parts.find(p => p.type === t)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')}`;
 }

@@ -36,7 +36,7 @@ export function DuplicatePanel({ matches, differentReason, onDifferent, onRehire
           <li key={m.employeeId}>
             {m.canView ? (
               <p><span className="font-medium">{m.fullName}</span>{' '}
-                <span>{t('{status}, {company}', { status: m.status, company: m.branch || m.employeeCode })}{m.joinedYear ? ` · ${t('joined {year}', { year: m.joinedYear })}` : ''}</span></p>
+                <span>{t('{status}, {company}', { status: m.status, company: m.branch || m.employeeCode })}{m.joinedYear ? ` · ${t('Joined in {year}', { year: m.joinedYear })}` : ''}</span></p>
             ) : <p>{t('A person with these details exists in another company you cannot see.')}</p>}
             {m.canView && (
               <div className="mt-2 flex flex-wrap gap-2">
