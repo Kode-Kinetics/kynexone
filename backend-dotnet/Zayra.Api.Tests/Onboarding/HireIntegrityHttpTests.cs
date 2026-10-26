@@ -312,15 +312,22 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
 
     // ── Draft lifecycle ──────────────────────────────────────────────────────────────────────────
     [Fact]
-    public async Task DraftDelete_CreatorWithinSevenDays_HardDeletes()
+    public async Task DraftDelete_CreatorWithinSevenDays_SoftDeletes_KeepsTheRecordAndCode()
     {
         var token = await _fx.NewUserAsync("dd1", "employees.write", "employees.read");
         using var created = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire($"Discard {Guid.NewGuid():N}"), token);
         var id = (await Json(created)).GetProperty("id").GetInt32();
         using var del = await _fx.SendAsync(HttpMethod.Delete, $"/api/employees/{id}/draft", null, token);
         del.StatusCode.Should().Be(HttpStatusCode.NoContent, await del.Content.ReadAsStringAsync());
-        (await _fx.EmployeeExistsAsync(id)).Should().BeFalse("a discard is a hard delete, not a soft one");
+        var row = await _fx.SoftDeleteSnapshotAsync(id);
+        row.IsDeleted.Should().BeTrue();
+        row.Status.Should().Be("Inactive");
+        row.PrivacyStatus.Should().Be("RetainedForStatutoryAudit");
+        row.RetentionUntilUtc.Should().BeAfter(DateTime.UtcNow.AddYears(6));
+        row.DeletedBy.Should().NotBeNull();
+        row.Code.Should().NotBeNullOrEmpty("the row is kept, so its employee code stays reserved");
         (await _fx.AuditPayloadsAsync("employee.draft_discarded")).Should().NotBeEmpty();
+        (await _fx.StagedLoginsStillEnabledAsync(id)).Should().Be(0, "the never-used staged login is deactivated");
     }
 
     [Fact]
@@ -332,7 +339,7 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
         var id = (await Json(created)).GetProperty("id").GetInt32();
         using var del = await _fx.SendAsync(HttpMethod.Delete, $"/api/employees/{id}/draft", null, other);
         del.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await _fx.EmployeeExistsAsync(id)).Should().BeTrue();
+        (await _fx.SoftDeleteSnapshotAsync(id)).IsDeleted.Should().BeFalse();
     }
 
     [Fact]
@@ -490,6 +497,18 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
 
     public async Task<int> EmployeeCountAsync() { using var s = Host.Services.CreateScope(); return await NewDb(s).Employees.IgnoreQueryFilters().CountAsync(); }
     public async Task<int> CountByNameAsync(string name) { using var s = Host.Services.CreateScope(); return await NewDb(s).Employees.IgnoreQueryFilters().CountAsync(e => e.EnglishName == name); }
+    public sealed record SoftDeleteRow(bool IsDeleted, string Status, string PrivacyStatus, DateTime? RetentionUntilUtc, Guid? DeletedBy, string Code);
+    public async Task<SoftDeleteRow> SoftDeleteSnapshotAsync(int id)
+    {
+        using var s = Host.Services.CreateScope();
+        var e = await NewDb(s).Employees.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == id);
+        return new SoftDeleteRow(e.IsDeleted, e.Status, e.PrivacyStatus, e.RetentionUntilUtc, e.DeletedBy, e.EmployeeCode);
+    }
+    public async Task<int> StagedLoginsStillEnabledAsync(int id)
+    {
+        using var s = Host.Services.CreateScope();
+        return await NewDb(s).EmployeeUserAccounts.IgnoreQueryFilters().CountAsync(a => a.EmployeeId == id && a.LoginDisabledReason == "");
+    }
     public async Task<bool> EmployeeExistsAsync(int id) { using var s = Host.Services.CreateScope(); return await NewDb(s).Employees.IgnoreQueryFilters().AnyAsync(e => e.Id == id); }
     public async Task<string> StatusOfAsync(int id) { using var s = Host.Services.CreateScope(); return await NewDb(s).Employees.IgnoreQueryFilters().Where(e => e.Id == id).Select(e => e.Status).SingleAsync(); }
     public async Task<int> StatusHistoryCountAsync(int id) { using var s = Host.Services.CreateScope(); return await NewDb(s).EmployeeStatusHistories.IgnoreQueryFilters().CountAsync(h => h.EmployeeId == id); }

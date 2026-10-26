@@ -123,13 +123,31 @@ public class HireIntegrityUnitTests
     }
 
     [Fact]
-    public void DraftDiscard_DependentTables_CoverTheHireGraph_AndExcludeAudit()
+    public void DraftDiscard_Apply_SetsTheSoftDeleteFieldSet()
     {
-        using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql("Host=unused").Options);
-        var tables = DraftDiscardService.DependentTables(db.Model).Select(t => t.Table).ToHashSet();
-        tables.Should().Contain(["employee_payroll_profiles", "employee_compliance_records", "employee_histories", "employee_import_gaps", "employee_user_accounts"]);
-        tables.Should().NotContain("audit_logs");
-        tables.Should().NotContain("employees");
+        var me = Guid.NewGuid();
+        var now = new DateTime(2026, 10, 26, 12, 0, 0, DateTimeKind.Utc);
+        var e = new Employee { Status = "Draft" };
+        DraftDiscardService.ApplySoftDelete(e, now, me);
+        e.IsDeleted.Should().BeTrue();
+        e.DeletedAtUtc.Should().Be(now);
+        e.DeletedBy.Should().Be(me);
+        e.Status.Should().Be("Inactive");
+        e.PrivacyStatus.Should().Be("RetainedForStatutoryAudit");
+        e.RetentionUntilUtc.Should().Be(now.AddYears(7));
+    }
+
+    [Fact]
+    public void DraftDiscard_FieldSet_MatchesEmployeesControllerDelete()
+    {
+        // The controller's private SoftDeleteEmployeeAsync is the reference; a discard must set the same fields.
+        var text = File.ReadAllText(Path.Combine(FindApiRoot(), "Controllers", "EmployeesController.cs"));
+        var start = text.IndexOf("private async Task SoftDeleteEmployeeAsync", StringComparison.Ordinal);
+        start.Should().BeGreaterThan(0);
+        var body = text.Substring(start, 900);
+        body.Should().Contain("employee.IsDeleted = true;").And.Contain("employee.DeletedAtUtc = deletedAt;")
+            .And.Contain("employee.DeletedBy = context.UserId;").And.Contain("employee.Status = \"Inactive\";")
+            .And.Contain("employee.PrivacyStatus = \"RetainedForStatutoryAudit\";").And.Contain("employee.RetentionUntilUtc = deletedAt.AddYears(7);");
     }
 
     // ── Compensation approval gate ───────────────────────────────────────────────────────────────
