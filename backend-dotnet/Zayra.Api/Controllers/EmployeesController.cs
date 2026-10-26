@@ -1,3 +1,4 @@
+using Zayra.Api.Application.Common.Import;
 using Microsoft.AspNetCore.DataProtection;
 using System.ComponentModel.DataAnnotations;
 using System.Data;
@@ -1897,6 +1898,7 @@ public class EmployeesController : ControllerBase
                 importBatchId,
                 errors = allErrors,
                 warnings = allWarnings,
+                warningsAr = ImportMessagesAr.Parallel(allWarnings),
                 createdIncomplete,
             });
         }
@@ -2741,6 +2743,7 @@ public class EmployeesController : ControllerBase
                 recommended,
                 errors = o.Errors,
                 warnings = o.Warnings,
+                warningsAr = ImportMessagesAr.Parallel(o.Warnings),
             });
         }
         var fieldGaps = fieldGapAgg

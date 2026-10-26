@@ -868,7 +868,7 @@ public class OrganizationStructureImportController : ControllerBase
             Received: parsed.TotalRows,
             Errors: errors,
             Warnings: rows.Count(x => x.Status == ImportRowStatus.Warning),
-            Rows: rows,
+            Rows: rows.Select(r => r.WithArabic()).ToList(),
             HasBlockingErrors: errors > 0,
             Committed: false,
             Applied: new Dictionary<string, int>());
