@@ -313,8 +313,8 @@ test('blockers: a role=alert banner with one card per group, up to 10 employees 
   // 12 employees, 10 listed
   await expect(tid(page, 'cc-lock-blocker-cost_centre_required').locator('[data-testid^="cc-lock-blocker-row-"]')).toHaveCount(10);
   await expect(tid(page, 'cc-lock-more-link')).toContainText('…and 2 more. See all in Cost accounting readiness.');
-  await expect(tid(page, 'cc-lock-more-link')).toHaveAttribute('href', '/setup?tab=costAccounting');
-  await expect(tid(page, 'cc-lock-set-default').first()).toHaveAttribute('href', '/setup?tab=costAccounting');
+  await expect(tid(page, 'cc-lock-more-link')).toHaveAttribute('href', '/setup?tab=glMapping&glTab=costAccounting');
+  await expect(tid(page, 'cc-lock-set-default').first()).toHaveAttribute('href', '/setup?tab=glMapping&glTab=costAccounting');
   // the fix link opens a new tab
   const [popup] = await Promise.all([context.waitForEvent('page'), employeeLink.click()]);
   expect(popup.url()).toContain('/people/400');
@@ -425,7 +425,7 @@ test('with costing off the old journal shows, with a note that links to Cost acc
   await tid(page, 'cc-lock-run-select').selectOption('run-jun');
   await page.getByRole('button', { name: 'Generate Journal' }).click();
   await expect(tid(page, 'cc-lock-costing-off-note')).toContainText('Cost accounting is off for this company. Lines post without cost centres.');
-  await expect(tid(page, 'cc-lock-costing-off-note').getByRole('link')).toHaveAttribute('href', '/setup?tab=costAccounting');
+  await expect(tid(page, 'cc-lock-costing-off-note').getByRole('link')).toHaveAttribute('href', '/setup?tab=glMapping&glTab=costAccounting');
   await expect(tid(page, 'cc-lock-groupby-cc')).toHaveCount(0);
 });
 
