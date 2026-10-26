@@ -44,6 +44,7 @@ public static class DuplicateOverridePolicy
         if (status == 0) return null;
         var problem = new ProblemDetails { Status = status, Title = code, Detail = detail };
         problem.Extensions["code"] = code;
+        problem.Extensions["message"] = detail;   // the legacy form shows data.message
         return new ObjectResult(problem) { StatusCode = status, ContentTypes = { "application/problem+json" } };
     }
 

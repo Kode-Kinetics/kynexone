@@ -91,7 +91,7 @@ public sealed class EmployeeHireController : ControllerBase
         if (verdict != DraftDiscardRules.Refusal.None)
             return StatusCode(403, new { error = "draft_discard_not_allowed", reason = verdict.ToString(),
                 message = "Only the person who created a draft can discard it, within seven days, before it has any activity. Use Delete for anything else." });
-        await _discard.DiscardAsync(tenantId, employee, Context(tenantId), ct);
+        await _discard.DiscardAsync(tenantId, id, Context(tenantId), ct);
         return NoContent();
     }
 

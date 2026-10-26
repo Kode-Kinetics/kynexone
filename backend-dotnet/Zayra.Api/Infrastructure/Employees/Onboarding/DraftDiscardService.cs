@@ -1,10 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
-using Zayra.Api.Infrastructure.Auth;
-using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Employees.Onboarding;
@@ -29,16 +26,22 @@ public static class DraftDiscardRules
     }
 }
 
+/// <summary>
+/// A discard is the platform's ordinary soft delete (the same fields <c>EmployeesController.Delete</c> sets: deleted flag,
+/// <c>Inactive</c>, retained for statutory audit for seven years), authorised for the creator of a quiet draft. The row
+/// and its employee code are kept; nothing is hard-deleted, so retention and the audit chain are untouched. The draft's
+/// never-used staged login is deactivated through the same credential primitives as the delete.
+/// </summary>
 public sealed class DraftDiscardService
 {
     public const string AuditAction = "employee.draft_discarded";
     private readonly ZayraDbContext _db;
-    private readonly IDocumentStorage _documents;
+    private readonly IAuditService _audit;
 
-    public DraftDiscardService(ZayraDbContext db, IDocumentStorage documents)
+    public DraftDiscardService(ZayraDbContext db, IAuditService audit)
     {
         _db = db;
-        _documents = documents;
+        _audit = audit;
     }
 
     public async Task<bool> HasActivityAsync(Guid tenantId, int employeeId, CancellationToken ct)
@@ -52,64 +55,34 @@ public sealed class DraftDiscardService
         return await _db.EmployeeChangeRequests.AnyAsync(c => c.TenantId == tenantId && c.EmployeeId == id, ct);
     }
 
-    /// <summary>Hard-removes the draft and everything that hangs off it, in one transaction. Eligibility is the
-    /// caller's job (<see cref="DraftDiscardRules"/>). Blobs are removed after the commit, best effort.</summary>
-    public async Task DiscardAsync(Guid tenantId, Employee employee, RequestContext context, CancellationToken ct)
+    /// <summary>The soft-delete field set. Kept identical to the controller's delete; a test pins the parity.</summary>
+    public static void ApplySoftDelete(Employee employee, DateTime deletedAt, Guid? deletedBy)
     {
-        var id = employee.Id;
-        var code = employee.EmployeeCode;
-        var blobs = await _db.EmployeeDocuments.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.EmployeeId == id).Select(d => d.StorageUrl).ToListAsync(ct);
-
-        var strategy = _db.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
-        {
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-            // Staged logins that never signed in belong to the draft; they go with it.
-            var userIds = await _db.EmployeeUserAccounts.AsNoTracking()
-                .Where(a => a.TenantId == tenantId && a.EmployeeId == id && a.UserId != null)
-                .Select(a => a.UserId!.Value).ToListAsync(ct);
-
-            foreach (var (table, column, tenantColumn) in DependentTables(_db.Model))
-            {
-                var sql = tenantColumn is null
-                    ? $"DELETE FROM \"{table}\" WHERE \"{column}\" = {{0}}"
-                    : $"DELETE FROM \"{table}\" WHERE \"{column}\" = {{0}} AND \"{tenantColumn}\" = {{1}}";
-                if (tenantColumn is null) await _db.Database.ExecuteSqlRawAsync(sql, [id], ct);
-                else await _db.Database.ExecuteSqlRawAsync(sql, [id, tenantId], ct);
-            }
-            _db.ChangeTracker.Clear();
-            if (userIds.Count > 0)
-            {
-                var strays = await _db.Users.Where(u => u.TenantId == tenantId && userIds.Contains(u.Id) && u.LastLoginAtUtc == null).ToListAsync(ct);
-                _db.Users.RemoveRange(strays);
-            }
-            var row = await _db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == id, ct);
-            if (row is not null) _db.Employees.Remove(row);
-            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, AuditAction, "Employee",
-                id.ToString(System.Globalization.CultureInfo.InvariantCulture), context with { TenantId = tenantId },
-                JsonSerializer.Serialize(new { employeeId = id, employeeCode = code })));
-            await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
-        });
-
-        foreach (var url in blobs.Where(b => !string.IsNullOrWhiteSpace(b)))
-            await _documents.TryDeleteAsync(tenantId, url, ct);
+        employee.IsDeleted = true;
+        employee.DeletedAtUtc = deletedAt;
+        employee.DeletedBy = deletedBy;
+        employee.Status = "Inactive";
+        employee.PrivacyStatus = "RetainedForStatutoryAudit";
+        employee.RetentionUntilUtc = deletedAt.AddYears(7);
     }
 
-    /// <summary>Every mapped table with an <c>EmployeeId</c> column (and its tenant column when it has one), found from
-    /// the model so a table added later is covered without editing this list. Audit rows have no such column and stay.</summary>
-    internal static IEnumerable<(string Table, string Column, string? TenantColumn)> DependentTables(IModel model)
+    public async Task DiscardAsync(Guid tenantId, int employeeId, RequestContext context, CancellationToken ct)
     {
-        foreach (var type in model.GetEntityTypes())
-        {
-            if (type.ClrType == typeof(Employee) || type.IsOwned() || type.GetTableName() is not { } table) continue;
-            var store = StoreObjectIdentifier.Table(table, type.GetSchema());
-            var property = type.FindProperty("EmployeeId");
-            if (property is null || (property.ClrType != typeof(int) && property.ClrType != typeof(int?))) continue;
-            if (property.GetColumnName(store) is not { } column) continue;
-            var tenant = type.FindProperty("TenantId")?.GetColumnName(store);
-            yield return (table, column, tenant);
-        }
+        var employee = await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Draft discard: eligibility and company scope were checked by the caller; the tenant is re-applied.")
+            .AsTracking().FirstAsync(e => e.Id == employeeId && !e.IsDeleted, ct);
+        var deletedAt = DateTime.UtcNow;
+        ApplySoftDelete(employee, deletedAt, context.UserId);
+
+        var (links, users, userIds) = await EmployeeManagementService.LoadCredentialGraphAsync(_db, tenantId, employeeId, employee.UserAccountId, ct);
+        var gated = await EmployeeManagementService.GateLinkedLoginsAsync(_db, tenantId, links, users, userIds, context, "employee.draft_discarded", employeeId, deletedAt, ct);
+        await EmployeeManagementService.StageCredentialInvalidationAsync(_db, gated.Links, gated.Users, gated.UserIds,
+            loginDisabledReason: "Employee record was deleted.", effectiveAtUtc: deletedAt, actorUserId: context.UserId,
+            actorIpAddress: context.IpAddress, bulkTokenUpdates: false, ct);
+
+        await _db.SaveChangesAsync(ct);
+        await _audit.WriteAsync(AuditAction, "Employee", employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture), context,
+            JsonSerializer.Serialize(new { employeeId, employeeCode = employee.EmployeeCode }), ct);
+        await EmployeeManagementService.DeactivatePayrollFootprintAsync(_db, _audit, tenantId, employeeId, "draft_discarded", deactivateSalaryStructure: true, context, ct);
     }
 }
