@@ -28,11 +28,12 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
     private readonly HireIntegrityHttpFixture _fx;
     public HireIntegrityHttpTests(HireIntegrityHttpFixture fixture) => _fx = fixture;
 
-    private static object Hire(string name, Guid? companyId = null, bool ack = false, string? reason = null, string? iban = null,
+    // A tenant with two companies has no default employing company (CD1), so every hire names one.
+    private object Hire(string name, Guid? companyId = null, bool ack = false, string? reason = null, string? iban = null,
         string? iqama = null) => new Dictionary<string, object?>
     {
         ["englishName"] = name,
-        ["companyId"] = companyId,
+        ["companyId"] = companyId ?? _fx.CompanyId,
         ["acknowledgeDuplicate"] = ack,
         ["duplicateOverrideReason"] = reason,
         ["payrollProfile"] = iban is null ? null : new { iban, bankName = "Test Bank", paymentMethod = "BankTransfer" },
@@ -111,10 +112,10 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
     [Fact]
     public async Task DuplicateCheck_MatchInInvisibleCompany_ReturnsMaskedShape_NoCodeNameBranch()
     {
-        var hidden = await _fx.SeedEmployeeInOtherCompanyAsync("Hidden Person Name", "2999888777");
+        var hidden = await _fx.SeedEmployeeInOtherCompanyAsync("Hidden Person Name", TestIds.ValidIqama(9988877));
         var token = await _fx.NewScopedUserAsync("dc2", _fx.CompanyId, "employees.write", "employees.read");
         using var r = await _fx.SendAsync(HttpMethod.Post, "/api/employees/duplicate-check",
-            new { identityValues = new[] { new { fieldKey = "iqama_number", value = "2999888777" } } }, token);
+            new { identityValues = new[] { new { fieldKey = "iqama_number", value = TestIds.ValidIqama(9988877) } } }, token);
         r.StatusCode.Should().Be(HttpStatusCode.OK);
         var text = await r.Content.ReadAsStringAsync();
         text.Should().NotContain("Hidden Person Name").And.NotContain(hidden.EmployeeCode);
@@ -122,13 +123,40 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
         match.GetProperty("canView").GetBoolean().Should().BeFalse();
     }
 
+    // ── CD22: the guard really runs from the container, on create and on update ───────────────────
+    [Fact]
+    public async Task Guard_RunsOnPostEmployees_AndOnTheContainerResolvedServiceUpdate()
+    {
+        var token = await _fx.NewUserAsync("cd22", "employees.write", "employees.read");
+        // Over HTTP: a checksum-invalid ID is refused by the GUARD (its problem shape), not by the legacy service.
+        using var post = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire($"Guarded {Guid.NewGuid():N}", iqama: "2000000009"), token);
+        post.StatusCode.Should().Be(HttpStatusCode.BadRequest, await post.Content.ReadAsStringAsync());
+        var body = await Json(post);
+        body.GetProperty("code").GetString().Should().Be("validation_failed");
+        body.GetProperty("errors").EnumerateObject().Select(p => p.Name).Should().Contain(n => n.StartsWith("complianceRecords["));
+
+        // Through DI: the registered service carries the guard, so an invalid UPDATE is refused the same way.
+        var existing = await _fx.SeedEmployeeAsync("Update Target", TestIds.ValidIqama(4443332));
+        using var scope = _fx.Host.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<Zayra.Api.Application.Employees.IEmployeeManagementService>();
+        var bad = EmployeeInputValidatorTests.Req(name: new string('x', 151)) with { CompanyId = _fx.CompanyId };
+        var ctx = new RequestContext("127.0.0.1", "test", Guid.NewGuid(), _fx.TenantId);
+        await Assert.ThrowsAsync<Zayra.Api.Application.Employees.Onboarding.EmployeeValidationException>(() => service.UpdateAsync(_fx.TenantId, existing.Id, bad, ctx, default));
+        await Assert.ThrowsAsync<Zayra.Api.Application.Employees.Onboarding.EmployeeValidationException>(() => service.CreateAsync(_fx.TenantId, bad, ctx, default));
+    }
+
     // ── Request size and idempotency (G20, G20b, C2) ─────────────────────────────────────────────
     [Fact]
-    public async Task Create_Body70KB_413()
+    public void Create_IsCappedAt64KB_OnTheRealEndpoint()
     {
-        var token = await _fx.NewUserAsync("sz1", "employees.write", "employees.read");
-        using var r = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire(new string('x', 70_000)), token);
-        r.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+        // TestServer does not enforce Kestrel's request body limit, so a 70 KB post cannot turn into a 413 here. What
+        // production enforces is the endpoint's own IRequestSizeLimitMetadata, which is what Kestrel reads: assert it is
+        // present on POST /api/employees with the 64 KB cap.
+        var source = _fx.Host.Services.GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>();
+        var create = source.Endpoints.OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>().Single(e =>
+            string.Equals(e.RoutePattern.RawText, "api/employees", StringComparison.OrdinalIgnoreCase)
+            && e.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>()?.HttpMethods.Contains("POST") == true);
+        create.Metadata.GetMetadata<Microsoft.AspNetCore.Http.Metadata.IRequestSizeLimitMetadata>()!.MaxRequestBodySize.Should().Be(65_536);
     }
 
     [Fact]
@@ -195,7 +223,7 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
         var key = Guid.NewGuid().ToString();
         using var first = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire($"Tenant A {Guid.NewGuid():N}"), a, idempotencyKey: key);
         first.StatusCode.Should().Be(HttpStatusCode.Created);
-        using var second = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire($"Tenant B {Guid.NewGuid():N}"), other, idempotencyKey: key);
+        using var second = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire($"Tenant B {Guid.NewGuid():N}", companyId: _fx.ForeignTenantCompanyId), other, idempotencyKey: key);
         second.StatusCode.Should().Be(HttpStatusCode.Created, await second.Content.ReadAsStringAsync());
     }
 
@@ -226,36 +254,36 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
     [Fact]
     public async Task Override_RequiresPermissionAndReason()
     {
-        await _fx.SeedEmployeeAsync("Existing Person", "2111000111");
+        await _fx.SeedEmployeeAsync("Existing Person", TestIds.ValidIqama(1110001));
         var officer = await _fx.NewUserAsync("ov1", "employees.write", "employees.read");
         var manager = await _fx.NewUserAsync("ov2", "employees.write", "employees.read", "employees.duplicate_override");
 
         using var denied = await _fx.SendAsync(HttpMethod.Post, "/api/employees",
-            Hire($"Dup {Guid.NewGuid():N}", ack: true, reason: "Same person, second legal entity", iqama: "2111000111"), officer);
+            Hire($"Dup {Guid.NewGuid():N}", ack: true, reason: "Same person, second legal entity", iqama: TestIds.ValidIqama(1110001)), officer);
         denied.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
         (await Json(denied)).GetProperty("code").GetString().Should().Be("override_not_permitted");
 
         using var shortReason = await _fx.SendAsync(HttpMethod.Post, "/api/employees",
-            Hire($"Dup {Guid.NewGuid():N}", ack: true, reason: "too short", iqama: "2111000111"), manager);
+            Hire($"Dup {Guid.NewGuid():N}", ack: true, reason: "too short", iqama: TestIds.ValidIqama(1110001)), manager);
         shortReason.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
         (await Json(shortReason)).GetProperty("code").GetString().Should().Be("override_reason_required");
 
         using var ok = await _fx.SendAsync(HttpMethod.Post, "/api/employees",
-            Hire($"Dup {Guid.NewGuid():N}", ack: true, reason: "Same person, second legal entity", iqama: "2111000111"), manager);
+            Hire($"Dup {Guid.NewGuid():N}", ack: true, reason: "Same person, second legal entity", iqama: TestIds.ValidIqama(1110001)), manager);
         ok.StatusCode.Should().Be(HttpStatusCode.Created, await ok.Content.ReadAsStringAsync());
     }
 
     [Fact]
     public async Task DuplicateAudit_OmitsOutOfScopeIds_AndHoldsNoIdentityValue()
     {
-        var hidden = await _fx.SeedEmployeeInOtherCompanyAsync("Far Away Person", "2555444333");
+        var hidden = await _fx.SeedEmployeeInOtherCompanyAsync("Far Away Person", TestIds.ValidIqama(5554443));
         var manager = await _fx.NewScopedUserAsync("ov3", _fx.CompanyId, "employees.write", "employees.read", "employees.duplicate_override");
         using var ok = await _fx.SendAsync(HttpMethod.Post, "/api/employees",
-            Hire($"Dup {Guid.NewGuid():N}", companyId: _fx.CompanyId, ack: true, reason: "Same person, other entity", iqama: "2555444333"), manager);
+            Hire($"Dup {Guid.NewGuid():N}", companyId: _fx.CompanyId, ack: true, reason: "Same person, other entity", iqama: TestIds.ValidIqama(5554443)), manager);
         ok.StatusCode.Should().Be(HttpStatusCode.Created, await ok.Content.ReadAsStringAsync());
         var audit = await _fx.AuditPayloadsAsync("employee.duplicate_override_created");
         audit.Should().NotBeEmpty();
-        audit.Should().OnlyContain(p => !p.Contains("\"" + hidden.Id + "\"") && !p.Contains("2555444333"));
+        audit.Should().OnlyContain(p => !p.Contains("\"" + hidden.Id + "\"") && !p.Contains(TestIds.ValidIqama(5554443)));
     }
 
     // ── Audit minimisation (G21) ─────────────────────────────────────────────────────────────────
@@ -264,11 +292,11 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
     {
         var writer = await _fx.NewUserAsync("au1", "employees.write", "employees.read");
         var name = $"Audited {Guid.NewGuid():N}";
-        using var r = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire(name, iban: Iban, iqama: "2777666555"), writer);
+        using var r = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire(name, iban: Iban, iqama: TestIds.ValidIqama(7776665)), writer);
         r.StatusCode.Should().Be(HttpStatusCode.Created, await r.Content.ReadAsStringAsync());
         foreach (var payload in await _fx.AllAuditMetadataAsync())
         {
-            payload.Should().NotContain(Iban).And.NotContain("2777666555");
+            payload.Should().NotContain(Iban).And.NotContain(TestIds.ValidIqama(7776665));
         }
         var comp = await _fx.AuditPayloadsAsync("employee.created_compensation_set");
         comp.Should().NotBeEmpty();
@@ -281,7 +309,7 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
     {
         var group = await _fx.NewUserAsync("ft1", "employees.write", "employees.read");
         var before = await _fx.EmployeeCountAsync();
-        using var r = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire($"Foreign {Guid.NewGuid():N}", companyId: _fx.OtherCompanyId), group);
+        using var r = await _fx.SendAsync(HttpMethod.Post, "/api/employees", Hire($"Foreign {Guid.NewGuid():N}", companyId: _fx.ForeignTenantCompanyId), group);
         ((int)r.StatusCode).Should().BeInRange(400, 499).And.NotBe(201);
         (await _fx.EmployeeCountAsync()).Should().Be(before);
     }
@@ -371,7 +399,7 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
     public async Task Rehire_ReusesTheRecord_NoSecondRow_HistoryAppended()
     {
         var token = await _fx.NewUserAsync("rh1", "employees.write", "employees.read");
-        var former = await _fx.SeedEmployeeAsync("Former Employee", "2333222111", status: "Terminated");
+        var former = await _fx.SeedEmployeeAsync("Former Employee", TestIds.ValidIqama(3332221), status: "Terminated");
         var before = await _fx.EmployeeCountAsync();
         var firstJoined = (await _fx.JoiningDatesAsync(former.Id)).Joining;
         using var r = await _fx.SendAsync(HttpMethod.Post, $"/api/employees/{former.Id}/rehire",
@@ -395,6 +423,7 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
     public AuthorizationPipelineHost Host { get; private set; } = null!;
     public Guid TenantId { get; private set; }
     public Guid CompanyId { get; private set; }
+    public Guid ForeignTenantCompanyId => _otherTenantCompany;
     public Guid OtherCompanyId { get; private set; }     // second company of the SAME tenant (for scope tests)
     public Guid OtherTenantId { get; private set; }
     private Guid _otherTenantCompany;

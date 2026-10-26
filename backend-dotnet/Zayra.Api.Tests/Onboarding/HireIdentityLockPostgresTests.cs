@@ -63,7 +63,8 @@ public sealed class HireIdentityLockPostgresTests
         for (var round = 0; round < Rounds; round++)
         {
             var name = $"Name Only {Guid.NewGuid():N}";
-            var dob = new DateOnly(1990, 1, 1).AddDays(round);
+            // Never a Jan-1: that is a data-entry sentinel the duplicate detector deliberately ignores (M2).
+            var dob = new DateOnly(1990, 3, 5).AddDays(round);
             var results = await RaceAsync(tenant, a: Request(name, dob: dob), b: Request(name, dob: dob));
             results.Count(r => r is CreatedAtActionResult).Should().Be(1, $"round {round}");
             results.Count(r => r is ConflictObjectResult).Should().Be(1, $"round {round}");

@@ -326,8 +326,8 @@
         "binding": "emp.Nationality",
         "applicability": "All",
         "visible": true,
-        "required": false,
-        "gate": null,
+        "required": true,
+        "gate": "activate",
         "issuedAfterHire": false,
         "pattern": null,
         "patternHint": null,
@@ -2263,8 +2263,8 @@
         "binding": "emp.Nationality",
         "applicability": "All",
         "visible": true,
-        "required": false,
-        "gate": null,
+        "required": true,
+        "gate": "activate",
         "issuedAfterHire": false,
         "pattern": null,
         "patternHint": null,
@@ -3744,6 +3744,13 @@
         "rowCount": 2
       },
       {
+        "field": "Nationality",
+        "label": "Nationality",
+        "gate": "activate",
+        "kind": "blocking",
+        "rowCount": 2
+      },
+      {
         "field": "doc:Contract",
         "label": "Contract document",
         "gate": "activate",
@@ -3766,7 +3773,8 @@
         "status": "WillCreate",
         "projectedStatus": "Draft",
         "blocking": [
-          "Iqama or border number"
+          "Iqama or border number",
+          "Nationality"
         ],
         "recommended": [
           "Contract document",
@@ -3784,7 +3792,8 @@
         "status": "WillCreate",
         "projectedStatus": "Draft",
         "blocking": [
-          "Iqama or border number"
+          "Iqama or border number",
+          "Nationality"
         ],
         "recommended": [
           "Contract document",

@@ -519,7 +519,7 @@ public class EmployeeDuplicateDetectionTests
         await using var db = CreateDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Original Person", iqama: "9090909090");
+        await SeedEmployee(db, t, "EXIST-1", "Original Person", iqama: TestIds.ValidIqama(9090909));
         // A tenant-default readiness policy for the imported jurisdiction. Without one the row resolves
         // to ZERO requirements, which the evaluator now reports as NeedsAttention ("no readiness policy")
         // rather than the old fabricated "Ready"/100 — and that would mask the advisory-gap behaviour tested here.
@@ -535,7 +535,7 @@ public class EmployeeDuplicateDetectionTests
 
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate,CountryCode\n" +
-            "IMP-1,Imported Person,9090909090,2024-01-01,IN\n";
+            "IMP-1,Imported Person," + TestIds.ValidIqama(9090909) + ",2024-01-01,IN\n";
         var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         Assert.Equal(1, Prop<int>(payload, "created"));           // never dropped
@@ -560,8 +560,8 @@ public class EmployeeDuplicateDetectionTests
         // Two rows, same Iqama → both must be flagged (back-flag the earlier one).
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate\n" +
-            "A,Person A,1234509876,2024-01-01\n" +
-            "B,Person B,1234509876,2024-01-01\n";
+            "A,Person A," + TestIds.ValidIqama(1234509) + ",2024-01-01\n" +
+            "B,Person B," + TestIds.ValidIqama(1234509) + ",2024-01-01\n";
         var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         Assert.Equal(2, Prop<int>(payload, "created"));
@@ -583,8 +583,8 @@ public class EmployeeDuplicateDetectionTests
 
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate\n" +
-            "A,Person A,111,2024-01-01\n" +
-            "B,Person B,222,2024-01-01\n";
+            "A,Person A," + TestIds.ValidIqama(1110001) + ",2024-01-01\n" +
+            "B,Person B," + TestIds.ValidIqama(2220002) + ",2024-01-01\n";
         var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         Assert.Equal(2, Prop<int>(payload, "created"));
@@ -598,12 +598,12 @@ public class EmployeeDuplicateDetectionTests
         await using var db = PgDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Original", iqama: "5150");
+        await SeedEmployee(db, t, "EXIST-1", "Original", iqama: TestIds.ValidIqama(5150));
         var ctrl = ImportController(db, t);
 
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate\n" +
-            "IMP-1,Imported,5150,2024-01-01\n";
+            "IMP-1,Imported," + TestIds.ValidIqama(5150) + ",2024-01-01\n";
         var payload = Payload(await ctrl.ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         var rows = Prop<List<object>>(payload, "rows");
