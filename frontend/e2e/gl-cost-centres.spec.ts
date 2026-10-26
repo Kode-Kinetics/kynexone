@@ -924,16 +924,16 @@ test('AR 1280: the account and fixed cost centre selects start at the code, beca
   expect(await page.getByLabel('حساب Basic salary').evaluate((el) => getComputedStyle(el).direction)).toBe('rtl');
 });
 
-test('AR: the mapping sub-line keeps its account code and name in their own isolated runs (bdi), and the text is unchanged', async ({ page }) => {
+test('AR: the mapping sub-line keeps each interpolated account code and name in its own isolated run (bdi), and the text is unchanged', async ({ page }) => {
   await boot(page, { locale: 'ar' });
+  // Company view, inheriting the group mapping: two accounts in one Arabic sentence.
   const line = tid(page, 'cc-map-fallback-EARN:BASIC');
-  await expect(line).toHaveText('الحساب الاحتياطي 5001 — Basic Salary Expense');
+  await expect(line).toHaveText('الحساب الاحتياطي 5001 — Basic Salary Expense · يرث 5001 — Basic Salary Expense');
   const runs = line.locator('bdi');
-  await expect(runs).toHaveCount(1);
+  await expect(runs).toHaveCount(2);
   await expect(runs.first()).toHaveText('5001 — Basic Salary Expense');
   // The isolate is a bdi element, not a control character in the text.
-  expect(await line.evaluate((el) => /[⁦-⁩‎‏]/.test(el.textContent ?? ''))).toBe(false);
-  // The company view's second sentence wraps both accounts.
-  const inherited = tid(page, 'cc-map-fallback-LOAN_RECEIVABLE');
-  expect(await inherited.locator('bdi').count()).toBeGreaterThanOrEqual(1);
+  expect(await line.evaluate((el) => /[\u2066-\u2069\u200e\u200f]/.test(el.textContent ?? ''))).toBe(false);
+  // One account: one run.
+  await expect(tid(page, 'cc-map-fallback-EARN:HOUSING').locator('bdi')).toHaveCount(1);
 });

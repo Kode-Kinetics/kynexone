@@ -15,6 +15,7 @@ import {
   type GlRulePresetResult,
 } from '../../api/financeGl';
 import type { CostCenterDto } from '../../api/organization';
+import { BdiMessage } from '../BdiMessage';
 import { useT } from '../../hooks/useT';
 import {
   addClassRule,
@@ -1038,8 +1039,8 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                           <p className="text-[11px] text-slate-500">{driverCategoryLabel(t, r.category)}</p>
                           <p className="break-words text-[11px] text-slate-500">
                             {inheritedAccount && !isOverridden
-                              ? t('Fallback {account} · inherits {inherited}', { account: r.defaultAccount, inherited: inheritedAccount })
-                              : t('Fallback {account}', { account: r.defaultAccount })}
+                              ? <BdiMessage testId={`cc-map-fallback-${r.driverKey}`} message="Fallback {account} · inherits {inherited}" values={{ account: r.defaultAccount, inherited: inheritedAccount }} />
+                              : <BdiMessage testId={`cc-map-fallback-${r.driverKey}`} message="Fallback {account}" values={{ account: r.defaultAccount }} />}
                           </p>
                         </td>
                         <td className="px-2 py-2">
