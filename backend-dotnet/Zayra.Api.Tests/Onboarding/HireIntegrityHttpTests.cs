@@ -11,6 +11,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Models;
 using Zayra.Api.Tests.Security;
 
@@ -443,7 +444,7 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
         foreach (var p in permissions)
             db.Set<UserPermissionOverride>().Add(new UserPermissionOverride { TenantId = tenantId, UserId = user.Id, PermissionKey = p, Effect = "Allow", IsActive = true, Reason = "hire integrity test" });
         if (scopedCompany is Guid cid)
-            db.Set<EntityAccessGrant>().Add(new EntityAccessGrant { TenantId = tenantId, UserId = user.Id, CompanyId = cid });
+            db.Set<UserEntityAccess>().Add(new UserEntityAccess { TenantId = tenantId, UserId = user.Id, CompanyId = cid, Role = "HR Officer" });
         await db.SaveChangesAsync();
 
         var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
@@ -451,7 +452,7 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
             .Include(u => u.UserRoles).ThenInclude(r => r.Role).ThenInclude(r => r!.RolePermissions).ThenInclude(p => p.Permission)
             .Include(u => u.PermissionOverrides).Include(u => u.EmployeeUserAccounts).Include(u => u.EntityAccesses)
             .SingleAsync(u => u.Id == user.Id);
-        var grants = loaded.EntityAccesses.Select(g => new EntityAccessGrant { CompanyId = g.CompanyId }).ToArray();
+        var grants = loaded.EntityAccesses.Where(e => e.IsActive).Select(e => new EntityAccessGrant(e.CompanyId, e.Role, e.GrantMode)).ToArray();
         var entityScope = EntityScopeClaims.Resolve(loaded.IsGroupScope, grants, Array.Empty<Guid>());
         return tokens.CreateAccessToken(loaded, AuthService.GetRoles(loaded), AuthService.GetPermissions(loaded), loaded.Tenant!, grants, entityScope, out _);
     }

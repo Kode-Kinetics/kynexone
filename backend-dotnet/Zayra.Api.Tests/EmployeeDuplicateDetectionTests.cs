@@ -315,9 +315,12 @@ public class EmployeeDuplicateDetectionTests
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
         await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: "1112223334");
-        var ctrl = BuildController(db, t);
+        // An acknowledged duplicate is a deliberate override: it needs the permission and a written reason.
+        var ctrl = BuildController(db, t, extraClaims: [new Claim("permission", "employees.duplicate_override")]);
 
-        var result = await ctrl.CreateEmployee(CreateReq("New Person", ack: true, identity: ("iqama_number", "1112223334")), BuildService(db), CancellationToken.None);
+        var result = await ctrl.CreateEmployee(
+            CreateReq("New Person", ack: true, identity: ("iqama_number", "1112223334")) with { DuplicateOverrideReason = "Same person, second legal entity" },
+            BuildService(db), CancellationToken.None);
 
         Assert.IsType<CreatedAtActionResult>(result.Result);
         Assert.Equal(2, await db.Employees.CountAsync(e => e.TenantId == t));

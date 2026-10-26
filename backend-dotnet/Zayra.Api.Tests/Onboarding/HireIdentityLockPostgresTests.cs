@@ -15,6 +15,7 @@ using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests.Onboarding;
