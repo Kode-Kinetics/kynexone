@@ -79,7 +79,7 @@ public class HrmHierarchyTests
         var b = await AddEmp(db, tid, "B", a.Id);
         var c = await AddEmp(db, tid, "C", b.Id);
 
-        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<Zayra.Api.Infrastructure.Organization.HierarchyRefusedException>(
             () => svc.SetManagerAsync(tid, a.Id, c.Id, Ctx(tid), default));
 
         Assert.Contains("circular", ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -91,7 +91,7 @@ public class HrmHierarchyTests
         var (svc, db, tid) = Setup();
         var emp = await AddEmp(db, tid, "SELF");
 
-        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<Zayra.Api.Infrastructure.Organization.HierarchyRefusedException>(
             () => svc.SetManagerAsync(tid, emp.Id, emp.Id, Ctx(tid), default));
 
         Assert.Contains("own manager", ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -166,7 +166,7 @@ public class HrmHierarchyTests
         await db.SaveChangesAsync();
         var otherMgrId = (await db.Employees.FirstAsync(e => e.EmployeeCode == "XMGR")).Id;
 
-        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<Zayra.Api.Infrastructure.Organization.HierarchyRefusedException>(
             () => svc.SetManagerAsync(tid, emp.Id, otherMgrId, Ctx(tid), default));
 
         Assert.Contains("not found", ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -201,7 +201,7 @@ public class HrmHierarchyTests
         var emp = await AddEmp(db, tid, "EMP", companyId: companyA);
         var mgr = await AddEmp(db, tid, "MGR", companyId: companyB);
 
-        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<Zayra.Api.Infrastructure.Organization.HierarchyRefusedException>(
             () => svc.SetManagerAsync(tid, emp.Id, mgr.Id, Ctx(tid), default));
 
         Assert.Contains("Cross-company", ex.Message);
@@ -308,7 +308,7 @@ public class HrmHierarchyTests
         var mgr = await AddEmp(db, tid, "MGR");
         var emp = await AddEmp(db, tid, "EMP");
 
-        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<Zayra.Api.Infrastructure.Organization.HierarchyRefusedException>(
             () => svc.AddReportingLineAsync(tid, emp.Id,
                 new AddReportingLineRequest(mgr.Id, "BestFriends", null, null), Ctx(tid), default));
 
@@ -539,7 +539,7 @@ public class HrmHierarchyTests
         var c = await AddEmp(db, tid, "C", b.Id);
 
         // A → B → C — setting C as A's manager would create A → B → C → A
-        await Assert.ThrowsAnyAsync<InvalidOperationException>(
+        await Assert.ThrowsAsync<Zayra.Api.Infrastructure.Organization.HierarchyRefusedException>(
             () => svc.ValidateNoCircularManagerAsync(tid, a.Id, c.Id, default));
     }
 
