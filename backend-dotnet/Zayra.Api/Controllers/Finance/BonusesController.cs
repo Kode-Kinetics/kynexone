@@ -715,8 +715,10 @@ public class BonusesController : ControllerBase
                 .ToListAsync(ct);
             // What each origin row has already been reversed by: the database caps the contras of ONE row at that row's amount.
             var originIds = accrualEntries.Select(x => x.Id).ToList();
-            var alreadyReversed = (await _db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
-                    .Where(x => x.TenantId == tid && x.ReversalOfEntryId != null && originIds.Contains(x.ReversalOfEntryId.Value))
+            var alreadyReversed = (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.FinanceGlEntries, tid,
+                        "Contras already written against these accrual rows, whatever company posted them; tenant-pinned and read-only.")
+                    .AsNoTracking()
+                    .Where(x => x.ReversalOfEntryId != null && originIds.Contains(x.ReversalOfEntryId.Value))
                     .Select(x => new { Origin = x.ReversalOfEntryId!.Value, x.Amount }).ToListAsync(ct))
                 .GroupBy(x => x.Origin).ToDictionary(g => g.Key, g => g.Sum(x => x.Amount));
             foreach (var position in openPositions.Where(p => p.Remaining > 0m))

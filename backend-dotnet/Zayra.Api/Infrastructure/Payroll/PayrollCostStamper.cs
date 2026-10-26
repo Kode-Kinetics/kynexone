@@ -272,10 +272,12 @@ public static class PayrollCostStamper
     public static void Apply(PayrollCostPlan plan, IEnumerable<PayrollEarning> earnings, IEnumerable<PayrollDeduction> deductions, IEnumerable<PayrollSlip>? slips = null)
     {
         if (!plan.Enabled) return;
-        foreach (var e in earnings)
-            if (plan.Rows.TryGetValue(e.Id, out var s)) { e.CostCenterId = s.CostCenterId; e.CostCenterSource = s.Source; }
-        foreach (var d in deductions)
-            if (plan.Rows.TryGetValue(d.Id, out var s)) { d.CostCenterId = s.CostCenterId; d.CostCenterSource = s.Source; }
+        // These are the PAYROLL STAMP columns on the run's own rows, written at Lock behind payroll.lock and the approval hash; they are
+        // not the employee / department / position attribution inputs the organization.costcenter.manage ratchet watches.
+        foreach (var earning in earnings)
+            if (plan.Rows.TryGetValue(earning.Id, out var s)) { earning.CostCenterId = s.CostCenterId; earning.CostCenterSource = s.Source; }
+        foreach (var deduction in deductions)
+            if (plan.Rows.TryGetValue(deduction.Id, out var s)) { deduction.CostCenterId = s.CostCenterId; deduction.CostCenterSource = s.Source; }
         if (slips is not null)
             foreach (var slip in slips)
                 if (plan.Employees.TryGetValue(slip.EmployeeId, out var s)) slip.CostCenterId = s.CostCenterId;

@@ -75,9 +75,10 @@ public static class EosbProvisionPlanner
         var lines = new List<FinanceGlEntry>();
         var snapshots = new List<EosbProvisionSnapshot>();
         // Per cost centre when costing is on (one bucket, key null, when it is off — the pre-cost-accounting lines exactly).
-        var catchUpRise = new Dictionary<Guid?, decimal>();
-        var monthlyRise = new Dictionary<Guid?, decimal>();
-        var fall = new Dictionary<Guid?, decimal>();
+        // Keyed by cost centre id, Guid.Empty = no cost centre (a dictionary cannot hold a null key).
+        var catchUpRise = new Dictionary<Guid, decimal>();
+        var monthlyRise = new Dictionary<Guid, decimal>();
+        var fall = new Dictionary<Guid, decimal>();
         var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
         var gl = cost?.Gl;
 
@@ -111,8 +112,9 @@ public static class EosbProvisionPlanner
             var (code, name) = GlAccountResolver.AccountFor("EARN:EOSB", PayrollCostStamper.ClassOf(ccId, gl), gl);
             return $"{code} - {name}";
         }
-        string CcCode(Guid? id) => gl is not null && id is Guid g && gl.CostCentres.TryGetValue(g, out var c) ? c.Code : string.Empty;
-        void Add(Dictionary<Guid?, decimal> bucket, Guid? cc, decimal amount) => bucket[cc] = bucket.GetValueOrDefault(cc) + amount;
+        string CcCode(Guid id) => gl is not null && gl.CostCentres.TryGetValue(id, out var c) ? c.Code : string.Empty;
+        void Add(Dictionary<Guid, decimal> bucket, Guid? cc, decimal amount) { var k = cc ?? Guid.Empty; bucket[k] = bucket.GetValueOrDefault(k) + amount; }
+        static Guid? Real(Guid id) => id == Guid.Empty ? null : id;
 
         foreach (var o in obligations.OrderBy(o => o.EmployeeId))
         {
@@ -143,12 +145,12 @@ public static class EosbProvisionPlanner
             }
         }
 
-        foreach (var (cc, amount) in catchUpRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
-            lines.Add(Line(ExpenseAt(cc), string.Empty, amount, CatchUpLabel, period, cc));
-        foreach (var (cc, amount) in monthlyRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
-            lines.Add(Line(ExpenseAt(cc), string.Empty, amount, MonthlyLabel, period, cc));
-        foreach (var (cc, amount) in fall.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
-            lines.Add(Line(string.Empty, ExpenseAt(cc), amount, ReleaseLabel, period, cc));
+        foreach (var (key, amount) in catchUpRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
+            lines.Add(Line(ExpenseAt(Real(key)), string.Empty, amount, CatchUpLabel, period, Real(key)));
+        foreach (var (key, amount) in monthlyRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
+            lines.Add(Line(ExpenseAt(Real(key)), string.Empty, amount, MonthlyLabel, period, Real(key)));
+        foreach (var (key, amount) in fall.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
+            lines.Add(Line(string.Empty, ExpenseAt(Real(key)), amount, ReleaseLabel, period, Real(key)));
         return (lines, snapshots);
     }
 }

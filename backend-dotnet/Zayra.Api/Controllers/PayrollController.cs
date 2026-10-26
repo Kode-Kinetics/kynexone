@@ -4051,13 +4051,9 @@ public partial class PayrollController : ControllerBase
             _db.Entry(d).Property(x => x.CostCenterId).IsModified = true;
             _db.Entry(d).Property(x => x.CostCenterSource).IsModified = true;
         }
-        foreach (var byCc in plan.CostPlan.Employees.Where(kv => kv.Value.CostCenterId != null).GroupBy(kv => kv.Value.CostCenterId))
-        {
-            var employeeIds = byCc.Select(kv => kv.Key).ToList();
-            var ccId = byCc.Key;
-            await _db.PayrollSlips.Where(s => s.TenantId == tenantId && s.RunId == run.Id && employeeIds.Contains(s.EmployeeId))
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.CostCenterId, ccId), ct);
-        }
+        // The slips are written through the change tracker with the rest of the Lock (no bulk statement touches the stamp columns).
+        var slips = await _db.PayrollSlips.Where(s => s.TenantId == tenantId && s.RunId == run.Id).ToListAsync(ct);
+        PayrollCostStamper.Apply(plan.CostPlan, Array.Empty<PayrollEarning>(), Array.Empty<PayrollDeduction>(), slips);
     }
 
     private async Task NotifyPayslipsReadyAsync(Guid tenantId, PayrollRun run, CancellationToken cancellationToken)

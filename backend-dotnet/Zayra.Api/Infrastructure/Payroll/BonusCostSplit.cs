@@ -53,7 +53,7 @@ public static class BonusCostSplit
     {
         var lines = new List<FinanceGlEntry>();
         var buckets = Split(total, employees.Select(e => (costCentreOf.GetValueOrDefault(e.EmployeeId), e.Gross)), ctx, currency);
-        var ordinals = new Dictionary<Guid?, int>();
+        var ordinals = new Dictionary<Guid, int>();   // Guid.Empty = no cost centre (a dictionary cannot hold a null key)
         foreach (var (ccId, amount) in buckets.OrderBy(b => b.CcId is Guid g && ctx.CostCentres.TryGetValue(g, out var c) ? c.Code : string.Empty, StringComparer.Ordinal))
         {
             var (code, name) = GlAccountResolver.AccountFor("EARN:BONUS", PayrollCostStamper.ClassOf(ccId, ctx), ctx);
@@ -72,8 +72,8 @@ public static class BonusCostSplit
             Stamp(line, ccId, ctx);
             if (ctx.CostAccountingEnabled)
             {
-                var ordinal = ordinals.GetValueOrDefault(ccId);
-                ordinals[ccId] = ordinal + 1;
+                var ordinal = ordinals.GetValueOrDefault(ccId ?? Guid.Empty);
+                ordinals[ccId ?? Guid.Empty] = ordinal + 1;
                 line.PostingKey = PayrollCostStamper.PostingKey(batchId, GlEventTypes.BonusAccrual, batchNumber, "DR", "EARN:BONUS", "BONUS_ACCRUAL", "Bonus", ccId, ordinal);
             }
             lines.Add(line);
