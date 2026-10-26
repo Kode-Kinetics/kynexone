@@ -868,3 +868,46 @@ test('a long account name is cut with an ellipsis and keeps its full text in a t
   await expect(name).toHaveAttribute('title', 'Remote Location Hardship Supplement for Long-Term Contractors and Seconded Staff');
   expect(await name.evaluate((el) => getComputedStyle(el).textOverflow)).toBe('ellipsis');
 });
+
+
+// ═════════════════════════════ Polish: names keep their beginning in RTL; the inherited badge is one line ═════════════════════════════
+
+test('AR 1280: a Latin account name is cut at its end, never its beginning, and the title keeps the whole name', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await boot(page, { locale: 'ar', groupMode: true });
+  const name = tid(page, 'cc-acct-name-5001');
+  await expect(name).toHaveAttribute('title', 'Basic Salary Expense');
+  const view = await name.evaluate((el) => {
+    const text = el.firstChild as Text;
+    const first = document.createRange();
+    first.setStart(text, 0);
+    first.setEnd(text, 1);
+    const f = first.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    return { direction: getComputedStyle(el).direction, firstCharInside: f.left >= box.left - 0.5 && f.right <= box.right + 0.5, firstChar: text.data[0] };
+  });
+  expect(view.firstChar).toBe('B');
+  expect(view.direction).toBe('ltr');
+  expect(view.firstCharInside).toBe(true);
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`${locale} 1280: the inherited-from-group badge is one line, with the full sentence for tooltip and screen readers`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await boot(page, { locale });
+    const badges = page.getByTestId('cc-inherited-badge');
+    await expect(badges.first()).toBeVisible();
+    const sizes = await badges.evaluateAll((els) => els.map((el) => {
+      const cs = getComputedStyle(el);
+      const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+      return { height: el.getBoundingClientRect().height, lh };
+    }));
+    expect(sizes.length).toBeGreaterThan(3);
+    for (const s of sizes) expect(s.height).toBeLessThanOrEqual(s.lh * 1.5 + 8);
+    for (const s of sizes) expect(s.height).toBeLessThan(s.lh * 2 + 4);
+    const first = badges.first();
+    await expect(first).toHaveAttribute('title', locale === 'ar' ? 'محدد على مستوى المجموعة ولم يُخصَّص لهذه الشركة.' : 'Set at group level and not overridden for this company.');
+    await expect(first).toContainText(locale === 'ar' ? 'موروث من المجموعة' : 'Inherited from group');
+    await expect(first.locator('[aria-hidden="true"]')).toHaveText(locale === 'ar' ? 'المجموعة' : 'Group');
+  });
+}
