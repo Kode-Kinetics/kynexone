@@ -20,8 +20,12 @@ internal static class OpenTelemetryRegistration
                 serviceName: Observability.ServiceName, serviceVersion: BuildInfo.Commit, serviceInstanceId: Environment.MachineName))
             .WithTracing(tracing => tracing
                 .AddAspNetCoreInstrumentation(options =>
+                {
                     // Health probes run every few seconds per instance; they are noise, not traffic.
-                    options.Filter = context => !context.Request.Path.StartsWithSegments("/health"))
+                    options.Filter = context => !context.Request.Path.StartsWithSegments("/health");
+                    // A few endpoints still take a free-text reason in the query string; it belongs in the audit trail, not in traces.
+                    options.EnrichWithHttpRequest = (activity, request) => activity.SetTag("url.query", QueryRedactor.Redact(request.QueryString.Value));
+                })
                 // Outbound URLs carry personal data (Qiwa: the employee's national ID in the path) and secrets
                 // (a tenant-configured device URL's query). The span keeps only the templated route.
                 .AddHttpClientInstrumentation(options => options.EnrichWithHttpRequestMessage = RedactUrl)

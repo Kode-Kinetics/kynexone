@@ -14,6 +14,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/departments")]
 [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+[Zayra.Api.Infrastructure.Filters.ReasonLimit]
 public class DepartmentsController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;

@@ -49,7 +49,7 @@ public record EmployeeCreateRequest(
     bool AcknowledgeDuplicate = false,
     // Cost-centre accounting (contract 2.9, M-10): why the employee's cost-centre override is being set or removed. Required (422
     // cost_centre_reason_required) whenever the request changes the override; recorded in the employee.cost_centre_override.changed audit row.
-    [MaxLength(500)] string? CostCenterReason = null);
+    string? CostCenterReason = null);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,

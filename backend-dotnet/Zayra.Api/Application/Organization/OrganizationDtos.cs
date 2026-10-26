@@ -106,7 +106,7 @@ public record DepartmentRequest(
     bool IsActive = true,
     Guid? CompanyId = null,
     // Cost-accounting v1: the reason for clearing a cost-centre or parent link (recorded in the audit row).
-    [MaxLength(500)] string? Reason = null);
+    string? Reason = null);
 
 public record DesignationDto(
     Guid Id,
@@ -191,7 +191,7 @@ public record CostCenterRequest(
     [MaxLength(24)] string? FunctionalClass = null,
     [MaxLength(30)] string? GlSegment = null,
     // Required when the functional class changes (M-10); recorded in the audit row.
-    [MaxLength(500)] string? Reason = null);
+    string? Reason = null);
 
 public static class OrganizationMappings
 {

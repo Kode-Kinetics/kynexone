@@ -43,6 +43,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/employees")]
 [Authorize]
+[Zayra.Api.Infrastructure.Filters.ReasonLimit("CostCenterReason")]
 public class EmployeesController : ControllerBase
 {
     private static readonly HashSet<string> SensitiveFields = new(StringComparer.OrdinalIgnoreCase)

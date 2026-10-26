@@ -10,6 +10,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/organization")]
 [Authorize]
+[Zayra.Api.Infrastructure.Filters.ReasonLimit]
 public class OrganizationController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;
