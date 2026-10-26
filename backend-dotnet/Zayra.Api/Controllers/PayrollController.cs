@@ -5182,7 +5182,9 @@ public partial class PayrollController : ControllerBase
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var entries = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount)>();
+        var entries = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName)>();
+        PayrollCostPlan previewCostPlan = PayrollCostPlan.Off;
+        RoundingCostBlock? previewRoundingBlock = null;
 
         // Once a run is locked, its GL is posted to the immutable FinanceGlEntries ledger. The
         // "GL Journal" for such a run MUST reflect what was actually posted — NOT a live re-projection
@@ -5233,12 +5235,14 @@ public partial class PayrollController : ControllerBase
                 if (!string.IsNullOrWhiteSpace(e.DebitAccount))
                 {
                     var (code, name) = SplitAccountLabel(e.DebitAccount);
-                    entries.Add((compCode, compName, code, name, "DR", e.Amount));
+                    entries.Add((compCode, compName, code, name, "DR", e.Amount, e.CostCenterCode, e.CostCenterName));
                 }
                 if (!string.IsNullOrWhiteSpace(e.CreditAccount))
                 {
                     var (code, name) = SplitAccountLabel(e.CreditAccount);
-                    entries.Add((compCode, compName, code, name, "CR", e.Amount));
+                    // A two-sided row's cost centre belongs to its expense side only.
+                    entries.Add((compCode, compName, code, name, "CR", e.Amount,
+                        string.IsNullOrWhiteSpace(e.DebitAccount) ? e.CostCenterCode : null, string.IsNullOrWhiteSpace(e.DebitAccount) ? e.CostCenterName : null));
                 }
             }
             // Deterministic display order: debits first, then credits, each by account code.
@@ -5263,14 +5267,17 @@ public partial class PayrollController : ControllerBase
                 if (!string.IsNullOrWhiteSpace(line.DebitAccount))
                 {
                     var (code, name) = SplitAccountLabel(line.DebitAccount);
-                    entries.Add((compCode, compName, code, name, "DR", line.Amount));
+                    entries.Add((compCode, compName, code, name, "DR", line.Amount, line.CostCenterCode, line.CostCenterName));
                 }
                 if (!string.IsNullOrWhiteSpace(line.CreditAccount))
                 {
                     var (code, name) = SplitAccountLabel(line.CreditAccount);
-                    entries.Add((compCode, compName, code, name, "CR", line.Amount));
+                    entries.Add((compCode, compName, code, name, "CR", line.Amount,
+                        string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterCode : null, string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterName : null));
                 }
             }
+            previewCostPlan = plan.CostPlan;
+            previewRoundingBlock = plan.RoundingBlock;
             previewCatchAlls = plan.CatchAlls;
             previewProblems = plan.Problems;
             previewRounding = plan.RoundingAdjustment;
@@ -5315,7 +5322,21 @@ public partial class PayrollController : ControllerBase
             period   = $"{run.Year}-{run.Month:D2}",
             currency = journalCurrency,
             isPosted, // true = immutable as-posted ledger; false = live preview through current mappings
-            entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount }),
+            entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount, costCentreCode = e.CostCentreCode, costCentreName = e.CostCentreName }),
+            // Cost accounting (WP-C2, for the Lock-preview screen): what Lock would refuse and warn about, in the same shapes Lock answers with.
+            costing = new
+            {
+                enabled = previewCostPlan.Enabled,
+                blockers = previewCostPlan.Blockers.Select(b => new
+                {
+                    employeeId = b.EmployeeId, employeeCode = b.EmployeeCode, level = b.Level, departmentId = b.DepartmentId, positionId = b.PositionId,
+                    parentDepartmentId = b.ParentDepartmentId, reason = b.Reason, accountCode = b.AccountCode,
+                }),
+                groups = previewCostPlan.Blockers.Count > 0 ? PayrollCostStamper.BuildRefusal(previewCostPlan.Blockers).Groups : Array.Empty<object>(),
+                roundingBlocked = previewRoundingBlock is not null,
+                fallbackEmployees = previewCostPlan.FallbackEmployees, fallbackAmount = previewCostPlan.FallbackAmount,
+                uncostedEmployees = previewCostPlan.UncostedEmployees, uncostedAmount = previewCostPlan.UncostedAmount,
+            },
             totalDebits, totalCredits,
             isBalanced = Math.Abs(totalDebits - totalCredits) < 0.01m,
             // Readiness, as Lock will judge it (preview only; empty once posted). Non-blocking warning:

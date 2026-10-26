@@ -628,3 +628,29 @@ public class PayrollCostingScaleAndRollUpTests
         (await k.Db.PayrollSlips.AsNoTracking().SingleAsync(s => s.RunId == run.Id && s.EmployeeId == k.Emp["E1"].Id)).CostCenterId.Should().Be(k.Cc["CC-P"].Id, "the slip stores the rolled-up centre (AM-15)");
     }
 }
+
+public class PayrollCostingPreviewTests
+{
+    [Fact]
+    public async Task ThePreview_ShowsTheCostCentrePerLine_AndTheSameBlockersLockWouldRefuseWith()
+    {
+        await using var k = await CostingLockKit.CreateAsync(costing: true, preset: true);
+        await k.AddCc("CC-1", "SELLING"); await k.AddDept("D-1", "CC-1");
+        await k.AddEmployee("E1", "D-1"); await k.AddEmployee("E2");   // E2 resolves nowhere
+        var run = await k.SeedRunAsync(new[] { CostingLockKit.E("E1", "BASIC", 1000m), CostingLockKit.E("E2", "BASIC", 400m) }, Array.Empty<(string, string, string, decimal, bool)>());
+
+        k.Db.ChangeTracker.Clear();
+        var res = await k.K.Payroll(k.Db, k.LockerId, "Admin").GlJournal(run.Id, default);
+
+        var body = CostingLockKit.Json(res);
+        body.GetProperty("isPosted").GetBoolean().Should().BeFalse();
+        body.GetProperty("entries").EnumerateArray().Single(e => e.GetProperty("glAccount").GetString() == "5001" && e.GetProperty("costCentreCode").GetString() == "CC-1")
+            .GetProperty("amount").GetDecimal().Should().Be(1000m);
+        var costing = body.GetProperty("costing");
+        costing.GetProperty("enabled").GetBoolean().Should().BeTrue();
+        var blocker = costing.GetProperty("blockers").EnumerateArray().Single();
+        blocker.GetProperty("employeeCode").GetString().Should().Be("E2");
+        blocker.GetProperty("accountCode").GetString().Should().Be("5001");
+        costing.GetProperty("groups").EnumerateArray().Single().GetProperty("amount").GetDecimal().Should().Be(400m);
+    }
+}

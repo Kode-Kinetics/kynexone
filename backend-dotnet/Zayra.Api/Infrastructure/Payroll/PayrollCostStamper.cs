@@ -297,7 +297,7 @@ public static class PayrollCostStamper
     };
 
     /// <summary>The 422 body (M-1, M-2, M-5): AM-1 blockers (no amounts) plus per-account / per-level aggregate groups.</summary>
-    public static (string Error, object Body) BuildRefusal(IReadOnlyList<CostBlocker> blockers)
+    public static (string Error, object Body, IReadOnlyList<object> Groups) BuildRefusal(IReadOnlyList<CostBlocker> blockers)
     {
         var groups = new List<(string Error, string Message, string MessageAr, object Group)>();
 
@@ -351,7 +351,7 @@ public static class PayrollCostStamper
             }).ToList(),
             groups = groups.Select(g => g.Group).ToList(),
         };
-        return (error, body);
+        return (error, body, groups.Select(g => g.Group).ToList());
     }
 
     public static object RoundingRefusal(string accountCode, string accountName, decimal amount, string currency) => new
