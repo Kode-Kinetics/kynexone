@@ -334,9 +334,9 @@ test('Arabic: RTL, translated field, chip, dialog and the server\'s Arabic refus
   await shotField(page, info, 'cc-ar-employee-inherited');
   await tid(page, 'cc-emp-why').click();
   await tid(page, 'cc-emp-why').click();
-  await expect(tid(page, 'cc-emp-why-order')).toContainText('الترتيب: استثناء الموظف، المنصب، القسم، القسم الأعلى، الافتراضي للشركة.');
+  await expect(tid(page, 'cc-emp-why-order')).toContainText('الترتيب: مركز التكلفة الاستثنائي للموظف، المنصب، القسم، القسم الأعلى، الافتراضي للشركة.');
   await tid(page, 'cc-emp-override-open').click();
-  const dialog = page.getByRole('dialog', { name: 'استثناء مركز التكلفة' });
+  const dialog = page.getByRole('dialog', { name: 'مركز تكلفة استثنائي للموظف' });
   await expect(dialog).toContainText('يحل محل');
   // The code inside the Arabic sentence is its own isolated run.
   await expect(dialog.locator('bdi').first()).toHaveText('ADMIN');
@@ -352,7 +352,7 @@ test('Arabic: RTL, translated field, chip, dialog and the server\'s Arabic refus
 test('Arabic: read-only sentence and costing-off note are translated', async ({ page }) => {
   await boot(page, { locale: 'ar', manage: false });
   await open(page);
-  await expect(tid(page, 'cc-emp-readonly-note')).toHaveText('يمكن لمديري الموارد البشرية والمسؤولين فقط تغيير هذا.');
+  await expect(tid(page, 'cc-emp-readonly-note')).toHaveText('يقتصر التغيير على مديري الموارد البشرية ومسؤولي النظام.');
   await expect(tid(page, 'cc-emp-costing-off-note')).toHaveText('محاسبة التكلفة متوقفة، لذا لا يؤثر هذا في الرواتب بعد.');
 });
 

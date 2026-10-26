@@ -621,8 +621,6 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Payroll.AiValidation", "HR Director", SeniorHr),
         ("GET Payroll.AuditIntegrity", "HR Manager,Payroll Manager,Payroll Officer,Finance Approver", PayrollFinanceTier),
         ("GET Payroll.AuditIntegrity", "HR Director", SeniorHr),
-        ("GET Payroll.CostCenterAllocation", "Finance Approver,Auditor", PayrollFinanceTier),
-        ("GET Payroll.CostCenterAllocation", "HR Director", SeniorHr),
         ("GET Payroll.EmployeeSalariesImportTemplate", "Finance Approver,Auditor", PayrollFinanceTier),
         ("GET Payroll.EmployeeSalariesImportTemplate", "HR Director", SeniorHr),
         ("GET Payroll.GetRunPopulation", "HR Director", SeniorHr),

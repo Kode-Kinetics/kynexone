@@ -88,7 +88,9 @@ public sealed class FinanceLedgerMigrationPostgresTests
         await migrator.MigrateAsync(m2);
         await fx.Expect("23001", $"UPDATE finance_gl_entries SET amount = 10 WHERE id = '{reversed}'");
         await using var db = Context(container);
-        (await db.Database.GetPendingMigrationsAsync()).Should().BeEmpty();
+        // AM-35: M2 is not the head of the chain any more; later migrations may still be pending after re-applying it, earlier ones may not.
+        (await db.Database.GetPendingMigrationsAsync()).Should().OnlyContain(m => string.CompareOrdinal(m, m2) > 0,
+            "after re-applying M2 only migrations that come later in the chain may still be pending");
     }
 
     [Fact]

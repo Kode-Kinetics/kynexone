@@ -248,6 +248,7 @@ test('the preview groups by cost centre first, with Not costed last, a status ch
   await expect(tid(page, 'cc-lock-status-chip')).toHaveText('Preview — not posted yet');
   await expect(tid(page, 'cc-lock-kpi-debits')).toContainText('300,000.00');
   await expect(tid(page, 'cc-lock-kpi-credits')).toContainText('300,000.00');
+  await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('0');
   await expect(tid(page, 'cc-lock-kpi-uncosted')).toContainText('0');
   await expect(tid(page, 'cc-lock-groupby-cc')).toHaveAttribute('aria-checked', 'true');
   const groups = page.locator('[data-testid^="cc-lock-group-"]');
@@ -296,6 +297,11 @@ test('blockers: a role=alert banner with one card per group, up to 10 employees 
   const banner = tid(page, 'cc-lock-blockers');
   await expect(banner).toHaveAttribute('role', 'alert');
   await expect(banner.getByRole('heading', { name: 'Lock is blocked: 2 problems' })).toBeVisible();
+  // 12 without a cost centre + 1 invalid = 13 distinct blocked employees; the six optional-account ones are a separate tile.
+  await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('13');
+  await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('Blocked: no cost centre');
+  await expect(tid(page, 'cc-lock-kpi-uncosted')).toContainText('6');
+  await expect(tid(page, 'cc-lock-kpi-uncosted')).toContainText('Not costed (optional accounts)');
   await expect(tid(page, 'cc-lock-blocker-cost_centre_required')).toContainText(M1_EN);
   await expect(tid(page, 'cc-lock-blocker-cost_centre_invalid')).toContainText(M2_EN);
   // the first group row: nothing at any level, so the department and the position come before the employee
@@ -468,12 +474,15 @@ test('Arabic: the preview and the blocker banner read right to left with codes a
   await reviewAndLock(page).click();
   await expect(tid(page, 'cc-lock-preview')).toBeVisible();
   await expect(tid(page, 'cc-lock-status-chip')).toHaveText('معاينة — لم تُرحَّل بعد');
-  await expect(tid(page, 'cc-lock-blockers').getByRole('heading')).toHaveText('القفل متوقف: مشكلتان');
+  await expect(tid(page, 'cc-lock-blockers').getByRole('heading')).toHaveText('يتعذّر قفل مسير الرواتب: مشكلتان');
   await expect(tid(page, 'cc-lock-fix-employee-E-0412')).toContainText('تعديل الموظف');
   await expect(tid(page, 'cc-lock-group-missing')).toContainText('مركز التكلفة مفقود');
   await expect(tid(page, 'cc-lock-set-default').first()).toContainText('تحديد المركز الافتراضي للشركة');
   await expect(tid(page, 'cc-lock-recheck')).toHaveText('إعادة الفحص');
-  await expect(tid(page, 'cc-lock-submit')).toContainText('قفل المسيرة');
+  await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('يمنعون القفل (بلا مركز تكلفة)');
+  await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('13');
+  await expect(tid(page, 'cc-lock-kpi-uncosted')).toContainText('حسابات اختيارية');
+  await expect(tid(page, 'cc-lock-submit')).toContainText('قفل مسير الرواتب');
   expect(await page.evaluate(() => document.documentElement.dir)).toBe('rtl');
   // codes are LTR islands
   await expect(tid(page, 'cc-lock-blocker-row-E-0412').locator('bdi').first()).toHaveAttribute('dir', 'ltr');

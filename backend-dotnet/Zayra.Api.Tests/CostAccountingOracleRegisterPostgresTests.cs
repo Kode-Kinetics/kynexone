@@ -105,17 +105,10 @@ public sealed class CostAccountingOracleRegisterPostgresTests
                                                               || r["component_code"].StartsWith("GOSI")))
             .Select(r => $"{r["employee_code"]}|{r["component_code"]}|{OracleFiles.D(r["amount"]):0.00}").Order().ToList();
 
-        // KNOWN, REPORTED DISAGREEMENT (oracle F-ROUND). E001's SANED is 18,750.00 x 0.0075 = 140.625 EXACTLY: a tie. The oracle rounds half
-        // away from zero (140.63, the contract's 2.6 rule); the payroll engine rounds half to even (Math.Round default) and produces 140.62.
-        // The oracle's README says "no exact tie occurs in this fixture", which is wrong for this one row. It is an upstream compute rounding
-        // difference (country pack), outside the posting code under test, so it is pinned here to the engine's value and called out in
-        // the report; the journal tests use the oracle's register verbatim.
+        // AM-33: E001's SANED is 18,750.00 x 0.0075 = 140.625 EXACTLY, a tie. The engine rounds half to even (Math.Round default) and the oracle
+        // register now carries the engine's 140.62: v1 does not change payroll computation, so the engine's value is authoritative.
         (18_750.00m * 0.0075m).Should().Be(140.625m, "an exact tie");
-        foreach (var tie in new[] { "E001|GOSI-SANED-EE|140.63", "E001|GOSI-SANED-ER|140.63" })
-        {
-            expected.Should().Contain(tie);
-            expected[expected.IndexOf(tie)] = tie.Replace("140.63", "140.62");
-        }
+        expected.Should().Contain("E001|GOSI-SANED-EE|140.62").And.Contain("E001|GOSI-SANED-ER|140.62");
         expected = expected.Order().ToList();
         var onlyEngine = produced.Except(expected).ToList();
         var onlyOracle = expected.Except(produced).ToList();

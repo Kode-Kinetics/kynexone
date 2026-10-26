@@ -566,7 +566,7 @@ test('Arabic mappings: RTL, translated headers and classes, and the server\'s Ar
   const state = await boot(page, { locale: 'ar' });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   const region = mapping(page);
-  await expect(region.getByRole('columnheader', { name: 'التصنيف الوظيفي', exact: true })).toBeVisible();
+  await expect(region.getByRole('columnheader', { name: 'التصنيف الوظيفي للتكلفة', exact: true })).toBeVisible();
   await expect(region.getByRole('columnheader', { name: 'مركز التكلفة الثابت', exact: true })).toBeVisible();
   await expect(tid(page, 'cc-map-class-row-EARN:BASIC-SELLING')).toContainText('البيع والتسويق');
   await shot(page, info, 'cc-ar-mappings-company');
@@ -791,10 +791,10 @@ test('Arabic readiness: RTL, translated checks, plural count, and the dialog', a
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   await page.getByRole('tab', { name: 'محاسبة التكلفة', exact: true }).click();
   await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('موظفون بلا مركز تكلفة');
-  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('مانع');
+  await expect(tid(page, 'cc-ready-check-employees-unresolved')).toContainText('عائق');
   await shot(page, info, 'cc-ar-readiness');
   await switchEl(page).click();
-  await expect(tid(page, 'cc-on-dialog')).toContainText('إذا فعّلتها الآن فسيتوقف القفل التالي بسبب');
+  await expect(tid(page, 'cc-on-dialog')).toContainText('إذا فعّلتها الآن فسيتعذّر قفل مسير الرواتب التالي بسبب');
   await shot(page, info, 'cc-ar-turn-on-dialog');
   expect(state.errors).toEqual([]);
 });

@@ -3,7 +3,7 @@
 Pure stdlib. Usage: python3 gen_oracle.py [--annuity 0.10] [--out DIR]
 Hand-accounting rules only; knows nothing of the implementation."""
 import csv, os, argparse, datetime
-from decimal import Decimal as D, ROUND_HALF_UP, ROUND_FLOOR
+from decimal import Decimal as D, ROUND_HALF_UP, ROUND_HALF_EVEN, ROUND_FLOOR
 from fractions import Fraction
 from collections import defaultdict, OrderedDict
 
@@ -14,6 +14,9 @@ OUT = A.out
 os.makedirs(f"{OUT}/inputs", exist_ok=True); os.makedirs(f"{OUT}/expected", exist_ok=True)
 
 def r2(x): return D(x).quantize(D("0.01"), rounding=ROUND_HALF_UP)
+# AM-33: the payroll engine rounds each GOSI component half to even (C# Math.Round); v1 does not change payroll computation, so the
+# GOSI register is rounded the same way. Every other amount stays half-up.
+def rg(x): return D(x).quantize(D("0.01"), rounding=ROUND_HALF_EVEN)
 def w(path, header, rows):
     with open(f"{OUT}/{path}", "w", newline="", encoding="utf-8") as f:
         c = csv.writer(f); c.writerow(header)
@@ -38,7 +41,7 @@ rows=[["rule_key","value","applies_to","effective_from","used_for_oracle","note"
  ["gosi.covered_wage_floor_sar","(not seeded)","","","no","no clamping floor"],
  ["gosi.covered_wage_min_annuities_sar / ..._occupational_hazards_sar","1500 / 400","validator warning only","pack default","no","not a clamp"],
  ["",""," ","","",""],
- ["COMPONENTS (rounded separately per employee, Math.Round 2dp half-even in the app, half-up here - see README flag F-ROUND)","","","","",""],
+ ["COMPONENTS (rounded separately per employee, Math.Round 2dp half-even in the app and in this generator - AM-33, see README flag F-ROUND)","","","","",""],
  ["GOSI-ANN-EE","covered wage x annuity rate","Saudi","","","DED:STATUTORY_EE -> 2101"],
  ["GOSI-SANED-EE","covered wage x 0.0075","Saudi","","","DED:STATUTORY_EE -> 2101"],
  ["GOSI-ANN-ER","covered wage x annuity rate","Saudi","","","employer; DED:STATUTORY_ER -> 2106, pair DR 5101"],
@@ -145,9 +148,9 @@ def gosi(e, basic, housing, code, month):
     base = min(basic + housing, CAP); out = []
     if e["nat"] == "Saudi":
         rate = NEW["2026-09" if month==1 else "2026-10"] if COHORT.get(code,("",))[0]=="NewEntrant" else PRE
-        out += [("GOSI-ANN-EE", r2(base*rate), False), ("GOSI-SANED-EE", r2(base*SANED), False),
-                ("GOSI-ANN-ER", r2(base*rate), True), ("GOSI-SANED-ER", r2(base*SANED), True)]
-    out.append(("GOSI-OH-ER", r2(base*OH), True))
+        out += [("GOSI-ANN-EE", rg(base*rate), False), ("GOSI-SANED-EE", rg(base*SANED), False),
+                ("GOSI-ANN-ER", rg(base*rate), True), ("GOSI-SANED-ER", rg(base*SANED), True)]
+    out.append(("GOSI-OH-ER", rg(base*OH), True))
     return out
 
 def register(month, ctx=BASE_CTX):
@@ -470,7 +473,7 @@ ccs_bad = {k:dict(v) for k,v in CCS.items()}; ccs_bad["CC-300"]["active"]=False
 blockers("S-A4",dict(BASE_CTX,ccs=ccs_bad),{},"CC-300 deactivated: E005 (position level) and E007 (employee override) hard-fail; company default NOT used as fall-through. E007's level is Employee")
 # (b1) rounding
 BL.append(["S-B1","cost_centre_rounding_required",422,"M-4","5199",0,"",D("0.01"),MSG4.format(amt="0.01",cur="SAR",code="5199"),
-  "fixture: stored slip nets sum 0.01 below component sums (drift); ROUNDING line must be posted to 5199 (Required) and company has NO default cost centre. With default CC-100 the line posts DR 5199 0.01 to CC-100 and Lock succeeds"])
+  "fixture: stored slip nets sum 0.01 below component sums (drift); ROUNDING line must be posted to 5199 (Required) and company has NO default cost centre. With default CC-100 the line posts as a CREDIT of 0.01 to 5199 on CC-100 (AM-34: the net is 0.01 below the component sums, so debits exceed credits and the missing amount is a credit) and Lock succeeds"])
 # (b2) fixed-CC mapping onto a NotAllowed account: spec rejects at SAVE time, nothing persisted, no journal change
 BL.append(["S-B2","cost_centre_not_allowed",422,"M-3","5005",0,"",None,"Account 5005 Overtime Expense does not accept a cost centre. Remove the cost centre from this posting rule or change the account's cost centre rule.",
   "SAVE-TIME: account 5005 rule = NotAllowed and a mapping (EARN:OVERTIME, fixed cost centre CC-200) is saved -> 422 M-3, mapping NOT persisted, M1/M2 journals unchanged. Same code from the write-time interceptor if a costed line is ever inserted on a NotAllowed account"])

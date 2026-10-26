@@ -80,6 +80,9 @@ public class GlAdjustmentRequest : ITenantOwned, ICompanyScopedOperational
     public string? DecidedByName { get; set; }
     public DateTime? DecidedAtUtc { get; set; }
     public string? DecisionNote { get; set; }
+    /// <summary>Cost-accounting v1 (WP-C3, AM-36): the optional cost centre the profit-and-loss line of the journal carries (null = none).
+    /// Validated by the one cost-centre reference check when requested; stamped, with its snapshots, on that line at approval.</summary>
+    public Guid? CostCenterId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
 }

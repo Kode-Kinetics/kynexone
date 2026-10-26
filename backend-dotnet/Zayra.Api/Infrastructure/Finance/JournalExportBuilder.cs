@@ -401,13 +401,26 @@ public static class JournalExportBuilder
             AccountCode: code, AccountName: name, Amount: e.Amount, Currency: e.Currency,
             AccountingDate: accountingDate, SystemPostedDate: e.EntryDate, Period: e.Period,
             JournalRef: journalRef, Description: e.Description, SourceModule: e.SourceModule,
-            SourceEntityId: e.SourceEntityId, SourceEntityRef: e.SourceEntityRef, EventType: e.EventType,
+            SourceEntityId: e.SourceEntityId, SourceEntityRef: ExportReference(e), EventType: e.EventType,
             CompanyId: e.CompanyId, CompanyCode: companyCode, IsReversed: e.IsReversed,
             ExternalAccountCode: string.IsNullOrWhiteSpace(external) ? null : external.Trim(),
             Scale: JournalAmount.ScaleFor(e.Currency),
             CostCenterCode: costed ? e.CostCenterCode : null,
             CostCenterName: costed ? e.CostCenterName : null,
             CostCenterGlSegment: costed ? e.CostCenterGlSegment : null);
+    }
+
+    /// <summary>
+    /// The reference an ERP file carries for a ledger row. EOSB provision and settlement lines are one line per employee and keep the employee link in
+    /// <c>SourceEntityRef</c> inside the system (their sub-ledger is rebuilt from it); that link is an employee identifier and must not leave. Exports
+    /// carry a period label for the provision movement and a settlement-level reference for the settlement lines instead.
+    /// </summary>
+    public static string ExportReference(FinanceGlEntry e)
+    {
+        if (e.SourceModule != FinalSettlementGlDescriptions.SourceModule || !int.TryParse(e.SourceEntityRef, out _)) return e.SourceEntityRef;
+        return e.EventType == GlEventTypes.EosbProvisionAccrual
+            ? $"EOSB-{e.Period}"
+            : $"SETTLEMENT-{e.SourceEntityId.ToString("N")[..12].ToUpperInvariant()}";
     }
 
     /// <summary>

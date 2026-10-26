@@ -135,12 +135,12 @@ public static class EosbProvisionPlanner
             var employeeRef = EosbProvisionLedger.EmployeeRef(o.EmployeeId);
             if (movement > 0m)
             {
-                lines.Add(Line(string.Empty, provisionAccount, movement, $"{label}: {o.EmployeeCode}", employeeRef));
+                lines.Add(Line(string.Empty, provisionAccount, movement, label, employeeRef));
                 if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
             }
             else
             {
-                lines.Add(Line(provisionAccount, string.Empty, -movement, $"{label}: {o.EmployeeCode}", employeeRef));
+                lines.Add(Line(provisionAccount, string.Empty, -movement, label, employeeRef));
                 Add(fall, gl is null ? null : o.CostCentreId, -movement);
             }
         }

@@ -39,6 +39,8 @@ public sealed class PayrollCostPlan
     public IReadOnlyDictionary<int, string> EmployeeCodes { get; init; } = new Dictionary<int, string>();
     /// <summary>Rolled-up-from map for the audit record (employee id to original cost centre), only when the small-cell roll-up changed something.</summary>
     public IReadOnlyDictionary<int, Guid> RolledUpFrom { get; init; } = new Dictionary<int, Guid>();
+    /// <summary>The company's small-cell minimum when the plan was made; a refusal body withholds the amount of a group smaller than this.</summary>
+    public int SmallCellMin { get; init; }
     /// <summary>Set by the journal builder: M-4 (the ROUNDING account is Required and nothing can cost the difference).</summary>
     public CostBlocker? RoundingBlocker { get; set; }
 }
@@ -76,7 +78,7 @@ public static class PayrollCostStamper
 
     /// <summary>True when lines on this driver's account are profit-and-loss lines, so they carry a cost centre.</summary>
     public static bool IsCostableDriver(string driverKey, GlResolutionContext ctx) =>
-        AccountTypeOf(driverKey, ctx) is "Expense" or "Revenue";
+        FinanceGlEntryGuard.IsPnl(AccountTypeOf(driverKey, ctx));
 
     public static string RuleOf(string code, GlResolutionContext ctx) =>
         ctx.AccountRules.TryGetValue(code, out var a) ? a.Rule : "Optional";
@@ -204,6 +206,7 @@ public static class PayrollCostStamper
             UncostedAmount = uncosted.Values.Sum(),
             EmployeeCodes = employees.ToDictionary(kv => kv.Key, kv => kv.Value.Code),
             RolledUpFrom = rolledFrom,
+            SmallCellMin = ctx.CostCentreSmallCellMin,
         };
     }
 
@@ -212,7 +215,7 @@ public static class PayrollCostStamper
     /// (bonus accrual, final-settlement accrual): one snapshot, one resolution per employee. The caller applies the account rules.
     /// </summary>
     public static async Task<Dictionary<int, CostCentreResolution>> ResolveEmployeesAsync(
-        ZayraDbContext db, Guid tenantId, Guid companyId, IEnumerable<int> employeeIds, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, Guid companyId, IEnumerable<int> employeeIds, CancellationToken ct, GlResolutionContext? smallCell = null)
     {
         var ids = employeeIds.Where(i => i > 0).Distinct().ToList();
         var employees = (await ScopedBypass.NullableTenantWide(db.Employees, tenantId,
@@ -221,9 +224,20 @@ public static class PayrollCostStamper
                 .Select(e => new Emp(e.Id, e.EmployeeCode, e.DepartmentId, e.PositionId, e.CostCenterId, e.CostCenterIsOverride))
                 .ToListAsync(ct)).ToDictionary(e => e.Id);
         var snapshot = await CostCentreResolver.LoadSnapshotAsync(db, tenantId, companyId, ct);
-        return ids.ToDictionary(id => id, id => employees.TryGetValue(id, out var e)
+        var resolved = ids.ToDictionary(id => id, id => employees.TryGetValue(id, out var e)
             ? CostCentreResolver.Resolve(new ResolverEmployee(e.DepartmentId, e.PositionId, e.CostCenterId, e.IsOverride), snapshot)
             : CostCentreResolution.Unresolved("none", "company"));
+
+        // AM-15 (WP-C3): the same small-cell roll-up payroll rows and EOSB already get, over the employees being posted together, so the
+        // bonus and settlement accruals never put a one-person cost centre on the ledger when the company asked for a minimum.
+        if (smallCell is { CostAccountingEnabled: true, CostCentreSmallCellMin: > 0 })
+        {
+            var final = resolved.ToDictionary(kv => kv.Key, kv => (CostCenterId: kv.Value.CostCenterId, Source: kv.Value.Source));
+            RollUp(final, new Dictionary<int, Guid>(), smallCell, snapshot);
+            foreach (var (id, value) in final)
+                if (value.Source == "RolledUp") resolved[id] = resolved[id] with { CostCenterId = value.CostCenterId, Source = "RolledUp" };
+        }
+        return resolved;
     }
 
     /// <summary>Contract 2.8: a cost centre with fewer than K employees is replaced by the nearest ancestor whose subtree holds at least K,
@@ -299,7 +313,10 @@ public static class PayrollCostStamper
     };
 
     /// <summary>The 422 body (M-1, M-2, M-5): AM-1 blockers (no amounts) plus per-account / per-level aggregate groups.</summary>
-    public static (string Error, object Body, IReadOnlyList<object> Groups) BuildRefusal(IReadOnlyList<CostBlocker> blockers)
+    /// <summary>An aggregate of fewer people than the small-cell minimum K (or of exactly one person when no minimum is set) is, or nearly is, one person's pay.</summary>
+    public static bool WithholdAmount(int employeesInGroup, int smallCellMin) => employeesInGroup < (smallCellMin > 0 ? smallCellMin : 2);
+
+    public static (string Error, object Body, IReadOnlyList<object> Groups) BuildRefusal(IReadOnlyList<CostBlocker> blockers, int smallCellMin = 0)
     {
         var groups = new List<(string Error, string Message, string MessageAr, object Group)>();
 
@@ -312,7 +329,8 @@ public static class PayrollCostStamper
             {
                 error = InvalidCode, level = LevelLabel(g.Key), employeeCount = employees.Count,
                 employees = employees.Take(10).Select(x => new { id = x.Key, code = x.First().EmployeeCode }).ToList(),
-                amount = Math.Round(g.Sum(b => b.Amount), 4), message, messageAr,
+                amount = WithholdAmount(employees.Count, smallCellMin) ? (decimal?)null : Math.Round(g.Sum(b => b.Amount), 4),
+                amountWithheld = WithholdAmount(employees.Count, smallCellMin), message, messageAr,
             }));
         }
         foreach (var g in blockers.Where(b => b.Reason == RequiredCode).GroupBy(b => (b.AccountCode, b.AccountName)).OrderBy(g => g.Key.AccountCode, StringComparer.Ordinal))
@@ -324,7 +342,8 @@ public static class PayrollCostStamper
             {
                 error = RequiredCode, accountCode = g.Key.AccountCode, accountName = g.Key.AccountName, employeeCount = employees.Count,
                 employees = employees.Take(10).Select(x => new { id = x.Key, code = x.First().EmployeeCode }).ToList(),
-                amount = Math.Round(g.Sum(b => b.Amount), 4), message, messageAr,
+                amount = WithholdAmount(employees.Count, smallCellMin) ? (decimal?)null : Math.Round(g.Sum(b => b.Amount), 4),
+                amountWithheld = WithholdAmount(employees.Count, smallCellMin), message, messageAr,
             }));
         }
         foreach (var g in blockers.Where(b => b.Reason == ReservedClassCode).GroupBy(b => b.AccountCode).OrderBy(g => g.Key, StringComparer.Ordinal))
@@ -335,7 +354,8 @@ public static class PayrollCostStamper
             {
                 error = ReservedClassCode, accountCode = g.Key, employeeCount = g.Select(b => b.EmployeeId).Distinct().Count(),
                 employees = g.GroupBy(b => b.EmployeeId).Take(10).Select(x => new { id = x.Key, code = x.First().EmployeeCode }).ToList(),
-                amount = Math.Round(g.Sum(b => b.Amount), 4), message, messageAr,
+                amount = WithholdAmount(g.Select(b => b.EmployeeId).Distinct().Count(), smallCellMin) ? (decimal?)null : Math.Round(g.Sum(b => b.Amount), 4),
+                amountWithheld = WithholdAmount(g.Select(b => b.EmployeeId).Distinct().Count(), smallCellMin), message, messageAr,
             }));
         }
 
@@ -423,7 +443,7 @@ public static class PayrollCostStamper
 
         foreach (var l in lines.OrderBy(l => l.PostingKey ?? string.Empty, StringComparer.Ordinal).ThenBy(l => l.Description, StringComparer.Ordinal))
             sb.Append("line|").Append(l.EventType).Append('|').Append(l.SourceEntityRef).Append('|').Append(l.DebitAccount).Append('|').Append(l.CreditAccount)
-              .Append('|').Append(N(l.Amount)).Append('|').Append(l.CompanyId?.ToString("N") ?? "-")
+              .Append('|').Append(N(l.Amount)).Append('|').Append(l.Currency).Append('|').Append(l.CompanyId?.ToString("N") ?? "-")
               .Append('|').Append(l.CostCenterId?.ToString("N") ?? "-").Append('|').Append(l.CostCenterCode ?? "-").Append('|').Append(l.CostCenterName ?? "-")
               .Append('|').Append(l.CostCenterGlSegment ?? "-").Append('|').Append(l.Description).Append('|').Append(l.PostingKey ?? "-").Append('\n');
 
@@ -445,7 +465,11 @@ public static class PayrollCostStamper
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
     }
 
-    /// <summary>The reversal key: sha256('REV' | originalEntryId). "Void twice" fails at the unique index.</summary>
-    public static string ReversalKey(Guid originalEntryId) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("REV|" + originalEntryId.ToString("N")))).ToLowerInvariant();
+    /// <summary>
+    /// The reversal key: sha256('REV' | originalEntryId), and for the SECOND and later partial reversals of one original also '| sequence' (the number of
+    /// contras already posted against it). "Void twice" still fails at the unique index; a legitimate second partial contra does not collide with the first.
+    /// </summary>
+    public static string ReversalKey(Guid originalEntryId, int sequence = 0) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            "REV|" + originalEntryId.ToString("N") + (sequence > 0 ? "|" + sequence.ToString(CultureInfo.InvariantCulture) : string.Empty)))).ToLowerInvariant();
 }

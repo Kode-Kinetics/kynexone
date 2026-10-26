@@ -400,7 +400,7 @@ public partial class FinanceGlController : ControllerBase
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var accountSet = await _db.GlAccounts.IgnoreQueryFilters()
             .Where(a => a.TenantId == tid && (companyId != null ? (a.CompanyId == companyId || a.CompanyId == null) : a.CompanyId == null))
-            .Select(a => new { a.Id, a.Code, a.Name, a.AccountType, a.IsActive }).ToListAsync(ct);
+            .Select(a => new { a.Id, a.Code, a.Name, a.AccountType, a.IsActive, a.CostCenterRule }).ToListAsync(ct);
         var accounts = accountSet.ToDictionary(a => a.Id);
 
         // Fixed cost centre (AM-4, AM-16): company mappings only, and the cost centre must be a live, active row of THAT company.
@@ -439,6 +439,11 @@ public partial class FinanceGlController : ControllerBase
                 if (!fixedRows.TryGetValue(cc, out var row) || row.CompanyId != companyId || !row.IsActive || row.IsDeleted)
                     return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_invalid", "The fixed cost centre must be an active cost centre of this company.",
                         "يجب أن يكون مركز التكلفة الثابت مركزًا نشطًا تابعًا لهذه الشركة."));
+                // M-3 (oracle S-B2): a fixed cost centre on an account that does not accept one could never post, so it is refused here.
+                if (string.Equals(account.CostCenterRule, "NotAllowed", StringComparison.Ordinal))
+                    return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_not_allowed",
+                        $"Account {account.Code} {account.Name} does not accept a cost centre. Remove the cost centre from this posting rule or change the account's cost centre rule.",
+                        GlCostCentreRuleFilterAttribute.ArabicFor("cost_centre_not_allowed")));
             }
             var changed = !prevByKey.TryGetValue((m.DriverKey!, cls), out var prev) || prev.AccountId != m.AccountId;
             if (!changed) continue;
