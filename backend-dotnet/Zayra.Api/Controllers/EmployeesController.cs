@@ -15,6 +15,7 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -4060,11 +4061,15 @@ public class EmployeesController : ControllerBase
 
                 if (immediateChanges.Count > 0)
                 {
+                    var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
                     ApplyChanges(employee, immediateChanges);
                     // Keys stored on the payroll profile (socialInsuranceReference) have no home on
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
+                    // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
+                    await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
+                    await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken);
                     await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, cancellationToken);
                     await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
                     loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
@@ -4148,9 +4153,13 @@ public class EmployeesController : ControllerBase
                 });
             }
 
+            var directAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
+            // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
+            await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, directAttributionBefore, cancellationToken);
+            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken);
             await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, cancellationToken);
             await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
             loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
@@ -4178,6 +4187,8 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+        catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
@@ -5214,10 +5225,15 @@ public class EmployeesController : ControllerBase
             if (newDesigId is null && !string.IsNullOrWhiteSpace(transfer.NewDesignation))
                 (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken, landingCompanyId);
 
+            var transferAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
             if (newDeptId is not null) { employee.DepartmentId = newDeptId; employee.Department = newDeptName; }
             if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
             if (newDesigId is not null) { employee.DesignationId = newDesigId; employee.Designation = newDesigTitle; }
             employee.UpdatedAtUtc = DateTime.UtcNow;
+            // AM-9 door guard: a transfer cannot move someone in a run awaiting finance review or lock to another cost centre (the transfer stays
+            // pending until the run is reopened or locked). The permission is the approver's own (employees.approve): the requester held the cost-centre one.
+            await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, transferAttributionBefore, cancellationToken);
+            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, transferAttributionBefore, GetUserId(), cancellationToken);
             transfer.Status = "ApprovedApplied";
             transfer.HrApprovedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
@@ -5248,6 +5264,7 @@ public class EmployeesController : ControllerBase
                 "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
             return this.EstablishmentConflict(ex);
         }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
