@@ -45,7 +45,7 @@ public partial class PayrollController
 
     private async Task<EosbProvisionBuild> BuildEosbProvisionAsync(
         Guid tenantId, PayrollRun run, string period, string currency, GlResolutionContext glCtx,
-        IReadOnlyList<PayrollEarning> earnings, Guid? postedBy, string postedByName, CancellationToken ct)
+        IReadOnlyList<PayrollEarning> earnings, Guid? postedBy, string postedByName, PayrollCostPlan costPlan, CancellationToken ct)
     {
         if (run.CompanyId is not Guid companyId) return EosbProvisionBuild.None();
         if (run.RunType != PayrollRunTypes.Regular && run.RunType != PayrollRunTypes.Replacement)
@@ -144,7 +144,8 @@ public partial class PayrollController
                 employee.Id, employee.EmployeeCode, result.TotalGratuity, carried,
                 IsCatchUp: history.Count == 0,
                 WageBase: result.AppliedWageBase > 0m ? result.AppliedWageBase : wageBasis.ConfiguredWage,
-                ServiceYears: (decimal)years, Rule: result.ApplicableRule));
+                ServiceYears: (decimal)years, Rule: result.ApplicableRule,
+                CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null));
         }
 
         if (obligations.Count == 0) return EosbProvisionBuild.None();
@@ -152,7 +153,8 @@ public partial class PayrollController
             tenantId, companyId, run.Id, period, periodEnd, currency,
             GlAccountResolver.AccountLabel(EosbProvisionExpenseDriver, glCtx),
             GlAccountResolver.AccountLabel(EosbProvisionLedger.ProvisionDriverKey, glCtx),
-            obligations, postedBy, postedByName, DateOnly.FromDateTime(DateTime.UtcNow));
+            obligations, postedBy, postedByName, DateOnly.FromDateTime(DateTime.UtcNow),
+            costPlan.Enabled ? new EosbCostContext(glCtx) : null);
         return new EosbProvisionBuild(lines, snapshots, null);
     }
 }

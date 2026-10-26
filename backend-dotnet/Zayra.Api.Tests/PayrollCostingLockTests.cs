@@ -296,6 +296,7 @@ public class PayrollCostingLockTests
         await k.AddEmployee("E7", "D-FIN", overrideCc: "CC-300");     // employee level -> CC-300
         await k.AddEmployee("E1", "D-SAL");
         k.Cc["CC-300"].IsActive = false;
+        k.Touch();
         await k.Db.SaveChangesAsync();
         var run = await k.SeedRunAsync(new[] { E("E5", "BASIC", 700m), E("E7", "BASIC", 1100m), E("E1", "BASIC", 900m) }, Array.Empty<(string, string, string, decimal, bool)>());
 
@@ -439,6 +440,7 @@ public class PayrollCostingLockTests
                 k.Db.PayrollEarnings.Add(new PayrollEarning { TenantId = k.TenantId, PayrollRunId = run.Id, EmployeeId = k.Emp["E2"].Id, ComponentCode = "TRANSPORT", ComponentName = "t", Amount = 10m, Source = "Salary" });
                 break;
         }
+        k.Touch();
         await k.Db.SaveChangesAsync();
 
         await AssertSentBackAsync(k, run, await k.LockAsync(run.Id));
@@ -451,6 +453,7 @@ public class PayrollCostingLockTests
         await using var _ = k;
         k.Emp["E1"].FullName = "Renamed Person";
         k.Cc["CC-300"].Name = "An unrelated cost centre renamed";
+        k.Touch();
         await k.Db.SaveChangesAsync();
 
         (await k.LockAsync(run.Id)).Should().BeOfType<OkObjectResult>();
@@ -470,6 +473,7 @@ public class PayrollCostingLockTests
 
         // an attribution edit while the run waits for finance...
         k.Dept["D-SAL"].CostCenterId = k.Cc["CC-300"].Id;
+        k.Touch();
         await k.Db.SaveChangesAsync();
         // ...then Finance finalises: the hash is the state AT FINAL APPROVAL, so Lock posts what the finalising approver saw.
         k.Db.ChangeTracker.Clear();
@@ -539,10 +543,15 @@ public class PayrollCostingLockTests
         await k.AddEmployee("E1", "D-SAL");
         var run = await k.SeedRunAsync(new[] { E("E1", "BASIC", 1000m) }, Array.Empty<(string, string, string, decimal, bool)>());
         (await k.ApproveAsync(run.Id)).Should().BeOfType<OkObjectResult>();
-        // a support-restored accrual: balanced, but its expense line carries no cost centre
+        // a support-restored accrual: balanced, but its expense line carries no cost centre. (The ledger guard refuses to WRITE such a
+        // line while costing is on, so it is restored with the switch briefly off, exactly as a support data-fix would.)
+        (await k.Db.Companies.SingleAsync(c => c.Id == k.CompanyId)).CostAccountingEnabled = false;
+        await k.Db.SaveChangesAsync();
         k.Db.FinanceGlEntries.AddRange(
             new FinanceGlEntry { TenantId = k.TenantId, CompanyId = k.CompanyId, SourceModule = "Payroll", SourceEntityId = run.Id, EventType = GlEventTypes.Accrual, DebitAccount = "5001 - Basic Salary Expense", Amount = 1000m, Currency = "SAR", Period = "2026-09" },
             new FinanceGlEntry { TenantId = k.TenantId, CompanyId = k.CompanyId, SourceModule = "Payroll", SourceEntityId = run.Id, EventType = GlEventTypes.Accrual, CreditAccount = "2100 - Salaries Payable", Amount = 1000m, Currency = "SAR", Period = "2026-09" });
+        await k.Db.SaveChangesAsync();
+        (await k.Db.Companies.SingleAsync(c => c.Id == k.CompanyId)).CostAccountingEnabled = true;
         await k.Db.SaveChangesAsync();
 
         var res = await k.LockAsync(run.Id);

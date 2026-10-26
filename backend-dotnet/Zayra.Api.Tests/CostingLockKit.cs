@@ -133,6 +133,12 @@ internal sealed class CostingLockKit : IAsyncDisposable
         return run;
     }
 
+    /// <summary>Re-attaches the cached master-data entities (a controller call clears the change tracker) so a test can edit them.</summary>
+    public void Touch()
+    {
+        Db.UpdateRange(Cc.Values); Db.UpdateRange(Dept.Values); Db.UpdateRange(Pos.Values); Db.UpdateRange(Emp.Values);
+    }
+
     public static (string, string, string, decimal) E(string emp, string code, decimal amount, string source = "Salary") => (emp, code, source, amount);
     public static (string, string, string, decimal, bool) D(string emp, string code, string source, decimal amount, bool employer = false) => (emp, code, source, amount, employer);
 

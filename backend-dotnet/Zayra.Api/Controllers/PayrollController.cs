@@ -21,6 +21,7 @@ using Zayra.Api.Infrastructure.Governance;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Attendance;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -33,6 +34,7 @@ namespace Zayra.Api.Controllers;
 // Reads keep their exact original role list (re-applied per GET method) — deferred to a later module.
 // WPS/payment/ERP-export mutations retain their in-body HasPermission("payroll.export") gate unchanged.
 [Authorize]
+[Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilter]
 public partial class PayrollController : ControllerBase
 {
     private readonly ZayraDbContext _db;
@@ -3657,6 +3659,11 @@ public partial class PayrollController : ControllerBase
             }), false);
         if (run.Status != "Approved") return new(BadRequest(new { message = "Only approved payroll runs can be locked." }), false);
 
+        // AM-8 / AM-29: Approve, the cost stamp and Lock hold the per-(tenant, company) cost-accounting advisory lock, so no attribution,
+        // mapping, rule or switch writer can commit between the drift check below and the stamp. Released at commit or rollback.
+        if (run.CompanyId is Guid costLockCompany)
+            await Infrastructure.Finance.CostAccountingGuards.AcquireCompanyLockAsync(_db, tenantId, costLockCompany, cancellationToken);
+
         // Block-on-error: any unresolved ERROR-severity validation result blocks locking.
         var blockingErrors = await _db.PayrollValidationResults.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Severity == "Error" && !x.IsResolved)
@@ -3767,6 +3774,17 @@ public partial class PayrollController : ControllerBase
             }), false);
         var glCurrency = glCompany.DefaultCurrency.Trim().ToUpperInvariant();
 
+        // AM-14 / AM-29: a user who changed a posting input of this company since its last lock — or an API key that user created —
+        // cannot lock its run, whatever permissions they hold. By identity; only while the company's switch is ON.
+        if (run.CompanyId is Guid sodCompany && GetUserId() is Guid lockerId
+            && await Infrastructure.Finance.CostAccountingSod.HasConflictAsync(_db, tenantId, sodCompany, period, lockerId, cancellationToken))
+            return new(StatusCode(403, Infrastructure.Finance.CostAccountingSod.RefusalBody), false);
+
+        // The cost-accounting context the readiness checks read (account rules), only when the switch is on.
+        var costingGl = glCompany.CostAccountingEnabled
+            ? await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken)
+            : null;
+
         if (alreadyPosted)
         {
             var liveAccrual = await _db.FinanceGlEntries.AsNoTracking()
@@ -3776,7 +3794,7 @@ public partial class PayrollController : ControllerBase
                              || x.EventType == GlEventTypes.BonusPayrollClearing
                              || x.EventType == GlEventTypes.SettlementPayrollClearing))
                 .ToListAsync(cancellationToken);
-            var readiness = ValidatePayrollGl(liveAccrual, glCurrency);
+            var readiness = ValidatePayrollGl(liveAccrual, glCurrency, costingGl);
             if (!readiness.IsReady)
                 return new(UnprocessableEntity(new
                 {
@@ -3793,6 +3811,7 @@ public partial class PayrollController : ControllerBase
                 }), false);
         }
         IReadOnlyList<PayrollGlCatchAll> lockCatchAlls = Array.Empty<PayrollGlCatchAll>();
+        var lockCostPlan = PayrollCostPlan.Off;
         decimal lockRounding = 0m;
         decimal lockEosbMovement = 0m;
         var lockEosbEmployees = 0;
@@ -3811,6 +3830,17 @@ public partial class PayrollController : ControllerBase
                 }), false);
             // The SAME builder the GL preview projects (preview == post, settlement clearing included).
             var plan = await BuildLockJournalAsync(tenantId, run, period, glCurrency, GetUserId(), GetUserName(), cancellationToken);
+
+            // ── AM-8: the approval hash is the control. The journal was built from ONE consistent read; if its fingerprint is not the
+            // one the approver sealed — costing switched on or off since, a NULL hash with the switch on, or ANY input that changes what
+            // posts — the run goes back for approval. A pre-costing run (switch off, no hash) is untouched.
+            var costingNow = glCompany.CostAccountingEnabled;
+            var sealedHash = run.CostCenterResolutionHash;
+            if ((costingNow || sealedHash is not null)
+                && (!costingNow || sealedHash is null || plan.CostPlan.Enabled != costingNow
+                    || !string.Equals(plan.CostHash, sealedHash, StringComparison.Ordinal)))
+                return await SendBackForCostChangeAsync(run, tenantId, sealedHash is not null, costingNow, cancellationToken);
+
             // Fail CLOSED on a switched-off account or system posting rule: treated exactly like an
             // unmapped account, never silently re-routed to some other account.
             if (plan.Problems.Count > 0)
@@ -3837,10 +3867,15 @@ public partial class PayrollController : ControllerBase
                     message = eosbRefusal.Message,
                     companyId = run.CompanyId,
                 }), false);
+            // Contract 2.7: every cost-centre refusal is collected across ALL rows (not first-fail) and nothing has been written.
+            if (plan.CostPlan.Blockers.Count > 0)
+                return new(UnprocessableEntity(PayrollCostStamper.BuildRefusal(plan.CostPlan.Blockers).Body), false);
+            if (plan.RoundingBlock is { } roundingBlock)
+                return new(UnprocessableEntity(PayrollCostStamper.RoundingRefusal(roundingBlock.AccountCode, roundingBlock.AccountName, roundingBlock.Amount, glCurrency)), false);
             var glLines = plan.Lines;
             var totalDebits = plan.TotalDebits;
             var totalCredits = plan.TotalCredits;
-            var readiness = ValidatePayrollGl(glLines, glCurrency);
+            var readiness = ValidatePayrollGl(glLines, glCurrency, plan.Context);
             if (!readiness.IsReady)
             {
                 var currencyMismatch = readiness.Currencies.Count != 1
@@ -3879,6 +3914,12 @@ public partial class PayrollController : ControllerBase
             }
             lockCatchAlls = plan.CatchAlls;
             lockRounding = plan.RoundingAdjustment;
+            lockCostPlan = plan.CostPlan;
+            if (plan.CostPlan.Enabled)
+            {
+                await PersistCostStampsAsync(plan, run, tenantId, cancellationToken);
+                run.CostAccountingApplied = true;
+            }
             _db.FinanceGlEntries.AddRange(glLines);
             // POD-C2 — the obligation witnesses commit with the journal they explain, or not at all.
             if (plan.EosbSnapshots.Count > 0) _db.EosbProvisionSnapshots.AddRange(plan.EosbSnapshots);
@@ -3921,6 +3962,7 @@ public partial class PayrollController : ControllerBase
             catchAllComponents = lockCatchAlls.Select(c => new { componentCode = c.ComponentCode, label = c.Label, driverKey = c.DriverKey, amount = c.Amount }).ToList(),
             roundingAdjustment = lockRounding,
             eosbProvisionMovement = lockEosbMovement, eosbProvisionEmployees = lockEosbEmployees,
+            costing = CostingSummary(lockCostPlan),
         }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         // JSON superset of the previous `Ok(run)` body — every PayrollRun property is still present at the
@@ -3950,7 +3992,61 @@ public partial class PayrollController : ControllerBase
             // POD-C2 — the end-of-service provision movement this Lock booked (0 when provisioning is off).
             eosbProvisionMovement = lockEosbMovement,
             eosbProvisionEmployees = lockEosbEmployees,
+            // Cost accounting (WP-C2): whether the journal was costed, and the W-1 / W-2 warnings (counts and aggregates only).
+            costing = CostingSummary(lockCostPlan),
         }), true, run);
+    }
+
+    private static object CostingSummary(PayrollCostPlan plan) => new
+    {
+        applied = plan.Enabled,
+        fallbackEmployees = plan.FallbackEmployees, fallbackAmount = plan.FallbackAmount,
+        uncostedEmployees = plan.UncostedEmployees, uncostedAmount = plan.UncostedAmount,
+        rolledUpEmployees = plan.RolledUpFrom.Count,
+    };
+
+    /// <summary>AM-8: the run goes back to Processed (the outside_bank_payments_changed pattern) and its sealed hash is cleared.</summary>
+    private async Task<LockOutcome> SendBackForCostChangeAsync(PayrollRun run, Guid tenantId, bool hadSealedHash, bool costingNow, CancellationToken ct)
+    {
+        _db.PayrollApprovals.Add(new PayrollApproval
+        {
+            TenantId = tenantId, PayrollRunId = run.Id, ApprovalLevel = "FinanceReview", Decision = "SentBack",
+            Notes = "Sent back automatically at Lock: cost-centre assignments or posting rules changed after approval.",
+            DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow,
+        });
+        run.Status = "Processed";
+        run.CostCenterResolutionHash = null;
+        await PayrollAudit("payroll.run.sent_back", "PayrollRun", run.Id.ToString(), new
+        {
+            reason = PayrollCostStamper.ChangedAfterApprovalCode, costingAtApproval = hadSealedHash, costingAtLock = costingNow,
+        }, ct);
+        await _db.SaveChangesAsync(ct);
+        return new(Conflict(PayrollCostStamper.ChangedAfterApprovalBody(run.Status)), true);
+    }
+
+    /// <summary>Writes the plan's stamps: the two stamp columns of each costed earning / deduction row (the rows the journal was built
+    /// from, attached and marked modified), and each slip's employee-level cost centre.</summary>
+    private async Task PersistCostStampsAsync(PayrollLockJournal plan, PayrollRun run, Guid tenantId, CancellationToken ct)
+    {
+        foreach (var e in plan.Earnings.Where(e => e.CostCenterId != null))
+        {
+            _db.Attach(e);
+            _db.Entry(e).Property(x => x.CostCenterId).IsModified = true;
+            _db.Entry(e).Property(x => x.CostCenterSource).IsModified = true;
+        }
+        foreach (var d in plan.Deductions.Where(d => d.CostCenterId != null))
+        {
+            _db.Attach(d);
+            _db.Entry(d).Property(x => x.CostCenterId).IsModified = true;
+            _db.Entry(d).Property(x => x.CostCenterSource).IsModified = true;
+        }
+        foreach (var byCc in plan.CostPlan.Employees.Where(kv => kv.Value.CostCenterId != null).GroupBy(kv => kv.Value.CostCenterId))
+        {
+            var employeeIds = byCc.Select(kv => kv.Key).ToList();
+            var ccId = byCc.Key;
+            await _db.PayrollSlips.Where(s => s.TenantId == tenantId && s.RunId == run.Id && employeeIds.Contains(s.EmployeeId))
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.CostCenterId, ccId), ct);
+        }
     }
 
     private async Task NotifyPayslipsReadyAsync(Guid tenantId, PayrollRun run, CancellationToken cancellationToken)
@@ -4251,6 +4347,11 @@ public partial class PayrollController : ControllerBase
         if (run.Status != "Processed" && run.Status != "PendingFinanceReview")
             return BadRequest(new { message = "Only a Processed or PendingFinanceReview run can be approved." });
 
+        // AM-8 / AM-29: Approve takes the same per-company cost-accounting lock as Lock and every attribution writer, so the
+        // fingerprint sealed below describes one consistent state.
+        if (run.CompanyId is Guid approveCompany)
+            await Infrastructure.Finance.CostAccountingGuards.AcquireCompanyLockAsync(_db, tenantId, approveCompany, cancellationToken);
+
         // Block-on-error: any unresolved ERROR-severity validation result blocks approval.
         var blockingErrors = await _db.PayrollValidationResults.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.Severity == "Error" && !x.IsResolved)
@@ -4341,6 +4442,26 @@ public partial class PayrollController : ControllerBase
         // Admin and Finance finalise directly to Approved
         if (isAdmin || isFinance)
         {
+            // AM-8: the approval hash is written ONLY on the transition to Approved (never at level 1), from the very journal Lock will
+            // build. Costing off: no hash. A costed run whose approver has not acknowledged the uncosted lines is refused (S-048).
+            string? sealedHash = null;
+            if (run.CompanyId is Guid sealCompany
+                && await _db.Companies.AsNoTracking().AnyAsync(c => c.TenantId == tenantId && c.Id == sealCompany && c.CostAccountingEnabled, cancellationToken))
+            {
+                var preview = await BuildLockJournalAsync(tenantId, run, GlAccrualPeriod(run),
+                    await ResolveRunCurrencyAsync(tenantId, run.CompanyId, cancellationToken), null, string.Empty, cancellationToken);
+                if (preview.CostPlan.UncostedEmployees > 0 && req.ExpectedUncostedCount != preview.CostPlan.UncostedEmployees)
+                    return Conflict(new
+                    {
+                        error = "uncosted_not_acknowledged",
+                        message = $"{preview.CostPlan.UncostedEmployees} employee(s) have lines on accounts where a cost centre is optional and will post WITHOUT one. " +
+                                  $"Review the cost-centre assignments and re-submit with expectedUncostedCount={preview.CostPlan.UncostedEmployees} to acknowledge.",
+                        uncostedEmployees = preview.CostPlan.UncostedEmployees, uncostedAmount = preview.CostPlan.UncostedAmount,
+                        acknowledged = req.ExpectedUncostedCount,
+                    });
+                sealedHash = preview.CostHash;
+            }
+            run.CostCenterResolutionHash = sealedHash;
             _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "Approved", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "Approved";
             // The acknowledged cash/cheque list is sealed here; Lock refuses to freeze any other list.
@@ -4356,6 +4477,7 @@ public partial class PayrollController : ControllerBase
         {
             _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "PayrollReview", Decision = "Approved", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "PendingFinanceReview";
+            run.CostCenterResolutionHash = null;   // AM-8: sealed only at final approval
             await PayrollAudit("payroll.run.payroll_approved", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             return Ok(run);
@@ -4379,6 +4501,7 @@ public partial class PayrollController : ControllerBase
                 return BadRequest(new { message = "Only a PendingFinanceReview run can be sent back." });
             _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "SentBack", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "Processed";
+            run.CostCenterResolutionHash = null;
             await PayrollAudit("payroll.run.sent_back", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             return Ok(run);
@@ -4695,6 +4818,7 @@ public partial class PayrollController : ControllerBase
             //    (PopulationLockedStatuses), so "exclude this employee and re-run" becomes reachable.
             var statusBefore = run.Status;
             run.Status              = "Draft";
+            run.CostCenterResolutionHash = null;
             run.ProcessedAtUtc      = null;
             run.ProcessedByUserId   = null;
             run.EmployeeCount       = 0;
@@ -8409,7 +8533,7 @@ public partial class PayrollController : ControllerBase
     /// <item>Everything else is unchanged: persisted driver, else the compiled switch.</item>
     /// </list></para>
     /// </summary>
-    private static string EarningDriverKeyFor(IReadOnlyList<GlDriverRow> drivers, string componentCode, string source)
+    internal static string EarningDriverKeyFor(IReadOnlyList<GlDriverRow> drivers, string componentCode, string source)
     {
         var direct = ResolveDriverForComponent(drivers, componentCode, source, GlDriverCategories.Earning);
         if (direct is not null && direct.MatchMode != GlDriverMatchModes.Any) return direct.Key;
@@ -8436,7 +8560,7 @@ public partial class PayrollController : ControllerBase
 
     /// <summary>F2 — the GL driver pinned on a line group by a tenant-configured pay component, or null for
     /// every system/subsystem line (which then routes exactly as before F2).</summary>
-    private static string? PinnedGlDriver(IEnumerable<string?> lineDriverKeys)
+    internal static string? PinnedGlDriver(IEnumerable<string?> lineDriverKeys)
         => lineDriverKeys.FirstOrDefault(k => !string.IsNullOrWhiteSpace(k));
 
     /// <summary>
@@ -8544,7 +8668,11 @@ public partial class PayrollController : ControllerBase
         IReadOnlyList<string> Currencies,
         IReadOnlyList<Guid> UnmappedEntryIds,
         IReadOnlyList<Guid> EmptySidedEntryIds,
-        IReadOnlyList<PayrollGlCompanyBalance> CompanyBalances);
+        IReadOnlyList<PayrollGlCompanyBalance> CompanyBalances)
+    {
+        /// <summary>Cost accounting only: expense / income lines on a Required account that carry no cost centre.</summary>
+        public IReadOnlyList<Guid> UncostedRequiredEntryIds { get; init; } = Array.Empty<Guid>();
+    }
 
     /// <summary>Debits and credits of one legal entity's slice of a payroll journal.</summary>
     private sealed record PayrollGlCompanyBalance(Guid? CompanyId, decimal Debits, decimal Credits, decimal Difference);
@@ -8557,8 +8685,14 @@ public partial class PayrollController : ControllerBase
     /// legal entity's currency.
     /// </summary>
     private static PayrollGlReadiness ValidatePayrollGl(
-        IReadOnlyCollection<FinanceGlEntry> lines, string companyCurrency)
+        IReadOnlyCollection<FinanceGlEntry> lines, string companyCurrency, GlResolutionContext? costing = null)
     {
+        // Cost accounting ON: ZERO tolerance, in the currency's minor unit, in total and per legal entity (contract 2.4, decision 5).
+        // Costing OFF keeps the historical +-0.01 so a legacy accrual restored by support is judged exactly as before.
+        var exact = costing is { CostAccountingEnabled: true };
+        var scale = CurrencyMinorUnits.Scale(companyCurrency);
+        var tolerance = exact ? 0m : 0.01m;
+        decimal R(decimal v) => exact ? Math.Round(v, scale, MidpointRounding.AwayFromZero) : Math.Round(v, 2);
         static bool IsUnmapped(string account)
         {
             if (string.IsNullOrWhiteSpace(account)) return false; // absent on the other side is legitimate
@@ -8569,8 +8703,8 @@ public partial class PayrollController : ControllerBase
                    || name.Equals("Unmapped", StringComparison.OrdinalIgnoreCase);
         }
 
-        var debits = Math.Round(lines.Where(l => !string.IsNullOrWhiteSpace(l.DebitAccount)).Sum(l => l.Amount), 2);
-        var credits = Math.Round(lines.Where(l => !string.IsNullOrWhiteSpace(l.CreditAccount)).Sum(l => l.Amount), 2);
+        var debits = R(lines.Where(l => !string.IsNullOrWhiteSpace(l.DebitAccount)).Sum(l => l.Amount));
+        var credits = R(lines.Where(l => !string.IsNullOrWhiteSpace(l.CreditAccount)).Sum(l => l.Amount));
         var difference = Math.Abs(debits - credits);
         var currencies = lines
             .Select(l => (l.Currency ?? string.Empty).Trim().ToUpperInvariant())
@@ -8593,18 +8727,32 @@ public partial class PayrollController : ControllerBase
             .GroupBy(l => l.CompanyId)
             .Select(g =>
             {
-                var dr = Math.Round(g.Where(l => !string.IsNullOrWhiteSpace(l.DebitAccount)).Sum(l => l.Amount), 2);
-                var cr = Math.Round(g.Where(l => !string.IsNullOrWhiteSpace(l.CreditAccount)).Sum(l => l.Amount), 2);
+                var dr = R(g.Where(l => !string.IsNullOrWhiteSpace(l.DebitAccount)).Sum(l => l.Amount));
+                var cr = R(g.Where(l => !string.IsNullOrWhiteSpace(l.CreditAccount)).Sum(l => l.Amount));
                 return new PayrollGlCompanyBalance(g.Key, dr, cr, Math.Abs(dr - cr));
             })
             .OrderBy(c => c.CompanyId?.ToString() ?? string.Empty, StringComparer.Ordinal)
             .ToList();
-        var everyCompanyBalanced = companyBalances.All(c => c.Difference <= 0.01m);
+        var everyCompanyBalanced = companyBalances.All(c => c.Difference <= tolerance);
+
+        // A Required expense / income account whose line carries no cost centre is not finance-ready: it would export uncosted.
+        var uncostedRequired = new List<Guid>();
+        if (exact)
+            foreach (var l in lines.Where(l => l.CostCenterId is null && l.ReversalOfEntryId is null))
+                foreach (var label in new[] { l.DebitAccount, l.CreditAccount }.Where(a => !string.IsNullOrWhiteSpace(a)))
+                {
+                    var code = SplitAccountLabel(label).Code;
+                    if (costing!.AccountRules.TryGetValue(code, out var a) && a.Rule == "Required" && a.AccountType is "Expense" or "Revenue")
+                        uncostedRequired.Add(l.Id);
+                }
 
         return new PayrollGlReadiness(
-            lines.Count > 0 && difference <= 0.01m && oneCompanyCurrency
-                && unmapped.Count == 0 && emptySided.Count == 0 && everyCompanyBalanced,
-            debits, credits, difference, currencies, unmapped, emptySided, companyBalances);
+            lines.Count > 0 && difference <= tolerance && oneCompanyCurrency
+                && unmapped.Count == 0 && emptySided.Count == 0 && everyCompanyBalanced && uncostedRequired.Count == 0,
+            debits, credits, difference, currencies, unmapped, emptySided, companyBalances)
+        {
+            UncostedRequiredEntryIds = uncostedRequired.Distinct().ToList(),
+        };
     }
 
     /// <summary>A pay item that reached the journal through a catch-all posting rule (EARN:OTHER →
@@ -8621,6 +8769,13 @@ public partial class PayrollController : ControllerBase
         public IReadOnlyList<EosbProvisionSnapshot> EosbSnapshots { get; init; } = Array.Empty<EosbProvisionSnapshot>();
         /// <summary>POD-C2 — set when provisioning is on but cannot be measured; Lock refuses rather than skip it.</summary>
         public EosbProvisionRefusal? EosbRefusal { get; init; }
+        /// <summary>Cost accounting (WP-C2): the cost-centre decisions made in the SAME pass that built <see cref="Lines"/>.</summary>
+        public PayrollCostPlan CostPlan { get; init; } = PayrollCostPlan.Off;
+        /// <summary>The approval fingerprint of everything this journal depends on (null when costing is off).</summary>
+        public string? CostHash { get; init; }
+        /// <summary>M-4: a Required rounding account with no company default cost centre.</summary>
+        public RoundingCostBlock? RoundingBlock { get; init; }
+        public GlResolutionContext Context { get; init; } = GlResolutionContext.Empty;
     }
 
     /// <summary>One earning/deduction group and the posting rule it routes to.</summary>
@@ -8664,6 +8819,12 @@ public partial class PayrollController : ControllerBase
             SettlementClearings = await FinalSettlementGlLedger.BuildPayrollClearingAsync(
                 _db, tenantId, id, settlementEarningTotal, ct),
         };
+        // Cost accounting (WP-C2): ONE resolution pass. The plan stamps the in-memory rows, and the builder below reads those same
+        // lists — nothing is re-queried between the decision and the journal (AM-8, C-1). Costing off: no plan, nothing stamped.
+        var costPlan = run.CompanyId is Guid costCompanyId
+            ? await PayrollCostStamper.PlanAsync(_db, tenantId, costCompanyId, earnings, dedxns, glCtx, ct)
+            : PayrollCostPlan.Off;
+        PayrollCostStamper.Apply(costPlan, earnings, dedxns);
         var (lines, _, _) = BuildPayrollGlEntries(
             tenantId, id, period, earnings, dedxns, run.TotalNetSalary, postedBy, postedByName, currency, glCtx);
 
@@ -8674,12 +8835,12 @@ public partial class PayrollController : ControllerBase
         foreach (var r in routed.Where(r => r.IsEmployerSide)) used.Add(r.PairKey);
 
         var employeeCount = earnings.Select(e => e.EmployeeId).Concat(dedxns.Select(d => d.EmployeeId)).Distinct().Count();
-        var rounding = AppendRoundingLine(lines, employeeCount, glCtx, tenantId, id, period, currency, postedBy, postedByName);
+        var (rounding, roundingBlock) = AppendRoundingLine(lines, employeeCount, glCtx, tenantId, id, period, currency, postedBy, postedByName);
         if (rounding != 0m) used.Add(PayrollRoundingDriverKey);
 
         // POD-C2 — the monthly end-of-service provision movement, when the company has switched it on.
         // Appended AFTER the rounding line: it balances on its own, so it can never move the rounding.
-        var eosb = await BuildEosbProvisionAsync(tenantId, run, period, currency, glCtx, earnings, postedBy, postedByName, ct);
+        var eosb = await BuildEosbProvisionAsync(tenantId, run, period, currency, glCtx, earnings, postedBy, postedByName, costPlan, ct);
         if (eosb.Lines.Count > 0)
         {
             lines.AddRange(eosb.Lines);
@@ -8715,10 +8876,19 @@ public partial class PayrollController : ControllerBase
 
         var totalDebits = lines.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
         var totalCredits = lines.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
+        string? costHash = null;
+        if (costPlan.Enabled)
+        {
+            var accountMasters = await PayrollCostStamper.LoadAccountMastersAsync(_db, tenantId, run.CompanyId!.Value, ct);
+            var extra = problems.Select(p => $"problem:{p.DriverKey}:{p.Kind}")
+                .Concat(new[] { $"rounding:{(roundingBlock is null ? "ok" : "blocked")}", $"eosb:{eosb.Refusal?.Code ?? "ok"}" });
+            costHash = PayrollCostStamper.ComputeHash(costPlan, lines, glCtx, accountMasters, extra);
+        }
         return new PayrollLockJournal(lines, totalDebits, totalCredits, catchAlls, problems, rounding, earnings, dedxns)
         {
             EosbSnapshots = eosb.Snapshots,
             EosbRefusal = eosb.Refusal,
+            CostPlan = costPlan, CostHash = costHash, RoundingBlock = roundingBlock, Context = glCtx,
         };
     }
 
@@ -8750,7 +8920,7 @@ public partial class PayrollController : ControllerBase
     /// wins; then the persisted driver store; then the compiled switch. Shared by the posting builder, the
     /// routing analysis and the GL resolution API.
     /// </summary>
-    private static (string Driver, bool IsEmployerSide, string PairKey) ResolveDeductionRouting(
+    internal static (string Driver, bool IsEmployerSide, string PairKey) ResolveDeductionRouting(
         IReadOnlyList<GlDriverRow> drivers, string componentCode, string source, string? pinned)
     {
         // F2 — a tenant-configured component posts to the driver validated when it was written and
@@ -8775,18 +8945,32 @@ public partial class PayrollController : ControllerBase
     /// larger is a real error and is left for ValidatePayrollGl to block, exactly as before.
     /// Returns the amount posted to the rounding account (positive = debit, negative = credit, 0 = none).
     /// </summary>
-    private static decimal AppendRoundingLine(
+    private static (decimal Adjustment, RoundingCostBlock? Block) AppendRoundingLine(
         List<FinanceGlEntry> lines, int employeeCount, GlResolutionContext gl,
         Guid tenantId, Guid runId, string period, string currency, Guid? postedBy, string postedByName)
     {
         var debits = Math.Round(lines.Where(l => !string.IsNullOrWhiteSpace(l.DebitAccount)).Sum(l => l.Amount), 2);
         var credits = Math.Round(lines.Where(l => !string.IsNullOrWhiteSpace(l.CreditAccount)).Sum(l => l.Amount), 2);
         var difference = debits - credits;
-        if (difference == 0m || lines.Count == 0) return 0m;
+        if (difference == 0m || lines.Count == 0) return (0m, null);
         var tolerance = Math.Min(1.00m, 0.01m * Math.Max(1, employeeCount));
-        if (Math.Abs(difference) > tolerance) return 0m;
+        if (Math.Abs(difference) > tolerance) return (0m, null);
         var account = GlAccountResolver.AccountLabel(PayrollRoundingDriverKey, gl);
-        lines.Add(new FinanceGlEntry
+
+        // Cost accounting: a genuine rounding difference is an Expense line, so it lands on the company default cost centre
+        // (the home of the rounding line). A Required rounding account with no usable default cannot post (M-4).
+        Guid? roundingCc = null;
+        if (gl.CostAccountingEnabled)
+        {
+            var (code, name) = GlAccountResolver.Resolve(PayrollRoundingDriverKey, gl.Overrides, gl.DriverDefaults);
+            var rule = PayrollCostStamper.RuleOf(code, gl);
+            if (rule != "NotAllowed" && PayrollCostStamper.IsCostableDriver(PayrollRoundingDriverKey, gl))
+            {
+                if (gl.CompanyDefaultCostCentreId is Guid d && gl.CostCentres.TryGetValue(d, out var dcc) && dcc.IsActive) roundingCc = d;
+                else if (rule == "Required") return (0m, new RoundingCostBlock(code, name, Math.Abs(difference)));
+            }
+        }
+        var line = new FinanceGlEntry
         {
             TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
             SourceEntityRef = period, EventType = GlEventTypes.Accrual,
@@ -8797,9 +8981,22 @@ public partial class PayrollController : ControllerBase
             EntryDate = DateOnly.FromDateTime(DateTime.UtcNow), Period = period,
             Description = PayrollGlDescriptions.Rounding,
             PostedBy = postedBy, PostedByName = postedByName,
-        });
-        return -difference;
+        };
+        if (gl.CostAccountingEnabled)
+        {
+            if (roundingCc is Guid rc && gl.CostCentres.TryGetValue(rc, out var info))
+            {
+                line.CostCenterId = rc; line.CostCenterCode = info.Code; line.CostCenterName = info.Name; line.CostCenterGlSegment = info.GlSegment;
+            }
+            line.PostingKey = PayrollCostStamper.PostingKey(runId, GlEventTypes.Accrual, period,
+                difference < 0m ? "DR" : "CR", PayrollRoundingDriverKey, PayrollRoundingDriverKey, "Rounding", roundingCc, 0);
+        }
+        lines.Add(line);
+        return (-difference, null);
     }
+
+    /// <summary>M-4: the rounding difference the journal needs cannot be costed (Required account, no usable company default).</summary>
+    private sealed record RoundingCostBlock(string AccountCode, string AccountName, decimal Amount);
 
     /// <summary>
     /// The posting driver a component code routes to, for the GL resolution API — the same calls the
@@ -8861,6 +9058,10 @@ public partial class PayrollController : ControllerBase
     // Uses Source-based routing so new pack codes (GOSI-ANN-EE, GPSSA-EE, etc.) map correctly
     // without requiring changes to the component code dictionary as new packs are added.
     // Returns: (lines, totalDebits, totalCredits).
+    //
+    // Cost accounting (WP-C2): with gl.CostAccountingEnabled the expense side is split per cost centre — the rows carry the
+    // stamps PayrollCostStamper wrote — and every line gets a posting key; liability / provision / receivable lines stay uncosted.
+    // With it OFF the rows carry no stamp, so every group collapses to the single line it always was and no key is written.
     private static (List<FinanceGlEntry> Lines, decimal TotalDebits, decimal TotalCredits) BuildPayrollGlEntries(
         Guid tenantId, Guid runId, string period,
         List<PayrollEarning> earnings, List<PayrollDeduction> deductions,
@@ -8871,6 +9072,8 @@ public partial class PayrollController : ControllerBase
         gl ??= GlResolutionContext.Empty;
         var lines = new List<FinanceGlEntry>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var costed = gl.CostAccountingEnabled;
+        var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
 
         // Resolve a posting driver to "<code> - <name>": mapping override → persisted driver default →
         // compiled default. Delegates to the shared ResolveGlAccount so posting and the GL Journal
@@ -8879,6 +9082,48 @@ public partial class PayrollController : ControllerBase
         {
             var (code, name) = ResolveGlAccount(driverKey, gl.Overrides, gl.DriverDefaults);
             return $"{code} - {name}";
+        }
+        // The same, routed by the functional class of the cost centre the line lands on (precedence in
+        // GlAccountResolver.AccountFor). With no cost centre or no class rows this is exactly Account().
+        string AccountAt(string driverKey, Guid? ccId)
+        {
+            var (code, name) = GlAccountResolver.AccountFor(driverKey, PayrollCostStamper.ClassOf(ccId, gl), gl);
+            return $"{code} - {name}";
+        }
+        Guid? CcOf(Guid? stamped) => costed ? stamped : null;
+        string CcCode(Guid? id) => id is Guid g && gl.CostCentres.TryGetValue(g, out var c) ? c.Code : string.Empty;
+        FinanceGlEntry At(FinanceGlEntry line, Guid? ccId, string driverKey, string componentCode, string source)
+        {
+            if (!costed) return line;
+            if (ccId is Guid g && gl.CostCentres.TryGetValue(g, out var info))
+            {
+                line.CostCenterId = g; line.CostCenterCode = info.Code; line.CostCenterName = info.Name; line.CostCenterGlSegment = info.GlSegment;
+            }
+            var side = string.IsNullOrEmpty(line.DebitAccount) ? "CR" : "DR";
+            var basis = string.Join('|', line.EventType, line.SourceEntityRef, side, driverKey, componentCode, source, ccId?.ToString("N") ?? "-");
+            var ordinal = keyOrdinals.GetValueOrDefault(basis);
+            keyOrdinals[basis] = ordinal + 1;
+            line.PostingKey = PayrollCostStamper.PostingKey(runId, line.EventType, line.SourceEntityRef, side, driverKey, componentCode, source, ccId, ordinal);
+            return line;
+        }
+
+        // Splits a total over the cost centres of the rows behind it by LARGEST REMAINDER on the currency's minor units, so the
+        // parts add up to the total to the last halala (contract 2.6). Weights are each cost centre's rows in minor units.
+        List<(Guid? CcId, decimal Amount)> Split(decimal total, IEnumerable<PayrollEarning> rows)
+        {
+            if (!costed) return new() { (null, total) };
+            var byCc = rows.GroupBy(r => r.CostCenterId)
+                .Select(g => (CcId: g.Key, Code: CcCode(g.Key), Weight: g.Sum(r => CurrencyMinorUnits.ToMinor(r.Amount, currency))))
+                .ToList();
+            var parts = LargestRemainder.Allocate(CurrencyMinorUnits.ToMinor(total, currency), byCc.Select(c => (c.Code, Math.Max(0L, c.Weight))).ToList());
+            var result = new List<(Guid?, decimal)>();
+            foreach (var (code, minor) in parts)
+            {
+                if (minor == 0) continue;
+                var cc = byCc.FirstOrDefault(c => c.Code == (code ?? string.Empty)).CcId;
+                result.Add((cc, CurrencyMinorUnits.FromMinor(minor, currency)));
+            }
+            return result.Count == 0 ? new() { (null, total) } : result;
         }
 
         // ── Earnings (Debit side) ──────────────────────────────────────────────
@@ -8899,7 +9144,7 @@ public partial class PayrollController : ControllerBase
         // to be re-posted as one hard-coded Account("EARN:BONUS") line, which silently discarded a tenant's
         // custom Phase-2 Earning driver (a shipped feature — ResolveDriverForComponent matches e.g.
         // BONUS_EID by Exact/Prefix/Suffix) and collapsed per-component detail into a single line.
-        var deferredBonusGroups = new List<(string Code, string Driver, decimal Amount)>();
+        var deferredBonusGroups = new List<(string Code, string Driver, decimal Amount, List<PayrollEarning> Rows)>();
         // POD-C1 — a settlement's earnings were ALREADY expensed when the settlement was approved
         // (DR 5110/5111/5112 / CR 2320). This run PAYS it, so the correct debit is the payable's own
         // stored account, not a second expense. Identical doctrine to the bonus clearing above; the plan
@@ -8909,7 +9154,7 @@ public partial class PayrollController : ControllerBase
         var settlementClearings = gl.SettlementClearings;
         var clearsSettlement = settlementClearings.Count > 0;
         decimal settlementEarningTotal = 0m;
-        var deferredSettlementGroups = new List<(string Code, string Driver, decimal Amount)>();
+        var deferredSettlementGroups = new List<(string Code, string Driver, decimal Amount, List<PayrollEarning> Rows)>();
         foreach (var grp in earnings.GroupBy(e => e.ComponentCode))
         {
             var src = grp.First().Source;
@@ -8918,27 +9163,45 @@ public partial class PayrollController : ControllerBase
             {
                 var settlementAmount = grp.Sum(e => e.Amount);
                 settlementEarningTotal += settlementAmount;
-                deferredSettlementGroups.Add((grp.Key, driverKey, settlementAmount));
+                deferredSettlementGroups.Add((grp.Key, driverKey, settlementAmount, grp.ToList()));
                 continue;   // re-emitted below as payable clearing + un-accrued remainder
             }
             if (clearsBonusAccrual && src == "Bonus")
             {
                 var bonusAmount = grp.Sum(e => e.Amount);
                 bonusEarningTotal += bonusAmount;
-                deferredBonusGroups.Add((grp.Key, driverKey, bonusAmount));
+                deferredBonusGroups.Add((grp.Key, driverKey, bonusAmount, grp.ToList()));
                 continue;   // re-emitted below as accrual clearing + per-component un-accrued remainder
             }
             var driver = driverKey;
-            lines.Add(new FinanceGlEntry
-            {
-                TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
-                SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                DebitAccount  = Account(driver), CreditAccount = string.Empty,
-                Amount = grp.Sum(e => e.Amount), Currency = currency,
-                EntryDate = today, Period = period,
-                Description = $"Payroll earning: {grp.Key}",
-                PostedBy = postedBy, PostedByName = postedByName,
-            });
+            foreach (var sub in grp.GroupBy(e => CcOf(e.CostCenterId)).OrderBy(g => CcCode(g.Key), StringComparer.Ordinal))
+                lines.Add(At(new FinanceGlEntry
+                {
+                    TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
+                    SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                    DebitAccount  = AccountAt(driver, sub.Key), CreditAccount = string.Empty,
+                    Amount = sub.Sum(e => e.Amount), Currency = currency,
+                    EntryDate = today, Period = period,
+                    Description = $"Payroll earning: {grp.Key}",
+                    PostedBy = postedBy, PostedByName = postedByName,
+                }, sub.Key, driver, grp.Key, src));
+        }
+
+        // One un-accrued remainder slice of a deferred (bonus / settlement) component: a single line, or — costing on — one per cost
+        // centre, divided by largest remainder over the employees' amounts so the parts add up to the slice exactly.
+        void EmitUnaccrued(string code, string driver, string src, decimal share, IReadOnlyList<PayrollEarning> rows)
+        {
+            foreach (var (ccId, amount) in Split(share, rows))
+                lines.Add(At(new FinanceGlEntry
+                {
+                    TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
+                    SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                    DebitAccount = AccountAt(driver, ccId), CreditAccount = string.Empty,
+                    Amount = amount, Currency = currency,
+                    EntryDate = today, Period = period,
+                    Description = $"Payroll earning: {code} (un-accrued)",
+                    PostedBy = postedBy, PostedByName = postedByName,
+                }, ccId, driver, code, src));
         }
 
         if (clearsBonusAccrual)
@@ -8956,7 +9219,7 @@ public partial class PayrollController : ControllerBase
                 cleared += c.Amount;
                 foreach (var kv in c.ByComponentCode)
                     clearedByCode[kv.Key] = clearedByCode.GetValueOrDefault(kv.Key) + kv.Value;
-                lines.Add(new FinanceGlEntry
+                lines.Add(At(new FinanceGlEntry
                 {
                     // The clearing carries the ACCRUAL's legal entity (falling back to the run's) so a
                     // per-company trial balance nets to zero and the payable sub-ledger can match this
@@ -8970,7 +9233,7 @@ public partial class PayrollController : ControllerBase
                     EntryDate = today, Period = period,
                     Description = $"{BonusGlDescriptions.PayrollClearingPrefix}{c.BatchRef}",
                     PostedBy = postedBy, PostedByName = postedByName,
-                });
+                }, null, "BONUS_PAYABLE", "BONUS_PAYABLE", "Bonus"));
             }
             // POD-B1b-FIX (P1-7 + re-audit #5). Each component debits its OWN driver for what is left,
             // keeping a custom Earning driver (BONUS_EID etc.) authoritative and preserving per-component
@@ -9003,23 +9266,14 @@ public partial class PayrollController : ControllerBase
                         : Math.Min(slice, Math.Round(remainder * (weights[i] / weightTotal), 2));
                     slice = Math.Round(slice - share, 2);
                     if (share <= 0m) continue;
-                    lines.Add(new FinanceGlEntry
-                    {
-                        TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
-                        SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                        DebitAccount = Account(ordered[i].Driver), CreditAccount = string.Empty,
-                        Amount = share, Currency = currency,
-                        EntryDate = today, Period = period,
-                        Description = $"Payroll earning: {ordered[i].Code} (un-accrued)",
-                        PostedBy = postedBy, PostedByName = postedByName,
-                    });
+                    EmitUnaccrued(ordered[i].Code, ordered[i].Driver, "Bonus", share, ordered[i].Rows);
                 }
             }
             else if (remainder > 0m)
             {
                 // Defensive: a clearing plan with no bonus earning lines behind it. Keep the pre-B1b-FIX
                 // single EARN:BONUS line so the journal can never come out unbalanced.
-                lines.Add(new FinanceGlEntry
+                lines.Add(At(new FinanceGlEntry
                 {
                     TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                     SourceEntityRef = period, EventType = GlEventTypes.Accrual,
@@ -9028,7 +9282,7 @@ public partial class PayrollController : ControllerBase
                     EntryDate = today, Period = period,
                     Description = "Payroll earning: BONUS (un-accrued)",
                     PostedBy = postedBy, PostedByName = postedByName,
-                });
+                }, null, "EARN:BONUS", "BONUS", "Bonus"));
             }
         }
 
@@ -9045,7 +9299,7 @@ public partial class PayrollController : ControllerBase
             {
                 if (c.Amount <= 0m) continue;
                 clearedSettlement += c.Amount;
-                lines.Add(new FinanceGlEntry
+                lines.Add(At(new FinanceGlEntry
                 {
                     TenantId = tenantId, CompanyId = c.CompanyId ?? gl.CompanyId,
                     SourceModule = "Payroll", SourceEntityId = runId,
@@ -9056,7 +9310,7 @@ public partial class PayrollController : ControllerBase
                     EntryDate = today, Period = period,
                     Description = $"{FinalSettlementGlDescriptions.PayrollClearingPrefix}{c.SettlementId}",
                     PostedBy = postedBy, PostedByName = postedByName,
-                });
+                }, null, "SETTLEMENT_PAYABLE", "SETTLEMENT_PAYABLE", FinalSettlementComponents.SettlementSource));
             }
             // Whatever the run pays that no live payable covers is a genuine expense of this run, debited
             // to each component's OWN driver (never one collapsed line), so a settlement paid without an
@@ -9073,62 +9327,60 @@ public partial class PayrollController : ControllerBase
                         : Math.Min(slice, Math.Round(settlementRemainder * (ordered[i].Amount / settlementEarningTotal), 2));
                     slice = Math.Round(slice - share, 2);
                     if (share <= 0m) continue;
-                    lines.Add(new FinanceGlEntry
-                    {
-                        TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
-                        SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                        DebitAccount = Account(ordered[i].Driver), CreditAccount = string.Empty,
-                        Amount = share, Currency = currency,
-                        EntryDate = today, Period = period,
-                        Description = $"Payroll earning: {ordered[i].Code} (un-accrued)",
-                        PostedBy = postedBy, PostedByName = postedByName,
-                    });
+                    EmitUnaccrued(ordered[i].Code, ordered[i].Driver, FinalSettlementComponents.SettlementSource, share, ordered[i].Rows);
                 }
             }
         }
 
         // ── Deductions (Credit side) ──────────────────────────────────────────
-        // Employer-expense pairs accumulate per paired-expense driver key so a client-defined pair
+        // Employer-expense pairs accumulate per paired-expense driver key (and cost centre) so a client-defined pair
         // (via a custom driver) balances the same way the system DED:STATUTORY_ER row does.
-        var employerExpenseByPairKey = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var employerExpenseByPair = new Dictionary<(string PairKey, Guid? CcId), decimal>();
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
             // Pinned driver → persisted driver store → compiled switch (see ResolveDeductionRouting).
             var (driver, isEmployerSide, pairKey) = ResolveDeductionRouting(
                 gl.Drivers, grp.Key.ComponentCode, grp.Key.Source, PinnedGlDriver(grp.Select(d => d.GlDriverKey)));
             if (isEmployerSide)
-                employerExpenseByPairKey[pairKey] = employerExpenseByPairKey.GetValueOrDefault(pairKey) + grp.Sum(d => d.Amount);
+                foreach (var sub in grp.GroupBy(d => CcOf(d.CostCenterId)))
+                    employerExpenseByPair[(pairKey, sub.Key)] = employerExpenseByPair.GetValueOrDefault((pairKey, sub.Key)) + sub.Sum(d => d.Amount);
 
-            lines.Add(new FinanceGlEntry
-            {
-                TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
-                SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                DebitAccount = string.Empty, CreditAccount = Account(driver),
-                Amount = grp.Sum(d => d.Amount), Currency = currency,
-                EntryDate = today, Period = period,
-                Description = $"{PayrollGlDescriptions.DeductionPrefix}{grp.Key.ComponentCode}",
-                PostedBy = postedBy, PostedByName = postedByName,
-            });
+            // A liability credit (and every employer-side credit) is one UNCOSTED line; a contra-EXPENSE credit
+            // (attendance, leave, settlement recovery) is a cost reduction and carries the cost centre.
+            var creditCosted = costed && !isEmployerSide && PayrollCostStamper.IsCostableDriver(driver, gl);
+            foreach (var sub in creditCosted ? grp.GroupBy(d => CcOf(d.CostCenterId)).OrderBy(g => CcCode(g.Key), StringComparer.Ordinal).ToList()
+                                              : new[] { grp.GroupBy(_ => (Guid?)null).Single() }.ToList())
+                lines.Add(At(new FinanceGlEntry
+                {
+                    TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
+                    SourceEntityRef = period, EventType = GlEventTypes.Accrual,
+                    DebitAccount = string.Empty, CreditAccount = creditCosted ? AccountAt(driver, sub.Key) : Account(driver),
+                    Amount = sub.Sum(d => d.Amount), Currency = currency,
+                    EntryDate = today, Period = period,
+                    Description = $"{PayrollGlDescriptions.DeductionPrefix}{grp.Key.ComponentCode}",
+                    PostedBy = postedBy, PostedByName = postedByName,
+                }, sub.Key, driver, grp.Key.ComponentCode, grp.Key.Source));
         }
 
         // Employer statutory contribution: DR expense to balance the CR liability above.
-        foreach (var (pairKey, amount) in employerExpenseByPairKey.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        foreach (var ((pairKey, ccId), amount) in employerExpenseByPair
+                     .OrderBy(kv => kv.Key.PairKey, StringComparer.Ordinal).ThenBy(kv => CcCode(kv.Key.CcId), StringComparer.Ordinal))
         {
             if (amount <= 0) continue;
-            lines.Add(new FinanceGlEntry
+            lines.Add(At(new FinanceGlEntry
             {
                 TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                DebitAccount = Account(pairKey), CreditAccount = string.Empty,
+                DebitAccount = AccountAt(pairKey, ccId), CreditAccount = string.Empty,
                 Amount = amount, Currency = currency,
                 EntryDate = today, Period = period,
                 Description = PayrollGlDescriptions.EmployerStatutory,
                 PostedBy = postedBy, PostedByName = postedByName,
-            });
+            }, ccId, pairKey, "EMPLOYER_STATUTORY", "Statutory"));
         }
 
         // Net salary payable balances all DR earnings vs. CR deductions.
-        lines.Add(new FinanceGlEntry
+        lines.Add(At(new FinanceGlEntry
         {
             TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
             SourceEntityRef = period, EventType = GlEventTypes.Accrual,
@@ -9137,7 +9389,7 @@ public partial class PayrollController : ControllerBase
             EntryDate = today, Period = period,
             Description = PayrollGlDescriptions.NetPayable,
             PostedBy = postedBy, PostedByName = postedByName,
-        });
+        }, null, "NET_PAYABLE", "NET_PAYABLE", "Net"));
 
         var totalDebits  = lines.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
         var totalCredits = lines.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
