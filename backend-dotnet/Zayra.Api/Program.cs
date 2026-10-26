@@ -985,7 +985,7 @@ app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILo
     if (drain.IsDraining)
         return Results.Json(new { status = "draining", utc = DateTime.UtcNow }, statusCode: StatusCodes.Status503ServiceUnavailable);
 
-    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, includeDetail: false);
+    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, includeDetail: false, logger: lf.CreateLogger("LedgerProtection"));
     if (evidence.Status == "ready") return Results.Ok(PublicReadiness.From(evidence));
     LogReadinessRefusal(evidence, lf);
     return Results.Json(PublicReadiness.From(evidence), statusCode: StatusCodes.Status503ServiceUnavailable);
@@ -993,7 +993,7 @@ app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILo
 
 app.MapGet("/health/ready/details", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
 {
-    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
+    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, logger: lf.CreateLogger("LedgerProtection"));
     if (evidence.Status == "ready") return Results.Ok(evidence);
     LogReadinessRefusal(evidence, lf);
     return Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
@@ -1146,6 +1146,9 @@ using (var scope = app.Services.CreateScope())
 
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
+
+    // Report (never refuse) when the application's own database role can switch off the ledger triggers; /health/ready repeats it.
+    await Zayra.Api.Infrastructure.Operations.LedgerProtection.ReportAsync(scope.ServiceProvider.GetRequiredService<ZayraDbContext>(), logger, CancellationToken.None);
 
     // A dedicated deployment is Production OR anything flagged DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT.
     // It gates the one-time platform-owner bootstrap below.

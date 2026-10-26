@@ -19,7 +19,7 @@ public static class ProductionReadinessEvidence
     /// migration parity and the worker fleet, so the tenant counts, queue counters and SMTP mode are
     /// not computed at all (they are not returned either — see <see cref="PublicReadiness"/>).
     /// </param>
-    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct, bool includeDetail = true)
+    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct, bool includeDetail = true, Microsoft.Extensions.Logging.ILogger? logger = null)
     {
         var dbProbe = await ProbeDatabaseAsync(db, ct);
         var tenantCounts = dbProbe.Healthy && includeDetail
@@ -54,7 +54,8 @@ public static class ProductionReadinessEvidence
             tenantCounts?.Active ?? 0,
             pendingMigrations,
             queues,
-            Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(config) ? true : null);
+            Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(config) ? true : null,
+            dbProbe.Healthy ? await LedgerProtection.ReportAsync(db, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, ct) : LedgerProtection.Enforced);
     }
 
     /// <summary>Pure status rule: ready iff the DB is reachable AND no migrations are pending.</summary>
