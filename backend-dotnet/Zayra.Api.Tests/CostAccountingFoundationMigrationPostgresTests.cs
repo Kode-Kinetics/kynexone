@@ -242,7 +242,8 @@ public sealed class CostAccountingFoundationMigrationPostgresTests
         // Re-applied: the backfill and defaults come back identically.
         await migrator.MigrateAsync(this_);
         (await Overrides(container)).Should().Contain("E-OVERRIDE", true).And.Contain("E-INHERITED", false);
-        (await PendingMigrations(container)).Should().BeEmpty();
+        (await PendingMigrations(container)).Should().OnlyContain(m => string.CompareOrdinal(m, this_) > 0,
+            "after re-applying M1 only migrations that come later in the chain may still be pending");
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────────────────────────────────────────────
