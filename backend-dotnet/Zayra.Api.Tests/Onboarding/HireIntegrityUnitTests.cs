@@ -170,18 +170,7 @@ public class HireIntegrityUnitTests
     public void CompensationGate_OnlyOpensWhenThereIsSomethingToApprove(int? salary, string? iban, string? account, bool expected) =>
         CompensationApprovalGate.CarriesCompensation(salary, iban, account).Should().Be(expected);
 
-    // ── Idempotency fingerprint ──────────────────────────────────────────────────────────────────
-    [Fact]
-    public void IdempotencyFingerprint_BindsTenantCreatorCompanyAndNormalisedName()
-    {
-        var t = Guid.NewGuid(); var u = Guid.NewGuid(); var c = Guid.NewGuid();
-        var f = IdempotentEmployeeCreateFilter.FingerprintOf(t, u, c, "Ali  Hassan");
-        f.Should().HaveLength(64).And.Be(IdempotentEmployeeCreateFilter.FingerprintOf(t, u, c, "ali hassan"));
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(t, Guid.NewGuid(), c, "Ali Hassan"), "a different user");
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(t, u, c, "Ali Hasan"), "a different body");
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(t, u, Guid.NewGuid(), "Ali Hassan"));
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(Guid.NewGuid(), u, c, "Ali Hassan"));
-    }
+    // The idempotency fingerprint now covers the whole request: see HireSecurityHardeningTests.RequestFingerprint_*.
 
     // ── Foreign-tenant company (second write layer) ──────────────────────────────────────────────
     [Fact]
