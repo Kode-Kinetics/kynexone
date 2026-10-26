@@ -238,6 +238,13 @@ public class CostCentrePermissionTests
     };
 
     [Fact]
+    public void A3_TheSetupAssistant_IsCoveredByThePermission_NotAKnownGap()
+    {
+        KnownGaps.Should().NotContainKey("Controllers/SetupAssistantController.cs", "applying a draft is a cost-attribution door (WP-A3 item 2)");
+        CoveredBy.Should().ContainKey("Controllers/SetupAssistantController.cs");
+    }
+
+    [Fact]
     public void S028_EveryWriterOfTheAttributionColumns_IsBehindThePermission_OrAKnownGap()
     {
         var root = SourceScan.ResolveApiRoot();
