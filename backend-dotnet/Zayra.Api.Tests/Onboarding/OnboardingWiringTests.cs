@@ -124,4 +124,19 @@ public class OnboardingWiringTests
         row.Metadata.Should().Contain(EmployeeWarningCodes.JoiningBackdated).And.Contain(reason);
         row.Metadata.Should().NotContain(joining.ToString("yyyy-MM-dd"));
     }
+
+    [Fact]
+    public void ContainerResolvedRateLimiter_EnforcesTheDefaultPolicies()
+    {
+        // The container hands the limiter's optional IEnumerable parameter over as an empty sequence; that used to leave
+        // every policy unregistered, so no endpoint was ever limited outside a unit test.
+        var services = new ServiceCollection();
+        services.AddOptions();
+        OnboardingServiceRegistration.AddOnboardingServices(services);
+        using var sp = services.BuildServiceProvider();
+        var limiter = sp.GetRequiredService<Zayra.Api.Infrastructure.Http.TenantUserRateLimiter>();
+        for (var i = 0; i < 20; i++) limiter.TryAcquire("duplicate-check", "t", "u", out _).Should().BeTrue($"call {i + 1}");
+        limiter.TryAcquire("duplicate-check", "t", "u", out var retry).Should().BeFalse();
+        retry.Should().BeGreaterThan(0);
+    }
 }

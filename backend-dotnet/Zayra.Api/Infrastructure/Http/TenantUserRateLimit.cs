@@ -40,7 +40,11 @@ public sealed class TenantUserRateLimiter : IDisposable
 
     public TenantUserRateLimiter(IConfiguration? configuration = null, IEnumerable<TenantUserRateLimitPolicy>? policies = null)
     {
-        foreach (var d in policies ?? Defaults)
+        // The container hands an optional IEnumerable parameter over as an EMPTY sequence, never null: an empty list means
+        // 'no override', and treating it as 'no policies' would leave every limiter unregistered (an unknown policy never
+        // blocks), so the whole feature would be silently inert in production.
+        var effective = policies?.ToList() is { Count: > 0 } custom ? custom : Defaults;
+        foreach (var d in effective)
         {
             // RateLimit:Employees:<policy>:PerUser / PerTenant / WindowSeconds override the defaults.
             var section = configuration?.GetSection($"RateLimit:Employees:{d.Name}");
