@@ -299,3 +299,6 @@ export function textDir(text: string): 'ltr' | 'rtl' {
   const m = /[A-Za-zÀ-ɏ֐-ࣿיִ-﷿ﹰ-﻿]/.exec(text);
   return m && /[֐-ࣿיִ-﷿ﹰ-﻿]/.test(m[0]) ? 'rtl' : 'ltr';
 }
+
+/** Setup → Payroll accounting → Cost accounting: a sub-tab of `glMapping`, opened by `glTab` (as "Find a setting" builds it). */
+export const COST_ACCOUNTING_SETUP_HREF = '/setup?tab=glMapping&glTab=costAccounting';

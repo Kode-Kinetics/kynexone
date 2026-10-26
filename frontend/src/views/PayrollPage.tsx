@@ -46,6 +46,10 @@ import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
 import { LoadError, serverMessage } from '../components/gl/glUi';
+import { financeGlApi } from '../api/financeGl';
+import { CostCentreLockPreview, CostingOffNote } from '../components/payroll/CostCentreLockPreview';
+import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/UncostedApprovalAck';
+import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
@@ -1042,6 +1046,10 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   // next action is the recompute on the Validation tab.
   const [staleAttendanceRun, setStaleAttendanceRun] = useState<PayrollRun | null>(null);
   const t = useT();
+  // Cost accounting v1: for an Approved run of a company with costing on, Lock becomes "Review & lock" (the preview owns the lock).
+  // A company whose switch cannot be read keeps today's Lock: the server still decides.
+  const [costingCompanies, setCostingCompanies] = useState<Set<string>>(new Set());
+  const [costingChecked, setCostingChecked] = useState(false);
 
   // A failed load is shown as a failure, never as "No runs yet" (which invites creating a duplicate run).
   const [runsError, setRunsError] = useState<unknown>(null);
@@ -1052,6 +1060,15 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
       .catch(e => { setRuns([]); setTotal(0); setRunsError(e); })
       .finally(() => setLoading(false));
   };
+  const approvedCompanyKey = [...new Set(runs.filter(r => r.status === 'Approved' && r.companyId).map(r => r.companyId as string))].sort().join(',');
+  useEffect(() => {
+    if (!approvedCompanyKey) { setCostingChecked(true); return; }
+    let active = true;
+    Promise.all(approvedCompanyKey.split(',').map(id =>
+      financeGlApi.costAccountingReadiness(id).then(r => (r.settings.enabled ? id : null)).catch(() => null)))
+      .then(ids => { if (active) { setCostingCompanies(new Set(ids.filter((id): id is string => !!id))); setCostingChecked(true); } });
+    return () => { active = false; };
+  }, [approvedCompanyKey]);
   useEffect(() => {
     load();
     payrollApi.listCompanies().then(cs => {
@@ -1191,8 +1208,13 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
                         <CheckCircle2 className="h-3 w-3" /> Approve
                       </button>
                     )}
-                    {run.status === 'Approved' && (
-                      <button type="button" onClick={e => { e.stopPropagation(); lockRun(run.id); }} disabled={lockingId !== null} className={`${btn.sm} h-6 px-2 text-xs`}>
+                    {run.status === 'Approved' && run.companyId && costingCompanies.has(run.companyId) && (
+                      <button type="button" data-testid={`cc-lock-review-${run.id}`} onClick={e => { e.stopPropagation(); onSelectRun(run, 'gl-journal'); }} className={`${btn.sm} h-6 px-2 text-xs`}>
+                        <Lock className="h-3 w-3" /> {t('Review & lock')}
+                      </button>
+                    )}
+                    {run.status === 'Approved' && !(run.companyId && costingCompanies.has(run.companyId)) && (
+                      <button type="button" onClick={e => { e.stopPropagation(); lockRun(run.id); }} disabled={lockingId !== null || !costingChecked} className={`${btn.sm} h-6 px-2 text-xs`}>
                         <Lock className="h-3 w-3" /> {lockingId === run.id ? 'Locking…' : 'Lock'}
                       </button>
                     )}
@@ -1984,8 +2006,11 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
   const outsideList = overrideReport?.paidOutsideBankFile ?? [];
   const outsideCount = outsideList.length;
   const needsOutsideAck = outsideCount > 0;
+  // S-048: the final approval seals the journal, so with costing on the approver states how many employees post uncosted.
+  const sealsJournal = hasPermission('payroll.approve') && (isFinance || isAdmin) && (selectedRun?.status === 'Processed' || selectedRun?.status === 'PendingFinanceReview');
+  const uncosted = useUncostedAck(runId, sealsJournal);
   const gateSatisfied =
-    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && !gateLoading && !gateError && currencyConfirmed;
+    (!needsExcludedAck || ackExcluded) && (!needsOverriddenAck || ackOverridden) && (!needsOutsideAck || ackOutside) && (!uncosted.needed || uncosted.affirmed) && !gateLoading && !gateError && currencyConfirmed;
 
   const handleApprove = async () => {
     if (!runId) return;
@@ -1998,6 +2023,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
         expectedExcludedCount: needsExcludedAck && ackExcluded ? excludedCount : null,
         expectedOverriddenCount: needsOverriddenAck && ackOverridden ? overriddenCount : null,
         expectedOutsideBankCount: needsOutsideAck && ackOutside ? outsideCount : null,
+        expectedUncostedCount: uncosted.expected(),
       });
       await refreshRuns();
       setRuns(r => r.map(x => x.id === runId ? { ...x, status: selectedRun?.status === 'Processed' && (isHROrPayroll && !isFinance && !isAdmin) ? 'PendingFinanceReview' : 'Approved' } : x));
@@ -2011,6 +2037,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
       const data = (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
       // A 409 here means the run moved under the approver — re-read the counts so the next attempt
       // acknowledges the truth rather than a stale number.
+      if (data?.error === 'uncosted_not_acknowledged') void uncosted.refresh();
       if (data?.error === 'excluded_employees_not_acknowledged' || data?.error === 'overridden_errors_not_acknowledged'
           || data?.error === 'outside_bank_payments_not_acknowledged') {
         setAckExcluded(false);
@@ -2160,6 +2187,8 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
                   }))}
                 />
               )}
+
+              {uncosted.needed && <UncostedApprovalAck count={uncosted.count} affirmed={uncosted.affirmed} onChange={uncosted.setAffirmed} />}
 
               <Field label="Notes / Comments">
                 <textarea aria-label="Approval notes" className={inp} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional comments for the record…" />
@@ -3004,6 +3033,8 @@ function ReportsTab() {
           </>
         )}
       </div>
+
+      <CostCentreJournalReport />
     </div>
   );
 }
@@ -3187,8 +3218,10 @@ function EOSBTab() {
 
 // ── GL Journal Tab ──────────────────────────────────────────────────────────────
 
-function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
+function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: string; onGoToApprovals?: () => void }) {
   const t = useT();
+  const { hasPermission } = useAuth();
+  const { companies: payrollCompanies } = usePayrollCompanies();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
@@ -3199,22 +3232,34 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
 
   const loadRuns = useCallback(() => {
     setRunsError(null);
-    payrollApi.listAllRuns().then(setRuns).catch((e: unknown) => setRunsError(serverMessage(e, t)));
+    return payrollApi.listAllRuns().then(setRuns).catch((e: unknown) => setRunsError(serverMessage(e, t)));
   }, [t]);
   useEffect(() => { loadRuns(); }, [loadRuns]);
-  useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
-
-  const load = async () => {
-    if (!runId) return;
+  // `t` changes identity when the dictionary finishes loading; the journal must not be read again for that.
+  const tRef = useRef(t);
+  tRef.current = t;
+  const load = useCallback(async (id?: string) => {
+    const target = id ?? runIdRef.current;
+    if (!target) return;
     setLoading(true);
     setJournalError(null);
-    payrollApi.glJournal(runId).then(j => setJournal(j)).catch((e: unknown) => { setJournal(null); setJournalError(serverMessage(e, t)); }).finally(() => setLoading(false));
-  };
+    await payrollApi.glJournal(target).then(j => setJournal(j)).catch((e: unknown) => { setJournal(null); setJournalError(serverMessage(e, tRef.current)); }).finally(() => setLoading(false));
+  }, []);
+  const runIdRef = useRef(runId);
+  runIdRef.current = runId;
+  // Arriving from a run card ("Review & lock") reads that run's journal at once; otherwise Generate Journal does.
+  useEffect(() => {
+    if (!selectedRunId) return;
+    setRunId(selectedRunId);
+    runIdRef.current = selectedRunId;
+    void load(selectedRunId);
+  }, [selectedRunId, load]);
 
   const debits  = journal?.entries.filter(e => e.entryType === 'DR') ?? [];
   const credits = journal?.entries.filter(e => e.entryType === 'CR') ?? [];
   const selectedRun = runs.find(r => r.id === runId);
   const exportPeriod = selectedRun ? `${selectedRun.year}-${String(selectedRun.month).padStart(2, '0')}` : undefined;
+  const runCompany = payrollCompanies.find(c => c.id === selectedRun?.companyId);
 
   return (
     <div className="space-y-4">
@@ -3224,18 +3269,31 @@ function GlJournalTab({ selectedRunId }: { selectedRunId?: string }) {
         </p>
       </div>
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run for GL journal" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+        <select aria-label="Select payroll run for GL journal" data-testid="cc-lock-run-select" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">Select payroll run…</option>
           {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
         </select>
-        <button type="button" className={btn.primary} onClick={load} disabled={!runId || loading}>
+        <button type="button" className={btn.primary} onClick={() => void load()} disabled={!runId || loading}>
           <BookOpen className="h-4 w-4" /> {loading ? 'Loading…' : 'Generate Journal'}
         </button>
       </div>
       {runsError && <LoadError message={runsError} onRetry={loadRuns} />}
       {journalError && <LoadError message={journalError} onRetry={() => void load()} />}
 
-      {journal && (
+      {journal?.costing?.enabled && (
+        <CostCentreLockPreview
+          journal={journal}
+          run={selectedRun}
+          companyName={runCompany?.tradeName || runCompany?.name || ''}
+          mayLock={hasPermission('payroll.lock')}
+          onReload={async () => { await Promise.all([load(), loadRuns()]); }}
+          onLocked={updated => { setRuns(rs => rs.map(r => (r.id === updated.id ? updated : r))); void load(); }}
+          onGoToApprovals={() => onGoToApprovals?.()}
+        />
+      )}
+      {journal && journal.costing && !journal.costing.enabled && <CostingOffNote />}
+
+      {journal && !journal.costing?.enabled && (
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
             <div className="surface p-4">
@@ -3658,7 +3716,7 @@ export function PayrollPage() {
       case 'payment-tracking': return <PaymentTrackingTab />;
       case 'reports':         return <ReportsTab />;
       case 'eosb':            return <EOSBTab />;
-      case 'gl-journal':      return <GlJournalTab selectedRunId={contextRunId} />;
+      case 'gl-journal':      return <GlJournalTab selectedRunId={contextRunId} onGoToApprovals={() => setActiveTab('approvals')} />;
       case 'reconciliation':  return <ReconciliationTab selectedRunId={contextRunId} />;
       case 'final-settlement': return <FinalSettlementTab />;
       case 'ai-validation':   return <AIValidationTab />;
