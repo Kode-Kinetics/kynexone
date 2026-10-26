@@ -63,7 +63,8 @@ public sealed class DropDeadConfigColumnsMigrationPostgresTests
         thisMigration.Should().NotBeNull("the migration that drops the unread columns exists");
         var previous = all[all.IndexOf(thisMigration!) - 1];
         previous.Should().EndWith("_StopMappingDeadConfigColumns", "release 2 follows release 1 directly");
-        all.Last().Should().Be(thisMigration);
+        // Present and ordered after its release-1 predecessor; later migrations may follow it (I-11).
+        all.IndexOf(thisMigration!).Should().BeGreaterThan(all.IndexOf(previous));
 
         await migrator.MigrateAsync(previous);
         const string tenant = "'10000000-0000-0000-0000-0000000000d2'";
@@ -71,6 +72,7 @@ public sealed class DropDeadConfigColumnsMigrationPostgresTests
         await Exec(container, await InsertRowSql(container, "attendance_policies", new() { ["tenant_id"] = tenant, ["code"] = "'KEEP'", ["grace_minutes"] = "7", ["late_threshold_minutes"] = "33" }));
 
         await migrator.MigrateAsync(thisMigration);
+        (await db.Database.GetAppliedMigrationsAsync()).Should().Contain(thisMigration, "the drop is applied");
 
         foreach (var (table, column, _) in Expected)
             (await Scalar<long>(container, $"SELECT count(*) FROM information_schema.columns WHERE table_name = '{table}' AND column_name = '{column}'"))
