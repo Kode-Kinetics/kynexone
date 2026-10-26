@@ -72,6 +72,9 @@ public class RawSqlExecutionRatchetTests
         // proves the guarded setup writes remain separate for tenants sharing the same codes;
         // CompanySetupPostgresTests.ConcurrentCommits_* proves the wizard's commit serializes on it.
         ["Infrastructure/Setup/SetupTenantLock.cs"] = 1,
+        // Add Employee: pg_advisory_xact_lock on a hash of (tenant, identity), taken in the create transaction so two
+        // creates of one person serialise. Writes no row; the key includes the tenant. HireIdentityLockPostgresTests.
+        ["Infrastructure/Employees/Onboarding/EmployeeIdentityLock.cs"] = 1,
         // Parameterized transaction-scoped advisory lock only: the key is derived from the
         // authenticated tenant ID and serializes overlapping statutory-rule mutations. It writes
         // no table row; StatutoryRuleSafeguardPostgresTests.ConcurrentOverlappingCreatesProduceOneVersionAndOneConflict
