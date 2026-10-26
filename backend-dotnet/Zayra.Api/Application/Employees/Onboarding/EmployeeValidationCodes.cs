@@ -37,11 +37,18 @@ public static class EmployeeFieldErrors
     public const string EmailInvalid = "email_invalid";
     public const string PhotoUrlScheme = "photo_url_scheme";
     public const string ListTooLong = "list_too_long";
+    // CD17: contract dates are data integrity.
+    public const string ContractEndBeforeStart = "contract_end_before_start";
+    public const string ContractEndWithoutFixedTerm = "contract_end_without_fixed_term";
 }
 
 /// <summary>Statutory-floor warning codes (409 <c>warnings_require_acknowledgement</c>).</summary>
 public static class EmployeeWarningCodes
 {
+    /// <summary>CD15: age AT THE JOINING DATE below 15. A warning (reason + employees.override_validation), never a block.</summary>
+    public const string UnderMinimumAge = "under_minimum_age";
+    /// <summary>CD14: joining more than 30 days in the past. Supersedes <see cref="JoiningBackdatedOver30d"/>.</summary>
+    public const string JoiningBackdated = "joining_backdated";
     public const string DobUnder15 = "dob_under_15";
     public const string Juvenile15To17 = "juvenile_15_17";
     public const string AgeOver70 = "age_over_70";

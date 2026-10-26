@@ -6,7 +6,7 @@ namespace Zayra.Api.Application.Employees;
 public record EmployeeCreateRequest(
     string? EmployeeCode,
     bool ManualEmployeeCode,
-    [Required, MaxLength(180)] string EnglishName,
+    [Required, MaxLength(150)] string EnglishName,
     [MaxLength(180)] string? ArabicName,
     [MaxLength(120)] string? PreferredName,
     // Creation stores an incomplete Draft; configured readiness still requires gender before activation.
@@ -43,6 +43,11 @@ public record EmployeeCreateRequest(
     EmployeeSalaryBreakdownRequest? SalaryBreakdown,
     IReadOnlyCollection<EmployeeComplianceRecordRequest>? ComplianceRecords,
     Guid? PositionId = null,
+    // Onboarding hire contract: ISO 3166 alpha-2 nationality, the reason for a duplicate/ID override, and the
+    // statutory-floor warnings the caller chose to override (409 warnings_require_acknowledgement replay).
+    [MaxLength(2)] string? NationalityCode = null,
+    [MaxLength(500)] string? DuplicateOverrideReason = null,
+    IReadOnlyCollection<Zayra.Api.Application.Employees.Onboarding.AcknowledgedWarning>? AcknowledgedWarnings = null,
     // Explicit "create anyway" override for the duplicate-person backstop. Default false → an
     // unacknowledged STRONG national-identity match is refused with 409 possible_duplicate (never-silent-
     // dup). Set only when the operator dismisses the warning; the create then records an audited override.
