@@ -228,13 +228,13 @@ public class CostCentrePermissionTests
         ["Controllers/PlanningController.cs"] = ["Controllers/PlanningController.cs"],
         ["Controllers/OrganizationStructureImportController.cs"] = ["Controllers/OrganizationStructureImportController.cs"],
         ["Controllers/SetupAssistantController.cs"] = ["Controllers/SetupAssistantController.cs"],
+        ["Controllers/EstablishmentController.cs"] = ["Controllers/EstablishmentController.cs"],
     };
 
     /// <summary>Writers NOT yet behind the permission, each with why. The list may only shrink: a new entry is a decision, not a convenience.</summary>
     private static readonly Dictionary<string, string> KnownGaps = new(StringComparer.Ordinal)
     {
         ["Controllers/FinanceGlController.CostAccounting.cs"] = "Writes only the company's DefaultCostCenterId, a finance setting gated by finance.gl.manage with a reason and audit (contract AM-3, AM-27), not an HR attribution door.",
-        ["Controllers/EstablishmentController.cs"] = "Establishment repair: sets DepartmentId only where the employee's free-text department already names that department (no change in meaning); gated by organization.establishment.write.",
     };
 
     [Fact]
