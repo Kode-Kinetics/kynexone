@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { CostCenterDto } from '../src/api/organization';
 import type { ReadinessCheck } from '../src/api/financeGl';
 import {
+  textDir,
   addClassRule,
   checkFixTarget,
   orderChecks,
@@ -273,5 +274,17 @@ test.describe('turning cost accounting on', () => {
     const g = turnOnGate(ready([check('a', 'ok', 0)], 2), false, 'because');
     expect(g).toMatchObject({ needsAck: true, exposure: 2, canConfirm: false });
     expect(turnOnGate(ready([check('a', 'ok', 0)], 2), true, 'because').canConfirm).toBe(true);
+  });
+});
+
+
+test.describe('text direction of a mixed code-and-name label', () => {
+  test('the first strong letter decides, so a Latin name keeps its start in an RTL page and an Arabic one stays RTL', () => {
+    expect(textDir('5002 — Housing Allowance Expense')).toBe('ltr');
+    expect(textDir('ADMIN — Administration')).toBe('ltr');
+    expect(textDir('5090 — بدل موقع الرياض')).toBe('rtl');
+    expect(textDir('ورثة ربط المجموعة')).toBe('rtl');
+    expect(textDir('5002')).toBe('ltr');
+    expect(textDir('')).toBe('ltr');
   });
 });

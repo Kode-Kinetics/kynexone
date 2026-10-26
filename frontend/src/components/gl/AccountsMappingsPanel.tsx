@@ -760,12 +760,12 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
             {/* Fixed layout: every column shares the width the page gives it (about 640px beside Setup's menu), long text wraps or is cut with a title, and nothing needs a horizontal scrollbar. */}
             <table className="w-full table-fixed text-sm">
               <colgroup>
+                <col className="w-[8%]" />
+                <col className="w-[13%]" />
+                <col className="w-[27%]" />
                 <col className="w-[9%]" />
                 <col className="w-[14%]" />
-                <col className="w-[22%]" />
-                <col className="w-[10%]" />
-                <col className="w-[14%]" />
-                <col className="w-[10%]" />
+                <col className="w-[8%]" />
                 <col className="w-[8%]" />
                 <col className="w-[13%]" />
               </colgroup>
@@ -802,7 +802,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                         <td className="px-2 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">
                           {a.externalCode ? <bdi dir="ltr" className="break-all">{a.externalCode}</bdi> : <><span className="text-slate-400" aria-hidden>—</span><span className="sr-only">{t('No ERP account code')}</span></>}
                         </td>
-                        <td className="px-2 py-2"><span data-testid={`cc-acct-name-${a.code}`} title={a.name} className="block overflow-hidden text-ellipsis whitespace-nowrap">{a.name}</span></td>
+                        <td className="px-2 py-2"><span data-testid={`cc-acct-name-${a.code}`} dir="auto" title={a.name} className="block overflow-hidden text-ellipsis whitespace-nowrap">{a.name}</span></td>
                         <td className="px-2 py-2 text-xs text-slate-600 dark:text-slate-300">{accountTypeLabel(t, a.accountType)}</td>
                         <td className="px-2 py-2">
                           {(() => {
@@ -821,7 +821,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                           })()}
                         </td>
                         <td className="px-2 py-2">
-                          {inherited ? <InheritedBadge wrap /> : inCompanyView ? <Badge tone="violet">{t('Company')}</Badge> : <Badge tone="sapphire">{t('Group')}</Badge>}
+                          {inherited ? <InheritedBadge short /> : inCompanyView ? <Badge tone="violet">{t('Company')}</Badge> : <Badge tone="sapphire">{t('Group')}</Badge>}
                         </td>
                         <td className="px-2 py-2">
                           <ActiveBadge active={a.isActive} />
@@ -1025,7 +1025,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="break-words text-slate-800 dark:text-slate-100">{r.label}</span>
                             {isOverridden && <Badge tone="violet" wrap>{t('Company override')}</Badge>}
-                            {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge wrap />}
+                            {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge short />}
                           </div>
                           <p className="text-[11px] text-slate-500">{driverCategoryLabel(t, r.category)}</p>
                           <p className="break-words text-[11px] text-slate-500">

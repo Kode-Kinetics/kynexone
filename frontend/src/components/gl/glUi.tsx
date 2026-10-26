@@ -106,10 +106,23 @@ export function Badge({
   );
 }
 
-export function InheritedBadge({ wrap }: { wrap?: boolean } = {}) {
+/**
+ * `short` is for tight tables: the visible word is "Group" on one line; the full sentence stays in the tooltip and is
+ * read by screen readers (so a row still contains "Inherited from group" as text).
+ */
+export function InheritedBadge({ short }: { short?: boolean } = {}) {
   const t = useT();
+  const title = t('Set at group level and not overridden for this company.');
+  if (short) {
+    return (
+      <Badge tone="slate" title={title} testId="cc-inherited-badge">
+        <span aria-hidden="true">{t('Group')}</span>
+        <span className="sr-only">{t('Inherited from group')}</span>
+      </Badge>
+    );
+  }
   return (
-    <Badge wrap={wrap} tone="slate" title={t('Set at group level and not overridden for this company.')}>
+    <Badge tone="slate" title={title}>
       {t('Inherited from group')}
     </Badge>
   );

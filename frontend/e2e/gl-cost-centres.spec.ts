@@ -911,3 +911,15 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(first.locator('[aria-hidden="true"]')).toHaveText(locale === 'ar' ? 'المجموعة' : 'Group');
   });
 }
+
+
+test('AR 1280: the account and fixed cost centre selects start at the code, because a Latin label reads left to right', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await boot(page, { locale: 'ar' });
+  for (const sel of [page.getByLabel('حساب Housing allowance'), tid(page, 'cc-map-fixed-EARN:HOUSING')]) {
+    expect(await sel.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0].text)).toMatch(/^[0-9A-Z]/);
+    expect(await sel.evaluate((el) => getComputedStyle(el).direction)).toBe('ltr');
+  }
+  // An Arabic placeholder stays right to left.
+  expect(await page.getByLabel('حساب Basic salary').evaluate((el) => getComputedStyle(el).direction)).toBe('rtl');
+});
