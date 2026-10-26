@@ -229,7 +229,7 @@ public sealed class JournalExportService
         }
         // A two-sided row's cost centre belongs to its Expense/Revenue side; unknown accounts stay unclassified (null).
         bool? IsProfitAndLoss(FinanceGlEntry e, string code) =>
-            InfoOf(e.CompanyId, code) is { } i ? i.Type is "Expense" or "Revenue" : null;
+            InfoOf(e.CompanyId, code) is { } i ? FinanceGlEntryGuard.IsPnl(i.Type) : null;
 
         var lines = JournalExportBuilder.Expand(selection.Entries, CodeOf, ExternalOf, IsProfitAndLoss);
         var tieOut = JournalExportBuilder.Verify(lines, selection.Entries, IsProfitAndLoss);

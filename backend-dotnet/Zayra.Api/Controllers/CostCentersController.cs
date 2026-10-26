@@ -62,8 +62,8 @@ public class CostCentersController : ControllerBase
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-        => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), cancellationToken);
+    public Task<IActionResult> Delete(Guid id, [FromQuery] string? reason, CancellationToken cancellationToken)
+        => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), reason, cancellationToken);
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
@@ -196,7 +196,7 @@ public class CostCentersController : ControllerBase
             rowResults.Add(new ImportRowResult(
                 rowNum, code, name,
                 errors.Count > 0 ? ImportRowStatus.Error : warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok,
-                errors, warnings));
+                errors, warnings).WithArabic());
         }
 
         return commit

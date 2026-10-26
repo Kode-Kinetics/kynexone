@@ -223,10 +223,7 @@ var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get
 var extraOrigins = (builder.Configuration["CORS_EXTRA_ORIGINS"] ?? string.Empty)
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 allowedOrigins = allowedOrigins.Concat(extraOrigins).Distinct().ToArray();
-builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => policy
-    .WithOrigins(allowedOrigins)
-    .AllowAnyMethod()
-    .AllowAnyHeader()));
+builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => Zayra.Api.KynexOneCorsPolicy.Apply(policy, allowedOrigins)));
 
 // Accepts either Npgsql keyword form or a postgres:// URI. Managed-Postgres consoles hand out
 // URIs; Npgsql parses only keyword form. See PostgresConnectionString for what that cost.

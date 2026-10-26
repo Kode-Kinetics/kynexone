@@ -206,7 +206,8 @@ internal static class FinanceGlEntryGuard
         return (i < 0 ? label : label[..i]).Trim();
     }
 
-    private static bool IsPnl(string type) =>
+    /// <summary>Profit and loss for every name the chart and imports use (the chart calls revenue "Income").</summary>
+    internal static bool IsPnl(string type) =>
         string.Equals(type, "Expense", StringComparison.OrdinalIgnoreCase) || string.Equals(type, "Income", StringComparison.OrdinalIgnoreCase)
         || string.Equals(type, "Revenue", StringComparison.OrdinalIgnoreCase);
 }

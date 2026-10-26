@@ -151,3 +151,56 @@ test.describe('the shared edit-draft change set never carries the cost centre (A
     expect(changes).toEqual({ department: 'Ops' });
   });
 });
+
+test.describe('the server-resolved attribution wins over the inference when the API sends it', () => {
+  const server = (over: Record<string, unknown>) => ({ costCenterId: 'sales', code: 'SALES', name: 'sales name', nameAr: null, source: 'Department', level: 'department', unresolvedReason: null, ...over });
+
+  test('the server source and cost centre are used even where the lists would infer something else', () => {
+    const i = base();
+    i.employee.costCentreResolution = server({ costCenterId: 'sales', source: 'Position', level: 'position' });
+    expect(resolveCostCentre(i)).toMatchObject({ kind: 'position', costCentreId: 'sales' });
+  });
+
+  test('each server source maps to the screen\'s kinds', () => {
+    const i = base();
+    for (const [source, level, kind] of [['Employee', 'employee', 'employee'], ['Department', 'department', 'department'], ['ParentDepartment', 'parentDepartment', 'parentDepartment'], ['CompanyDefault', 'company', 'companyDefault']] as const) {
+      i.employee.costCentreResolution = server({ source, level });
+      expect(resolveCostCentre(i)).toMatchObject({ kind, costCentreId: 'sales' });
+    }
+  });
+
+  test('the source name still comes from the lists when the kind agrees', () => {
+    const i = base();
+    i.employee.costCentreResolution = server({ costCenterId: 'admin', source: 'ParentDepartment', level: 'parentDepartment' });
+    expect(resolveCostCentre(i)).toMatchObject({ kind: 'parentDepartment', costCentreId: 'admin', sourceName: 'Parent' });
+  });
+
+  test('None with reason "none" is none; an "..._invalid" reason is invalid at its level', () => {
+    const i = base();
+    i.employee.costCentreResolution = server({ costCenterId: null, code: null, name: null, source: 'None', level: null, unresolvedReason: 'none' });
+    expect(resolveCostCentre(i)).toMatchObject({ kind: 'none', costCentreId: null });
+    i.employee.costCentreResolution = server({ costCenterId: null, code: null, name: null, source: 'None', level: 'position', unresolvedReason: 'position_cost_centre_invalid' });
+    expect(resolveCostCentre(i)).toMatchObject({ kind: 'invalid', level: 'position', costCentreId: null });
+  });
+
+  test('ignoreOverride (what removing the override would return to) still infers from the lists', () => {
+    const i = base();
+    i.employee.costCenterId = 'sales';
+    i.employee.costCenterIsOverride = true;
+    i.employee.costCentreResolution = server({ costCenterId: 'sales', source: 'Employee', level: 'employee' });
+    expect(resolveCostCentre(i, { ignoreOverride: true })).toMatchObject({ kind: 'parentDepartment', costCentreId: 'admin' });
+  });
+
+  test('the override flag comes from the server resolution when costCenterIsOverride is absent', () => {
+    const i = base();
+    i.employee.costCenterId = 'sales';
+    i.employee.costCentreResolution = server({ source: 'Employee', level: 'employee' });
+    expect(isOverride(i)).toBe(true);
+    i.employee.costCentreResolution = server({ source: 'Department', level: 'department' });
+    expect(isOverride(i)).toBe(false);
+  });
+
+  test('without it (an older response) the inference is unchanged', () => {
+    expect(resolveCostCentre(base())).toMatchObject({ kind: 'parentDepartment', costCentreId: 'admin' });
+  });
+});
