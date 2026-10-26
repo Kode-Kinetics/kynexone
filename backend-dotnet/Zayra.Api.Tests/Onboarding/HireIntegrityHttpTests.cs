@@ -373,12 +373,14 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
         var token = await _fx.NewUserAsync("rh1", "employees.write", "employees.read");
         var former = await _fx.SeedEmployeeAsync("Former Employee", "2333222111", status: "Terminated");
         var before = await _fx.EmployeeCountAsync();
+        var firstJoined = (await _fx.JoiningDatesAsync(former.Id)).Joining;
         using var r = await _fx.SendAsync(HttpMethod.Post, $"/api/employees/{former.Id}/rehire",
             new { startDate = DateTime.UtcNow.Date, reason = "Returning after a two year break" }, token);
         r.StatusCode.Should().Be(HttpStatusCode.OK, await r.Content.ReadAsStringAsync());
         (await _fx.EmployeeCountAsync()).Should().Be(before, "a rehire reuses the record");
         (await _fx.StatusOfAsync(former.Id)).Should().Be("Draft");
         (await _fx.StatusHistoryCountAsync(former.Id)).Should().Be(1);
+        (await _fx.JoiningDatesAsync(former.Id)).Original.Should().Be(DateOnly.FromDateTime(firstJoined), "the first rehire keeps the original joining date (I-3)");
 
         using var again = await _fx.SendAsync(HttpMethod.Post, $"/api/employees/{former.Id}/rehire",
             new { startDate = DateTime.UtcNow.Date, reason = "Second attempt on a draft" }, token);
@@ -511,6 +513,7 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
     }
     public async Task<bool> EmployeeExistsAsync(int id) { using var s = Host.Services.CreateScope(); return await NewDb(s).Employees.IgnoreQueryFilters().AnyAsync(e => e.Id == id); }
     public async Task<string> StatusOfAsync(int id) { using var s = Host.Services.CreateScope(); return await NewDb(s).Employees.IgnoreQueryFilters().Where(e => e.Id == id).Select(e => e.Status).SingleAsync(); }
+    public async Task<(DateOnly? Original, DateTime Joining)> JoiningDatesAsync(int id) { using var s = Host.Services.CreateScope(); var e = await NewDb(s).Employees.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == id); return (e.OriginalJoiningDate, e.JoiningDate); }
     public async Task<int> StatusHistoryCountAsync(int id) { using var s = Host.Services.CreateScope(); return await NewDb(s).EmployeeStatusHistories.IgnoreQueryFilters().CountAsync(h => h.EmployeeId == id); }
     public async Task<int> OpenCompensationGapsAsync(int id) { using var s = Host.Services.CreateScope(); return await NewDb(s).EmployeeImportGaps.IgnoreQueryFilters().CountAsync(g => g.EmployeeId == id && g.GapType == "pay:compensationUnapproved" && g.ResolvedAtUtc == null); }
     public async Task SetStatusAsync(int id, string status)
