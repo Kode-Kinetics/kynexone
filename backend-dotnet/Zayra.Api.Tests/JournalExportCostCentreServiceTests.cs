@@ -28,6 +28,26 @@ public class JournalExportCostCentreServiceTests
     // ── Freeze, regenerate, safe names (T-058, T-060, T-062) ──────────────────────────────────────
 
     [Fact]
+    public async Task ATwoSidedLineWithAnIncomeAccount_CarriesTheCostCentre_OnTheIncomeSideOnly()
+    {
+        // The chart's own name for revenue is "Income" (FinanceGlController.AccountTypes); the exporter must treat it as
+        // profit and loss exactly like the ledger guard does, so the cost centre lands on the income line, not the payable.
+        var (db, tenantId) = await TenantAsync(costAccounting: true);
+        SeedChart(db, tenantId);
+        db.GlAccounts.Add(new GlAccount { TenantId = tenantId, Code = "4100", Name = "Other Income", AccountType = "Income", CostCenterRule = "Optional" });
+        db.SaveChanges();
+        db.Add(Row(tenantId, "Accrual", "2100 - Salaries Payable", "4100 - Other Income", 250m, "July recovery", ccCode: "CC100", ccName: "Operations", ccSegment: "6100-OPS"));
+        db.SaveChanges();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+
+        var generic = IdOf(await CreateAsync(db, maker, "generic-csv"));
+
+        var frozen = await db.GlJournalExportLines.AsNoTracking().Where(l => l.GlJournalExportId == generic).ToListAsync();
+        frozen.Single(l => l.AccountCode == "4100").CostCenterCode.Should().Be("CC100");
+        frozen.Single(l => l.AccountCode == "2100").CostCenterCode.Should().BeNull();
+    }
+
+    [Fact]
     public async Task ACostedExport_FreezesTheSnapshot_OnTheProfitAndLossLineOnly_AndCarriesItInEveryFormat()
     {
         var (db, tenantId) = await TenantAsync(costAccounting: true);
