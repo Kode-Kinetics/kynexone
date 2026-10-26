@@ -7,8 +7,8 @@ import { bootHire, expectNoHorizontalScroll } from './hire/hireMocks';
  * Local: next dev -p 5174, then playwright test -c e2e/playwright.employee-hire.config.ts. CI collects it in the chromium project.
  */
 const L = {
-  en: { name: 'English full name', start: 'Start date', desig: 'Designation', next: 'Next', save: 'Save draft', back: 'Back', nat: /Nationality/, create: 'Create employee draft' },
-  ar: { name: 'الاسم الكامل بالإنجليزية', start: 'تاريخ المباشرة', desig: 'المسمى الوظيفي', next: 'التالي', save: 'حفظ المسودة', back: 'السابق', nat: /الجنسية/, create: 'إنشاء مسودة الموظف' },
+  en: { name: 'English full name', start: 'Start date', desig: 'Designation', next: 'Next', save: 'Save draft', back: 'Back', nat: /Nationality/, create: 'Create employee draft', docs: 'Documents' },
+  ar: { name: 'الاسم الكامل بالإنجليزية', start: 'تاريخ المباشرة', desig: 'المسمى الوظيفي', next: 'التالي', save: 'حفظ كمسودة', back: 'السابق', nat: /الجنسية/, create: 'إنشاء مسودة الموظف', docs: 'المستندات' },
 } as const;
 
 async function basics(page: Page, l: typeof L.en | typeof L.ar = L.en, over: { name?: string; start?: string } = {}) {
@@ -420,6 +420,8 @@ test.describe('CD35 screenshots (EN 1440, AR 360)', () => {
         await next(page, l); await next(page, l); await next(page, l);
         await expect(page.getByTestId('review-hijri-idExpiry')).toBeVisible();
         await expectNoHorizontalScroll(page);
+        await page.getByRole('region', { name: l.docs }).scrollIntoViewIfNeeded();
+        await page.evaluate(() => window.scrollBy(0, 160));
         await shot(page, 'review-hijri');
       });
     });
