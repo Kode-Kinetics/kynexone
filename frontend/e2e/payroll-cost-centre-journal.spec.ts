@@ -256,11 +256,13 @@ test('the preview groups by cost centre first, with Not costed last, a status ch
   await expect(groups.nth(1)).toHaveAttribute('data-testid', 'cc-lock-group-SALES');
   await expect(groups.nth(2)).toHaveAttribute('data-testid', 'cc-lock-group-none');
   await expect(tid(page, 'cc-lock-group-SALES')).toContainText('180,000.00');
-  await expect(tid(page, 'cc-lock-group-SALES')).toContainText('net 178,000.00');
+  await expect(tid(page, 'cc-lock-group-SALES')).toContainText('Net 178,000.00');
   await expect(tid(page, 'cc-lock-group-none')).toContainText('Not costed (balance-sheet lines)');
   await expect(tid(page, 'cc-lock-blockers')).toHaveCount(0);
   await expect(tid(page, 'cc-lock-submit')).not.toHaveAttribute('aria-disabled', 'true');
-  expect(state.reads.filter((r) => r.path === '/api/payroll/runs/run-jun/gl-journal')).toHaveLength(1);
+  // (dev strict mode runs an effect twice, so the count is 1 in a production build and 2 here)
+  expect(state.reads.filter((r) => r.path === '/api/payroll/runs/run-jun/gl-journal').length).toBeGreaterThan(0);
+  expect(state.writes).toHaveLength(0);
   await shot(page, info, 'cc-en-lock-preview');
 });
 
@@ -328,8 +330,10 @@ test('blockers: a role=alert banner with one card per group, up to 10 employees 
   await expect(submit).toHaveAccessibleDescription('Fix the problems above to lock.');
   await submit.focus();
   await expect(submit).toBeFocused();
-  await submit.click();
+  // Playwright treats aria-disabled as not actionable, so force the click a keyboard or pointer user could make.
+  await submit.click({ force: true });
   expect(state.writes.filter((w) => w.path.endsWith('/lock'))).toHaveLength(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(await axeSeriousOrWorse(page, '[data-testid="cc-lock-preview"]')).toEqual([]);
   await shot(page, info, 'cc-en-lock-blocked');
 });
@@ -366,6 +370,7 @@ test('a locked run from before cost centres shows one Not recorded group', async
   await boot(page, { legacyLocked: true });
   await page.locator('#payroll-tab-gl-journal').click();
   await tid(page, 'cc-lock-run-select').selectOption('run-jun');
+  await page.getByRole('button', { name: 'Generate Journal' }).click();
   await expect(tid(page, 'cc-lock-preview')).toBeVisible();
   await expect(tid(page, 'cc-lock-legacy-note')).toContainText('Not recorded (run locked before cost centres)');
   await expect(tid(page, 'cc-lock-status-chip')).toHaveText('Locked');
@@ -403,7 +408,7 @@ test('separation of duties: the 403 sentence shows in Arabic and the run stays A
   state.state.lockRefusal = { status: 403, body: { error: 'separation_of_duties', message: SOD_EN, messageAr: SOD_AR } };
   await tid(page, 'cc-lock-submit').click();
   await tid(page, 'cc-lock-confirm').click();
-  await expect(page.getByRole('alert').filter({ hasText: SOD_AR })).toBeVisible();
+  await expect(tid(page, 'cc-lock-error')).toHaveText(SOD_AR);
   await expect(tid(page, 'cc-lock-submit')).toBeVisible();
 });
 
@@ -418,6 +423,7 @@ test('a user without payroll.lock reads the preview, sees a note, and has no Loc
 test('with costing off the old journal shows, with a note that links to Cost accounting', async ({ page }) => {
   await boot(page, { costingOn: false }, 'gl-journal');
   await tid(page, 'cc-lock-run-select').selectOption('run-jun');
+  await page.getByRole('button', { name: 'Generate Journal' }).click();
   await expect(tid(page, 'cc-lock-costing-off-note')).toContainText('Cost accounting is off for this company. Lines post without cost centres.');
   await expect(tid(page, 'cc-lock-costing-off-note').getByRole('link')).toHaveAttribute('href', '/setup?tab=costAccounting');
   await expect(tid(page, 'cc-lock-groupby-cc')).toHaveCount(0);

@@ -2,6 +2,7 @@ import client from './client';
 import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
+import type { JournalCosting } from '../lib/payrollCostLock';
 
 export interface SalaryStructure {
   id: string;
@@ -359,6 +360,9 @@ export interface PayrollGLEntry {
   glAccountName: string;
   entryType: 'DR' | 'CR';
   amount: number;
+  /** Cost accounting v1: the cost centre this line lands on; null for a balance-sheet or uncosted line. */
+  costCentreCode?: string | null;
+  costCentreName?: string | null;
 }
 
 export interface PayrollGLJournal {
@@ -369,6 +373,10 @@ export interface PayrollGLJournal {
   totalDebits: number;
   totalCredits: number;
   isBalanced: boolean;
+  /** True once Lock has posted the run (the lines are the ledger's); false for the live preview. */
+  isPosted?: boolean;
+  /** Cost accounting v1: what Lock would refuse and warn about. Absent from a server that predates it. */
+  costing?: JournalCosting;
 }
 
 export interface PayrollVarianceRow {
@@ -687,7 +695,7 @@ export const payrollApi = {
   // cash count, so a client that silently echoes the server's number back would be no control.
   approveRun: (
     id: string,
-    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null } = {},
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null } = {},
   ) =>
     client
       .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
@@ -695,6 +703,8 @@ export const payrollApi = {
         expectedExcludedCount: body.expectedExcludedCount ?? null,
         expectedOverriddenCount: body.expectedOverriddenCount ?? null,
         expectedOutsideBankCount: body.expectedOutsideBankCount ?? null,
+        // S-048: the uncosted-Optional count the approver affirmed (costing on only).
+        expectedUncostedCount: body.expectedUncostedCount ?? null,
       })
       .then((r) => r.data),
 
