@@ -53,7 +53,7 @@ async function boot(page: Page, options: { url?: string; arabic?: boolean; dark?
       roles: [options.readOnly ? 'Auditor' : 'Admin'],
       permissions: options.readOnly
         ? ['organization.read']
-        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read'],
+        : ['organization.read', 'organization.write', 'organization.costcenter.manage', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read'],
       accountType: 'Group', isGroupScope: !options.companyScoped,
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })),
     });

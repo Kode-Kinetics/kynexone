@@ -190,9 +190,8 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const hasNoCompanyOption = unassignedCount > 0;
 
   return (
-    <section aria-labelledby={headingId} className="space-y-4">
-      {/* Setup's own header already shows the title and description; this names the region for assistive technology. */}
-      <h2 id={headingId} className="sr-only">{t('Cost centres')}</h2>
+    <section aria-label={t('Cost centres')} className="space-y-4">
+      {/* Setup's own header shows the title and description; the region is named for assistive technology below. */}
       <div className="flex flex-wrap items-center justify-end gap-3">
         <div className="flex flex-wrap items-center gap-2">
           {canManage ? (
@@ -254,7 +253,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
         : items.length === 0 ? <p className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">{t('No cost centres yet. Add one, or import a CSV.')}</p>
         : rows.length === 0 ? <p className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">{t('No cost centres match your filters.')}</p>
         : (
-          <div className="surface overflow-x-auto" tabIndex={0} role="group" aria-labelledby={headingId}>
+          <div className="surface overflow-x-auto" tabIndex={0} role="group" aria-label={t('Cost centres')}>
             <table data-testid="cc-master-table" className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
                 <tr>
