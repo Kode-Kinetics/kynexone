@@ -33,6 +33,12 @@ public sealed class TenantUserRateLimiter : IDisposable
         new("transliterate", 60, 300, TimeSpan.FromMinutes(1)),
         new("transliterate-batch", 10, 300, TimeSpan.FromMinutes(1)),
         new("employee-create", 10, 60, TimeSpan.FromMinutes(1)),
+        // The write routes around the hire (autosave runs every few seconds while a form is open).
+        new("hire-draft", 60, 300, TimeSpan.FromMinutes(1)),
+        new("employee-rehire", 5, 30, TimeSpan.FromMinutes(1)),
+        new("draft-discard", 10, 60, TimeSpan.FromMinutes(1)),
+        new("compensation-approve", 10, 60, TimeSpan.FromMinutes(1)),
+        new("nationality-confirm", 30, 200, TimeSpan.FromMinutes(1)),
     ];
 
     private readonly Dictionary<string, PartitionedRateLimiter<(string Tenant, string User)>> _limiters = new(StringComparer.Ordinal);
@@ -72,7 +78,8 @@ public sealed class TenantUserRateLimiter : IDisposable
     public bool TryAcquire(string policy, string tenantId, string userId, out int retryAfterSeconds)
     {
         retryAfterSeconds = 0;
-        if (!_limiters.TryGetValue(policy, out var limiter)) return true;   // an unknown policy name never blocks
+        // An unknown policy name is a wiring mistake: refuse rather than leave the route unthrottled.
+        if (!_limiters.TryGetValue(policy, out var limiter)) { retryAfterSeconds = 60; return false; }
         var lease = limiter.AttemptAcquire((tenantId, userId));
         if (lease.IsAcquired) { lease.Dispose(); return true; }
         retryAfterSeconds = lease.TryGetMetadata(MetadataName.RetryAfter, out var after)
@@ -130,13 +137,20 @@ public sealed class TenantUserRateLimitFilter : IAsyncActionFilter
         var user = context.HttpContext.User;
         var tenant = user.FindFirstValue("tenant_id");
         var userId = user.FindFirstValue(ClaimTypes.NameIdentifier) ?? user.FindFirstValue("sub");
-        // Unauthenticated callers never reach here (the authorization filter ran first); with no limiter registered
-        // (a host that did not call AddOnboardingServices) the filter is inert rather than failing the request.
-        if (_limiter is not null && !string.IsNullOrEmpty(tenant) && !string.IsNullOrEmpty(userId)
-            && !_limiter.TryAcquire(_policy, tenant, userId, out var retryAfter))
+        // With no limiter registered (a host that did not call AddOnboardingServices) the filter is inert. A request
+        // that reaches an authorised action without a tenant or user identity is refused, never counted as nobody.
+        if (_limiter is not null)
         {
-            context.Result = new RateLimitedResult(retryAfter);
-            return;
+            if (string.IsNullOrEmpty(tenant) || string.IsNullOrEmpty(userId))
+            {
+                context.Result = new UnauthorizedResult();
+                return;
+            }
+            if (!_limiter.TryAcquire(_policy, tenant, userId, out var retryAfter))
+            {
+                context.Result = new RateLimitedResult(retryAfter);
+                return;
+            }
         }
         await next();
     }
