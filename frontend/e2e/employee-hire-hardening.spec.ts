@@ -141,6 +141,8 @@ test.describe('CD26 duplicate panel and rehire copy', () => {
     const panel = page.getByRole('region', { name: 'Possible match' });
     await expect(panel).toContainText('Same name — check before continuing.');
     await expect(panel).toContainText('Active, Hire Test Company');
+    await expect(panel).toContainText('Joined in 2021');
+    await expect(panel).not.toContainText('2,021');
     await expect(panel).not.toContainText('TEST-044');
     await expect(panel).not.toContainText('Riyadh');
   });
@@ -165,6 +167,37 @@ test.describe('CD26 duplicate panel and rehire copy', () => {
     await page.getByRole('button', { name: 'Confirm rehire' }).click();
     await expect(page.getByRole('heading', { name: 'Alex Morgan has been rehired.' })).toBeVisible();
     await expect(page.getByText('added as a draft')).toHaveCount(0);
+  });
+});
+
+test.describe('lead review: refresh resumes the same draft', () => {
+  test('after the first save the URL carries ?draft=<id>; a reload hydrates that draft and posts no second create', async ({ page }) => {
+    const detail = { id: 901, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z', companyId: 'company-hire', englishName: 'Alex Morgan', joiningDate: '2026-11-01', designationId: 'desig-1', gradeId: 'grade-g5', complianceRecords: [], documents: [], history: [], transfers: [] };
+    const api = await bootHire(page, { draftDetail: detail });
+    await basics(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toContainText('Saved');
+    await expect(page).toHaveURL(/\/people\/new\?draft=901$/);
+    expect(api.creates).toHaveLength(1);
+    await page.reload();
+    await expect(page.getByLabel('English full name')).toHaveValue('Alex Morgan');
+    expect(api.gets).toContain('/api/employees/901');
+    expect(api.creates).toHaveLength(1);
+  });
+});
+
+test.describe('lead review: no Self-Service promise on Review', () => {
+  test('neutral "before activation" copy, EN and AR', async ({ page }) => {
+    await bootHire(page);
+    await basics(page); await next(page); await next(page); await next(page);
+    await expect(page.getByText('You can leave this for now and add it later from the employee record.')).toBeVisible();
+    await expect(page.getByText(/Self-Service/i)).toHaveCount(0);
+  });
+  test('AR', async ({ page }) => {
+    await bootHire(page, { locale: 'ar' });
+    await basics(page, L.ar); await next(page, L.ar); await next(page, L.ar); await next(page, L.ar);
+    await expect(page.getByText('يمكنك تركه الآن وإضافته لاحقاً من ملف الموظف.')).toBeVisible();
+    await expect(page.getByText('الخدمة الذاتية')).toHaveCount(0);
   });
 });
 
