@@ -4,9 +4,9 @@ E001,HOUSING,Earning,EARN:HOUSING,Earning,false,3750.00,CC-110,Department
 E001,TRANSPORT,Earning,EARN:TRANSPORT,Earning,false,1000.00,CC-110,Department
 E001,BONUS,Bonus,EARN:BONUS,Earning,false,1000.00,CC-110,Department
 E001,GOSI-ANN-EE,Statutory,DED:STATUTORY_EE,Deduction,false,1687.50,CC-110,Department
-E001,GOSI-SANED-EE,Statutory,DED:STATUTORY_EE,Deduction,false,140.63,CC-110,Department
+E001,GOSI-SANED-EE,Statutory,DED:STATUTORY_EE,Deduction,false,140.62,CC-110,Department
 E001,GOSI-ANN-ER,Statutory,DED:STATUTORY_ER,Deduction,true,1687.50,CC-110,Department
-E001,GOSI-SANED-ER,Statutory,DED:STATUTORY_ER,Deduction,true,140.63,CC-110,Department
+E001,GOSI-SANED-ER,Statutory,DED:STATUTORY_ER,Deduction,true,140.62,CC-110,Department
 E001,GOSI-OH-ER,Statutory,DED:STATUTORY_ER,Deduction,true,375.00,CC-110,Department
 E002,BASIC,Earning,EARN:BASIC,Earning,false,9000.00,CC-200,Department
 E002,HOUSING,Earning,EARN:HOUSING,Earning,false,2250.00,CC-200,Department
@@ -32,9 +32,9 @@ E005,HOUSING,Earning,EARN:HOUSING,Earning,false,1750.00,CC-300,Position
 E005,TRANSPORT,Earning,EARN:TRANSPORT,Earning,false,500.00,CC-300,Position
 E005,BONUS,Bonus,EARN:BONUS,Earning,false,1000.00,CC-300,Position
 E005,GOSI-ANN-EE,Statutory,DED:STATUTORY_EE,Deduction,false,787.50,CC-300,Position
-E005,GOSI-SANED-EE,Statutory,DED:STATUTORY_EE,Deduction,false,65.63,CC-300,Position
+E005,GOSI-SANED-EE,Statutory,DED:STATUTORY_EE,Deduction,false,65.62,CC-300,Position
 E005,GOSI-ANN-ER,Statutory,DED:STATUTORY_ER,Deduction,true,787.50,CC-300,Position
-E005,GOSI-SANED-ER,Statutory,DED:STATUTORY_ER,Deduction,true,65.63,CC-300,Position
+E005,GOSI-SANED-ER,Statutory,DED:STATUTORY_ER,Deduction,true,65.62,CC-300,Position
 E005,GOSI-OH-ER,Statutory,DED:STATUTORY_ER,Deduction,true,175.00,CC-300,Position
 E006,BASIC,Earning,EARN:BASIC,Earning,false,6500.00,CC-110,Department
 E006,HOUSING,Earning,EARN:HOUSING,Earning,false,1625.00,CC-110,Department

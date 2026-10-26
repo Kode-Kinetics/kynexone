@@ -322,8 +322,8 @@ public sealed class CostAccountingOraclePostgresTests
             (await w.K.ApproveAndLockAsync(w.Reg1.Id)).Should().BeOfType<OkObjectResult>();
             var rounding = (await w.AllLedgerAsync()).Single(l => l.DebitAccount.StartsWith("5199") || l.CreditAccount.StartsWith("5199"));
             (rounding.Amount, rounding.CostCenterCode).Should().Be((0.01m, "CC-100"));
-            // The oracle's prose says "DR 5199 0.01"; a net 0.01 BELOW the component sums leaves debits 0.01 above credits, so the
-            // missing amount is a CREDIT. Reported as an oracle-prose disagreement; the amount, account and cost centre agree.
+            // AM-34: a net 0.01 BELOW the component sums leaves debits 0.01 above credits, so the rounding line is a CREDIT of 0.01 to 5199
+            // (the oracle prose now says so; amount, account and cost centre were always as stated).
             rounding.CreditAccount.Should().StartWith("5199");
         }
     }

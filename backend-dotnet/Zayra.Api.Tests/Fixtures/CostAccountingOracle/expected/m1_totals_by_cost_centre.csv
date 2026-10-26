@@ -6,7 +6,7 @@ CC-100,5101,Employer Social Insurance Expense,125.00,0.00,125.00
 CC-110,5001,Basic Salary Expense,25500.00,0.00,25500.00
 CC-110,5002,Housing Allowance Expense,6375.00,0.00,6375.00
 CC-110,5003,Transport Allowance Expense,1900.00,0.00,1900.00
-CC-110,5101,Employer Social Insurance Expense,3257.82,0.00,3257.82
+CC-110,5101,Employer Social Insurance Expense,3257.81,0.00,3257.81
 CC-110,6100,Employee Bonus Expense,1000.01,0.00,1000.01
 CC-200,5001,Basic Salary Expense,31333.33,0.00,31333.33
 CC-200,5002,Housing Allowance Expense,7833.33,0.00,7833.33
@@ -21,10 +21,10 @@ CC-200,6100,Employee Bonus Expense,1000.00,0.00,1000.00
 CC-300,5001,Basic Salary Expense,18000.00,0.00,18000.00
 CC-300,5002,Housing Allowance Expense,4500.00,0.00,4500.00
 CC-300,5003,Transport Allowance Expense,1300.00,0.00,1300.00
-CC-300,5101,Employer Social Insurance Expense,1303.13,0.00,1303.13
+CC-300,5101,Employer Social Insurance Expense,1303.12,0.00,1303.12
 CC-300,6100,Employee Bonus Expense,999.99,0.00,999.99
 CC-100,TOTAL,P&L net by cost centre,,,6775.00
-CC-110,TOTAL,P&L net by cost centre,,,38032.83
+CC-110,TOTAL,P&L net by cost centre,,,38032.82
 CC-200,TOTAL,P&L net by cost centre,,,80076.14
-CC-300,TOTAL,P&L net by cost centre,,,26103.12
-ALL,TOTAL,P&L net all cost centres,,,150987.09
+CC-300,TOTAL,P&L net by cost centre,,,26103.11
+ALL,TOTAL,P&L net all cost centres,,,150987.07

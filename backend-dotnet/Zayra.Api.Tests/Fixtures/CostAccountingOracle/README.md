@@ -28,7 +28,7 @@ Positions: P-SUPV (CC-300), P-TECH and P-GEN (no CC).
 
 ## Rules used (hand accounting)
 1. Resolution order: employee override, position, department, parent department, company default (spec 2.2). Invalid CC at a level is a hard error, never falls through.
-2. Round once per employee x component row to 2 dp half-up (away from zero), then group by (component, CC). A CC line is an exact sum, so ordinary earnings need no residue and there is NO 5199 rounding line in any scenario of this pack (drift 0.00).
+2. Round once per employee x component row to 2 dp half-up (away from zero; GOSI statutory components half-even, see F-ROUND), then group by (component, CC). A CC line is an exact sum, so ordinary earnings need no residue and there is NO 5199 rounding line in any scenario of this pack (drift 0.00).
 3. Only Expense accounts carry a CC. Liability/asset lines (2100, 2101, 2106, 2107, 2300, 2320, 1000, 1410) are uncosted. Contra-expense credit 5113 IS costed. Employer GOSI: DR 5101 per CC (employee's CC), CR 2106 once, uncosted.
 4. Net payable = all earnings - employee deductions (GOSI-ANN-EE, GOSI-SANED-EE, loan, advance, settlement recovery). Employer GOSI is outside net.
 5. Largest remainder (spec 2.6): floor(total x w / W) in minor units, spare units to largest fractional remainder, ties by ordinal CC code.
@@ -57,7 +57,7 @@ Positions: P-SUPV (CC-300), P-TECH and P-GEN (no CC).
 - F-LAW-2: an Unknown cohort is priced at the existing 9% with a warning; if E006 was in fact first registered after 2024-07-03 the correct rate is 10%.
 - F-LAW-3: no contributory-wage floor is applied (1,500 / 400 minimums only raise a validator warning); GOSI minimums are therefore unmodelled.
 - F-LAW-4: GCC nationals and bonus/arrears inclusion in the covered wage follow pack rules not exercised here.
-- F-ROUND: the app uses C# `Math.Round(x, 2)` (banker's rounding on exact ties); the oracle rounds half-up. No exact tie occurs in this fixture, so results agree; the spec's allocator uses AwayFromZero.
+- F-ROUND (corrected, AM-33): the payroll engine rounds each statutory component with C# `Math.Round(x, 2)` (half to even). The fixture DOES contain exact ties: SANED 0.75% on a covered wage of 18,750.00 (E001) is 140.625 and on 8,750.00 (E005) is 65.625. The first version of this oracle rounded them half-up (140.63, 65.63); the engine's half-even value (140.62, 65.62) is authoritative for v1, because a costing release must not move pay amounts, and the GOSI register, journals, totals and trial balances here are regenerated from it (EE and ER rows, M1 and M2). Whether GOSI's own rounding rule is half-up is a separate statutory item for the KSA pack, not for this release. The spec's cost-centre allocator uses AwayFromZero (that is a different operation and is unchanged).
 
 ## Headline expected numbers
 - M1: all journals DR = CR = 188,543.24 (ALL-M1). RUN-REG-2026-09: DR = CR = 118,130.93; NET_PAYABLE 103,717.36; 2101 = 5,510.42 (ANN-EE) + 448.45 (SANED-EE); 2106 = 5,510.42 + 448.45 + 1,995.83 (OH) = 7,954.70, equal to the four 5101 lines. P&L net by CC: CC-100 6,775.00; CC-110 38,032.83; CC-200 80,076.14; CC-300 26,103.12; total 150,987.09.
@@ -81,7 +81,7 @@ Full tables in `expected/allocation_cases.csv` and `allocation_vectors.csv`.
 - S-A3 (all accounts Optional): no blocker, warning W-1, E004's lines post with blank CC.
 - S-A4 (CC-300 deactivated): 422 `cost_centre_invalid` (M-2) at Employee level (E007) and Position level (E005); company default must NOT rescue them.
 (b) Required account would post uncosted:
-- S-B1: 0.01 rounding drift, 5199 Required, no company default, M-4 (amount 0.01 SAR). With default CC-100 the line is DR 5199 0.01 on CC-100.
+- S-B1: 0.01 rounding drift, 5199 Required, no company default, M-4 (amount 0.01 SAR). With default CC-100 the line is a CREDIT of 0.01 to 5199 on CC-100 (AM-34; the amount, account and cost centre are as first stated, only the side was misdescribed).
 - S-B2: 5005 NotAllowed and a mapping (EARN:OVERTIME, fixed CC-200) is saved: 422 `cost_centre_not_allowed` (M-3, account 5005 Overtime Expense), mapping not persisted, journals unchanged.
 - S-B3: bonus holder unresolved, M-1 on 6100.
 
