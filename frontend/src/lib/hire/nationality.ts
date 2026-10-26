@@ -1,6 +1,6 @@
 import { getCountries } from 'libphonenumber-js/min';
 
-export type IdType = 'nationalId' | 'iqama' | 'gccId' | 'passport';
+export type IdType = 'nationalId' | 'iqama' | 'border' | 'gccId' | 'passport';
 export type NationalityClass = 'saudi' | 'gcc' | 'expat' | 'unknown';
 
 export interface CountryOption { code: string; nameEn: string; nameAr: string }

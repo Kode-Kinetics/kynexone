@@ -19,10 +19,21 @@ export function normaliseReviewItems(raw: unknown): ReviewItem[] {
   });
 }
 
+/** Known hire-review keys and the sentence each reads as (CD34). Unknown pay:/data: keys get a generic sentence, never the raw key. */
+const KEY_SENTENCE: Record<string, string> = {
+  'pay:compensationUnapproved': 'Pay package awaiting Finance approval',
+  'pay:bankUnverified': 'Imported bank details to verify',
+  'pay:ibanMissing': 'The IBAN is missing',
+  'pay:salaryMissing': 'The salary has not been entered',
+  'pay:molIdMissing': 'The MOL ID is missing',
+  'pay:payrollProfileMissing': 'The payroll details have not been entered',
+  'data:joining_backdated': 'The start date is more than 30 days in the past.',
+};
+
 export function reviewItemLabel(item: ReviewItem, t: Translate): string {
-  switch (item.key) {
-    case 'pay:compensationUnapproved': return t('Pay package awaiting Finance approval');
-    case 'pay:bankUnverified': return t('Imported bank details to verify');
-    default: return item.label || item.key;
-  }
+  const known = KEY_SENTENCE[item.key];
+  if (known) return t(known);
+  if (item.key.startsWith('pay:')) return t('Some pay details need attention');
+  if (item.key.startsWith('data:')) return t('Some details need review');
+  return item.label || item.key;
 }

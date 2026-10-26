@@ -118,11 +118,11 @@ test.describe('hireValidation', () => {
     expect(validateHire({ ...four, basic: '12,000.50' }, ctx, 'draft')).toEqual([]);
   });
   test('contract end must be after the start date (CD17), with EN + AR copy', () => {
-    const issues = validateHire({ ...four, contractEndDate: '2026-11-01' }, ctx, 'draft');
+    const issues = validateHire({ ...four, contractType: 'Fixed term', contractEndDate: '2026-11-01' }, ctx, 'draft');
     expect(msg(issues, 'contractEndDate')).toBe('The contract end date must be after the start date.');
     expect(msg(issues, 'contractEndDate', 'ar')).toBe('يجب أن يكون تاريخ انتهاء العقد بعد تاريخ المباشرة.');
-    expect(validateHire({ ...four, contractEndDate: '2027-11-01' }, ctx, 'draft')).toEqual([]);
-    expect(keys(validateHire({ ...four, contractEndDate: '2027-02-31' }, ctx, 'draft'))).toEqual(['contractEndDate']);
+    expect(validateHire({ ...four, contractType: 'Fixed term', contractEndDate: '2027-11-01' }, ctx, 'draft')).toEqual([]);
+    expect(keys(validateHire({ ...four, contractType: 'Fixed term', contractEndDate: '2027-02-31' }, ctx, 'draft'))).toEqual(['contractEndDate']);
   });
   test('each issue names its step so the summary can send the user there', () => {
     const issues = validateHire({ ...emptyHireForm(), dob: '2999-01-01', housing: '-1', startDate: '2999-01-01' }, ctx, 'create');

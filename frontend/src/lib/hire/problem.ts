@@ -1,4 +1,6 @@
 import type { DuplicateMatch } from '../../api/employees';
+import type { HireForm } from './hireForm';
+import { FIELD_LIMITS, TOO_LONG_KEY } from './hireValidation';
 
 export interface ServerWarning { code: string; field?: string; message?: string; requiresPermission?: boolean }
 
@@ -43,19 +45,20 @@ export function parseHireProblem(err: unknown): HireProblem {
 /** Server code -> i18n key. Every code the wizard can receive has an EN and an AR sentence (hireWizard.ts). */
 export const SERVER_CODE_KEYS: Record<string, string> = {
   required: 'This field is required.',
-  value_too_long: 'Use 150 characters or fewer.',
+  value_too_long: TOO_LONG_KEY,
   invalid_format: 'This value is not in a valid format.',
   id_format_invalid: 'This ID number is not in a valid format.',
   id_checksum_invalid: 'This ID number is not valid. Check the digits.',
   id_prefix_nationality_mismatch: 'This ID number does not match the nationality.',
   nationality_unknown: 'Choose a nationality from the list.',
-  dob_future: 'Date of birth must make the employee between 15 and 80 years old.',
-  dob_out_of_range: 'Date of birth must make the employee between 15 and 80 years old.',
+  dob_future: 'Date of birth cannot be in the future.',
+  dob_out_of_range: 'Date of birth cannot be more than 100 years ago.',
   joining_out_of_range: 'The start date is outside the allowed range.',
   probation_order: 'The probation end date must be after the probation start date.',
   negative_amount: 'Amount cannot be negative.',
   amount_overflow: 'Enter an amount of 9,999,999,999.99 or less.',
-  iban_invalid: 'Saudi IBANs have 24 characters and start with SA.',
+  iban_invalid: 'This IBAN is not valid. Check the digits and length.',
+  iban_checksum_invalid: 'This IBAN is not valid. Check the digits.',
   phone_invalid: 'Enter a valid mobile number.',
   email_invalid: 'Enter a valid email address.',
   photo_url_scheme: 'The photo link must start with https://.',
@@ -91,3 +94,17 @@ export const SERVER_CODE_KEYS: Record<string, string> = {
   mobile_foreign_for_company: 'The mobile number is from a different country than the company.',
   duplicate_probable: 'This name matches someone already on file.',
 };
+
+/**
+ * The sentence for a server field error. `value_too_long` names the field and its own limit (CD26); every other code
+ * keeps its fixed sentence. A field with no known limit gets a limit-free sentence, never a borrowed "150".
+ */
+export function serverFieldIssue(field: keyof HireForm, code: string): { key: string; params?: Record<string, string> } {
+  if (code === 'value_too_long') {
+    const lim = FIELD_LIMITS[field];
+    if (field === 'englishName') return { key: 'Use 150 characters or fewer.' };
+    if (lim) return { key: TOO_LONG_KEY, params: { limit: String(lim.limit), field: lim.label } };
+    return { key: 'This value is too long. Shorten it.' };
+  }
+  return { key: SERVER_CODE_KEYS[code] ?? 'This value is not in a valid format.' };
+}

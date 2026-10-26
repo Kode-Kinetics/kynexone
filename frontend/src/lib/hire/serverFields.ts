@@ -6,7 +6,7 @@ const MAP: Record<string, keyof HireForm> = {
   nationality: 'nationalityCode', nationalityCode: 'nationalityCode', mobileNumber: 'mobileNational', personalEmail: 'personalEmail',
   workEmail: 'workEmailLocal', companyId: 'companyId', branchId: 'branchId', departmentId: 'departmentId', designationId: 'designationId',
   gradeId: 'gradeId', reportingManagerEmployeeId: 'managerId', joiningDate: 'startDate', contractEndDate: 'contractEndDate',
-  contractType: 'contractType', employmentType: 'employmentType', workLocation: 'workLocation', employeeCode: 'employeeCode',
+  probationEndDate: 'probationEndDate', contractType: 'contractType', employmentType: 'employmentType', workLocation: 'workLocation', employeeCode: 'employeeCode',
   idNumber: 'idNumber', 'payrollProfile.iban': 'iban', 'payrollProfile.molId': 'molId',
   'salaryBreakdown.basicSalary': 'basic', 'salaryBreakdown.housingAllowance': 'housing',
   'salaryBreakdown.transportAllowance': 'transport', 'salaryBreakdown.otherAllowance': 'other',
@@ -15,7 +15,11 @@ const MAP: Record<string, keyof HireForm> = {
 export function serverFieldToForm(field: string): keyof HireForm | null {
   const direct = MAP[field];
   if (direct) return direct;
-  if (/^complianceRecords\[\d+\]\.expiryDate$/.test(field)) return 'idExpiry';
-  if (/^complianceRecords\[\d+\]\.fieldValue$/.test(field)) return 'idNumber';
+  const rec = /^complianceRecords\[(\d+)\]\.(expiryDate|fieldValue)$/.exec(field);
+  if (rec) {
+    // Record 0 is the primary identity; record 1 is the passport (CD27).
+    const second = rec[1] === '1';
+    return rec[2] === 'expiryDate' ? (second ? 'passportExpiry' : 'idExpiry') : (second ? 'passportNumber' : 'idNumber');
+  }
   return null;
 }

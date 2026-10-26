@@ -22,6 +22,9 @@ export interface HireForm {
   idNumber: string;
   idExpiry: string;
   idChecksumOverrideReason: string;
+  /** CD27: an expat's passport, as a second identity row beside the Iqama / Border Number. */
+  passportNumber: string;
+  passportExpiry: string;
   dob: string;
   mobileCountry: string;
   mobileNational: string;
@@ -29,6 +32,7 @@ export interface HireForm {
   employmentType: string;
   contractType: string;
   contractEndDate: string;
+  probationEndDate: string;
   workLocation: string;
   iban: string;
   molId: string;
@@ -42,8 +46,8 @@ export function emptyHireForm(): HireForm {
   return {
     englishName: '', companyId: '', startDate: '', designationId: '', gradeId: '', branchId: '', departmentId: '', managerId: '',
     employeeCode: '', manualCode: false, workEmailLocal: '', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
-    nationalityCode: '', idType: '', idNumber: '', idExpiry: '', idChecksumOverrideReason: '', dob: '', mobileCountry: '', mobileNational: '',
-    personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', workLocation: '', iban: '', molId: '',
+    nationalityCode: '', idType: '', idNumber: '', idExpiry: '', idChecksumOverrideReason: '', passportNumber: '', passportExpiry: '', dob: '', mobileCountry: '', mobileNational: '',
+    personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', workLocation: '', iban: '', molId: '',
     basic: '', housing: '', transport: '', other: '',
   };
 }

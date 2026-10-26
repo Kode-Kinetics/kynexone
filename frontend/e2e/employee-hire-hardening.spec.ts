@@ -150,7 +150,7 @@ test.describe('CD26 duplicate panel and rehire copy', () => {
     await page.getByLabel(L.ar.name).fill('Alex Morgan');
     await page.getByLabel(L.ar.name).blur();
     const panel = page.getByRole('region', { name: 'تطابق محتمل' });
-    await expect(panel).toContainText('منتهي الخدمة');
+    await expect(panel).toContainText('منتهية خدمته');
     await expect(panel).toContainText('شركة اختبار');
     await expect(panel).not.toContainText('Terminated');
   });

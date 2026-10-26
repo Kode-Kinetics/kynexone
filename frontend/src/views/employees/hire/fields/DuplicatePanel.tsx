@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
+import { duplicateStatusKey, isNameOnlyMatch } from '@/src/lib/hire/duplicate';
 import type { DuplicateMatch } from '@/src/api/employees';
 
 export type MatchCard = DuplicateMatch & { joinedYear?: number };
@@ -13,10 +14,13 @@ const MIN_REASON = 10;
  * Non-modal "possible match" panel (A6): the person decides, never silently. "Different person" and "Rehire" each
  * need a reason (audited server-side). Matches the user cannot see arrive masked (canView false) and show no details.
  */
-export function DuplicatePanel({ matches, differentReason, onDifferent, onRehire, rehireBusy }: {
-  matches: MatchCard[]; differentReason: string | null; onDifferent: (reason: string) => void; onRehire: (match: MatchCard, reason: string) => void; rehireBusy?: boolean;
+export type PanelCompany = { id: string; legalNameEn: string; legalNameAr?: string | null };
+
+export function DuplicatePanel({ matches, companies = [], differentReason, onDifferent, onRehire, rehireBusy }: {
+  matches: MatchCard[]; companies?: PanelCompany[]; differentReason: string | null; onDifferent: (reason: string) => void; onRehire: (match: MatchCard, reason: string) => void; rehireBusy?: boolean;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
+  const companyName = (id?: string | null) => { const c = companies.find(x => x.id === id); return c ? (locale === 'ar' && c.legalNameAr ? c.legalNameAr : c.legalNameEn) : ''; };
   const [mode, setMode] = useState<null | { kind: 'different' } | { kind: 'rehire'; match: MatchCard }>(null);
   const [reason, setReason] = useState('');
   const [tried, setTried] = useState(false);
@@ -35,8 +39,11 @@ export function DuplicatePanel({ matches, differentReason, onDifferent, onRehire
         {matches.map(m => (
           <li key={m.employeeId}>
             {m.canView ? (
-              <p><span className="font-medium">{m.fullName}</span>{' '}
-                <span>{t('{status}, {company}', { status: m.status, company: m.branch || m.employeeCode })}{m.joinedYear ? ` · ${t('Joined in {year}', { year: m.joinedYear })}` : ''}</span></p>
+              <>
+                <p><span className="font-medium">{m.fullName}</span>{' '}
+                  <span>{companyName(m.companyId) ? t('{status}, {company}', { status: t(duplicateStatusKey(m.status)), company: companyName(m.companyId) }) : t(duplicateStatusKey(m.status))}{m.joinedYear ? ` · ${t('Joined in {year}', { year: m.joinedYear })}` : ''}</span></p>
+                {isNameOnlyMatch(m) ? <p className="mt-0.5 font-medium">{t('Same name — check before continuing.')}</p> : m.matchType === 'strong' ? <p className="mt-0.5">{t('Same ID number')}</p> : null}
+              </>
             ) : <p>{t('A person with these details exists in another company you cannot see.')}</p>}
             {m.canView && (
               <div className="mt-2 flex flex-wrap gap-2">
