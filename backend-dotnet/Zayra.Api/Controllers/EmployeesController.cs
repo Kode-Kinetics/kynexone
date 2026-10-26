@@ -1771,6 +1771,10 @@ public class EmployeesController : ControllerBase
             await new EmployeeLoginProvisioner(_db).EnsureStagedLoginsAsync(
                 tenantId, createdRowMeta.Select(m => m.Emp).ToList(), Context() with { TenantId = tenantId }, ct);
 
+            // A new hire that lands outside the active workforce with pay or bank details waits for Finance like a created one.
+            foreach (var (_, (payEmp, _)) in batchPayroll.Where(b => !repairExistingCodes.Contains(b.Key)))
+                await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, payEmp, null, Context(), ct);
+
             // Single persist covering Pass 2 links, the advisory re-stamp, the gap rows, the work-email audit and the logins.
             if (await PersistAsync("links") is { } finalSaveError) return finalSaveError;
 
@@ -2806,7 +2810,7 @@ public class EmployeesController : ControllerBase
             await hierarchy.SetManagerAsync(RequireTenant(), id, req.ManagerEmployeeId, Context(), ct);
             return NoContent();
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     // ── Reporting lines ───────────────────────────────────────────────────────
@@ -2839,7 +2843,7 @@ public class EmployeesController : ControllerBase
             var line = await hierarchy.AddReportingLineAsync(RequireTenant(), id, req, Context(), ct);
             return Created($"/api/employees/{id}/reporting-lines/{line.Id}", line);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     [HttpDelete("{id:int}/reporting-lines/{lineId:guid}")]
@@ -2868,7 +2872,7 @@ public class EmployeesController : ControllerBase
         {
             return Ok(await hierarchy.ResolveHierarchyAsync(RequireTenant(), id, maxDepth, ct));
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     [HttpGet("{id:int}/workflow-approvers")]
@@ -2885,7 +2889,7 @@ public class EmployeesController : ControllerBase
         {
             return Ok(await hierarchy.ResolveWorkflowApproversAsync(RequireTenant(), id, workflowType, ct));
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     public record SetManagerRequest(int? ManagerEmployeeId);
@@ -6468,7 +6472,7 @@ public class EmployeesController : ControllerBase
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
-    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
+    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant(), Permissions: User.EffectivePermissions());
     private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();

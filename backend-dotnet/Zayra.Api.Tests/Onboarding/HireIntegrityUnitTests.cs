@@ -42,7 +42,7 @@ public class HireIntegrityUnitTests
         var user = Guid.NewGuid().ToString();
         for (var i = 0; i < 20; i++) limiter.TryAcquire("duplicate-check", tenant, user, out _);
         limiter.TryAcquire("derive-work-email", tenant, user, out _).Should().BeTrue();
-        limiter.TryAcquire("no-such-policy", tenant, user, out _).Should().BeTrue("an unknown name never blocks");
+        limiter.TryAcquire("no-such-policy", tenant, user, out _).Should().BeFalse("an unknown name is a wiring mistake and fails closed");
     }
 
     // ── Identity lock keys ───────────────────────────────────────────────────────────────────────
@@ -170,18 +170,7 @@ public class HireIntegrityUnitTests
     public void CompensationGate_OnlyOpensWhenThereIsSomethingToApprove(int? salary, string? iban, string? account, bool expected) =>
         CompensationApprovalGate.CarriesCompensation(salary, iban, account).Should().Be(expected);
 
-    // ── Idempotency fingerprint ──────────────────────────────────────────────────────────────────
-    [Fact]
-    public void IdempotencyFingerprint_BindsTenantCreatorCompanyAndNormalisedName()
-    {
-        var t = Guid.NewGuid(); var u = Guid.NewGuid(); var c = Guid.NewGuid();
-        var f = IdempotentEmployeeCreateFilter.FingerprintOf(t, u, c, "Ali  Hassan");
-        f.Should().HaveLength(64).And.Be(IdempotentEmployeeCreateFilter.FingerprintOf(t, u, c, "ali hassan"));
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(t, Guid.NewGuid(), c, "Ali Hassan"), "a different user");
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(t, u, c, "Ali Hasan"), "a different body");
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(t, u, Guid.NewGuid(), "Ali Hassan"));
-        f.Should().NotBe(IdempotentEmployeeCreateFilter.FingerprintOf(Guid.NewGuid(), u, c, "Ali Hassan"));
-    }
+    // The idempotency fingerprint now covers the whole request: see HireSecurityHardeningTests.RequestFingerprint_*.
 
     // ── Foreign-tenant company (second write layer) ──────────────────────────────────────────────
     [Fact]

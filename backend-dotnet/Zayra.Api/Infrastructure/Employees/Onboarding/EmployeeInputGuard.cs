@@ -18,13 +18,16 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
     private readonly ZayraDbContext _db;
     private readonly IRequestEntityScopeResolver? _scope;
     private readonly ITenantClock? _clock;
+    private readonly IDataScopeService? _dataScope;
+    private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor? _http;
     // The last request this guard returned. Handing that same instance back in (the draft autosave path enforces
     // as a draft, then the service enforces as an update) is not validated twice.
     private EmployeeCreateRequest? _lastEnforced;
 
-    public EmployeeInputGuard(ZayraDbContext db, IRequestEntityScopeResolver? scope = null, ITenantClock? clock = null)
+    public EmployeeInputGuard(ZayraDbContext db, IRequestEntityScopeResolver? scope = null, ITenantClock? clock = null,
+        IDataScopeService? dataScope = null, Microsoft.AspNetCore.Http.IHttpContextAccessor? http = null)
     {
-        _db = db; _scope = scope; _clock = clock;
+        _db = db; _scope = scope; _clock = clock; _dataScope = dataScope; _http = http;
     }
 
     public Task<EmployeeCreateRequest> EnforceCreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct) =>
@@ -79,7 +82,11 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
                 result.Errors.ToDictionary(k => k.Key, k => k.Value.ToArray()),
                 "Some fields need attention: " + string.Join(", ", result.Errors.Keys) + ".");
 
-        var refResult = await refs.ValidateAsync(tenantId, forRefs, scope, employeeId, ct);
+        // A manager the caller may not see answers exactly like a manager that does not exist.
+        Func<int, bool>? canAccessEmployee = null;
+        if (_dataScope is not null && _http?.HttpContext?.User is { Identity.IsAuthenticated: true } caller)
+            canAccessEmployee = (await _dataScope.ResolveAsync(caller, tenantId, ct)).CanAccessEmployee;
+        var refResult = await refs.ValidateAsync(tenantId, forRefs, scope, employeeId, ct, canAccessEmployee);
         var warnings = result.Warnings.Concat(refResult.Warnings).ToList();
 
         var unacknowledged = new List<EmployeeWarning>();

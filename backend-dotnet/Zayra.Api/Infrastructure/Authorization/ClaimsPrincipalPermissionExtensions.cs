@@ -22,6 +22,12 @@ public static class ClaimsPrincipalPermissionExtensions
         return false;
     }
 
+    /// <summary>The caller's effective permission keys, read from the validated principal only (never from the request body).</summary>
+    public static IReadOnlyCollection<string> EffectivePermissions(this ClaimsPrincipal? user) =>
+        user is null
+            ? Array.Empty<string>()
+            : new HashSet<string>(user.Claims.Where(c => c.Type == PermissionClaimType).Select(c => c.Value), StringComparer.OrdinalIgnoreCase);
+
     public static bool HasAnyPermission(this ClaimsPrincipal? user, IEnumerable<string> permissions)
     {
         if (user is null || permissions is null) return false;

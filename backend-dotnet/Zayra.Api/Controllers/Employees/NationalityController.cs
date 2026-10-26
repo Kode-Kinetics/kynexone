@@ -6,7 +6,9 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees.Onboarding;
 using Zayra.Api.Data;
+using Zayra.Api.Controllers.Employees;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Http;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -14,7 +16,7 @@ namespace Zayra.Api.Controllers;
 public sealed record NationalityDto(string Iso2, string NameEn, string NameAr, string Class);
 public sealed record NationalityReviewItemDto(int EmployeeId, string EmployeeCode, string FullName, string NationalityText,
     string State, string? ProposedCode, string? ProposedClass, string LegacyClass);
-public sealed record ConfirmNationalityRequest(string? NationalityCode);
+public sealed record ConfirmNationalityRequest(string? NationalityCode, string? Reason = null);
 
 /// <summary>
 /// The nationality catalog for the client pickers, and the HR review queue for employees whose free-text
@@ -56,22 +58,39 @@ public sealed class NationalityController : ControllerBase
 
     [HttpPost("api/employees/{id:int}/nationality/confirm")]
     [HasPermission("employees.write")]
+    [TenantUserRateLimit("nationality-confirm")]
     public async Task<IActionResult> Confirm(int id, [FromBody] ConfirmNationalityRequest body, CancellationToken ct)
     {
         var tenantId = RequireTenant();
         var scope = await _scope.ResolveAsync(User, tenantId, ct);
         var employee = await _db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == id && !e.IsDeleted, ct);
         if (employee is null || !scope.CanAccessEmployee(id)) return NotFound();
+        // A nationality that is already confirmed is changed through the normal employee change, not this queue.
+        if (employee.NationalityMappingState == NationalityMappingStates.Confirmed)
+            return EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 409, "nationality_state_conflict", "This nationality is already confirmed.");
+        var reason = body.Reason?.Trim() ?? string.Empty;
+        if (reason.Length is < 10 or > 500)
+            return EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 422, "override_reason_required", "Say what the nationality was checked against (10 to 500 characters).");
         var entry = NationalityCatalog.FindByIso2(body.NationalityCode ?? employee.NationalityCode);
         if (entry is null) return UnprocessableEntity(new { code = "nationality_unknown", error = "Choose a nationality from the list." });
 
         var before = NationalityCatalog.LegacyClassOf(employee.Nationality);
+        var priorText = employee.Nationality;
+        var priorState = employee.NationalityMappingState;
         employee.NationalityCode = entry.Iso2;
         employee.Nationality = entry.NameEn;
         employee.NationalityMappingState = NationalityMappingStates.Confirmed;
+        var context = new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), UserId(), tenantId);
+        _db.EmployeeHistories.Add(new EmployeeHistory
+        {
+            TenantId = tenantId, EmployeeId = id, EventType = "NationalityConfirmed", FieldName = "Nationality",
+            OldValue = priorText ?? string.Empty, NewValue = entry.NameEn, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow),
+            Reason = reason, CreatedByUserId = UserId(),
+        });
+        await _audit.WriteAsync("employee.nationality_confirmed", "Employee", id.ToString(), context,
+            System.Text.Json.JsonSerializer.Serialize(new { fromState = priorState, beforeClass = before.ToString(), afterClass = entry.Class.ToString(), code = entry.Iso2, reason }), ct);
         if (before != entry.Class)
-            await _audit.WriteAsync("employee.nationality_reclassified", "Employee", id.ToString(),
-                new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), UserId(), tenantId),
+            await _audit.WriteAsync("employee.nationality_reclassified", "Employee", id.ToString(), context,
                 System.Text.Json.JsonSerializer.Serialize(new { beforeClass = before.ToString(), afterClass = entry.Class.ToString(), code = entry.Iso2 }), ct);
         await _db.SaveChangesAsync(ct);
         return NoContent();

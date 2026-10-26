@@ -82,7 +82,7 @@ public sealed class IdempotentEmployeeCreateFilter : IAsyncActionFilter
             return;
         }
 
-        var claim = new Claim(key, FingerprintOf(tenantId, userId, request.CompanyId, request.EnglishName));
+        var claim = new Claim(key, FingerprintOf(tenantId, userId, request));
         var db = http.RequestServices.GetRequiredService<ZayraDbContext>();
         var ct = http.RequestAborted;
 
@@ -119,17 +119,31 @@ public sealed class IdempotentEmployeeCreateFilter : IAsyncActionFilter
         }
     }
 
-    /// <summary>SHA-256 of tenant + creator + company + normalised name (letters and digits, upper case).</summary>
-    public static string FingerprintOf(Guid tenantId, Guid userId, Guid? companyId, string? englishName)
+    /// <summary>
+    /// SHA-256 of tenant + creator + the WHOLE normalised create request, so a retry that carries different pay, identity
+    /// or contact details under the same key is a different request. Normalisation: the name is compared as letters and
+    /// digits in upper case; every other text is trimmed; empty and missing values are the same.
+    /// </summary>
+    public static string FingerprintOf(Guid tenantId, Guid userId, EmployeeCreateRequest request)
     {
         var name = new StringBuilder();
-        foreach (var ch in (englishName ?? string.Empty).Trim())
+        foreach (var ch in (request.EnglishName ?? string.Empty).Trim())
             if (char.IsLetterOrDigit(ch)) name.Append(char.ToUpperInvariant(ch));
-        var text = $"{tenantId:N}|{userId:N}|{companyId?.ToString("N") ?? "-"}|{name}";
+        var node = System.Text.Json.JsonSerializer.SerializeToNode(request with { EnglishName = name.ToString() });
+        var text = $"{tenantId:N}|{userId:N}|{Canonical(node)}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
     }
 
-    private sealed record Existing(int Id, Guid? CreatedBy, string? Fingerprint);
+    private static string Canonical(System.Text.Json.Nodes.JsonNode? node) => node switch
+    {
+        null => string.Empty,
+        System.Text.Json.Nodes.JsonObject o => "{" + string.Join(",", o.Select(p => (p.Key, Value: Canonical(p.Value))).Where(p => p.Value.Length > 0)
+            .Select(p => $"{p.Key}:{p.Value}")) + "}",
+        System.Text.Json.Nodes.JsonArray a => "[" + string.Join(",", a.Select(Canonical)) + "]",
+        _ => node.GetValueKind() == System.Text.Json.JsonValueKind.String ? (node.GetValue<string>() ?? string.Empty).Trim() : node.ToJsonString(),
+    };
+
+    private sealed record Existing(int Id, Guid? CreatedBy, string? Fingerprint, bool IsDeleted);
 
     private static async Task<Existing?> FindAsync(ZayraDbContext db, Guid tenantId, Guid key, CancellationToken ct)
     {
@@ -137,16 +151,17 @@ public sealed class IdempotentEmployeeCreateFilter : IAsyncActionFilter
                 "Idempotent create: the key's employee may sit in a company the caller cannot see; the tenant is re-applied and only the id, creator and fingerprint are read.")
             .AsNoTracking()
             .Where(e => e.CreateIdempotencyKey == key)
-            .Select(e => new { e.Id, e.CreatedBy, e.CreateRequestFingerprint })
+            .Select(e => new { e.Id, e.CreatedBy, e.CreateRequestFingerprint, e.IsDeleted })
             .FirstOrDefaultAsync(ct);
-        return row is null ? null : new Existing(row.Id, row.CreatedBy, row.CreateRequestFingerprint);
+        return row is null ? null : new Existing(row.Id, row.CreatedBy, row.CreateRequestFingerprint, row.IsDeleted);
     }
 
     private static async Task<IActionResult> ReplayOrMismatchAsync(
         ActionExecutingContext context, ZayraDbContext db, Guid tenantId, Guid userId, Claim claim,
         Existing row, CancellationToken ct)
     {
-        if (row.CreatedBy != userId || !string.Equals(row.Fingerprint, claim.Fingerprint, StringComparison.Ordinal))
+        // A key whose hire was discarded is spent: it never replays and never answers 404 forever.
+        if (row.IsDeleted || row.CreatedBy != userId || !string.Equals(row.Fingerprint, claim.Fingerprint, StringComparison.Ordinal))
             return Problem(context.HttpContext, StatusCodes.Status422UnprocessableEntity, MismatchCode,
                 "This Idempotency-Key was already used for a different request.", null);
 
