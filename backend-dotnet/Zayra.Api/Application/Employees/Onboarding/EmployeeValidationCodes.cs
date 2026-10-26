@@ -54,11 +54,11 @@ public static class EmployeeWarningCodes
     public const string AgeOver70 = "age_over_70";
     public const string JoiningBackdatedOver30d = "joining_backdated_over_30d";
     public const string JoiningOver180dFuture = "joining_over_180d_future";
-    public const string ProbationOver180 = "probation_over_180";
+    /// <summary>CD31: probation longer than 180 days (Labour Law Art. 53). Field <c>probationEndDate</c>.</summary>
     public const string ProbationOverLimit = "probation_over_limit";
     public const string IdExpired = "id_expired";
     public const string IdExpiring90d = "id_expiring_90d";
-    public const string SalaryBelowWageFloor = "salary_below_wage_floor";
+    // CD31: the Saudization wage-floor warning is deferred (the threshold is a VERIFY number); no constant until it is verified.
     public const string BasicBelow50Pct = "basic_below_50pct";
     public const string GradeBandOutOfRange = "grade_band_out_of_range";
     public const string MobileForeignForCompany = "mobile_foreign_for_company";

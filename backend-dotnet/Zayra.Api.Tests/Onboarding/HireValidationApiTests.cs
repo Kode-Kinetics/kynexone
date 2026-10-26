@@ -119,9 +119,9 @@ public class HireValidationApiTests : IClassFixture<EmployeeDraftCreateHttpFixtu
         var first = await Post(Probation());
         first.Status.Should().Be(HttpStatusCode.Conflict, first.Json.ToString());
         first.Json.GetProperty("code").GetString().Should().Be("warnings_require_acknowledgement");
-        first.Json.GetProperty("warnings").EnumerateArray().Select(w => w.GetProperty("code").GetString()).Should().Contain("probation_over_180");
+        first.Json.GetProperty("warnings").EnumerateArray().Select(w => w.GetProperty("code").GetString()).Should().Contain("probation_over_limit");
 
-        var second = await Post(Probation(new[] { new { code = "probation_over_180", reason = "Executive hire, 200 day probation agreed in contract" } }));
+        var second = await Post(Probation(new[] { new { code = "probation_over_limit", reason = "Executive hire, 200 day probation agreed in contract" } }));
         second.Status.Should().Be(HttpStatusCode.Created, second.Json.ToString());
         var id = second.Json.GetProperty("id").GetInt32();
         using var scope = _fx.Host.Services.CreateScope();

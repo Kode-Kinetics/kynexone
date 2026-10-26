@@ -51,7 +51,9 @@ public record EmployeeCreateRequest(
     // Explicit "create anyway" override for the duplicate-person backstop. Default false → an
     // unacknowledged STRONG national-identity match is refused with 409 possible_duplicate (never-silent-
     // dup). Set only when the operator dismisses the warning; the create then records an audited override.
-    bool AcknowledgeDuplicate = false);
+    bool AcknowledgeDuplicate = false,
+    // CD26: end of a fixed-term contract. Stored on Employee.ContractEndDate; CD17 rules in the input guard.
+    DateOnly? ContractEndDate = null);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,
@@ -61,8 +63,9 @@ public record EmployeePayrollProfileRequest(
     string? SalaryCurrency,
     string? PayrollGroup,
     string? SalaryStructureReference,
-    bool WpsEligible,
-    bool EosbEligible,
+    // CD30: null = take the default from the employing company's country policy (server-side), never from what was typed.
+    bool? WpsEligible,
+    bool? EosbEligible,
     string? SocialInsuranceReference,
     string? MolId,
     string? BankRoutingCode);

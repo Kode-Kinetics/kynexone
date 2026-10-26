@@ -442,6 +442,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // occupying→occupying and are deliberately NOT gated (mandated reinstatement is never refused).
         if (_activationGuard.ShouldGate(oldStatus, request.Status))
         {
+            if (_inputGuard is not null) await _inputGuard.EnforceActivationAsync(tenantId, id, context, ct);   // CD28
             var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, ct);
             if (gateSnapshot is not null)
                 await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, ct);
@@ -1516,6 +1517,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.ConfirmationDate = request.ConfirmationDate;
         employee.ProbationStartDate = request.ProbationStartDate;
         employee.ProbationEndDate = request.ProbationEndDate;
+        employee.ContractEndDate = request.ContractEndDate ?? (Zayra.Api.Application.Employees.Onboarding.ContractRules.IsFixedTerm(employee.ContractType) ? employee.ContractEndDate : null);   // CD26
         employee.NoticePeriodDays = request.NoticePeriodDays;
         employee.WorkLocation = Clean(request.WorkLocation);
         employee.PayrollProfileCode = Clean(request.PayrollGroup);
@@ -1708,7 +1710,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         // A bad IBAN persisted here silently blocks the entire payroll run weeks later; fail fast so
         // the person entering it fixes it now. Empty is allowed (bank details filled in later).
         var cleanIban = Clean(request.Iban);
-        if (!string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
+        var draftAutosave = _inputGuard is not null && employee.Id != 0 && employee.Status == EmployeeStatuses.Draft;   // CD28: a draft keeps what was typed; activation refuses it
+        if (!draftAutosave && !string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
             throw new InvalidOperationException($"{Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(cleanIban)}. Enter a correct IBAN before saving.");
         profile.Iban = cleanIban;
         profile.AccountNumber = Clean(request.AccountNumber);
@@ -1716,8 +1719,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         profile.SalaryCurrency = Clean(request.SalaryCurrency);
         profile.PayrollGroup = Clean(request.PayrollGroup);
         profile.SalaryStructureReference = Clean(request.SalaryStructureReference);
-        profile.WpsEligible = request.WpsEligible;
-        profile.EosbEligible = request.EosbEligible;
+        profile.WpsEligible = request.WpsEligible ?? profile.WpsEligible;     // CD30: null = the server-side country default, already applied by the guard
+        profile.EosbEligible = request.EosbEligible ?? profile.EosbEligible;
         profile.SocialInsuranceReference = Clean(request.SocialInsuranceReference);
         profile.MolId = Clean(request.MolId);
         profile.BankRoutingCode = Clean(request.BankRoutingCode);

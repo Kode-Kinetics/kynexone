@@ -166,7 +166,7 @@ public class HireFunctionalHardeningTests
         await using var db = CreateDb(); var (t, c) = Seed(db);
         var both = new[]
         {
-            new EmployeeComplianceRecordRequest("SA", "iqama_number", "Iqama", "2000000004", null, Today.AddYears(1), true, false),
+            new EmployeeComplianceRecordRequest("SA", "iqama_number", "Iqama", "2000000006", null, Today.AddYears(1), true, false),
             new EmployeeComplianceRecordRequest("SA", "passport_number", "Passport", "N1234567", null, Today.AddYears(3), true, false),
         };
         var req = (Req(records: both) with { CompanyId = c.Id, Nationality = "Indian", NationalityCode = "IN" });

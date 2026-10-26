@@ -123,10 +123,20 @@ public static class EmployeeInputValidator
             else if (age < 18) Warn(EmployeeWarningCodes.Juvenile15To17, "dateOfBirth", "The employee is under 18 at the joining date.");
             else if (age > 70) Warn(EmployeeWarningCodes.AgeOver70, "dateOfBirth", "The employee is over 70 at the joining date.");
         }
-        if (request.ProbationStartDate is { } ps && request.ProbationEndDate is { } pe)
+        if (request.ProbationEndDate is { } pe)
         {
-            if (pe < ps) Err("probationEndDate", EmployeeFieldErrors.ProbationOrder);
-            else if (pe.DayNumber - ps.DayNumber > 180) Warn(EmployeeWarningCodes.ProbationOver180, "probationEndDate", "Probation is longer than 180 days.");
+            // CD31: the limit runs from the probation start, else from the joining date.
+            var probationFrom = request.ProbationStartDate ?? (joiningOk ? joining : null);
+            if (request.ProbationStartDate is { } ps && pe < ps) Err("probationEndDate", EmployeeFieldErrors.ProbationOrder);
+            else if (probationFrom is { } pf && pe.DayNumber - pf.DayNumber > 180)
+                Warn(EmployeeWarningCodes.ProbationOverLimit, "probationEndDate", "Probation is longer than 180 days.");
+        }
+        // CD17 / CD26: a fixed-term end is after its start; an end date needs a fixed term. Autosave (draft) never
+        // fights typing (CD28); the stored value is re-checked by Create-from-Review and by activation.
+        if (!draft && request.ContractEndDate is not null)
+        {
+            DateOnly? contractStart = joining;
+            foreach (var e in ContractRules.Check(request.ContractType, contractStart, request.ContractEndDate)) Err("contractEndDate", e);
         }
         if (request.ConfirmationDate is { } cd && joining is { } jj && cd < jj) Err("confirmationDate", EmployeeFieldErrors.ProbationOrder);
         if (request.NoticePeriodDays is { } np && (np < 0 || np > 365)) Err("noticePeriodDays", EmployeeFieldErrors.InvalidFormat);
@@ -179,6 +189,7 @@ public static class EmployeeInputValidator
                 var cleaned = payroll.Iban.Replace(" ", "").ToUpperInvariant();
                 if (cleaned.Length <= 34)
                 {
+                    // CD29: the Saudi rule applies to a Saudi company; elsewhere mod-97 plus the country's own length.
                     if (!draft && !(ksa ? IbanValidator.IsSaudiIban(cleaned) : IbanValidator.IsValid(cleaned))) Err("payrollProfile.iban", EmployeeFieldErrors.IbanInvalid);
                     else payroll = payroll with { Iban = cleaned };
                 }

@@ -161,9 +161,9 @@ public class EmployeeInputValidatorTests
         Run(Req(joining: Day(s), confirmation: s.AddDays(-1))).Errors["confirmationDate"].Should().Contain(EmployeeFieldErrors.ProbationOrder);
         var r = Run(Req(probStart: s, probEnd: s.AddDays(200)));
         r.Errors.Should().BeEmpty();
-        r.Warnings.Select(w => w.Code).Should().Contain(EmployeeWarningCodes.ProbationOver180);
+        r.Warnings.Select(w => w.Code).Should().Contain(EmployeeWarningCodes.ProbationOverLimit);
         r.Normalised.ProbationEndDate.Should().Be(s.AddDays(200), "the stored value is never clamped (G33)");
-        Run(Req(probStart: s, probEnd: s.AddDays(180))).Warnings.Select(w => w.Code).Should().NotContain(EmployeeWarningCodes.ProbationOver180);
+        Run(Req(probStart: s, probEnd: s.AddDays(180))).Warnings.Select(w => w.Code).Should().NotContain(EmployeeWarningCodes.ProbationOverLimit);
     }
 
     [Fact]
