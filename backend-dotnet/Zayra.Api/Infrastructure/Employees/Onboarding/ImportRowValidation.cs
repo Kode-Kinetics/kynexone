@@ -23,6 +23,13 @@ public static class ImportRowValidation
         EmployeeFieldErrors.Required, EmployeeFieldErrors.ProbationOrder,
     };
 
+    /// <summary>
+    /// A "value is too long" error is a value the database cannot store. The import already refuses the WHOLE file for
+    /// those, naming row and column and writing nothing (<c>EmployeeImportStorageGuard</c>), so the controller leaves
+    /// such a row to that guard instead of skipping it here and importing the rest of the file.
+    /// </summary>
+    public static bool IsStorageBound(string error) => error.EndsWith(": " + Describe(EmployeeFieldErrors.ValueTooLong), StringComparison.Ordinal);
+
     public static ResolvedImportRow Apply(ResolvedImportRow r, Dictionary<string, string> row, ImportLookups? lookups = null)
     {
         string V(string k) => row.GetValueOrDefault(k, string.Empty).Trim();
