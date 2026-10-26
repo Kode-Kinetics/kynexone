@@ -245,6 +245,14 @@ public class CostCentrePermissionTests
     }
 
     [Fact]
+    public void A3_TheEstablishmentRepair_IsCoveredByThePermission_NotAKnownGap()
+    {
+        KnownGaps.Should().NotContainKey("Controllers/EstablishmentController.cs", "stamping a department id changes where a person resolves to (WP-A3 item 6)");
+        CoveredBy.Should().ContainKey("Controllers/EstablishmentController.cs");
+        KnownGaps.Keys.Should().BeEquivalentTo(["Controllers/FinanceGlController.CostAccounting.cs"], "the list may only shrink; the finance default-cost-centre setting is the one gap left");
+    }
+
+    [Fact]
     public void S028_EveryWriterOfTheAttributionColumns_IsBehindThePermission_OrAKnownGap()
     {
         var root = SourceScan.ResolveApiRoot();
