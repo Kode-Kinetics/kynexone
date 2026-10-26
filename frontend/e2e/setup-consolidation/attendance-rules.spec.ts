@@ -174,6 +174,9 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 1000 }, { name: 
       if (dir) { mkdirSync(dir, { recursive: true }); await page.screenshot({ path: `${dir}/${locale}-${viewport.name}-list.png`, fullPage: true }); }
       await panel(page).getByRole('button').first().click();
       await expect(editor(page)).toBeVisible();
+      // The drawer eases in over 200 ms: wait for data-state="open" and the end of the transition before any screenshot.
+      await expect(editor(page)).toHaveAttribute('data-state', 'open');
+      await expect.poll(() => editor(page).evaluate(el => getComputedStyle(el).opacity), { message: 'drawer finished fading in' }).toBe('1');
       if (dir) await page.screenshot({ path: `${dir}/${locale}-${viewport.name}-editor.png` });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, 'no horizontal scroll').toBeLessThanOrEqual(0);

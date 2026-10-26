@@ -17,8 +17,6 @@ export interface CompanyProfile {
   branchCity?: string;
   operatingModel?: string;
   payrollModel?: string;
-  approvalModel?: string;
-  strictEntityScope: boolean;
   sections: SetupSections;
 
   // Operating choices. Each one lands in a column the product already reads; see
@@ -52,7 +50,7 @@ export interface DraftEmployeeIdRule { companyPrefix: string; useCountryPrefix: 
 export interface DraftLeavePolicy { name: string; leaveTypeCode: string; annualEntitlementDays: number; accrualMethod: string; encashmentAllowed: boolean; encashmentMaxDays: number; minimumDaysPerRequest: number; maximumDaysPerRequest: number; noticeRequiredDays: number; weekendsIncluded: boolean; publicHolidaysIncluded: boolean; appliesOnProbation: boolean; payrollImpact: string; proratePartialMonths?: boolean; gradeCode?: string; departmentCode?: string; employmentType?: string; }
 export interface DraftHoliday { nameEn: string; nameAr: string; date: string; isRecurring: boolean; isOptional: boolean; holidayType: string; notes: string; }
 export interface DraftHolidayCalendar { name: string; calendarYear: number; holidays: DraftHoliday[]; }
-export interface DraftAttendancePolicy { code: string; name: string; graceMinutes: number; lateThresholdMinutes: number; earlyExitThresholdMinutes: number; halfDayThresholdMinutes: number; absentThresholdMinutes: number; standardWorkMinutes: number; breakMinutes: number; roundingRule: string; requiresOvertimeApproval: boolean; allowAbsenceToLeaveConversion: boolean; }
+export interface DraftAttendancePolicy { code: string; name: string; graceMinutes: number; earlyExitThresholdMinutes: number; halfDayThresholdMinutes: number; standardWorkMinutes: number; breakMinutes: number; }
 export interface DraftOvertimeMultiplier { dayCategory: string; multiplier: number; }
 export interface DraftOvertimePolicy { code: string; name: string; hourlyRateBasis: string; standardMonthlyHours: number; minimumMinutes: number; maximumMinutesPerDay: number; monthlyCapMinutes: number; roundingRule: string; requiresApproval: boolean; allowCompOffConversion: boolean; multipliers: DraftOvertimeMultiplier[]; }
 export interface DraftLocalization { defaultLanguage: string; rtlEnabled: boolean; calendarSystem: string; defaultTimezone: string; dateFormat: string; hijriDatesEnabled: boolean; }
@@ -109,49 +107,6 @@ export interface SetupDraft {
   localization: DraftLocalization | null;
 }
 
-export interface SetupPreviewResult { configurationVersion?: number; draft: SetupDraft; notes: string[]; engine: string; }
-
-const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
-
-/**
- * Coerce a raw preview response into a render-safe shape. LLM-generated JSON
- * (or backend serialization) can omit/null any list; the UI maps over all of
- * them during render, so a missing array would throw mid-render and blank the
- * page. Every list defaults to []; workingWeek defaults to null.
- */
-export function normalizeDraft(raw: unknown): SetupDraft {
-  const d = (raw ?? {}) as Partial<SetupDraft>;
-  return {
-    policySource: d.policySource,
-    policySources: d.policySources,
-    policyFieldSources: d.policyFieldSources,
-    benefitPlans: asArray<DraftBenefitPlan>(d.benefitPlans).map(p => ({ ...p, gradeCodes: asArray<string>(p.gradeCodes) })),
-    branches: asArray<DraftBranch>(d.branches),
-    departments: asArray<DraftDepartment>(d.departments),
-    costCenters: asArray<DraftCostCenter>(d.costCenters),
-    designations: asArray<DraftDesignation>(d.designations),
-    grades: asArray<DraftGrade>(d.grades),
-    gradePayComponents: asArray<DraftGradePayComponent>(d.gradePayComponents),
-    leaveTypes: asArray<DraftLeaveType>(d.leaveTypes),
-    shifts: asArray<DraftShift>(d.shifts),
-    workingWeek: d.workingWeek ?? null,
-    payComponents: asArray<DraftPayComponent>(d.payComponents),
-    statutoryRules: asArray<DraftStatutoryRule>(d.statutoryRules),
-    employeeIdRule: d.employeeIdRule ?? null,
-    leavePolicies: asArray<DraftLeavePolicy>(d.leavePolicies),
-    // The calendar's own holiday list is mapped over during render, so it gets the same
-    // treatment as every top-level list: a calendar with a null list must not blank the page.
-    holidayCalendar: d.holidayCalendar
-      ? { ...d.holidayCalendar, holidays: asArray<DraftHoliday>(d.holidayCalendar.holidays) }
-      : null,
-    attendancePolicy: d.attendancePolicy ?? null,
-    overtimePolicy: d.overtimePolicy
-      ? { ...d.overtimePolicy, multipliers: asArray<DraftOvertimeMultiplier>(d.overtimePolicy.multipliers) }
-      : null,
-    localization: d.localization ?? null,
-  };
-}
-
 export interface PolicyExtractionProposal { target: 'configuration' | 'profile'; field: string; value: unknown; sourceQuote: string; sourceStart: number; sourceLength: number; userCompleted?: boolean; reviewKey?: string; }
 export interface PolicyPartialProposal extends PolicyExtractionProposal { missingFields: string[]; }
 export interface PolicyOnboardingTaskProposal {
@@ -196,18 +151,6 @@ export const setupAssistantApi = {
   policyReviewHistory: (companyId: string, documentId: string, signal?: AbortSignal) => client.get<PolicyReviewRecord[]>('/api/setup-assistant/policy/reviews', { params: { companyId, documentId }, signal }).then(r => r.data),
   extractPolicy: (documentId: string, profile: CompanyProfile, signal?: AbortSignal, chunkIndex = 0) =>
     client.post<PolicyExtractionResult>('/api/setup-assistant/policy/extract', { documentId, useAi: true, profile: serverProfile(profile), chunkIndex }, { signal }).then(r => r.data),
-  preview: (profile: CompanyProfile) =>
-    client.post<SetupPreviewResult>('/api/setup-assistant/preview', serverProfile(profile)).then(r => ({
-      draft: normalizeDraft(r.data?.draft),
-      notes: asArray<string>(r.data?.notes),
-      engine: r.data?.engine ?? '',
-      configurationVersion: r.data?.configurationVersion,
-    })),
-
-  apply: (draft: SetupDraft, countryCode: string, currencyCode: string, legalEntityName?: string, companyId?: string) =>
-    client.post<{ applied: Record<string, number>; total: number; skipped?: Record<string, { count: number; reasonCode: string; reason: string }> }>(
-      '/api/setup-assistant/apply', { draft, countryCode, currencyCode, legalEntityName, companyId },
-    ).then(r => r.data),
 };
 
 /** Browser checkpoints are local review state, not AI context or server configuration. */

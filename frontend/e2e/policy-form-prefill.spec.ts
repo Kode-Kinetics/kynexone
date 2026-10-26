@@ -16,9 +16,9 @@ const drafts = [
   { id: 'orientation-task', taskTitle: 'Provide orientation training', taskDescription: 'Cover health and safety and ERP training.', category: 'Training', assignedToName: 'HR', dueOffsetDays: null, isMandatory: true, condition: null, sourceQuote: orientationQuote, sourceStart: taskQuote.length + 1, sourceLength: orientationQuote.length },
 ];
 
-async function boot(page: Page, options: { group?: boolean; workspace?: boolean; delayCompanies?: boolean } = {}) {
+async function boot(page: Page, options: { group?: boolean; workspace?: boolean; delayCompanies?: boolean; seedTasks?: any[] } = {}) {
   const writes: { path: string; body: any }[] = [];
-  const savedTasks: any[] = [];
+  const savedTasks: any[] = [...(options.seedTasks ?? [])];
   const errors: string[] = [];
   let templateReads = 0;
   let releaseCompanies = () => {};
@@ -207,4 +207,188 @@ test('workspace upload failure stays recoverable in place and never writes check
   await expect(page.getByRole('button', { name: 'Upload and review', exact: true })).toBeEnabled();
   await expect(page).not.toHaveURL(/mode=starter/);
   expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toHaveLength(0);
+});
+
+// ── Restored from the retired Policy starter studio: the same behaviours, against the Onboarding policy workspace ──
+// (#268 removed the studio-driven versions of these when it deleted the studio's bridge to /recruitment/onboarding.)
+
+async function extractAndOpenWorkspace(page: Page) {
+  await page.getByRole('button', { name: 'Fill from policy', exact: true }).click();
+  await page.getByLabel('Upload a document for extraction', { exact: true }).setInputFiles({ name: document.originalName, mimeType: 'text/plain', buffer: Buffer.from(policyText) });
+  await page.getByRole('button', { name: 'Upload and review', exact: true }).click();
+  await page.getByRole('button', { name: 'Improve with AI (optional)', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
+  await page.getByRole('button', { name: 'Extract from policy', exact: true }).click();
+  await page.getByRole('button', { name: 'Review prefilled forms', exact: true }).click();
+  await expect(page).toHaveURL(url => url.pathname === '/setup' && url.searchParams.get('setting') === 'onboardingChecklists');
+  await expect(page.getByRole('region', { name: 'Policy task drafts', exact: true })).toBeVisible();
+  await page.getByTitle('Onboarding checklist', { exact: true }).selectOption(checklistId);
+}
+
+// After a reload the workspace restores the locally prepared values through the policy panel, not by itself.
+async function reopenAfterReload(page: Page) {
+  await page.reload();
+  await page.getByRole('button', { name: 'Fill from policy', exact: true }).click();
+  await page.getByRole('button', { name: '2. Prepare form values', exact: true }).click();
+  await page.getByRole('button', { name: 'Review local form values', exact: true }).click();
+  await page.getByTitle('Onboarding checklist', { exact: true }).selectOption(checklistId);
+}
+
+// Catches replacing the existing manual endpoint with an automatic or non-persistent apply action.
+test('workspace explicit manual save uses the existing template endpoint and reads saved values back', async ({ page }) => {
+  const state = await boot(page, { workspace: true });
+  await extractAndOpenWorkspace(page);
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await page.getByTitle('Due offset days', { exact: true }).fill('2');
+  const readsBeforeSave = state.templateReads;
+  await page.getByRole('button', { name: 'Save Template Task', exact: true }).click();
+  await expect.poll(() => state.templateReads).toBeGreaterThan(readsBeforeSave);
+  await expect(page.getByText('1. Arrange contract signing', { exact: true })).toBeVisible();
+  const businessWrites = state.writes.filter(write => write.path.startsWith('/api/recruitment/'));
+  expect(businessWrites).toHaveLength(1);
+  expect(businessWrites[0]).toMatchObject({ path: `/api/recruitment/onboarding/checklists/${checklistId}/template-tasks`, body: { taskTitle: 'Arrange contract signing', taskDescription: 'HR arranges contract signing.', category: 'Document', dueOffsetDays: 2, isMandatory: true } });
+  expect(state.writes.some(write => write.path.endsWith('/tasks/bulk') || write.path.endsWith('/apply'))).toBe(false);
+  await page.reload();
+  await page.getByTitle('Onboarding checklist', { exact: true }).selectOption(checklistId);
+  await expect(page.getByText('1. Arrange contract signing', { exact: true })).toBeVisible();
+  expect(state.errors).toEqual([]);
+});
+
+// Catches applying a conditional medical duty to every employee without an explicit HR choice.
+test('workspace conditional source is visible and blocks save until applicability is confirmed', async ({ page }) => {
+  const state = await boot(page, { workspace: true });
+  await extractAndOpenWorkspace(page);
+  await page.getByRole('combobox', { name: 'Policy task draft', exact: true }).selectOption('medical-task');
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await expect(page.getByText('Only if an additional medical is needed.', { exact: true })).toBeVisible();
+  await page.locator('summary').filter({ hasText: 'Policy source' }).click();
+  await expect(page.getByText(taskQuote, { exact: true })).toBeVisible();
+  await expect(page.locator('summary').filter({ hasText: 'Policy source' })).toContainText(document.originalName);
+  await page.getByTitle('Due offset days', { exact: true }).fill('1');
+  await page.getByTitle('Mandatory task', { exact: true }).selectOption('Optional');
+  const save = page.getByRole('button', { name: 'Save Template Task', exact: true });
+  await expect(save).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'I confirm this task applies to the selected checklist; conditions are not enforced automatically.', exact: true }).check();
+  await expect(save).toBeEnabled();
+  expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
+});
+
+// Catches a same-title existing task being overwritten without review, or losing an assigned user.
+test('workspace matching existing task keeps an unstated deadline and requires explicit update confirmation', async ({ page }) => {
+  const state = await boot(page, { workspace: true, seedTasks: [{ id: 'existing-task', tenantId: 'prefill-tenant', checklistId, taskTitle: 'Arrange contract signing', taskDescription: 'Current contract procedure', category: 'Document', assignedToName: 'HR', assignedToUserId: '40000000-0000-0000-0000-000000000011', dueOffsetDays: 7, orderIndex: 3, isMandatory: false, isActive: true }] });
+  await extractAndOpenWorkspace(page);
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await expect(page.getByTitle('Due offset days', { exact: true })).toHaveValue('7');
+  await expect(page.getByText(/Current: Current contract procedure/)).toBeVisible();
+  const save = page.getByRole('button', { name: 'Save Template Task', exact: true });
+  await expect(save).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'I reviewed the existing task values and want to update this matching task.', exact: true }).check();
+  await save.click();
+  await expect(page.getByRole('status').filter({ hasText: 'Template task saved and verified.' })).toBeVisible();
+  const written = state.writes.find(write => write.path.endsWith('/template-tasks'));
+  expect(written?.body).toMatchObject({ dueOffsetDays: 7, assignedToUserId: '40000000-0000-0000-0000-000000000011' });
+  expect(state.savedTasks).toHaveLength(1);
+  expect(state.savedTasks[0].id).toBe('existing-task');
+});
+
+// Catches losing an edited policy task when selecting another draft or resuming the route.
+test('workspace dirty per-task edits survive switching drafts and reloading', async ({ page }) => {
+  const state = await boot(page, { workspace: true });
+  await extractAndOpenWorkspace(page);
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await page.getByPlaceholder('Task title', { exact: true }).fill('HR-reviewed contract signing');
+  await page.getByTitle('Due offset days', { exact: true }).fill('4');
+  const selector = page.getByRole('combobox', { name: 'Policy task draft', exact: true });
+  await selector.selectOption('orientation-task');
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Provide orientation training');
+  await selector.selectOption('contract-task');
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('HR-reviewed contract signing');
+  await expect(page.getByTitle('Due offset days', { exact: true })).toHaveValue('4');
+  await reopenAfterReload(page);
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('HR-reviewed contract signing');
+  await expect(page.getByTitle('Due offset days', { exact: true })).toHaveValue('4');
+  expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
+});
+
+// Catches policy prefill silently replacing HR's unrelated unsaved manual task.
+test('workspace declining replacement preserves a dirty manual task form', async ({ page }) => {
+  const state = await boot(page, { workspace: true });
+  await extractAndOpenWorkspace(page);
+  await page.getByPlaceholder('Task title', { exact: true }).fill('Unrelated manual task');
+  await page.getByTitle('Due offset days', { exact: true }).fill('9');
+  let confirmation = '';
+  page.once('dialog', async dialog => { confirmation = dialog.message(); await dialog.dismiss(); });
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  expect(confirmation).toContain('unsaved values');
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Unrelated manual task');
+  await expect(page.getByTitle('Due offset days', { exact: true })).toHaveValue('9');
+  expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
+});
+
+// Catches a browser-storage quota failure silently dropping edits on the next draft switch.
+test('workspace local storage failure does not lose the visible edited task when switching drafts', async ({ page }) => {
+  await boot(page, { workspace: true });
+  await extractAndOpenWorkspace(page);
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key.startsWith('kynexone-policy-form-draft:')) throw new DOMException('Test quota exceeded', 'QuotaExceededError');
+      return original.call(this, key, value);
+    };
+  });
+  await page.getByPlaceholder('Task title', { exact: true }).fill('Unsaved in browser storage, retained in form');
+  const selector = page.getByRole('combobox', { name: 'Policy task draft', exact: true });
+  await selector.selectOption('orientation-task');
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await selector.selectOption('contract-task');
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Unsaved in browser storage, retained in form');
+});
+
+for (const boundary of ['tenantId', 'userId'] as const) {
+  // Catches leaking browser-retained policy drafts into another signed-in identity.
+  test(`workspace bridge drafts do not appear after the ${boundary} changes`, async ({ page }) => {
+    const state = await boot(page, { workspace: true });
+    await extractAndOpenWorkspace(page);
+    state.identity[boundary] = `different-${boundary}`;
+    await page.reload();
+    await expect(page.getByRole('region', { name: 'Onboarding checklists', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Policy task drafts', exact: true })).toHaveCount(0);
+    expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
+  });
+}
+
+// Catches preserving write controls after the same user's write authorization is removed.
+test('workspace read-only recruitment permission cannot save a populated policy draft', async ({ page }) => {
+  const state = await boot(page, { workspace: true });
+  await extractAndOpenWorkspace(page);
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  await page.getByTitle('Due offset days', { exact: true }).fill('2');
+  state.identity.readOnly = true;
+  await page.reload();
+  await expect(page.getByText('Your role does not have access', { exact: true }).first()).toBeVisible();
+  // Without recruitment.write the onboarding editor is not opened at all, so no policy entry point or save is offered.
+  await expect(page.getByRole('button', { name: 'Fill from policy', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Policy task drafts', exact: true })).toHaveCount(0);
+  const save = page.getByRole('button', { name: 'Save Template Task', exact: true });
+  if (await save.count()) await expect(save).toBeDisabled();
+  expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
+});
+
+test('workspace policy-prefilled controls remain usable at mobile width', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = await boot(page, { workspace: true });
+  await extractAndOpenWorkspace(page);
+  await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
+  const title = page.getByPlaceholder('Task title', { exact: true });
+  await expect(title).toHaveValue('Arrange contract signing');
+  await title.fill('Mobile-reviewed signing');
+  await page.getByTitle('Due offset days', { exact: true }).fill('3');
+  await expect(page.getByRole('button', { name: 'Save Template Task', exact: true })).toBeEnabled();
+  expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
+  expect(state.errors).toEqual([]);
 });

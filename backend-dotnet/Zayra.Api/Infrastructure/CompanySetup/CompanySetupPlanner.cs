@@ -1035,7 +1035,7 @@ public sealed class CompanySetupPlanner
         DraftHolidayCalendar? holidayCalendar = null;
         if (rules?.HolidayCalendar?.UsePack == true && country.Length > 0)
         {
-            holidayCalendar = SetupAssistantService.DeterministicCompanyDefaults(country, currency, legalNameEn).HolidayCalendar;
+            holidayCalendar = SetupDraftDefaults.DeterministicCompanyDefaults(country, currency, legalNameEn).HolidayCalendar;
             if (holidayCalendar is null || holidayCalendar.Holidays.Count == 0)
             {
                 holidayCalendar = null;

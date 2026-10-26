@@ -38,7 +38,7 @@ public sealed record CompanySetupOutcome<T>(int Status, T? Value, object? Error 
 /// defaults, server-side drafts, the atomic + idempotent commit and the readiness checklist.
 ///
 /// <para><b>Model-free by construction (Decision 1).</b> Nothing here depends on <c>ILlmClient</c>,
-/// <c>ISetupAssistantService</c> or anything in <c>Infrastructure.AI</c>; the defaults come from the static,
+/// <c>the retired setup assistant</c> or anything in <c>Infrastructure.AI</c>; the defaults come from the static,
 /// deterministic template and the country pack. <c>CompanySetupNoModelCallTests</c> asserts it.</para>
 /// </summary>
 public sealed class CompanySetupService
@@ -184,7 +184,7 @@ public sealed class CompanySetupService
         var currency = HomeJurisdiction.CurrencyFor(country);
 
         // Addendum B: grade bands are in the company's own currency.
-        var template = SetupAssistantService.DeterministicCompanyDefaults(country, currency, null);
+        var template = SetupDraftDefaults.DeterministicCompanyDefaults(country, currency, null);
         var resolved = await _workWeek.ResolveAsync(tenantId, null, country, ct);
         var weekend = CompanySetupPack.FormatWeekend(resolved.WeekendDays);
 
@@ -299,7 +299,7 @@ public sealed class CompanySetupService
         var currency = company.DefaultCurrency.Trim().ToUpperInvariant();
         static string? B(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
 
-        var template = SetupAssistantService.DeterministicCompanyDefaults(country, currency, null);
+        var template = SetupDraftDefaults.DeterministicCompanyDefaults(country, currency, null);
         var packTz = HomeJurisdiction.TimeZoneFor(country);
 
         // Branches and their locations (active rows; removed or inactive ones are managed in Setup).

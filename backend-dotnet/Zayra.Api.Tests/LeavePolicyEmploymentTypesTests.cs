@@ -48,11 +48,11 @@ public sealed class LeavePolicyEmploymentTypesTests
     public void SetupConflict_PartialOverlapIsAConflict_SubsetAndDisjointAreNot()
     {
         // Full-Time+Part-Time vs Part-Time+Contract: a part-timer falls under both, neither is broader.
-        SetupAssistantService.LeaveScopesConflict(null, null, "Full-Time,Part-Time", null, null, "Part-Time,Contract").Should().BeTrue();
+        SetupDraftDefaults.LeaveScopesConflict(null, null, "Full-Time,Part-Time", null, null, "Part-Time,Contract").Should().BeTrue();
         // Strict subset: the narrower policy is a deliberate override, not a conflict.
-        SetupAssistantService.LeaveScopesConflict(null, null, "Full-Time,Part-Time", null, null, "Part-Time").Should().BeFalse();
+        SetupDraftDefaults.LeaveScopesConflict(null, null, "Full-Time,Part-Time", null, null, "Part-Time").Should().BeFalse();
         // Separate populations.
-        SetupAssistantService.LeaveScopesConflict(null, null, "Full-Time,Part-Time", null, null, "Contract").Should().BeFalse();
+        SetupDraftDefaults.LeaveScopesConflict(null, null, "Full-Time,Part-Time", null, null, "Contract").Should().BeFalse();
     }
 
     [Theory]

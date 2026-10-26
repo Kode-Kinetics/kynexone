@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
 import { appendPolicyProposals, mergePolicyValue, policySources, proposalKey, proposalsConflict, type SourcedPolicyProposal } from '../src/lib/policyBinder';
-import { normalizeDraft } from '../src/api/setupAssistant';
 import * as binder from '../src/lib/policyBinder';
 
 test('task draft chunks are idempotent and retain distinct source versions', () => {
@@ -70,9 +69,4 @@ test('no overtime conflicts with paid or compensatory modes and a reviewed choic
   expect(proposalsConflict(none, comp)).toBe(true);
   expect(mergePolicyValue('overtimeModes', ['PaidOvertime', 'CompensatoryOff'], ['NotApplicable'])).toEqual(['NotApplicable']);
   expect(mergePolicyValue('overtimeModes', ['NotApplicable'], ['PaidOvertime'])).toEqual(['PaidOvertime']);
-});
-
-test('preserves all document and field provenance through draft normalization for apply', () => {
-  const provenance = { policySource: { documentId: 'one', contentSha256: 'hash' }, policySources: [{ documentId: 'one', contentSha256: 'hash', name: 'Binder.pdf' }], policyFieldSources: [{ documentId: 'one', contentSha256: 'hash', target: 'configuration', field: 'leavePolicies', sourceStart: 10, sourceLength: 25 }] };
-  expect(normalizeDraft(provenance)).toMatchObject(provenance);
 });
