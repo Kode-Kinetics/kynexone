@@ -11,3 +11,6 @@ export const duplicateStatusKey = (status: string): string => STATUS_KEYS[status
 export function isNameOnlyMatch(m: Pick<DuplicateMatch, 'matchType' | 'signals'>): boolean {
   return m.matchType === 'possible' && (m.signals ?? []).some(s => /name/i.test(s));
 }
+
+/** A year is never grouped ("2021", not "2,021"), in any language. */
+export const plainYear = (year: number): string => String(Math.trunc(year));

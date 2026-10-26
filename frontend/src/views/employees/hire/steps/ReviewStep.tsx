@@ -119,7 +119,7 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
         <div className="rounded-xl border border-slate-200 p-4 text-sm dark:border-white/10">
           <p className="font-semibold">{t('Before activation')}</p>
           <p className="mt-1 text-slate-600 dark:text-slate-300">{new Intl.ListFormat(locale, { type: 'unit', style: 'narrow' }).format(missing)}</p>
-          <p className="mt-2 text-slate-500">{t('You can leave these for now. The employee can complete them in Self-Service after the first day.')}</p>
+          <p className="mt-2 text-slate-500">{t('You can leave this for now and add it later from the employee record.')}</p>
         </div>
       )}
     </div>

@@ -288,6 +288,8 @@ export function HireWizard() {
       const version = res.updatedAtUtc ?? (res as { createdAtUtc?: string }).createdAtUtc ?? '';
       flushSync(() => { setDraft({ id: res.id, name: res.englishName || res.fullName || form.englishName.trim() }); setSavedForm(form); setAcks(all); });
       autosave.current!.adopt(version);
+      // A refresh now resumes this draft instead of starting a blank form (and creating a second record). No navigation, no reload.
+      window.history.replaceState(window.history.state, '', `/people/new?draft=${res.id}`);
       return res.id;
     } catch (e) {
       handleFailure(e);

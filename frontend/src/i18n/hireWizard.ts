@@ -170,7 +170,7 @@ const ar: Record<string, string> = {
   'Needed before activation: choose a designation or a grade.': 'مطلوب قبل التفعيل: اختر المسمى الوظيفي أو الدرجة.',
   'A designation brings its own grade.': 'المسمى الوظيفي يحمل درجته.',
   'Designation or grade': 'المسمى الوظيفي أو الدرجة',
-  'You can leave these for now. The employee can complete them in Self-Service after the first day.': 'يمكنك تركها الآن. يمكن للموظف استكمالها في الخدمة الذاتية بعد أول يوم عمل.',
+  'You can leave this for now and add it later from the employee record.': 'يمكنك تركه الآن وإضافته لاحقاً من ملف الموظف.',
   '{name} has been added as a draft.': 'تمت إضافة {name} كمسودة.',
   'Readiness': 'الجاهزية',
   'Checking what is left…': 'جارٍ التحقق مما تبقى…',

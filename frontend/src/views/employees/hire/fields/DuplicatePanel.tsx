@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { duplicateStatusKey, isNameOnlyMatch } from '@/src/lib/hire/duplicate';
+import { duplicateStatusKey, isNameOnlyMatch, plainYear } from '@/src/lib/hire/duplicate';
 import type { DuplicateMatch } from '@/src/api/employees';
 
 export type MatchCard = DuplicateMatch & { joinedYear?: number };
@@ -41,7 +41,7 @@ export function DuplicatePanel({ matches, companies = [], differentReason, onDif
             {m.canView ? (
               <>
                 <p><span className="font-medium">{m.fullName}</span>{' '}
-                  <span>{companyName(m.companyId) ? t('{status}, {company}', { status: t(duplicateStatusKey(m.status)), company: companyName(m.companyId) }) : t(duplicateStatusKey(m.status))}{m.joinedYear ? ` · ${t('Joined in {year}', { year: m.joinedYear })}` : ''}</span></p>
+                  <span>{companyName(m.companyId) ? t('{status}, {company}', { status: t(duplicateStatusKey(m.status)), company: companyName(m.companyId) }) : t(duplicateStatusKey(m.status))}{m.joinedYear ? ` · ${t('Joined in {year}', { year: plainYear(m.joinedYear) })}` : ''}</span></p>
                 {isNameOnlyMatch(m) ? <p className="mt-0.5 font-medium">{t('Same name — check before continuing.')}</p> : m.matchType === 'strong' ? <p className="mt-0.5">{t('Same ID number')}</p> : null}
               </>
             ) : <p>{t('A person with these details exists in another company you cannot see.')}</p>}
