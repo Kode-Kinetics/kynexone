@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 // CI does not use this file: the main `chromium` project collects employee-hire-wizard.spec.ts (npx playwright test --project=chromium).
 export default defineConfig({
   testDir: '.',
-  testMatch: /employee-hire-wizard\.spec\.ts|employee-hire\.a11y\.spec\.ts/,
+  testMatch: /employee-hire-wizard\.spec\.ts|employee-hire-hardening\.spec\.ts|employee-hire\.a11y\.spec\.ts/,
   workers: 1,
   retries: 0,
   timeout: 60_000,
