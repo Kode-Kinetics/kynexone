@@ -12,6 +12,7 @@ import {
   blockerCards,
   classifyLockError,
   groupJournal,
+  lockKpis,
   readOnlyLockNote,
   type BlockerRow,
   type GroupMode,
@@ -100,6 +101,7 @@ export function CostCentreLockPreview({ journal, run, companyName, mayLock, onRe
   const serverGroups: LockGroup[] = refusal ? refusal.groups : costing.groups;
   const roundingBlocked = costing.roundingBlocked || refusal?.error === 'cost_centre_rounding_required';
   const cards = useMemo(() => blockerCards(serverGroups, blockers, locale), [serverGroups, blockers, locale]);
+  const kpis = lockKpis(costing, blockers, serverGroups);
   const problemCount = cards.length + (roundingBlocked ? 1 : 0);
   const blocked = !posted && (problemCount > 0 || !journal.isBalanced);
 
@@ -200,7 +202,7 @@ export function CostCentreLockPreview({ journal, run, companyName, mayLock, onRe
           : <span data-testid="cc-lock-status-chip"><Badge tone="amber"><Eye className="h-3 w-3" aria-hidden /> {t('Preview — not posted yet')}</Badge></span>}
       </header>
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="surface p-4" data-testid="cc-lock-kpi-debits">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total debits')}</p>
           <p className="text-lg font-bold tabular-nums text-sapphire dark:text-cyanAccent"><bdi dir="ltr">{money(journal.totalDebits)}</bdi></p>
@@ -209,9 +211,13 @@ export function CostCentreLockPreview({ journal, run, companyName, mayLock, onRe
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total credits')}</p>
           <p className="text-lg font-bold tabular-nums text-sapphire dark:text-cyanAccent"><bdi dir="ltr">{money(journal.totalCredits)}</bdi></p>
         </div>
+        <div className="surface p-4" data-testid="cc-lock-kpi-blocked">
+          <p className="text-xs text-slate-500 dark:text-slate-400">{t('Blocked: no cost centre')}</p>
+          <p className={`text-lg font-bold tabular-nums ${kpis.blocked > 0 ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}><bdi dir="ltr">{fmt.integer(kpis.blocked)}</bdi></p>
+        </div>
         <div className="surface p-4" data-testid="cc-lock-kpi-uncosted">
-          <p className="text-xs text-slate-500 dark:text-slate-400">{t('Uncosted employees')}</p>
-          <p className="text-lg font-bold tabular-nums text-slate-900 dark:text-white"><bdi dir="ltr">{fmt.integer(costing.uncostedEmployees ?? 0)}</bdi></p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{t('Not costed (optional accounts)')}</p>
+          <p className="text-lg font-bold tabular-nums text-slate-900 dark:text-white"><bdi dir="ltr">{fmt.integer(kpis.uncosted)}</bdi></p>
         </div>
       </div>
 

@@ -456,7 +456,7 @@ test('Arabic: RTL, translated headings, classes and refusals; codes stay left to
   const table = tid(page, 'cc-master-table');
   await expect(table.getByRole('columnheader', { name: 'الرمز', exact: true })).toBeVisible();
   await expect(table.getByRole('columnheader', { name: 'رمز ERP', exact: true })).toBeVisible();
-  await expect(table.getByRole('columnheader', { name: 'التصنيف الوظيفي', exact: true })).toBeVisible();
+  await expect(table.getByRole('columnheader', { name: 'التصنيف الوظيفي للتكلفة', exact: true })).toBeVisible();
   await tid(page, 'cc-master-expand-SALES').click();
   await expect(tid(page, 'cc-master-row-SALES')).toContainText('البيع والتسويق');
   expect(await tid(page, 'cc-master-row-SALES').locator('bdi[dir="ltr"]').first().textContent()).toBe('SALES');
@@ -570,7 +570,7 @@ test('Arabic: the links-to-clear gate and help are translated', async ({ page },
   ctl.previewLinks = 2;
   ctl.previewRows = clearRows;
   await chooseFile(page);
-  await expect(tid(page, 'cc-import-clear-warning')).toContainText('سيمسح هذا الملف');
+  await expect(tid(page, 'cc-import-clear-warning')).toContainText('سيزيل هذا الملف');
   await expect(tid(page, 'cc-import-help')).toContainText('[CLEAR]');
   await shot(page, info, 'cc-ar-department-import-clear');
 });

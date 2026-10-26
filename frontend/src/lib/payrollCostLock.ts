@@ -174,6 +174,23 @@ export function hiddenEmployeeCount(g: Pick<LockGroup, 'employeeCount' | 'employ
   return Math.max(0, g.employeeCount - g.employees.length);
 }
 
+const MISSING_OR_INVALID = new Set(['cost_centre_required', 'cost_centre_invalid']);
+
+/**
+ * The two Lock-preview tiles. `blocked`: distinct employees that stop Lock for a missing or invalid cost centre (the blocker
+ * list is capped per group, so the server's group counts are the floor). `uncosted`: employees whose Optional-account lines
+ * post without one; these do not stop Lock.
+ */
+export function lockKpis(
+  costing: Pick<JournalCosting, 'uncostedEmployees'> | null | undefined,
+  blockers: readonly LockBlocker[],
+  groups: readonly LockGroup[],
+): { blocked: number; uncosted: number } {
+  const ids = new Set(blockers.filter((b) => MISSING_OR_INVALID.has(b.reason)).map((b) => b.employeeId));
+  const fromGroups = Math.max(0, ...groups.filter((g) => MISSING_OR_INVALID.has(g.error)).map((g) => g.employeeCount));
+  return { blocked: Math.max(ids.size, fromGroups), uncosted: costing?.uncostedEmployees ?? 0 };
+}
+
 /** One card per server group (the server already splits by account and by level), one row per employee, with fix links. */
 export function blockerCards(groups: readonly LockGroup[], blockers: readonly LockBlocker[], locale: string): BlockerCard[] {
   return groups.map((g, i) => {
