@@ -53,7 +53,7 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
             company = await refs.ResolveCompanyAsync(tenantId, companyForRules, scope, ct);
 
         var country = company?.CountryCode;
-        var tz = ResolveZone(CountryCodeStandard.NormalizeToIso2(country));
+        var tz = OnboardingClock.ZoneFor(country);
         var today = _clock is not null ? await _clock.TodayAsync(tenantId, ct) : DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz));
         var result = EmployeeInputValidator.Validate(request, new EmployeeInputValidationContext(country, today, mode, tz));
 
@@ -104,13 +104,5 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
             throw new EmployeeValidationException(422, EmployeeProblemCodes.OverrideNotPermitted,
                 new Dictionary<string, string[]> { ["acknowledgedWarnings"] = [EmployeeProblemCodes.OverrideNotPermitted] },
                 "You do not have permission to override this check.");
-    }
-
-    private static TimeZoneInfo ResolveZone(string? iso2)
-    {
-        if (iso2 != "SA") return TimeZoneInfo.Utc;
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Riyadh"); }
-        catch (Exception e) when (e is TimeZoneNotFoundException or InvalidTimeZoneException)
-        { return TimeZoneInfo.CreateCustomTimeZone("Riyadh", TimeSpan.FromHours(3), "Riyadh", "Riyadh"); }
     }
 }
