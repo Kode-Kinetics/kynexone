@@ -121,6 +121,9 @@ public class SetupAssistantController : ControllerBase
     {
         if (!HasPermission("organization.setup.apply")) return Forbid();
         if (req.Draft is null) return BadRequest(new { message = "A reviewed draft is required." });
+        // Creating cost centres and linking them to departments re-points where pay posts (cost-centre accounting, S-027): the cost-centre permission
+        // as well as the setup one, so a custom role with only setup.apply cannot do through the assistant what the master-data screens refuse it.
+        if (req.Draft.CostCenters.Count > 0 && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         // One spelling of the country everywhere it is written (company, branches, leave policies, calendars, rules):
         // the forms store ISO codes upper-case, and "sa" would otherwise sit beside "SA".
         req = req with { CountryCode = CountryCodeStandard.NormalizeToIso2(req.CountryCode) ?? (req.CountryCode ?? string.Empty).Trim().ToUpperInvariant() };
@@ -175,6 +178,10 @@ public class SetupAssistantController : ControllerBase
                 gate.Problems.Add("The source policy belongs to a different company. Select a policy for the reviewed legal entity.");
         }
         gate.Problems.AddRange(await ValidatePolicyReferencesAsync(tenantId, req, gate.Company, preview: false, ct));
+        // The master-data rule for a cost-centre code (the same expression as the table CHECK), judged before anything is written.
+        foreach (var draftCostCentre in d.CostCenters)
+            if (!CostCentreCode.IsValid(OrgCodes.Normalize(draftCostCentre.Code)))
+                gate.Problems.Add($"Cost centre code '{draftCostCentre.Code}': {CostCentreCode.Rule}");
         if (gate.Problems.Count > 0)
             return UnprocessableEntity(new
             {
@@ -217,6 +224,14 @@ public class SetupAssistantController : ControllerBase
             }
         }
         company ??= await _db.Companies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
+        // A cost centre belongs to one company (contract 2.9); it is never created tenant-wide.
+        if (d.CostCenters.Count > 0 && company is null)
+            return UnprocessableEntity(new
+            {
+                error = "setup_apply_refused",
+                message = "Nothing was applied. A cost centre belongs to a company: choose or name the legal entity this draft is for.",
+                problems = new[] { "A cost centre belongs to a company: choose or name the legal entity this draft is for." },
+            });
 
         var branchByCode = company is null
             ? new Dictionary<string, Branch>()
@@ -383,9 +398,25 @@ public class SetupAssistantController : ControllerBase
             var entity = new CostCenter { TenantId = tenantId, CompanyId = company?.Id, Code = OrgCodes.Normalize(cc.Code), Name = cc.Name, IsActive = true, CreatedBy = GetUserId() };
             _db.CostCenters.Add(entity);
             Audit("organization.cost_center_created", nameof(CostCenter), entity.Id, cc.Code);
+            auditChanges[entity.Id] = new { before = (object?)null, after = new { id = entity.Id, code = entity.Code, name = entity.Name, companyId = entity.CompanyId, isActive = entity.IsActive } };
             costCenterByCode[cc.Code.ToUpperInvariant()] = entity;
             if (!string.IsNullOrWhiteSpace(cc.DepartmentCode) && deptEntities.TryGetValue(cc.DepartmentCode.ToUpperInvariant(), out var dept))
+            {
+                // A department that already exists may have people in a payroll run awaiting finance review or lock: re-pointing it is refused (AM-9, M-7).
+                var existingDepartment = _db.Entry(dept).State != EntityState.Added;
+                var costCentreBefore = dept.CostCenterId;
+                if (existingDepartment)
+                {
+                    try { await new CostAttributionGuard(_db).EnsureDepartmentUnchangedAsync(tenantId, dept.CompanyId, dept.Id, dept.ParentDepartmentId, entity.Id, ct); }
+                    catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+                }
                 dept.CostCenterId = entity.Id;
+                if (existingDepartment)
+                {
+                    Audit("organization.department_updated", nameof(Department), dept.Id, dept.Code);
+                    auditChanges[dept.Id] = new { before = new { costCenterId = costCentreBefore }, after = new { costCenterId = (Guid?)entity.Id } };
+                }
+            }
             Bump("costCenters", 1);
         }
 

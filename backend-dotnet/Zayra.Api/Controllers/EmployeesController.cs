@@ -15,6 +15,7 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -665,6 +666,11 @@ public class EmployeesController : ControllerBase
         // shift every later value into the wrong column. Every such row is named; nothing is read from the file.
         if (ParseImportRows(req.CsvContent, out var rows) is IActionResult shapeRejection) return shapeRejection;
         if (TooManyRows(rows.Count) is IActionResult tooMany) return tooMany;
+        // A cost-centre cell is a re-point of where the person's pay posts (contract 2.9, S-027): the cost-centre permission, not just bulk import.
+        // Checked for the preview and the commit alike, before anything is read or written. (An import only ever creates people or fills gaps on an
+        // existing one, so there is no run to guard and no existing attribution to clear.)
+        if (rows.Any(r => !string.IsNullOrWhiteSpace(r.GetValueOrDefault("CostCenterCode", string.Empty))) && !OrgWriteRules.MayManageCostCentres(this))
+            return Forbid();
         if (req.ConfirmReimport && string.IsNullOrWhiteSpace(req.ReimportReason))
             return UnprocessableEntity(new
             {
@@ -1751,6 +1757,16 @@ public class EmployeesController : ControllerBase
             foreach (var (emp, _, _, _) in createdRowMeta.Where(m => !string.IsNullOrWhiteSpace(m.Emp.WorkEmail)))
                 _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(emp, tenantId, Context(), importedAtUtc, "import"));
 
+            // A cost centre named in the file that is not the department's own is an override: the audit action finance's separation-of-duties check reads.
+            foreach (var (emp, _, _, _) in createdRowMeta.Where(m => m.Emp.CostCenterIsOverride))
+                _audit.Stage("employee.cost_centre_override.changed", nameof(Employee), emp.Id.ToString(), Context(),
+                    JsonSerializer.Serialize(new
+                    {
+                        before = new { @override = false, costCenterId = (Guid?)null },
+                        after = new { @override = true, costCenterId = emp.CostCenterId },
+                        source = "import",
+                    }), emp.CompanyId);
+
             // New imported hires get the same grade defaults as form-created employees. Existing
             // records and their HR exceptions are not rewritten by an import/repair operation.
             await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsForEmployeesAsync(
@@ -2279,6 +2295,7 @@ public class EmployeesController : ControllerBase
             CompanyId = resolved.CompanyId,
             BranchId = resolved.BranchId,
             CostCenterId = resolved.CostCenterId,
+            CostCenterIsOverride = resolved.CostCenterIsOverride,
             EmployeeCode = finalCode,
             FullName = name,
             EnglishName = name,
@@ -2925,6 +2942,8 @@ public class EmployeesController : ControllerBase
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+        catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
         // HOME JURISDICTION: the employing company has no country, so nothing can be required and nothing
         // saved. The Add Employee modal disables its submit button on the same condition — this is the
         // authoritative refusal behind that affordance, and it names the company and where the fix lives
@@ -4044,11 +4063,16 @@ public class EmployeesController : ControllerBase
 
                 if (immediateChanges.Count > 0)
                 {
+                    var immediateCostCentre = await PrepareCostCentrePatchAsync(employee, immediateChanges, request.CostCenterReason, tenantId, cancellationToken);
+                    var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
                     ApplyChanges(employee, immediateChanges);
                     // Keys stored on the payroll profile (socialInsuranceReference) have no home on
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
-                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
+                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken, immediateCostCentre);
+                    // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
+                    await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
+                    await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken, request.CostCenterReason);
                     await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, cancellationToken);
                     await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
                     loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
@@ -4132,9 +4156,14 @@ public class EmployeesController : ControllerBase
                 });
             }
 
+            var costCentrePatch = await PrepareCostCentrePatchAsync(employee, request.Changes, request.CostCenterReason, tenantId, cancellationToken);
+            var directAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
-            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
+            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken, costCentrePatch);
+            // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
+            await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, directAttributionBefore, cancellationToken);
+            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken, request.CostCenterReason);
             await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, cancellationToken);
             await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
             loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
@@ -4162,7 +4191,21 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+        catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// The "costCenter" patch key, resolved to a live cost centre of the employee's company BEFORE any column is touched (a code that does not resolve is a
+    /// 422 with nothing written), and refused with 422 <c>cost_centre_reason_required</c> when it would set, re-point or remove the override without a reason (M-10).
+    /// </summary>
+    private async Task<EmployeeOrgFieldResolver.PreparedCostCentre?> PrepareCostCentrePatchAsync(Employee employee, IReadOnlyDictionary<string, JsonElement> changes, string? reason, Guid tenantId, CancellationToken ct)
+    {
+        var prepared = await EmployeeOrgFieldResolver.PrepareCostCentreAsync(_db, tenantId, employee, changes, ct);
+        if (prepared is not null && EmployeeOrgFieldResolver.ChangesOverride(employee, prepared) && string.IsNullOrWhiteSpace(reason))
+            throw CostCentreRuleException.ReasonRequired();
+        return prepared;
     }
 
     private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, CancellationToken ct)
@@ -5198,10 +5241,15 @@ public class EmployeesController : ControllerBase
             if (newDesigId is null && !string.IsNullOrWhiteSpace(transfer.NewDesignation))
                 (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken, landingCompanyId);
 
+            var transferAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
             if (newDeptId is not null) { employee.DepartmentId = newDeptId; employee.Department = newDeptName; }
             if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
             if (newDesigId is not null) { employee.DesignationId = newDesigId; employee.Designation = newDesigTitle; }
             employee.UpdatedAtUtc = DateTime.UtcNow;
+            // AM-9 door guard: a transfer cannot move someone in a run awaiting finance review or lock to another cost centre (the transfer stays
+            // pending until the run is reopened or locked). The permission is the approver's own (employees.approve): the requester held the cost-centre one.
+            await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, transferAttributionBefore, cancellationToken);
+            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, transferAttributionBefore, GetUserId(), cancellationToken);
             transfer.Status = "ApprovedApplied";
             transfer.HrApprovedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
@@ -5232,6 +5280,7 @@ public class EmployeesController : ControllerBase
                 "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
             return this.EstablishmentConflict(ex);
         }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
@@ -6583,7 +6632,8 @@ internal sealed class DraftApprovalNotReadyException : InvalidOperationException
 internal sealed class DraftApprovalNotFoundException : InvalidOperationException { }
 public record EmployeeDocumentRequest(string DocumentType, string FileName, string ContentType, string StorageUrl, bool IsRequired, DateOnly? ExpiryDate);
 public record EmployeeTransferRequestDto(string NewDepartment, string NewBranch, int? NewManagerEmployeeId, DateOnly EffectiveDate);
-public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, JsonElement> Changes);
+/// <param name="CostCenterReason">Why the "costCenter" key is setting or removing the employee's cost-centre override (M-10): required when it does, audited.</param>
+public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, JsonElement> Changes, string? CostCenterReason = null);
 public record GroupCountDto(string Name, int Count);
 public record EmployeeReportsDto(int TotalHeadcount, int ActiveEmployees, int NewJoiners, int Exits, int ProbationEmployees, IReadOnlyCollection<GroupCountDto> DepartmentHeadcount, IReadOnlyCollection<GroupCountDto> BranchHeadcount, IReadOnlyCollection<GroupCountDto> NationalityMix, IReadOnlyCollection<GroupCountDto> GenderMix, int ContractExpiringSoon, int VisaOrPassportExpiringSoon, int MissingDocumentsOrIncompleteProfiles);
 public record EmployeeAiResponseDto(string Answer, IReadOnlyCollection<EmployeeListItemDto> Employees);

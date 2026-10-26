@@ -182,7 +182,7 @@ public class CostCentreDoorTests
 
     // ── Employee form door (EmployeeManagementService) ────────────────────────
 
-    private static EmployeeCreateRequest EmployeeBody(string code, Guid? company, Guid? costCentre) => new(
+    private static EmployeeCreateRequest EmployeeBody(string code, Guid? company, Guid? costCentre, string? reason = "Agreed with finance") => new(
         EmployeeCode: code, ManualEmployeeCode: true, EnglishName: "Door Test", ArabicName: null, PreferredName: null,
         Gender: "Male", DateOfBirth: null, Nationality: "Pakistani", MaritalStatus: null, PersonalEmail: null,
         WorkEmail: null, MobileNumber: null, ProfilePhotoUrl: null, CompanyId: company, BranchId: null, DepartmentId: null,
@@ -190,7 +190,8 @@ public class CostCentreDoorTests
         SecondLevelManagerEmployeeId: null, EmploymentType: "Full-Time", ContractType: "Unlimited",
         JoiningDate: new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc), ConfirmationDate: null, ProbationStartDate: null,
         ProbationEndDate: null, NoticePeriodDays: null, WorkLocation: null, PayrollGroup: null, ShiftPolicyCode: null,
-        LeavePolicyCode: null, AttendancePolicyCode: null, PayrollProfile: null, SalaryBreakdown: null, ComplianceRecords: null);
+        LeavePolicyCode: null, AttendancePolicyCode: null, PayrollProfile: null, SalaryBreakdown: null, ComplianceRecords: null,
+        CostCenterReason: reason);
 
     private static EmployeeManagementService Employees(ZayraDbContext db) =>
         new(db, new AuditService(db), new DoorTestStorage(), TestNotifications.For(db));
