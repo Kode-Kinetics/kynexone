@@ -1121,20 +1121,20 @@ public class GlJournalExportsController : ControllerBase
     /// <c>finance.erp.confirm || finance.gl.manage</c>, on the stated assumption that a tenant could "define"
     /// the two narrower keys to turn segregation on. It could not: the catalog is global and seeded, and
     /// neither key was in it, so both collapsed to <c>finance.gl.manage</c> and the maker could always
-    /// attest their own export. <c>finance.gl.export</c> is dropped (nothing distinguishes it from
-    /// <c>finance.gl.manage</c> in this product); <c>finance.erp.confirm</c> is now a catalog key.</para>
+    /// attest their own export. <c>finance.erp.confirm</c> is now a catalog key, and <c>finance.gl.export</c> was added
+    /// later (AM-19) as the key for taking the file, see <see cref="CanDownload"/>.</para>
     /// </summary>
     private bool CanRead() => HasPermission("finance.gl.read") || HasPermission("finance.gl.manage");
     private bool CanExport() => HasPermission("finance.gl.manage");
 
     /// <summary>
     /// Taking the file (and seeing its lines) is an export-holder act: <c>finance.gl.read</c> alone keeps metadata and totals.
-    /// Today the export holder is <c>finance.gl.manage</c> (see <see cref="CanExport"/>); the contract's dedicated
-    /// <c>finance.gl.export</c> key needs a permission-catalog entry first and is a one-line change here. An ERP API key that
+    /// The export holder is <c>finance.gl.export</c> (AM-19), granted to every role that held <c>finance.gl.manage</c> when it
+    /// was introduced (seeded bundles and migration GrantFinanceGlExport). An ERP API key that
     /// holds the read scope may pull files: creating the key with that scope is the explicit grant, and every pull is audited
     /// with the key's id and creator.
     /// </summary>
-    private bool CanDownload() => CanExport() || (ErpApiKeyPrincipal.IsApiKey(User) && HasPermission("finance.gl.read"));
+    private bool CanDownload() => HasPermission("finance.gl.export") || (ErpApiKeyPrincipal.IsApiKey(User) && HasPermission("finance.gl.read"));
     private bool CanConfirm() => HasPermission(ErpConfirmPermission);
 
     /// <summary>Confirm or reject that the client's ERP imported a journal export — the checker key.</summary>
