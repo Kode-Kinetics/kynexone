@@ -13,6 +13,7 @@ using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Employees.Onboarding;
+using Zayra.Api.Infrastructure.Http;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Employees;
@@ -51,6 +52,8 @@ public sealed class EmployeeHireController : ControllerBase
     // ── Draft autosave ───────────────────────────────────────────────────────────────────────────
     [HttpPut("{id:int}/hire-draft")]
     [HasPermission("employees.write")]
+    [TenantUserRateLimit("hire-draft")]
+    [RequestSizeLimit(65_536)]
     public async Task<IActionResult> SaveDraft(int id, [FromBody] HireDraftRequest body, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -66,7 +69,23 @@ public sealed class EmployeeHireController : ControllerBase
         var guard = HttpContext.RequestServices.GetService(typeof(IEmployeeInputGuard)) as IEmployeeInputGuard;
         if (guard is not null) request = await guard.EnforceDraftAsync(tenantId, id, request, Context(tenantId), ct);
 
-        var saved = await _management.UpdateAsync(tenantId, id, request, Context(tenantId), ct, User.HasPermission("employees.sensitive"));
+        // Take the draft atomically: only one of two saves made from the same basis gets past this line.
+        var claimedAt = DateTime.UtcNow;
+        var claimed = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Draft autosave claim: a conditional update on the draft the caller already resolved in scope; tenant pinned.")
+            .Where(e => e.Id == id && !e.IsDeleted && e.UpdatedAtUtc == employee.UpdatedAtUtc)
+            .ExecuteUpdateAsync(set => set.SetProperty(e => e.UpdatedAtUtc, (DateTime?)claimedAt), ct);
+        if (claimed == 0)
+            return Problem(409, "draft_changed_elsewhere", "This draft was changed in another window. Reload it before saving.");
+        EmployeeDetailDto? saved;
+        try { saved = await _management.UpdateAsync(tenantId, id, request, Context(tenantId), ct, User.HasPermission("employees.sensitive")); }
+        catch
+        {
+            // The save failed: give the draft its previous stamp back so the client's basis is still valid.
+            await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Draft autosave claim release; tenant pinned.")
+                .Where(e => e.Id == id && e.UpdatedAtUtc == claimedAt)
+                .ExecuteUpdateAsync(set => set.SetProperty(e => e.UpdatedAtUtc, employee.UpdatedAtUtc), CancellationToken.None);
+            throw;
+        }
         if (saved is null) return NotFound();
         var after = await _db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == id)
             .Select(e => new { e.UpdatedAtUtc, e.CreatedAtUtc, e.ReadinessState, e.ActivationBlockersCount }).FirstAsync(ct);
@@ -80,6 +99,7 @@ public sealed class EmployeeHireController : ControllerBase
     // ── Creator discard ──────────────────────────────────────────────────────────────────────────
     [HttpDelete("{id:int}/draft")]
     [HasPermission("employees.write")]
+    [TenantUserRateLimit("draft-discard")]
     public async Task<IActionResult> DiscardDraft(int id, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -101,6 +121,7 @@ public sealed class EmployeeHireController : ControllerBase
 
     [HttpPost("{id:int}/rehire")]
     [HasPermission("employees.write")]
+    [TenantUserRateLimit("employee-rehire")]
     public async Task<IActionResult> Rehire(int id, [FromBody] RehireRequest body, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -114,10 +135,24 @@ public sealed class EmployeeHireController : ControllerBase
         if (await _db.EmployeeFinalSettlements.AnyAsync(s => s.TenantId == tenantId && s.EmployeeId == id
                 && s.Status != FinalSettlementStatuses.Paid && s.Status != FinalSettlementStatuses.Cancelled, ct))
             return Problem(409, "final_settlement_open", "The previous final settlement is not settled yet.");
-        if (body.DesignationId is Guid d && !await _db.Designations.AnyAsync(x => x.TenantId == tenantId && x.Id == d && !x.IsDeleted, ct))
-            return Problem(422, "invalid_reference", "The selected designation is not available.");
-        if (body.GradeId is Guid g && !await _db.Grades.AnyAsync(x => x.TenantId == tenantId && x.Id == g && !x.IsDeleted, ct))
-            return Problem(422, "invalid_reference", "The selected grade is not available.");
+        // The start date follows the same hard window as a new hire's joining date (today - 50 years .. today + 2 years).
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var requested = DateOnly.FromDateTime(body.StartDate);
+        if (requested < today.AddYears(-50) || requested > today.AddYears(2))
+            throw new EmployeeValidationException(400, EmployeeProblemCodes.ValidationFailed,
+                new Dictionary<string, string[]> { ["startDate"] = [EmployeeFieldErrors.JoiningOutOfRange] },
+                "The start date is outside the allowed range.");
+        // A changed designation or grade is checked like a new hire's: this tenant, active, the employing company or shared,
+        // and the grade the designation belongs to.
+        var gradeChanged = body.GradeId is Guid requestedGrade && requestedGrade != employee.GradeId;
+        if (body.DesignationId is not null || body.GradeId is not null)
+        {
+            var refs = new EmployeeReferenceValidator(_db);
+            var probe = new EmployeeCreateRequest(null, false, employee.EnglishName ?? employee.FullName, null, null, null, null, null, null, null, null, null, null,
+                employee.CompanyId, null, null, body.DesignationId, body.GradeId ?? (body.DesignationId is not null ? employee.GradeId : null), null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+            await refs.ValidateAsync(tenantId, probe, this.GetEntityScope(), id, ct);
+        }
 
         var context = Context(tenantId);
         var oldStatus = employee.Status;
@@ -136,6 +171,8 @@ public sealed class EmployeeHireController : ControllerBase
             TenantId = tenantId, EmployeeId = id, OldStatus = oldStatus, NewStatus = EmployeeStatuses.Draft,
             EffectiveDate = startDate, Reason = $"Rehired: {reason}", ChangedByUserId = context.UserId,
         });
+        // The person is a new hire again: whatever pay they carry waits for Finance (a grade change always does).
+        await CompensationApprovalGate.ReconcileAsync(_db, employee, null, context, ct, forceReopen: gradeChanged);
         _db.EmployeeHistories.Add(new EmployeeHistory
         {
             TenantId = tenantId, EmployeeId = id, EventType = "Rehired", FieldName = "Status",
@@ -173,6 +210,7 @@ public sealed class EmployeeHireController : ControllerBase
     // ── Finance approves the pay package set at create ───────────────────────────────────────────
     [HttpPost("{id:int}/compensation/approve")]
     [HasPermission(CompensationApprovalGate.ApprovePermission)]
+    [TenantUserRateLimit("compensation-approve")]
     public async Task<IActionResult> ApproveCompensation(int id, [FromBody] ApproveCompensationRequest body, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -187,14 +225,19 @@ public sealed class EmployeeHireController : ControllerBase
         var open = await _db.EmployeeImportGaps
             .Where(g => g.TenantId == tenantId && g.EmployeeId == id && g.GapType == CompensationApprovalGate.GapType && g.ResolvedAtUtc == null)
             .ToListAsync(ct);
-        if (open.Count == 0)
+        var livePay = await CompensationApprovalGate.LiveFingerprintAsync(_db, tenantId, id, ct);
+        var alreadyApproved = await CompensationApprovalGate.ApprovedFingerprintAsync(_db, tenantId, id, ct);
+        // Nothing waiting AND the stored figures are the approved ones: nothing to do. A package that moved on without a
+        // gap (a write that bypassed the hooks) is approved afresh.
+        if (open.Count == 0 && string.Equals(alreadyApproved, livePay, StringComparison.Ordinal))
             return Conflict(new { error = "nothing_to_approve", message = "This employee has no pay package waiting for approval." });
 
         var profile = await _db.EmployeePayrollProfiles.AsNoTracking()
             .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == id && !p.IsDeleted, ct);
-        var makers = new HashSet<Guid>();
+        var makers = new HashSet<Guid>(await CompensationApprovalGate.PayWritersSinceApprovalAsync(_db, tenantId, id, ct));
         if (profile?.CreatedBy is Guid pc) makers.Add(pc);
         if (profile?.UpdatedBy is Guid pu) makers.Add(pu);
+        if (employee.UpdatedBy is Guid eu) makers.Add(eu);
         var subjectUsers = await ApprovalUnblockSubjects(tenantId, id, employee, ct);
         var refusal = CompensationApprovalGate.RefusalFor(caller.Value, employee.CreatedBy, subjectUsers.Contains(caller.Value) ? caller.Value : employee.UserAccountId, makers);
         if (refusal is not null || await CredentialHandlerBar.IsBarredAsync(_db, tenantId, id, caller.Value, DateTime.UtcNow, ct))
@@ -202,7 +245,13 @@ public sealed class EmployeeHireController : ControllerBase
                 message = "A pay package must be approved by someone other than the person who entered it, the employee, or the person who issued the employee's sign-in code." });
 
         var now = DateTime.UtcNow;
-        foreach (var g in open) g.ResolvedAtUtc = now;
+        if (open.Count == 0)
+            open.Add(NewResolvedGap(tenantId, employee));
+        foreach (var g in open)
+        {
+            g.ResolvedAtUtc = now;
+            g.RawValue = CompensationApprovalGate.ApprovedMarker + livePay;   // the approval is bound to these exact figures
+        }
         await _audit.WriteAsync(CompensationApprovalGate.ApprovedAction, "Employee", id.ToString(), Context(tenantId),
             JsonSerializer.Serialize(new
             {
@@ -210,6 +259,17 @@ public sealed class EmployeeHireController : ControllerBase
                 fingerprint = CompensationApprovalGate.FingerprintForApproval(employee.Salary, profile?.Iban),
             }), ct);
         return Ok(new { approved = true });
+    }
+
+    private EmployeeImportGap NewResolvedGap(Guid tenantId, Employee employee)
+    {
+        var gap = new EmployeeImportGap
+        {
+            TenantId = tenantId, CompanyId = employee.CompanyId, ImportBatchId = Guid.Empty, EmployeeId = employee.Id, RowNumber = 0,
+            GapType = CompensationApprovalGate.GapType, GapCategory = "pay", Detail = "Pay package and bank details approved by Finance.",
+        };
+        _db.EmployeeImportGaps.Add(gap);
+        return gap;
     }
 
     private async Task<IReadOnlyCollection<Guid>> ApprovalUnblockSubjects(Guid tenantId, int id, Employee employee, CancellationToken ct)
@@ -243,5 +303,6 @@ public sealed class EmployeeHireController : ControllerBase
 
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
-    private RequestContext Context(Guid tenantId) => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), tenantId);
+    private RequestContext Context(Guid tenantId) => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), tenantId,
+        Permissions: User.EffectivePermissions());
 }

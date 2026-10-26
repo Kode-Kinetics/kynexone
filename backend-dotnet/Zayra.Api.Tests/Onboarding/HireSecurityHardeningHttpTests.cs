@@ -226,7 +226,7 @@ public class HireSecurityHardeningHttpTests : IClassFixture<HireIntegrityHttpFix
     }
 
     [Theory]
-    [InlineData(-800)]
+    [InlineData(-18600)]
     [InlineData(800)]
     public async Task Rehire_StartDateOutsideTheWindow_IsValidationFailed(int daysFromToday)
     {

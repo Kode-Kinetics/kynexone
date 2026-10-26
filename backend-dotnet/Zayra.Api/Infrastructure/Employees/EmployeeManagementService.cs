@@ -309,6 +309,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var employee = await _db.Employees.TagWith(RowLockingInterceptor.ForUpdateTag)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
+        var priorPay = await Onboarding.CompensationApprovalGate.LiveFingerprintAsync(_db, tenantId, id, cancellationToken);
         var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
         var priorPositionId = employee.PositionId;
         // Capture BEFORE ApplyEmployee overwrites WorkEmail — needed for the login-identity rename guard.
@@ -358,6 +359,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _db.SaveChangesAsync(cancellationToken);
             await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
         }
+        await Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, priorPay, context, cancellationToken);
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         var updateAudit = AuthAuditEntry.Create(updateAuditId, DateTime.UtcNow, "employee.updated", "Employee", id.ToString(), context with { TenantId = tenantId });

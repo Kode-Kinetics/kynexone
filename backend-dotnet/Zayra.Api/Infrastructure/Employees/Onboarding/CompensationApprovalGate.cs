@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Employees.Onboarding;
@@ -28,43 +29,136 @@ public static class CompensationApprovalGate
     public const string CreatedAction = "employee.created_compensation_set";
     public const string ApprovedAction = "employee.created_compensation_approved";
     public const string ApprovePermission = "payroll.approve";
+    /// <summary>One audit row per write that changed the pay package of a hire still awaiting approval; its actor can no longer approve.</summary>
+    public const string WrittenAction = "employee.compensation_written";
+    /// <summary>Marks a resolved gap with the pay fingerprint Finance approved (the rest of the field is the hash).</summary>
+    public const string ApprovedMarker = "approved:";
 
     /// <summary>True when the stored hire carries pay figures or bank details that need a second person.</summary>
     public static bool CarriesCompensation(decimal? salary, string? iban, string? accountNumber) =>
         (salary ?? 0m) > 0m || !string.IsNullOrWhiteSpace(iban) || !string.IsNullOrWhiteSpace(accountNumber);
 
+    /// <summary>The figures Finance approves, in one comparable shape.</summary>
+    public sealed record PayPackage(
+        decimal? Salary, decimal Basic, decimal Housing, decimal Transport, decimal Food, decimal Mobile, decimal Other,
+        decimal FixedDeduction, string? Currency, string? Iban, string? AccountNumber);
+
+    /// <summary>SHA-256 over the whole package (basic, allowances, deductions, currency, bank account), normalised so
+    /// spacing and case never matter. Used to bind an approval to the exact figures it approved.</summary>
+    public static string PayFingerprint(PayPackage p)
+    {
+        static string Money(decimal? v) => (v ?? 0m).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+        static string Compact(string? v) => (v ?? string.Empty).Replace(" ", "", StringComparison.Ordinal).ToUpperInvariant();
+        return Sha256(string.Join('|', "pay.v1", Money(p.Salary), Money(p.Basic), Money(p.Housing), Money(p.Transport),
+            Money(p.Food), Money(p.Mobile), Money(p.Other), Money(p.FixedDeduction), Compact(p.Currency), Compact(p.Iban), Compact(p.AccountNumber)));
+    }
+
+    /// <summary>The employee's stored pay package right now: staged rows win over saved ones.</summary>
+    public static async Task<PayPackage> LivePackageAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var salary = db.Employees.Local.FirstOrDefault(e => e.Id == employeeId)?.Salary;
+        if (salary is null)
+            salary = await ScopedBypass.NullableTenantWide(db.Employees, tenantId, "Pay approval: the stored salary of the employee being approved; tenant pinned.")
+                .AsNoTracking().Where(e => e.Id == employeeId).Select(e => e.Salary).FirstOrDefaultAsync(ct);
+        var profile = db.EmployeePayrollProfiles.Local
+                .FirstOrDefault(p => p.TenantId == tenantId && p.EmployeeId == employeeId && !p.IsDeleted)
+            ?? await db.EmployeePayrollProfiles.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employeeId && !p.IsDeleted, ct);
+        var staged = db.EmployeeSalaryStructures.Local.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive).ToList();
+        var saved = await db.EmployeeSalaryStructures.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive).ToListAsync(ct);
+        var structure = staged.Concat(saved.Where(x => staged.All(t => t.Id != x.Id)))
+            .OrderByDescending(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();
+        return new PayPackage(salary, structure?.BasicSalary ?? 0m, structure?.HousingAllowance ?? 0m, structure?.TransportAllowance ?? 0m,
+            structure?.FoodAllowance ?? 0m, structure?.MobileAllowance ?? 0m, structure?.OtherAllowance ?? 0m, structure?.FixedDeduction ?? 0m,
+            structure?.Currency ?? profile?.SalaryCurrency, profile?.Iban, profile?.AccountNumber);
+    }
+
+    public static async Task<string> LiveFingerprintAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>
+        PayFingerprint(await LivePackageAsync(db, tenantId, employeeId, ct));
+
+    /// <summary>
+    /// The pay fingerprint Finance last approved: a hash, <see cref="NoApproval"/> when nobody has approved, or
+    /// <see cref="LegacyApproval"/> when the approval predates the fingerprint (nothing to compare against).
+    /// </summary>
+    public const string NoApproval = "none";
+    public const string LegacyApproval = "legacy";
+
+    public static async Task<string> ApprovedFingerprintAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var last = await db.EmployeeImportGaps.AsNoTracking()
+            .Where(g => g.TenantId == tenantId && g.EmployeeId == employeeId && g.GapType == GapType && g.ResolvedAtUtc != null)
+            .OrderByDescending(g => g.ResolvedAtUtc).Select(g => g.RawValue).FirstOrDefaultAsync(ct);
+        // Rows are read newest first; only the newest decides.
+        var any = await db.EmployeeImportGaps.AsNoTracking().AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == employeeId
+            && g.GapType == GapType && g.ResolvedAtUtc != null, ct);
+        if (!any) return NoApproval;
+        return last is { } v && v.StartsWith(ApprovedMarker, StringComparison.Ordinal) ? v[ApprovedMarker.Length..] : LegacyApproval;
+    }
+
+    /// <summary>
+    /// Called after ANY write of an employee's pay (create, update, draft autosave, import, rehire). For an employee who is
+    /// not yet in post it keeps the Finance gap honest: opens it when the stored figures are not the approved ones, and
+    /// records the actor of a write that changed them so they can never approve their own figures. An employee already in
+    /// post is left to the salary-change approval. <paramref name="priorFingerprint"/> is the package before the write
+    /// (null = unknown, treated as a write).
+    /// </summary>
+    public static async Task ReconcileAsync(ZayraDbContext db, Employee employee, string? priorFingerprint, RequestContext context,
+        CancellationToken ct, bool forceReopen = false)
+    {
+        if (employee.TenantId is not Guid tenantId || employee.Id == 0) return;
+        if (Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(employee.Status)) return;
+        var package = await LivePackageAsync(db, tenantId, employee.Id, ct);
+        var live = PayFingerprint(package);
+        var written = forceReopen || priorFingerprint is null || !string.Equals(priorFingerprint, live, StringComparison.Ordinal);
+        if (!CarriesCompensation(package.Salary, package.Iban, package.AccountNumber)) return;
+
+        var approved = await ApprovedFingerprintAsync(db, tenantId, employee.Id, ct);
+        var needsApproval = forceReopen || approved == NoApproval
+            || (approved == LegacyApproval ? written : !string.Equals(approved, live, StringComparison.Ordinal));
+        if (!needsApproval) return;
+
+        if (!await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == employee.Id
+                && g.GapType == GapType && g.ResolvedAtUtc == null, ct))
+        {
+            db.EmployeeImportGaps.Add(new EmployeeImportGap
+            {
+                TenantId = tenantId,
+                CompanyId = employee.CompanyId,
+                ImportBatchId = Guid.Empty,
+                EmployeeId = employee.Id,
+                RowNumber = 0,
+                GapType = GapType,
+                GapCategory = "pay",
+                Detail = "Pay package and bank details are awaiting approval by Finance.",
+            });
+        }
+        if (written)
+            db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, priorFingerprint is null && approved == NoApproval ? CreatedAction : WrittenAction,
+                "Employee", employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), context with { TenantId = tenantId },
+                JsonSerializer.Serialize(Fingerprint(package.Salary, package.Iban))));
+    }
+
     /// <summary>
     /// Called inside the create transaction after the salary and payroll profile are written. Stages the gap and the
     /// audit row on the caller's context; the caller's next SaveChanges commits them with the employee.
     /// </summary>
-    public static async Task OpenAsync(ZayraDbContext db, Employee employee, RequestContext context, CancellationToken ct)
-    {
-        if (employee.TenantId is not Guid tenantId || employee.Id == 0) return;
-        // The profile is staged by the caller in this same transaction and may not be saved yet, so the tracked copy
-        // wins over a database read (which would miss it and leave a hire with bank details and no approval gap).
-        var profile = db.EmployeePayrollProfiles.Local
-                .FirstOrDefault(p => p.TenantId == tenantId && p.EmployeeId == employee.Id && !p.IsDeleted)
-            ?? await db.EmployeePayrollProfiles.AsNoTracking()
-                .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employee.Id && !p.IsDeleted, ct);
-        if (!CarriesCompensation(employee.Salary, profile?.Iban, profile?.AccountNumber)) return;
-        if (await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == employee.Id
-                && g.GapType == GapType && g.ResolvedAtUtc == null, ct))
-            return;
+    public static Task OpenAsync(ZayraDbContext db, Employee employee, RequestContext context, CancellationToken ct) =>
+        ReconcileAsync(db, employee, null, context, ct);
 
-        db.EmployeeImportGaps.Add(new EmployeeImportGap
-        {
-            TenantId = tenantId,
-            CompanyId = employee.CompanyId,
-            ImportBatchId = Guid.Empty,
-            EmployeeId = employee.Id,
-            RowNumber = 0,
-            GapType = GapType,
-            GapCategory = "pay",
-            Detail = "Pay package and bank details are awaiting approval by Finance.",
-        });
-        db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, CreatedAction, "Employee",
-            employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), context with { TenantId = tenantId },
-            JsonSerializer.Serialize(Fingerprint(employee.Salary, profile?.Iban))));
+    /// <summary>Everyone who wrote this employee's pay figures since the last approval (the create counts).</summary>
+    public static async Task<IReadOnlyCollection<Guid>> PayWritersSinceApprovalAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var since = await db.EmployeeImportGaps.AsNoTracking()
+            .Where(g => g.TenantId == tenantId && g.EmployeeId == employeeId && g.GapType == GapType && g.ResolvedAtUtc != null)
+            .MaxAsync(g => g.ResolvedAtUtc, ct) ?? DateTime.MinValue;
+        var id = employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var writers = await ScopedBypass.NullableTenantWide(db.AuditLogs, tenantId, "Pay approval: who wrote this employee's figures since the last approval; tenant pinned, entity pinned.")
+            .AsNoTracking()
+            .Where(a => a.EntityName == "Employee" && a.EntityId == id && a.UserId != null && a.CreatedAtUtc > since
+                && (a.Action == CreatedAction || a.Action == WrittenAction))
+            .Select(a => a.UserId!.Value).Distinct().ToListAsync(ct);
+        return writers;
     }
 
     /// <summary>
@@ -78,7 +172,7 @@ public static class CompensationApprovalGate
         ResolvedReadinessPolicy policy, CancellationToken ct)
     {
         var readiness = evaluator.Evaluate(snapshot, policy);
-        if (await IsOpenAsync(db, tenantId, snapshot.EmployeeId, ct))
+        if (await IsOpenAsync(db, tenantId, snapshot.EmployeeId, ct) || await HasDriftedFromApprovalAsync(db, tenantId, snapshot.EmployeeId, ct))
         {
             var blocker = new ReadinessItem(
                 Key: GapType, Label: "Pay package awaiting Finance approval", Category: "pay", Reason: "statutory",
@@ -87,6 +181,14 @@ public static class CompensationApprovalGate
         }
         if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
         return readiness;
+    }
+
+    /// <summary>True when Finance approved a specific package and the stored one is no longer it (a write that bypassed every hook).</summary>
+    public static async Task<bool> HasDriftedFromApprovalAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var approved = await ApprovedFingerprintAsync(db, tenantId, employeeId, ct);
+        if (approved is NoApproval or LegacyApproval) return false;
+        return !string.Equals(approved, await LiveFingerprintAsync(db, tenantId, employeeId, ct), StringComparison.Ordinal);
     }
 
     public static Task<bool> IsOpenAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>
