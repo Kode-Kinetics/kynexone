@@ -588,7 +588,7 @@ public class BonusesController : ControllerBase
             if (glCtx.CostAccountingEnabled && companyId is Guid costCompany)
             {
                 var resolved = await Zayra.Api.Infrastructure.Payroll.PayrollCostStamper.ResolveEmployeesAsync(
-                    _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct);
+                    _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx);
                 foreach (var (employeeId, r) in resolved) costOf[employeeId] = r.CostCenterId;
 
                 // A Required bonus-expense account with an employee who has no usable cost centre is refused with M-1 / M-2 (the same body Lock
@@ -860,7 +860,7 @@ public class BonusesController : ControllerBase
                 var costOf = new Dictionary<int, Guid?>();
                 if (glCtx.CostAccountingEnabled && companyId is Guid costCompany)
                     foreach (var (employeeId, r) in await PayrollCostStamper.ResolveEmployeesAsync(
-                                 _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct))
+                                 _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx))
                         costOf[employeeId] = r.CostCenterId;
                 foreach (var (ccId, part) in BonusCostSplit.Split(unaccrued,
                              group.Select(b => (costOf.GetValueOrDefault(b.EmployeeIntId ?? 0), b.GrossBonusAmount)), glCtx, currency))

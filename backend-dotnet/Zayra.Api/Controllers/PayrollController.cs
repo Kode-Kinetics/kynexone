@@ -9816,78 +9816,182 @@ public partial class PayrollController : ControllerBase
     }
 
     /// <summary>
-    /// Cost-centre payroll allocation — aggregates a run's payroll cost by cost centre
-    /// (resolved via each employee's CostCenterId). Enterprise finance reporting: answers
-    /// "what did we spend per cost centre this period?". Employees with no cost centre roll
-    /// up into an "Unassigned" bucket so the totals always reconcile to the run total.
-    /// TotalCost = gross pay + employer statutory cost (the true cost to the company).
+    /// Cost-centre payroll allocation — aggregates a run's payroll cost by cost centre (contract 2.10, decision 3, AM-17, D-7).
+    /// <list type="bullet">
+    /// <item><b>Stamped</b> (locked run costed at Lock): gross from the stamped earnings, contra-expense deductions and employer statutory cost from
+    /// the stamped deduction rows, headcount and net from the slips' stamped cost centre, names from the journal-line SNAPSHOTS. Nothing
+    /// reads the live employee or cost-centre rows, so a later rename, transfer or department change cannot move the report.</item>
+    /// <item><b>NotRecorded</b> (locked before cost centres existed): one honest bucket. Never the live employee row.</item>
+    /// <item><b>Preview</b> (any run not yet locked): a dry-run resolution, labelled so.</item>
+    /// </list>
+    /// For a stamped run it also returns <c>journalNet</c> per cost centre (the run's own profit-and-loss ledger lines),
+    /// <c>clearedAgainstAccrual</c> (bonus and settlement amounts the payroll cleared against an earlier accrual instead of expensing again) and a top-level
+    /// <c>reconciles</c>: per cost centre <c>journalNet == earnings − contra deductions + employer statutory − clearedAgainstAccrual (+ rounding line)</c> (T-025).
+    /// Needs <c>finance.gl.read</c> and company scope (S-038).
     /// </summary>
     [HttpGet("runs/{id:guid}/cost-center-allocation")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
+    [HasPermission("finance.gl.read")]
     public async Task<IActionResult> CostCenterAllocation(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == id, cancellationToken);
         if (run is null) return NotFound();
+        if (run.CompanyId is Guid runCompany && !this.GetEntityScope().CanAccessCompany(runCompany)) return NotFound();
 
-        var slips = await _db.PayrollSlips.AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.RunId == id).ToListAsync(cancellationToken);
-        var empIds = slips.Select(s => s.EmployeeId).Distinct().ToList();
-        var ccByEmp = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && empIds.Contains(e.Id))
-            .Select(e => new { e.Id, e.CostCenterId })
-            .ToDictionaryAsync(e => e.Id, e => e.CostCenterId, cancellationToken);
-        var costCenters = await _db.CostCenters.AsNoTracking()
-            .Where(c => c.TenantId == tenantId && !c.IsDeleted)
-            .ToDictionaryAsync(c => c.Id, cancellationToken);
+        var slips = await _db.PayrollSlips.AsNoTracking().Where(s => s.TenantId == tenantId && s.RunId == id).ToListAsync(cancellationToken);
+        var earnings = await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id).ToListAsync(cancellationToken);
+        var deductions = await _db.PayrollDeductions.AsNoTracking().Where(d => d.TenantId == tenantId && d.PayrollRunId == id).ToListAsync(cancellationToken);
         var currency = await ResolveCurrencyAsync(tenantId, cancellationToken);
+        var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
 
-        var grouped = slips
-            .GroupBy(s => ccByEmp.TryGetValue(s.EmployeeId, out var cc) ? cc : null)
-            .Select(g =>
-            {
-                var ccId = g.Key;
-                var code = "—";
-                var name = "Unassigned";
-                if (ccId.HasValue && costCenters.TryGetValue(ccId.Value, out var cc)) { code = cc.Code; name = cc.Name; }
-                var gross = g.Sum(s => s.GrossSalary);
-                var employer = g.Sum(s => s.EmployerStatutoryTotal);
-                return new
-                {
-                    costCenterId = ccId,
-                    costCenterCode = code,
-                    costCenterName = name,
-                    employeeCount = g.Count(),
-                    grossSalary = gross,
-                    netSalary = g.Sum(s => s.NetSalary),
-                    employerCost = employer,
-                    totalCost = gross + employer,
-                };
-            })
-            .OrderByDescending(a => a.totalCost)
-            .ToList();
+        const string NotRecordedLabel = "Not recorded (run locked before cost centres)";
+        var wasLocked = run.Status is "Locked" or "Voided" || run.LockedAtUtc != null;
+        var basis = !wasLocked ? "Preview" : run.CostAccountingApplied ? "Stamped" : "NotRecorded";
 
-        var totalCost = grouped.Sum(a => a.totalCost);
-        var allocations = grouped.Select(a => new
+        var names = new Dictionary<Guid, (string Code, string Name)>();
+        List<FinanceGlEntry> ledger = new();
+        if (basis == "Stamped")
         {
-            a.costCenterId, a.costCenterCode, a.costCenterName, a.employeeCount,
-            a.grossSalary, a.netSalary, a.employerCost, a.totalCost,
-            percentOfTotal = totalCost == 0 ? 0m : Math.Round(a.totalCost / totalCost * 100, 2),
-        }).ToList();
+            ledger = await _db.FinanceGlEntries.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id && x.ReversalOfEntryId == null)
+                .ToListAsync(cancellationToken);
+            foreach (var l in ledger.Where(l => l.CostCenterId != null && l.CostCenterCode != null))
+                names.TryAdd(l.CostCenterId!.Value, (l.CostCenterCode!, l.CostCenterName ?? l.CostCenterCode!));
+        }
+        else if (basis == "Preview")
+        {
+            // A dry-run resolution exactly as Lock would decide it (same small-cell roll-up). In memory only: nothing is saved.
+            if (run.CompanyId is Guid previewCompany)
+            {
+                var plan = await PayrollCostStamper.PlanAsync(_db, tenantId, previewCompany, earnings, deductions, glCtx, cancellationToken);
+                if (plan.Enabled) PayrollCostStamper.Apply(plan, earnings, deductions, slips);
+                else
+                {
+                    var resolved = await PayrollCostStamper.ResolveEmployeesAsync(_db, tenantId, previewCompany, slips.Select(s => s.EmployeeId), cancellationToken);
+                    var byEmployee = resolved.ToDictionary(kv => kv.Key, kv => kv.Value.CostCenterId);
+                    foreach (var e in earnings) e.CostCenterId = byEmployee.GetValueOrDefault(e.EmployeeId);
+                    foreach (var d in deductions) d.CostCenterId = byEmployee.GetValueOrDefault(d.EmployeeId);
+                    foreach (var s in slips) s.CostCenterId = byEmployee.GetValueOrDefault(s.EmployeeId);
+                }
+            }
+            var previewIds = earnings.Select(e => e.CostCenterId).Concat(deductions.Select(d => d.CostCenterId)).Concat(slips.Select(s => s.CostCenterId))
+                .Where(c => c != null).Select(c => c!.Value).Distinct().ToList();
+            foreach (var cc in await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId && previewIds.Contains(c.Id)).ToListAsync(cancellationToken))
+                names[cc.Id] = (cc.Code, cc.Name);
+        }
+
+        decimal Round(decimal v) => Math.Round(v, 2);
+        string AccountType(string label)
+        {
+            var code = label.Split(' ', 2)[0];
+            if (glCtx.AccountRules.TryGetValue(code, out var a)) return a.AccountType;
+            return PayrollGlCatalog.Drivers.FirstOrDefault(d => d.DefaultCode == code)?.AccountType ?? string.Empty;
+        }
+        bool IsPnl(string label) => !string.IsNullOrWhiteSpace(label) && AccountType(label) is "Expense" or "Revenue" or "Income";
+
+        // ── NotRecorded: a run locked before cost centres. One bucket, from the slips only. ───────────────────────────────
+        if (basis == "NotRecorded")
+        {
+            var gross = slips.Sum(s => s.GrossSalary);
+            var employer = slips.Sum(s => s.EmployerStatutoryTotal);
+            var only = new
+            {
+                costCenterId = (Guid?)null, costCenterCode = "—", costCenterName = NotRecordedLabel, employeeCount = slips.Count,
+                grossSalary = gross, netSalary = slips.Sum(s => s.NetSalary), employerCost = employer, totalCost = gross + employer, percentOfTotal = gross + employer == 0 ? 0m : 100m,
+                contraDeductions = 0m, journalNet = (decimal?)null, clearedAgainstAccrual = (decimal?)null, roundingAdjustment = (decimal?)null, smallCell = false,
+            };
+            return Ok(new
+            {
+                runId = id, period = $"{run.Year}-{run.Month:D2}", currency, basis, label = NotRecordedLabel,
+                totalEmployees = slips.Count, totalGross = gross, totalNet = only.netSalary, totalEmployerCost = employer, totalCost = only.totalCost,
+                reconciles = (bool?)null, retroNote = RetroNote, retroNoteAr = RetroNoteAr, allocations = new[] { only },
+            });
+        }
+
+        // ── Stamped / Preview: bucket by the cost centre carried on the rows ───────────────────────────────────────────────
+        var keys = earnings.Select(e => e.CostCenterId)
+            .Concat(deductions.Where(d => d.IsEmployerContribution || d.CostCenterId != null).Select(d => d.CostCenterId))
+            .Concat(slips.Select(s => s.CostCenterId))
+            .Concat(ledger.Where(l => l.CostCenterId != null && (IsPnl(l.DebitAccount) || IsPnl(l.CreditAccount))).Select(l => l.CostCenterId))
+            .Distinct().ToList();
+
+        // Bonus and settlement earnings that payroll cleared against an accrual (the run carries the clearing lines) are not this run's expense.
+        var bonusDeferred = ledger.Any(l => l.EventType == GlEventTypes.BonusPayrollClearing);
+        var settlementDeferred = ledger.Any(l => l.EventType == GlEventTypes.SettlementPayrollClearing);
+        bool Deferred(PayrollEarning e) => (bonusDeferred && e.Source == "Bonus") || (settlementDeferred && e.Source == FinalSettlementComponents.SettlementSource);
+
+        var k = (int)glCtx.CostCentreSmallCellMin;
+        var buckets = keys.Select(cc =>
+        {
+            var gross = earnings.Where(e => e.CostCenterId == cc).Sum(e => e.Amount);
+            var contra = deductions.Where(d => !d.IsEmployerContribution && d.CostCenterId == cc && cc != null).Sum(d => d.Amount);
+            var employer = deductions.Where(d => d.IsEmployerContribution && d.CostCenterId == cc).Sum(d => d.Amount);
+            var mine = slips.Where(s => s.CostCenterId == cc).ToList();
+            var deferredEarnings = earnings.Where(e => e.CostCenterId == cc && Deferred(e)).Sum(e => e.Amount);
+            decimal? journalNet = null, cleared = null, rounding = null;
+            if (basis == "Stamped")
+            {
+                var mineLines = ledger.Where(l => l.CostCenterId == cc).ToList();
+                decimal Net(IEnumerable<FinanceGlEntry> ls) =>
+                    ls.Sum(l => (IsPnl(l.DebitAccount) ? l.Amount : 0m) - (IsPnl(l.CreditAccount) ? l.Amount : 0m));
+                journalNet = Round(Net(mineLines));
+                var unaccrued = mineLines.Where(l => l.Description.EndsWith("(un-accrued)", StringComparison.Ordinal) && IsPnl(l.DebitAccount)).Sum(l => l.Amount);
+                cleared = Round(deferredEarnings - unaccrued);
+                rounding = Round(Net(mineLines.Where(l => l.Description == PayrollGlDescriptions.Rounding)));
+            }
+            names.TryGetValue(cc ?? Guid.Empty, out var nm);
+            return new
+            {
+                costCenterId = cc,
+                costCenterCode = cc is null ? "—" : nm.Code ?? "—",
+                costCenterName = cc is null ? "Unassigned" : nm.Name ?? nm.Code ?? "—",
+                employeeCount = mine.Count,
+                grossSalary = gross,
+                netSalary = mine.Sum(s => s.NetSalary),
+                employerCost = employer,
+                totalCost = gross + employer,
+                contraDeductions = contra,
+                journalNet,
+                clearedAgainstAccrual = cleared,
+                roundingAdjustment = rounding,
+                smallCell = k > 0 && cc is not null && mine.Count < k,
+            };
+        }).OrderByDescending(b => b.totalCost).ThenBy(b => b.costCenterCode, StringComparer.Ordinal).ToList();
+
+        var totalCost = buckets.Sum(b => b.totalCost);
+        bool? reconciles = basis != "Stamped" ? null
+            : buckets.All(b => Math.Abs(b.journalNet!.Value - (b.grossSalary - b.contraDeductions + b.employerCost - b.clearedAgainstAccrual!.Value + b.roundingAdjustment!.Value)) < 0.005m);
 
         return Ok(new
         {
             runId = id,
             period = $"{run.Year}-{run.Month:D2}",
             currency,
+            basis,
+            label = basis == "Preview" ? "Preview" : null,
             totalEmployees = slips.Count,
-            totalGross = grouped.Sum(a => a.grossSalary),
-            totalNet = grouped.Sum(a => a.netSalary),
-            totalEmployerCost = grouped.Sum(a => a.employerCost),
+            totalGross = buckets.Sum(b => b.grossSalary),
+            totalNet = buckets.Sum(b => b.netSalary),
+            totalEmployerCost = buckets.Sum(b => b.employerCost),
             totalCost,
-            allocations,
+            reconciles,
+            retroNote = RetroNote,
+            retroNoteAr = RetroNoteAr,
+            allocations = buckets.Select(b => new
+            {
+                b.costCenterId, b.costCenterCode, b.costCenterName, b.employeeCount,
+                b.grossSalary, b.netSalary, b.employerCost, b.totalCost,
+                percentOfTotal = totalCost == 0 ? 0m : Math.Round(b.totalCost / totalCost * 100, 2),
+                b.contraDeductions, b.journalNet, b.clearedAgainstAccrual, b.roundingAdjustment, b.smallCell,
+            }).ToList(),
         });
     }
+
+    /// <summary>D-7: effective dating is out of v1, and the report says so wherever it is read.</summary>
+    private const string RetroNote =
+        "Pay for earlier periods (retro-pay) and back-dated transfers post to the cost centre that is current at Lock, not to the cost centre in force on the date they relate to.";
+    private const string RetroNoteAr =
+        "الأجور المتأخرة (الرجعية) والنقل بأثر رجعي تُرحَّل إلى مركز التكلفة الساري وقت قفل المسيرة، وليس إلى المركز الساري في التاريخ الذي تخصه.";
 
     // ══════════════════════════════════════════════════════════════════════════════════════════════
     //  POD-C1 — THE TERMINATION SETTLEMENT PIPELINE
@@ -10386,7 +10490,7 @@ public partial class PayrollController : ControllerBase
         Guid? settlementCostCentre = null;
         if (glCtx.CostAccountingEnabled && s.CompanyId is Guid settlementCompany)
         {
-            var resolution = (await PayrollCostStamper.ResolveEmployeesAsync(_db, tenantId, settlementCompany, new[] { s.EmployeeId }, cancellationToken))[s.EmployeeId];
+            var resolution = (await PayrollCostStamper.ResolveEmployeesAsync(_db, tenantId, settlementCompany, new[] { s.EmployeeId }, cancellationToken, glCtx))[s.EmployeeId];
             settlementCostCentre = resolution.CostCenterId;
             if (settlementCostCentre is null)
             {

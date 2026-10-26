@@ -8725,7 +8725,6 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("cost_centers", null, t =>
                         {
-
                             t.HasCheckConstraint("ck_cost_centers__functional_class", "functional_class IS NULL OR functional_class IN ('COGS', 'SELLING', 'G_AND_A', 'R_AND_D', 'OPERATIONS', 'CAPITALISABLE')");
 
                             t.HasCheckConstraint("ck_cost_centers__gl_segment_format", "gl_segment IS NULL OR gl_segment ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$'");
@@ -15122,12 +15121,9 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("finance_gl_entries", null, t =>
                         {
-
                             t.HasCheckConstraint("ck_finance_gl_entries__cost_center_needs_company", "cost_center_id IS NULL OR company_id IS NOT NULL");
 
                             t.HasCheckConstraint("ck_finance_gl_entries__cost_center_pair", "(cost_center_id IS NULL) = (cost_center_code IS NULL)");
-
-
                         });
                 });
 
@@ -15457,6 +15453,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CompanyId")
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cost_center_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")

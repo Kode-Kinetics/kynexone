@@ -198,18 +198,21 @@ public class GlAdjustmentsController : ControllerBase
                 message = $"A true-up for {period} is already waiting for approval. Approve or reject it first." });
 
         var gl = await GlAccountResolver.LoadAsync(_db, tid.Value, cid, ct);
+        var expenseLabel = GlAccountResolver.AccountLabel("EARN:EOSB", gl);
+        if (req.CostCenterId is Guid requestedCc && await CostCentreErrorAsync(tid.Value, cid, requestedCc, expenseLabel, ct) is { } ccError) return ccError;
         var row = new GlAdjustmentRequest
         {
             TenantId = tid.Value, CompanyId = cid, Kind = GlAdjustmentKinds.EosbTrueUp,
             Period = period, AccountingDate = PeriodEnd(period), Amount = req.Amount,
             Currency = await CompanyCurrencyAsync(tid.Value, cid, ct),
-            SourceAccount = GlAccountResolver.AccountLabel("EARN:EOSB", gl),
+            SourceAccount = expenseLabel,
             TargetAccount = GlAccountResolver.AccountLabel(EosbProvisionLedger.ProvisionDriverKey, gl),
             Reason = req.Reason.Trim(), ReportReference = req.ReportReference.Trim(),
+            CostCenterId = req.CostCenterId,
             RequestedByUserId = this.GetUserId(), RequestedByName = UserName(),
         };
         _db.GlAdjustmentRequests.Add(row);
-        WriteAudit("finance.gl.eosb_true_up.requested", row, new { row.Period, row.Amount, row.Reason, row.ReportReference });
+        WriteAudit("finance.gl.eosb_true_up.requested", row, new { row.Period, row.Amount, row.Reason, row.ReportReference, row.CostCenterId });
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(row));
     }
@@ -293,17 +296,19 @@ public class GlAdjustmentsController : ControllerBase
                 return BadRequest(new { code = "GL_ADJUSTMENT_TARGET_INVALID", message = "Choose a different account to move the balance to." });
         }
 
+        if (req.CostCenterId is Guid requestedCc && await CostCentreErrorAsync(tid.Value, cid, requestedCc, target, ct) is { } ccError) return ccError;
         var row = new GlAdjustmentRequest
         {
             TenantId = tid.Value, CompanyId = cid, Kind = GlAdjustmentKinds.LegacyAbsenceReclass,
             Period = period, AccountingDate = req.AccountingDate, Amount = source.Balance,
             Currency = await CompanyCurrencyAsync(tid.Value, cid, ct),
             SourceAccount = source.Account, TargetAccount = target, Reason = req.Reason.Trim(),
+            CostCenterId = req.CostCenterId,
             RequestedByUserId = this.GetUserId(), RequestedByName = UserName(),
         };
         _db.GlAdjustmentRequests.Add(row);
         WriteAudit("finance.gl.legacy_absence_reclass.requested", row,
-            new { row.SourceAccount, row.TargetAccount, row.Amount, row.AccountingDate, row.Reason });
+            new { row.SourceAccount, row.TargetAccount, row.Amount, row.AccountingDate, row.Reason, row.CostCenterId });
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(row));
     }
@@ -435,6 +440,22 @@ public class GlAdjustmentsController : ControllerBase
             }
         }
 
+        // Cost accounting (WP-C3): the profit-and-loss line carries the cost centre chosen at request, but only while the company's switch is on
+        // (costing off keeps every journal as it always was). It is checked again here: it may have been deactivated since, and nothing is written then.
+        if (row.CostCenterId is Guid ccId
+            && await ScopedBypass.TenantWide(_db.Companies, tid, "Whether the journal's company has cost accounting on; tenant-pinned and read-only.")
+                .AsNoTracking().AnyAsync(c => c.Id == cid && c.CostAccountingEnabled, ct))
+        {
+            if (await CostCentreErrorAsync(tid, cid, ccId, row.Kind == GlAdjustmentKinds.EosbTrueUp ? row.SourceAccount : row.TargetAccount, ct) is { } ccError) return ccError;
+            var cc = await ScopedBypass.TenantWide(_db.CostCenters, tid, "The cost centre stamped on the journal line; tenant-pinned and read-only.")
+                .AsNoTracking().Where(c => c.Id == ccId).Select(c => new { c.Code, c.Name, c.GlSegment }).SingleAsync(ct);
+            var pnlLabel = row.Kind == GlAdjustmentKinds.EosbTrueUp ? row.SourceAccount : row.TargetAccount;
+            foreach (var line in lines.Where(l => l.DebitAccount == pnlLabel || l.CreditAccount == pnlLabel))
+            {
+                line.CostCenterId = ccId; line.CostCenterCode = cc.Code; line.CostCenterName = cc.Name; line.CostCenterGlSegment = cc.GlSegment;
+            }
+        }
+
         row.Status = GlAdjustmentStatuses.Approved;
         row.DecidedByUserId = me;
         row.DecidedByName = UserName();
@@ -444,7 +465,7 @@ public class GlAdjustmentsController : ControllerBase
         _db.FinanceGlEntries.AddRange(lines);
         WriteAudit(AuditPrefix(row) + ".approved", row, new
         {
-            row.Amount, row.SourceAccount, row.TargetAccount, row.Period, row.Reason,
+            row.Amount, row.SourceAccount, row.TargetAccount, row.Period, row.Reason, row.CostCenterId,
             requestedBy = row.RequestedByUserId, approvedBy = me, note = row.DecisionNote,
             postedLines = lines.Select(l => new { l.DebitAccount, l.CreditAccount, l.Amount }),
         });
@@ -524,7 +545,7 @@ public class GlAdjustmentsController : ControllerBase
     private static object ToDto(GlAdjustmentRequest r, Guid? me, bool mayDecide) => new
     {
         r.Id, r.CompanyId, r.Kind, r.Status, r.Period, r.AccountingDate, r.Amount, r.Currency,
-        r.SourceAccount, r.TargetAccount, r.Reason, r.ReportReference,
+        r.SourceAccount, r.TargetAccount, r.Reason, r.ReportReference, r.CostCenterId,
         r.RequestedByName, r.RequestedAtUtc, r.DecidedByName, r.DecidedAtUtc, r.DecisionNote,
         // The panel hides Approve for the requester rather than letting them hit the SoD refusal.
         requestedByMe = me is not null && r.RequestedByUserId == me,
@@ -544,6 +565,40 @@ public class GlAdjustmentsController : ControllerBase
                 "company scope was authorised above; only tenant membership of the requested company is checked")
             .AsNoTracking().AnyAsync(c => c.Id == cid, ct);
         return exists ? null : NotFound(new { message = "Company not found." });
+    }
+
+    /// <summary>
+    /// Why a cost centre cannot go on this journal, or null when it can: the one cost-centre reference check (this company's active centre),
+    /// then the account rule — the centre belongs on the profit-and-loss side only, and an account whose rule is NotAllowed refuses it (M-3).
+    /// </summary>
+    private async Task<IActionResult?> CostCentreErrorAsync(Guid tid, Guid cid, Guid costCenterId, string? pnlAccountLabel, CancellationToken ct)
+    {
+        var check = await new CostCentreRefValidator(_db).ValidateAsync(tid, cid, costCenterId, forNewAssignment: true, ct);
+        if (!check.IsValid)
+            return UnprocessableEntity(Zayra.Api.Application.Organization.CostCentreRuleException.Parent(check.Code!, check.Message!).ToPayload());
+
+        var account = pnlAccountLabel is null ? null : await AccountInfoAsync(tid, cid, pnlAccountLabel, ct);
+        if (account is null || account.Value.Type is not ("Expense" or "Revenue" or "Income"))
+            return UnprocessableEntity(Zayra.Api.Infrastructure.Finance.CostAccountingGuards.Error("cost_centre_not_allowed",
+                "A cost centre can only be put on a journal that has an expense or income account.",
+                Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilterAttribute.ArabicFor("cost_centre_not_allowed")));
+        if (account.Value.Rule == "NotAllowed")
+            return UnprocessableEntity(Zayra.Api.Infrastructure.Finance.CostAccountingGuards.Error("cost_centre_not_allowed",
+                $"Account {pnlAccountLabel} does not accept a cost centre. Remove the cost centre from this journal or change the account's cost centre rule.",
+                Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilterAttribute.ArabicFor("cost_centre_not_allowed")));
+        return null;
+    }
+
+    private async Task<(string Type, string Rule)?> AccountInfoAsync(Guid tid, Guid cid, string label, CancellationToken ct)
+    {
+        var code = label.Split(' ', 2)[0].Trim();
+        var row = await ScopedBypass.TenantWide(_db.GlAccounts, tid, "Type and cost-centre rule of the account a journal posts to; tenant-pinned and read-only.")
+            .AsNoTracking().Where(a => a.Code == code && (a.CompanyId == cid || a.CompanyId == null))
+            .OrderByDescending(a => a.CompanyId != null).ThenByDescending(a => a.IsActive)
+            .Select(a => new { a.AccountType, a.CostCenterRule }).FirstOrDefaultAsync(ct);
+        if (row is not null) return (row.AccountType, row.CostCenterRule);
+        var catalog = PayrollGlCatalog.Drivers.FirstOrDefault(d => d.DefaultCode == code);
+        return catalog is null ? null : (catalog.AccountType, "Optional");
     }
 
     private async Task<string> CompanyCurrencyAsync(Guid tid, Guid cid, CancellationToken ct)

@@ -3,7 +3,11 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Controllers;
+using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -23,8 +27,8 @@ public sealed class EosbCostedLockPostgresTests
     private readonly PostgresFixture _fx;
     public EosbCostedLockPostgresTests(PostgresFixture fx) => _fx = fx;
 
-    private const string Expense = "5110 - End of Service Benefit Expense";
-    private const string Provision = "2310 - End of Service Benefit Provision";
+    private const string Expense = "5110";
+    private const string Provision = "2310";
 
     private async Task<CostingLockKit> KitAsync(short smallCell = 0)
     {
@@ -66,7 +70,7 @@ public sealed class EosbCostedLockPostgresTests
     private static PayrollController Ksa(ZayraDbContext db, Guid tenantId, Guid userId)
     {
         var rules = PayComponentNetPayDefectTests.KsaRules();
-        var ctrl = new PayrollController(db, new DataScopeService(db), new HttpContextAccessor(), new F2NullNotifications(), new KsaTestPackResolver(rules), rules,
+        var ctrl = new PayrollController(db, new DataScopeService(db), new HttpContextAccessor(), new F2NullNotifications(), new EosbKsaResolver(rules), rules,
             new F2NullLetters(), new NullDocumentStorage(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(8));
         var claims = new List<Claim>
         {
@@ -99,12 +103,12 @@ public sealed class EosbCostedLockPostgresTests
             .Where(l => l.TenantId == k.TenantId && l.SourceEntityId == run.Id && l.EventType == GlEventTypes.EosbProvisionAccrual).ToListAsync();
 
         // exactly three years at half a month of a 10,000 wage each: 15,000 per person, 30,000 in total (the figure the uncosted journal books)
-        var expense = lines.Where(l => l.DebitAccount == Expense).ToList();
+        var expense = lines.Where(l => l.DebitAccount.StartsWith(Expense)).ToList();
         expense.Select(l => (l.CostCenterCode, l.Amount)).OrderBy(x => x.CostCenterCode).Should().Equal(("CC-110", 15_000m), ("CC-200", 15_000m));
         expense.Sum(l => l.Amount).Should().Be(30_000m);
         expense.Should().OnlyContain(l => l.CostCenterId != null && l.PostingKey != null);
 
-        var provision = lines.Where(l => l.CreditAccount == Provision).ToList();
+        var provision = lines.Where(l => l.CreditAccount.StartsWith(Provision)).ToList();
         provision.Should().HaveCount(2, "one uncosted provision line per employee");
         provision.Should().OnlyContain(l => l.CostCenterId == null && l.CostCenterCode == null);
         provision.Sum(l => l.Amount).Should().Be(30_000m);
@@ -127,7 +131,18 @@ public sealed class EosbCostedLockPostgresTests
 
         await using var read = k.K.NewContext();
         var expense = (await read.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
-            .Where(l => l.TenantId == k.TenantId && l.SourceEntityId == run.Id && l.EventType == GlEventTypes.EosbProvisionAccrual && l.DebitAccount == Expense).ToListAsync());
+            .Where(l => l.TenantId == k.TenantId && l.SourceEntityId == run.Id && l.EventType == GlEventTypes.EosbProvisionAccrual && l.DebitAccount.StartsWith(Expense)).ToListAsync());
         expense.Select(l => (l.CostCenterCode, l.Amount)).Should().Equal(new[] { ("CC-110", 30_000m) }); // two people in two one-person cost centres roll to the company default
     }
+}
+
+/// <summary>The KSA pack for "SAU" (the code the fixtures' companies carry), so the EOSB obligation is the real Art. 84 figure.</summary>
+file sealed class EosbKsaResolver(StubRuleReader rules) : ICountryPackResolver
+{
+    public IStatutoryDeductionCalculator ResolveDeductionCalculator(string cc, string j) => cc is "SAU" or "SA" ? new KsaDeductionCalculator(rules) : new DefaultStatutoryDeductionCalculator();
+    public IEndOfServiceCalculator ResolveEndOfServiceCalculator(string cc, string j) => cc is "SAU" or "SA" ? new KsaEndOfServiceCalculator(rules) : new DefaultEndOfServiceCalculator();
+    public IWageProtectionExporter ResolveWageProtectionExporter(string cc, string j) => new DefaultWageProtectionExporter();
+    public INationalizationTracker ResolveNationalizationTracker(string cc, string j) => new DefaultNationalizationTracker();
+    public ILocalizationProfile ResolveLocalizationProfile(string cc, string j) => new DefaultLocalizationProfile();
+    public ICountryPackDescriptor ResolveDescriptor(string cc, string j) => new DefaultCountryPackDescriptor();
 }
