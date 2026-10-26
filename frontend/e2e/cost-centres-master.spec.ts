@@ -16,13 +16,13 @@ const companySa = { id: 'co-sa', legalNameEn: 'Masar Trading KSA', legalNameAr: 
 const companyAe = { id: 'co-ae', legalNameEn: 'Masar Services UAE', legalNameAr: '', tradeName: 'Masar UAE', countryCode: 'AE', jurisdiction: 'UAE', defaultCurrency: 'AED', isActive: true, approvalStatus: 'Active' };
 const ZERO = '00000000-0000-0000-0000-000000000000';
 
-interface Cc { id: string; companyId: string | null; code: string; name: string; nameAr?: string | null; isActive: boolean; parentId?: string | null; functionalClass?: string | null; glSegment?: string | null }
+interface Cc { id: string; companyId: string | null; code: string; name: string; nameAr?: string | null; isActive: boolean; parentId?: string | null; functionalClass?: string | null; glSegment?: string | null; inUseTotal?: number; codeLocked?: boolean }
 
 const seed = (): Cc[] => [
-  { id: 'cc-sales', companyId: 'co-sa', code: 'SALES', name: 'Sales', nameAr: 'المبيعات', isActive: true, functionalClass: 'SELLING', glSegment: 'S100' },
-  { id: 'cc-sales-ry', companyId: 'co-sa', code: 'SALES-RY', name: 'Riyadh Sales', nameAr: 'مبيعات الرياض', isActive: true, parentId: 'cc-sales', functionalClass: 'SELLING', glSegment: 'S110' },
+  { id: 'cc-sales', companyId: 'co-sa', code: 'SALES', name: 'Sales', nameAr: 'المبيعات', isActive: true, functionalClass: 'SELLING', glSegment: 'S100', inUseTotal: 18, codeLocked: false },
+  { id: 'cc-sales-ry', companyId: 'co-sa', code: 'SALES-RY', name: 'Riyadh Sales', nameAr: 'مبيعات الرياض', isActive: true, parentId: 'cc-sales', functionalClass: 'SELLING', glSegment: 'S110', inUseTotal: 3, codeLocked: true },
   { id: 'cc-sales-ry-n', companyId: 'co-sa', code: 'SALES-RY-N', name: 'Riyadh North', isActive: true, parentId: 'cc-sales-ry' },
-  { id: 'cc-ops', companyId: 'co-sa', code: 'OPS', name: 'Operations', isActive: false, functionalClass: 'OPERATIONS' },
+  { id: 'cc-ops', companyId: 'co-sa', code: 'OPS', name: 'Operations', isActive: false, functionalClass: 'OPERATIONS', inUseTotal: 0, codeLocked: false },
   { id: 'cc-orphan', companyId: null, code: 'ORPHAN', name: 'Old group cost centre', isActive: true },
   { id: 'cc-ae', companyId: 'co-ae', code: 'AE-OPS', name: 'UAE operations', isActive: true },
 ];
@@ -37,7 +37,7 @@ interface Options {
   listDown?: boolean;
 }
 
-interface Recorded { method: string; path: string; body: any; headers: Record<string, string> }
+interface Recorded { method: string; path: string; query: string; body: any; headers: Record<string, string> }
 
 async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCenters') {
   const manage = options.manage ?? true;
@@ -65,7 +65,7 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
     const reply = (json: unknown, status = 200, headers?: Record<string, string>) => route.fulfill({ status, json, headers });
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
     const body = (() => { try { return request.postDataJSON(); } catch { return request.postData(); } })();
-    if (method !== 'GET') writes.push({ method, path: p, body, headers: request.headers() });
+    if (method !== 'GET') writes.push({ method, path: p, query: u.search, body, headers: request.headers() });
 
     if (p === '/api/auth/me') {
       return reply({
@@ -161,7 +161,7 @@ test('the tree shows parents with their children indented, expands and collapses
   const { errors } = await boot(page);
   const table = tid(page, 'cc-master-table');
   await expect(table.getByRole('columnheader', { name: 'Code', exact: true })).toBeVisible();
-  for (const h of ['Name', 'ERP code', 'Functional class', 'Company', 'Status']) await expect(table.getByRole('columnheader', { name: h, exact: true })).toBeVisible();
+  for (const h of ['Name', 'ERP code', 'Functional class', 'Company', 'In use', 'Status']) await expect(table.getByRole('columnheader', { name: h, exact: true })).toBeVisible();
   await expect(tid(page, 'cc-master-view-tree')).toHaveAttribute('aria-pressed', 'true');
   await expect(tid(page, 'cc-master-row-SALES')).toHaveAttribute('data-depth', '0');
   await expect(tid(page, 'cc-master-row-SALES-RY')).toHaveCount(0); // collapsed
@@ -389,19 +389,48 @@ test('Deactivate with nothing using it just deactivates', async ({ page }) => {
   expect(lastWrite(writes, 'PUT').body).toMatchObject({ isActive: false, reason: 'Closed' });
 });
 
-test('Delete confirms, then a 409 in use shows the same counts; a delete with no use removes the row', async ({ page }) => {
-  const { ctl } = await boot(page);
+test('Delete asks for a reason, then a 409 in use shows the same counts; a delete with no use removes the row and sends the reason as ?reason=', async ({ page }) => {
+  const { ctl, writes } = await boot(page);
   await tid(page, 'cc-master-view-flat').click();
   await openMenu(page, 'SALES');
   await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
   ctl.refuse = inUse;
+  // A delete needs a reason too: nothing is sent until one is typed.
+  await page.getByRole('dialog', { name: 'Delete SALES?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Delete SALES?' })).toContainText('Enter a reason for this change.');
+  expect(writes).toHaveLength(0);
+  await tid(page, 'cc-form-reason').fill('Merged elsewhere');
   await page.getByRole('dialog', { name: 'Delete SALES?' }).getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(tid(page, 'cc-inuse-dialog')).toBeVisible();
   await page.getByRole('dialog', { name: 'Cost centre SALES is in use' }).getByRole('button', { name: 'Close', exact: true }).last().click();
   await openMenu(page, 'ORPHAN');
   await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('Created by mistake');
   await page.getByRole('dialog', { name: 'Delete ORPHAN?' }).getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(tid(page, 'cc-master-row-ORPHAN')).toHaveCount(0);
+  const del = lastWrite(writes, 'DELETE');
+  expect(new URLSearchParams(del.query).get('reason')).toBe('Created by mistake');
+});
+
+test('the In use column shows the server count, "Not in use" for zero and a dash when the server did not say', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await expect(tid(page, 'cc-master-inuse-SALES')).toContainText('18');
+  await expect(tid(page, 'cc-master-inuse-OPS')).toContainText('Not in use');
+  await expect(tid(page, 'cc-master-inuse-ORPHAN')).not.toContainText('Not in use'); // unknown, not zero
+});
+
+test('M-9 up front: a cost centre the server reports as codeLocked opens with the code and company read-only and the sentence beside the code', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await tid(page, 'cc-master-row-SALES-RY').getByRole('button', { name: 'Edit' }).click();
+  await expect(tid(page, 'cc-form-code')).toHaveAttribute('readonly', '');
+  await expect(tid(page, 'cc-form-company')).toBeDisabled();
+  await expect(tid(page, 'cc-form-code-locked-note')).toContainText('The code cannot change because journal lines already carry it. You can rename it.');
+  // An unlocked one is editable.
+  await page.keyboard.press('Escape');
+  await tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' }).click();
+  await expect(tid(page, 'cc-form-code')).not.toHaveAttribute('readonly', '');
 });
 
 test('the row menu opens with the keyboard, moves with the arrow keys and closes with Escape', async ({ page }) => {
@@ -447,6 +476,7 @@ test('Arabic: the in-use dialog is translated, with plural counts', async ({ pag
   await openMenu(page, 'SALES');
   await page.getByRole('menuitem', { name: 'حذف', exact: true }).click();
   ctl.refuse = inUse;
+  await tid(page, 'cc-form-reason').fill('دمج');
   await page.getByRole('dialog', { name: 'حذف SALES؟' }).getByRole('button', { name: 'حذف', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'مركز التكلفة SALES قيد الاستخدام' })).toBeVisible();
   await expect(tid(page, 'cc-inuse-count-departments')).toHaveText('قسمان');

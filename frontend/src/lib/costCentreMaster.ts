@@ -18,6 +18,10 @@ export interface MasterItem {
   parentId?: string | null;
   functionalClass?: string | null;
   glSegment?: string | null;
+  /** Live references (departments, positions, employees, posting rules, company default, active children). Absent on an older response. */
+  inUseTotal?: number;
+  /** True once a posted journal line carries the cost centre: its code and company are frozen (M-9). */
+  codeLocked?: boolean;
 }
 
 export interface TreeRow<T extends MasterItem = MasterItem> { item: T; depth: number; hasChildren: boolean }
@@ -117,6 +121,15 @@ export function inUseCounts(counts: Record<string, number>): Array<{ key: InUseK
   return IN_USE_ORDER.map(([serverKey, key]) => ({ key, count: Number(counts[serverKey] ?? 0) })).filter((c) => c.count > 0);
 }
 
+/** The "In use" column: the server's count, or null (unknown) for a response that predates it. */
+export const inUseTotalOf = (item: MasterItem): number | null => (typeof item.inUseTotal === 'number' ? item.inUseTotal : null);
+
+/** M-9: the code is read-only once the server says a posted line carries it. */
+export const isCodeLocked = (item: MasterItem): boolean => item.codeLocked === true;
+
+/** DELETE has no body, so the reason rides the query string. */
+export const removeParams = (reason: string): { reason?: string } => (reason.trim() ? { reason: reason.trim() } : {});
+
 // ── The write ────────────────────────────────────────────────────────────────
 
 export interface MasterForm {
@@ -168,4 +181,16 @@ export function linksToClearFrom(header: string | undefined, rows: ReadonlyArray
   const fromHeader = Number.parseInt(header ?? '', 10);
   const fromRows = rows.reduce((n, r) => n + (r.warnings ?? []).filter((w) => /^Clears the /.test(w)).length, 0);
   return Math.max(Number.isFinite(fromHeader) ? fromHeader : 0, fromRows);
+}
+
+// ── Import messages in Arabic ───────────────────────────────────────────────
+
+/**
+ * Import rows carry English `errors`/`warnings` and, since the server sends them, parallel `errorsAr`/`warningsAr` arrays (same
+ * order, null where a message has no Arabic). On an Arabic page the Arabic entry is shown where there is one; every other message,
+ * and every message from an older server, stays English.
+ */
+export function localisedMessages(messages: readonly string[], messagesAr: ReadonlyArray<string | null> | null | undefined, locale: string): string[] {
+  if (locale !== 'ar' || !messagesAr) return [...messages];
+  return messages.map((m, i) => (messagesAr[i] ? (messagesAr[i] as string) : m));
 }

@@ -93,12 +93,12 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
   const positionId = employee.positionId ?? null;
   const input: ResolveInput | null = useMemo(() => data && ({
     companyId,
-    employee: { costCenterId: employee.costCenterId ?? null, departmentId: employee.departmentId ?? null, positionId, costCenterIsOverride: employee.costCenterIsOverride ?? null },
+    employee: { costCenterId: employee.costCenterId ?? null, departmentId: employee.departmentId ?? null, positionId, costCenterIsOverride: employee.costCenterIsOverride ?? null, costCentreResolution: employee.costCentreResolution ?? null },
     departments: data.departments.map((d) => ({ id: d.id, nameEn: locale === 'ar' && d.nameAr ? d.nameAr : d.nameEn, parentDepartmentId: d.parentDepartmentId ?? null, costCenterId: d.costCenterId ?? null })),
     positions: data.positions.map((p) => ({ id: p.id, title: p.title ?? p.code ?? '', costCenterId: p.costCenterId ?? null })),
     costCentres: data.costCentres,
     companyDefaultId: data.companyDefaultId,
-  }), [companyId, data, employee.costCenterId, employee.costCenterIsOverride, employee.departmentId, locale, positionId]);
+  }), [companyId, data, employee.costCenterId, employee.costCenterIsOverride, employee.costCentreResolution, employee.departmentId, locale, positionId]);
 
   if (loadError) return <div data-testid="cc-emp-field"><LoadError message={loadError} onRetry={() => void load()} /></div>;
   if (!data || !input) {

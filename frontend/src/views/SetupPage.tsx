@@ -722,6 +722,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
 function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const t = useT();
+  const { locale } = useLocale();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<DepartmentDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -791,7 +792,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             onExport={async () => { const csv = await departmentsApi.export(); downloadCsv(csv, 'departments.csv'); }}
             onDownloadTemplate={async () => { const csv = await departmentsApi.importTemplate(); downloadCsv(csv, 'departments-template.csv'); }}
             importHelp={msg('Leave a cost-centre or parent cell blank to keep the current value. Write [CLEAR] to remove it.')}
-            onPreview={async (csv) => { const r = await departmentsApi.importPreview(csv, importCompanyId); return toDepartmentPreview(r.data, r.linksToClearHeader); }}
+            onPreview={async (csv) => { const r = await departmentsApi.importPreview(csv, importCompanyId); return toDepartmentPreview(r.data, r.linksToClearHeader, locale); }}
             onImport={async (csv, _key, options) => { const r = await departmentsApi.import(csv, importCompanyId, options); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }

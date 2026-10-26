@@ -16,9 +16,24 @@ export type SourceLevel = 'employee' | 'position' | 'department' | 'parentDepart
 
 interface CostCentreLike { id: string; code: string; name: string; nameAr?: string | null; companyId?: string | null; isActive: boolean }
 
+/** What the API's employee detail sends as `costCentreResolution`: the server's own answer to "where does this person's cost land". */
+export interface ServerResolution {
+  costCenterId: string | null;
+  code?: string | null;
+  name?: string | null;
+  nameAr?: string | null;
+  /** Employee | Position | Department | ParentDepartment | CompanyDefault | None. */
+  source: string;
+  level?: string | null;
+  /** 'none', or '<level>_cost_centre_invalid'. */
+  unresolvedReason?: string | null;
+}
+
+const KIND_OF_SOURCE: Record<string, SourceKind> = { Employee: 'employee', Position: 'position', Department: 'department', ParentDepartment: 'parentDepartment', CompanyDefault: 'companyDefault' };
+
 export interface ResolveInput {
   companyId?: string | null;
-  employee: { costCenterId?: string | null; departmentId?: string | null; positionId?: string | null; costCenterIsOverride?: boolean | null };
+  employee: { costCenterId?: string | null; departmentId?: string | null; positionId?: string | null; costCenterIsOverride?: boolean | null; costCentreResolution?: ServerResolution | null };
   departments: ReadonlyArray<{ id: string; nameEn: string; nameAr?: string | null; parentDepartmentId?: string | null; costCenterId?: string | null }>;
   positions: ReadonlyArray<{ id: string; title: string; costCenterId?: string | null }>;
   costCentres: ReadonlyArray<CostCentreLike>;
@@ -36,19 +51,41 @@ const MAX_DEPTH = 20;
 const LEVEL: Record<SourceKind, SourceLevel> = { employee: 'employee', position: 'position', department: 'department', parentDepartment: 'parentDepartment', companyDefault: 'company' };
 
 /**
- * Whether the stored cost centre is an override. The server's flag decides when the API sends it; until it does, a stored
- * cost centre that differs from the department's own is one: that is the rule the server applies when it writes it.
+ * Whether the stored cost centre is an override. The server's flag decides when the API sends it, then the server's resolution
+ * (its source is Employee only for an override); only for an older response does a stored cost centre that differs from the
+ * department's own count as one: that is the rule the server applies when it writes it.
  */
 export function isOverride(input: ResolveInput): boolean {
   const { employee } = input;
   if (typeof employee.costCenterIsOverride === 'boolean') return employee.costCenterIsOverride && !!employee.costCenterId;
   if (!employee.costCenterId) return false;
+  if (employee.costCentreResolution) return employee.costCentreResolution.source === 'Employee';
   const department = input.departments.find((d) => d.id === employee.departmentId);
   return employee.costCenterId !== (department?.costCenterId ?? null);
 }
 
 /** The server's order: employee override, position, department, parent department (loop-safe), company default. */
 export function resolveCostCentre(input: ResolveInput, options: { ignoreOverride?: boolean } = {}): Resolution {
+  const inferred = inferCostCentre(input, options);
+  const server = input.employee.costCentreResolution;
+  // The server's own answer wins when the API sent it. What removing an override would return to is not what the server resolved
+  // (it resolved the override), so that question stays an inference from the lists.
+  if (!server || options.ignoreOverride) return inferred;
+  const kind = KIND_OF_SOURCE[server.source];
+  if (kind && server.costCenterId) {
+    return inferred.kind === kind && 'sourceName' in inferred
+      ? { kind, costCentreId: server.costCenterId, sourceName: inferred.sourceName }
+      : { kind, costCentreId: server.costCenterId };
+  }
+  if (server.unresolvedReason && server.unresolvedReason !== 'none') {
+    const level = (server.level as SourceLevel | null | undefined) ?? 'company';
+    return { kind: 'invalid', costCentreId: null, level, code: inferred.kind === 'invalid' ? inferred.code : '' };
+  }
+  return { kind: 'none', costCentreId: null };
+}
+
+/** The same order worked out from the lists, for a response that has no server resolution. */
+function inferCostCentre(input: ResolveInput, options: { ignoreOverride?: boolean } = {}): Resolution {
   const check = (id: string, kind: SourceKind, sourceName?: string): Resolution => {
     const cc = input.costCentres.find((c) => c.id === id);
     return cc && cc.isActive && (!input.companyId || cc.companyId === input.companyId)

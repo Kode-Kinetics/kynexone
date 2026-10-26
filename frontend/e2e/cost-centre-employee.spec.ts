@@ -43,6 +43,8 @@ interface Options {
   costingOn?: boolean;
   /** PUT /api/employees/901 answers this once. */
   refusal?: { status: number; body: unknown };
+  /** The employee detail carries the server's own costCentreResolution (and costCenterIsOverride). */
+  serverResolution?: Record<string, unknown> & { costCenterIsOverride?: boolean };
 }
 
 async function boot(page: Page, options: Options = {}) {
@@ -93,7 +95,7 @@ async function boot(page: Page, options: Options = {}) {
         return reply({ updated: true });
       }
       if (method === 'GET') {
-        return reply({ ...fixtureEmployees[901], costCenterId: state.costCenterId, costCenter: state.costCenter });
+        return reply({ ...fixtureEmployees[901], costCenterId: state.costCenterId, costCenter: state.costCenter, ...(options.serverResolution ? { costCenterIsOverride: options.serverResolution.costCenterIsOverride ?? false, costCentreResolution: options.serverResolution } : {}) });
       }
     }
     return route.fallback();
@@ -139,6 +141,21 @@ test('an inherited cost centre shows its code and name, a text chip naming the d
   await tid(page, 'cc-emp-why').click();
   await shotField(page, info, 'cc-en-employee-inherited');
   expect(errors).toEqual([]);
+});
+
+test('when the API sends costCentreResolution the field shows the server\'s answer, not an inference from the lists', async ({ page }) => {
+  // The lists would infer ADMIN from the department; the server says SALES, from the position.
+  await boot(page, { serverResolution: { costCenterId: 'cc-sales', code: 'SALES', name: 'Sales', nameAr: 'المبيعات', source: 'Position', level: 'position', unresolvedReason: null, costCenterIsOverride: false } });
+  await open(page);
+  await expect(tid(page, 'cc-emp-value')).toHaveText('SALES — Sales');
+  await expect(tid(page, 'cc-emp-source')).toContainText('From position');
+  await expect(tid(page, 'cc-emp-override-remove')).toHaveCount(0);
+});
+
+test('when the server says Employee (an override) the field shows the override controls even though the stored copy equals the department\'s', async ({ page }) => {
+  await boot(page, { serverResolution: { costCenterId: 'cc-admin', code: 'ADMIN', name: 'Administration', nameAr: 'الإدارة', source: 'Employee', level: 'employee', unresolvedReason: null, costCenterIsOverride: true } });
+  await open(page);
+  await expect(tid(page, 'cc-emp-override-remove')).toBeVisible();
 });
 
 test('the chip names the parent department when that is where the cost centre comes from', async ({ page }) => {
