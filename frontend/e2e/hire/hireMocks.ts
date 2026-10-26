@@ -98,7 +98,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       seq++;
       return reply({ updatedAtUtc: `2026-10-27T08:00:0${seq}Z`, readiness: { blockers: [], warnings: [] } });
     }
-    if (/^\/api\/employees\/\d+\/hire-review$/.test(p)) return reply({ blockers: ['Identity number missing'], warnings: [], notProvided: ['arabicName'], essSections: [] });
+    if (/^\/api\/employees\/\d+\/hire-review$/.test(p)) return reply({ blockers: [{ key: 'IqamaNumber', label: 'Identity number missing' }, { key: 'pay:compensationUnapproved', label: 'Pay package awaiting Finance approval' }], warnings: [], notProvided: [{ key: 'arabicName', label: 'Arabic name' }], essSections: [] });
     if (/^\/api\/employees\/\d+\/rehire$/.test(p)) { rehires.push(body); return reply({ id: 44, status: 'Draft', fullName: 'Alex Morgan', updatedAtUtc: '2026-10-27T09:00:00Z' }); }
     if (/^\/api\/employees\/\d+\/draft$/.test(p) && method === 'DELETE') { discards.push(p); return route.fulfill({ status: 204 }); }
     if (p.endsWith('/pay-scale')) return reply([]);

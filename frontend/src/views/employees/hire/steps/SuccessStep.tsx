@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { employeeHireApi, type HireReview } from '@/src/api/employeeHire';
+import { reviewItemLabel } from '@/src/lib/hire/reviewLabels';
 
 export function SuccessStep({ id, name }: { id: number; name: string }) {
   const { t } = useLocale();
@@ -18,7 +19,7 @@ export function SuccessStep({ id, name }: { id: number; name: string }) {
         {review === null && <p className="text-slate-500">{t('Checking what is left…')}</p>}
         {review === 'failed' && <p className="text-slate-500">{t('Readiness could not be loaded. Open the record to see it.')}</p>}
         {review && review !== 'failed' && (blockers.length
-          ? <ul className="mt-1 list-disc ps-5">{blockers.map(b => <li key={b}>{b}</li>)}</ul>
+          ? <ul className="mt-1 list-disc ps-5">{blockers.map(b => <li key={b.key}>{reviewItemLabel(b, t)}</li>)}</ul>
           : <p>{t('Nothing is blocking activation.')}</p>)}
       </div>
       <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">{t('Next: complete the details, then request activation. The employee signs in only after activation.')}</p>

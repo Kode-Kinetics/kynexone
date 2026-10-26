@@ -197,6 +197,9 @@ const ar: Record<string, string> = {
   'Date of birth': 'تاريخ الميلاد',
   'Work email': 'البريد الوظيفي',
   'Arabic full name': 'الاسم الكامل بالعربية',
+  // hire-review items rendered by key (I-8) and the readiness checklist (I-2)
+  'Pay package awaiting Finance approval': 'حزمة الراتب بانتظار موافقة المالية',
+  'Imported bank details to verify': 'بيانات البنك المستوردة بحاجة إلى التحقق',
 };
 
 export const hireWizard = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };
