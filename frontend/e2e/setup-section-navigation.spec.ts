@@ -533,5 +533,5 @@ test('a company-scoped group administrator sees only company-owned settings, Cos
   await openSetupSection(page, 'Cost centres');
   await expect(sectionHeading(page)).toHaveText('Cost centres');
   await expect(page).toHaveURL(/[?&]tab=costCenters(&|$)/);
-  await expect(page.getByRole('button', { name: 'Add Cost Center', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New cost centre', exact: true })).toBeVisible();
 });

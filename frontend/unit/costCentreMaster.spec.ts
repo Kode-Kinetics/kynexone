@@ -26,11 +26,11 @@ const sample = (): MasterItem[] => [
 test.describe('buildTree', () => {
   test('roots in code order with children under their parent, depth counted, collapsed children hidden', () => {
     const rows = buildTree(sample(), new Set(['sales', 'sales-ry']));
-    expect(rows.map((r) => [r.item.code, r.depth])).toEqual([['ORPHAN', 0], ['OPS', 0], ['OTHER', 0], ['SALES', 0], ['SALES-RY', 1], ['SALES-RY-N', 2]]);
+    expect(rows.map((r) => [r.item.code, r.depth])).toEqual([['OPS', 0], ['ORPHAN', 0], ['OTHER', 0], ['SALES', 0], ['SALES-RY', 1], ['SALES-RY-N', 2]]);
     expect(rows.find((r) => r.item.code === 'SALES')?.hasChildren).toBe(true);
     expect(rows.find((r) => r.item.code === 'OPS')?.hasChildren).toBe(false);
-    expect(buildTree(sample(), new Set()).map((r) => r.item.code)).toEqual(['ORPHAN', 'OPS', 'OTHER', 'SALES']);
-    expect(buildTree(sample(), new Set(['sales'])).map((r) => r.item.code)).toEqual(['ORPHAN', 'OPS', 'OTHER', 'SALES', 'SALES-RY']);
+    expect(buildTree(sample(), new Set()).map((r) => r.item.code)).toEqual(['OPS', 'ORPHAN', 'OTHER', 'SALES']);
+    expect(buildTree(sample(), new Set(['sales'])).map((r) => r.item.code)).toEqual(['OPS', 'ORPHAN', 'OTHER', 'SALES', 'SALES-RY']);
   });
 
   test('a parent that is not in the list (another company, deleted) leaves the child at the top, and a loop does not spin', () => {

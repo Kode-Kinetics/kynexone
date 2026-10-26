@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileUp, Upload, Users } from 'lucide-react';
 import { Modal } from './Modal';
 import { useLocale } from '../contexts/LocaleContext';
+import { OrgPreviewBody } from './OrgPreviewBody';
 
 type Translate = ReturnType<typeof useLocale>['t'];
 
@@ -188,6 +189,28 @@ export interface ImportCommitCheck {
   failedRows?: Array<{ row?: number; employeeCode?: string; problem?: string; column?: string }>;
 }
 
+export interface OrgPreviewRow {
+  row: number;
+  code: string;
+  name: string;
+  outcome: 'ok' | 'warning' | 'error' | 'skipped';
+  errors: string[];
+  warnings: string[];
+}
+
+export interface OrgPreview {
+  rows: OrgPreviewRow[];
+  wouldUpdate: number;
+  /** Existing cost-centre and parent links the file would remove. */
+  linksToClear: number;
+}
+
+/** What the importer is told when the file clears links: the acknowledgement and why. */
+export interface ImportCommitOptions {
+  acknowledgeClearedLinks?: boolean;
+  reason?: string;
+}
+
 /** Dry-run projection returned before commit — persists nothing server-side. */
 export interface ImportPreview {
   received: number;
@@ -204,6 +227,11 @@ export interface ImportPreview {
   wouldCreateActive?: number;
   wouldCreateDraft?: number;
   rows: ImportPreviewRow[];
+  /**
+   * Set by the organisation importers (departments): the review shows their own table and, when the file would remove
+   * existing links, a gate that needs an acknowledgement and a reason before Confirm.
+   */
+  org?: OrgPreview;
   /** Optional per-field roll-up; when absent it is derived from each row's blocking/recommended. */
   fieldGaps?: ImportFieldGap[];
 }
@@ -244,7 +272,7 @@ export interface ImportExportToolbarProps {
    * `importKey` identifies one selected file. An importer that forwards it lets the server replay a
    * re-sent submission (a retry after a timeout) instead of importing the same file twice.
    */
-  onImport: (csvContent: string, importKey?: string) => Promise<ImportResult>;
+  onImport: (csvContent: string, importKey?: string, options?: ImportCommitOptions) => Promise<ImportResult>;
   /**
    * False hides Template and Import CSV, for a user the API would refuse (the import endpoint's
    * permission key, e.g. `employees.bulk_import`). Defaults to true.
@@ -260,6 +288,8 @@ export interface ImportExportToolbarProps {
    * narrows the worklist to a specific typed gap (e.g. link:manager) within this import batch.
    */
   onViewIncomplete?: (filter?: ImportResultFilter) => void;
+  /** One sentence about the file's columns, shown on the template button and in the review. */
+  importHelp?: string;
 }
 
 interface Toast {
@@ -358,6 +388,7 @@ export function ImportExportToolbar({
   canImport = true,
   onPreview,
   onViewIncomplete,
+  importHelp,
 }: ImportExportToolbarProps) {
   const { t } = useLocale();
   const [exporting, setExporting] = useState(false);
@@ -370,6 +401,9 @@ export function ImportExportToolbar({
   const [pendingCsv, setPendingCsv] = useState<string | null>(null);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
+  // The links-to-clear gate (organisation importers): acknowledged, and why.
+  const [ackLinks, setAckLinks] = useState(false);
+  const [clearReason, setClearReason] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = (next: Toast) => {
@@ -446,6 +480,8 @@ export function ImportExportToolbar({
     setPreviewing(true);
     setPreview(null);
     setResult(null);
+    setAckLinks(false);
+    setClearReason('');
     setPendingCsv(csvContent);
     setPendingKey(importKey);
     try {
@@ -463,7 +499,7 @@ export function ImportExportToolbar({
     if (!pendingCsv) return;
     setImporting(true);
     try {
-      const res = await onImport(pendingCsv, pendingKey ?? undefined);
+      const res = await onImport(pendingCsv, pendingKey ?? undefined, clearsLinks ? { acknowledgeClearedLinks: true, reason: clearReason.trim() } : undefined);
       setResult(res);
       setPreview(null);
       setPendingCsv(null);
@@ -486,6 +522,8 @@ export function ImportExportToolbar({
   };
 
   const commitRefused = preview?.commitCheck?.outcome === 'would_refuse';
+  const clearsLinks = (preview?.org?.linksToClear ?? 0) > 0;
+  const gateOpen = !clearsLinks || (ackLinks && clearReason.trim().length > 0);
 
   const cancelPreview = () => {
     setPreview(null);
@@ -562,7 +600,7 @@ export function ImportExportToolbar({
         className={btnOutline}
         disabled={templating}
         onClick={handleTemplate}
-        title={t('Download a blank CSV import template')}
+        title={importHelp ? `${t('Download a blank CSV import template')}. ${t(importHelp)}` : t('Download a blank CSV import template')}
       >
         <FileUp className="h-3.5 w-3.5" />
         {templating ? t('Downloading…') : t('CSV import template')}
@@ -607,7 +645,7 @@ export function ImportExportToolbar({
                 <Download className="h-3.5 w-3.5" />
                 {t('Download preview')}
               </button>
-              <button type="button" className="btn-primary disabled:opacity-60" onClick={confirmImport} disabled={importing || !preview || (preview?.wouldFail ?? 0) > 0 || commitRefused}>
+              <button type="button" className="btn-primary !bg-blue-700 hover:!bg-blue-800 disabled:opacity-60" onClick={confirmImport} disabled={importing || !preview || (preview?.wouldFail ?? 0) > 0 || commitRefused || !gateOpen}>
                 {importing ? t('Importing…') : t('Confirm import')}
               </button>
             </>
@@ -615,6 +653,8 @@ export function ImportExportToolbar({
         >
           {previewing || !preview ? (
             <p className="p-4 text-sm text-slate-500">{t('Checking rows…')}</p>
+          ) : preview.org ? (
+            <OrgPreviewBody preview={preview} help={importHelp} ack={ackLinks} onAck={setAckLinks} reason={clearReason} onReason={setClearReason} />
           ) : (
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2 text-xs">

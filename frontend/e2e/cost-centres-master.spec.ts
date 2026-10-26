@@ -157,22 +157,23 @@ const openMenu = async (page: Page, code: string) => {
 
 // ═════════════════════════════ Screen 1: the list ═════════════════════════════
 
-test('the tree shows parents with their children indented, expands and collapses with aria-expanded, and marks each row\'s level', async ({ page }, info) => {
+test('the tree shows parents with their children indented, expands and collapses with aria-expanded, and announces each row\'s level', async ({ page }, info) => {
   const { errors } = await boot(page);
   const table = tid(page, 'cc-master-table');
   await expect(table.getByRole('columnheader', { name: 'Code', exact: true })).toBeVisible();
   for (const h of ['Name', 'ERP code', 'Functional class', 'Company', 'Status']) await expect(table.getByRole('columnheader', { name: h, exact: true })).toBeVisible();
   await expect(tid(page, 'cc-master-view-tree')).toHaveAttribute('aria-pressed', 'true');
-  await expect(tid(page, 'cc-master-row-SALES')).toHaveAttribute('aria-level', '1');
+  await expect(tid(page, 'cc-master-row-SALES')).toHaveAttribute('data-depth', '0');
   await expect(tid(page, 'cc-master-row-SALES-RY')).toHaveCount(0); // collapsed
   const expand = tid(page, 'cc-master-expand-SALES');
   await expect(expand).toHaveAttribute('aria-expanded', 'false');
   await expand.click();
   await expect(expand).toHaveAttribute('aria-expanded', 'true');
-  await expect(tid(page, 'cc-master-row-SALES-RY')).toHaveAttribute('aria-level', '2');
+  // axe rejects aria-level on a plain table row, so the level is announced as text instead.
+  await expect(tid(page, 'cc-master-row-SALES-RY')).toContainText('Level 2');
   await expect(tid(page, 'cc-master-row-SALES-RY-N')).toHaveCount(0);
   await tid(page, 'cc-master-expand-SALES-RY').click();
-  await expect(tid(page, 'cc-master-row-SALES-RY-N')).toHaveAttribute('aria-level', '3');
+  await expect(tid(page, 'cc-master-row-SALES-RY-N')).toContainText('Level 3');
   await expect(tid(page, 'cc-master-row-SALES')).toContainText('S100');
   await expect(tid(page, 'cc-master-row-SALES')).toContainText('Selling');
   await shot(page, info, 'cc-en-master-tree');
@@ -371,7 +372,7 @@ test('Deactivate asks for a reason, and a 409 in use shows what uses it with cou
   await expect(dialog).toContainText('Move them to another cost centre first.');
   await shot(page, info, 'cc-en-master-in-use');
   expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
-  await dialog.getByRole('button', { name: 'Close', exact: true }).first().click();
+  await page.getByRole('dialog', { name: 'Cost centre SALES is in use' }).getByRole('button', { name: 'Close', exact: true }).last().click();
   await expect(dialog).toHaveCount(0);
   // The reason travelled with the deactivation.
   expect(lastWrite(writes, 'PUT').body).toMatchObject({ isActive: false, reason: 'Merged into Riyadh' });
@@ -396,7 +397,7 @@ test('Delete confirms, then a 409 in use shows the same counts; a delete with no
   ctl.refuse = inUse;
   await page.getByRole('dialog', { name: 'Delete SALES?' }).getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(tid(page, 'cc-inuse-dialog')).toBeVisible();
-  await tid(page, 'cc-inuse-dialog').getByRole('button', { name: 'Close', exact: true }).first().click();
+  await page.getByRole('dialog', { name: 'Cost centre SALES is in use' }).getByRole('button', { name: 'Close', exact: true }).last().click();
   await openMenu(page, 'ORPHAN');
   await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
   await page.getByRole('dialog', { name: 'Delete ORPHAN?' }).getByRole('button', { name: 'Delete', exact: true }).click();
@@ -517,7 +518,7 @@ test('the import help says blank means unchanged and [CLEAR] removes the link, i
   const { ctl } = await boot(page, {}, '/setup?tab=departments');
   ctl.previewRows = [{ rowNumber: 2, entityCode: 'FIN', entityName: 'Finance', status: 0, errors: [], warnings: [] }];
   const help = 'Leave a cost-centre or parent cell blank to keep the current value. Write [CLEAR] to remove it.';
-  await expect(page.getByRole('button', { name: 'CSV import template', exact: true })).toHaveAttribute('title', new RegExp(help.replace(/[[\]]/g, '\\$&')));
+  await expect(page.getByRole('button', { name: 'Template', exact: true })).toHaveAttribute('title', new RegExp(help.replace(/[[\]]/g, '\\$&')));
   await chooseFile(page);
   await expect(tid(page, 'cc-import-help')).toHaveText(help);
 });
