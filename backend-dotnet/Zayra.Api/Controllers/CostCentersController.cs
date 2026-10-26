@@ -14,7 +14,7 @@ namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/cost-centers")]
-[Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+[Authorize]
 public class CostCentersController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;

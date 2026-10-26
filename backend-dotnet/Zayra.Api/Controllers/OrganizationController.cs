@@ -112,7 +112,6 @@ public class OrganizationController : ControllerBase
             grade => Created($"/api/organization/grades/{grade.Id}", grade));
 
     [HttpGet("cost-centers")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
     [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<PagedResult<CostCenterDto>>> CostCenters([FromQuery] Guid? companyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
         => Ok(await _organization.GetCostCentersAsync(RequireTenant(), companyId, page, pageSize, cancellationToken));
