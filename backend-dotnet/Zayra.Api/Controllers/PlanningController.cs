@@ -207,8 +207,12 @@ public class PlanningController : ControllerBase
 
         dept.ApprovedHeadcount = newApproved;
         dept.MonthlyBudgetAmount = newBudget;
+        var costCentreBefore = dept.CostCenterId;
         if (body.CostCenterId.HasValue)
             dept.CostCenterId = body.CostCenterId.Value == Guid.Empty ? null : body.CostCenterId.Value;
+        if (costCentreBefore != dept.CostCenterId)
+            Zayra.Api.Infrastructure.Finance.CostAttributionAudit.Stage(_audit, Context(), "Department", dept.Id, dept.CompanyId,
+                new { costCenterId = costCentreBefore }, new { costCenterId = dept.CostCenterId }, body.Reason);
         dept.UpdatedAtUtc = DateTime.UtcNow;
         // Staged, so the audit row commits in the same SaveChanges as the change.
         _audit.Stage("establishment.budget_updated", "Department", dept.Id.ToString(), Context(),

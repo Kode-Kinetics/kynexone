@@ -411,6 +411,9 @@ public class SetupAssistantController : ControllerBase
                     catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
                 }
                 dept.CostCenterId = entity.Id;
+                if (existingDepartment && costCentreBefore != dept.CostCenterId)
+                    Zayra.Api.Infrastructure.Finance.CostAttributionAudit.Stage(_audit, Context(tenantId), nameof(Department), dept.Id, dept.CompanyId,
+                        new { costCenterId = costCentreBefore }, new { costCenterId = dept.CostCenterId });
                 if (existingDepartment)
                 {
                     Audit("organization.department_updated", nameof(Department), dept.Id, dept.Code);

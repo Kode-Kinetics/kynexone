@@ -87,6 +87,9 @@ public class PositionsController : ControllerBase
             position.UpdatedAtUtc = DateTime.UtcNow;
             position.UpdatedBy = UserId();
             StageAudit("position.updated", before, position);
+            if (before.CostCenterId != position.CostCenterId)
+                Zayra.Api.Infrastructure.Finance.CostAttributionAudit.Stage(_audit, new RequestContext(null, null, UserId(), tenantId), "Position", position.Id, position.CompanyId,
+                    new { costCenterId = before.CostCenterId }, new { costCenterId = position.CostCenterId });
             await _db.SaveChangesAsync(ct);
             return Ok(position);
         }

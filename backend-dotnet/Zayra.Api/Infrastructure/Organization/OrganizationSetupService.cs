@@ -10,6 +10,7 @@ using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -360,6 +361,10 @@ public class OrganizationSetupService : IOrganizationSetupService
         department.UpdatedBy = context.UserId;
         _audit.Stage("organization.department_updated", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
             DepartmentAuditJson(before, department, request.Reason), department.CompanyId);
+        if (before.CostCenterId != department.CostCenterId || before.ParentDepartmentId != department.ParentDepartmentId)
+            CostAttributionAudit.Stage(_audit, context with { TenantId = tenantId }, nameof(Department), department.Id, department.CompanyId,
+                new { costCenterId = before.CostCenterId, parentDepartmentId = before.ParentDepartmentId },
+                new { costCenterId = department.CostCenterId, parentDepartmentId = department.ParentDepartmentId }, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
         return department.ToDto();
     }
@@ -583,6 +588,10 @@ public class OrganizationSetupService : IOrganizationSetupService
         _audit.Stage("organization.cost_center_updated", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
             CostCentreAuditJson(before, costCenter, request.Reason), costCenter.CompanyId);
         if (classChanged) StageClassChanged(tenantId, context, costCenter, before.FunctionalClass, request.Reason);
+        if (before.IsActive != costCenter.IsActive || before.CompanyId != costCenter.CompanyId || before.GlSegment != costCenter.GlSegment || before.ParentId != costCenter.ParentId)
+            CostAttributionAudit.Stage(_audit, context with { TenantId = tenantId }, nameof(CostCenter), costCenter.Id, costCenter.CompanyId,
+                new { isActive = before.IsActive, companyId = before.CompanyId, glSegment = before.GlSegment, parentId = before.ParentId },
+                new { isActive = costCenter.IsActive, companyId = costCenter.CompanyId, glSegment = costCenter.GlSegment, parentId = costCenter.ParentId }, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
         return await WithUsageAsync(costCenter.ToDto(), tenantId, cancellationToken);
     }

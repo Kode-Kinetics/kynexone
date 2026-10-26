@@ -116,7 +116,7 @@ public class CostAttributionSodAuditTests
     };
 
     private static ClaimsPrincipal Principal(W w, params string[] permissions) => new(new ClaimsIdentity(
-        new[] { new Claim("tenant_id", w.Tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, w.User.ToString()), new Claim(ClaimTypes.Role, "Admin"), new Claim("is_group_scope", "true") }
+        new[] { new Claim("tenant_id", w.Tenant.ToString()), new Claim(ClaimTypes.NameIdentifier, w.User.ToString()), new Claim("sub", w.User.ToString()), new Claim(ClaimTypes.Role, "Admin"), new Claim("is_group_scope", "true") }
             .Concat(permissions.Select(p => new Claim("permission", p))), "test"));
 
     private static PositionRequest PositionBody(W w, Guid? cc, string title = "Analyst") =>
@@ -187,7 +187,7 @@ public class CostAttributionSodAuditTests
         result.Result.Should().BeOfType<OkObjectResult>();
 
         var rows = await Rows(w);
-        rows.Select(r => r.EntityName).Should().BeEquivalentTo(new[] { nameof(Department), nameof(Position), nameof(CostCenter) });
+        rows.Select(r => r.EntityName).Distinct().Should().BeEquivalentTo(new[] { nameof(Department), nameof(Position), nameof(CostCenter) });
         rows.Should().OnlyContain(r => r.CompanyId == w.A.Id && r.UserId == w.User);
     }
 

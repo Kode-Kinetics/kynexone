@@ -14,6 +14,7 @@ using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
@@ -304,6 +305,8 @@ public class OrganizationStructureImportController : ControllerBase
         void Bump(string key) => counts[key] = counts.GetValueOrDefault(key) + 1;
         // One audit row per entity, with the Setup forms' own action names, written in THIS transaction (see Commit).
         var audited = new List<(string Action, string Entity, Guid Id, string Key)>();
+        // Attribution moves, staged with the company once the data is saved (strict separation of duties).
+        var attribution = new List<(string Entity, Guid Id, Guid? CompanyId, object Before, object After)>();
         void Audit(string action, string entity, Guid id, string key) => audited.Add((action, entity, id, key));
         var pendingCompanyCreates = 0;
 
@@ -449,7 +452,9 @@ public class OrganizationStructureImportController : ControllerBase
             if (costCenters.TryGetValue(((Guid?)company.Id, code.Trim().ToUpperInvariant()), out var cc))
             {
                 cc.Name = Val(row, "Name");
+                var activeBefore = cc.IsActive;
                 cc.IsActive = Bool(row, "IsActive", true);
+                if (activeBefore != cc.IsActive) attribution.Add((nameof(CostCenter), cc.Id, cc.CompanyId, new { isActive = activeBefore }, new { isActive = cc.IsActive }));
                 cc.UpdatedAtUtc = DateTime.UtcNow;
                 Audit("organization.cost_center_updated", nameof(CostCenter), cc.Id, code);
             }
@@ -524,6 +529,9 @@ public class OrganizationStructureImportController : ControllerBase
                     || (departmentCostCenter is not null && departmentCostCenter.CompanyId != owner)))
                 throw new InvalidOperationException($"Department '{code}' links a branch or cost center of another company.");
             // A blank link cell leaves an existing row's link unchanged.
+            var departmentIsNew = _db.Entry(department).State == EntityState.Added;
+            var departmentCostCentreBefore = department.CostCenterId;
+            var departmentParentBefore = department.ParentDepartmentId;
             if (departmentBranch is not null) department.BranchId = departmentBranch.Id;
             if (departmentCostCenter is not null)
             {
@@ -537,12 +545,20 @@ public class OrganizationStructureImportController : ControllerBase
             department.IsActive = Bool(row, "IsActive", true);
             department.UpdatedAtUtc = DateTime.UtcNow;
             if (_db.Entry(department).State != EntityState.Added) Audit("organization.department_updated", nameof(Department), department.Id, code);
+            if (!departmentIsNew && departmentCostCentreBefore != department.CostCenterId)
+                attribution.Add((nameof(Department), department.Id, department.CompanyId, new { costCenterId = departmentCostCentreBefore, parentDepartmentId = departmentParentBefore }, new { costCenterId = department.CostCenterId, parentDepartmentId = departmentParentBefore }));
         }
         foreach (var row in parsed.Departments)
         {
             var parentCode = Val(row, "ParentDepartmentCode");
             if (!string.IsNullOrWhiteSpace(parentCode))
-                departments[Val(row, "Code").ToUpperInvariant()].ParentDepartmentId = departments[parentCode.ToUpperInvariant()].Id;
+            {
+                var child = departments[Val(row, "Code").ToUpperInvariant()];
+                var parentBefore = child.ParentDepartmentId;
+                child.ParentDepartmentId = departments[parentCode.ToUpperInvariant()].Id;
+                if (_db.Entry(child).State != EntityState.Added && parentBefore != child.ParentDepartmentId)
+                    attribution.Add((nameof(Department), child.Id, child.CompanyId, new { parentDepartmentId = parentBefore }, new { parentDepartmentId = child.ParentDepartmentId }));
+            }
         }
 
         await _db.SaveChangesAsync(ct);
@@ -647,6 +663,8 @@ public class OrganizationStructureImportController : ControllerBase
                     throw new InvalidOperationException($"Position '{code}' links cost center '{positionCostCenter.Code}', which is inactive.");
                 if (position.CompanyId is Guid positionCompany && positionCostCenter.CompanyId != positionCompany)
                     throw new InvalidOperationException($"Position '{code}' links a cost center of another company.");
+                if (_db.Entry(position).State != EntityState.Added && position.CostCenterId != positionCostCenter.Id)
+                    attribution.Add((nameof(Position), position.Id, position.CompanyId, new { costCenterId = position.CostCenterId }, new { costCenterId = positionCostCenter.Id }));
                 position.CostCenterId = positionCostCenter.Id;
             }
             if (!string.IsNullOrWhiteSpace(Val(row, "DesignationCode"))) position.DesignationId = designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
@@ -690,6 +708,8 @@ public class OrganizationStructureImportController : ControllerBase
         // Setup forms, tagged with the import as the source.
         var context = BuildContext(tenantId);
         var at = DateTime.UtcNow;
+        foreach (var (entity, id, companyId, before, after) in attribution)
+            CostAttributionAudit.Stage(_audit, context, entity, id, companyId, before, after);
         foreach (var (action, entity, id, key) in audited.DistinctBy(a => (a.Action, a.Id)))
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, action, entity, id.ToString(), context,
                 JsonSerializer.Serialize(new { source = "organization_structure_import", key })));
