@@ -227,7 +227,8 @@ public sealed class EmployeeHireController : ControllerBase
         var employee = await (track ? query.AsTracking() : query.AsNoTracking()).FirstOrDefaultAsync(e => e.Id == id && !e.IsDeleted, ct);
         if (employee is null) return null;
         var scope = this.GetEntityScope();
-        return employee.CompanyId is null || scope.CanAccessCompany(employee.CompanyId) ? employee : null;
+        // A record with no company is invisible to a scoped caller everywhere else; the hire routes agree (group-level callers pass).
+        return scope.CanAccessCompany(employee.CompanyId) ? employee : null;
     }
 
     private ObjectResult Problem(int status, string code, string detail) => BuildProblem(HttpContext.TraceIdentifier, status, code, detail);
