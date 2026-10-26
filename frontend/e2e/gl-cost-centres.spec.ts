@@ -23,7 +23,7 @@ const companyAe = {
 };
 
 const M7_EN = 'A payroll run for this company is awaiting finance review or lock, and this change would alter what it posts. Lock the run, or reopen it first.';
-const M7_AR = 'هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل، وهذا التغيير سيغيّر ما ستقوم بترحيله. اقفل المسيرة أو أعد فتحها أولًا.';
+const M7_AR = 'يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل، وسيغيّر هذا التعديل ما سيُرحَّل. اقفل المسير أو أعد فتحه أولًا.';
 const lockedBody = { error: 'locked_into_approved_run', code: 'locked_into_approved_run', message: M7_EN, messageAr: M7_AR };
 
 interface Account { id: string; companyId: string | null; code: string; name: string; accountType: string; isActive: boolean; costCenterRule: string; externalCode?: string | null }
@@ -209,7 +209,7 @@ async function boot(page: Page, options: Options = {}, initialUrl?: string) {
     if (p === '/api/finance/gl/mappings' && method === 'GET') return reply(mappingRows(companyId));
     if (p === '/api/finance/gl/mappings' && method === 'PUT') {
       if (ctl.mappingRefusal) return reply(ctl.mappingRefusal.body, ctl.mappingRefusal.status);
-      return reply({ count: Array.isArray(body) ? body.length : 0, changed: 1, removed: 0 });
+      return reply({ count: Array.isArray(body) ? body.length : Array.isArray(body?.mappings) ? body.mappings.length : 0, changed: 1, removed: 0 });
     }
     if (p === '/api/finance/gl/drivers' && method === 'GET') return reply([]);
     if (p === '/api/finance/gl/resolve') return reply({ companyId: null, rows: [] });
@@ -468,12 +468,16 @@ test('a reason appears once something is edited, is required to save, and travel
   await tid(page, 'cc-map-save').click();
   await expect(page.getByText('Mappings saved.')).toBeVisible();
   const put = lastMappingPut(state);
-  expect(search(put).get('reason')).toBe('Sales loans are charged to Sales');
+  // The reason travels in the JSON body now; the query keeps only the company scope.
+  expect(search(put).get('reason')).toBeNull();
   expect(search(put).get('companyId')).toBe('co-sa');
-  expect(put.body).toEqual([
-    { driverKey: 'EARN:HOUSING', accountId: 'acc-5090', segmentCostCenterId: 'cc-admin', functionalClass: null },
-    { driverKey: 'LOAN_RECEIVABLE', accountId: 'acc-1400', segmentCostCenterId: 'cc-sales', functionalClass: null },
-  ]);
+  expect(put.body).toEqual({
+    reason: 'Sales loans are charged to Sales',
+    mappings: [
+      { driverKey: 'EARN:HOUSING', accountId: 'acc-5090', segmentCostCenterId: 'cc-admin', functionalClass: null },
+      { driverKey: 'LOAN_RECEIVABLE', accountId: 'acc-1400', segmentCostCenterId: 'cc-sales', functionalClass: null },
+    ],
+  });
 });
 
 test('picking a functional class turns the fixed cost centre off, and picking a fixed cost centre turns the class off', async ({ page }) => {

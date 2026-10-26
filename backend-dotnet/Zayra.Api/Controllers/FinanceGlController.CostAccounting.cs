@@ -98,7 +98,7 @@ public partial class FinanceGlController
         var reason = req.Reason!.Trim();
 
         if (kChange && (targetK < 0 || targetK > MaxSmallCellMin))
-            return UnprocessableEntity(CostAccountingGuards.Error("small_cell_min_invalid", $"The small-cell minimum must be between 0 and {MaxSmallCellMin}.", $"يجب أن يكون الحد الأدنى للخلايا الصغيرة بين 0 و{MaxSmallCellMin}."));
+            return UnprocessableEntity(CostAccountingGuards.Error("small_cell_min_invalid", $"The small-cell minimum must be between 0 and {MaxSmallCellMin}.", $"يجب أن يكون الحد الأدنى لعدد الموظفين في المركز بين 0 و{MaxSmallCellMin}."));
         if (defaultChange && targetDefault is { } dcc)
         {
             var row = await ScopedBypass.TenantWide(_db.CostCenters, tid, "The default cost centre must be a live row of this company; foreign rows are refused, not described.")
@@ -110,7 +110,7 @@ public partial class FinanceGlController
         if (enableChange && req.Enabled == true && CurrencyMinorUnits.Scale(company.DefaultCurrency) == 3)
             return UnprocessableEntity(CostAccountingGuards.Error("currency_scale_unsupported_for_payroll",
                 "This company's currency uses three decimal places, which payroll storage cannot carry yet, so cost accounting cannot be turned on.",
-                "عملة هذه الشركة تستخدم ثلاث خانات عشرية ولا يستطيع تخزين الرواتب حملها بعد، لذا لا يمكن تفعيل محاسبة التكلفة."));
+                "تستخدم عملة هذه الشركة ثلاث منازل عشرية، ولا يدعم تخزين الرواتب حاليًا سوى منزلتين عشريتين، لذا لا يمكن تفعيل محاسبة التكلفة."));
 
         // M-7 (AM-3, AM-9): none of the three may move while a run awaits finance review or lock.
         if (await CostAccountingGuards.HasRunAwaitingFinanceOrLockAsync(_db, tid, companyId, ct))
@@ -126,7 +126,7 @@ public partial class FinanceGlController
             await _db.SaveChangesAsync(ct);
             return Conflict(CostAccountingGuards.Error("cost_accounting_has_costed_runs",
                 "Cost accounting cannot be turned off because a payroll run of this company was already locked with cost centres. Contact support if it must be reversed.",
-                "لا يمكن إيقاف محاسبة التكلفة لأن مسيرة رواتب لهذه الشركة قُفلت بالفعل مع مراكز التكلفة. تواصل مع الدعم إذا لزم التراجع."));
+                "لا يمكن إيقاف محاسبة التكلفة لأن مسير رواتب لهذه الشركة قُفل بعد تفعيلها وبمراكز التكلفة. تواصل مع الدعم الفني إن احتجت إلى التراجع."));
         }
 
         // Readiness is evaluated with the PROPOSED default and K, before anything is mutated.
@@ -140,7 +140,7 @@ public partial class FinanceGlController
                 {
                     error = "cost_accounting_blockers", code = "cost_accounting_blockers",
                     message = "Cost accounting has readiness blockers or small-cell exposure. Fix them, or acknowledge them to turn it on anyway.",
-                    messageAr = "هناك موانع جاهزية أو تعرّض لخلايا صغيرة في محاسبة التكلفة. عالجها أو أقرّ بها لتفعيل الميزة على أي حال.",
+                    messageAr = "توجد موانع تمنع التفعيل أو مراكز تكلفة بعدد موظفين قليل قد يكشف رواتب أفراد. عالجها أو أقرّ بها لتفعيل محاسبة التكلفة على أي حال.",
                     checks = readiness.Checks, blockers = readiness.Blockers, smallCellExposure = new { count = readiness.SmallCellExposure, threshold = CostAccountingReadinessService.SmallCellThreshold },
                 });
         }

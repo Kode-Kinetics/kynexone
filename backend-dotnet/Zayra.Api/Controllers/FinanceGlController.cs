@@ -366,12 +366,14 @@ public partial class FinanceGlController : ControllerBase
     /// account whose type the driver accepts (earnings → Expense, deductions → the type the catalog
     /// declares, NET_PAYABLE → Liability).</summary>
     [HttpPut("mappings")]
-    public async Task<IActionResult> SetMappings([FromQuery] Guid? companyId, [FromBody] List<GlMappingRequest> mappings, CancellationToken ct, [FromQuery] string? reason = null)
+    public async Task<IActionResult> SetMappings([FromQuery] Guid? companyId, [FromBody] GlMappingsBody body, CancellationToken ct, [FromQuery] string? reason = null)
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } err) return err;
-        mappings ??= new List<GlMappingRequest>();
+        var mappings = body?.Mappings ?? new List<GlMappingRequest>();
+        // The reason is read from the body; the query value is kept for one release and loses to a non-blank body reason.
+        reason = string.IsNullOrWhiteSpace(body?.Reason) ? reason : body!.Reason;
         // The whole save is one cost-attribution write: advisory lock + transaction, so the M-7 check cannot race an Approve.
         return await CostAccountingGuards.SerializeAsync(_db, tid.Value, companyId, () => SetMappingsCoreAsync(tid.Value, companyId, mappings, reason, ct), ct);
     }
@@ -424,18 +426,18 @@ public partial class FinanceGlController : ControllerBase
             if (!accounts.TryGetValue(m.AccountId, out var account)) return BadRequest(new { message = $"Account '{m.AccountId}' is not visible to this scope." });
             if (cls is not null && !FunctionalClasses.Contains(cls, StringComparer.Ordinal))
                 return UnprocessableEntity(CostAccountingGuards.Error("functional_class_invalid", $"'{cls}' is not a functional class. Use one of {string.Join(", ", FunctionalClasses.Where(c => c != ReservedFunctionalClass))}.",
-                    "التصنيف الوظيفي غير صالح."));
+                    "التصنيف الوظيفي للتكلفة غير صالح."));
             if (cls == ReservedFunctionalClass)
                 return UnprocessableEntity(CostAccountingGuards.Error("functional_class_reserved", "The Capitalisable class is reserved and cannot be used for posting yet.",
-                    "التصنيف الوظيفي «قابل للرسملة» محجوز ولا يمكن استخدامه في الترحيل بعد."));
+                    "التصنيف «قابلة للرسملة» محجوز لاستخدام لاحق ولا يمكن استخدامه في الترحيل حاليًا."));
             if (m.SegmentCostCenterId is { } cc)
             {
                 if (cls is not null)
                     return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_with_class", "A posting rule is either for one functional class or fixed to one cost centre, not both.",
-                        "قاعدة الترحيل إما لتصنيف وظيفي واحد أو مثبّتة على مركز تكلفة واحد، وليس كلاهما."));
+                        "تُحدَّد قاعدة الترحيل إما بتصنيف وظيفي للتكلفة واحد أو بمركز تكلفة ثابت واحد، وليس بكليهما."));
                 if (companyId is null)
                     return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_requires_company", "Fixed cost centres are set per company. Switch to a company to set one.",
-                        "تُحدَّد مراكز التكلفة الثابتة لكل شركة. انتقل إلى شركة لتحديد مركز."));
+                        "تُحدَّد مراكز التكلفة الثابتة لكل شركة. اختر شركة معيّنة لتحديد مركز."));
                 if (!fixedRows.TryGetValue(cc, out var row) || row.CompanyId != companyId || !row.IsActive || row.IsDeleted)
                     return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_invalid", "The fixed cost centre must be an active cost centre of this company.",
                         "يجب أن يكون مركز التكلفة الثابت مركزًا نشطًا تابعًا لهذه الشركة."));
@@ -893,7 +895,7 @@ public partial class FinanceGlController : ControllerBase
         if (!CostCenterRules.Contains(rule, StringComparer.Ordinal))
             return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_rule_invalid",
                 $"The cost centre rule must be one of {string.Join(", ", CostCenterRules)}.",
-                "يجب أن تكون قاعدة مركز التكلفة إحدى القيم: Required أو Optional أو NotAllowed."));
+                "يجب أن تكون قاعدة مركز التكلفة أحد الخيارات: إلزامي (Required) أو اختياري (Optional) أو غير مسموح (NotAllowed)."));
         if (rule == "Required" && !IsProfitAndLossType(accountType))
             return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_rule_invalid_for_type",
                 "Only expense and income accounts can require a cost centre.",
@@ -1186,6 +1188,51 @@ public record GlPeriodActionRequest(string? Reason = null);
 public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true, string? ExternalCode = null, string? CostCenterRule = null);
 /// <param name="FunctionalClass">Cost-centre functional class this row applies to; null = every class. Mutually exclusive with a fixed cost centre.</param>
 public record GlMappingRequest(string DriverKey, Guid AccountId, Guid? SegmentCostCenterId = null, string? FunctionalClass = null);
+
+/// <summary>The body of <c>PUT /mappings</c>: <c>{ "reason": "...", "mappings": [...] }</c>. The legacy bare array (<c>[...]</c>) still binds, with no body
+/// reason, for one release; the controller then falls back to the <c>?reason=</c> query value. A non-blank body reason wins over the query one.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(GlMappingsBodyConverter))]
+public sealed class GlMappingsBody : System.Collections.Generic.IEnumerable<GlMappingRequest>
+{
+    public List<GlMappingRequest> Mappings { get; set; } = new();
+    public string? Reason { get; set; }
+    public void Add(GlMappingRequest m) => Mappings.Add(m);
+    public IEnumerator<GlMappingRequest> GetEnumerator() => Mappings.GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    public static implicit operator GlMappingsBody(List<GlMappingRequest> mappings) => new() { Mappings = mappings };
+}
+
+public sealed class GlMappingsBodyConverter : System.Text.Json.Serialization.JsonConverter<GlMappingsBody>
+{
+    public override GlMappingsBody? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null) return null;
+        if (reader.TokenType == JsonTokenType.StartArray)
+            return new GlMappingsBody { Mappings = JsonSerializer.Deserialize<List<GlMappingRequest>>(ref reader, options) ?? new() };
+        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("Expected an object or an array of mappings.");
+        var body = new GlMappingsBody();
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            var name = reader.GetString() ?? "";
+            reader.Read();
+            if (name.Equals("reason", StringComparison.OrdinalIgnoreCase))
+                body.Reason = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
+            else if (name.Equals("mappings", StringComparison.OrdinalIgnoreCase))
+                body.Mappings = JsonSerializer.Deserialize<List<GlMappingRequest>>(ref reader, options) ?? new();
+            else reader.Skip();
+        }
+        return body;
+    }
+
+    public override void Write(Utf8JsonWriter writer, GlMappingsBody value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("reason", value.Reason);
+        writer.WritePropertyName("mappings");
+        JsonSerializer.Serialize(writer, value.Mappings, options);
+        writer.WriteEndObject();
+    }
+}
 public record CostCentreRulePresetRequest(string? Reason);
 /// <param name="Enabled">null = unchanged.</param>
 /// <param name="DefaultCostCenterId">null = unchanged (use <paramref name="ClearDefaultCostCenter"/> to remove).</param>

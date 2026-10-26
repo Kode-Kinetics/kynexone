@@ -22,15 +22,15 @@ public sealed class CostCentreRuleException(string code, int status, string mess
 
     public static CostCentreRuleException GlSegmentInvalid() => new("cost_centre_gl_segment_invalid", 422,
         "The ERP cost centre value starts with a letter or digit and then uses only letters, digits, dot, dash or underscore, up to 30 characters.",
-        "تبدأ قيمة مركز التكلفة في نظام ERP بحرف أو رقم ثم تستخدم الحروف والأرقام والنقطة والشرطة والشرطة السفلية فقط، بحد أقصى 30 حرفًا.");
+        "يبدأ رمز ERP بحرف أو رقم، ولا يستخدم بعده إلا الأحرف والأرقام والنقطة والشرطة والشرطة السفلية، بحد أقصى 30 حرفًا.");
 
     public static CostCentreRuleException GlSegmentTaken() => new("cost_centre_gl_segment_taken", 409,
         "Another cost centre of this company already uses that ERP value.",
-        "يوجد مركز تكلفة آخر في هذه الشركة يستخدم قيمة ERP هذه.");
+        "يوجد مركز تكلفة آخر في هذه الشركة يستخدم رمز ERP هذا.");
 
     public static CostCentreRuleException FunctionalClassInvalid() => new("cost_centre_functional_class_invalid", 422,
         "The functional class must be one of COGS, SELLING, G_AND_A, R_AND_D, OPERATIONS or CAPITALISABLE.",
-        "يجب أن يكون التصنيف الوظيفي أحد: COGS أو SELLING أو G_AND_A أو R_AND_D أو OPERATIONS أو CAPITALISABLE.");
+        "التصنيف الوظيفي للتكلفة غير صالح. القيم المسموحة: تكلفة المبيعات (COGS)، البيع والتسويق (SELLING)، عمومية وإدارية (G_AND_A)، البحث والتطوير (R_AND_D)، التشغيل (OPERATIONS)، قابلة للرسملة (CAPITALISABLE).");
 
     /// <summary>M-10.</summary>
     public static CostCentreRuleException ReasonRequired() => new("cost_centre_reason_required", 422,
@@ -40,12 +40,12 @@ public sealed class CostCentreRuleException(string code, int status, string mess
 
     private static string ParentArabic(string code) => code switch
     {
-        "cost_centre_parent_self" => "لا يمكن أن يكون مركز التكلفة أبًا لنفسه.",
-        "cost_centre_parent_cycle" => "هذا الأب سيُنشئ حلقة في شجرة مراكز التكلفة.",
-        "cost_centre_parent_too_deep" => "لا يمكن أن تزيد شجرة مراكز التكلفة على عشرة مستويات.",
+        "cost_centre_parent_self" => "لا يمكن أن يكون مركز التكلفة هو المركز الأعلى لنفسه.",
+        "cost_centre_parent_cycle" => "هذا الاختيار للمركز الأعلى يُنشئ دورة مغلقة في هيكل مراكز التكلفة.",
+        "cost_centre_parent_too_deep" => "لا يجوز أن يتجاوز عمق هيكل مراكز التكلفة عشرة مستويات.",
         "cost_centre_other_company" => "يتبع مركز التكلفة شركة أخرى. اختر أحد مراكز تكلفة هذه الشركة.",
         "cost_centre_inactive" => "مركز التكلفة غير نشط ولا يمكن تعيينه.",
-        _ => "لم يُعثر على مركز التكلفة في هذا المستأجر.",
+        _ => "لم يُعثر على مركز التكلفة.",
     };
 
     public static string ParentMessage(string code) => code switch
@@ -62,7 +62,7 @@ public sealed class CostCentreRuleException(string code, int status, string mess
         int n(string k) => counts.GetValueOrDefault(k);
         return new("cost_centre_in_use", 409,
             $"Cost centre {costCentreCode} is used by {n("department")} department(s), {n("employee")} employee(s), {n("position")} position(s) and {n("mapping")} posting rule(s), so it cannot be deleted, deactivated or moved to another company.",
-            $"مركز التكلفة {costCentreCode} مستخدم في {n("department")} قسم/أقسام و{n("employee")} موظف/موظفين و{n("position")} منصب/مناصب و{n("mapping")} قاعدة ترحيل، لذا لا يمكن حذفه أو إيقافه أو نقله إلى شركة أخرى.",
+            $"مركز التكلفة {costCentreCode} مستخدم حاليًا: الأقسام ({n("department")})، الموظفون ({n("employee")})، المناصب ({n("position")})، قواعد الترحيل ({n("mapping")}). لذا لا يمكن حذفه أو إيقافه أو نقله إلى شركة أخرى.",
             counts);
     }
 
@@ -70,10 +70,10 @@ public sealed class CostCentreRuleException(string code, int status, string mess
     /// Discloses nothing about the run.</summary>
     public static CostCentreRuleException LockedIntoApprovedRun() => new("locked_into_approved_run", 409,
         "A payroll run for this company is awaiting finance review or lock; reopen it first.",
-        "هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتحها أولًا.");
+        "يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتح المسير أولًا.");
 
     /// <summary>M-9.</summary>
     public static CostCentreRuleException CodeLocked(string costCentreCode) => new("cost_centre_code_locked", 409,
         $"The code of cost centre {costCentreCode} cannot change because journal lines already carry it. You can rename it.",
-        $"لا يمكن تغيير رمز مركز التكلفة {costCentreCode} لأن قيود دفتر اليومية تحمله بالفعل. يمكنك تغيير الاسم.");
+        $"لا يمكن تغيير رمز مركز التكلفة {costCentreCode} لأن قيود اليومية تحمل هذا الرمز بالفعل. يمكنك تغيير الاسم.");
 }

@@ -41,7 +41,7 @@ public static class CostAccountingGuards
     /// <summary>M-7, corrected per AM-9: it names the real unlock paths (Lock, or Reopen) and never the run, period or amounts (S-042).</summary>
     public static object LockedIntoApprovedRunBody { get; } = Error(LockedIntoApprovedRunCode,
         "A payroll run for this company is awaiting finance review or lock, and this change would alter what it posts. Lock the run, or reopen it first.",
-        "هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل، وهذا التغيير سيغيّر ما ستقوم بترحيله. اقفل المسيرة أو أعد فتحها أولًا.");
+        "يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل، وسيغيّر هذا التعديل ما سيُرحَّل. اقفل المسير أو أعد فتحه أولًا.");
 
     /// <summary>M-10.</summary>
     public static object ReasonRequiredBody { get; } = Error(ReasonRequiredCode, "Enter a reason for this change.", "أدخل سببًا لهذا التغيير.");
@@ -105,12 +105,17 @@ public static class CostAccountingSod
         "employee.cost_centre_override.changed",
         // Strict separation of duties (CTO ruling, P2-2): any change to where cost lands also counts.
         CostAttributionAudit.Action,
+        // Only a change to an EXISTING employee's attribution counts. A hire's first attribution is recorded as
+        // employee.cost_attribution_initialised, which is deliberately absent here (CTO scope decision), so onboarding staff
+        // does not bar the admin from locking the month.
         "employee.cost_attribution_changed",
+        // An account's type or active flag decides which postings the cost-centre rule applies to.
+        "finance.gl.account.updated",
     };
 
     public static object RefusalBody { get; } = CostAccountingGuards.Error(ErrorCode,
         "You changed cost-accounting settings for this company since the last lock, so someone else must lock or export this run.",
-        "لقد غيّرت إعدادات محاسبة التكلفة لهذه الشركة منذ آخر قفل، لذا يجب أن يقوم مستخدم آخر بقفل هذه المسيرة أو تصديرها.");
+        "غيّرتَ إعدادات محاسبة التكلفة لهذه الشركة منذ آخر قفل، وتطبيقًا لمبدأ الفصل بين المهام يجب أن يتولى مستخدم آخر قفل هذا المسير أو تصديره.");
 
     public static async Task<bool> HasConflictAsync(ZayraDbContext db, Guid tenantId, Guid companyId, string period, Guid userId, CancellationToken ct)
     {

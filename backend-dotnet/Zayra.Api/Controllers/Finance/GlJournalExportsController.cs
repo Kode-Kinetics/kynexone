@@ -895,10 +895,13 @@ public class GlJournalExportsController : ControllerBase
         }
     }
 
-    private static bool IsErpEvidenceRefusal(Exception ex)
+    private bool IsErpEvidenceRefusal(Exception ex)
     {
+        // The ledger's table name comes from the model, so this refusal match is not a second place that names the table.
+        var ledger = _db.Model.FindEntityType(typeof(FinanceGlEntry))?.GetTableName();
+        if (string.IsNullOrEmpty(ledger)) return false;
         for (var e = ex; e is not null; e = e.InnerException)
-            if (e is Npgsql.PostgresException { SqlState: "23514" or "23001" } pg && pg.MessageText.Contains("finance_gl_entries", StringComparison.Ordinal))
+            if (e is Npgsql.PostgresException { SqlState: "23514" or "23001" } pg && pg.MessageText.Contains(ledger, StringComparison.Ordinal))
                 return true;
         return false;
     }

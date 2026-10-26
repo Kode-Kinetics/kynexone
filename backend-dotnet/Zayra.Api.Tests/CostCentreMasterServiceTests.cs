@@ -189,7 +189,7 @@ public class CostCentreMasterServiceTests
         await Reference(w, cc, "department");
         var ex = await Refused(() => w.Svc.DeleteCostCenterAsync(w.Tenant, cc.Id, Ctx(w.Tenant), default));
         ex.Message.Should().Be("Cost centre OPS is used by 1 department(s), 0 employee(s), 0 position(s) and 0 posting rule(s), so it cannot be deleted, deactivated or moved to another company.");
-        ex.MessageAr.Should().Be("مركز التكلفة OPS مستخدم في 1 قسم/أقسام و0 موظف/موظفين و0 منصب/مناصب و0 قاعدة ترحيل، لذا لا يمكن حذفه أو إيقافه أو نقله إلى شركة أخرى.");
+        ex.MessageAr.Should().Be("مركز التكلفة OPS مستخدم حاليًا: الأقسام (1)، الموظفون (0)، المناصب (0)، قواعد الترحيل (0). لذا لا يمكن حذفه أو إيقافه أو نقله إلى شركة أخرى.");
     }
 
     [Fact]
@@ -222,7 +222,7 @@ public class CostCentreMasterServiceTests
         var ex = await Refused(() => w.Svc.UpdateCostCenterAsync(w.Tenant, cc.Id, Req(w.A, "OPS2", "Operations"), Ctx(w.Tenant), default));
         (ex.Code, ex.Status).Should().Be(("cost_centre_code_locked", 409));
         ex.Message.Should().Be("The code of cost centre OPS cannot change because journal lines already carry it. You can rename it.");
-        ex.MessageAr.Should().Be("لا يمكن تغيير رمز مركز التكلفة OPS لأن قيود دفتر اليومية تحمله بالفعل. يمكنك تغيير الاسم.");
+        ex.MessageAr.Should().Be("لا يمكن تغيير رمز مركز التكلفة OPS لأن قيود اليومية تحمل هذا الرمز بالفعل. يمكنك تغيير الاسم.");
 
         var moved = await Refused(() => w.Svc.UpdateCostCenterAsync(w.Tenant, cc.Id, Req(w.B, "OPS", "Operations"), Ctx(w.Tenant), default));
         moved.Code.Should().Be("cost_centre_code_locked");

@@ -14,7 +14,7 @@ import { bootEmployeeWorkspaceFixture, employees as fixtureEmployees } from './e
  */
 
 const M7_EN = 'A payroll run for this company is awaiting finance review or lock; reopen it first.';
-const M7_AR = 'هناك مسيرة رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتحها أولًا.';
+const M7_AR = 'يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتح المسير أولًا.';
 const REASON_EN = 'Enter a reason for this change.';
 const REASON_AR = 'أدخل سببًا لهذا التغيير.';
 

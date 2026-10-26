@@ -121,9 +121,24 @@ public class CostAccountingSodTests
         (await Conflict(db, tid, co.Id, preset)).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task AnAccountActiveChange_BlocksItsEditor()
+    {
+        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
+        var (tid, co, a1, _) = await Seed(db);
+        var editor = Guid.NewGuid();
+
+        // Same cost-centre rule, account deactivated: only finance.gl.account.updated is emitted, not rule_changed.
+        Status(await Gl(db, tid, ManagePerms, uid: editor).UpdateAccount(a1.Id, false, new GlAccountRequest("5001", a1.Name, a1.AccountType, false, null, a1.CostCenterRule), default)).Should().Be(200);
+        (await db.AuditLogs.CountAsync(a => a.UserId == editor && a.Action == "finance.gl.account.rule_changed")).Should().Be(0);
+
+        (await Conflict(db, tid, co.Id, editor)).Should().BeTrue();
+    }
+
     [Theory]
     [InlineData("organization.costcenter.class_changed")]
     [InlineData("employee.cost_centre_override.changed")]
+    [InlineData("finance.gl.account.updated")]
     public async Task TheMasterDataActionsWpAEmits_AreInTheSet(string action)
     {
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;

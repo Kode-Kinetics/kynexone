@@ -3787,7 +3787,7 @@ public partial class PayrollController : ControllerBase
             {
                 error = "currency_scale_unsupported_for_payroll",
                 message = $"Cost accounting cannot post payroll in {glCurrency} yet: payroll amounts are stored to two decimals, so the third decimal would be lost. Switch cost accounting off for this company, or wait for the payroll storage change.",
-                messageAr = $"لا يمكن ترحيل الرواتب بعملة {glCurrency} مع محاسبة التكلفة بعد: تُخزَّن مبالغ الرواتب بخانتين عشريتين فتضيع الخانة الثالثة. أوقف محاسبة التكلفة لهذه الشركة أو انتظر تعديل تخزين الرواتب.",
+                messageAr = $"لا يمكن ترحيل الرواتب بعملة {glCurrency} مع محاسبة التكلفة حاليًا: تُخزَّن مبالغ الرواتب بمنزلتين عشريتين فتُفقد المنزلة الثالثة. أوقف محاسبة التكلفة لهذه الشركة، أو انتظر إصدارًا لاحقًا يدعم ذلك.",
                 currency = glCurrency,
             }), false);
 
@@ -9991,7 +9991,7 @@ public partial class PayrollController : ControllerBase
     private const string RetroNote =
         "Pay for earlier periods (retro-pay) and back-dated transfers post to the cost centre that is current at Lock, not to the cost centre in force on the date they relate to.";
     private const string RetroNoteAr =
-        "الأجور المتأخرة (الرجعية) والنقل بأثر رجعي تُرحَّل إلى مركز التكلفة الساري وقت قفل المسيرة، وليس إلى المركز الساري في التاريخ الذي تخصه.";
+        "الأجور المتأخرة (الرجعية) والنقل بأثر رجعي تُرحَّل إلى مركز التكلفة الساري وقت قفل المسير، وليس إلى المركز الساري في التاريخ الذي تخصه.";
 
     // ══════════════════════════════════════════════════════════════════════════════════════════════
     //  POD-C1 — THE TERMINATION SETTLEMENT PIPELINE

@@ -264,12 +264,14 @@ export const financeGlApi = {
   // ── Driver → account mappings ──────────────────────────────────────────────
   listMappings: (companyId?: string | null) =>
     client.get<GlMappingRow[]>('/api/finance/gl/mappings', { params: scoped(companyId) }).then((r) => r.data),
-  /** `reason` is recorded in the audit log (M-10); the server requires it for classes and fixed cost centres. */
+  /** `reason` is recorded in the audit log (M-10); the server requires it for classes and fixed cost centres. It travels in the body. */
   setMappings: (mappings: GlMappingInput[], companyId?: string | null, reason?: string) =>
     client
-      .put<{ count: number; changed: number; removed: number }>('/api/finance/gl/mappings', mappings, {
-        params: { ...(scoped(companyId) ?? {}), ...(reason?.trim() ? { reason: reason.trim() } : {}) },
-      })
+      .put<{ count: number; changed: number; removed: number }>(
+        '/api/finance/gl/mappings',
+        { mappings, ...(reason?.trim() ? { reason: reason.trim() } : {}) },
+        { params: scoped(companyId) },
+      )
       .then((r) => r.data),
 
   // ── Extensible driver store ────────────────────────────────────────────────
