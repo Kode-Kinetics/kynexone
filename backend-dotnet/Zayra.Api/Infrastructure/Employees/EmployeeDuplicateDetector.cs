@@ -151,8 +151,7 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
             {
                 if (overCap)
                 {
-                    if (string.IsNullOrWhiteSpace(probe.Nationality)
-                        || !string.Equals(e.Nationality?.Trim(), probe.Nationality.Trim(), System.StringComparison.OrdinalIgnoreCase))
+                    if (!NationalityKey.Same(e.Nationality, probe.Nationality))
                         continue;
                 }
                 if (NameMatches(probeNorm, probeArabic, e))

@@ -71,4 +71,22 @@ public class NationalityMirrorReaderTests
     [Theory]
     [InlineData("Qatari"), InlineData("QA"), InlineData("QAT")]
     public void QatariNational_KeepsEveryPreviouslyAcceptedSpelling(string spelling) => QatarDeductionCalculator.IsQatariNational(spelling).Should().BeTrue();
+
+    [Theory]
+    [InlineData("Pakistani", "Pakistan")]
+    [InlineData("Indian", "India")]
+    [InlineData("Emirati", "United Arab Emirates")]
+    [InlineData("Saudi", "Saudi Arabia")]
+    [InlineData("سعودي", "Saudi Arabia")]
+    public void DuplicateDetector_ComparesNationalityAsTheSameCountry(string legacy, string mirrored)   // CD24
+        => NationalityKey.Same(legacy, mirrored).Should().BeTrue();
+
+    [Fact]
+    public void DuplicateDetector_DifferentCountriesAndBlanksAreNotTheSameSignal()
+    {
+        NationalityKey.Same("Pakistani", "India").Should().BeFalse();
+        NationalityKey.Same("", "Pakistan").Should().BeFalse();
+        NationalityKey.Same(null, null).Should().BeFalse();
+        NationalityKey.Same("Atlantean", "atlantean").Should().BeTrue("unrecognised text still compares case-insensitively");
+    }
 }
