@@ -1,0 +1,1 @@
+{ "status": 409, "contentType": "application/problem+json", "headers": {}, "body": { "title": "Draft changed elsewhere.", "status": 409, "code": "draft_changed_elsewhere", "traceId": "00-abc-04" } }
