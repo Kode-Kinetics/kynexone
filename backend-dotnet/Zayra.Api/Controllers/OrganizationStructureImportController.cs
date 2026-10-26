@@ -800,7 +800,9 @@ public class OrganizationStructureImportController : ControllerBase
             refs: [("CompanyLegalName", companyNames, "Company")], duplicateScopeKey: "CompanyLegalName");
         Merge(branchCodes, parsed.Branches.Select(x => Val(x, "Code")));
         AddRows("costCenters", parsed.CostCenters, "Code", "Name", required: ["CompanyLegalName", "Code", "Name"], known: costCenterCodes, rows,
-            refs: [("CompanyLegalName", companyNames, "Company")]);
+            refs: [("CompanyLegalName", companyNames, "Company")],
+            // A code is printed on journal exports: the same format rule the commit applies to a new row and the form applies (contract 1.1).
+            newCodeError: code => CostCentreCode.IsValid(OrgCodes.Normalize(code)) ? null : $"Cost center code '{code}': {CostCentreCode.Rule}");
         Merge(costCenterCodes, parsed.CostCenters.Select(x => Val(x, "Code")));
         AddRows("grades", parsed.Grades, "Code", "Name", required: ["Code", "Name"], known: gradeCodes, rows);
         AddGradeSanityRows(parsed.Grades, rows);
@@ -1068,7 +1070,7 @@ public class OrganizationStructureImportController : ControllerBase
         public static SavedIndex<T> Of<T>(IEnumerable<T> rows, Func<T, string> key, string label) => new(rows, key, label);
     }
 
-    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null, string? duplicateScopeKey = null)
+    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null, string? duplicateScopeKey = null, Func<string, string?>? newCodeError = null)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < source.Count; i++)
@@ -1087,6 +1089,9 @@ public class OrganizationStructureImportController : ControllerBase
                     + (duplicateScopeKey is null ? string.Empty : $" for {duplicateScopeKey} '{Val(row, duplicateScopeKey)}'"));
             if (!string.IsNullOrWhiteSpace(code) && known.Contains(code))
                 warnings.Add($"{section} record '{code}' already exists and will be updated");
+            // A code that is not saved yet must satisfy the master-data rule now, not when the commit reaches the row.
+            else if (!string.IsNullOrWhiteSpace(code) && newCodeError?.Invoke(code) is { } codeError)
+                errors.Add(codeError);
             foreach (var (key, knownRefs, label) in refs ?? [])
             {
                 var value = Val(row, key);
