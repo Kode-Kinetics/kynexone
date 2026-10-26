@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore.Migrations;
+using Zayra.Api.Infrastructure.Data;
 
 #nullable disable
 
@@ -11,6 +12,7 @@ namespace Zayra.Api.Migrations
     /// The stored values are not recoverable after Up. Down re-adds every column with its original type, NOT NULL and
     /// default, so the schema can be rolled back; the values come back as the default.
     /// </summary>
+    [ContractPhase("Release 1 (PR #271, StopMappingDeadConfigColumns) stopped mapping all 16 columns; no code reads or writes them")]
     public partial class DropDeadConfigColumns : Migration
     {
         /// <inheritdoc />
