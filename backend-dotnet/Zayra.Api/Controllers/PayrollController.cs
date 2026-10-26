@@ -6373,7 +6373,16 @@ public partial class PayrollController : ControllerBase
         run.ErpPostingStatusChangedAtUtc = DateTime.UtcNow;
         run.ErpPostingReference = req.Reference;
         run.ErpPostingFailureReason = req.Status == ErpPostingStatuses.Rejected ? req.Notes : null;
-        foreach (var entry in glEntries)
+        // The ledger's own state machine (migration M2) refuses to walk a line back: a Posted line stays Posted, and a line that has
+        // been exported or rejected cannot return to ReadyForErp. Those lines are skipped, not failed, and the answer says how many.
+        static bool LineMayMove(FinanceGlEntry line, string target) => line.ErpPostingStatus switch
+        {
+            ErpPostingStatuses.Posted => false,
+            ErpPostingStatuses.Exported or ErpPostingStatuses.Rejected => target != ErpPostingStatuses.ReadyForErp,
+            _ => true,
+        };
+        var skippedLines = glEntries.Count(e => !LineMayMove(e, req.Status));
+        foreach (var entry in glEntries.Where(e => LineMayMove(e, req.Status)))
         {
             entry.ErpPostingStatus = req.Status;
             entry.ErpStatusChangedAtUtc = DateTime.UtcNow;
@@ -6382,9 +6391,9 @@ public partial class PayrollController : ControllerBase
         }
 
         await PayrollAudit("payroll.erp_posting.status_changed", "PayrollRun", id.ToString(),
-            new { from, to = req.Status, reference = req.Reference, notes = req.Notes }, cancellationToken);
+            new { from, to = req.Status, reference = req.Reference, notes = req.Notes, skippedLines }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        return Ok(new { runId = id, erpPostingStatus = run.ErpPostingStatus, reference = run.ErpPostingReference });
+        return Ok(new { runId = id, erpPostingStatus = run.ErpPostingStatus, reference = run.ErpPostingReference, skippedLines });
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -7339,6 +7348,9 @@ public partial class PayrollController : ControllerBase
             Description = $"REVERSAL — {orig.Description} — {reason}",
             PostedBy = postedBy, PostedByName = postedByName,
             IsReversed = false, ReversalOfEntryId = orig.Id,
+            // A contra copies the cost centre id and its three snapshots verbatim (AM-25), so a void nets every cost centre to zero.
+            CostCenterId = orig.CostCenterId, CostCenterCode = orig.CostCenterCode, CostCenterName = orig.CostCenterName,
+            CostCenterGlSegment = orig.CostCenterGlSegment, PostingKey = PayrollCostStamper.ReversalKey(orig.Id),
         }).ToList();
     }
 
@@ -10486,6 +10498,8 @@ public partial class PayrollController : ControllerBase
                     Description = $"{FinalSettlementGlDescriptions.ReversalPrefix}{orig.Description} — {req.Reason}",
                     PostedBy = GetUserId(), PostedByName = GetUserName(),
                     IsReversed = false, ReversalOfEntryId = orig.Id,
+                    CostCenterId = orig.CostCenterId, CostCenterCode = orig.CostCenterCode, CostCenterName = orig.CostCenterName,
+                    CostCenterGlSegment = orig.CostCenterGlSegment, PostingKey = PayrollCostStamper.ReversalKey(orig.Id),
                 });
             foreach (var o in originals) o.IsReversed = true;
             _db.FinanceGlEntries.AddRange(contras);
