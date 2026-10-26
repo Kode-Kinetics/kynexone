@@ -579,3 +579,52 @@ public class PayrollCostingLockTests
         Err(res).Should().Be("gl_not_finance_ready");
     }
 }
+
+public class PayrollCostingScaleAndRollUpTests
+{
+    [Theory]
+    [InlineData("KWD")]
+    [InlineData("BHD")]
+    [InlineData("OMR")]
+    public async Task S053_ACompanyWhoseCurrencyHasThreeDecimals_CannotLockWithCostingOn_UntilPayrollStorageIsWidened(string currency)
+    {
+        await using var k = await CostingLockKit.CreateAsync(costing: true, preset: true);
+        (await k.Db.Companies.SingleAsync(c => c.Id == k.CompanyId)).DefaultCurrency = currency;
+        await k.Db.SaveChangesAsync();
+        await k.AddCc("CC-1"); await k.AddDept("D-1", "CC-1"); await k.AddEmployee("E1", "D-1");
+        var run = await k.SeedRunAsync(new[] { CostingLockKit.E("E1", "BASIC", 1000m) }, Array.Empty<(string, string, string, decimal, bool)>());
+        (await k.ApproveAsync(run.Id)).Should().BeOfType<OkObjectResult>();
+
+        var res = await k.LockAsync(run.Id);
+
+        CostingLockKit.Status(res).Should().Be(422);
+        CostingLockKit.Err(res).Should().Be("currency_scale_unsupported_for_payroll");
+        (await k.GlAsync(run.Id)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task T036_WithK3_AOneEmployeeCostCentreRollsUpToItsParent_SourceRolledUp_NoLineEqualsOneEmployeesAmount()
+    {
+        await using var k = await CostingLockKit.CreateAsync(costing: true, preset: true);
+        await k.AddCc("CC-P", "G_AND_A");
+        await k.AddCc("CC-A", "G_AND_A", parent: "CC-P");     // one employee
+        await k.AddCc("CC-B", "G_AND_A", parent: "CC-P");     // two employees
+        await k.AddDept("D-A", "CC-A"); await k.AddDept("D-B", "CC-B");
+        await k.AddEmployee("E1", "D-A"); await k.AddEmployee("E2", "D-B"); await k.AddEmployee("E3", "D-B"); await k.AddEmployee("E4", "D-B");
+        (await k.Db.Companies.SingleAsync(c => c.Id == k.CompanyId)).CostCentreSmallCellMin = 3;
+        await k.Db.SaveChangesAsync();
+        var run = await k.SeedRunAsync(new[]
+        {
+            CostingLockKit.E("E1", "BASIC", 7777m), CostingLockKit.E("E2", "BASIC", 1000m), CostingLockKit.E("E3", "BASIC", 2000m), CostingLockKit.E("E4", "BASIC", 3000m),
+        }, Array.Empty<(string, string, string, decimal, bool)>());
+
+        (await k.ApproveAndLockAsync(run.Id)).Should().BeOfType<OkObjectResult>();
+
+        var basic = (await k.GlAsync(run.Id)).Where(l => l.DebitAccount.StartsWith("5001")).ToList();
+        basic.Select(l => (l.CostCenterCode, l.Amount)).OrderBy(x => x.CostCenterCode).Should().Equal(("CC-B", 6000m), ("CC-P", 7777m));
+        basic.Should().NotContain(l => l.CostCenterCode == "CC-A");
+        var e1 = await k.Db.PayrollEarnings.AsNoTracking().SingleAsync(e => e.PayrollRunId == run.Id && e.EmployeeId == k.Emp["E1"].Id);
+        (e1.CostCenterId, e1.CostCenterSource).Should().Be((k.Cc["CC-P"].Id, "RolledUp"));
+        (await k.Db.PayrollSlips.AsNoTracking().SingleAsync(s => s.RunId == run.Id && s.EmployeeId == k.Emp["E1"].Id)).CostCenterId.Should().Be(k.Cc["CC-P"].Id, "the slip stores the rolled-up centre (AM-15)");
+    }
+}

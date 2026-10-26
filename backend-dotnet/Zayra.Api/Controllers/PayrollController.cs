@@ -3780,6 +3780,17 @@ public partial class PayrollController : ControllerBase
             && await Infrastructure.Finance.CostAccountingSod.HasConflictAsync(_db, tenantId, sodCompany, period, lockerId, cancellationToken))
             return new(StatusCode(403, Infrastructure.Finance.CostAccountingSod.RefusalBody), false);
 
+        // S-053: payroll stores amounts at 2 dp (D-1), so a 3-dp currency would silently lose fils at compute while the ledger and exports
+        // carry 3. With costing on that is refused up front rather than posted wrong.
+        if (glCompany.CostAccountingEnabled && CurrencyMinorUnits.Scale(glCurrency) == 3)
+            return new(UnprocessableEntity(new
+            {
+                error = "currency_scale_unsupported_for_payroll",
+                message = $"Cost accounting cannot post payroll in {glCurrency} yet: payroll amounts are stored to two decimals, so the third decimal would be lost. Switch cost accounting off for this company, or wait for the payroll storage change.",
+                messageAr = $"لا يمكن ترحيل الرواتب بعملة {glCurrency} مع محاسبة التكلفة بعد: تُخزَّن مبالغ الرواتب بخانتين عشريتين فتضيع الخانة الثالثة. أوقف محاسبة التكلفة لهذه الشركة أو انتظر تعديل تخزين الرواتب.",
+                currency = glCurrency,
+            }), false);
+
         // The cost-accounting context the readiness checks read (account rules), only when the switch is on.
         var costingGl = glCompany.CostAccountingEnabled
             ? await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken)
@@ -9088,6 +9099,9 @@ public partial class PayrollController : ControllerBase
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var costed = gl.CostAccountingEnabled;
         var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
+        // The bonus / settlement remainder arithmetic below has always rounded to 2 dp. Costing OFF keeps that exactly; costing ON uses the
+        // currency's minor unit, so a 3-dp ledger (KWD/BHD/OMR) cannot lose a fils (T-032).
+        var dp = costed ? CurrencyMinorUnits.Scale(currency) : 2;
 
         // Resolve a posting driver to "<code> - <name>": mapping override → persisted driver default →
         // compiled default. Delegates to the shared ResolveGlAccount so posting and the GL Journal
@@ -9262,12 +9276,12 @@ public partial class PayrollController : ControllerBase
             // Pro rata over gross remains the fallback for a legacy/incoherent plan that carries no
             // component map, so the journal balances by construction either way
             // (Σ(clearing) + Σ(remainder slices) == Σ(bonus earnings), always).
-            var remainder = Math.Round(bonusEarningTotal - cleared, 2);
+            var remainder = Math.Round(bonusEarningTotal - cleared, dp);
             if (remainder > 0m && deferredBonusGroups.Count > 0 && bonusEarningTotal > 0m)
             {
                 var ordered = deferredBonusGroups.OrderBy(g => g.Code, StringComparer.Ordinal).ToList();
                 var shortfall = ordered
-                    .Select(g => Math.Max(0m, Math.Round(g.Amount - clearedByCode.GetValueOrDefault(g.Code), 2)))
+                    .Select(g => Math.Max(0m, Math.Round(g.Amount - clearedByCode.GetValueOrDefault(g.Code), dp)))
                     .ToList();
                 var useShortfall = shortfall.Sum() > 0m;
                 var weights = useShortfall ? shortfall : ordered.Select(g => g.Amount).ToList();
@@ -9277,8 +9291,8 @@ public partial class PayrollController : ControllerBase
                 {
                     var share = i == ordered.Count - 1
                         ? slice
-                        : Math.Min(slice, Math.Round(remainder * (weights[i] / weightTotal), 2));
-                    slice = Math.Round(slice - share, 2);
+                        : Math.Min(slice, Math.Round(remainder * (weights[i] / weightTotal), dp));
+                    slice = Math.Round(slice - share, dp);
                     if (share <= 0m) continue;
                     EmitUnaccrued(ordered[i].Code, ordered[i].Driver, "Bonus", share, ordered[i].Rows);
                 }
@@ -9329,7 +9343,7 @@ public partial class PayrollController : ControllerBase
             // Whatever the run pays that no live payable covers is a genuine expense of this run, debited
             // to each component's OWN driver (never one collapsed line), so a settlement paid without an
             // accrual — a seeder, a legacy fixture — behaves exactly like an ordinary earning.
-            var settlementRemainder = Math.Round(settlementEarningTotal - clearedSettlement, 2);
+            var settlementRemainder = Math.Round(settlementEarningTotal - clearedSettlement, dp);
             if (settlementRemainder > 0m && deferredSettlementGroups.Count > 0 && settlementEarningTotal > 0m)
             {
                 var ordered = deferredSettlementGroups.OrderBy(g => g.Code, StringComparer.Ordinal).ToList();
@@ -9338,8 +9352,8 @@ public partial class PayrollController : ControllerBase
                 {
                     var share = i == ordered.Count - 1
                         ? slice
-                        : Math.Min(slice, Math.Round(settlementRemainder * (ordered[i].Amount / settlementEarningTotal), 2));
-                    slice = Math.Round(slice - share, 2);
+                        : Math.Min(slice, Math.Round(settlementRemainder * (ordered[i].Amount / settlementEarningTotal), dp));
+                    slice = Math.Round(slice - share, dp);
                     if (share <= 0m) continue;
                     EmitUnaccrued(ordered[i].Code, ordered[i].Driver, FinalSettlementComponents.SettlementSource, share, ordered[i].Rows);
                 }
