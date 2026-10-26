@@ -19,6 +19,8 @@ import {
   type SourceLevel,
 } from '../../lib/employeeCostCentre';
 import { pickServerMessage } from '../../lib/glCostAccounting';
+import { msg } from '../../i18n/translations';
+import { BdiMessage } from '../BdiMessage';
 import { Modal } from '../Modal';
 import { FieldError, LoadError } from '../gl/glUi';
 
@@ -109,29 +111,31 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
   const overridden = isOverride(input);
   const inherited: Resolution = overridden ? resolveCostCentre(input, { ignoreOverride: true }) : resolution;
 
-  const returnsTo = (r: Resolution, code: string): string => {
+  // Each sentence carries a Latin code or name inside Arabic words, so the values sit in their own <bdi>.
+  const returnsTo = (r: Resolution, code: string): React.ReactNode => {
+    const name = r.kind === 'department' || r.kind === 'parentDepartment' || r.kind === 'position' ? r.sourceName ?? '' : '';
     switch (r.kind) {
-      case 'department': return t('Removing it returns to: {code}, from department {name}.', { code, name: r.sourceName ?? '' });
-      case 'parentDepartment': return t('Removing it returns to: {code}, from parent department {name}.', { code, name: r.sourceName ?? '' });
-      case 'position': return t('Removing it returns to: {code}, from position {name}.', { code, name: r.sourceName ?? '' });
-      default: return t('Removing it returns to: {code}, from the company default.', { code });
+      case 'department': return <BdiMessage message={msg('Removing it returns to: {code}, from department {name}.')} values={{ code, name }} />;
+      case 'parentDepartment': return <BdiMessage message={msg('Removing it returns to: {code}, from parent department {name}.')} values={{ code, name }} />;
+      case 'position': return <BdiMessage message={msg('Removing it returns to: {code}, from position {name}.')} values={{ code, name }} />;
+      default: return <BdiMessage message={msg('Removing it returns to: {code}, from the company default.')} values={{ code }} />;
     }
   };
-  const replaces = (r: Resolution, code: string): string => {
+  const replaces = (r: Resolution, code: string): React.ReactNode => {
     switch (r.kind) {
-      case 'department': return t("Replaces the department's cost centre: {code}. Applies from the next Lock; locked runs do not change.", { code });
-      case 'parentDepartment': return t("Replaces the parent department's cost centre: {code}. Applies from the next Lock; locked runs do not change.", { code });
-      case 'position': return t("Replaces the position's cost centre: {code}. Applies from the next Lock; locked runs do not change.", { code });
-      default: return t('Replaces the company default cost centre: {code}. Applies from the next Lock; locked runs do not change.', { code });
+      case 'department': return <BdiMessage message={msg("Replaces the department's cost centre: {code}. Applies from the next Lock; locked runs do not change.")} values={{ code }} />;
+      case 'parentDepartment': return <BdiMessage message={msg("Replaces the parent department's cost centre: {code}. Applies from the next Lock; locked runs do not change.")} values={{ code }} />;
+      case 'position': return <BdiMessage message={msg("Replaces the position's cost centre: {code}. Applies from the next Lock; locked runs do not change.")} values={{ code }} />;
+      default: return <BdiMessage message={msg('Replaces the company default cost centre: {code}. Applies from the next Lock; locked runs do not change.')} values={{ code }} />;
     }
   };
-  const invalidSentence = (level: SourceLevel, code: string): string => {
+  const invalidSentence = (level: SourceLevel, code: string): React.ReactNode => {
     switch (level) {
-      case 'employee': return t('The employee cost centre {code} is inactive, deleted or in another company.', { code });
-      case 'position': return t('The position cost centre {code} is inactive, deleted or in another company.', { code });
-      case 'department': return t('The department cost centre {code} is inactive, deleted or in another company.', { code });
-      case 'parentDepartment': return t('The parent department cost centre {code} is inactive, deleted or in another company.', { code });
-      default: return t('The company default cost centre {code} is inactive, deleted or in another company.', { code });
+      case 'employee': return <BdiMessage message={msg('The employee cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
+      case 'position': return <BdiMessage message={msg('The position cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
+      case 'department': return <BdiMessage message={msg('The department cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
+      case 'parentDepartment': return <BdiMessage message={msg('The parent department cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
+      default: return <BdiMessage message={msg('The company default cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
     }
   };
   const chipText = (r: Resolution): string => {

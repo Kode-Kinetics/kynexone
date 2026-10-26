@@ -90,7 +90,7 @@ export function EmployeeWorkspaceShell({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 id="employee-workspace-heading" tabIndex={-1} className="truncate text-2xl font-extrabold text-slate-950 outline-none dark:text-white">
+              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" className="truncate text-2xl font-extrabold text-slate-950 outline-none dark:text-white">
                 {employee.fullName}
               </h1>
               <span className="rounded-md bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200">{employee.status}</span>

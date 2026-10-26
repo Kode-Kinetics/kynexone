@@ -110,6 +110,11 @@ async function shot(page: Page, info: TestInfo, name: string) {
 }
 
 const tid = (page: Page, id: string) => page.getByTestId(id);
+/** The field sits below the fold on Employment: bring it into the middle of the viewport for the review shot. */
+async function shotField(page: Page, info: TestInfo, name: string) {
+  await tid(page, 'cc-emp-field').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await shot(page, info, name);
+}
 const open = async (page: Page) => {
   await page.goto('/people/901?section=employment');
   await expect(page.getByRole('heading', { name: /Employment details|تفاصيل التوظيف/ })).toBeVisible();
@@ -131,7 +136,8 @@ test('an inherited cost centre shows its code and name, a text chip naming the d
   await expect(tid(page, 'cc-emp-override-open')).toHaveText(/Override…/);
   await expect(tid(page, 'cc-emp-override-remove')).toHaveCount(0);
   await expect(tid(page, 'cc-emp-readonly-note')).toHaveCount(0);
-  await shot(page, info, 'cc-en-employee-inherited');
+  await tid(page, 'cc-emp-why').click();
+  await shotField(page, info, 'cc-en-employee-inherited');
   expect(errors).toEqual([]);
 });
 
@@ -283,7 +289,7 @@ test('without organization.costcenter.manage the field is read-only with a visib
   await expect(tid(page, 'cc-emp-readonly-note')).toHaveText('Only HR managers and admins can change this.');
   await expect(tid(page, 'cc-emp-override-open')).toHaveCount(0);
   await expect(tid(page, 'cc-emp-override-remove')).toHaveCount(0);
-  await shot(page, info, 'cc-en-employee-readonly');
+  await shotField(page, info, 'cc-en-employee-readonly');
 });
 
 test('a reader without finance.gl.read still sees the field; the company default is simply not claimed', async ({ page }) => {
@@ -305,12 +311,18 @@ test('Arabic: RTL, translated field, chip, dialog and the server\'s Arabic refus
   await expect(tid(page, 'cc-emp-value').locator('bdi').first()).toHaveText('ADMIN');
   expect(await tid(page, 'cc-emp-value').locator('bdi').first().evaluate((el) => el.getAttribute('dir'))).toBe('ltr');
   await expect(tid(page, 'cc-emp-source')).toHaveText('من القسم: المالية');
-  await shot(page, info, 'cc-ar-employee-inherited');
+  // A Latin name in the page title is cut at its end, never its beginning: the title reads left to right.
+  await expect(page.locator('#employee-workspace-heading')).toHaveCSS('direction', 'ltr');
+  await tid(page, 'cc-emp-why').click();
+  await shotField(page, info, 'cc-ar-employee-inherited');
+  await tid(page, 'cc-emp-why').click();
   await tid(page, 'cc-emp-why').click();
   await expect(tid(page, 'cc-emp-why-order')).toContainText('الترتيب: استثناء الموظف، المنصب، القسم، القسم الأعلى، الافتراضي للشركة.');
   await tid(page, 'cc-emp-override-open').click();
   const dialog = page.getByRole('dialog', { name: 'استثناء مركز التكلفة' });
   await expect(dialog).toContainText('يحل محل');
+  // The code inside the Arabic sentence is its own isolated run.
+  await expect(dialog.locator('bdi').first()).toHaveText('ADMIN');
   await tid(page, 'cc-emp-override-select').selectOption('cc-sales');
   await tid(page, 'cc-emp-override-save').click();
   await expect(dialog).toContainText(REASON_AR);
