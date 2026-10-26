@@ -18,6 +18,13 @@ public static class ImportMessagesAr
 
     private static readonly (Regex Pattern, Func<Match, string> Arabic)[] Rules =
     [
+        (new("^" + Regex.Escape(CostCentreRuleException.LockedIntoApprovedRun().Message) + "$", Opts), _ => CostCentreRuleException.LockedIntoApprovedRun().MessageAr),
+        (new(@"^Cost centre (.*) is used by (\d+) department\(s\), (\d+) employee\(s\), (\d+) position\(s\) and (\d+) posting rule\(s\), so it cannot be deleted, deactivated or moved to another company\.$", Opts),
+            m => CostCentreRuleException.InUse(m.Groups[1].Value, new Dictionary<string, int>
+            {
+                ["department"] = int.Parse(m.Groups[2].Value), ["employee"] = int.Parse(m.Groups[3].Value),
+                ["position"] = int.Parse(m.Groups[4].Value), ["mapping"] = int.Parse(m.Groups[5].Value),
+            }).MessageAr),
         (new(@"^Clears the cost centre link of this existing department\.$", Opts), _ => "سيؤدي هذا إلى مسح ربط مركز التكلفة لهذا القسم الحالي."),
         (new(@"^Clears the parent department link of this existing department\.$", Opts), _ => "سيؤدي هذا إلى مسح ربط القسم الأب لهذا القسم الحالي."),
         (new(@"^CostCenterCode '(.*)' not found$", Opts), m => $"رمز مركز التكلفة '{m.Groups[1].Value}' غير موجود"),

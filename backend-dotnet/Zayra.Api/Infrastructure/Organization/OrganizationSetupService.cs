@@ -654,7 +654,9 @@ public class OrganizationSetupService : IOrganizationSetupService
     }
 
     /// <summary>M-8: live references to the cost centre, by kind. Historical journal lines are not live references (they hold their own snapshot).</summary>
-    private async Task<Dictionary<string, int>> CostCentreUsageAsync(Guid tenantId, Guid id, CancellationToken cancellationToken) => new()
+    private Task<Dictionary<string, int>> CostCentreUsageAsync(Guid tenantId, Guid id, CancellationToken cancellationToken) => CostCentreUsageAsync(_db, tenantId, id, cancellationToken);
+
+    private static async Task<Dictionary<string, int>> CostCentreUsageAsync(ZayraDbContext _db, Guid tenantId, Guid id, CancellationToken cancellationToken) => new()
     {
         ["department"] = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification).CountAsync(x => x.CostCenterId == id && !x.IsDeleted, cancellationToken),
         ["employee"] = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, OrgScopeJustification).CountAsync(x => x.CostCenterId == id && !x.IsDeleted, cancellationToken),
@@ -664,9 +666,13 @@ public class OrganizationSetupService : IOrganizationSetupService
         ["activeChild"] = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, OrgScopeJustification).CountAsync(x => x.ParentId == id && !x.IsDeleted && x.IsActive, cancellationToken),
     };
 
-    private async Task EnsureNotInUseAsync(Guid tenantId, CostCenter costCenter, CancellationToken cancellationToken)
+    private Task EnsureNotInUseAsync(Guid tenantId, CostCenter costCenter, CancellationToken cancellationToken) =>
+        EnsureCostCentreNotInUseAsync(_db, tenantId, costCenter, cancellationToken);
+
+    /// <summary>M-8, for the writers that are not this service (the structure import).</summary>
+    public static async Task EnsureCostCentreNotInUseAsync(ZayraDbContext db, Guid tenantId, CostCenter costCenter, CancellationToken cancellationToken)
     {
-        var counts = await CostCentreUsageAsync(tenantId, costCenter.Id, cancellationToken);
+        var counts = await CostCentreUsageAsync(db, tenantId, costCenter.Id, cancellationToken);
         if (counts.Values.Any(n => n > 0)) throw CostCentreRuleException.InUse(costCenter.Code, counts);
     }
 
