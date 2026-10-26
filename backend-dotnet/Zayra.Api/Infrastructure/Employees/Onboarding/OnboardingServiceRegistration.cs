@@ -11,6 +11,8 @@ public static class OnboardingServiceRegistration
     {
         services.AddSingleton<TenantUserRateLimiter>();
         services.AddScoped<DraftDiscardService>();
+        // Input validation (guard, problem filter, DTO bounds): the only registration path, so no double registration.
+        services.AddHireValidation();
         return services;
     }
 }

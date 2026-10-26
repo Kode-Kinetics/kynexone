@@ -5549,6 +5549,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
+        // Employee onboarding P1: nationality code/state, original joining date (migration OnboardingP1).
+        OnboardingModelConfiguration.Configure(modelBuilder);
         SelfieAttendanceModelConfiguration.Configure(modelBuilder);
         // LRN — learning management (same append-only convention).
         LearningModelConfiguration.Configure(modelBuilder);
