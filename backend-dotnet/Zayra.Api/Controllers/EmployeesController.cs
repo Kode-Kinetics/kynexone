@@ -2942,6 +2942,8 @@ public class EmployeesController : ControllerBase
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+        catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
         // HOME JURISDICTION: the employing company has no country, so nothing can be required and nothing
         // saved. The Add Employee modal disables its submit button on the same condition — this is the
         // authoritative refusal behind that affordance, and it names the company and where the fix lives
@@ -4061,15 +4063,16 @@ public class EmployeesController : ControllerBase
 
                 if (immediateChanges.Count > 0)
                 {
+                    var immediateCostCentre = await PrepareCostCentrePatchAsync(employee, immediateChanges, request.CostCenterReason, tenantId, cancellationToken);
                     var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
                     ApplyChanges(employee, immediateChanges);
                     // Keys stored on the payroll profile (socialInsuranceReference) have no home on
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
-                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken);
+                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken, immediateCostCentre);
                     // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
                     await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
-                    await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken);
+                    await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken, request.CostCenterReason);
                     await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, cancellationToken);
                     await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
                     loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
@@ -4153,13 +4156,14 @@ public class EmployeesController : ControllerBase
                 });
             }
 
+            var costCentrePatch = await PrepareCostCentrePatchAsync(employee, request.Changes, request.CostCenterReason, tenantId, cancellationToken);
             var directAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
-            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken);
+            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken, costCentrePatch);
             // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
             await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, directAttributionBefore, cancellationToken);
-            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken);
+            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken, request.CostCenterReason);
             await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, cancellationToken);
             await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
             loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
@@ -4190,6 +4194,18 @@ public class EmployeesController : ControllerBase
         catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// The "costCenter" patch key, resolved to a live cost centre of the employee's company BEFORE any column is touched (a code that does not resolve is a
+    /// 422 with nothing written), and refused with 422 <c>cost_centre_reason_required</c> when it would set, re-point or remove the override without a reason (M-10).
+    /// </summary>
+    private async Task<EmployeeOrgFieldResolver.PreparedCostCentre?> PrepareCostCentrePatchAsync(Employee employee, IReadOnlyDictionary<string, JsonElement> changes, string? reason, Guid tenantId, CancellationToken ct)
+    {
+        var prepared = await EmployeeOrgFieldResolver.PrepareCostCentreAsync(_db, tenantId, employee, changes, ct);
+        if (prepared is not null && EmployeeOrgFieldResolver.ChangesOverride(employee, prepared) && string.IsNullOrWhiteSpace(reason))
+            throw CostCentreRuleException.ReasonRequired();
+        return prepared;
     }
 
     private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, CancellationToken ct)
