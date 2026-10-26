@@ -63,20 +63,26 @@ public static class CompensationApprovalGate
             JsonSerializer.Serialize(Fingerprint(employee.Salary, profile?.Iban))));
     }
 
-    /// <summary>The activation blocker. Throws the structured 422 the rest of the gate already raises.</summary>
-    public static async Task<EmployeeReadiness> EnsureApprovedAsync(
-        ZayraDbContext db, Guid tenantId, int employeeId, EmployeeReadiness readiness, ResolvedReadinessPolicy policy, CancellationToken ct)
+    /// <summary>
+    /// The activation gate with the pay-approval blocker folded in: evaluates the policy, adds
+    /// <see cref="GapType"/> to the blockers while the gap is open, and throws the structured 422 the rest of the
+    /// gate already raises. Replaces the evaluator call in <c>EmployeeActivationGuard.EnsureActivatableAsync</c>, so
+    /// the checklist always lists the pay blocker next to any other missing detail.
+    /// </summary>
+    public static async Task<EmployeeReadiness> EnsureActivatableAsync(
+        ZayraDbContext db, Guid tenantId, IEmployeeReadinessEvaluator evaluator, EmployeeReadinessSnapshot snapshot,
+        ResolvedReadinessPolicy policy, CancellationToken ct)
     {
-        if (!await IsOpenAsync(db, tenantId, employeeId, ct)) return readiness;
-        var blocker = new ReadinessItem(
-            Key: GapType, Label: "Pay package awaiting Finance approval", Category: "pay", Reason: "statutory",
-            Jurisdiction: null, Gate: "activate", FixKind: "pay", FixTarget: null, DocumentType: null);
-        var blocked = readiness with
+        var readiness = evaluator.Evaluate(snapshot, policy);
+        if (await IsOpenAsync(db, tenantId, snapshot.EmployeeId, ct))
         {
-            State = "Blocked",
-            Blocking = readiness.Blocking.Concat([blocker]).ToList(),
-        };
-        throw new EmployeeActivationBlockedException(employeeId, blocked, policy);
+            var blocker = new ReadinessItem(
+                Key: GapType, Label: "Pay package awaiting Finance approval", Category: "pay", Reason: "statutory",
+                Jurisdiction: null, Gate: "activate", FixKind: "pay", FixTarget: null, DocumentType: null);
+            readiness = readiness with { State = "Blocked", Blocking = readiness.Blocking.Concat([blocker]).ToList() };
+        }
+        if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
+        return readiness;
     }
 
     public static Task<bool> IsOpenAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>
