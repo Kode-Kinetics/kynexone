@@ -43,6 +43,8 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     localStorage.setItem('zayra_access_token', 'hire-browser-fixture');
     if (locale === 'ar') localStorage.setItem('kynexone-locale-choice-v2', 'ar');
   }, [options.locale ?? 'en']);
+  // The Next dev indicator is a dev-only overlay that can sit on top of the sticky action bar.
+  await page.addInitScript(() => { document.addEventListener('DOMContentLoaded', () => { const st = document.createElement('style'); st.textContent = 'nextjs-portal{display:none!important}'; document.head.appendChild(st); }); });
   await page.route('**/api/**', async route => {
     const req = route.request();
     const url = new URL(req.url());

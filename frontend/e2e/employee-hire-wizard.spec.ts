@@ -61,7 +61,7 @@ test.describe('quick hire (desktop)', () => {
     await bootHire(page, { multipleCompanies: true });
     await page.getByLabel('English full name').fill('Alex Morgan');
     await saveDraft(page);
-    await expect(page.getByLabel('Company')).toBeFocused();
+    await expect(page.locator('#hire-companyId')).toBeFocused();
     await expect(page.locator('#hire-companyId-error')).toHaveText('Choose the employing company.');
     await expect(heading(page, STEPS[0])).toBeVisible();
   });
@@ -122,13 +122,13 @@ test.describe('person, pickers and validation (desktop)', () => {
     await toStep2(page);
     const box = page.getByRole('combobox', { name: /Nationality/ });
     await box.fill('sau');
-    await expect(page.getByRole('option').first()).toContainText('Saudi Arabia');
+    await expect(page.getByRole('listbox').getByRole('option').first()).toContainText('Saudi Arabia');
     await box.fill('Suadi');
     await box.blur();
     await expect(page.locator('#hire-nationalityCode-error')).toHaveText('Choose a nationality from the list.');
     expect(api.catalogCalls).toHaveLength(0);
     await box.fill('paki');
-    await page.getByRole('option', { name: /Pakistan/ }).click();
+    await page.getByRole('listbox').getByRole('option', { name: /Pakistan/ }).click();
     await expect.poll(() => api.catalogCalls.length).toBe(1);
     expect(api.catalogCalls[0]).toContain('nationality=PK');
   });
@@ -136,7 +136,7 @@ test.describe('person, pickers and validation (desktop)', () => {
   test('AC17/18: the ID type follows nationality (Saudi, GCC, expat, non-resident)', async ({ page }) => {
     await bootHire(page);
     await toStep2(page);
-    const pick = async (text: string, re: RegExp) => { const b = page.getByRole('combobox', { name: /Nationality/ }); await b.fill(text); await page.getByRole('option', { name: re }).first().click(); };
+    const pick = async (text: string, re: RegExp) => { const b = page.getByRole('combobox', { name: /Nationality/ }); await b.fill(text); await page.getByRole('listbox').getByRole('option', { name: re }).first().click(); };
     await pick('sau', /Saudi Arabia/);
     await next(page);
     await expect(page.getByLabel('ID type')).toHaveValue('nationalId');
@@ -156,7 +156,7 @@ test.describe('person, pickers and validation (desktop)', () => {
     await bootHire(page);
     await toStep2(page);
     const b = page.getByRole('combobox', { name: /Nationality/ });
-    await b.fill('sau'); await page.getByRole('option', { name: /Saudi Arabia/ }).click();
+    await b.fill('sau'); await page.getByRole('listbox').getByRole('option', { name: /Saudi Arabia/ }).click();
     await next(page);
     const id = page.getByLabel('ID number');
     await id.fill('1000000009');
@@ -287,9 +287,10 @@ test.describe('duplicates, autosave, guard, review (desktop)', () => {
     expect(await prevented()).toBe(false);
     await page.getByLabel('English full name').fill('Alex Morgan');
     expect(await prevented()).toBe(true);
-    await page.locator('nav a[href]:visible, aside a[href]:visible').first().click();
+    await page.evaluate(() => { const a = document.createElement('a'); a.href = '/people'; a.id = 'probe-link'; a.textContent = 'x'; a.style.cssText = 'position:fixed;top:0;left:0;z-index:99999'; document.body.appendChild(a); });
+    await page.locator('#probe-link').click();
     await expect(page.getByRole('dialog', { name: 'Discard changes?' })).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
+    await page.getByRole('dialog', { name: 'Discard changes?' }).getByRole('button', { name: 'Cancel' }).click();
     await basics(page);
     await saveDraft(page);
     await expect(page.getByTestId('saved-indicator')).toBeVisible();

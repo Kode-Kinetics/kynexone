@@ -83,6 +83,7 @@ export function HireWizard() {
   const [differentReason, setDifferentReason] = useState<string | null>(null);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [, setTick] = useState(0);
 
   const busyRef = useRef(false);
   const keyRef = useRef(newIdempotencyKey());
@@ -163,7 +164,7 @@ export function HireWizard() {
   }, []);
   const focusIssue = useCallback((issue: FieldIssue) => {
     pending.current = { kind: 'field', field: issue.field };
-    if (issue.step !== step) setStep(issue.step); else setForm(f => ({ ...f }));
+    if (issue.step !== step) setStep(issue.step); else setTick(n => n + 1);
   }, [step]);
 
   // ── autosave ────────────────────────────────────────────────────────────
@@ -217,8 +218,8 @@ export function HireWizard() {
     setTouched(prev => new Set([...prev, ...list.map(i => i.field)]));
     setSummaryFields(list.map(i => i.field));
     if (!list.length) return;
-    if (focus === 'field' && list.length === 1) { pending.current = { kind: 'field', field: list[0].field }; if (list[0].step !== step) setStep(list[0].step); else setForm(f => ({ ...f })); }
-    else { pending.current = { kind: 'summary' }; setForm(f => ({ ...f })); }
+    if (focus === 'field' && list.length === 1) { pending.current = { kind: 'field', field: list[0].field }; if (list[0].step !== step) setStep(list[0].step); else setTick(n => n + 1); }
+    else { pending.current = { kind: 'summary' }; setTick(n => n + 1); }
   }, [step]);
 
   const handleFailure = useCallback((e: unknown) => {
@@ -321,7 +322,7 @@ export function HireWizard() {
   if (created) return <div className="mx-auto w-full max-w-[720px] p-4"><SuccessStep id={created.id} name={created.name} /></div>;
 
   return (
-    <div className="mx-auto w-full max-w-[720px] px-4 pb-28 pt-4">
+    <div className="mx-auto w-full max-w-[720px] px-4 pb-44 pt-4 lg:pb-28">
       <h1 className="text-xl font-semibold text-slate-900 dark:text-white">{t('Add employee')}</h1>
       <nav aria-label={t('Employee setup progress')} className="mt-4">
         <p className="text-sm font-medium text-slate-600 sm:hidden dark:text-slate-300">{t('Step {n} of {total}: {label}', { n: String(step), total: '4', label: label(step) })}</p>
@@ -358,7 +359,7 @@ export function HireWizard() {
         )}
       </div>
 
-      <div data-testid="action-bar" className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:border-white/10 dark:bg-slate-900/95">
+      <div data-testid="action-bar" className="fixed inset-x-0 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 border-t border-slate-200 bg-white/95 px-4 pb-3 pt-3 lg:bottom-0 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-white/10 dark:bg-slate-900/95">
         <div className="mx-auto flex w-full max-w-[720px] flex-wrap items-center gap-2">
           <button type="button" className="btn-secondary" onClick={onCancel}>{t('Cancel')}</button>
           <button type="button" className="btn-secondary" disabled={busy} onClick={onSaveDraft}>{t('Save draft')}</button>

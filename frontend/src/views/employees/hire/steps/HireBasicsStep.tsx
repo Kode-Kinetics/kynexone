@@ -18,6 +18,7 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
 
   const onDesignation = (id: string) => {
     set('designationId', id);
+    blur('designationId');
     const grade = lookups.designations.find(d => d.id === id)?.gradeId;
     if (grade && !form.gradeId) set('gradeId', grade);
   };
@@ -46,7 +47,7 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
       </FieldShell>
       <FieldShell field="gradeId" label={t('Grade')} error={errorFor('gradeId')}>
         {p => (
-          <select {...p} value={form.gradeId} onChange={e => set('gradeId', e.target.value)} onBlur={() => blur('gradeId')} className={select}>
+          <select {...p} value={form.gradeId} onChange={e => { set('gradeId', e.target.value); blur('gradeId'); }} onBlur={() => blur('gradeId')} className={select}>
             <option value="">{t('Not chosen')}</option>
             {grades.map(g => <option key={g.id} value={g.id}>{`${g.code} - ${g.name}`}</option>)}
           </select>
