@@ -227,15 +227,30 @@ public class CostCentrePermissionTests
         ["Controllers/PositionsController.cs"] = ["Controllers/PositionsController.cs"],
         ["Controllers/PlanningController.cs"] = ["Controllers/PlanningController.cs"],
         ["Controllers/OrganizationStructureImportController.cs"] = ["Controllers/OrganizationStructureImportController.cs"],
+        ["Controllers/SetupAssistantController.cs"] = ["Controllers/SetupAssistantController.cs"],
+        ["Controllers/EstablishmentController.cs"] = ["Controllers/EstablishmentController.cs"],
     };
 
     /// <summary>Writers NOT yet behind the permission, each with why. The list may only shrink: a new entry is a decision, not a convenience.</summary>
     private static readonly Dictionary<string, string> KnownGaps = new(StringComparer.Ordinal)
     {
-        ["Controllers/SetupAssistantController.cs"] = "Applies an AI draft under organization.setup.apply; owned by the setup-assistant work, not WP-A.",
         ["Controllers/FinanceGlController.CostAccounting.cs"] = "Writes only the company's DefaultCostCenterId, a finance setting gated by finance.gl.manage with a reason and audit (contract AM-3, AM-27), not an HR attribution door.",
-        ["Controllers/EstablishmentController.cs"] = "Establishment repair: sets DepartmentId only where the employee's free-text department already names that department (no change in meaning); gated by organization.establishment.write.",
     };
+
+    [Fact]
+    public void A3_TheSetupAssistant_IsCoveredByThePermission_NotAKnownGap()
+    {
+        KnownGaps.Should().NotContainKey("Controllers/SetupAssistantController.cs", "applying a draft is a cost-attribution door (WP-A3 item 2)");
+        CoveredBy.Should().ContainKey("Controllers/SetupAssistantController.cs");
+    }
+
+    [Fact]
+    public void A3_TheEstablishmentRepair_IsCoveredByThePermission_NotAKnownGap()
+    {
+        KnownGaps.Should().NotContainKey("Controllers/EstablishmentController.cs", "stamping a department id changes where a person resolves to (WP-A3 item 6)");
+        CoveredBy.Should().ContainKey("Controllers/EstablishmentController.cs");
+        KnownGaps.Keys.Should().BeEquivalentTo(["Controllers/FinanceGlController.CostAccounting.cs"], "the list may only shrink; the finance default-cost-centre setting is the one gap left");
+    }
 
     [Fact]
     public void S028_EveryWriterOfTheAttributionColumns_IsBehindThePermission_OrAKnownGap()

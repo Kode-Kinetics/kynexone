@@ -1439,24 +1439,33 @@ public class EmployeeManagementService : IEmployeeManagementService
     }
 
     /// <summary>
-    /// The form door for the employee's cost centre (contract 2.9). Blank means "no change" (the form sends every field back on each save), a value equal
-    /// to the stored one is carried through untouched, and a new one is validated by the one validator against the employee's own company. An explicit
-    /// cost centre that differs from the department's is an override; one equal to the department's is just a copy.
+    /// The form door for the employee's cost centre (contract 2.9). Null means "no change" (the form sends every field back on each save), a value equal
+    /// to the stored one is carried through untouched, <see cref="Guid.Empty"/> is the explicit "None" (remove the override and inherit the department's),
+    /// and a new one is validated by the one validator against the employee's own company. An explicit cost centre that differs from the department's is
+    /// an override; one equal to the department's is just a copy. Setting, re-pointing or removing the override needs a reason (M-10), which the audit row keeps.
     /// </summary>
-    private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null)
+    private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null, string? reason = null)
     {
-        if (requested is not Guid costCenterId || costCenterId == employee.CostCenterId) return;
-        await new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db)
-            .EnsureAsync(tenantId, employee.CompanyId, costCenterId, forNewAssignment: true, cancellationToken);
+        if (requested is not Guid costCenterId) return;
+        var wasOverride = employee.CostCenterIsOverride;
+        var wasCostCentre = employee.CostCenterId;
+        var remove = costCenterId == Guid.Empty;
+        if (remove ? !wasOverride : costCenterId == employee.CostCenterId) return;
+        if (!remove)
+            await new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db)
+                .EnsureAsync(tenantId, employee.CompanyId, costCenterId, forNewAssignment: true, cancellationToken);
         var departmentCostCentre = departmentId is Guid d
             ? await _db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == d).Select(x => x.CostCenterId).FirstOrDefaultAsync(cancellationToken)
             : null;
-        var wasOverride = employee.CostCenterIsOverride;
-        var wasCostCentre = employee.CostCenterId;
-        employee.CostCenterId = costCenterId;
-        employee.CostCenterIsOverride = costCenterId != departmentCostCentre;
+        Guid? newCostCentre = remove ? departmentCostCentre : costCenterId;
+        var newOverride = !remove && costCenterId != departmentCostCentre;
+        var overrideChanged = wasOverride != newOverride || (newOverride && wasCostCentre != newCostCentre);
+        if (overrideChanged && string.IsNullOrWhiteSpace(reason))
+            throw Zayra.Api.Application.Organization.CostCentreRuleException.ReasonRequired();
+        employee.CostCenterId = newCostCentre;
+        employee.CostCenterIsOverride = newOverride;
         // The audit action finance's separation-of-duties check reads; staged, so it commits with the employee.
-        if (wasOverride != employee.CostCenterIsOverride || (employee.CostCenterIsOverride && wasCostCentre != costCenterId))
+        if (overrideChanged)
             _audit.Stage("employee.cost_centre_override.changed", nameof(Employee),
                 employee.Id != 0 ? employee.Id.ToString() : employee.PublicId.ToString(),
                 (context ?? new RequestContext(null, null, null)) with { TenantId = tenantId },
@@ -1464,6 +1473,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 {
                     before = new { @override = wasOverride, costCenterId = wasCostCentre },
                     after = new { @override = employee.CostCenterIsOverride, costCenterId = employee.CostCenterId },
+                    reason = reason!.Trim(),
                 }), employee.CompanyId);
     }
 
@@ -1490,7 +1500,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
         employee.GradeId = request.GradeId;
-        await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken, context);
+        await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken, context, request.CostCenterReason);
         employee.PositionId = request.PositionId;
         // AM-9: someone in a run awaiting finance review or lock cannot be moved to another cost centre until the run is reopened or locked.
         await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);

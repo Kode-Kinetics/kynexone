@@ -306,7 +306,8 @@ public class EstablishmentApiTests
         db.Employees.AddRange(match, ambiguous, unmatched);
         await db.SaveChangesAsync();
 
-        var payload = JsonSerializer.Serialize(((OkObjectResult)await CreateController(db, fx.TenantId)
+        var payload = JsonSerializer.Serialize(((OkObjectResult)await CreateController(db, fx.TenantId,
+                "organization.read", "organization.write", "organization.establishment.write", "organization.costcenter.manage")
             .ReconcileDepartments(CancellationToken.None)).Value);
         payload.Should().Contain("\"resolvedCount\":1").And.Contain("\"ambiguous\":1").And.Contain("\"unmatched\":1");
 

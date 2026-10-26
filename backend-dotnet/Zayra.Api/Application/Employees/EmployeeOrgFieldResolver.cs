@@ -195,6 +195,10 @@ public static class EmployeeOrgFieldResolver
         return new PreparedCostCentre(false, match.Id, match.Code);
     }
 
+    /// <summary>Whether applying the prepared "costCenter" patch would set, re-point or remove the employee's override (so it needs a reason, M-10).</summary>
+    public static bool ChangesOverride(Employee employee, PreparedCostCentre costCentre) =>
+        costCentre.Clear ? employee.CostCenterIsOverride : !employee.CostCenterIsOverride || employee.CostCenterId != costCentre.Id;
+
     private static async Task ApplyCostCentreAsync(ZayraDbContext db, Guid tenantId, Employee employee, PreparedCostCentre costCentre, CancellationToken ct)
     {
         if (!costCentre.Clear)
@@ -251,7 +255,7 @@ public static class EmployeeOrgFieldResolver
     /// Stages ONE audit row when a change moved where the employee's cost goes: the resolved cost centre, the override flag or the stored copy
     /// differs. It records the resolved cost centre before and after (contract AM-9 / S-029), whichever path caused the change. Does not save.
     /// </summary>
-    public static async Task StageAttributionAuditAsync(ZayraDbContext db, Guid tenantId, Employee employee, AttributionState before, Guid? actorUserId, CancellationToken ct)
+    public static async Task StageAttributionAuditAsync(ZayraDbContext db, Guid tenantId, Employee employee, AttributionState before, Guid? actorUserId, CancellationToken ct, string? reason = null)
     {
         var after = AttributionState.Of(employee);
         if (before == after) return;
@@ -264,6 +268,7 @@ public static class EmployeeOrgFieldResolver
                 {
                     before = new { @override = before.IsOverride, costCenterId = before.CostCenterId },
                     after = new { @override = after.IsOverride, costCenterId = after.CostCenterId },
+                    reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim(),
                 }), employee.CompanyId);
 
         Guid? resolvedBefore = null, resolvedAfter = null;
