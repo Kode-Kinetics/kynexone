@@ -161,9 +161,9 @@ public class CostCentersController : ControllerBase
             if (errors.Count == 0)
             {
                 var request = new CostCenterRequest(
-                    // Not in the template. Carried over so an import cannot orphan a cost centre
-                    // that the form had assigned to a company.
-                    CompanyId: existing?.CompanyId ?? companyId,
+                    // Not in the template. An existing row keeps its own company (tenant-wide stays tenant-wide),
+                    // so the grant check below judges the row as the form does; only a new row takes the importer's.
+                    CompanyId: existing is null ? companyId : existing.CompanyId,
                     Code: code,
                     Name: name,
                     IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
