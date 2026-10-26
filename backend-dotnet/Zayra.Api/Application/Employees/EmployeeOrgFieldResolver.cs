@@ -254,14 +254,22 @@ public static class EmployeeOrgFieldResolver
     /// <summary>
     /// Stages ONE audit row when a change moved where the employee's cost goes: the resolved cost centre, the override flag or the stored copy
     /// differs. It records the resolved cost centre before and after (contract AM-9 / S-029), whichever path caused the change. Does not save.
+    /// <para><paramref name="initial"/> marks the first attribution of a newly created employee (a hire). It is recorded as
+    /// <see cref="InitialAttributionAction"/>, which is deliberately NOT in <c>CostAccountingSod.RelevantActions</c> (CTO scope decision): hiring
+    /// must not bar the admin from locking the month, whereas <see cref="AttributionChangedAction"/> (a change to an existing employee) does.
+    /// <paramref name="overrideAlreadyAudited"/> is for the form doors, which stage the override row themselves with the reason.</para>
     /// </summary>
-    public static async Task StageAttributionAuditAsync(ZayraDbContext db, Guid tenantId, Employee employee, AttributionState before, Guid? actorUserId, CancellationToken ct, string? reason = null)
+    public const string AttributionChangedAction = "employee.cost_attribution_changed";
+    public const string InitialAttributionAction = "employee.cost_attribution_initialised";
+
+    public static async Task StageAttributionAuditAsync(ZayraDbContext db, Guid tenantId, Employee employee, AttributionState before, Guid? actorUserId, CancellationToken ct, string? reason = null,
+        bool initial = false, bool overrideAlreadyAudited = false)
     {
         var after = AttributionState.Of(employee);
         if (before == after) return;
 
         // The audit action finance's separation-of-duties check reads: an override was set, removed or re-pointed.
-        if (before.IsOverride != after.IsOverride || (after.IsOverride && before.CostCenterId != after.CostCenterId))
+        if (!overrideAlreadyAudited && (before.IsOverride != after.IsOverride || (after.IsOverride && before.CostCenterId != after.CostCenterId)))
             new AuditService(db).Stage("employee.cost_centre_override.changed", nameof(Employee), employee.Id.ToString(),
                 new RequestContext(null, null, actorUserId, tenantId),
                 JsonSerializer.Serialize(new
@@ -289,7 +297,7 @@ public static class EmployeeOrgFieldResolver
             before = new { departmentId = before.DepartmentId, positionId = before.PositionId, costCenterId = before.CostCenterId, @override = before.IsOverride, resolvedCostCenterId = resolvedBefore, source = sourceBefore },
             after = new { departmentId = after.DepartmentId, positionId = after.PositionId, costCenterId = after.CostCenterId, @override = after.IsOverride, resolvedCostCenterId = resolvedAfter, source = sourceAfter },
         });
-        new AuditService(db).Stage("employee.cost_attribution_changed", nameof(Employee), employee.Id.ToString(),
+        new AuditService(db).Stage(initial ? InitialAttributionAction : AttributionChangedAction, nameof(Employee), employee.Id.ToString(),
             new RequestContext(null, null, actorUserId, tenantId), json, employee.CompanyId);
     }
 }

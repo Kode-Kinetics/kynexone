@@ -105,7 +105,12 @@ public static class CostAccountingSod
         "employee.cost_centre_override.changed",
         // Strict separation of duties (CTO ruling, P2-2): any change to where cost lands also counts.
         CostAttributionAudit.Action,
+        // Only a change to an EXISTING employee's attribution counts. A hire's first attribution is recorded as
+        // employee.cost_attribution_initialised, which is deliberately absent here (CTO scope decision), so onboarding staff
+        // does not bar the admin from locking the month.
         "employee.cost_attribution_changed",
+        // An account's type or active flag decides which postings the cost-centre rule applies to.
+        "finance.gl.account.updated",
     };
 
     public static object RefusalBody { get; } = CostAccountingGuards.Error(ErrorCode,

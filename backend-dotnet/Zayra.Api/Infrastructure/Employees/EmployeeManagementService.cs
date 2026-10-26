@@ -167,7 +167,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
-        await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
+        var hireAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
@@ -201,6 +201,9 @@ public class EmployeeManagementService : IEmployeeManagementService
                     employee.EmployeeCode = await AllocateEmployeeCodeAsync(tenantId, request, context, cancellationToken);
                 _db.Employees.Add(employee);
                 await _db.SaveChangesAsync(cancellationToken);
+                // The hire's first attribution stays on the trail, as an action that does not count toward lock SoD (only a change to an existing employee does).
+                await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, hireAttributionBefore, context.UserId, cancellationToken,
+                    initial: true, overrideAlreadyAudited: true);
                 await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
                 await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
@@ -315,7 +318,10 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
-        await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
+        var editAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
+        // A change to an EXISTING employee's attribution counts toward lock SoD; the form already staged the override row with its reason.
+        await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, editAttributionBefore, context.UserId, cancellationToken,
+            overrideAlreadyAudited: true);
         // GOVERNING JURISDICTION against the (possibly reassigned) EMPLOYING company — a stated country is
         // kept, a blank one adopts the company's, so editing a record heals a country left blank by an
         // earlier create or import.
@@ -1493,7 +1499,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 }), employee.CompanyId);
     }
 
-    private async Task ApplyEmployee(Employee employee, EmployeeCreateRequest request, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null)
+    private async Task<Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.AttributionState> ApplyEmployee(Employee employee, EmployeeCreateRequest request, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null)
     {
         var attributionBefore = Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.AttributionState.Of(employee);
         employee.EnglishName = Clean(request.EnglishName);
@@ -1563,6 +1569,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // fallback would read the wrong company or none. Both callers run DeriveEmployeeCountryAsync once
         // the legal entity is settled.
         employee.CountryCode = request.ComplianceRecords?.FirstOrDefault()?.CountryCode ?? employee.CountryCode;
+        return attributionBefore;
     }
 
     /// <summary>
