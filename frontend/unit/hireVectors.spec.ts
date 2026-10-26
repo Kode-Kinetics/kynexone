@@ -10,32 +10,43 @@ import { parseMobile } from '../src/lib/hire/phone';
  * until it lands the vectors from the KSA rulebook (10-KSA section 1) are used. Both sides must agree on them.
  */
 const SHARED = path.resolve(__dirname, '../../backend-dotnet/Zayra.Api.Tests/Fixtures/hire-vectors.json');
-interface Vectors { nationalId: { valid: string[]; invalid: string[] }; iqama: { valid: string[]; invalid: string[] }; iban: { valid: string[]; invalid: string[] }; phone: { valid: Array<{ input: string; country: string; e164: string }>; invalid: Array<{ input: string; country: string }> } }
-const FALLBACK: Vectors = {
-  nationalId: { valid: ['1000000008', '1000000016'], invalid: ['1000000009', '1000000000', '100000008', '2000000006', '3000000000'] },
-  iqama: { valid: ['2000000006'], invalid: ['2000000007', '1000000008', '200000006', '20000000067', 'abcdefghij'] },
-  iban: { valid: ['SA0380000000608010167519'], invalid: ['SA0380000000608010167518', 'SA03800000006080101675', 'GB82WEST12345698765432SA', 'SA038000000060801016751900'] },
-  phone: {
-    valid: [{ input: '0512345678', country: 'SA', e164: '+966512345678' }, { input: '+966 51 234 5678', country: 'SA', e164: '+966512345678' }, { input: '٠٥١٢٣٤٥٦٧٨', country: 'SA', e164: '+966512345678' }],
-    invalid: [{ input: '0412345678', country: 'SA' }, { input: '051234567', country: 'SA' }, { input: 'abc', country: 'SA' }],
-  },
-};
-function load(): Vectors {
-  if (!fs.existsSync(SHARED)) return FALLBACK;
-  const shared = JSON.parse(fs.readFileSync(SHARED, 'utf8')) as Partial<Vectors>;
-  return { ...FALLBACK, ...shared };
+interface Shared {
+  saudiNationalId: { valid: string[]; invalidChecksum: string[]; invalidFormat: string[] };
+  iqama: { valid: string[]; invalidChecksum: string[]; invalidFormat: string[] };
+  leadingDigitMismatch: { notIdNorIqama: string[] };
+  borderNumber: { valid: string[]; advisoryChecksumFailure: string[]; invalidFormat: string[] };
+  digitNormalisation: Array<{ input: string; expected: string }>;
+  saIban: { valid: string[]; invalidChecksum: string[]; invalidLength: string[]; invalidStructure: string[] };
+  phoneE164: { cases: Array<{ input: string; normalised: string | null }> };
 }
-const v = load();
+const FALLBACK: Shared = {
+  saudiNationalId: { valid: ['1000000008', '1000000016'], invalidChecksum: ['1000000009', '1000000000'], invalidFormat: ['100000008'] },
+  iqama: { valid: ['2000000006'], invalidChecksum: ['2000000007'], invalidFormat: ['200000006'] },
+  leadingDigitMismatch: { notIdNorIqama: ['3000000000'] },
+  borderNumber: { valid: [], advisoryChecksumFailure: [], invalidFormat: [] },
+  digitNormalisation: [{ input: '١٠٠٠٠٠٠٠٠٨', expected: '1000000008' }],
+  saIban: { valid: ['SA0380000000608010167519'], invalidChecksum: ['SA0380000000608010167518'], invalidLength: ['SA03800000006080101675'], invalidStructure: [] },
+  phoneE164: { cases: [{ input: '0512345678', normalised: '+966512345678' }, { input: '0412345678', normalised: null }] },
+};
+const v: Shared = fs.existsSync(SHARED) ? { ...FALLBACK, ...JSON.parse(fs.readFileSync(SHARED, 'utf8')) } : FALLBACK;
 
 test.describe('shared hire vectors', () => {
-  for (const id of v.nationalId.valid) test(`national id valid ${id}`, () => expect(validateIdNumber('nationalId', id)).toBe('ok'));
-  for (const id of v.nationalId.invalid) test(`national id invalid ${id}`, () => expect(validateIdNumber('nationalId', id)).not.toBe('ok'));
+  for (const id of v.saudiNationalId.valid) test(`national id valid ${id}`, () => expect(validateIdNumber('nationalId', id)).toBe('ok'));
+  for (const id of v.saudiNationalId.invalidChecksum) test(`national id checksum ${id}`, () => expect(validateIdNumber('nationalId', id)).toBe('checksum'));
+  for (const id of v.saudiNationalId.invalidFormat) test(`national id format ${id}`, () => expect(validateIdNumber('nationalId', id)).toBe('format'));
   for (const id of v.iqama.valid) test(`iqama valid ${id}`, () => expect(validateIdNumber('iqama', id)).toBe('ok'));
-  for (const id of v.iqama.invalid) test(`iqama invalid ${id}`, () => expect(validateIdNumber('iqama', id)).not.toBe('ok'));
-  for (const i of v.iban.valid) test(`iban valid ${i}`, () => expect(validateIban(i)).toBe('ok'));
-  for (const i of v.iban.invalid) test(`iban invalid ${i}`, () => expect(validateIban(i)).not.toBe('ok'));
-  for (const p of v.phone.valid) test(`phone valid ${p.input}`, () => expect(parseMobile(p.input, p.country)?.e164).toBe(p.e164));
-  for (const p of v.phone.invalid) test(`phone invalid ${p.input}`, () => expect(parseMobile(p.input, p.country)).toBeNull());
+  for (const id of v.iqama.invalidChecksum) test(`iqama checksum ${id}`, () => expect(validateIdNumber('iqama', id)).toBe('checksum'));
+  for (const id of v.iqama.invalidFormat) test(`iqama format ${id}`, () => expect(validateIdNumber('iqama', id)).toBe('format'));
+  for (const id of v.leadingDigitMismatch.notIdNorIqama) test(`neither id nor iqama ${id}`, () => { expect(validateIdNumber('nationalId', id)).toBe('format'); expect(validateIdNumber('iqama', id)).toBe('format'); });
+  for (const id of v.borderNumber.valid) test(`border valid ${id}`, () => expect(validateIdNumber('border', id)).toBe('ok'));
+  for (const id of v.borderNumber.advisoryChecksumFailure) test(`border checksum is advisory ${id}`, () => expect(validateIdNumber('border', id)).toBe('ok'));
+  for (const id of v.borderNumber.invalidFormat) test(`border format ${id}`, () => expect(validateIdNumber('border', id)).toBe('format'));
+  for (const n of v.digitNormalisation) test(`digits ${n.input}`, () => expect(normalizeDigits(n.input)).toBe(n.expected));
+  for (const i of v.saIban.valid) test(`iban valid ${i}`, () => expect(validateIban(i)).toBe('ok'));
+  for (const i of v.saIban.invalidChecksum) test(`iban checksum ${i}`, () => expect(validateIban(i)).toBe('checksum'));
+  for (const i of v.saIban.invalidLength) test(`iban length ${i}`, () => expect(validateIban(i)).toBe('saudi_structure'));
+  for (const i of v.saIban.invalidStructure) test(`iban structure ${i}`, () => expect(validateIban(i)).not.toBe('ok'));
+  for (const p of v.phoneE164.cases) test(`phone ${p.input}`, () => expect(parseMobile(p.input, 'SA')?.e164 ?? null).toBe(p.normalised));
 
   test('failure kind distinguishes format from checksum', () => {
     expect(validateIdNumber('nationalId', '1000000009')).toBe('checksum');

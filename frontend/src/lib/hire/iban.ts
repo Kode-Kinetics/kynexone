@@ -1,4 +1,4 @@
-export type IbanCheck = 'ok' | 'format' | 'saudi_structure' | 'checksum';
+export type IbanCheck = 'ok' | 'saudi_structure' | 'checksum';
 
 export function normalizeIban(raw: string): string {
   return (raw ?? '').replace(/[\s ‎‏-]/g, '').toUpperCase();
@@ -14,13 +14,9 @@ function mod97(iban: string): number {
   return remainder;
 }
 
-/** Saudi IBAN: SA + 2 check + 2 bank + 18 alphanumeric = 24; any other country: generic length + mod-97. */
+/** Saudi IBAN (the server's rule, shared vectors): SA + 2 check + 2 bank + 18 alphanumeric = 24, mod-97 = 1. Any other prefix fails the structure check. */
 export function validateIban(raw: string): IbanCheck {
   const iban = normalizeIban(raw);
-  if (iban.startsWith('SA')) {
-    if (!/^SA\d{2}[0-9A-Z]{20}$/.test(iban)) return 'saudi_structure';
-  } else if (!/^[A-Z]{2}\d{2}[0-9A-Z]{11,30}$/.test(iban)) {
-    return 'format';
-  }
+  if (!/^SA\d{2}[0-9A-Z]{20}$/.test(iban)) return 'saudi_structure';
   return mod97(iban) === 1 ? 'ok' : 'checksum';
 }
