@@ -198,4 +198,10 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     /// preserves the audit trail and lets a later, fuller field-by-field merge key off it. Null = not merged.
     /// Additive/nullable (migration-discipline: ships with its index in one migration).</summary>
     public int? DuplicateOfEmployeeId { get; set; }
+
+    // ── Idempotent create (the client's retry key; null for every hire made without one) ────────
+    /// <summary>The UUID the client sent as Idempotency-Key when it created this employee. Unique per tenant.</summary>
+    public Guid? CreateIdempotencyKey { get; set; }
+    /// <summary>SHA-256 of tenant + creator + company + normalised name, used to tell a retry from a reused key.</summary>
+    public string? CreateRequestFingerprint { get; set; }
 }

@@ -1544,6 +1544,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.PublicId })
                   .HasDatabaseName("ux_employees_tenant_public_id")
                   .IsUnique();
+            entity.Property(x => x.CreateRequestFingerprint).HasMaxLength(64);
+            entity.HasIndex(x => new { x.TenantId, x.CreateIdempotencyKey })
+                  .HasDatabaseName("ux_employees_tenant_create_idempotency_key")
+                  .IsUnique()
+                  .HasFilter("create_idempotency_key IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.Status });
             // "Needs info" worklist filter — employees whose readiness is Blocked.
             entity.HasIndex(x => new { x.TenantId, x.ReadinessState });
