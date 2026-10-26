@@ -7,7 +7,7 @@ import { payrollApi, type PayrollGLJournal, type PayrollRun } from '../../api/pa
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
-import { textDir } from '../../lib/glCostAccounting';
+import { textDir, COST_ACCOUNTING_SETUP_HREF } from '../../lib/glCostAccounting';
 import {
   blockerCards,
   classifyLockError,
@@ -31,7 +31,7 @@ import { Badge, WarningNote } from '../gl/glUi';
 
 const LARGE_RUN = 2000;
 const PAGE = 200;
-const DEFAULT_HREF = '/setup?tab=costAccounting';
+const DEFAULT_HREF = COST_ACCOUNTING_SETUP_HREF;
 
 /** "2026-06" in the viewer's language ("Jun 2026" / "يونيو 2026"). */
 export function periodLabel(period: string, locale: string): string {
