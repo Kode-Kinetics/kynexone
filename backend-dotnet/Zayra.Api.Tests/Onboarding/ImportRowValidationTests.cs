@@ -24,7 +24,9 @@ public class ImportRowValidationTests
     {
         Run(Row(("Nationality", "Saudi"), ("IdNumber", "1000000009"))).Errors.Should().ContainSingle().Which.Should().StartWith("IdNumber");
         Run(Row(("IqamaNumber", "2000000007"))).Errors.Should().NotBeEmpty();
-        Run(Row(("Nationality", "Saudi"), ("IqamaNumber", TestIds.ValidIqama(5)))).Errors.Should().NotBeEmpty();   // class disagreement
+        var mismatch = Run(Row(("Nationality", "Saudi"), ("IqamaNumber", TestIds.ValidIqama(5))));   // class disagreement: flagged, not skipped
+        mismatch.Errors.Should().BeEmpty();
+        mismatch.Gaps.Should().Contain(g => g.Type == "data:id_prefix_nationality_mismatch");
         Run(Row(("FullName", new string('x', 151)))).Errors.Should().NotBeEmpty();
         Run(Row(("DateOfBirth", DateTime.UtcNow.AddDays(10).ToString("yyyy-MM-dd")))).Errors.Should().NotBeEmpty();
         Run(Row(("HousingAllowance", "-1"))).Errors.Should().NotBeEmpty();

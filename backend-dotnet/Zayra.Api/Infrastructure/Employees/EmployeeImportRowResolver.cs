@@ -614,7 +614,7 @@ public static class EmployeeImportRowResolver
             r.Warnings.Add($"Salary {gross:N2} is outside grade {finalGrade.Code} band — imported and marked for review.");
         }
 
-        return r;
+        return Onboarding.ImportRowValidation.Apply(r, row, lk);
     }
 }
 

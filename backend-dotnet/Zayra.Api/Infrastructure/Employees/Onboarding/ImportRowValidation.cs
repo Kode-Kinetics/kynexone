@@ -18,7 +18,8 @@ public static class ImportRowValidation
     {
         EmployeeFieldErrors.ValueTooLong, EmployeeFieldErrors.DobFuture, EmployeeFieldErrors.DobOutOfRange,
         EmployeeFieldErrors.JoiningOutOfRange, EmployeeFieldErrors.NegativeAmount, EmployeeFieldErrors.AmountOverflow,
-        EmployeeFieldErrors.IdFormatInvalid, EmployeeFieldErrors.IdChecksumInvalid, EmployeeFieldErrors.IdPrefixNationalityMismatch,
+        // A class/nationality disagreement lands as a warning in an import (messy nationality cells are common); the form refuses it.
+        EmployeeFieldErrors.IdFormatInvalid, EmployeeFieldErrors.IdChecksumInvalid,
         EmployeeFieldErrors.Required, EmployeeFieldErrors.ProbationOrder,
     };
 

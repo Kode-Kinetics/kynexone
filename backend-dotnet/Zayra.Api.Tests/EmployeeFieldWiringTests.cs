@@ -447,7 +447,7 @@ public class EmployeeFieldWiringTests
         var (tenantId, _) = await SeedEmployee(db, "SA", "Saudi");
 
         // A Saudi NATIONAL carrying an Iqama (the expat residence permit) — not applicable to them.
-        const string csv = "EmployeeCode,FullName,CountryCode,Nationality,IqamaNumber\nEMP-PV-1,Saud Ali,SA,Saudi,2000000001\n";
+        var csv = $"EmployeeCode,FullName,CountryCode,Nationality,IqamaNumber\nEMP-PV-1,Saud Ali,SA,Saudi,{TestIds.ValidIqama(1)}\n";
 
         var preview = (OkObjectResult)await Controller(db, tenantId)
             .ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
