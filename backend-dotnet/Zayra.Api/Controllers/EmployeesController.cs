@@ -2898,6 +2898,8 @@ public class EmployeesController : ControllerBase
     [Zayra.Api.Infrastructure.Employees.Onboarding.IdempotentEmployeeCreate]
     public async Task<ActionResult<EmployeeDetailDto>> CreateEmployee(EmployeeCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Refusal(request.AcknowledgeDuplicate, request.DuplicateOverrideReason,
+                User.HasPermission(Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Permission)) is { } overrideRefused) return overrideRefused;
         try
         {
             var tenantId = RequireTenant();

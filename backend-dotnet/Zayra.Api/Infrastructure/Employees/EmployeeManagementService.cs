@@ -37,9 +37,11 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
+    private readonly IHttpContextAccessor? _http;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHttpContextAccessor? httpContextAccessor = null)
     {
+        _http = httpContextAccessor;
         _db = db;
         _audit = audit;
         _documents = documents;
@@ -150,6 +152,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
+        Onboarding.IdempotentEmployeeCreateFilter.Stamp(_http, employee);
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
@@ -180,6 +183,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         async Task<bool> PersistAsync() => await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
             excludeEmployeeId: null, path: "create", context, async () =>
             {
+                await Onboarding.EmployeeIdentityLock.AcquireAndRecheckAsync(_db, _duplicateDetector, tenantId, BuildCreateProbe(request, excludeEmployeeId: null), duplicateMatches.Select(m => m.EmployeeId).ToList(), request.AcknowledgeDuplicate, cancellationToken);
                 if (!request.ManualEmployeeCode)
                     employee.EmployeeCode = await AllocateEmployeeCodeAsync(tenantId, request, context, cancellationToken);
                 _db.Employees.Add(employee);
@@ -193,6 +197,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 // Grade defaults are part of the hire transaction, before any individual HR exceptions.
                 await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
                     _db, employee, context.UserId, cancellationToken);
+                await Onboarding.CompensationApprovalGate.OpenAsync(_db, employee, context, cancellationToken);
                 // The login belongs to the profile from creation onwards (contract §3): staged now, in this transaction.
                 await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
@@ -251,12 +256,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             var action = strongDuplicates.Count > 0 ? "employee.duplicate_override_created" : "employee.created_with_possible_duplicate";
             await _audit.WriteAsync(action, "Employee", employee.Id.ToString(), context,
-                JsonSerializer.Serialize(new
-                {
-                    matchedEmployeeIds = duplicateMatches.Select(m => m.EmployeeId),
-                    matchType = strongDuplicates.Count > 0 ? "strong" : "probable",
-                    signals = duplicateMatches.SelectMany(m => m.Signals).Distinct(),
-                }), cancellationToken);
+                Onboarding.DuplicateOverridePolicy.AuditPayload(duplicateMatches, _http, strongDuplicates.Count > 0, request.DuplicateOverrideReason), cancellationToken);
         }
         // The write response is a READ of the record, so it obeys the SAME mask gate as GET {id}.
         // Hard-coding true here made every create/update/status-flip an unmasked salary + IBAN read for
