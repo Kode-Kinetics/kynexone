@@ -194,7 +194,7 @@ test.describe('CD26 draft resume (/people/new?draft=<id>)', () => {
   for (const status of [404, 403] as const) {
     test(`${status}: a friendly message, no form data, no autosave`, async ({ page }) => {
       const api = await bootHire(page, { draftDetail: status }, '/people/new?draft=44');
-      await expect(page.getByRole('alert')).toContainText('This draft could not be found, or you do not have access to it.');
+      await expect(page.getByRole('alert').filter({ hasText: 'This draft could not be found' })).toContainText('This draft could not be found, or you do not have access to it.');
       await expect(page.getByRole('link', { name: 'Start a new employee' })).toBeVisible();
       await expect(page.getByLabel('English full name')).toHaveCount(0);
       expect(api.puts).toHaveLength(0);
@@ -203,7 +203,7 @@ test.describe('CD26 draft resume (/people/new?draft=<id>)', () => {
 
   test('a record that is no longer a draft is not opened for editing', async ({ page }) => {
     const api = await bootHire(page, { draftDetail: { ...detail, status: 'Active' } }, '/people/new?draft=44');
-    await expect(page.getByRole('alert')).toContainText('This employee is no longer a draft.');
+    await expect(page.getByRole('alert').filter({ hasText: /\w/ })).toContainText('This employee is no longer a draft.');
     await expect(page.getByRole('link', { name: 'Open the record' })).toBeVisible();
     await expect(page.getByLabel('English full name')).toHaveCount(0);
     expect(api.puts).toHaveLength(0);
@@ -272,7 +272,7 @@ test.describe('CD32 override hint', () => {
 test.describe('CD34 Review and Success', () => {
   async function fillForReview(page: Page, l: typeof L.en | typeof L.ar) {
     await basics(page, l, { start: '2026-01-05' });
-    await page.getByLabel(l === L.en ? 'Work email' : 'البريد الوظيفي').fill('alex.morgan');
+    await page.getByLabel(l === L.en ? 'Work email' : 'البريد الإلكتروني الوظيفي').fill('alex.morgan');
     await next(page, l);
     await pickNationality(page, l === L.en ? 'paki' : 'باك', /Pakistan|باكستان/, l);
     await next(page, l);
