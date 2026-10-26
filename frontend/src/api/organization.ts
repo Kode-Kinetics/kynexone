@@ -221,9 +221,29 @@ export const departmentsApi = {
   remove: (id: string) => client.delete(`/api/departments/${id}`),
   export: () => client.get<string>('/api/departments/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/departments/import-template', { responseType: 'text' }).then((r) => r.data),
-  /** companyId: the company the file's rows belong to (required when the tenant has several). */
-  import: (csv: string, companyId?: string) => client.post<RawImportCommit>('/api/departments/import', { csv, companyId }).then((r) => toImportResult(r.data)),
+  /**
+   * Dry run: nothing is saved. `linksToClearHeader` is the X-Links-To-Clear count of existing cost-centre and parent links
+   * the file would remove (a blank cell keeps a link; only the [CLEAR] token removes it).
+   */
+  importPreview: (csv: string, companyId?: string) =>
+    client.post<RawDepartmentPreview>('/api/departments/import-preview', { csv, companyId })
+      .then((r) => ({ data: r.data, linksToClearHeader: (r.headers?.['x-links-to-clear'] as string | undefined) })),
+  /**
+   * companyId: the company the file's rows belong to (required when the tenant has several). A file that would clear links
+   * is refused (409) without `acknowledgeClearedLinks`, and (422) without a `reason`.
+   */
+  import: (csv: string, companyId?: string, options?: { acknowledgeClearedLinks?: boolean; reason?: string }) =>
+    client.post<RawImportCommit>('/api/departments/import', { csv, companyId, ...(options?.acknowledgeClearedLinks ? { acknowledgeClearedLinks: true, reason: options.reason } : {}) }).then((r) => toImportResult(r.data)),
 };
+
+export interface RawDepartmentPreview {
+  received: number;
+  wouldCreate: number;
+  wouldUpdate: number;
+  wouldSkip: number;
+  /** status is the server's enum: 0/Ok, 1/Warning, 2/Error, 3/Skipped. */
+  rows: Array<{ rowNumber: number; entityCode?: string | null; entityName?: string | null; status: number | string; errors?: string[]; warnings?: string[] }>;
+}
 
 // ─── Designation ─────────────────────────────────────────────────────────────
 
@@ -383,6 +403,11 @@ export interface CostCenterDto {
   /** Optional Arabic name; readers fall back to name. */
   nameAr?: string | null;
   isActive: boolean;
+  parentId?: string | null;
+  /** COGS | SELLING | G_AND_A | R_AND_D | OPERATIONS | CAPITALISABLE. */
+  functionalClass?: string | null;
+  /** The cost-centre value in the customer's ERP. */
+  glSegment?: string | null;
 }
 
 export interface CostCenterRequest {
@@ -391,7 +416,30 @@ export interface CostCenterRequest {
   name: string;
   nameAr?: string | null;
   isActive: boolean;
+  /** null/absent leaves it alone on an update; the empty Guid clears it. */
+  parentId?: string | null;
+  /** null/absent leaves it alone; '' clears it. Needs finance.gl.manage and a reason. */
+  functionalClass?: string | null;
+  /** null/absent leaves it alone; '' clears it. */
+  glSegment?: string | null;
+  /** Required when the functional class changes; recorded in the audit row. */
+  reason?: string;
 }
+
+export interface PositionDto {
+  id: string;
+  companyId?: string | null;
+  departmentId?: string | null;
+  code?: string;
+  title?: string;
+  costCenterId?: string | null;
+}
+
+export const positionsApi = {
+  /** The positions of a company (the employee's cost centre can come from the position). */
+  list: (companyId?: string | null) =>
+    client.get<PositionDto[]>('/api/positions', { params: companyId ? { companyId } : undefined }).then((r) => r.data),
+};
 
 export const costCentersApi = {
   list: (companyId?: string, page = 1, pageSize = 100) =>

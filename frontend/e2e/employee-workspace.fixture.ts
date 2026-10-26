@@ -22,7 +22,7 @@ interface EmployeeWorkspaceFixtureOptions {
   locale?: 'en' | 'ar';
 }
 
-const employees = {
+export const employees = {
   901: {
     id: 901,
     employeeCode: 'EMP-SA-QA-FIN-17-2026-0001',

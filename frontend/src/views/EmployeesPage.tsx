@@ -27,6 +27,7 @@ import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
+import { createCostCentreFields, createNeedsReason } from '../lib/employeeCostCentre';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
@@ -327,6 +328,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   // "Access Denied" toast) for a background read they never asked for. The server still enforces the limit.
   const canReadUsage = hasPermission('security.manage');
   const canReadBenefits = hasPermission('employees.write');
+  // AM-30: setting a cost centre on a new employee is an attribution change; the server refuses it without this.
+  const canManageCostCentres = hasPermission('organization.costcenter.manage');
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -1304,6 +1307,10 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     }
     if (step === 1 && formCompanyMissingCountry) message = formCompanyMissingCountryMessage;
     if (step === 1 && !selectedFormCompany) message = t('Choose an employing company before saving.');
+    // AM-30: a cost centre other than the department's is an override, and the server needs the reason for it.
+    if (step === 1 && !message && createNeedsReason({ canManage: canManageCostCentres, chosenId: form.costCenterId ?? '', departmentCostCentreId: departments.find((item) => item.id === form.departmentId)?.costCenterId ?? '' }) && !(form.costCenterReason ?? '').trim()) {
+      message = t('Enter a reason for this change.');
+    }
     if (step === 1 && selectedDesignation?.gradeId && form.gradeId && selectedDesignation.gradeId !== form.gradeId) {
       message = 'Selected designation is restricted to a different grade.';
     }
@@ -1461,6 +1468,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       setFormError(`Salary package must be within ${selectedGrade.currency} ${selectedGrade.minSalary.toLocaleString()} - ${selectedGrade.maxSalary.toLocaleString()} for ${selectedGrade.code}.`);
       return;
     }
+    const departmentCostCentreId = departments.find((item) => item.id === form.departmentId)?.costCenterId ?? '';
     createSaveLock.current = true;
     setSaving(true);
     try {
@@ -1480,7 +1488,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           // advisory check unavailable — proceed; the commit's 409 still catches strong matches
         }
       }
-      const payload = cleanPayload(form);
+      const payload = cleanPayload(form, { canManage: canManageCostCentres, departmentCostCentreId });
       if (acknowledgeDuplicate) payload.acknowledgeDuplicate = true;
       const created = await employeesApi.create(payload);
       surfaceAdvisoryWarning(created);
@@ -1684,7 +1692,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   // offer a blank editor that could overwrite a saved value while the API rollout catches up.
   const hasCurrentEditValue = (field: EditField) => !OPTIONAL_EXPIRY_EDIT_KEYS.has(field.key)
     || (selectedEmployee as unknown as Record<string, unknown> | null)?.[field.key] !== undefined;
-  const canEditField = (field: EditField) => canEditEmployees && hasCurrentEditValue(field) && (!EXTENDED_PAYROLL_EDIT_KEYS.has(field.key) || (selectedEmployee != null && Object.prototype.hasOwnProperty.call(selectedEmployee, 'salaryBreakdown'))) && (canReadSensitiveEmployees || (!field.sensitive && !MASKED_EMPLOYEE_EDIT_KEYS.has(field.key)));
+  const canEditField = (field: EditField) => canEditEmployees && field.key !== 'costCenter' && hasCurrentEditValue(field) && (!EXTENDED_PAYROLL_EDIT_KEYS.has(field.key) || (selectedEmployee != null && Object.prototype.hasOwnProperty.call(selectedEmployee, 'salaryBreakdown'))) && (canReadSensitiveEmployees || (!field.sensitive && !MASKED_EMPLOYEE_EDIT_KEYS.has(field.key)));
   const dirtyEditKeys = Object.keys(editForm).filter((key) => editForm[key] !== editOriginal[key]);
   const editChangedKeys = editFields.filter((field) => canEditField(field) && dirtyEditKeys.includes(field.key)).map((field) => field.key);
   const salaryPackageChanged = editChangedKeys.some(key => key.startsWith('salaryBreakdown.'));
@@ -2812,7 +2820,24 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               ltr
             />
             <EmployeeAdditionalDetails title="More employment details">
-            <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
+            {canManageCostCentres ? (
+              <div>
+                <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
+                {createNeedsReason({ canManage: true, chosenId: form.costCenterId ?? '', departmentCostCentreId: departments.find((item) => item.id === form.departmentId)?.costCenterId ?? '' }) && (
+                  <label className="mt-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    <span>{t('Reason')} <span aria-hidden className="text-rose-500">*</span></span>
+                    <input data-testid="cc-create-reason" value={form.costCenterReason ?? ''} maxLength={500} onChange={(e) => setField('costCenterReason', e.target.value)} className="input mt-1.5 w-full" aria-describedby="cc-create-reason-hint" />
+                    <span id="cc-create-reason-hint" className="mt-1 block text-xs font-normal text-slate-500">{t('Why this person has a different cost centre from their department. Recorded in the audit log.')}</span>
+                  </label>
+                )}
+              </div>
+            ) : (
+              <div className="text-sm">
+                <p className="font-medium text-slate-700 dark:text-slate-300">{t('Cost center')}</p>
+                <p className="mt-1.5 min-h-10 rounded-lg bg-slate-50 px-3 py-2.5 text-slate-700 dark:bg-white/5 dark:text-slate-300">{nameById(costCenters, form.costCenterId, 'name') || '—'}</p>
+                <p role="note" data-testid="cc-create-readonly-note" className="mt-1 text-xs text-slate-500">{t('Only HR managers and admins can change this.')}</p>
+              </div>
+            )}
             <Input label="Job title" value={form.jobTitle ?? ''} onChange={(v) => setField('jobTitle', v)} />
             <Select label="Employment type" value={referenceValue('employmentType', form.employmentType)} onChange={(v) => setField('employmentType', v)} options={referenceChoices('employmentType', form.employmentType)} info="How the employee is engaged. Affects payroll, leave entitlements and reports." infoKey="employees.employment_type" />
             <Select label="Contract type" value={referenceValue('contractType', form.contractType)} onChange={(v) => setField('contractType', v)} options={referenceChoices('contractType', form.contractType)} />
@@ -3097,7 +3122,7 @@ function buildDuplicateProbe(form: EmployeeCreateRequest): DuplicateCheckRequest
   };
 }
 
-function cleanPayload(form: EmployeeCreateRequest): EmployeeCreateRequest {
+function cleanPayload(form: EmployeeCreateRequest, costCentre: { canManage: boolean; departmentCostCentreId: string }): EmployeeCreateRequest {
   // The API expects null/absent for empty Guid and date fields — an empty string
   // fails JSON model binding with a 400 before validation even runs.
   const emptyToUndefined = (value?: string) => value?.trim() ? value.trim() : undefined;
@@ -3121,7 +3146,10 @@ function cleanPayload(form: EmployeeCreateRequest): EmployeeCreateRequest {
     departmentId: emptyToUndefined(form.departmentId),
     designationId: emptyToUndefined(form.designationId),
     gradeId: emptyToUndefined(form.gradeId),
-    costCenterId: emptyToUndefined(form.costCenterId),
+    // AM-30: only a user who may set it sends a cost centre; an override carries its reason; None is the empty Guid.
+    costCenterId: undefined,
+    costCenterReason: undefined,
+    ...createCostCentreFields({ canManage: costCentre.canManage, chosenId: form.costCenterId ?? '', departmentCostCentreId: costCentre.departmentCostCentreId, reason: form.costCenterReason ?? '' }),
     personalEmail: emptyToUndefined(form.personalEmail),
     workEmail: emptyToUndefined(form.workEmail),
     joiningDate: emptyToUndefined(form.joiningDate),

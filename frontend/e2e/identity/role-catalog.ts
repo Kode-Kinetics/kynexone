@@ -150,6 +150,11 @@ function evaluatePredicate(role: string, predicate: string, catalog: string[], n
   const exceptRe = /\(\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*&&\s*!\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*\)/g;
   const excepts = [...predicate.matchAll(exceptRe)].map((m) => ({ prefix: m[1], without: m[2] }));
   predicate = predicate.replace(exceptRe, '');
+  // `(x.Key.StartsWith("p") && x.Key != "k")`: prefix p except the one key k (HR Director's organization.* without
+  // organization.costcenter.manage).
+  const exceptKeyRe = /\(\s*x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)\s*&&\s*x\.Key\s*!=\s*"([^"]+)"\s*\)/g;
+  const exceptKeys = [...predicate.matchAll(exceptKeyRe)].map((m) => ({ prefix: m[1], notKey: m[2] }));
+  predicate = predicate.replace(exceptKeyRe, '');
   const prefixes = [...predicate.matchAll(/x\.Key\.StartsWith\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1]);
   // Every `x.Key is "a" or "b"` clause, not just the first: a role may grant two explicit lists (HR Director names
   // its legacy keys in one and the learning keys in another). Reading only the first silently dropped the rest.
@@ -176,7 +181,8 @@ function evaluatePredicate(role: string, predicate: string, catalog: string[], n
   }
   return {
     keys: catalog.filter((key) => prefixes.some((p) => key.startsWith(p)) || exact.includes(key)
-      || excepts.some((e) => key.startsWith(e.prefix) && !key.startsWith(e.without))),
+      || excepts.some((e) => key.startsWith(e.prefix) && !key.startsWith(e.without))
+      || exceptKeys.some((e) => key.startsWith(e.prefix) && key !== e.notKey)),
     unknown: exact.filter((key) => !catalog.includes(key)),
   };
 }
