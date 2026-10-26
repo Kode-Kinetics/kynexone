@@ -12,7 +12,7 @@ import {
   buildTree, codeProblem, filterItems, inUseCounts, inUseFromError, inUseTotalOf, isCodeLocked, isFiltering, NO_COMPANY_FILTER, parentOptions, saveBody,
   type InUseKey, type MasterForm,
 } from '../../lib/costCentreMaster';
-import { FUNCTIONAL_CLASSES, pickServerMessage } from '../../lib/glCostAccounting';
+import { FUNCTIONAL_CLASSES, pickServerMessage, COST_ACCOUNTING_SETUP_HREF } from '../../lib/glCostAccounting';
 import { Modal } from '../Modal';
 import { downloadCsv, ImportExportToolbar } from '../ImportExportToolbar';
 import { Badge, FieldError, LoadError, Spinner, WarningNote } from '../gl/glUi';
@@ -34,7 +34,7 @@ const IN_USE_LINKS: Partial<Record<InUseKey, string>> = {
   departments: '/setup?tab=departments',
   employees: '/people',
   rules: '/setup?tab=glMapping',
-  default: '/setup?tab=costAccounting',
+  default: COST_ACCOUNTING_SETUP_HREF,
 };
 
 export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }) {
