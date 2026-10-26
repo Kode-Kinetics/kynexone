@@ -6,6 +6,10 @@ import {
   filterItems,
   inUseCounts,
   inUseFromError,
+  inUseTotalOf,
+  isCodeLocked,
+  localisedMessages,
+  removeParams,
   isFiltering,
   linksToClearFrom,
   parentOptions,
@@ -136,5 +140,43 @@ test.describe('the department import\'s links to clear', () => {
     expect(linksToClearFrom(undefined, rows)).toBe(2);
     expect(linksToClearFrom('0', rows)).toBe(2);
     expect(linksToClearFrom('x', [])).toBe(0);
+  });
+});
+
+test.describe('the "In use" column and the code lock come from the server (inUseTotal, codeLocked)', () => {
+  test('inUseTotalOf is the server count, and null (unknown) for an older response', () => {
+    expect(inUseTotalOf(item('A', { inUseTotal: 4 }))).toBe(4);
+    expect(inUseTotalOf(item('A', { inUseTotal: 0 }))).toBe(0);
+    expect(inUseTotalOf(item('A'))).toBeNull();
+  });
+
+  test('the code is locked only when the server says so; a missing flag is not a lock', () => {
+    expect(isCodeLocked(item('A', { codeLocked: true }))).toBe(true);
+    expect(isCodeLocked(item('A', { codeLocked: false }))).toBe(false);
+    expect(isCodeLocked(item('A'))).toBe(false);
+  });
+});
+
+test.describe('a reason travels on delete as ?reason=', () => {
+  test('trimmed, and absent when blank', () => {
+    expect(removeParams(' Created by mistake ')).toEqual({ reason: 'Created by mistake' });
+    expect(removeParams('   ')).toEqual({});
+  });
+});
+
+test.describe('import messages: Arabic when the server sent it and the page is Arabic', () => {
+  const en = ['Clears the cost centre link of this existing department.', 'Something else'];
+  const ar = ['سيؤدي هذا إلى مسح ربط مركز التكلفة لهذا القسم الحالي.', null];
+  test('Arabic page: the parallel entry where there is one, the English where there is not', () => {
+    expect(localisedMessages(en, ar, 'ar')).toEqual([ar[0], 'Something else']);
+  });
+  test('English page, or no Arabic array (an older server): the English untouched', () => {
+    expect(localisedMessages(en, ar, 'en')).toEqual(en);
+    expect(localisedMessages(en, null, 'ar')).toEqual(en);
+    expect(localisedMessages(en, undefined, 'ar')).toEqual(en);
+  });
+  test('an empty or short Arabic array never drops a message', () => {
+    expect(localisedMessages(en, [''], 'ar')).toEqual(en);
+    expect(localisedMessages(en, [], 'ar')).toEqual(en);
   });
 });

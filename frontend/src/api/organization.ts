@@ -242,7 +242,7 @@ export interface RawDepartmentPreview {
   wouldUpdate: number;
   wouldSkip: number;
   /** status is the server's enum: 0/Ok, 1/Warning, 2/Error, 3/Skipped. */
-  rows: Array<{ rowNumber: number; entityCode?: string | null; entityName?: string | null; status: number | string; errors?: string[]; warnings?: string[] }>;
+  rows: Array<{ rowNumber: number; entityCode?: string | null; entityName?: string | null; status: number | string; errors?: string[]; warnings?: string[]; errorsAr?: Array<string | null> | null; warningsAr?: Array<string | null> | null }>;
 }
 
 // ─── Designation ─────────────────────────────────────────────────────────────
@@ -408,6 +408,12 @@ export interface CostCenterDto {
   functionalClass?: string | null;
   /** The cost-centre value in the customer's ERP. */
   glSegment?: string | null;
+  /** Live references per referencing table; absent on an older server. */
+  inUse?: { departments: number; positions: number; employees: number; mappings: number; companyDefault: number; children: number; postedLedgerLines: number };
+  /** Live references in total (what blocks a delete, a deactivation and a company move). */
+  inUseTotal?: number;
+  /** True once a posted journal line carries the cost centre: its code and company are frozen. */
+  codeLocked?: boolean;
 }
 
 export interface CostCenterRequest {
@@ -451,7 +457,8 @@ export const costCentersApi = {
     client.post<CostCenterDto>('/api/organization/cost-centers', data).then((r) => r.data),
   update: (id: string, data: CostCenterRequest) =>
     client.put<CostCenterDto>(`/api/cost-centers/${id}`, data).then((r) => r.data),
-  remove: (id: string) => client.delete(`/api/cost-centers/${id}`),
+  /** A delete needs a reason (recorded in the audit log); DELETE has no body, so it rides the query string. */
+  remove: (id: string, reason?: string) => client.delete(`/api/cost-centers/${id}`, { params: reason?.trim() ? { reason: reason.trim() } : undefined }),
   export: () => client.get<string>('/api/cost-centers/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/cost-centers/import-template', { responseType: 'text' }).then((r) => r.data),
   /** companyId: the company the file's cost centres belong to (cost-centre codes are per company). */

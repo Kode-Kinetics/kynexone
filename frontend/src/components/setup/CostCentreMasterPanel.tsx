@@ -9,7 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { describeApiError } from '../../lib/apiError';
 import {
-  buildTree, codeProblem, filterItems, inUseCounts, inUseFromError, isFiltering, NO_COMPANY_FILTER, parentOptions, saveBody,
+  buildTree, codeProblem, filterItems, inUseCounts, inUseFromError, inUseTotalOf, isCodeLocked, isFiltering, NO_COMPANY_FILTER, parentOptions, saveBody,
   type InUseKey, type MasterForm,
 } from '../../lib/costCentreMaster';
 import { FUNCTIONAL_CLASSES, pickServerMessage } from '../../lib/glCostAccounting';
@@ -115,6 +115,8 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   };
   const set = <K extends keyof MasterForm>(key: K, value: MasterForm[K]) => setForm((f) => ({ ...f, [key]: value }));
 
+  // M-9: the server says when a posted line carries the code; the 409 handler below stays for an older server.
+  const codeLockedByServer = !!editing && isCodeLocked(editing);
   const classChanged = editing ? form.functionalClass !== (editing.functionalClass ?? '') : !!form.functionalClass;
   const deactivating = !!editing && editing.isActive && !form.isActive;
   const movingCompany = !!editing && !!editing.companyId && form.companyId !== editing.companyId;
@@ -159,11 +161,11 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const runAction = async () => {
     if (!action) return;
     const { kind, item } = action;
-    if (kind === 'deactivate' && !actionReason.trim()) { setActionError(t('Enter a reason for this change.')); return; }
+    if (!actionReason.trim()) { setActionError(t('Enter a reason for this change.')); return; }
     setSaving(true); setActionError('');
     try {
       if (kind === 'deactivate') await costCentersApi.update(item.id, saveBody(item, { ...formOf(item), isActive: false, reason: actionReason }));
-      else await costCentersApi.remove(item.id);
+      else await costCentersApi.remove(item.id, actionReason);
       setAction(null);
       await load();
     } catch (err) {
@@ -257,7 +259,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
             <table data-testid="cc-master-table" className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
                 <tr>
-                  {['Code', 'Name', 'ERP code', 'Functional class', 'Company', 'Status'].map((h) => <th key={h} scope="col" className="px-3 py-2 text-start font-medium">{t(h)}</th>)}
+                  {['Code', 'Name', 'ERP code', 'Functional class', 'Company', 'In use', 'Status'].map((h) => <th key={h} scope="col" className="px-3 py-2 text-start font-medium">{t(h)}</th>)}
                   <th scope="col" className="px-3 py-2 text-start font-medium"><span className="sr-only">{t('Actions')}</span></th>
                 </tr>
               </thead>
@@ -282,6 +284,11 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
                       {item.companyId ? org.nameOf(item.companyId) : (
                         <span data-testid={`cc-master-nocompany-chip-${item.code}`} className="inline-block max-w-[11rem] rounded-md bg-rose-50 px-2 py-1 text-start text-xs font-semibold leading-snug text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('No company: cannot be used for posting. Assign a company.')}</span>
                       )}
+                    </td>
+                    <td data-testid={`cc-master-inuse-${item.code}`} className="whitespace-nowrap px-3 py-2 text-xs">
+                      {inUseTotalOf(item) === null ? <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>
+                        : inUseTotalOf(item) === 0 ? <span className="text-slate-500 dark:text-slate-400">{t('Not in use')}</span>
+                        : <Badge tone="amber"><span title={t('{count} in use', { count: inUseTotalOf(item) ?? 0 })}><span aria-hidden>{inUseTotalOf(item)}</span><span className="sr-only">{t('{count} in use', { count: inUseTotalOf(item) ?? 0 })}</span></span></Badge>}
                     </td>
                     <td className="px-3 py-2"><Badge tone={item.isActive ? 'emerald' : 'slate'}>{item.isActive ? t('Active') : t('Inactive')}</Badge></td>
                     <td className="px-3 py-2">
@@ -327,11 +334,11 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           <Labelled label={t('Company')} required error={errors.company}>
             {(id, describedBy) => (
               <>
-                <select id={id} aria-describedby={describedBy} data-testid="cc-form-company" value={form.companyId} disabled={!!lockedNote} onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value, parentId: '' }))} className="select w-full">
+                <select id={id} aria-describedby={describedBy} data-testid="cc-form-company" value={form.companyId} disabled={!!lockedNote || codeLockedByServer} onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value, parentId: '' }))} className="select w-full">
                   <option value="">{t('Choose the company')}</option>
                   {org.options.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
-                {lockedNote && <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{t('The company cannot change once the cost centre is in use.')}</p>}
+                {(lockedNote || codeLockedByServer) && <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{t('The company cannot change once the cost centre is in use.')}</p>}
               </>
             )}
           </Labelled>
@@ -339,10 +346,10 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
             {(id, describedBy) => (
               <>
                 <div className="relative">
-                  <input id={id} aria-describedby={describedBy} aria-invalid={!!errors.code} data-testid="cc-form-code" dir="ltr" value={form.code} readOnly={!!lockedNote} maxLength={40} onChange={(e) => set('code', e.target.value)} className={`input w-full ${lockedNote ? 'bg-slate-50 pe-9 dark:bg-white/5' : ''}`} />
+                  <input id={id} aria-describedby={describedBy} aria-invalid={!!errors.code} data-testid="cc-form-code" dir="ltr" value={form.code} readOnly={!!lockedNote || codeLockedByServer} maxLength={40} onChange={(e) => set('code', e.target.value)} className={`input w-full ${lockedNote || codeLockedByServer ? 'bg-slate-50 pe-9 dark:bg-white/5' : ''}`} />
                   {lockedNote && <Lock className="pointer-events-none absolute end-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" aria-hidden />}
                 </div>
-                {lockedNote && <p data-testid="cc-form-code-locked-note" role="note" className="mt-1 text-xs font-medium text-amber-800 dark:text-amber-300">{lockedNote}</p>}
+                {(lockedNote || codeLockedByServer) && <p data-testid="cc-form-code-locked-note" role="note" className="mt-1 text-xs font-medium text-amber-800 dark:text-amber-300">{lockedNote || t('The code cannot change because journal lines already carry it. You can rename it.')}</p>}
               </>
             )}
           </Labelled>
@@ -402,7 +409,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
       >
         <div className="space-y-3">
           <p className="text-sm text-slate-700 dark:text-slate-200">{action?.kind === 'delete' ? t('The cost centre leaves the list. Posted journal lines keep it.') : t('Posted journal lines keep it. It can no longer be assigned.')}</p>
-          {action?.kind === 'deactivate' && (
+          {action && (
             <div>
               <label htmlFor={`${headingId}-action-reason`} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Reason')} <span aria-hidden className="text-rose-500">*</span></label>
               <input id={`${headingId}-action-reason`} data-testid="cc-form-reason" value={actionReason} maxLength={500} onChange={(e) => setActionReason(e.target.value)} className="input w-full" />

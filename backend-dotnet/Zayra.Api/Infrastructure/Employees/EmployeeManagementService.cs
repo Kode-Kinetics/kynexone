@@ -109,7 +109,23 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken)) with
         {
             SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
+            CostCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken),
         };
+    }
+
+    /// <summary>
+    /// Where this employee's cost lands, from the same resolver payroll posts with (one snapshot of the employee's company, so one read per
+    /// request). Organisation data like <c>CostCenterId</c> beside it, so it is not masked. An employee with no company resolves to none.
+    /// </summary>
+    private async Task<EmployeeCostCentreResolutionDto> ResolveCostCentreAsync(Guid tenantId, Employee employee, CancellationToken cancellationToken)
+    {
+        if (employee.CompanyId is not Guid companyId) return new(null, null, null, null, "None", null, "none");
+        var snapshot = await Zayra.Api.Infrastructure.Payroll.CostCentreResolver.LoadSnapshotAsync(_db, tenantId, companyId, cancellationToken);
+        var resolution = Zayra.Api.Infrastructure.Payroll.CostCentreResolver.Resolve(Zayra.Api.Infrastructure.Payroll.ResolverEmployee.From(employee), snapshot);
+        if (resolution.CostCenterId is not Guid id) return new(null, null, null, null, "None", resolution.Level, resolution.UnresolvedReason ?? "none");
+        var master = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id)
+            .Select(c => new { c.Code, c.Name, c.NameAr }).FirstOrDefaultAsync(cancellationToken);
+        return new(id, master?.Code, master?.Name, master?.NameAr, resolution.Source ?? "None", resolution.Level, null);
     }
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)

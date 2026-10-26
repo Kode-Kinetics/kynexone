@@ -58,7 +58,7 @@ public class CostCentrePermissionTests
         var plain = new[] { "organization.write", "organization.read" };
         (await Ctl(plain).Create(body, default)).Result.Should().BeOfType<ForbidResult>();
         (await Ctl(plain).Update(w.Cc.Id, new CostCenterRequest(w.A.Id, "OPS", "Renamed"), default)).Result.Should().BeOfType<ForbidResult>();
-        (await Ctl(plain).Delete(w.Other.Id, default)).Should().BeOfType<ForbidResult>();
+        (await Ctl(plain).Delete(w.Other.Id, "Removed in test", default)).Should().BeOfType<ForbidResult>();
         (await Ctl(plain).ImportPreview(import, default)).Should().BeOfType<ForbidResult>();
         (await Ctl(plain).Import(import, default)).Should().BeOfType<ForbidResult>();
         (await Org(plain).CreateCostCenter(body, default)).Result.Should().BeOfType<ForbidResult>();
@@ -69,7 +69,7 @@ public class CostCentrePermissionTests
         (await Ctl(only).Create(body, default)).Result.Should().BeOfType<CreatedAtActionResult>();
         (await Ctl(only).Update(w.Cc.Id, new CostCenterRequest(w.A.Id, "OPS", "Renamed"), default)).Result.Should().BeOfType<OkObjectResult>();
         (await Ctl(only).Import(import, default)).Should().BeOfType<OkObjectResult>();
-        (await Ctl(only).Delete(w.Other.Id, default)).Should().BeOfType<NoContentResult>();
+        (await Ctl(only).Delete(w.Other.Id, "Removed in test", default)).Should().BeOfType<NoContentResult>();
     }
 
     [Fact]
@@ -201,7 +201,7 @@ public class CostCentrePermissionTests
     public async Task S008_TheAuditRowRecordsTheClassBeforeAndAfter_AndTheReason()
     {
         var w = await Seed();
-        var id = (await CostCentres(w, Manage, "finance.gl.manage").Create(new CostCenterRequest(w.A.Id, "CLS", "Classified", FunctionalClass: "COGS"), default)).Result as CreatedAtActionResult;
+        var id = (await CostCentres(w, Manage, "finance.gl.manage").Create(new CostCenterRequest(w.A.Id, "CLS", "Classified", FunctionalClass: "COGS", Reason: "initial classification"), default)).Result as CreatedAtActionResult;
         var costCentreId = ((CostCenterDto)id!.Value!).Id;
         await CostCentres(w, Manage, "finance.gl.manage").Update(costCentreId, new CostCenterRequest(w.A.Id, "CLS", "Classified", FunctionalClass: "G_AND_A", Reason: "gross margin presentation"), default);
 

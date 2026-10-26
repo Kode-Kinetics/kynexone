@@ -326,6 +326,8 @@ export interface EmployeeEntity {
   costCenterId?: string;
   /** Sent once the server reports it (AM-30 follow-up); until then the screen infers it. */
   costCenterIsOverride?: boolean;
+  /** The server's own answer to where this person's cost lands (sent on the detail read). */
+  costCentreResolution?: import('../lib/employeeCostCentre').ServerResolution | null;
   department: string;
   designation: string;
   branch: string;

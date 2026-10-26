@@ -174,7 +174,11 @@ public record GradePayScaleComponentRequest(
     bool IsActive = true);
 
 public record CostCenterDto(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive, string? NameAr = null,
-    Guid? ParentId = null, string? FunctionalClass = null, string? GlSegment = null);
+    Guid? ParentId = null, string? FunctionalClass = null, string? GlSegment = null,
+    CostCentreInUse? InUse = null, int InUseTotal = 0, bool CodeLocked = false);
+
+/// <summary>Live references to a cost centre, per referencing table (M-8), and the posted ledger lines that freeze its code (M-9; not a live reference).</summary>
+public sealed record CostCentreInUse(int Departments, int Positions, int Employees, int Mappings, int CompanyDefault, int Children, int PostedLedgerLines);
 
 public record CostCenterRequest(
     Guid? CompanyId,

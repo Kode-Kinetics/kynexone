@@ -254,6 +254,7 @@ public class DepartmentsController : ControllerBase
             {
                 error = "links_clear_not_acknowledged",
                 message = $"This file would clear {linksToClear} existing cost-centre or parent link(s). Review the preview and confirm to continue.",
+                messageAr = $"سيؤدي هذا الملف إلى مسح {linksToClear} من روابط مركز التكلفة أو القسم الأب الحالية. راجع المعاينة ثم أكد للمتابعة.",
                 linksToClear,
             });
         if (linksToClear > 0 && string.IsNullOrWhiteSpace(reason))
@@ -483,7 +484,7 @@ public class DepartmentsController : ControllerBase
             row.NameEn,
             row.Errors.Count > 0 ? ImportRowStatus.Error : row.Warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok,
             row.Errors,
-            row.Warnings)).ToList();
+            row.Warnings).WithArabic()).ToList();
 
     private static string NormalizeCode(string code) => OrgCodes.Normalize(code);
 

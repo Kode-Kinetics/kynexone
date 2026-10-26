@@ -472,13 +472,45 @@ public class OrganizationSetupService : IOrganizationSetupService
         var ordered = query.OrderBy(x => x.Code);
         var total = await ordered.CountAsync(cancellationToken);
         var items = await ordered.Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(cancellationToken);
-        return new PagedResult<CostCenterDto>(items, total, page, pageSize);
+        var usage = await CostCentreUsageForAsync(tenantId, items.Select(i => i.Id).ToList(), cancellationToken);
+        return new PagedResult<CostCenterDto>(items.Select(i => WithUsage(i, usage)).ToList(), total, page, pageSize);
     }
 
     public async Task<CostCenterDto?> GetCostCenterAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
     {
         var costCenter = await _db.CostCenters.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
-        return costCenter?.ToDto();
+        return costCenter is null ? null : await WithUsageAsync(costCenter.ToDto(), tenantId, cancellationToken);
+    }
+
+    private async Task<CostCenterDto> WithUsageAsync(CostCenterDto dto, Guid tenantId, CancellationToken cancellationToken) =>
+        WithUsage(dto, await CostCentreUsageForAsync(tenantId, [dto.Id], cancellationToken));
+
+    private static CostCenterDto WithUsage(CostCenterDto dto, IReadOnlyDictionary<Guid, CostCentreInUse> usage)
+    {
+        var u = usage.GetValueOrDefault(dto.Id) ?? new CostCentreInUse(0, 0, 0, 0, 0, 0, 0);
+        // The total is the live references (M-8: what blocks a delete, a deactivation and a company move); posted ledger lines freeze the code (M-9) but are history, not a live reference.
+        return dto with { InUse = u, InUseTotal = u.Departments + u.Positions + u.Employees + u.Mappings + u.CompanyDefault + u.Children, CodeLocked = u.PostedLedgerLines > 0 };
+    }
+
+    /// <summary>The same references <see cref="CostCentreUsageAsync"/> counts for one cost centre, for a page of them at once: one grouped query per referencing table, never one per row.</summary>
+    private async Task<Dictionary<Guid, CostCentreInUse>> CostCentreUsageForAsync(Guid tenantId, IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken)
+    {
+        var idList = ids.ToList();
+        var result = idList.ToDictionary(i => i, _ => new int[7]);
+        if (ids.Count == 0) return result.ToDictionary(kv => kv.Key, kv => new CostCentreInUse(0, 0, 0, 0, 0, 0, 0));
+        async Task Fill<T>(int slot, IQueryable<T> rows, System.Linq.Expressions.Expression<Func<T, Guid?>> key)
+        {
+            var grouped = await rows.GroupBy(key).Select(g => new { Id = g.Key, N = g.Count() }).ToListAsync(cancellationToken);
+            foreach (var g in grouped) if (g.Id is Guid id && result.TryGetValue(id, out var counts)) counts[slot] = g.N;
+        }
+        await Fill(0, ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification).Where(x => !x.IsDeleted && x.CostCenterId != null && idList.Contains(x.CostCenterId.Value)), x => x.CostCenterId);
+        await Fill(1, ScopedBypass.TenantWide(_db.Positions, tenantId, OrgScopeJustification).Where(x => !x.IsDeleted && x.CostCenterId != null && idList.Contains(x.CostCenterId.Value)), x => x.CostCenterId);
+        await Fill(2, ScopedBypass.NullableTenantWide(_db.Employees, tenantId, OrgScopeJustification).Where(x => !x.IsDeleted && x.CostCenterId != null && idList.Contains(x.CostCenterId.Value)), x => x.CostCenterId);
+        await Fill(3, ScopedBypass.TenantWide(_db.GlAccountMappings, tenantId, OrgScopeJustification).Where(x => x.IsActive && x.SegmentCostCenterId != null && idList.Contains(x.SegmentCostCenterId.Value)), x => x.SegmentCostCenterId);
+        await Fill(4, ScopedBypass.TenantWide(_db.Companies, tenantId, OrgScopeJustification).Where(x => !x.IsDeleted && x.DefaultCostCenterId != null && idList.Contains(x.DefaultCostCenterId.Value)), x => x.DefaultCostCenterId);
+        await Fill(5, ScopedBypass.TenantWide(_db.CostCenters, tenantId, OrgScopeJustification).Where(x => !x.IsDeleted && x.IsActive && x.ParentId != null && idList.Contains(x.ParentId.Value)), x => x.ParentId);
+        await Fill(6, _db.FinanceGlEntries.Where(e => e.TenantId == tenantId && e.CostCenterId != null && idList.Contains(e.CostCenterId.Value)), e => e.CostCenterId);
+        return result.ToDictionary(kv => kv.Key, kv => new CostCentreInUse(kv.Value[0], kv.Value[1], kv.Value[2], kv.Value[3], kv.Value[4], kv.Value[5], kv.Value[6]));
     }
 
     public async Task<CostCenterDto> CreateCostCenterAsync(Guid tenantId, CostCenterRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -504,7 +536,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             CostCentreAuditJson(null, costCenter, request.Reason), costCenter.CompanyId);
         if (functionalClass is not null) StageClassChanged(tenantId, context, costCenter, null, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
-        return costCenter.ToDto();
+        return await WithUsageAsync(costCenter.ToDto(), tenantId, cancellationToken);
     }
 
     public async Task<CostCenterDto?> UpdateCostCenterAsync(Guid tenantId, Guid id, CostCenterRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -552,10 +584,10 @@ public class OrganizationSetupService : IOrganizationSetupService
             CostCentreAuditJson(before, costCenter, request.Reason), costCenter.CompanyId);
         if (classChanged) StageClassChanged(tenantId, context, costCenter, before.FunctionalClass, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
-        return costCenter.ToDto();
+        return await WithUsageAsync(costCenter.ToDto(), tenantId, cancellationToken);
     }
 
-    public async Task<bool> DeleteCostCenterAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken)
+    public async Task<bool> DeleteCostCenterAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken, string? reason = null)
     {
         var costCenter = await _db.CostCenters.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (costCenter is null) return false;
@@ -565,7 +597,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         costCenter.DeletedAtUtc = DateTime.UtcNow;
         costCenter.DeletedBy = context.UserId;
         _audit.Stage("organization.cost_center_deleted", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
-            CostCentreAuditJson(before, costCenter, null), costCenter.CompanyId);
+            CostCentreAuditJson(before, costCenter, reason), costCenter.CompanyId);
         await _db.SaveChangesAsync(cancellationToken);
         return true;
     }
