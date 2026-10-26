@@ -338,6 +338,14 @@ public class GlJournalExportsController : ControllerBase
         var (bytes, _, formatter, refusal) = await _exports.RegenerateAsync(export, ct);
         if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
 
+        WriteAudit("finance.gl.journal_export.downloaded", "GlJournalExport", export.Id.ToString(), export.CompanyId, new
+        {
+            export.FileName,
+            export.FormatKey,
+            export.LineCount,
+        });
+        await _db.SaveChangesAsync(ct);
+
         Response.Headers["X-Journal-Export-Hash"] = export.FileHash;
         Response.Headers["X-Journal-Export-Lines"] = export.LineCount.ToString();
         return File(bytes!, formatter!.ContentType, export.FileName);

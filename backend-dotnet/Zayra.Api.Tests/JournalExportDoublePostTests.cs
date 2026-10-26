@@ -354,6 +354,40 @@ public class JournalExportDoublePostTests
         ((FileContentResult)file).FileContents.Should().Equal(v1Bytes);
     }
 
+    // ── Download audit ────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ADownload_IsRecordedInTheAuditLog()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var created = await CreateAsync(db, maker);
+
+        var file = await Ctrl(db, maker).Download(IdOf(created), default);
+
+        file.Should().BeOfType<FileContentResult>();
+        db.ChangeTracker.Clear();
+        var export = await db.GlJournalExports.AsNoTracking().SingleAsync();
+        var row = await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Action == "finance.gl.journal_export.downloaded");
+        row.EntityName.Should().Be("GlJournalExport");
+        row.EntityId.Should().Be(export.Id.ToString());
+        row.TenantId.Should().Be(tenantId);
+        row.CompanyId.Should().Be(export.CompanyId);
+        row.Metadata.Should().Contain(export.FileName).And.Contain(export.LineCount.ToString());
+    }
+
+    [Fact]
+    public async Task ADownloadOfAnUnknownExport_WritesNoAuditRow()
+    {
+        var (db, tenantId) = await TenantAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+
+        (await Ctrl(db, maker).Download(Guid.NewGuid(), default)).Should().BeOfType<NotFoundResult>();
+
+        (await db.AuditLogs.AnyAsync(a => a.Action == "finance.gl.journal_export.downloaded")).Should().BeFalse();
+    }
+
     // ── Harness ───────────────────────────────────────────────────────────────────────────────────
 
     private static async Task<(ZayraDbContext Db, Guid TenantId)> TenantAsync()
