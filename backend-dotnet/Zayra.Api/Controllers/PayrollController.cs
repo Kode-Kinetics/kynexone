@@ -12054,7 +12054,7 @@ public record EmployeeSalaryStructureRequest(int EmployeeId, Guid? SalaryStructu
 /// <param name="ExpectedOutsideBankCount">Acknowledges, by count, the employees paid by cash or cheque (outside
 /// the bank/WPS file). Required when the run has any.</param>
 public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null,
-    int? ExpectedOutsideBankCount = null);
+    int? ExpectedOutsideBankCount = null, int? ExpectedUncostedCount = null);
 /// <param name="ExpectedOutsideBankCount">Only for a run locked before payment methods were frozen: acknowledges,
 /// by count, the cash/cheque employees the batch will leave out of the bank file.</param>
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency, int? ExpectedOutsideBankCount = null);

@@ -374,15 +374,16 @@ internal sealed class GlPostingKit : IAsyncDisposable
         await Db.SaveChangesAsync();
     }
 
-    public PayrollController Payroll(ZayraDbContext? db = null)
+    public PayrollController Payroll(ZayraDbContext? db = null, Guid? userId = null, string? role = null)
     {
         var claims = new List<Claim>
         {
             new("tenant_id", TenantId.ToString()),
-            new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new(ClaimTypes.NameIdentifier, (userId ?? Guid.NewGuid()).ToString()),
             new(ClaimTypes.Name, "gl-posting-test"),
             new("permission", "payroll.lock"),
         };
+        if (role is not null) claims.Add(new Claim(ClaimTypes.Role, role));
         var http = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
         return new PayrollController(db ?? Db, new _GpUnrestrictedScope(), new _GpHttpAccessor(http), new _GpNullNotifications(),
             new _GpNullPackResolver(), new StubRuleReader(), new _GpNullLetterService(), new _GpNullDocStorage(),
