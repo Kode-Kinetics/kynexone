@@ -10,6 +10,7 @@ using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -360,6 +361,10 @@ public class OrganizationSetupService : IOrganizationSetupService
         department.UpdatedBy = context.UserId;
         _audit.Stage("organization.department_updated", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
             DepartmentAuditJson(before, department, request.Reason), department.CompanyId);
+        if (before.CostCenterId != department.CostCenterId || before.ParentDepartmentId != department.ParentDepartmentId)
+            CostAttributionAudit.Stage(_audit, context with { TenantId = tenantId }, nameof(Department), department.Id, department.CompanyId,
+                new { costCenterId = before.CostCenterId, parentDepartmentId = before.ParentDepartmentId },
+                new { costCenterId = department.CostCenterId, parentDepartmentId = department.ParentDepartmentId }, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
         return department.ToDto();
     }
@@ -583,6 +588,10 @@ public class OrganizationSetupService : IOrganizationSetupService
         _audit.Stage("organization.cost_center_updated", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
             CostCentreAuditJson(before, costCenter, request.Reason), costCenter.CompanyId);
         if (classChanged) StageClassChanged(tenantId, context, costCenter, before.FunctionalClass, request.Reason);
+        if (before.IsActive != costCenter.IsActive || before.CompanyId != costCenter.CompanyId || before.GlSegment != costCenter.GlSegment || before.ParentId != costCenter.ParentId)
+            CostAttributionAudit.Stage(_audit, context with { TenantId = tenantId }, nameof(CostCenter), costCenter.Id, costCenter.CompanyId,
+                new { isActive = before.IsActive, companyId = before.CompanyId, glSegment = before.GlSegment, parentId = before.ParentId },
+                new { isActive = costCenter.IsActive, companyId = costCenter.CompanyId, glSegment = costCenter.GlSegment, parentId = costCenter.ParentId }, request.Reason);
         await _db.SaveChangesAsync(cancellationToken);
         return await WithUsageAsync(costCenter.ToDto(), tenantId, cancellationToken);
     }
@@ -654,7 +663,9 @@ public class OrganizationSetupService : IOrganizationSetupService
     }
 
     /// <summary>M-8: live references to the cost centre, by kind. Historical journal lines are not live references (they hold their own snapshot).</summary>
-    private async Task<Dictionary<string, int>> CostCentreUsageAsync(Guid tenantId, Guid id, CancellationToken cancellationToken) => new()
+    private Task<Dictionary<string, int>> CostCentreUsageAsync(Guid tenantId, Guid id, CancellationToken cancellationToken) => CostCentreUsageAsync(_db, tenantId, id, cancellationToken);
+
+    private static async Task<Dictionary<string, int>> CostCentreUsageAsync(ZayraDbContext _db, Guid tenantId, Guid id, CancellationToken cancellationToken) => new()
     {
         ["department"] = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification).CountAsync(x => x.CostCenterId == id && !x.IsDeleted, cancellationToken),
         ["employee"] = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, OrgScopeJustification).CountAsync(x => x.CostCenterId == id && !x.IsDeleted, cancellationToken),
@@ -664,9 +675,13 @@ public class OrganizationSetupService : IOrganizationSetupService
         ["activeChild"] = await ScopedBypass.TenantWide(_db.CostCenters, tenantId, OrgScopeJustification).CountAsync(x => x.ParentId == id && !x.IsDeleted && x.IsActive, cancellationToken),
     };
 
-    private async Task EnsureNotInUseAsync(Guid tenantId, CostCenter costCenter, CancellationToken cancellationToken)
+    private Task EnsureNotInUseAsync(Guid tenantId, CostCenter costCenter, CancellationToken cancellationToken) =>
+        EnsureCostCentreNotInUseAsync(_db, tenantId, costCenter, cancellationToken);
+
+    /// <summary>M-8, for the writers that are not this service (the structure import).</summary>
+    public static async Task EnsureCostCentreNotInUseAsync(ZayraDbContext db, Guid tenantId, CostCenter costCenter, CancellationToken cancellationToken)
     {
-        var counts = await CostCentreUsageAsync(tenantId, costCenter.Id, cancellationToken);
+        var counts = await CostCentreUsageAsync(db, tenantId, costCenter.Id, cancellationToken);
         if (counts.Values.Any(n => n > 0)) throw CostCentreRuleException.InUse(costCenter.Code, counts);
     }
 

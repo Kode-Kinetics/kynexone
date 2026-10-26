@@ -12,6 +12,7 @@ namespace Zayra.Api.Controllers;
 /// default cost centre and small-cell K) and the readiness dry-run. Finance-owned: <c>finance.gl.manage</c> writes,
 /// <c>finance.gl.read</c> reads; HR permissions never apply here.
 /// </summary>
+[Zayra.Api.Infrastructure.Filters.ReasonLimit]
 public partial class FinanceGlController
 {
     private const int MaxSmallCellMin = 1000;

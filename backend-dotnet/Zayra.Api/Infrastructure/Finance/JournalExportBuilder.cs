@@ -336,6 +336,8 @@ public static class JournalExportBuilder
     /// stamps each line with ITS company, never a "GROUP" placeholder).</param>
     /// <param name="externalCodeOf">The GL account's external (ERP) code for (row, internal account code),
     /// or null to send our own code.</param>
+    /// <param name="scaleOf">The decimal scale a row is written at. Null = the currency's own scale (KWD/BHD/OMR 3, else 2). The export service passes
+    /// <see cref="ScaleResolver"/> so a company that has not switched cost accounting on keeps its two-decimal files byte for byte.</param>
     /// <param name="isProfitAndLoss">Whether the account with this code is a P&amp;L (Expense/Revenue) account for this row:
     /// true, false, or null when unknown. A two-sided row's cost centre is the Expense/Revenue side's, so it lands on that
     /// line only (see <see cref="CostSides"/>).</param>
@@ -343,7 +345,8 @@ public static class JournalExportBuilder
         IEnumerable<FinanceGlEntry> entries,
         Func<FinanceGlEntry, string> companyCodeOf,
         Func<FinanceGlEntry, string, string?>? externalCodeOf,
-        Func<FinanceGlEntry, string, bool?>? isProfitAndLoss = null)
+        Func<FinanceGlEntry, string, bool?>? isProfitAndLoss = null,
+        Func<FinanceGlEntry, int>? scaleOf = null)
     {
         var raw = new List<JournalExportLine>();
         foreach (var e in entries)
@@ -353,9 +356,9 @@ public static class JournalExportBuilder
             var companyCode = companyCodeOf(e);
             var (ccDr, ccCr) = CostSides(e, isProfitAndLoss);
             if (!string.IsNullOrEmpty(e.DebitAccount))
-                raw.Add(NewLine(e, "DR", e.DebitAccount, accounting, journalRef, companyCode, externalCodeOf, ccDr));
+                raw.Add(NewLine(e, "DR", e.DebitAccount, accounting, journalRef, companyCode, externalCodeOf, ccDr, scaleOf));
             if (!string.IsNullOrEmpty(e.CreditAccount))
-                raw.Add(NewLine(e, "CR", e.CreditAccount, accounting, journalRef, companyCode, externalCodeOf, ccCr));
+                raw.Add(NewLine(e, "CR", e.CreditAccount, accounting, journalRef, companyCode, externalCodeOf, ccCr, scaleOf));
         }
 
         return raw
@@ -367,6 +370,10 @@ public static class JournalExportBuilder
             .Select((l, i) => l with { LineNo = i + 1 })
             .ToList();
     }
+
+    /// <summary>Currency scale for companies with cost accounting on; the legacy two decimals for everyone else (rows with no company included).</summary>
+    public static Func<FinanceGlEntry, int> ScaleResolver(IReadOnlySet<Guid> costedCompanyIds) =>
+        e => e.CompanyId is { } id && costedCompanyIds.Contains(id) ? JournalAmount.ScaleFor(e.Currency) : JournalAmount.Scale;
 
     /// <summary>
     /// Which line(s) of a ledger row carry its cost-centre snapshot. A one-sided row: its only line. A two-sided row
@@ -391,7 +398,7 @@ public static class JournalExportBuilder
 
     private static JournalExportLine NewLine(
         FinanceGlEntry e, string side, string accountLabel, DateOnly accountingDate, string journalRef, string companyCode,
-        Func<FinanceGlEntry, string, string?>? externalCodeOf, bool costed)
+        Func<FinanceGlEntry, string, string?>? externalCodeOf, bool costed, Func<FinanceGlEntry, int>? scaleOf = null)
     {
         var (code, name) = SplitAccountLabel(accountLabel);
         var external = externalCodeOf?.Invoke(e, code);
@@ -403,7 +410,7 @@ public static class JournalExportBuilder
             SourceEntityId: e.SourceEntityId, SourceEntityRef: ExportReference(e), EventType: e.EventType,
             CompanyId: e.CompanyId, CompanyCode: companyCode, IsReversed: e.IsReversed,
             ExternalAccountCode: string.IsNullOrWhiteSpace(external) ? null : external.Trim(),
-            Scale: JournalAmount.ScaleFor(e.Currency),
+            Scale: scaleOf?.Invoke(e) ?? JournalAmount.ScaleFor(e.Currency),
             CostCenterCode: costed ? e.CostCenterCode : null,
             CostCenterName: costed ? e.CostCenterName : null,
             CostCenterGlSegment: costed ? e.CostCenterGlSegment : null);

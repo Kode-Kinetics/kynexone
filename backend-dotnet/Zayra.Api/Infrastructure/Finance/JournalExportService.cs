@@ -231,7 +231,8 @@ public sealed class JournalExportService
         bool? IsProfitAndLoss(FinanceGlEntry e, string code) =>
             InfoOf(e.CompanyId, code) is { } i ? FinanceGlEntryGuard.IsPnl(i.Type) : null;
 
-        var lines = JournalExportBuilder.Expand(selection.Entries, CodeOf, ExternalOf, IsProfitAndLoss);
+        var costedCompanies = liveCompanies.Where(c => c.CostAccountingEnabled).Select(c => c.Id).ToHashSet();
+        var lines = JournalExportBuilder.Expand(selection.Entries, CodeOf, ExternalOf, IsProfitAndLoss, JournalExportBuilder.ScaleResolver(costedCompanies));
         var tieOut = JournalExportBuilder.Verify(lines, selection.Entries, IsProfitAndLoss);
         if (!tieOut.Ok)
             return (null, new JournalExportRefusal(422, new

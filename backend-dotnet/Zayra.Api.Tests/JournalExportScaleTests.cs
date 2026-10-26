@@ -141,7 +141,7 @@ public class JournalExportScaleTests
     [InlineData("SAR", 2, "100.12")]
     public async Task Persist_FreezesTheCurrencyScale_AndTheFileRegeneratesIdentically(string currency, int scale, string rounded)
     {
-        var (db, tenantId) = await TenantAsync(currency);
+        var (db, tenantId) = await TenantAsync(currency, costAccounting: true); // the currency scale applies once costing is on; a costing-off company stays at 2 dp
         db.FinanceGlEntries.AddRange(
             Row(tenantId, "Accrual", "5000 - Salaries", "", 100.1235m, currency: currency),
             Row(tenantId, "Accrual", "", "2100 - Salaries Payable", 100.1235m, currency: currency));

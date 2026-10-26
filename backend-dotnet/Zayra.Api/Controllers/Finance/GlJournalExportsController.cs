@@ -307,7 +307,7 @@ public class GlJournalExportsController : ControllerBase
             newRowsInScopeSinceExport = new
             {
                 count = newSince.Count,
-                total = JournalAmount.Round(newSince.Sum(e => e.Amount), JournalAmount.ScaleFor(export.Currency)),
+                total = JournalAmount.Round(newSince.Sum(e => e.Amount), export.AmountScale ?? JournalAmount.Scale),
                 message = newSince.Count == 0 ? null
                     : "GL rows have been posted into this scope since the export was taken (a void contra is dated "
                     + "into the ORIGINAL period; loans/advances post continuously). The exported file is still valid "
@@ -385,7 +385,7 @@ public class GlJournalExportsController : ControllerBase
     {
         if (!CanConfirm()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        return await SerialisedAsync(async () => (await ConfirmCoreAsync(tid.Value, id, req, ct), true), ct);
+        return await GuardedEvidenceAsync(() => SerialisedAsync(async () => (await ConfirmCoreAsync(tid.Value, id, req, ct), true), ct));
     }
 
     private async Task<IActionResult> ConfirmCoreAsync(Guid tid, Guid id, ErpImportConfirmationRequest req, CancellationToken ct)
@@ -564,7 +564,7 @@ public class GlJournalExportsController : ControllerBase
     public async Task<IActionResult> ConfirmJournals(Guid id, [FromBody] ErpJournalConfirmationRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
-        return await SerialisedAsync(async () => (await ConfirmJournalsCoreAsync(id, req, ct), true), ct);
+        return await GuardedEvidenceAsync(() => SerialisedAsync(async () => (await ConfirmJournalsCoreAsync(id, req, ct), true), ct));
     }
 
     private async Task<IActionResult> ConfirmJournalsCoreAsync(Guid id, ErpJournalConfirmationRequest req, CancellationToken ct)
@@ -874,6 +874,35 @@ public class GlJournalExportsController : ControllerBase
     /// both in id order — are held until commit, so concurrent decisions serialise and none overwrites another.
     /// The action says whether to commit: a refusal that wrote its own audit row commits, a failed insert rolls back.
     /// </summary>
+    /// <summary>
+    /// The ledger's own evidence rule (M2) refuses, at COMMIT, to change the ERP document number of a row the ERP already holds. That is a conflict the
+    /// caller can act on, not a server fault: nothing was written (the transaction rolled back), and the answer carries no database text.
+    /// </summary>
+    private async Task<IActionResult> GuardedEvidenceAsync(Func<Task<IActionResult>> run)
+    {
+        try { return await run(); }
+        catch (Exception ex) when (IsErpEvidenceRefusal(ex))
+        {
+            _db.ChangeTracker.Clear();
+            return Conflict(new
+            {
+                error = "erp_document_conflict",
+                message = "Your ERP already holds these ledger rows under a different document number, so this confirmation was not recorded. "
+                        + "Two numbers for one journal means it was imported twice: investigate in your ERP before recording another.",
+                messageAr = "نظام تخطيط الموارد لديكم يحتفظ بهذه القيود برقم مستند مختلف، لذا لم يُسجَّل هذا التأكيد. "
+                          + "وجود رقمين لقيد واحد يعني أنه استُورد مرتين: تحققوا في النظام قبل تسجيل رقم آخر.",
+            });
+        }
+    }
+
+    private static bool IsErpEvidenceRefusal(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+            if (e is Npgsql.PostgresException { SqlState: "23514" or "23001" } pg && pg.MessageText.Contains("finance_gl_entries", StringComparison.Ordinal))
+                return true;
+        return false;
+    }
+
     private async Task<IActionResult> SerialisedAsync(Func<Task<(IActionResult Result, bool Commit)>> action, CancellationToken ct)
     {
         if (!_db.Database.IsRelational())
@@ -984,8 +1013,8 @@ public class GlJournalExportsController : ControllerBase
         companyCode = build.CompanyCode,
         entryCount = build.Document.EntryCount,
         lineCount = build.Document.Lines.Count,
-        totalDebits = JournalAmount.Round(build.TieOut.RoundedDebits, JournalAmount.ScaleFor(build.Document.Currency)),
-        totalCredits = JournalAmount.Round(build.TieOut.RoundedCredits, JournalAmount.ScaleFor(build.Document.Currency)),
+        totalDebits = JournalAmount.Round(build.TieOut.RoundedDebits, build.Document.Lines.Count > 0 ? build.Document.Lines[0].Scale : JournalAmount.ScaleFor(build.Document.Currency)),
+        totalCredits = JournalAmount.Round(build.TieOut.RoundedCredits, build.Document.Lines.Count > 0 ? build.Document.Lines[0].Scale : JournalAmount.ScaleFor(build.Document.Currency)),
         // Each company's journal balances on its own — the per-company check the gate enforced.
         byCompany = (build.TieOut.ByCompany ?? Array.Empty<CompanyBalance>()).Select(b => new
         {

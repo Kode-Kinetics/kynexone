@@ -103,6 +103,9 @@ public static class CostAccountingSod
         "finance.gl.cost_accounting.small_cell_changed",
         "organization.costcenter.class_changed",
         "employee.cost_centre_override.changed",
+        // Strict separation of duties (CTO ruling, P2-2): any change to where cost lands also counts.
+        CostAttributionAudit.Action,
+        "employee.cost_attribution_changed",
     };
 
     public static object RefusalBody { get; } = CostAccountingGuards.Error(ErrorCode,
