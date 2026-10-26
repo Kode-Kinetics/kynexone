@@ -58,7 +58,7 @@ public class CostCentrePermissionTests
         var plain = new[] { "organization.write", "organization.read" };
         (await Ctl(plain).Create(body, default)).Result.Should().BeOfType<ForbidResult>();
         (await Ctl(plain).Update(w.Cc.Id, new CostCenterRequest(w.A.Id, "OPS", "Renamed"), default)).Result.Should().BeOfType<ForbidResult>();
-        (await Ctl(plain).Delete(w.Other.Id, default)).Should().BeOfType<ForbidResult>();
+        (await Ctl(plain).Delete(w.Other.Id, "Removed in test", default)).Should().BeOfType<ForbidResult>();
         (await Ctl(plain).ImportPreview(import, default)).Should().BeOfType<ForbidResult>();
         (await Ctl(plain).Import(import, default)).Should().BeOfType<ForbidResult>();
         (await Org(plain).CreateCostCenter(body, default)).Result.Should().BeOfType<ForbidResult>();
@@ -69,7 +69,7 @@ public class CostCentrePermissionTests
         (await Ctl(only).Create(body, default)).Result.Should().BeOfType<CreatedAtActionResult>();
         (await Ctl(only).Update(w.Cc.Id, new CostCenterRequest(w.A.Id, "OPS", "Renamed"), default)).Result.Should().BeOfType<OkObjectResult>();
         (await Ctl(only).Import(import, default)).Should().BeOfType<OkObjectResult>();
-        (await Ctl(only).Delete(w.Other.Id, default)).Should().BeOfType<NoContentResult>();
+        (await Ctl(only).Delete(w.Other.Id, "Removed in test", default)).Should().BeOfType<NoContentResult>();
     }
 
     [Fact]
