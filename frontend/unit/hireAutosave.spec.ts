@@ -13,7 +13,7 @@ function harness(saveImpl?: (payload: string, base: string) => Promise<{ updated
     save: async (payload, base) => { saves.push({ payload, base }); return saveImpl ? saveImpl(payload, base) : { updatedAtUtc: `v${saves.length}` }; },
     onState: s => states.push(s),
   });
-  const advance = async (ms: number) => { clock += ms; for (const t of timers.filter(x => x.due <= clock)) { timers.splice(timers.indexOf(t), 1); t.fn(); } await Promise.resolve(); await Promise.resolve(); };
+  const advance = async (ms: number) => { clock += ms; for (const t of timers.filter(x => x.due <= clock)) { timers.splice(timers.indexOf(t), 1); t.fn(); } await new Promise(r => setTimeout(r, 0)); };
   return { auto, saves, states, advance, pending: () => timers.length };
 }
 

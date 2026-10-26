@@ -4,6 +4,7 @@ import { releaseA } from './releaseA';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
+import { hireWizard } from './hireWizard';
 import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
@@ -1491,6 +1492,7 @@ const en: Dict = {
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
+  ...hireWizard.en,
   ...setupExperience.en,
   ...glSetup.en,
   ...glErp.en,
@@ -2957,6 +2959,7 @@ const ar: Dict = {
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
+  ...hireWizard.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
   ...glErp.ar,

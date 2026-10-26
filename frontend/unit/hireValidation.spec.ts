@@ -27,7 +27,7 @@ const COPY: Array<[string, string, string]> = [
   ['DOB out of range', 'Date of birth must make the employee between 15 and 80 years old.', 'يجب أن يكون عمر الموظف بين 15 و80 سنة.'],
   ['Phone invalid', 'Enter a valid {country} mobile number.', 'أدخل رقم جوال {country} صحيحًا.'],
   ['IBAN invalid', 'Saudi IBANs have 24 characters and start with SA.', 'يتكون الآيبان السعودي من 24 خانة ويبدأ بـ SA.'],
-  ['Work email wrong domain', 'Work email must end in @{domain}.', 'يجب أن ينتهي البريد الوظيفي بـ @{domain}.'],
+  ['Work email wrong domain', 'Work email must end in @{domain}.', 'يجب أن ينتهي البريد الإلكتروني الوظيفي بـ \u200e@{domain}.'],
   ['Negative amount', 'Amount cannot be negative.', 'لا يمكن أن يكون المبلغ سالبًا.'],
 ];
 
