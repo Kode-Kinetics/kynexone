@@ -145,7 +145,17 @@ public sealed class JournalExportEmployeeIdentifiersPostgresTests
         foreach (var period in new[] { "2026-06", "2026-09" })
             foreach (var formatter in service.Formatters)
             {
-                var (build, refusal) = await service.BuildAsync(k.TenantId, new JournalExportFilter(Period: period, CompanyId: k.CompanyId, Currency: "SAR"), formatter.Key, default);
+                // Some formats need a tenant option before they will build (a ledger id, a journal name): supply a placeholder and go on.
+                var options = new Dictionary<string, string>();
+                JournalExportBuild? build = null; JournalExportRefusal? refusal = null;
+                for (var attempt = 0; attempt < 8; attempt++)
+                {
+                    (build, refusal) = await service.BuildAsync(k.TenantId, new JournalExportFilter(Period: period, CompanyId: k.CompanyId, Currency: "SAR"), formatter.Key, default, options);
+                    var payload = refusal is null ? default : JsonSerializer.SerializeToElement(refusal.Payload);
+                    if (refusal is not null && payload.TryGetProperty("error", out var err) && err.GetString() == "format_option_required")
+                        options[payload.GetProperty("option").GetString()!] = "1";
+                    else break;
+                }
                 if (build is null) throw new Xunit.Sdk.XunitException($"{formatter.Key} {period} refused: {JsonSerializer.Serialize(refusal?.Payload)}");
                 var text = Encoding.UTF8.GetString(build.Bytes) + Encoding.Latin1.GetString(build.Bytes);
                 foreach (var marker in new[] { Marker1, Marker2, Name1, "Alharbimarker", "Person " + Marker2 })

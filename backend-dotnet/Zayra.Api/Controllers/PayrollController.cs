@@ -3880,7 +3880,7 @@ public partial class PayrollController : ControllerBase
                 }), false);
             // Contract 2.7: every cost-centre refusal is collected across ALL rows (not first-fail) and nothing has been written.
             if (plan.CostPlan.Blockers.Count > 0)
-                return new(UnprocessableEntity(PayrollCostStamper.BuildRefusal(plan.CostPlan.Blockers).Body), false);
+                return new(UnprocessableEntity(PayrollCostStamper.BuildRefusal(plan.CostPlan.Blockers, plan.CostPlan.SmallCellMin).Body), false);
             if (plan.RoundingBlock is { } roundingBlock)
                 return new(UnprocessableEntity(PayrollCostStamper.RoundingRefusal(roundingBlock.AccountCode, roundingBlock.AccountName, roundingBlock.Amount, glCurrency)), false);
             var glLines = plan.Lines;
@@ -5328,7 +5328,7 @@ public partial class PayrollController : ControllerBase
                     employeeId = b.EmployeeId, employeeCode = b.EmployeeCode, level = b.Level, departmentId = b.DepartmentId, positionId = b.PositionId,
                     parentDepartmentId = b.ParentDepartmentId, reason = b.Reason, accountCode = b.AccountCode,
                 }),
-                groups = previewCostPlan.Blockers.Count > 0 ? PayrollCostStamper.BuildRefusal(previewCostPlan.Blockers).Groups : Array.Empty<object>(),
+                groups = previewCostPlan.Blockers.Count > 0 ? PayrollCostStamper.BuildRefusal(previewCostPlan.Blockers, previewCostPlan.SmallCellMin).Groups : Array.Empty<object>(),
                 roundingBlocked = previewRoundingBlock is not null,
                 fallbackEmployees = previewCostPlan.FallbackEmployees, fallbackAmount = previewCostPlan.FallbackAmount,
                 uncostedEmployees = previewCostPlan.UncostedEmployees, uncostedAmount = previewCostPlan.UncostedAmount,
@@ -8784,7 +8784,7 @@ public partial class PayrollController : ControllerBase
                 foreach (var label in new[] { l.DebitAccount, l.CreditAccount }.Where(a => !string.IsNullOrWhiteSpace(a)))
                 {
                     var code = SplitAccountLabel(label).Code;
-                    if (costing!.AccountRules.TryGetValue(code, out var a) && a.Rule == "Required" && a.AccountType is "Expense" or "Revenue")
+                    if (costing!.AccountRules.TryGetValue(code, out var a) && a.Rule == "Required" && FinanceGlEntryGuard.IsPnl(a.AccountType))
                         uncostedRequired.Add(l.Id);
                 }
 
@@ -9887,7 +9887,7 @@ public partial class PayrollController : ControllerBase
             if (glCtx.AccountRules.TryGetValue(code, out var a)) return a.AccountType;
             return PayrollGlCatalog.Drivers.FirstOrDefault(d => d.DefaultCode == code)?.AccountType ?? string.Empty;
         }
-        bool IsPnl(string label) => !string.IsNullOrWhiteSpace(label) && AccountType(label) is "Expense" or "Revenue" or "Income";
+        bool IsPnl(string label) => !string.IsNullOrWhiteSpace(label) && FinanceGlEntryGuard.IsPnl(AccountType(label));
 
         // ── NotRecorded: a run locked before cost centres. One bucket, from the slips only. ───────────────────────────────
         if (basis == "NotRecorded")
@@ -10501,7 +10501,7 @@ public partial class PayrollController : ControllerBase
                         new CostBlocker(s.EmployeeId, s.EmployeeCode, resolution.Level ?? "company", null, null, null,
                             resolution.UnresolvedReason == "none" ? PayrollCostStamper.RequiredCode : PayrollCostStamper.InvalidCode,
                             expense.Code, expense.Name, s.GrossPayable),
-                    }).Body);
+                    }, glCtx.CostCentreSmallCellMin).Body);
             }
         }
         var (glLines, dr, cr) = FinalSettlementGlLedger.BuildAccrual(

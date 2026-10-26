@@ -96,7 +96,7 @@ public class GlJournalExportsController : ControllerBase
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
             includePreviouslyConfirmed, replacesExportId, acknowledgeUncostedRequired);
         var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct, options);
-        if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
+        if (refusal is not null) return StatusCode(refusal.Status, RedactTieOutDetail(refusal.Payload));
 
         // Line samples (descriptions, amounts, cost centres) are for export holders; a reader keeps counts and totals.
         return Ok(Manifest(build!, null, sampleLines: CanDownload()));
@@ -1103,8 +1103,19 @@ public class GlJournalExportsController : ControllerBase
         return this.GetEntityScope().IsGroupLevel ? null : Forbid();
     }
 
-    /// <summary>Placeholder until the redaction lands.</summary>
-    internal object RedactTieOutDetail(object payload) => payload;
+    /// <summary>AM-21: a tie-out failure names cost centres and amounts, for export or manage holders; a read-only user gets the count and a generic message.</summary>
+    internal object RedactTieOutDetail(object payload)
+    {
+        if (HasPermission("finance.gl.export") || HasPermission("finance.gl.manage")) return payload;
+        if (System.Text.Json.JsonSerializer.SerializeToNode(payload) is not System.Text.Json.Nodes.JsonObject body
+            || body["costCentreDeltas"] is not System.Text.Json.Nodes.JsonArray deltas) return payload;
+        var count = deltas.Count;
+        body.Remove("costCentreDeltas");
+        body["costCentreDeltaCount"] = count;
+        if (count > 0)
+            body["message"] = "The export does not tie out to the GL, so no file was produced. Ask a finance user with export access for the details.";
+        return body;
+    }
 
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));

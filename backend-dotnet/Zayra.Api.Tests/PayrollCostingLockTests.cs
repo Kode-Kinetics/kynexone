@@ -652,6 +652,8 @@ public class PayrollCostingPreviewTests
         var blocker = costing.GetProperty("blockers").EnumerateArray().Single();
         blocker.GetProperty("employeeCode").GetString().Should().Be("E2");
         blocker.GetProperty("accountCode").GetString().Should().Be("5001");
-        costing.GetProperty("groups").EnumerateArray().Single().GetProperty("amount").GetDecimal().Should().Be(400m);
+        var previewGroup = costing.GetProperty("groups").EnumerateArray().Single();
+        previewGroup.GetProperty("amount").ValueKind.Should().Be(JsonValueKind.Null, "the one unresolved employee's pay is withheld, as it is at Lock");
+        previewGroup.GetProperty("amountWithheld").GetBoolean().Should().BeTrue();
     }
 }
