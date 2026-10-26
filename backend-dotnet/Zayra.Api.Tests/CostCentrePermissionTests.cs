@@ -201,7 +201,7 @@ public class CostCentrePermissionTests
     public async Task S008_TheAuditRowRecordsTheClassBeforeAndAfter_AndTheReason()
     {
         var w = await Seed();
-        var id = (await CostCentres(w, Manage, "finance.gl.manage").Create(new CostCenterRequest(w.A.Id, "CLS", "Classified", FunctionalClass: "COGS"), default)).Result as CreatedAtActionResult;
+        var id = (await CostCentres(w, Manage, "finance.gl.manage").Create(new CostCenterRequest(w.A.Id, "CLS", "Classified", FunctionalClass: "COGS", Reason: "initial classification"), default)).Result as CreatedAtActionResult;
         var costCentreId = ((CostCenterDto)id!.Value!).Id;
         await CostCentres(w, Manage, "finance.gl.manage").Update(costCentreId, new CostCenterRequest(w.A.Id, "CLS", "Classified", FunctionalClass: "G_AND_A", Reason: "gross margin presentation"), default);
 
