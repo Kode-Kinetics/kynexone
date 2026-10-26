@@ -13,6 +13,9 @@ import {
   orderChecks,
   readinessAllClear,
   sampleHref,
+  blockerFixLinks,
+  blockerReason,
+  type BlockerLevel,
   textDir,
   turnOnGate,
 } from '../../lib/glCostAccounting';
@@ -43,6 +46,18 @@ function checkLabel(t: Translator, key: string): string {
     case 'small-cell': return t('Cost centres with very few employees');
     case 'rules-not-enforced': return t('Required rules that nothing enforces yet');
     default: return key;
+  }
+}
+
+/** Why one employee has no cost centre (AM-1): none at any level, or the level whose cost centre cannot be used. */
+function blockerReasonText(t: Translator, level: BlockerLevel): string {
+  switch (level) {
+    case 'none': return t('No cost centre at any level.');
+    case 'employee': return t('Its own cost centre is inactive, deleted or in another company.');
+    case 'position': return t("Its position's cost centre is inactive, deleted or in another company.");
+    case 'department': return t("Its department's cost centre is inactive, deleted or in another company.");
+    case 'parentDepartment': return t("Its parent department's cost centre is inactive, deleted or in another company.");
+    default: return t('The company default cost centre is inactive, deleted or in another company.');
   }
 }
 
@@ -328,9 +343,21 @@ export function CostAccountingPanel({ companies, scope, costCenters, canManage, 
                             {c.sample.map((s) => {
                               const href = sampleHref(c.key, s);
                               const label = <bdi dir="ltr" className="font-mono">{s.code}</bdi>;
+                              const detail = c.key === 'employees-unresolved' ? blockerReason(s) : null;
+                              const fixes = c.key === 'employees-unresolved' ? blockerFixLinks(s) : [];
                               return (
-                                <li key={`${s.kind ?? ''}-${s.id}`} className="min-h-6">
-                                  {href ? <Link href={href} className="font-medium text-sapphire underline underline-offset-2 dark:text-cyanAccent">{label}</Link> : label}
+                                <li key={`${s.kind ?? ''}-${s.id}`} data-testid={`cc-ready-sample-${c.key}-${s.id}`} className="min-h-6">
+                                  {href ? <Link href={href} className="font-medium text-blue-700 underline underline-offset-2 dark:text-cyanAccent">{label}</Link> : label}
+                                  {detail && <span className="ms-2 text-slate-600 dark:text-slate-300">{blockerReasonText(t, detail)}</span>}
+                                  {fixes.length > 0 && (
+                                    <span className="ms-2 inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+                                      {fixes.map((f) => (
+                                        <Link key={f.kind} href={f.href} data-testid={`cc-ready-sample-fix-${f.kind}`} className="inline-flex min-h-6 items-center font-medium text-blue-700 underline underline-offset-2 dark:text-cyanAccent">
+                                          {f.kind === 'employee' ? t('Employee') : f.kind === 'department' ? t('Department') : f.kind === 'position' ? t('Position') : t('Parent department')}
+                                        </Link>
+                                      ))}
+                                    </span>
+                                  )}
                                 </li>
                               );
                             })}

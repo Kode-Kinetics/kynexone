@@ -232,6 +232,48 @@ export function sampleHref(key: string, sample: ReadinessSample): string | null 
   return null;
 }
 
+export type BlockerLevel = 'none' | 'employee' | 'position' | 'department' | 'parentDepartment' | 'company';
+
+/** The server's reason for a blocked employee: none at any level, or the level whose cost centre is invalid. */
+export function blockerReason(sample: Pick<ReadinessSample, 'reason'>): BlockerLevel | null {
+  switch (sample.reason) {
+    case 'none': return 'none';
+    case 'employee_cost_centre_invalid': return 'employee';
+    case 'position_cost_centre_invalid': return 'position';
+    case 'department_cost_centre_invalid': return 'department';
+    case 'parent_department_cost_centre_invalid': return 'parentDepartment';
+    case 'company_default_cost_centre_invalid': return 'company';
+    default: return null;
+  }
+}
+
+export interface BlockerFixLink { kind: 'employee' | 'department' | 'parentDepartment' | 'position'; href: string }
+
+const departmentHref = (id: string) => `/setup?tab=departments&department=${encodeURIComponent(id)}`;
+
+/**
+ * Where a blocked employee (AM-1) can be fixed: the record at the level that is wrong comes first, then the others the
+ * person sits under, then the person. There is no per-position page, so a position opens Designations.
+ */
+export function blockerFixLinks(sample: ReadinessSample): BlockerFixLink[] {
+  const employeeId = typeof sample.employeeId === 'number' ? sample.employeeId : typeof sample.id === 'number' ? sample.id : null;
+  const links: BlockerFixLink[] = [];
+  const level = blockerReason(sample) === 'none' ? 'none' : sample.level;
+  const department = sample.departmentId ? { kind: 'department' as const, href: departmentHref(sample.departmentId) } : null;
+  const parent = sample.parentDepartmentId ? { kind: 'parentDepartment' as const, href: departmentHref(sample.parentDepartmentId) } : null;
+  const position = sample.positionId ? { kind: 'position' as const, href: '/setup?tab=designations' } : null;
+  // An invalid company default is fixed in the default field of this same panel, not on the person's records.
+  const ordered = blockerReason(sample) === 'company' ? []
+    : level === 'parentDepartment' ? [parent, department]
+    : level === 'department' ? [department]
+    : level === 'position' ? [position]
+    : level === 'employee' ? []
+    : [department, position];
+  for (const link of ordered) if (link) links.push(link);
+  if (employeeId && employeeId > 0) links.push({ kind: 'employee', href: employeeWorkspaceHref(employeeId) });
+  return links;
+}
+
 export interface TurnOnGate {
   /** Blocking checks that have something counted. */
   hard: ReadinessCheck[];

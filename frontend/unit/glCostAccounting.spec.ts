@@ -320,6 +320,10 @@ test.describe('blockerFixLinks lists the places a blocked employee can be fixed,
     expect(kinds(sample({}))).toEqual(['employee']);
   });
 
+  test('an invalid company default is fixed in the default field, so only the person is offered', () => {
+    expect(kinds(sample({ level: 'company', departmentId: 'dep-a', reason: 'company_default_cost_centre_invalid' }))).toEqual(['employee']);
+  });
+
   test('an employee with no usable id has no links at all', () => {
     expect(blockerFixLinks({ id: 'x', code: 'x' } as never)).toEqual([]);
   });

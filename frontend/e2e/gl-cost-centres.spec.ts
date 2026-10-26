@@ -975,12 +975,13 @@ test('AM-1: each blocked employee says why and links to the record to fix, the n
 test('AM-1 in Arabic: the reasons and the link names are translated, and the codes stay left to right', async ({ page }, info) => {
   await boot(page, { locale: 'ar' });
   await page.route('**/api/finance/gl/cost-accounting/readiness*', (route) => route.fulfill({ json: blockerReadiness() }));
-  await openReadiness(page);
+  await page.getByRole('tab', { name: 'محاسبة التكلفة', exact: true }).click();
+  await expect(tid(page, 'cc-ready-switch')).toBeVisible();
   await tid(page, 'cc-ready-check-employees-unresolved').click();
   const parentRow = tid(page, 'cc-ready-sample-employees-unresolved-450');
   await expect(parentRow.getByTestId('cc-ready-sample-fix-parentDepartment')).toHaveText('القسم الأعلى');
   await expect(parentRow.getByTestId('cc-ready-sample-fix-department')).toHaveText('القسم');
-  await expect(parentRow.getByTestId('cc-ready-sample-fix-employee')).toHaveText('الموظف');
+  await expect(parentRow.getByTestId('cc-ready-sample-fix-employee')).toHaveText('موظف');
   await expect(parentRow).toContainText('غير نشط أو محذوف أو يتبع شركة أخرى');
   await expect(tid(page, 'cc-ready-sample-employees-unresolved-431')).toContainText('لا يوجد مركز تكلفة على أي مستوى');
   await shot(page, info, 'cc-ar-readiness-blocker-detail');

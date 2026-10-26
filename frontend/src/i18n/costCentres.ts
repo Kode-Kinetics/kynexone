@@ -214,6 +214,14 @@ const ar: Record<string, string> = {
   'Move them to another cost centre first.': 'انقلها أولًا إلى مركز تكلفة آخر.',
   'Level {level}': 'المستوى {level}',
 
+  // ── Readiness: where each blocked employee is fixed (AM-1) ──
+  'No cost centre at any level.': 'لا يوجد مركز تكلفة على أي مستوى.',
+  'Its own cost centre is inactive, deleted or in another company.': 'مركز تكلفته الخاص غير نشط أو محذوف أو يتبع شركة أخرى.',
+  "Its position's cost centre is inactive, deleted or in another company.": 'مركز تكلفة منصبه غير نشط أو محذوف أو يتبع شركة أخرى.',
+  "Its department's cost centre is inactive, deleted or in another company.": 'مركز تكلفة قسمه غير نشط أو محذوف أو يتبع شركة أخرى.',
+  "Its parent department's cost centre is inactive, deleted or in another company.": 'مركز تكلفة قسمه الأعلى غير نشط أو محذوف أو يتبع شركة أخرى.',
+  'The company default cost centre is inactive, deleted or in another company.': 'مركز التكلفة الافتراضي للشركة غير نشط أو محذوف أو يتبع شركة أخرى.',
+
   // ── Journal export: what a read-only reader sees ──
   'Line detail is shown to people who can download the file. You can see totals and balances.': 'يظهر تفصيل الأسطر لمن يستطيع تنزيل الملف. يمكنك الاطلاع على الإجماليات والأرصدة.',
   'Your access lets you see totals and balances, but not download the file.': 'تتيح لك صلاحيتك الاطلاع على الإجماليات والأرصدة دون تنزيل الملف.',
