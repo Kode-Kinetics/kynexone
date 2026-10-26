@@ -1771,6 +1771,10 @@ public class EmployeesController : ControllerBase
             await new EmployeeLoginProvisioner(_db).EnsureStagedLoginsAsync(
                 tenantId, createdRowMeta.Select(m => m.Emp).ToList(), Context() with { TenantId = tenantId }, ct);
 
+            // A new hire that lands outside the active workforce with pay or bank details waits for Finance like a created one.
+            foreach (var (_, (payEmp, _)) in batchPayroll.Where(b => !repairExistingCodes.Contains(b.Key)))
+                await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, payEmp, null, Context(), ct);
+
             // Single persist covering Pass 2 links, the advisory re-stamp, the gap rows, the work-email audit and the logins.
             if (await PersistAsync("links") is { } finalSaveError) return finalSaveError;
 
