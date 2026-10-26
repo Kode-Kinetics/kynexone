@@ -665,6 +665,11 @@ public class EmployeesController : ControllerBase
         // shift every later value into the wrong column. Every such row is named; nothing is read from the file.
         if (ParseImportRows(req.CsvContent, out var rows) is IActionResult shapeRejection) return shapeRejection;
         if (TooManyRows(rows.Count) is IActionResult tooMany) return tooMany;
+        // A cost-centre cell is a re-point of where the person's pay posts (contract 2.9, S-027): the cost-centre permission, not just bulk import.
+        // Checked for the preview and the commit alike, before anything is read or written. (An import only ever creates people or fills gaps on an
+        // existing one, so there is no run to guard and no existing attribution to clear.)
+        if (rows.Any(r => !string.IsNullOrWhiteSpace(r.GetValueOrDefault("CostCenterCode", string.Empty))) && !OrgWriteRules.MayManageCostCentres(this))
+            return Forbid();
         if (req.ConfirmReimport && string.IsNullOrWhiteSpace(req.ReimportReason))
             return UnprocessableEntity(new
             {
@@ -1751,6 +1756,16 @@ public class EmployeesController : ControllerBase
             foreach (var (emp, _, _, _) in createdRowMeta.Where(m => !string.IsNullOrWhiteSpace(m.Emp.WorkEmail)))
                 _db.AuditLogs.Add(WorkEmailLoginGuard.InitialWorkEmailAudit(emp, tenantId, Context(), importedAtUtc, "import"));
 
+            // A cost centre named in the file that is not the department's own is an override: the audit action finance's separation-of-duties check reads.
+            foreach (var (emp, _, _, _) in createdRowMeta.Where(m => m.Emp.CostCenterIsOverride))
+                _audit.Stage("employee.cost_centre_override.changed", nameof(Employee), emp.Id.ToString(), Context(),
+                    JsonSerializer.Serialize(new
+                    {
+                        before = new { @override = false, costCenterId = (Guid?)null },
+                        after = new { @override = true, costCenterId = emp.CostCenterId },
+                        source = "import",
+                    }), emp.CompanyId);
+
             // New imported hires get the same grade defaults as form-created employees. Existing
             // records and their HR exceptions are not rewritten by an import/repair operation.
             await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsForEmployeesAsync(
@@ -2279,6 +2294,7 @@ public class EmployeesController : ControllerBase
             CompanyId = resolved.CompanyId,
             BranchId = resolved.BranchId,
             CostCenterId = resolved.CostCenterId,
+            CostCenterIsOverride = resolved.CostCenterIsOverride,
             EmployeeCode = finalCode,
             FullName = name,
             EnglishName = name,
