@@ -10,6 +10,7 @@ using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Employees.Onboarding;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
