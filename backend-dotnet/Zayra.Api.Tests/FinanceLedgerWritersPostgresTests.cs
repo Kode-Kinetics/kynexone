@@ -164,7 +164,47 @@ public sealed class FinanceLedgerWritersPostgresTests
         var twice = (List<FinanceGlEntry>)build.Invoke(null, new object?[] { k.TenantId, runId, loaded, GlEventTypes.NetSettlementReversal, Guid.NewGuid(), "ops", "reverse again" })!;
         again.FinanceGlEntries.AddRange(twice);
         var failure = await Record.ExceptionAsync(() => again.SaveChangesAsync());
-        StateOf(failure!).Should().Be("23514", "a second full contra of the same lines is a double reversal");
+        // AM-35: the app guard refuses first (reversal_invalid, before anything is sent); the trigger is the second layer that would have
+        // (SQLSTATE 23514 at commit). Either layer's refusal proves a double reversal cannot commit; the next test pins the trigger alone.
+        failure.Should().NotBeNull("a second full contra of the same lines is a double reversal");
+        var appGuard = failure is GlCostCentreRuleException { Code: "reversal_invalid" };
+        (appGuard || StateOf(failure!) == "23514").Should().BeTrue($"either the app guard or the trigger must refuse :: {failure}");
+        await using var after = k.NewContext();
+        (await after.FinanceGlEntries.AsNoTracking().CountAsync(x => x.SourceEntityId == runId && x.ReversalOfEntryId != null))
+            .Should().Be(originals.Length, "the refused second set wrote nothing");
+    }
+
+    [Fact]
+    public async Task ASecondFullContra_InsertedByDirectSql_IsRefusedByTheTriggerAlone_DefenceInDepth()
+    {
+        // AM-35: with the app guard out of the picture (plain SQL, no EF), the M2 trigger still refuses to commit a double reversal.
+        await using var k = await NewKitAsync();
+        var runId = Guid.NewGuid();
+        var original = Guid.NewGuid();
+        var firstContra = Guid.NewGuid();
+        string Insert(Guid id, Guid? reversalOf, bool reversed, string debit, string credit) =>
+            "INSERT INTO finance_gl_entries (id, tenant_id, company_id, source_module, source_entity_id, source_entity_ref, event_type, debit_account, " +
+            "credit_account, amount, currency, entry_date, period, description, posted_by_name, is_reversed, reversal_of_entry_id, created_at_utc, erp_posting_status) VALUES (" +
+            $"'{id}', '{k.TenantId}', '{k.CompanyId}', 'Payroll', '{runId}', 'BATCH-1', '{(reversalOf is null ? GlEventTypes.NetSettlement : GlEventTypes.NetSettlementReversal)}', " +
+            $"'{debit}', '{credit}', 700, 'SAR', DATE '2026-09-25', '2026-09', 'direct sql', 'poster', {(reversed ? "true" : "false")}, " +
+            $"{(reversalOf is null ? "NULL" : $"'{reversalOf}'")}, now(), 'NotReady')";
+
+        await using (var conn = new NpgsqlConnection(_fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await using var tx = await conn.BeginTransactionAsync();
+            foreach (var sql in new[]
+                     {
+                         Insert(original, null, false, "2100 - Net pay", ""),
+                         Insert(firstContra, original, false, "", "2100 - Net pay"),
+                         $"UPDATE finance_gl_entries SET is_reversed = true WHERE id = '{original}'",
+                     })
+                await using (var cmd = new NpgsqlCommand(sql, conn, tx)) await cmd.ExecuteNonQueryAsync();
+            await tx.CommitAsync();
+        }
+
+        await AssertRefused("23514", Insert(Guid.NewGuid(), original, false, "", "2100 - Net pay"),
+            "a second full contra of an already reversed line is refused by the database on its own");
     }
 
     // ── loans and bonuses: the other two IsReversed writers ───────────────────────────────────────────────────
