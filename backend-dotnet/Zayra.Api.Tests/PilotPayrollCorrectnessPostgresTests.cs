@@ -239,15 +239,7 @@ public class PilotPayrollCorrectnessPostgresTests
         (await db.CompanyStatutoryOverrides.AsNoTracking().SingleAsync(o => o.Id == pending.Id)).Status
             .Should().Be("PendingApproval", "nothing can be approved and then ignored");
 
-        // 3. Setup assistant apply.
-        var setup = WithUser(new SetupAssistantController(db, new _PilotNoSetupPreview(), new Zayra.Api.Infrastructure.Audit.AuditService(db)), tenantId);
-        var draft = Zayra.Api.Application.Setup.SetupDraft.Empty() with
-        {
-            StatutoryRules = [new Zayra.Api.Application.Setup.DraftStatutoryRule("gosi.employee_rate", "0.0975", "decimal", "wizard")],
-        };
-        AssertGosiRefusal(await setup.Apply(new ApplySetupRequest(draft, "SA", "SAR"), CancellationToken.None));
-
-        // 4. Tenant-admin country rules.
+        // 3. Tenant-admin country rules.
         var admin = WithUser(new TenantAdminController(db), tenantId);
         AssertGosiRefusal(await admin.CreateCountryRule(new CreateCountryRuleRequest(
             "SAU", RuleKeys.GosiExpOhRate, "0.03", "decimal", "hazard", true, ef, null), CancellationToken.None));
@@ -1051,13 +1043,6 @@ file sealed class _PilotKsaResolver : ICountryPackResolver
     public INationalizationTracker ResolveNationalizationTracker(string cc, string j) => new DefaultNationalizationTracker();
     public ILocalizationProfile ResolveLocalizationProfile(string cc, string j) => new DefaultLocalizationProfile();
     public ICountryPackDescriptor ResolveDescriptor(string cc, string j) => new DefaultCountryPackDescriptor();
-}
-
-file sealed class _PilotNoSetupPreview : Zayra.Api.Application.Setup.ISetupAssistantService
-{
-    public Task<Zayra.Api.Application.Setup.SetupPreviewResult> GenerateAsync(
-        Zayra.Api.Application.Setup.SetupRequester requester, Zayra.Api.Application.Setup.CompanyProfile profile, CancellationToken ct)
-        => Task.FromResult(new Zayra.Api.Application.Setup.SetupPreviewResult(Zayra.Api.Application.Setup.SetupDraft.Empty(), [], "test"));
 }
 
 file sealed class _PilotLetters : ILetterService

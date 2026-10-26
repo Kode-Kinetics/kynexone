@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261025224707_GrantFinanceGlExport")]
+    [Migration("20261026000300_GrantFinanceGlExport")]
     partial class GrantFinanceGlExport
     {
         /// <inheritdoc />

@@ -5,7 +5,7 @@ namespace Zayra.Api.Application.Setup;
 /// <summary>
 /// On whose behalf a draft is generated.
 ///
-/// The assistant calls a model, and every model call has to produce a tenant-scoped usage/cost
+/// Policy extraction records its work, and every recorded call has to produce a tenant-scoped usage/cost
 /// record, so it cannot run without knowing who asked. This is deliberately a separate parameter
 /// rather than fields on <see cref="CompanyProfile"/>: the profile is the request body and the
 /// client controls it, while these three values come from the caller's verified claims.
@@ -32,8 +32,6 @@ public sealed record CompanyProfile(
     string? BranchCity,
     string? OperatingModel,
     string? PayrollModel,
-    string? ApprovalModel,
-    bool StrictEntityScope,
     SetupSections Sections,
 
     // ── Operating choices ────────────────────────────────────────────────────
@@ -142,9 +140,8 @@ public sealed record DraftHoliday(string NameEn, string NameAr, string Date, boo
 public sealed record DraftHolidayCalendar(string Name, int CalendarYear, List<DraftHoliday> Holidays);
 
 public sealed record DraftAttendancePolicy(
-    string Code, string Name, int GraceMinutes, int LateThresholdMinutes, int EarlyExitThresholdMinutes,
-    int HalfDayThresholdMinutes, int AbsentThresholdMinutes, int StandardWorkMinutes, int BreakMinutes,
-    string RoundingRule, bool RequiresOvertimeApproval, bool AllowAbsenceToLeaveConversion);
+    string Code, string Name, int GraceMinutes, int EarlyExitThresholdMinutes,
+    int HalfDayThresholdMinutes, int StandardWorkMinutes, int BreakMinutes);
 
 public sealed record DraftOvertimeMultiplier(string DayCategory, decimal Multiplier);
 public sealed record DraftOvertimePolicy(
@@ -182,38 +179,4 @@ public sealed record SetupDraft(
     public static SetupDraft Empty() =>
         new(new(), new(), new(), new(), new(), new(), new(), new(), null, new(), new(), null,
             new(), null, null, null, null);
-}
-
-public sealed record SetupPreviewResult(SetupDraft Draft, List<string> Notes, string Engine, int ConfigurationVersion = 1);
-
-public interface ISetupAssistantService
-{
-    /// <summary>Generates a proposed (un-persisted) starter configuration for a company profile.
-    /// Uses the configured LLM for the descriptive parts and deterministic templates for the
-    /// risk-sensitive statutory parts. Never throws on LLM failure.
-    ///
-    /// <para><paramref name="requester"/> is not optional. Every attempt is recorded against that
-    /// tenant and user — including the attempts that never reach a provider, which are precisely
-    /// the ones that went unnoticed while this feature silently served a built-in template.</para></summary>
-    Task<SetupPreviewResult> GenerateAsync(SetupRequester requester, CompanyProfile profile, CancellationToken ct);
-}
-
-/// <summary>
-/// The platform's own statutory rules for one country, as ruleKey → ruleValue.
-///
-/// The assistant needs a handful of legal figures — the annual-leave floor, the sick-leave bands,
-/// the overtime multipliers — to fill a leave policy or an overtime policy with something other
-/// than zero. Those figures already exist, seeded, effective-dated and flagged for sign-off, in
-/// <c>statutory_rules</c>. Copying them into this file would create a second set that drifts from
-/// the first, so the assistant reads the real ones and leaves the field at zero when there is no
-/// rule to read.
-/// </summary>
-public interface ISetupStatutoryDefaults
-{
-    /// <param name="iso3">Normalised 3-letter country, e.g. "SAU".</param>
-    /// <param name="tenantId">Whose rules to read. A tenant that has overridden a rate gets its own
-    /// value in the draft rather than the platform default it deliberately moved away from.</param>
-    /// <returns>An empty dictionary when the country has no platform rules — never null, and never
-    /// an exception: a draft is still worth producing without them.</returns>
-    Task<IReadOnlyDictionary<string, string>> LoadAsync(string iso3, Guid tenantId, CancellationToken ct);
 }

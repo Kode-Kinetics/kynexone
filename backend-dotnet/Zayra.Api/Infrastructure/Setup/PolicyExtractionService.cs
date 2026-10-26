@@ -346,7 +346,7 @@ public sealed class PolicyExtractionService(ILlmClient llm, AiOptions options, I
             Configuration = configuration,
             Sections = new(true, true, true, true, true, true, Benefits: true),
         };
-        if (SetupAssistantService.ValidateConfiguration(validate).Count > 0)
+        if (SetupDraftDefaults.ValidateConfiguration(validate).Count > 0)
             throw new ArgumentException("Unsupported configuration values.");
     }
 

@@ -227,7 +227,6 @@ public class CostCentrePermissionTests
         ["Controllers/PositionsController.cs"] = ["Controllers/PositionsController.cs"],
         ["Controllers/PlanningController.cs"] = ["Controllers/PlanningController.cs"],
         ["Controllers/OrganizationStructureImportController.cs"] = ["Controllers/OrganizationStructureImportController.cs"],
-        ["Controllers/SetupAssistantController.cs"] = ["Controllers/SetupAssistantController.cs"],
         ["Controllers/EstablishmentController.cs"] = ["Controllers/EstablishmentController.cs"],
     };
 
@@ -244,10 +243,11 @@ public class CostCentrePermissionTests
     };
 
     [Fact]
-    public void A3_TheSetupAssistant_IsCoveredByThePermission_NotAKnownGap()
+    public void A3_TheRetiredSetupAssistant_IsNeitherADoorNorAGap()
     {
-        KnownGaps.Should().NotContainKey("Controllers/SetupAssistantController.cs", "applying a draft is a cost-attribution door (WP-A3 item 2)");
-        CoveredBy.Should().ContainKey("Controllers/SetupAssistantController.cs");
+        // The setup assistant's backend was retired; nothing may quietly bring its attribution writes back.
+        KnownGaps.Should().NotContainKey("Controllers/SetupAssistantController.cs");
+        CoveredBy.Should().NotContainKey("Controllers/SetupAssistantController.cs");
     }
 
     [Fact]

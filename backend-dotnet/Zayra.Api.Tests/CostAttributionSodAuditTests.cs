@@ -144,25 +144,6 @@ public class CostAttributionSodAuditTests
         await Emitted(w);
     }
 
-    private sealed class NoAssistant : ISetupAssistantService
-    {
-        public Task<SetupPreviewResult> GenerateAsync(SetupRequester requester, CompanyProfile profile, CancellationToken ct) =>
-            Task.FromResult(new SetupPreviewResult(SetupDraft.Empty(), [], "test"));
-    }
-
-    [Fact]
-    public async Task SetupAssistantRelinkingADepartmentToANewCostCentre_Emits()
-    {
-        var w = await Seed();
-        var controller = new SetupAssistantController(w.Db, new NoAssistant(), new AuditService(w.Db))
-        {
-            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(w, "organization.setup.apply", "organization.costcenter.manage") } }
-        };
-        var draft = SetupDraft.Empty() with { CostCenters = [new DraftCostCenter("NEWCC", "New", "D1")], Departments = [new DraftDepartment("D1", "Dept One")] };
-        (await controller.Apply(new ApplySetupRequest(draft, "SA", "SAR", null, w.A.Id), default)).Should().BeOfType<OkObjectResult>();
-        (await Rows(w)).Should().NotBeEmpty().And.OnlyContain(r => r.CompanyId == w.A.Id);
-    }
-
     private static OrganizationStructureImportController Import(W w) => new(w.Db, new AuditService(w.Db))
     {
         ControllerContext = new ControllerContext

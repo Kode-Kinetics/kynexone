@@ -32,7 +32,7 @@ namespace Zayra.Api.Migrations
     /// contra (and the stamp and its export) in an order the writers do not control.</para>
     /// </summary>
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261025203000_FinanceGlEntriesAppendOnly")]
+    [Migration("20261026000200_FinanceGlEntriesAppendOnly")]
     public partial class FinanceGlEntriesAppendOnly : Migration
     {
         /// <summary>Transaction-scoped, as in M1: CREATE TRIGGER takes SHARE ROW EXCLUSIVE and must not queue every writer behind it.</summary>

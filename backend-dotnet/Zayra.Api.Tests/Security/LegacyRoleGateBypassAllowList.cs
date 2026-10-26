@@ -729,8 +729,6 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("POST CompanySetup.DryRun", "HR Director", SeniorHr),
         ("GET CompanySetup.Readiness", "HR Director", SeniorHr),
         ("PUT CompanySetup.UpdateDraft", "HR Director", SeniorHr),
-        ("POST SetupAssistant.Apply", "HR Director", SeniorHr),
-        ("POST SetupAssistant.Preview", "HR Director", SeniorHr),
         ("GET StatutoryRules.List", "Payroll Manager,Finance Approver", PayrollFinanceTier),
         ("GET TenantHrConfig.Get", "HR Officer,Compliance Officer,Recruiter,HR Assistant,Auditor", OrgReadByDesign),
         ("GET TenantHrConfig.Get", "HR Director", SeniorHr),

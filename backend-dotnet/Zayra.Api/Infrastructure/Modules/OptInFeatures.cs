@@ -73,9 +73,8 @@ public static class OptInFeatures
             [FeatureKeys.SuccessionCandidateVisibility] = [],
             // Policy intake (owner decision 2026-10-20: only manual company setup is enabled). Every policy upload,
             // parse, local preparation, AI extraction and review (/api/setup-assistant/policy/...), and the policy
-            // library with its Q&A for HR and employees (/api/ai/policy/...). The Setup Assistant's own preview and
-            // apply (/api/setup-assistant/preview|apply) stay open: that is the manual setup path. Even with the flag
-            // on, policy text never reaches a model (PolicyContentModelGate).
+            // library with its Q&A for HR and employees (/api/ai/policy/...). Even with the flag on, policy text never
+            // reaches a model (PolicyContentModelGate).
             [FeatureKeys.PolicyIntake] =
             [
                 "/api/setup-assistant/policy",

@@ -13,7 +13,7 @@ namespace Zayra.Api.Tests;
 /// <summary>
 /// Eleven TenantHrConfig switches were never read by anything (approval routing, import behaviour, hierarchy and payroll
 /// flags). They are retired from the API: GET no longer returns them and PUT neither needs nor applies them. The columns
-/// stay for one release so a rollback works. An old client that still sends them is ignored, not refused.
+/// were dropped from the database after the entity stopped mapping them. An old client that still sends them is ignored, not refused.
 /// </summary>
 public class TenantHrConfigRetiredSwitchesTests
 {
@@ -97,12 +97,9 @@ public class TenantHrConfigRetiredSwitchesTests
         var json = Body(await Controller(db, tenantId).Upsert(request, CancellationToken.None));
 
         json.GetProperty("establishmentEnforcementMode").GetString().Should().Be("Advisory");
-        var stored = await db.TenantHrConfigs.AsNoTracking().SingleAsync();
-        // The columns remain this release for rollback, at their defaults: nothing writes them any more.
-        stored.UseDeptHeadApproval.Should().BeTrue();
-        stored.UseHrFinalApproval.Should().BeTrue();
-        stored.AutoCreateDeptOnImport.Should().BeFalse();
-        stored.RequireImportPreviewBeforeCommit.Should().BeTrue();
-        stored.RequireCostCenterForPayroll.Should().BeFalse();
+        // Nothing reads or writes the retired columns any more: the entity no longer maps them at all.
+        typeof(TenantHrConfig).GetProperties().Select(p => p.Name).Should().NotContain(
+            ["UseDeptHeadApproval", "UseHrFinalApproval", "AutoCreateDeptOnImport", "RequireImportPreviewBeforeCommit", "RequireCostCenterForPayroll"]);
+        (await db.TenantHrConfigs.AsNoTracking().SingleAsync()).EstablishmentEnforcementMode.Should().Be("Advisory");
     }
 }

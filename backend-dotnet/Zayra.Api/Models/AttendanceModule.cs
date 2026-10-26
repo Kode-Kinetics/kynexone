@@ -130,15 +130,12 @@ public class AttendancePolicy : ITenantOwned
     public Guid? DepartmentId { get; set; }
     public Guid? GradeId { get; set; }
     public int GraceMinutes { get; set; } = 10;
-    public int LateThresholdMinutes { get; set; } = 15;
     public int EarlyExitThresholdMinutes { get; set; } = 15;
     public int HalfDayThresholdMinutes { get; set; } = 240;
-    public int AbsentThresholdMinutes { get; set; } = 120;
     public int StandardWorkMinutes { get; set; } = 480;
     public int BreakMinutes { get; set; } = 60;
-    public string RoundingRule { get; set; } = "NearestMinute";
-    public bool RequiresOvertimeApproval { get; set; } = true;
-    public bool AllowAbsenceToLeaveConversion { get; set; } = true;
+    // Five columns nothing reads (late/absent thresholds, rounding rule, overtime-approval and absence-to-leave flags) are no
+    // longer mapped; they stay in the database, with defaults, until a later release drops them.
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

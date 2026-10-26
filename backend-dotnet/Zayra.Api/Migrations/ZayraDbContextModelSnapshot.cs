@@ -576,26 +576,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<bool>("AllowCrossDeptManager")
-                        .HasColumnType("boolean")
-                        .HasColumnName("allow_cross_dept_manager");
-
-                    b.Property<bool>("AllowCrossLocationManager")
-                        .HasColumnType("boolean")
-                        .HasColumnName("allow_cross_location_manager");
-
-                    b.Property<bool>("AllowDottedLineApproval")
-                        .HasColumnType("boolean")
-                        .HasColumnName("allow_dotted_line_approval");
-
-                    b.Property<bool>("AutoCreateDeptOnImport")
-                        .HasColumnType("boolean")
-                        .HasColumnName("auto_create_dept_on_import");
-
-                    b.Property<bool>("AutoCreateDesignationOnImport")
-                        .HasColumnType("boolean")
-                        .HasColumnName("auto_create_designation_on_import");
-
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -617,18 +597,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("establishment_enforcement_mode");
 
-                    b.Property<bool>("RequireCostCenterForPayroll")
-                        .HasColumnType("boolean")
-                        .HasColumnName("require_cost_center_for_payroll");
-
-                    b.Property<bool>("RequireGradeForApprovalPolicy")
-                        .HasColumnType("boolean")
-                        .HasColumnName("require_grade_for_approval_policy");
-
-                    b.Property<bool>("RequireImportPreviewBeforeCommit")
-                        .HasColumnType("boolean")
-                        .HasColumnName("require_import_preview_before_commit");
-
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
@@ -636,18 +604,6 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
-
-                    b.Property<bool>("UseDeptHeadApproval")
-                        .HasColumnType("boolean")
-                        .HasColumnName("use_dept_head_approval");
-
-                    b.Property<bool>("UseHrFinalApproval")
-                        .HasColumnType("boolean")
-                        .HasColumnName("use_hr_final_approval");
-
-                    b.Property<bool>("UseSupervisorBeforeManager")
-                        .HasColumnType("boolean")
-                        .HasColumnName("use_supervisor_before_manager");
 
                     b.HasKey("Id");
 
@@ -3972,14 +3928,6 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<int>("AbsentThresholdMinutes")
-                        .HasColumnType("integer")
-                        .HasColumnName("absent_threshold_minutes");
-
-                    b.Property<bool>("AllowAbsenceToLeaveConversion")
-                        .HasColumnType("boolean")
-                        .HasColumnName("allow_absence_to_leave_conversion");
-
                     b.Property<Guid?>("BranchId")
                         .HasColumnType("uuid")
                         .HasColumnName("branch_id");
@@ -4021,23 +3969,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
-                    b.Property<int>("LateThresholdMinutes")
-                        .HasColumnType("integer")
-                        .HasColumnName("late_threshold_minutes");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("name");
-
-                    b.Property<bool>("RequiresOvertimeApproval")
-                        .HasColumnType("boolean")
-                        .HasColumnName("requires_overtime_approval");
-
-                    b.Property<string>("RoundingRule")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("rounding_rule");
 
                     b.Property<int>("StandardWorkMinutes")
                         .HasColumnType("integer")

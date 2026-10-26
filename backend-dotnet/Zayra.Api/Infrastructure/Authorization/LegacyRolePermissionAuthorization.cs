@@ -82,7 +82,6 @@ public static class LegacyRolePermissionResolver
             ["Employees"] = new("employees.read", "employees.write", "employees.approve", "employees.delete", "employees.write", "employees.documents", "employees.bulk_import"),
             ["MigrationImport"] = new("employees.bulk_import", "employees.bulk_import", Import: "employees.bulk_import"),
             ["OrganizationStructureImport"] = new("organization.read", "organization.write", Import: "organization.write"),
-            ["SetupAssistant"] = new("organization.read", "organization.setup.apply", Manage: "organization.setup.apply"),
             // The create-company wizard: reading its context, defaults, drafts and readiness is organization.read;
             // saving a draft, the dry run and the commit are organization.setup.apply — the same as Setup Studio.
             ["CompanySetup"] = new("organization.read", "organization.setup.apply", "organization.setup.apply", "organization.setup.apply", "organization.setup.apply"),

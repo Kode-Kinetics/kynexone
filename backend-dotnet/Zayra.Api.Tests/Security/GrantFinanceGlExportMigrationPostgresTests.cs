@@ -9,7 +9,7 @@ using Zayra.Api.Migrations;
 namespace Zayra.Api.Tests.Security;
 
 /// <summary>
-/// 20261025224707_GrantFinanceGlExport on real PostgreSQL. Taking a journal-export file moves from finance.gl.manage to the
+/// 20261026000300_GrantFinanceGlExport on real PostgreSQL. Taking a journal-export file moves from finance.gl.manage to the
 /// dedicated finance.gl.export key (AM-19); a tenant that exists today must not lose the ability, so the migration grants the
 /// new key to every live role that holds finance.gl.manage — built-in or tenant-defined — and to nobody else.
 /// </summary>
