@@ -49,6 +49,7 @@ import { LoadError, serverMessage } from '../components/gl/glUi';
 import { financeGlApi } from '../api/financeGl';
 import { CostCentreLockPreview, CostingOffNote } from '../components/payroll/CostCentreLockPreview';
 import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/UncostedApprovalAck';
+import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
@@ -3032,6 +3033,8 @@ function ReportsTab() {
           </>
         )}
       </div>
+
+      <CostCentreJournalReport />
     </div>
   );
 }

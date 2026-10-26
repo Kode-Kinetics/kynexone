@@ -67,6 +67,27 @@ const ar: Record<string, string> = {
   '{count, plural, one {# employee posts lines on Optional accounts without a cost centre} other {# employees post lines on Optional accounts without a cost centre}}': '{count, plural, zero {لا يوجد موظفون تُرحَّل بنودهم بلا مركز تكلفة} one {موظف واحد تُرحَّل بنوده على الحسابات الاختيارية بلا مركز تكلفة} two {موظفان تُرحَّل بنودهما على الحسابات الاختيارية بلا مركز تكلفة} few {# موظفين تُرحَّل بنودهم على الحسابات الاختيارية بلا مركز تكلفة} many {# موظفًا تُرحَّل بنودهم على الحسابات الاختيارية بلا مركز تكلفة} other {# موظف تُرحَّل بنودهم على الحسابات الاختيارية بلا مركز تكلفة}}',
   'Those lines will post uncosted. Review the cost-centre assignments first, then state the count to approve.': 'ستُرحَّل هذه البنود بلا مركز تكلفة. راجع تعيينات مراكز التكلفة أولًا ثم أكّد العدد للاعتماد.',
   'I have reviewed this and confirm that exactly {count} employees post uncosted.': 'راجعتُ ذلك وأؤكد أن عدد الموظفين الذين تُرحَّل بنودهم بلا مركز تكلفة هو {count} بالضبط.',
+  // ── Screen 7: Payroll journal by cost centre ──
+  'Payroll journal by cost centre': 'قيد الرواتب حسب مركز التكلفة',
+  'Headcount': 'عدد الموظفين',
+  'Employer cost': 'تكلفة صاحب العمل',
+  'Net': 'الصافي',
+  'Journal net': 'صافي القيد',
+  'Cleared against accrual': 'المسوّى مقابل المستحق',
+  'Grand total': 'الإجمالي الكلي',
+  'Run': 'المسيرة',
+  'Select a payroll run…': 'اختر مسيرة رواتب…',
+  'All periods': 'كل الفترات',
+  'Preview — this run is not locked': 'معاينة — هذه المسيرة غير مقفلة',
+  'Reconciles with the journal.': 'يتطابق مع قيد اليومية.',
+  'Does not reconcile with the journal.': 'لا يتطابق مع قيد اليومية.',
+  'Difference: {amount}': 'الفرق: {amount}',
+  'Reconciliation with the journal is available once the run is locked.': 'تتوفر مطابقة قيد اليومية بعد قفل المسيرة.',
+  'No costed lines for this run.': 'لا توجد بنود موزعة على مراكز التكلفة لهذه المسيرة.',
+  'Includes cost centres rolled up to protect small groups.': 'يتضمن مراكز تكلفة جُمعت لحماية المجموعات الصغيرة.',
+  'Unassigned (no cost centre)': 'بلا مركز تكلفة',
+  'Show accounts for {cc}': 'عرض حسابات {cc}',
+  'Amounts in {currency}.': 'المبالغ بعملة {currency}.',
 };
 
 export const payrollCostCentres = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

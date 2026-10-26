@@ -395,7 +395,7 @@ export function CostCentreLockPreview({ journal, run, companyName, mayLock, onRe
                   <tr className={tone}>
                     <th scope="rowgroup" colSpan={cols - 2} className="px-3 py-2 text-start font-semibold">
                       <button type="button" aria-expanded={open} onClick={() => toggle(g.key)} className="inline-flex min-h-6 items-center gap-1.5 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire">
-                        {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4 rtl:-scale-x-100" aria-hidden />}
+                        {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
                         {g.kind === 'missing' && <AlertTriangle className="h-4 w-4" aria-hidden />}
                         <span>{groupTitle(g)}</span>
                       </button>

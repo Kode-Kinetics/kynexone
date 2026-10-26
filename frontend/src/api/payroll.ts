@@ -419,6 +419,12 @@ export interface CostCenterAllocationRow {
   employerCost: number;
   totalCost: number;
   percentOfTotal: number;
+  /** Cost accounting v1 (stamped runs): what the stamps imply and what the journal booked. Null before the run is locked. */
+  contraDeductions?: number;
+  journalNet?: number | null;
+  clearedAgainstAccrual?: number | null;
+  roundingAdjustment?: number | null;
+  smallCell?: boolean;
 }
 
 export interface CostCenterAllocationReport {
@@ -430,6 +436,13 @@ export interface CostCenterAllocationReport {
   totalNet: number;
   totalEmployerCost: number;
   totalCost: number;
+  /** Preview (not locked), Stamped (locked and costed) or NotRecorded (locked before cost centres). */
+  basis?: 'Preview' | 'Stamped' | 'NotRecorded';
+  label?: string | null;
+  /** Null when there is nothing to compare (a preview, or a run locked before cost centres). */
+  reconciles?: boolean | null;
+  retroNote?: string | null;
+  retroNoteAr?: string | null;
   allocations: CostCenterAllocationRow[];
 }
 

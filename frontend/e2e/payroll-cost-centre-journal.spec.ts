@@ -567,7 +567,7 @@ test('Export CSV downloads exactly the table on screen', async ({ page }) => {
   const lines = text.split('\r\n');
   expect(lines[0]).toBe('"Cost centre","Headcount","Gross","Employer cost","Net","Journal net","Cleared against accrual"');
   expect(lines[1]).toBe('"SALES — Sales","14","1000.00","100.00","900.00","1050.00","0.00"');
-  expect(lines[lines.length - 1]).toBe('"Total","23","1500.00","150.00","1350.00","1600.00","0.00"');
+  expect(lines[lines.length - 1]).toBe('"Grand total","23","1500.00","150.00","1350.00","1600.00","0.00"');
 });
 
 test('small cost centres rolled up to protect groups are noted', async ({ page }) => {
@@ -610,7 +610,7 @@ test('Arabic: the report reads right to left, codes and amounts stay left to rig
   await boot(page, { locale: 'ar' }, 'reports');
   await openReport(page);
   await expect(report(page).getByRole('heading', { level: 2 })).toHaveText('قيد الرواتب حسب مركز التكلفة');
-  await expect(tid(page, 'cc-report-chip')).toHaveText('مقفلة');
+  await expect(tid(page, 'cc-report-chip')).toHaveText('مقفل');
   await expect(tid(page, 'cc-report-reconciles')).toHaveText('يتطابق مع قيد اليومية.');
   await expect(tid(page, 'cc-report-total')).toContainText('الإجمالي الكلي');
   await expect(tid(page, 'cc-report-row-SALES').locator('bdi').first()).toHaveAttribute('dir', 'ltr');
