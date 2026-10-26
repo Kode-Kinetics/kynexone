@@ -479,9 +479,9 @@ test('Arabic: the preview and the blocker banner read right to left with codes a
   await expect(tid(page, 'cc-lock-group-missing')).toContainText('مركز التكلفة مفقود');
   await expect(tid(page, 'cc-lock-set-default').first()).toContainText('تحديد المركز الافتراضي للشركة');
   await expect(tid(page, 'cc-lock-recheck')).toHaveText('إعادة الفحص');
-  await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('محظور: بلا مركز تكلفة');
+  await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('يمنعون القفل (بلا مركز تكلفة)');
   await expect(tid(page, 'cc-lock-kpi-blocked')).toContainText('13');
-  await expect(tid(page, 'cc-lock-kpi-uncosted')).toContainText('بلا مركز تكلفة (حسابات اختيارية)');
+  await expect(tid(page, 'cc-lock-kpi-uncosted')).toContainText('حسابات اختيارية');
   await expect(tid(page, 'cc-lock-submit')).toContainText('قفل مسير الرواتب');
   expect(await page.evaluate(() => document.documentElement.dir)).toBe('rtl');
   // codes are LTR islands
