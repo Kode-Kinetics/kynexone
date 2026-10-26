@@ -288,3 +288,52 @@ test.describe('text direction of a mixed code-and-name label', () => {
     expect(textDir('')).toBe('ltr');
   });
 });
+
+// ═════════════════════════ Readiness blocker detail (AM-1): where each unresolved employee is fixed ═════════════════════════
+
+import { blockerFixLinks, blockerReason } from '../src/lib/glCostAccounting';
+
+test.describe('blockerFixLinks lists the places a blocked employee can be fixed, nearest cause first', () => {
+  const sample = (over: Record<string, unknown>) => ({ id: 450, code: 'E-0450', employeeId: 450, employeeCode: 'E-0450', level: 'company', departmentId: null, positionId: null, parentDepartmentId: null, reason: 'none', ...over });
+  const kinds = (s: ReturnType<typeof sample>) => blockerFixLinks(s as never).map((l) => l.kind);
+
+  test('a parent department with an invalid cost centre points at it first, then the department, then the person', () => {
+    const links = blockerFixLinks(sample({ level: 'parentDepartment', departmentId: 'dep-a', parentDepartmentId: 'dep-p', reason: 'parent_department_cost_centre_invalid' }) as never);
+    expect(links.map((l) => l.kind)).toEqual(['parentDepartment', 'department', 'employee']);
+    expect(links[0].href).toBe('/setup?tab=departments&department=dep-p');
+    expect(links[1].href).toBe('/setup?tab=departments&department=dep-a');
+    expect(links[2].href).toContain('450');
+  });
+
+  test('a department or position level names that record, then the person', () => {
+    expect(kinds(sample({ level: 'department', departmentId: 'dep-a', reason: 'department_cost_centre_invalid' }))).toEqual(['department', 'employee']);
+    expect(kinds(sample({ level: 'position', positionId: 'pos-1', reason: 'position_cost_centre_invalid' }))).toEqual(['position', 'employee']);
+    expect(blockerFixLinks(sample({ level: 'position', positionId: 'pos-1' }) as never)[0].href).toBe('/setup?tab=designations');
+  });
+
+  test('an override that no longer works is fixed on the person', () => {
+    expect(kinds(sample({ level: 'employee', reason: 'employee_cost_centre_invalid' }))).toEqual(['employee']);
+  });
+
+  test('nothing at any level offers each record the person has, then the person; with no ids only the person', () => {
+    expect(kinds(sample({ departmentId: 'dep-a', positionId: 'pos-1' }))).toEqual(['department', 'position', 'employee']);
+    expect(kinds(sample({}))).toEqual(['employee']);
+  });
+
+  test('an employee with no usable id has no links at all', () => {
+    expect(blockerFixLinks({ id: 'x', code: 'x' } as never)).toEqual([]);
+  });
+});
+
+test.describe('blockerReason reads the server\'s reason as a level', () => {
+  test('none, and each invalid level', () => {
+    expect(blockerReason({ reason: 'none' } as never)).toBe('none');
+    expect(blockerReason({ reason: 'employee_cost_centre_invalid' } as never)).toBe('employee');
+    expect(blockerReason({ reason: 'position_cost_centre_invalid' } as never)).toBe('position');
+    expect(blockerReason({ reason: 'department_cost_centre_invalid' } as never)).toBe('department');
+    expect(blockerReason({ reason: 'parent_department_cost_centre_invalid' } as never)).toBe('parentDepartment');
+    expect(blockerReason({ reason: 'company_default_cost_centre_invalid' } as never)).toBe('company');
+    expect(blockerReason({} as never)).toBeNull();
+    expect(blockerReason({ reason: 'something_new' } as never)).toBeNull();
+  });
+});

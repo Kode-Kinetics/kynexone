@@ -937,3 +937,51 @@ test('AR: the mapping sub-line keeps each interpolated account code and name in 
   // One account: one run.
   await expect(tid(page, 'cc-map-fallback-EARN:HOUSING').locator('bdi')).toHaveCount(1);
 });
+
+
+// ═════════════════════════════ AM-1: where each blocked employee is fixed ═════════════════════════════
+
+const blockerReadiness = () => {
+  const r = readiness('co-sa', {}, false);
+  r.checks[0].sample = [
+    { id: 450, code: 'E-0450', employeeId: 450, employeeCode: 'E-0450', level: 'parentDepartment', departmentId: 'dep-a', positionId: null, parentDepartmentId: 'dep-p', reason: 'parent_department_cost_centre_invalid' },
+    { id: 431, code: 'E-0431', employeeId: 431, employeeCode: 'E-0431', level: 'company', departmentId: null, positionId: 'pos-1', parentDepartmentId: null, reason: 'none' },
+    { id: 412, code: 'E-0412', employeeId: 412, employeeCode: 'E-0412', level: 'employee', departmentId: 'dep-cs', positionId: null, parentDepartmentId: null, reason: 'employee_cost_centre_invalid' },
+  ] as never;
+  r.checks[0].count = 3;
+  return r;
+};
+
+test('AM-1: each blocked employee says why and links to the record to fix, the nearest cause first', async ({ page }, info) => {
+  await boot(page);
+  await page.route('**/api/finance/gl/cost-accounting/readiness*', (route) => route.fulfill({ json: blockerReadiness() }));
+  await openReadiness(page);
+  await tid(page, 'cc-ready-check-employees-unresolved').click();
+  const parentRow = tid(page, 'cc-ready-sample-employees-unresolved-450');
+  await expect(parentRow).toContainText('Its parent department\'s cost centre is inactive, deleted or in another company.');
+  await expect(parentRow.getByTestId('cc-ready-sample-fix-parentDepartment')).toHaveAttribute('href', '/setup?tab=departments&department=dep-p');
+  await expect(parentRow.getByTestId('cc-ready-sample-fix-department')).toHaveAttribute('href', '/setup?tab=departments&department=dep-a');
+  await expect(parentRow.getByTestId('cc-ready-sample-fix-employee')).toHaveAttribute('href', /450/);
+  const positionRow = tid(page, 'cc-ready-sample-employees-unresolved-431');
+  await expect(positionRow).toContainText('No cost centre at any level.');
+  await expect(positionRow.getByTestId('cc-ready-sample-fix-position')).toHaveAttribute('href', '/setup?tab=designations');
+  const employeeRow = tid(page, 'cc-ready-sample-employees-unresolved-412');
+  await expect(employeeRow).toContainText('Its own cost centre is inactive, deleted or in another company.');
+  await expect(employeeRow.getByTestId('cc-ready-sample-fix-department')).toHaveCount(0);
+  expect(await axeSeriousOrWorse(page, '[data-testid="cc-ready-check-list-employees-unresolved"]')).toEqual([]);
+  await shot(page, info, 'cc-en-readiness-blocker-detail');
+});
+
+test('AM-1 in Arabic: the reasons and the link names are translated, and the codes stay left to right', async ({ page }, info) => {
+  await boot(page, { locale: 'ar' });
+  await page.route('**/api/finance/gl/cost-accounting/readiness*', (route) => route.fulfill({ json: blockerReadiness() }));
+  await openReadiness(page);
+  await tid(page, 'cc-ready-check-employees-unresolved').click();
+  const parentRow = tid(page, 'cc-ready-sample-employees-unresolved-450');
+  await expect(parentRow.getByTestId('cc-ready-sample-fix-parentDepartment')).toHaveText('القسم الأعلى');
+  await expect(parentRow.getByTestId('cc-ready-sample-fix-department')).toHaveText('القسم');
+  await expect(parentRow.getByTestId('cc-ready-sample-fix-employee')).toHaveText('الموظف');
+  await expect(parentRow).toContainText('غير نشط أو محذوف أو يتبع شركة أخرى');
+  await expect(tid(page, 'cc-ready-sample-employees-unresolved-431')).toContainText('لا يوجد مركز تكلفة على أي مستوى');
+  await shot(page, info, 'cc-ar-readiness-blocker-detail');
+});
