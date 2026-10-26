@@ -54,7 +54,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     arabicName: opt(form.arabicName),
     preferredName: opt(form.preferredName),
     dateOfBirth: opt(form.dob),
-    nationalityCode: opt(form.nationalityCode),
+    nationalityCode: /^[A-Z]{2}$/.test(form.nationalityCode) ? form.nationalityCode : undefined,
     maritalStatus: opt(form.maritalStatus),
     personalEmail: opt(form.personalEmail),
     mobileNumber: mobile,
