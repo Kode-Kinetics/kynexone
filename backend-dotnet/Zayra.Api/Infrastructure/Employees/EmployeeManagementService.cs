@@ -170,7 +170,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // EMPLOYING company's domain (multi-company req). Sets employee.WorkEmail; may throw
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, context, cancellationToken);
-        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: true);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: true, request.AcknowledgedWarnings);
         // Release A: blank cash allowances are filled from Benefits by grade, or refused with the reason — before anything is saved.
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Reject a bad IBAN BEFORE persisting anything (position/salary already validate pre-save), so a
@@ -329,7 +329,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // run the login-identity rename guard (keeps a linked User in sync; blocks a rename that would collide
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, context, cancellationToken);
-        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: false);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: false, request.AcknowledgedWarnings);
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, context.UserId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -1729,7 +1729,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     }
 
     private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken,
-        bool isNewEmployee)
+        bool isNewEmployee, IReadOnlyCollection<Zayra.Api.Application.Employees.Onboarding.AcknowledgedWarning>? acknowledged = null)
     {
         if (employee.PositionId is not null)
         {
@@ -1793,10 +1793,23 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var grossSalary = GrossSalary(package);
         if (grossSalary <= 0) return;
-        if (grade.MinSalary > 0 && grossSalary < grade.MinSalary)
+        var belowMin = grade.MinSalary > 0 && grossSalary < grade.MinSalary;
+        var aboveMax = grade.MaxSalary > 0 && grossSalary > grade.MaxSalary;
+        if (!belowMin && !aboveMax) return;
+        if (_inputGuard is not null)
+        {
+            // With the onboarding guard in place the grade band is a statutory-floor style WARNING (G08): acknowledged
+            // with a reason it saves, otherwise the caller gets the 409 warning shape instead of a hard 400.
+            // The guard has already checked the reason's length; here only its presence matters.
+            const string code = Zayra.Api.Application.Employees.Onboarding.EmployeeWarningCodes.GradeBandOutOfRange;
+            if (acknowledged?.Any(a => a.Code == code) == true) return;
+            throw new Zayra.Api.Application.Employees.Onboarding.EmployeeWarningsRequireAckException([
+                new Zayra.Api.Application.Employees.Onboarding.EmployeeWarning(code, "salaryBreakdown",
+                    "Total pay is outside the salary band of the selected grade.")]);
+        }
+        if (belowMin)
             throw new InvalidOperationException($"Salary package {grossSalary:N2} is below grade {grade.Code} minimum {grade.MinSalary:N2} {grade.Currency}.");
-        if (grade.MaxSalary > 0 && grossSalary > grade.MaxSalary)
-            throw new InvalidOperationException($"Salary package {grossSalary:N2} exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}.");
+        throw new InvalidOperationException($"Salary package {grossSalary:N2} exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}.");
     }
 
     private async Task SynchronizePositionIncumbencyAsync(Employee employee, Guid? priorPositionId, RequestContext context, CancellationToken cancellationToken)

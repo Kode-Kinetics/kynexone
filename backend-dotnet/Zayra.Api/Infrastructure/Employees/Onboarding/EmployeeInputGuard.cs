@@ -93,6 +93,13 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
         if (unacknowledged.Count > 0) throw new EmployeeWarningsRequireAckException(unacknowledged);
 
         // Only the acknowledgements that were actually needed travel on, so the audit row lists real overrides.
+        // The grade band is also checked by the employee service against the MERGED pay package (the request's figures
+        // plus the grade's pay scale), which the guard cannot see; an acknowledgement for it must survive to there.
+        if (acks.TryGetValue(EmployeeWarningCodes.GradeBandOutOfRange, out var bandAck))
+        {
+            RequireReason(bandAck);
+            consumed[EmployeeWarningCodes.GradeBandOutOfRange] = bandAck;
+        }
         var normalised = result.Normalised with { AcknowledgedWarnings = consumed.Values.ToList() };
         if (request.CompanyId is null && mode != EmployeeGuardMode.Update) normalised = normalised with { CompanyId = refResult.Company.Id };
         _lastEnforced = normalised;
