@@ -237,6 +237,12 @@ public class CostCentrePermissionTests
         ["Controllers/FinanceGlController.CostAccounting.cs"] = "Writes only the company's DefaultCostCenterId, a finance setting gated by finance.gl.manage with a reason and audit (contract AM-3, AM-27), not an HR attribution door.",
     };
 
+    /// <summary>Writers that stamp a cost centre the system derived (never caller input), each with why it needs no permission door.</summary>
+    private static readonly Dictionary<string, string> SystemWriters = new(StringComparer.Ordinal)
+    {
+        ["Controllers/PayrollController.cs"] = "Lock stamps the resolver's cost centre onto the run's earnings, deductions, slips and journal lines: system-derived, never caller input, sealed by the approval hash and frozen by the M2 stamp trigger once the run is Locked (contract AM-8, AM-12).",
+    };
+
     [Fact]
     public void A3_TheSetupAssistant_IsCoveredByThePermission_NotAKnownGap()
     {
@@ -263,13 +269,13 @@ public class CostCentrePermissionTests
             .ToList();
         writers.Should().NotBeEmpty();
 
-        var unlisted = writers.Where(f => !CoveredBy.ContainsKey(f) && !KnownGaps.ContainsKey(f)).ToList();
+        var unlisted = writers.Where(f => !CoveredBy.ContainsKey(f) && !KnownGaps.ContainsKey(f) && !SystemWriters.ContainsKey(f)).ToList();
         unlisted.Should().BeEmpty("a file that writes DepartmentId/PositionId/CostCenterId/CostCenterIsOverride/ParentDepartmentId/DefaultCostCenterId must sit behind organization.costcenter.manage (add it to CoveredBy once its door checks the permission) or be named in KnownGaps with the reason");
 
         foreach (var (file, doors) in CoveredBy)
             foreach (var door in doors)
                 SourceScan.StripCSharpComments(File.ReadAllText(Path.Combine(root, door))).Should().MatchRegex(@"organization\.costcenter\.manage|MayManageCostCentres", $"{door} is the door for {file}");
 
-        (CoveredBy.Keys.Concat(KnownGaps.Keys)).Where(k => !writers.Contains(k)).Should().BeEmpty("an entry for a file that no longer writes those columns must be removed");
+        (CoveredBy.Keys.Concat(KnownGaps.Keys).Concat(SystemWriters.Keys)).Where(k => !writers.Contains(k)).Should().BeEmpty("an entry for a file that no longer writes those columns must be removed");
     }
 }
