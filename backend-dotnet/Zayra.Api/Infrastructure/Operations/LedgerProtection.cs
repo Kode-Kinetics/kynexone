@@ -59,7 +59,7 @@ public static class LedgerProtection
             if (result == Degraded && !_loggedCritical) { _loggedCritical = true; announce = true; }
         }
         if (announce)
-            log.LogCritical("LEDGER PROTECTION DEGRADED: the application's database role can switch off the ledger triggers (it owns finance_gl_entries, is a member of its owner, or is a superuser; see finance_ledger_trigger_bypass_roles()). The ledger is append-only by convention only. Connect the application as a role that does not own the tables and holds SELECT, INSERT, UPDATE.");
+            log.LogCritical("LEDGER PROTECTION DEGRADED: the application's database role can switch off the ledger triggers (it owns the ledger table, is a member of its owner, or is a superuser; see finance_ledger_trigger_bypass_roles()). The ledger is append-only by convention only. Connect the application as a role that does not own the tables and holds SELECT, INSERT, UPDATE.");
         return result;
     }
 
