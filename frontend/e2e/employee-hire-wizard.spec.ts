@@ -107,6 +107,24 @@ test.describe('quick hire (desktop)', () => {
     await expect(page.locator('#hire-gradeId-error')).toHaveText('This designation belongs to grade G5.');
   });
 
+  test('G01/AC7: a start date beyond today+2y is an inline error (EN and AR); a date 40 days back is not an error', async ({ page }) => {
+    await bootHire(page);
+    await page.getByLabel('Start date').fill('2099-01-01');
+    await page.getByLabel('Start date').blur();
+    await expect(page.locator('#hire-startDate-error')).toContainText(/^Start date must be between \d{4}-\d{2}-\d{2} and \d{4}-\d{2}-\d{2}\.$/);
+    const past = new Date(Date.now() - 40 * 86400000).toISOString().slice(0, 10);
+    await page.getByLabel('Start date').fill(past);
+    await page.getByLabel('Start date').blur();
+    await expect(page.locator('#hire-startDate-error')).toHaveCount(0);
+  });
+
+  test('G01: the same range error reads in Arabic', async ({ page }) => {
+    await bootHire(page, { locale: 'ar' });
+    await page.getByLabel('تاريخ المباشرة').fill('2099-01-01');
+    await page.getByLabel('تاريخ المباشرة').blur();
+    await expect(page.locator('#hire-startDate-error')).toContainText('يجب أن يكون تاريخ المباشرة بين');
+  });
+
   test('AC21: a Hijri line sits beside the start date', async ({ page }) => {
     await bootHire(page);
     await page.getByLabel('Start date').fill('2026-10-14');
@@ -377,10 +395,11 @@ test.describe('screenshots', () => {
       await bootHire(page, { locale });
       fs.mkdirSync(dir!, { recursive: true });
       const shot = (n: string) => page.screenshot({ path: `${dir}/hire-${n}-${locale}-${w}.png`, animations: 'disabled', style: 'nextjs-portal { display: none !important; }' });
-      await shot('1-basics-empty');
       const L = locale === 'en'
         ? { name: 'English full name', start: 'Start date', desig: 'Designation', next: 'Next' }
         : { name: 'الاسم الكامل بالإنجليزية', start: 'تاريخ المباشرة', desig: 'المسمى الوظيفي', next: 'التالي' };
+      await expect(page.getByLabel(L.name)).toBeVisible();
+      await shot('1-basics-empty');
       await page.getByLabel(L.name).fill('Alex Morgan');
       await page.getByRole('button', { name: L.next, exact: true }).click();
       await shot('2-basics-errors');

@@ -322,7 +322,7 @@ export function HireWizard() {
   if (created) return <div className="mx-auto w-full max-w-[720px] p-4"><SuccessStep id={created.id} name={created.name} /></div>;
 
   return (
-    <div className="mx-auto w-full max-w-[720px] px-4 pb-44 pt-4 lg:pb-28">
+    <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-4">
       <h1 className="text-xl font-semibold text-slate-900 dark:text-white">{t('Add employee')}</h1>
       <nav aria-label={t('Employee setup progress')} className="mt-4">
         <p className="text-sm font-medium text-slate-600 sm:hidden dark:text-slate-300">{t('Step {n} of {total}: {label}', { n: String(step), total: '4', label: label(step) })}</p>
@@ -359,8 +359,8 @@ export function HireWizard() {
         )}
       </div>
 
-      <div data-testid="action-bar" className="fixed inset-x-0 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 border-t border-slate-200 bg-white/95 px-4 pb-3 pt-3 lg:bottom-0 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-white/10 dark:bg-slate-900/95">
-        <div className="mx-auto flex w-full max-w-[720px] flex-wrap items-center gap-2">
+      <div data-testid="action-bar" className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 -mx-4 mt-6 border-t border-slate-200 bg-white/95 px-4 pb-3 pt-3 lg:bottom-0 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-white/10 dark:bg-slate-900/95">
+        <div className="flex w-full flex-wrap items-center gap-2">
           <button type="button" className="btn-secondary" onClick={onCancel}>{t('Cancel')}</button>
           <button type="button" className="btn-secondary" disabled={busy} onClick={onSaveDraft}>{t('Save draft')}</button>
           <span data-testid="saved-indicator" role="status" aria-live="polite" className="text-xs text-slate-500">{savedText}</span>
