@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { LOCALE_DICTS, translate } from '../src/i18n/translations';
 import { emptyHireForm, type HireForm } from '../src/lib/hire/hireForm';
-import { validateHire, type FieldIssue } from '../src/lib/hire/hireValidation';
+import { activationNeeds, validateHire, type FieldIssue } from '../src/lib/hire/hireValidation';
 
 const ctx = { today: '2026-10-27', emailDomain: 'example.test', companyCountry: 'SA' };
 const four: HireForm = { ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'c1', startDate: '2026-11-01', designationId: 'd1' };
@@ -43,13 +43,16 @@ test.describe('hireValidation', () => {
     expect(keys(validateHire(emptyHireForm(), ctx, 'draft'))).toEqual(['englishName', 'companyId']);
     expect(validateHire({ ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'c1' }, ctx, 'draft')).toEqual([]);
   });
-  test('create scope adds start date and designation-or-grade (AC 2, 6)', () => {
-    const issues = validateHire({ ...emptyHireForm(), englishName: 'Alex', companyId: 'c1' }, ctx, 'create');
-    expect(keys(issues)).toEqual(['startDate', 'designationId']);
-    expect(msg(issues, 'startDate')).toBe('Enter the start date.');
-    expect(msg(issues, 'designationId')).toBe('Choose a designation or a grade.');
-    expect(validateHire({ ...four, designationId: '', gradeId: 'g1' }, ctx, 'create')).toEqual([]);
+  test('CD21: create scope gates on the same draft floor; start date and designation/grade never block (AC 2, 6)', () => {
+    const f = { ...emptyHireForm(), englishName: 'Alex', companyId: 'c1' };
+    expect(validateHire(f, ctx, 'create')).toEqual([]);
     expect(validateHire(four, ctx, 'create')).toEqual([]);
+  });
+  test('CD21: activationNeeds lists the missing start date and designation-or-grade, neutrally', () => {
+    const f = { ...emptyHireForm(), englishName: 'Alex', companyId: 'c1' };
+    expect(activationNeeds(f).map(n => n.field)).toEqual(['startDate', 'designationId']);
+    expect(activationNeeds({ ...f, startDate: '2026-11-01', gradeId: 'g1' })).toEqual([]);
+    expect(activationNeeds(four)).toEqual([]);
   });
   test('name: empty, 150 ok, 151 too long, digits refused (AC 10)', () => {
     expect(msg(validateHire({ ...four, englishName: ' ' }, ctx, 'draft'), 'englishName')).toBe('Enter the employee\'s English full name.');
@@ -121,7 +124,7 @@ test.describe('hireValidation', () => {
     expect(keys(validateHire({ ...four, contractEndDate: '2027-02-31' }, ctx, 'draft'))).toEqual(['contractEndDate']);
   });
   test('each issue names its step so the summary can send the user there', () => {
-    const issues = validateHire({ ...emptyHireForm(), dob: '2999-01-01', housing: '-1' }, ctx, 'create');
+    const issues = validateHire({ ...emptyHireForm(), dob: '2999-01-01', housing: '-1', startDate: '2999-01-01' }, ctx, 'create');
     expect(Object.fromEntries(issues.map(i => [i.field, i.step]))).toMatchObject({ englishName: 1, companyId: 1, startDate: 1, dob: 2, housing: 3 });
   });
 });

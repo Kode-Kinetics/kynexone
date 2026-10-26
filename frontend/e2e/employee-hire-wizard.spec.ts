@@ -41,13 +41,27 @@ test.describe('quick hire (desktop)', () => {
     await expect(page.getByRole('list', { name: 'Progress' }).getByRole('button')).toHaveCount(0);
   });
 
-  test('AC5/6: start date is empty and "Enter the start date." shows on Next', async ({ page }) => {
+  test('AC5/CD21: start date is empty; it is a neutral "Needed before activation" hint and never blocks Next', async ({ page }) => {
     await bootHire(page);
     await expect(page.getByLabel('Start date')).toHaveValue('');
+    await expect(page.locator('#hire-startDate-hint')).toHaveText('Needed before activation');
     await page.getByLabel('English full name').fill('Alex Morgan');
     await next(page);
-    await expect(page.locator('#hire-startDate-error')).toHaveText('Enter the start date.');
-    await expect(heading(page, STEPS[0])).toBeVisible();
+    await expect(heading(page, STEPS[1])).toBeVisible();
+    await expect(page.getByTestId('error-summary')).toHaveCount(0);
+    await expect(page.locator('#hire-startDate-error')).toHaveCount(0);
+  });
+
+  test('CD21: with only name and company, Review lists start date and designation under "Before activation" and Create still works', async ({ page }) => {
+    const api = await bootHire(page);
+    await page.getByLabel('English full name').fill('Alex Morgan');
+    await next(page); await next(page); await next(page);
+    const before = page.getByText('Before activation');
+    await expect(before).toBeVisible();
+    await expect(page.getByText('Start date').last()).toBeVisible();
+    await page.getByRole('button', { name: 'Create employee draft' }).click();
+    await expect(page.getByRole('heading', { name: 'Alex Morgan has been added as a draft.' })).toBeVisible();
+    expect(api.creates[0].body.joiningDate).toBeUndefined();
   });
 
   test('AC3: one company is preselected and read-only', async ({ page }) => {
@@ -354,6 +368,48 @@ test.describe('duplicates, autosave, guard, review (desktop)', () => {
   });
 });
 
+test.describe('closing the reported gaps', () => {
+  test('AC27: a displayed amount uses the app formatter (Latin digits, grouping) in Arabic too', async ({ page }) => {
+    await bootHire(page, { locale: 'ar' });
+    await page.getByLabel('الاسم الكامل بالإنجليزية').fill('Alex Morgan');
+    await page.getByRole('button', { name: 'التالي', exact: true }).click();
+    await page.getByRole('button', { name: 'التالي', exact: true }).click();
+    await page.getByLabel('الراتب الأساسي').fill('12000.5');
+    await page.getByRole('button', { name: 'التالي', exact: true }).click();
+    const row = page.getByRole('region', { name: 'الوظيفة والراتب' });
+    await expect(row).toContainText(/12,000\.50/);
+    expect(await row.innerText()).not.toMatch(/[٠-٩]/);
+  });
+
+  test('AC38: browser Back and a sidebar link both hit the leave guard while work is unsaved', async ({ page }) => {
+    await bootHire(page, {}, '/people');
+    await page.waitForLoadState('networkidle');
+    await page.evaluate(() => (window as unknown as { next: { router: { push: (u: string) => void } } }).next.router.push('/people/new'));
+    await expect(page).toHaveURL(/\/people\/new/);
+    await page.getByLabel('English full name').fill('Alex Morgan');
+    await page.evaluate(() => history.back());
+    const dlg = page.getByRole('dialog', { name: 'Discard changes?' });
+    await expect(dlg).toBeVisible();
+    await expect(page).toHaveURL(/\/people\/new/);
+    await dlg.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dlg).toHaveCount(0);
+    await page.getByRole('button', { name: 'Org Chart' }).click();
+    await expect(page.getByRole('dialog', { name: 'Discard changes?' })).toBeVisible();
+    await expect(page).toHaveURL(/\/people\/new/);
+  });
+
+  test('AC47: a match in a company the user cannot see is masked (no name, no code, no record link)', async ({ page }) => {
+    await bootHire(page, { duplicate: { status: 'Active', canView: false } });
+    await page.getByLabel('English full name').fill('Alex Morgan');
+    await page.getByLabel('English full name').blur();
+    const panel = page.getByRole('region', { name: 'Possible match' });
+    await expect(panel).toContainText('A person with these details exists in another company you cannot see.');
+    await expect(panel.getByRole('link', { name: 'Open record' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Rehire this person' })).toHaveCount(0);
+    await expect(panel).not.toContainText('TEST-');
+  });
+});
+
 test.describe('Arabic RTL at 360px', () => {
   test.use({ viewport: { width: 360, height: 780 } });
 
@@ -400,9 +456,9 @@ test.describe('screenshots', () => {
         : { name: 'الاسم الكامل بالإنجليزية', start: 'تاريخ المباشرة', desig: 'المسمى الوظيفي', next: 'التالي' };
       await expect(page.getByLabel(L.name)).toBeVisible();
       await shot('1-basics-empty');
-      await page.getByLabel(L.name).fill('Alex Morgan');
       await page.getByRole('button', { name: L.next, exact: true }).click();
       await shot('2-basics-errors');
+      await page.getByLabel(L.name).fill('Alex Morgan');
       await page.getByLabel(L.start).fill('2026-10-14');
       await page.getByLabel(L.desig).selectOption({ label: 'Specialist' });
       await page.getByRole('button', { name: L.next, exact: true }).click();

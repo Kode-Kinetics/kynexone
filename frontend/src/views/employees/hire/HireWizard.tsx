@@ -359,7 +359,7 @@ export function HireWizard() {
         )}
       </div>
 
-      <div data-testid="action-bar" className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 -mx-4 mt-6 border-t border-slate-200 bg-white/95 px-4 pb-3 pt-3 lg:bottom-0 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-white/10 dark:bg-slate-900/95">
+      <div data-testid="action-bar" className="sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 -mx-4 mt-6 border-t border-slate-200 bg-white px-4 pb-3 pt-3 lg:bottom-0 lg:pb-[max(0.75rem,env(safe-area-inset-bottom))] dark:border-white/10 dark:bg-slate-900">
         <div className="flex w-full flex-wrap items-center gap-2">
           <button type="button" className="btn-secondary" onClick={onCancel}>{t('Cancel')}</button>
           <button type="button" className="btn-secondary" disabled={busy} onClick={onSaveDraft}>{t('Save draft')}</button>

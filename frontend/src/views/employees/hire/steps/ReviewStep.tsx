@@ -6,6 +6,7 @@ import { formatAmount } from '@/src/lib/hire/money';
 import { parseAmount } from '@/src/lib/hire/payload';
 import { buildCountryOptions } from '@/src/lib/hire/nationality';
 import { normalizeIban } from '@/src/lib/hire/iban';
+import { activationNeeds } from '@/src/lib/hire/hireValidation';
 import type { StepProps } from '../types';
 
 function Row({ label, value, ltr }: { label: string; value?: string; ltr?: boolean }) {
@@ -38,6 +39,7 @@ export function ReviewStep({ form, lookups, currency, onEdit }: StepProps & { on
   const name = <T extends { id: string }>(rows: T[], id: string, pick: (r: T) => string) => { const r = rows.find(x => x.id === id); return r ? pick(r) : ''; };
   const money = (v: string) => { const n = parseAmount(v); return n && n > 0 ? formatAmount(n, currency, locale) : ''; };
   const missing = [
+    ...activationNeeds(form).map(n => t(n.key === 'startDate' ? 'Start date' : 'Designation or grade')),
     !form.nationalityCode && t('Nationality'), !form.idNumber.trim() && t('ID number'), !form.iban.trim() && t('IBAN'), !form.arabicName.trim() && t('Arabic full name'), !form.dob && t('Date of birth'),
   ].filter(Boolean) as string[];
   return (
@@ -70,7 +72,7 @@ export function ReviewStep({ form, lookups, currency, onEdit }: StepProps & { on
       </Block>
       {missing.length > 0 && (
         <div className="rounded-xl border border-slate-200 p-4 text-sm dark:border-white/10">
-          <p className="font-semibold">{t('Missing for activation')}</p>
+          <p className="font-semibold">{t('Before activation')}</p>
           <p className="mt-1 text-slate-600 dark:text-slate-300">{new Intl.ListFormat(locale, { type: 'unit', style: 'narrow' }).format(missing)}</p>
           <p className="mt-2 text-slate-500">{t('You can leave these for now. The employee can complete them in Self-Service after the first day.')}</p>
         </div>

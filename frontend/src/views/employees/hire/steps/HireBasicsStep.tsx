@@ -36,8 +36,8 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
           </select>
         )}
       </FieldShell>
-      <DateField field="startDate" label={t('Start date')} required value={form.startDate} onChange={v => set('startDate', v)} onBlur={() => blur('startDate')} error={errorFor('startDate')} />
-      <FieldShell field="designationId" label={t('Designation')} required error={errorFor('designationId')} hint={t('Choose a designation or a grade. A designation brings its own grade.')}>
+      <DateField field="startDate" label={t('Start date')} hint={form.startDate ? undefined : t('Needed before activation')} value={form.startDate} onChange={v => set('startDate', v)} onBlur={() => blur('startDate')} error={errorFor('startDate')} />
+      <FieldShell field="designationId" label={t('Designation')} error={errorFor('designationId')} hint={form.designationId || form.gradeId ? t('A designation brings its own grade.') : t('Needed before activation: choose a designation or a grade.')}>
         {p => (
           <select {...p} value={form.designationId} onChange={e => onDesignation(e.target.value)} onBlur={() => blur('designationId')} className={select}>
             <option value="">{t('Not chosen')}</option>

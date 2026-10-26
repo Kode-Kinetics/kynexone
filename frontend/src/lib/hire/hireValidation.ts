@@ -41,7 +41,7 @@ const EN = new Intl.DisplayNames(['en'], { type: 'region' });
  * Hard errors only (data integrity, CD6). Statutory floors (backdated start, age under 15, probation over 180 days,
  * a grade band, an expired ID) are server warnings answered with an acknowledgement, not errors here.
  */
-export function validateHire(form: HireForm, ctx: ValidationContext, scope: HireScope): FieldIssue[] {
+export function validateHire(form: HireForm, ctx: ValidationContext, _scope: HireScope = 'create'): FieldIssue[] {
   const out: FieldIssue[] = [];
   const add = (field: keyof HireForm, key: string, params?: Record<string, string>) => out.push({ field, step: STEP[field] ?? 1, key, params });
 
@@ -52,10 +52,9 @@ export function validateHire(form: HireForm, ctx: ValidationContext, scope: Hire
   if (blank(form.companyId)) add('companyId', 'Choose the employing company.');
 
   const { min, max } = startDateRange(ctx.today);
-  if (blank(form.startDate)) { if (scope === 'create') add('startDate', 'Enter the start date.'); }
-  else if (!isRealDate(form.startDate) || form.startDate < min || form.startDate > max) add('startDate', 'Start date must be between {min} and {max}.', { min, max });
+  // CD21: a missing start date or designation/grade is an activation need (see activationNeeds), never an error here.
+  if (!blank(form.startDate) && (!isRealDate(form.startDate) || form.startDate < min || form.startDate > max)) add('startDate', 'Start date must be between {min} and {max}.', { min, max });
 
-  if (scope === 'create' && blank(form.designationId) && blank(form.gradeId)) add('designationId', 'Choose a designation or a grade.');
   if (ctx.designationGrade && !blank(form.gradeId) && form.gradeId !== ctx.designationGrade.gradeId) {
     add('gradeId', 'This designation belongs to grade {grade}.', { grade: ctx.designationGrade.gradeCode });
   }
@@ -105,5 +104,15 @@ export function validateHire(form: HireForm, ctx: ValidationContext, scope: Hire
       add('contractEndDate', 'The contract end date must be after the start date.');
     }
   }
+  return out;
+}
+
+export interface ActivationNeed { field: keyof HireForm; step: 1 | 2 | 3; key: string }
+
+/** CD21: what is still missing before the employee can be activated. Shown as a neutral hint and on Review, never as an error. */
+export function activationNeeds(form: HireForm): ActivationNeed[] {
+  const out: ActivationNeed[] = [];
+  if (blank(form.startDate)) out.push({ field: 'startDate', step: 1, key: 'Start date' });
+  if (blank(form.designationId) && blank(form.gradeId)) out.push({ field: 'designationId', step: 1, key: 'Designation or grade' });
   return out;
 }

@@ -17,7 +17,7 @@ export interface HireMockOptions {
   /** Put hire_wizard_v2 in the disabled keys, as the server does for a tenant that has not been switched on. */
   flagOff?: boolean;
   /** Existing person the duplicate-check returns. */
-  duplicate?: { status: string; matchType?: 'strong' | 'probable' };
+  duplicate?: { status: string; matchType?: 'strong' | 'probable'; canView?: boolean };
   /** The first create answers 409 warnings_require_acknowledgement. */
   warnFirstCreate?: boolean;
   /** Every hire-draft PUT answers 409 draft_changed_elsewhere. */
@@ -79,7 +79,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/employees/duplicate-check') {
       dupChecks.push(body);
       const d = options.duplicate;
-      return reply({ hasStrong: d?.matchType === 'strong', hasProbable: !!d, matches: d ? [{ employeeId: 44, employeeCode: 'TEST-044', fullName: 'Alex Morgan', status: d.status, matchType: d.matchType ?? 'probable', signals: ['Same name'], canView: true, joinedYear: 2021, companyId: company.id }] : [] });
+      return reply({ hasStrong: d?.matchType === 'strong', hasProbable: !!d, matches: d ? [d.canView === false ? { employeeId: 45, employeeCode: '', fullName: '', status: '', matchType: 'probable', signals: [], canView: false } : { employeeId: 44, employeeCode: 'TEST-044', fullName: 'Alex Morgan', status: d.status, matchType: d.matchType ?? 'probable', signals: ['Same name'], canView: true, joinedYear: 2021, companyId: company.id }] : [] });
     }
     if (p === '/api/employees' && method === 'POST') {
       const key = req.headers()['idempotency-key'];

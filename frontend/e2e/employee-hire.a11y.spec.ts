@@ -28,7 +28,7 @@ for (const [locale, viewport] of [['en', { width: 1440, height: 1000 }], ['ar', 
       await clean(page, 'step 1 errors');
       await page.getByLabel(l.name).fill('Alex Morgan');
       await page.getByLabel(l.name).blur();
-      await expect(page.getByTestId('error-summary')).toHaveCount(1);
+      await expect(page.getByTestId('error-summary')).toHaveCount(0);
       await page.getByLabel(l.start).fill('2026-01-05');
       await page.getByLabel(l.desig).selectOption({ label: 'Specialist' });
       await expect(page.locator('section[aria-label]').first()).toBeVisible();
