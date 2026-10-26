@@ -5,6 +5,7 @@ import {
   classifyLockError,
   groupJournal,
   hiddenEmployeeCount,
+  lockKpis,
   readOnlyLockNote,
   type JournalLine,
   type LockBlocker,
@@ -146,4 +147,31 @@ test.describe('acknowledgeUncosted', () => {
 test('readOnlyLockNote is true only when the user may not lock', () => {
   expect(readOnlyLockNote(false)).toBe(true);
   expect(readOnlyLockNote(true)).toBe(false);
+});
+
+test.describe('lockKpis', () => {
+  const mk = (id: number, reason: string): LockBlocker => blocker({ employeeId: id, employeeCode: `E-${id}`, reason, accountCode: '5001' });
+  const group = (over: Partial<LockGroup>): LockGroup => ({
+    error: 'cost_centre_required', employeeCount: 1, employees: [], amount: 0, message: '', messageAr: '', ...over,
+  });
+
+  test('blocked counts each employee once, across accounts and across missing and invalid', () => {
+    const blockers = [mk(1, 'cost_centre_required'), { ...mk(1, 'cost_centre_required'), accountCode: '5002' }, mk(2, 'cost_centre_required'), mk(3, 'cost_centre_invalid')];
+    expect(lockKpis({ uncostedEmployees: 0 }, blockers, []).blocked).toBe(3);
+  });
+
+  test('blocked uses the server group count when the blocker list is shorter (employees beyond the sample)', () => {
+    const blockers = [mk(1, 'cost_centre_required'), mk(2, 'cost_centre_required')];
+    const groups = [group({ employeeCount: 12, employees: [{ id: 1, code: 'E-1' }, { id: 2, code: 'E-2' }] }), group({ error: 'cost_centre_invalid', employeeCount: 1 })];
+    expect(lockKpis({ uncostedEmployees: 0 }, blockers, groups).blocked).toBe(12);
+  });
+
+  test('other refusals (rounding, reserved class) do not count as employees without a cost centre', () => {
+    expect(lockKpis({ uncostedEmployees: 0 }, [mk(1, 'cost_centre_rounding_required')], [group({ error: 'cost_centre_rounding_required', employeeCount: 9 })]).blocked).toBe(0);
+  });
+
+  test('uncosted stays the optional-account count, separate from blocked', () => {
+    expect(lockKpis({ uncostedEmployees: 6 }, [mk(1, 'cost_centre_required')], [])).toEqual({ blocked: 1, uncosted: 6 });
+    expect(lockKpis(null, [], [])).toEqual({ blocked: 0, uncosted: 0 });
+  });
 });
