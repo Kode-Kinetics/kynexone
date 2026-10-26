@@ -526,6 +526,12 @@ public class EmployeesController : ControllerBase
         [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
     {
         var tenantId = RequireTenant();
+        // N4: a company outside the caller's tenant or entity scope is refused, with the same answer as a company
+        // that does not exist (no way to probe which ids are real).
+        if (companyId is Guid requestedCompany
+            && (!this.GetEntityScope().CanAccessCompany(requestedCompany)
+                || !await _db.Companies.AsNoTracking().AnyAsync(c => c.TenantId == tenantId && c.Id == requestedCompany, ct)))
+            return NotFound(new { error = "company_not_found", message = "That company is not available." });
         // Explicit countryCode wins, else the company's — this endpoint publishes that rule in its own
         // response, and it is now the SAME helper every write path and the readiness resolver use, so
         // the documentation and the behaviour cannot drift apart again.
@@ -2900,7 +2906,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDetailDto>> CreateEmployee(EmployeeCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Refusal(request.AcknowledgeDuplicate, request.DuplicateOverrideReason,
-                User.HasPermission(Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Permission)) is { } overrideRefused) return overrideRefused;
+                User.HasPermission(Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Permission), HttpContext.TraceIdentifier) is { } overrideRefused) return overrideRefused;
         try
         {
             var tenantId = RequireTenant();
