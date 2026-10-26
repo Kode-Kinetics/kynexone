@@ -1,0 +1,116 @@
+using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees;
+using Zayra.Api.Application.Employees.Onboarding;
+using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Scope;
+using Microsoft.EntityFrameworkCore;
+
+namespace Zayra.Api.Infrastructure.Employees.Onboarding;
+
+/// <inheritdoc cref="IEmployeeInputGuard"/>
+public sealed class EmployeeInputGuard : IEmployeeInputGuard
+{
+    public const string OverridePermission = "employees.override_validation";
+    private const int ReasonMin = 10, ReasonMax = 500;
+
+    private readonly ZayraDbContext _db;
+    private readonly IRequestEntityScopeResolver? _scope;
+    private readonly ITenantClock? _clock;
+
+    public EmployeeInputGuard(ZayraDbContext db, IRequestEntityScopeResolver? scope = null, ITenantClock? clock = null)
+    {
+        _db = db; _scope = scope; _clock = clock;
+    }
+
+    public Task<EmployeeCreateRequest> EnforceCreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct) =>
+        RunAsync(tenantId, null, request, EmployeeGuardMode.Create, context, ct);
+
+    public Task<EmployeeCreateRequest> EnforceUpdateAsync(Guid tenantId, int employeeId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct) =>
+        RunAsync(tenantId, employeeId, request, EmployeeGuardMode.Update, context, ct);
+
+    public Task<EmployeeCreateRequest> EnforceDraftAsync(Guid tenantId, int? employeeId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct) =>
+        RunAsync(tenantId, employeeId, request, EmployeeGuardMode.Draft, context, ct);
+
+    private async Task<EmployeeCreateRequest> RunAsync(
+        Guid tenantId, int? employeeId, EmployeeCreateRequest request, EmployeeGuardMode mode, RequestContext context, CancellationToken ct)
+    {
+        var scope = _scope?.Resolve().ToEntityScopeContext() ?? EntityScopeContext.GroupLevel;
+        var refs = new EmployeeReferenceValidator(_db);
+        var mayOverride = context.Permissions?.Contains(OverridePermission) == true;
+        var acks = (request.AcknowledgedWarnings ?? []).Where(a => !string.IsNullOrWhiteSpace(a.Code))
+            .GroupBy(a => a.Code, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Last(), StringComparer.Ordinal);
+
+        // The employing company fixes the jurisdiction every other rule depends on.
+        var companyForRules = request.CompanyId;
+        if (companyForRules is null && mode == EmployeeGuardMode.Update && employeeId is int id)
+            companyForRules = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Existing employee's company for validation; tenant re-applied.")
+                .AsNoTracking().Where(e => e.Id == id).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        var forRefs = request with { CompanyId = companyForRules };
+        Models.Company? company = null;
+        if (!(mode == EmployeeGuardMode.Draft && companyForRules is null))
+            company = await refs.ResolveCompanyAsync(tenantId, companyForRules, scope, ct);
+
+        var country = company?.CountryCode;
+        var tz = ResolveZone(CountryCodeStandard.NormalizeToIso2(country));
+        var today = _clock is not null ? await _clock.TodayAsync(tenantId, ct) : DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz));
+        var result = EmployeeInputValidator.Validate(request, new EmployeeInputValidationContext(country, today, mode, tz));
+
+        // CD5: a checksum failure is waivable by an authorised caller with a reason; a format failure never is.
+        foreach (var (field, codes) in result.Errors.ToList())
+            if (codes.Remove(EmployeeWarningCodes.IdChecksumInvalid))
+            {
+                if (acks.TryGetValue(EmployeeWarningCodes.IdChecksumInvalid, out var ack))
+                {
+                    RequireAllowed(mayOverride); RequireReason(ack);
+                }
+                else codes.Add(EmployeeWarningCodes.IdChecksumInvalid);
+                if (codes.Count == 0) result.Errors.Remove(field);
+            }
+        if (result.Errors.Count > 0)
+            throw new EmployeeValidationException(400, EmployeeProblemCodes.ValidationFailed,
+                result.Errors.ToDictionary(k => k.Key, k => k.Value.ToArray()),
+                "Some fields need attention: " + string.Join(", ", result.Errors.Keys) + ".");
+
+        var refResult = await refs.ValidateAsync(tenantId, forRefs, scope, employeeId, ct);
+        var warnings = result.Warnings.Concat(refResult.Warnings).ToList();
+
+        var unacknowledged = new List<EmployeeWarning>();
+        foreach (var w in warnings)
+        {
+            if (!acks.TryGetValue(w.Code, out var ack)) { unacknowledged.Add(w); continue; }
+            RequireReason(ack);
+            if (w.RequiresPermission) RequireAllowed(mayOverride);
+        }
+        if (unacknowledged.Count > 0) throw new EmployeeWarningsRequireAckException(unacknowledged);
+
+        var normalised = result.Normalised;
+        return request.CompanyId is null && mode != EmployeeGuardMode.Update ? normalised with { CompanyId = refResult.Company.Id } : normalised;
+    }
+
+    private static void RequireReason(AcknowledgedWarning ack)
+    {
+        var len = ack.Reason?.Trim().Length ?? 0;
+        if (len < ReasonMin || len > ReasonMax)
+            throw new EmployeeValidationException(422, EmployeeProblemCodes.OverrideReasonRequired,
+                new Dictionary<string, string[]> { ["acknowledgedWarnings"] = [EmployeeProblemCodes.OverrideReasonRequired] },
+                $"A reason of {ReasonMin} to {ReasonMax} characters is required to override this.");
+    }
+
+    private static void RequireAllowed(bool mayOverride)
+    {
+        if (!mayOverride)
+            throw new EmployeeValidationException(422, EmployeeProblemCodes.OverrideNotPermitted,
+                new Dictionary<string, string[]> { ["acknowledgedWarnings"] = [EmployeeProblemCodes.OverrideNotPermitted] },
+                "You do not have permission to override this check.");
+    }
+
+    private static TimeZoneInfo ResolveZone(string? iso2)
+    {
+        if (iso2 != "SA") return TimeZoneInfo.Utc;
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Riyadh"); }
+        catch (Exception e) when (e is TimeZoneNotFoundException or InvalidTimeZoneException)
+        { return TimeZoneInfo.CreateCustomTimeZone("Riyadh", TimeSpan.FromHours(3), "Riyadh", "Riyadh"); }
+    }
+}

@@ -41,9 +41,9 @@ public class EmployeeReferenceValidatorTests
         db.Companies.AddRange(fx.Company, fx.SisterCompany, fx.ForeignCompany);
         fx.Branch = new Branch { TenantId = fx.Tenant, CompanyId = fx.Company.Id, NameEn = "HQ", IsActive = true };
         fx.Dept = new Department { TenantId = fx.Tenant, CompanyId = fx.Company.Id, NameEn = "Ops", IsActive = true };
-        fx.Grade = new Grade { TenantId = fx.Tenant, CompanyId = fx.Company.Id, NameEn = "G5", MinSalary = 5000, MaxSalary = 9000, IsActive = true };
-        fx.Desig = new Designation { TenantId = fx.Tenant, CompanyId = fx.Company.Id, NameEn = "Analyst", GradeId = fx.Grade.Id, IsActive = true };
-        fx.Cc = new CostCenter { TenantId = fx.Tenant, CompanyId = fx.Company.Id, NameEn = "CC1", IsActive = true };
+        fx.Grade = new Grade { TenantId = fx.Tenant, CompanyId = fx.Company.Id, Name = "G5", MinSalary = 5000, MaxSalary = 9000, IsActive = true };
+        fx.Desig = new Designation { TenantId = fx.Tenant, CompanyId = fx.Company.Id, TitleEn = "Analyst", GradeId = fx.Grade.Id, IsActive = true };
+        fx.Cc = new CostCenter { TenantId = fx.Tenant, CompanyId = fx.Company.Id, Name = "CC1", IsActive = true };
         fx.Manager = new Employee { TenantId = fx.Tenant, CompanyId = fx.Company.Id, EmployeeCode = "M1", FullName = "Boss", EnglishName = "Boss", Status = "Active" };
         db.AddRange(fx.Branch, fx.Dept, fx.Grade, fx.Desig, fx.Cc, fx.Manager);
         await db.SaveChangesAsync();
@@ -184,7 +184,7 @@ public class EmployeeReferenceValidatorTests
     public async Task Create_DesignationGradeMismatch_422()   // G02
     {
         await using var db = CreateDb(); var fx = await Seed(db);
-        var other = new Grade { TenantId = fx.Tenant, CompanyId = fx.Company.Id, NameEn = "G9", MinSalary = 1, MaxSalary = 2, IsActive = true };
+        var other = new Grade { TenantId = fx.Tenant, CompanyId = fx.Company.Id, Name = "G9", MinSalary = 1, MaxSalary = 2, IsActive = true };
         db.Grades.Add(other); await db.SaveChangesAsync();
         var ex = await Refused(() => new EmployeeReferenceValidator(db).ValidateAsync(fx.Tenant,
             Req(fx) with { DesignationId = fx.Desig.Id, GradeId = other.Id }, Group, null, default));
