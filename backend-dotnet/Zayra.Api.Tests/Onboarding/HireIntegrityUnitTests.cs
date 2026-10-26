@@ -42,7 +42,7 @@ public class HireIntegrityUnitTests
         var user = Guid.NewGuid().ToString();
         for (var i = 0; i < 20; i++) limiter.TryAcquire("duplicate-check", tenant, user, out _);
         limiter.TryAcquire("derive-work-email", tenant, user, out _).Should().BeTrue();
-        limiter.TryAcquire("no-such-policy", tenant, user, out _).Should().BeTrue("an unknown name never blocks");
+        limiter.TryAcquire("no-such-policy", tenant, user, out _).Should().BeFalse("an unknown name is a wiring mistake and fails closed");
     }
 
     // ── Identity lock keys ───────────────────────────────────────────────────────────────────────

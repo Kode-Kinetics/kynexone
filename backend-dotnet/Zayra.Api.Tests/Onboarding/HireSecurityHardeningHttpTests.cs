@@ -201,6 +201,20 @@ public class HireSecurityHardeningHttpTests : IClassFixture<HireIntegrityHttpFix
         (await ApproveAsync(third, id)).StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    [Fact]
+    public async Task Import_OfAHireOutsideTheActiveWorkforce_WithBankDetails_OpensThePayGap()
+    {
+        var token = await _fx.NewUserAsync("cd37i", "employees.bulk_import", "employees.write", "employees.read", "employees.sensitive");
+        var name = $"Imported Person {Guid.NewGuid():N}"[..28];
+        var csv = $"FullName,Nationality,CompanyLegalName,IBAN\n{name},Indian,Hire integrity A,{Iban1}\n";
+        using var r = await _fx.SendAsync(HttpMethod.Post, "/api/employees/import", new { csvContent = csv }, token);
+        r.StatusCode.Should().Be(HttpStatusCode.OK, await r.Content.ReadAsStringAsync());
+        using var s = _fx.Host.Services.CreateScope();
+        var db = s.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var id = await db.Employees.IgnoreQueryFilters().Where(e => e.FullName == name).Select(e => e.Id).SingleAsync();
+        (await GapsAsync(id)).Open.Should().Be(1);
+    }
+
     // ── CD40: rehire validates references, the start-date window, and re-opens the pay gap ─────────
     [Fact]
     public async Task Rehire_WithAGradeFromAnotherTenant_Is422_InvalidReference()
