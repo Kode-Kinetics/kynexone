@@ -246,7 +246,9 @@ public sealed class CostAccountingOraclePostgresTests
             g.GetProperty("employeeCount").GetInt32().Should().Be(int.Parse(row["n_employees"]));
             g.GetProperty("employees").EnumerateArray().Select(e => e.GetProperty("code").GetString()).Order()
                 .Should().Equal(row["employee_codes(max10)"].Split(';', StringSplitOptions.RemoveEmptyEntries).Order());
-            if (row["aggregate_amount"] != "") g.GetProperty("amount").GetDecimal().Should().Be(OracleFiles.D(row["aggregate_amount"]));
+            // The oracle states the aggregate; the response withholds it for a group of one employee (it would be that person's pay).
+            if (int.Parse(row["n_employees"]) == 1) { g.GetProperty("amount").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null); g.GetProperty("amountWithheld").GetBoolean().Should().BeTrue(); }
+            else if (row["aggregate_amount"] != "") g.GetProperty("amount").GetDecimal().Should().Be(OracleFiles.D(row["aggregate_amount"]));
             g.GetProperty("message").GetString().Should().Be(row["message_en"]);
         }
     }
@@ -322,13 +324,13 @@ public sealed class CostAccountingOraclePostgresTests
             (await w.K.ApproveAndLockAsync(w.Reg1.Id)).Should().BeOfType<OkObjectResult>();
             var rounding = (await w.AllLedgerAsync()).Single(l => l.DebitAccount.StartsWith("5199") || l.CreditAccount.StartsWith("5199"));
             (rounding.Amount, rounding.CostCenterCode).Should().Be((0.01m, "CC-100"));
-            // The oracle's prose says "DR 5199 0.01"; a net 0.01 BELOW the component sums leaves debits 0.01 above credits, so the
-            // missing amount is a CREDIT. Reported as an oracle-prose disagreement; the amount, account and cost centre agree.
+            // AM-34: a net 0.01 BELOW the component sums leaves debits 0.01 above credits, so the rounding line is a CREDIT of 0.01 to 5199
+            // (the oracle prose now says so; amount, account and cost centre were always as stated).
             rounding.CreditAccount.Should().StartWith("5199");
         }
     }
 
-    [Fact(Skip = "DEFECT in WP-B (FinanceGlController.SetMappings): a mapping with a fixed cost centre on a NotAllowed account is saved (200) instead of refused with 422 cost_centre_not_allowed / M-3 (oracle S-B2, contract 2.7). WP-B owns the file; this test is the acceptance check for the fix.")]
+    [Fact]
     public async Task SB2_AFixedCostCentreOnANotAllowedAccount_IsRefusedWithM3_AndNothingIsSaved()
     {
         await using var w = await OracleWorld.CreateAsync(_fx);

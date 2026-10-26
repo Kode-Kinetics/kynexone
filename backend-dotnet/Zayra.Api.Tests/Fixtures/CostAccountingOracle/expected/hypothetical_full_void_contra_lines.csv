@@ -18,13 +18,13 @@ VOID-RUN-REG-2026-09,16,2026-10,PayrollVoid,EARN:BONUS,6100,Employee Bonus Expen
 VOID-RUN-REG-2026-09,17,2026-10,PayrollVoid,EARN:BONUS,6100,Employee Bonus Expense,CR,33.34,CC-200,SELLING,Payroll earning: BONUS (un-accrued)
 VOID-RUN-REG-2026-09,18,2026-10,PayrollVoid,EARN:BONUS,6100,Employee Bonus Expense,CR,33.33,CC-300,COGS,Payroll earning: BONUS (un-accrued)
 VOID-RUN-REG-2026-09,19,2026-10,PayrollVoid,DED:STATUTORY_EE,2101,Social Insurance Payable (Employee),DR,5510.42,,,Payroll deduction: GOSI-ANN-EE
-VOID-RUN-REG-2026-09,20,2026-10,PayrollVoid,DED:STATUTORY_EE,2101,Social Insurance Payable (Employee),DR,448.45,,,Payroll deduction: GOSI-SANED-EE
+VOID-RUN-REG-2026-09,20,2026-10,PayrollVoid,DED:STATUTORY_EE,2101,Social Insurance Payable (Employee),DR,448.43,,,Payroll deduction: GOSI-SANED-EE
 VOID-RUN-REG-2026-09,21,2026-10,PayrollVoid,DED:LOAN,2107,Loan & Advance Deductions Payable,DR,500.00,,,Payroll deduction: LOAN_EMI
 VOID-RUN-REG-2026-09,22,2026-10,PayrollVoid,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,DR,5510.42,,,Payroll deduction: GOSI-ANN-ER
-VOID-RUN-REG-2026-09,23,2026-10,PayrollVoid,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,DR,448.45,,,Payroll deduction: GOSI-SANED-ER
+VOID-RUN-REG-2026-09,23,2026-10,PayrollVoid,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,DR,448.43,,,Payroll deduction: GOSI-SANED-ER
 VOID-RUN-REG-2026-09,24,2026-10,PayrollVoid,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,DR,1995.83,,,Payroll deduction: GOSI-OH-ER
 VOID-RUN-REG-2026-09,25,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,125.00,CC-100,G_AND_A,Employer statutory contribution
-VOID-RUN-REG-2026-09,26,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,3257.82,CC-110,G_AND_A,Employer statutory contribution
+VOID-RUN-REG-2026-09,26,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,3257.81,CC-110,G_AND_A,Employer statutory contribution
 VOID-RUN-REG-2026-09,27,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,3268.75,CC-200,SELLING,Employer statutory contribution
-VOID-RUN-REG-2026-09,28,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,1303.13,CC-300,COGS,Employer statutory contribution
-VOID-RUN-REG-2026-09,29,2026-10,PayrollVoid,NET_PAYABLE,2100,Salaries Payable,DR,103717.36,,,Net salaries payable
+VOID-RUN-REG-2026-09,28,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,1303.12,CC-300,COGS,Employer statutory contribution
+VOID-RUN-REG-2026-09,29,2026-10,PayrollVoid,NET_PAYABLE,2100,Salaries Payable,DR,103717.38,,,Net salaries payable

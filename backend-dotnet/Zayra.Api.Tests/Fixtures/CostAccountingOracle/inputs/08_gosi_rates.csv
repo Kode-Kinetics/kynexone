@@ -9,7 +9,7 @@ gosi.covered_wage_ceiling_sar,45000,monthly cap on basic+housing,pack default,ye
 gosi.covered_wage_floor_sar,(not seeded),,,no,no clamping floor
 gosi.covered_wage_min_annuities_sar / ..._occupational_hazards_sar,1500 / 400,validator warning only,pack default,no,not a clamp
 ,, ,,,
-"COMPONENTS (rounded separately per employee, Math.Round 2dp half-even in the app, half-up here - see README flag F-ROUND)",,,,,
+"COMPONENTS (rounded separately per employee, Math.Round 2dp half-even in the app and in this generator - AM-33, see README flag F-ROUND)",,,,,
 GOSI-ANN-EE,covered wage x annuity rate,Saudi,,,DED:STATUTORY_EE -> 2101
 GOSI-SANED-EE,covered wage x 0.0075,Saudi,,,DED:STATUTORY_EE -> 2101
 GOSI-ANN-ER,covered wage x annuity rate,Saudi,,,"employer; DED:STATUTORY_ER -> 2106, pair DR 5101"

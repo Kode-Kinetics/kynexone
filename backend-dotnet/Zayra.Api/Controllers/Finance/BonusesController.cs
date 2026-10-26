@@ -588,7 +588,7 @@ public class BonusesController : ControllerBase
             if (glCtx.CostAccountingEnabled && companyId is Guid costCompany)
             {
                 var resolved = await Zayra.Api.Infrastructure.Payroll.PayrollCostStamper.ResolveEmployeesAsync(
-                    _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct);
+                    _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx);
                 foreach (var (employeeId, r) in resolved) costOf[employeeId] = r.CostCenterId;
 
                 // A Required bonus-expense account with an employee who has no usable cost centre is refused with M-1 / M-2 (the same body Lock
@@ -606,7 +606,7 @@ public class BonusesController : ControllerBase
                             b.EmployeeIntId!.Value, codes.GetValueOrDefault(b.EmployeeIntId.Value, string.Empty),
                             resolved[b.EmployeeIntId.Value].Level ?? "company", null, null, null,
                             resolved[b.EmployeeIntId.Value].UnresolvedReason == "none" ? PayrollCostStamper.RequiredCode : PayrollCostStamper.InvalidCode,
-                            expenseCode, expenseName, b.GrossBonusAmount)).ToList()).Body);
+                            expenseCode, expenseName, b.GrossBonusAmount)).ToList(), glCtx.CostCentreSmallCellMin).Body);
                     }
                 }
             }
@@ -720,7 +720,7 @@ public class BonusesController : ControllerBase
                     .AsNoTracking()
                     .Where(x => x.ReversalOfEntryId != null && originIds.Contains(x.ReversalOfEntryId.Value))
                     .Select(x => new { Origin = x.ReversalOfEntryId!.Value, x.Amount }).ToListAsync(ct))
-                .GroupBy(x => x.Origin).ToDictionary(g => g.Key, g => g.Sum(x => x.Amount));
+                .GroupBy(x => x.Origin).ToDictionary(g => g.Key, g => (Total: g.Sum(x => x.Amount), Count: g.Count()));
             foreach (var position in openPositions.Where(p => p.Remaining > 0m))
             {
                 await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, position.CompanyId, batch.PaymentPeriod, ct);
@@ -734,7 +734,7 @@ public class BonusesController : ControllerBase
                 foreach (var origin in origins)
                 {
                     if (left <= 0m) break;
-                    var room = Math.Round(origin.Amount - alreadyReversed.GetValueOrDefault(origin.Id), 4);
+                    var room = Math.Round(origin.Amount - alreadyReversed.GetValueOrDefault(origin.Id).Total, 4);
                     var take = Math.Min(left, room);
                     if (take <= 0m) continue;
                     _db.FinanceGlEntries.Add(new FinanceGlEntry
@@ -749,7 +749,7 @@ public class BonusesController : ControllerBase
                         PostedBy = uid, PostedByName = GetUserName(),
                         ReversalOfEntryId = origin.Id,
                         CostCenterId = origin.CostCenterId, CostCenterCode = origin.CostCenterCode, CostCenterName = origin.CostCenterName,
-                        CostCenterGlSegment = origin.CostCenterGlSegment, PostingKey = PayrollCostStamper.ReversalKey(origin.Id),
+                        CostCenterGlSegment = origin.CostCenterGlSegment, PostingKey = PayrollCostStamper.ReversalKey(origin.Id, alreadyReversed.GetValueOrDefault(origin.Id).Count),
                     });
                     left = Math.Round(left - take, 4);
                     if (take >= room) origin.IsReversed = true;
@@ -860,7 +860,7 @@ public class BonusesController : ControllerBase
                 var costOf = new Dictionary<int, Guid?>();
                 if (glCtx.CostAccountingEnabled && companyId is Guid costCompany)
                     foreach (var (employeeId, r) in await PayrollCostStamper.ResolveEmployeesAsync(
-                                 _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct))
+                                 _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx))
                         costOf[employeeId] = r.CostCenterId;
                 foreach (var (ccId, part) in BonusCostSplit.Split(unaccrued,
                              group.Select(b => (costOf.GetValueOrDefault(b.EmployeeIntId ?? 0), b.GrossBonusAmount)), glCtx, currency))
