@@ -6909,12 +6909,14 @@ public partial class PayrollController : ControllerBase
                     TenantId = tenantId, CompanyId = s.CompanyId ?? run.CompanyId,
                     SourceModule = FinalSettlementGlDescriptions.SourceModule,
                     SourceEntityId = s.Id,
-                    SourceEntityRef = EosbProvisionLedger.EmployeeRef(s.EmployeeId),
+                    // T-037 / contract 2.8: no employee identifier on a payroll-source ledger line. The settlement id already rides in
+                    // SourceEntityId; the reference is the settlement's own, never the employee's.
+                    SourceEntityRef = FinalSettlementGlDescriptions.SettlementRef(s.Id),
                     EventType = GlEventTypes.SettlementResidualReclass,
                     DebitAccount = employeeReceivableAccount, CreditAccount = receivableAccount,
                     Amount = covered, Currency = s.Currency,
                     EntryDate = today, Period = settlementPeriod,
-                    Description = $"{FinalSettlementGlDescriptions.ResidualReclassPrefix}{what} — {s.EmployeeCode}",
+                    Description = $"{FinalSettlementGlDescriptions.ResidualReclassPrefix}{what}",
                     PostedBy = GetUserId(), PostedByName = GetUserName(),
                 });
                 // The per-employee sub-ledger behind the aggregate 1420 debit, so the residual AGES on
@@ -10348,9 +10350,28 @@ public partial class PayrollController : ControllerBase
             provisionReleases.Add((releasedFrom.ProvisionAccount, released));
         }
 
+        // Cost accounting (WP-C2): the leaver's cost centre AT THE APPROVAL DATE (contract 2.4). A Required expense account with no cost
+        // centre for the leaver refuses the approval with M-1 and nothing is written.
+        Guid? settlementCostCentre = null;
+        if (glCtx.CostAccountingEnabled && s.CompanyId is Guid settlementCompany)
+        {
+            var resolution = (await PayrollCostStamper.ResolveEmployeesAsync(_db, tenantId, settlementCompany, new[] { s.EmployeeId }, cancellationToken))[s.EmployeeId];
+            settlementCostCentre = resolution.CostCenterId;
+            if (settlementCostCentre is null)
+            {
+                var expense = GlAccountResolver.Resolve(FinalSettlementGlLedger.ExpenseDriverFor(FinalSettlementComponents.Gratuity), glCtx.Overrides, glCtx.DriverDefaults);
+                if (PayrollCostStamper.RuleOf(expense.Code, glCtx) == "Required")
+                    return UnprocessableEntity(PayrollCostStamper.BuildRefusal(new[]
+                    {
+                        new CostBlocker(s.EmployeeId, s.EmployeeCode, resolution.Level ?? "company", null, null, null,
+                            resolution.UnresolvedReason == "none" ? PayrollCostStamper.RequiredCode : PayrollCostStamper.InvalidCode,
+                            expense.Code, expense.Name, s.GrossPayable),
+                    }).Body);
+            }
+        }
         var (glLines, dr, cr) = FinalSettlementGlLedger.BuildAccrual(
             tenantId, s, lines, glPeriod, glCtx, actorId, GetUserName(),
-            provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases);
+            provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases, settlementCostCentre);
         if (Math.Abs(dr - cr) > 0.01m)
             return UnprocessableEntity(new
             {

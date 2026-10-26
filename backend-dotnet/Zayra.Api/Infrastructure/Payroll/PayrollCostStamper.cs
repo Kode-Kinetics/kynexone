@@ -207,6 +207,25 @@ public static class PayrollCostStamper
         };
     }
 
+    /// <summary>
+    /// Resolves the cost centre of a set of employees of one company (contract 2.2) for the writers that post outside a payroll run
+    /// (bonus accrual, final-settlement accrual): one snapshot, one resolution per employee. The caller applies the account rules.
+    /// </summary>
+    public static async Task<Dictionary<int, CostCentreResolution>> ResolveEmployeesAsync(
+        ZayraDbContext db, Guid tenantId, Guid companyId, IEnumerable<int> employeeIds, CancellationToken ct)
+    {
+        var ids = employeeIds.Where(i => i > 0).Distinct().ToList();
+        var employees = (await ScopedBypass.NullableTenantWide(db.Employees, tenantId,
+                    "Cost resolution reads the employees tenant-pinned and read-only, whatever the caller's company claims.")
+                .AsNoTracking().Where(e => ids.Contains(e.Id))
+                .Select(e => new Emp(e.Id, e.EmployeeCode, e.DepartmentId, e.PositionId, e.CostCenterId, e.CostCenterIsOverride))
+                .ToListAsync(ct)).ToDictionary(e => e.Id);
+        var snapshot = await CostCentreResolver.LoadSnapshotAsync(db, tenantId, companyId, ct);
+        return ids.ToDictionary(id => id, id => employees.TryGetValue(id, out var e)
+            ? CostCentreResolver.Resolve(new ResolverEmployee(e.DepartmentId, e.PositionId, e.CostCenterId, e.IsOverride), snapshot)
+            : CostCentreResolution.Unresolved("none", "company"));
+    }
+
     /// <summary>Contract 2.8: a cost centre with fewer than K employees is replaced by the nearest ancestor whose subtree holds at least K,
     /// else by the company default; the row's source becomes RolledUp.</summary>
     private static void RollUp(Dictionary<int, (Guid? CostCenterId, string? Source)> final, Dictionary<int, Guid> rolledFrom,
