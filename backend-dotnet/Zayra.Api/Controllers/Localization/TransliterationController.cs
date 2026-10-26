@@ -20,6 +20,7 @@ public class TransliterationController : ControllerBase
     public TransliterationController(ITransliterationService svc) => _svc = svc;
 
     [HttpPost]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("transliterate")]
     public IActionResult Transliterate([FromBody] TransliterateRequest req)
     {
         // Authenticated + tenant-scoped (defence-in-depth; the fallback policy already requires auth).
@@ -60,6 +61,7 @@ public class TransliterationController : ControllerBase
     /// "" means no confident suggestion. Person names are never batched.
     /// </summary>
     [HttpPost("batch")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("transliterate-batch")]
     public IActionResult TransliterateBatch([FromBody] TransliterateBatchRequest req)
     {
         if (this.GetTenantId() is null) return Unauthorized();

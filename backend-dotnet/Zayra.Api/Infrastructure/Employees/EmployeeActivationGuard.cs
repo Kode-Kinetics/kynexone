@@ -75,7 +75,7 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         Guid tenantId, Guid? companyId, EmployeeReadinessSnapshot snapshot, RequestContext ctx, CancellationToken ct)
     {
         var policy = await _resolver.ResolveAsync(tenantId, companyId, snapshot.CountryCode, snapshot.Nationality, ct);
-        return await _evaluator.EnsureActivatableAsync(snapshot, policy, ctx, ct);
+        return await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.EnsureActivatableAsync(_db, tenantId, _evaluator, snapshot, policy, ct);
     }
 
     public async Task<EmployeeReadinessSnapshot?> BuildSnapshotAsync(Guid tenantId, int employeeId, CancellationToken ct)

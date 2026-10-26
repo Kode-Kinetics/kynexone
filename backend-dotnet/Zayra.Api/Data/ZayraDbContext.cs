@@ -627,6 +627,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Added
             if (scoped.CompanyId is Guid explicitCompany)
             {
+                await Zayra.Api.Infrastructure.Employees.Onboarding.TenantCompanyMembershipGuard.AssertAsync(this, explicitCompany, ResolveEntryTenantId(entry) ?? tenantClaim.Value, ct);
                 if (!scope.CanAccessCompany(explicitCompany))
                     throw new UnauthorizedAccessException(
                         $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} in a company outside your access.");
