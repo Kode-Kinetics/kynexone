@@ -122,6 +122,8 @@ public sealed class EmployeeHireController : ControllerBase
         var context = Context(tenantId);
         var oldStatus = employee.Status;
         var startDate = DateOnly.FromDateTime(body.StartDate);
+        // History anchor: the first joining date is kept the first time this person is rehired, never overwritten.
+        employee.OriginalJoiningDate ??= DateOnly.FromDateTime(employee.JoiningDate);
         employee.Status = EmployeeStatuses.Draft;
         employee.JoiningDate = body.StartDate.Date;
         employee.ActivatedAtUtc = null;
@@ -228,11 +230,13 @@ public sealed class EmployeeHireController : ControllerBase
         return employee.CompanyId is null || scope.CanAccessCompany(employee.CompanyId) ? employee : null;
     }
 
-    private ObjectResult Problem(int status, string code, string detail)
+    private ObjectResult Problem(int status, string code, string detail) => BuildProblem(HttpContext.TraceIdentifier, status, code, detail);
+
+    internal static ObjectResult BuildProblem(string traceId, int status, string code, string detail)
     {
         var problem = new ProblemDetails { Status = status, Title = code, Detail = detail };
         problem.Extensions["code"] = code;
-        problem.Extensions["traceId"] = HttpContext.TraceIdentifier;
+        problem.Extensions["traceId"] = traceId;
         return new ObjectResult(problem) { StatusCode = status, ContentTypes = { "application/problem+json" } };
     }
 

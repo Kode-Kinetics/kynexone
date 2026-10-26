@@ -38,10 +38,14 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
     private readonly IHttpContextAccessor? _http;
+    private readonly Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard? _inputGuard;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHttpContextAccessor? httpContextAccessor = null)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHttpContextAccessor? httpContextAccessor = null, Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard? inputGuard = null)
     {
         _http = httpContextAccessor;
+        // Hire input guard (validation, references, acknowledgement). DI always supplies it in production;
+        // direct-construction test sites that predate it pass nothing and skip it.
+        _inputGuard = inputGuard;
         _db = db;
         _audit = audit;
         _documents = documents;
@@ -115,6 +119,8 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
+        // Onboarding input guard: exactly once, before anything is persisted or a code number is burnt.
+        if (_inputGuard is not null) request = await _inputGuard.EnforceCreateAsync(tenantId, request, context, cancellationToken);
         // ── HOME JURISDICTION PRECONDITION (server-authoritative) ───────────────────────────────────
         // The EMPLOYING company's country keys every statutory requirement (identity documents, leave
         // entitlements, activation gates). A blank one resolves an EMPTY requirement set, so the create
@@ -248,6 +254,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
         await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
+        await WriteWarningOverrideAuditAsync(employee.Id, request, context, cancellationToken);
         var workEmailHasExistingLogin = await WorkEmailLoginGuard.BelongsToExistingLoginAsync(_db, tenantId, employee.WorkEmail, cancellationToken);
         // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
         // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match
@@ -268,8 +275,23 @@ public class EmployeeManagementService : IEmployeeManagementService
         };
     }
 
+    /// <summary>
+    /// One <c>employee.warning_overridden</c> row per statutory warning the caller acknowledged. Codes and the
+    /// caller's reason only, never the values that tripped the warning. Written once the employee id exists; the
+    /// guard narrows <c>AcknowledgedWarnings</c> to the warnings it actually consumed.
+    /// </summary>
+    private async Task WriteWarningOverrideAuditAsync(int employeeId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct)
+    {
+        if (request.AcknowledgedWarnings is not { Count: > 0 } acks) return;
+        foreach (var ack in acks.Where(a => !string.IsNullOrWhiteSpace(a.Code)))
+            await _audit.WriteAsync("employee.warning_overridden", "Employee", employeeId.ToString(), context,
+                System.Text.Json.JsonSerializer.Serialize(new { code = ack.Code, reason = ack.Reason?.Trim() }), ct);
+    }
+
     public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
+        // Onboarding input guard: a request the guard already normalised (the draft autosave path) is not re-checked.
+        if (_inputGuard is not null) request = await _inputGuard.EnforceUpdateAsync(tenantId, id, request, context, cancellationToken);
         var publicId = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted)
             .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken);
         if (!publicId.HasValue) return null;
@@ -342,6 +364,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         updateAudit.CompanyId = employee.CompanyId;
         _db.AuditLogs.Add(updateAudit);
         await _db.SaveChangesAsync(cancellationToken);
+        await WriteWarningOverrideAuditAsync(id, request, context, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         // Same mask gate as GET {id} — see CreateAsync.
         var updated = await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);

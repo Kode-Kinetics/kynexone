@@ -158,7 +158,7 @@ public sealed class IdempotentEmployeeCreateFilter : IAsyncActionFilter
         return body is null ? new NotFoundResult() : new OkObjectResult(body);
     }
 
-    private static IActionResult Problem(HttpContext http, int status, string code, string detail, IDictionary<string, string[]>? errors)
+    internal static IActionResult Problem(HttpContext http, int status, string code, string detail, IDictionary<string, string[]>? errors)
     {
         var problem = new ProblemDetails { Status = status, Title = code, Detail = detail };
         problem.Extensions["code"] = code;

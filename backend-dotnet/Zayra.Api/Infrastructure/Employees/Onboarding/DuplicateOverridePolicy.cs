@@ -33,7 +33,7 @@ public static class DuplicateOverridePolicy
     }
 
     /// <summary>The 422 problem for a refused override, or null when the request may proceed.</summary>
-    public static ActionResult? Refusal(bool acknowledgeDuplicate, string? reason, bool holdsPermission)
+    public static ActionResult? Refusal(bool acknowledgeDuplicate, string? reason, bool holdsPermission, string? traceId = null)
     {
         var (status, code, detail) = Check(acknowledgeDuplicate, reason, holdsPermission) switch
         {
@@ -45,6 +45,7 @@ public static class DuplicateOverridePolicy
         var problem = new ProblemDetails { Status = status, Title = code, Detail = detail };
         problem.Extensions["code"] = code;
         problem.Extensions["message"] = detail;   // the legacy form shows data.message
+        if (traceId is not null) problem.Extensions["traceId"] = traceId;   // same envelope as every other onboarding problem
         return new ObjectResult(problem) { StatusCode = status, ContentTypes = { "application/problem+json" } };
     }
 

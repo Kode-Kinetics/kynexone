@@ -18,6 +18,9 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
     private readonly ZayraDbContext _db;
     private readonly IRequestEntityScopeResolver? _scope;
     private readonly ITenantClock? _clock;
+    // The last request this guard returned. Handing that same instance back in (the draft autosave path enforces
+    // as a draft, then the service enforces as an update) is not validated twice.
+    private EmployeeCreateRequest? _lastEnforced;
 
     public EmployeeInputGuard(ZayraDbContext db, IRequestEntityScopeResolver? scope = null, ITenantClock? clock = null)
     {
@@ -36,6 +39,7 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
     private async Task<EmployeeCreateRequest> RunAsync(
         Guid tenantId, int? employeeId, EmployeeCreateRequest request, EmployeeGuardMode mode, RequestContext context, CancellationToken ct)
     {
+        if (ReferenceEquals(request, _lastEnforced)) return request;
         var scope = _scope?.Resolve().ToEntityScopeContext() ?? EntityScopeContext.GroupLevel;
         var refs = new EmployeeReferenceValidator(_db);
         var mayOverride = context.Permissions?.Contains(OverridePermission) == true;
@@ -57,6 +61,7 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
         var today = _clock is not null ? await _clock.TodayAsync(tenantId, ct) : DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz));
         var result = EmployeeInputValidator.Validate(request, new EmployeeInputValidationContext(country, today, mode, tz));
 
+        var consumed = new Dictionary<string, AcknowledgedWarning>(StringComparer.Ordinal);
         // CD5: a checksum failure is waivable by an authorised caller with a reason; a format failure never is.
         foreach (var (field, codes) in result.Errors.ToList())
             if (codes.Remove(EmployeeWarningCodes.IdChecksumInvalid))
@@ -64,6 +69,7 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
                 if (acks.TryGetValue(EmployeeWarningCodes.IdChecksumInvalid, out var ack))
                 {
                     RequireAllowed(mayOverride); RequireReason(ack);
+                    consumed[EmployeeWarningCodes.IdChecksumInvalid] = ack;
                 }
                 else codes.Add(EmployeeWarningCodes.IdChecksumInvalid);
                 if (codes.Count == 0) result.Errors.Remove(field);
@@ -81,12 +87,16 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
         {
             if (!acks.TryGetValue(w.Code, out var ack)) { unacknowledged.Add(w); continue; }
             RequireReason(ack);
+            consumed[w.Code] = ack;
             if (w.RequiresPermission) RequireAllowed(mayOverride);
         }
         if (unacknowledged.Count > 0) throw new EmployeeWarningsRequireAckException(unacknowledged);
 
-        var normalised = result.Normalised;
-        return request.CompanyId is null && mode != EmployeeGuardMode.Update ? normalised with { CompanyId = refResult.Company.Id } : normalised;
+        // Only the acknowledgements that were actually needed travel on, so the audit row lists real overrides.
+        var normalised = result.Normalised with { AcknowledgedWarnings = consumed.Values.ToList() };
+        if (request.CompanyId is null && mode != EmployeeGuardMode.Update) normalised = normalised with { CompanyId = refResult.Company.Id };
+        _lastEnforced = normalised;
+        return normalised;
     }
 
     private static void RequireReason(AcknowledgedWarning ack)
