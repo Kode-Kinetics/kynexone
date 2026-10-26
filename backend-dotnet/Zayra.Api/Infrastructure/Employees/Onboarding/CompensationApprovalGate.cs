@@ -40,8 +40,12 @@ public static class CompensationApprovalGate
     public static async Task OpenAsync(ZayraDbContext db, Employee employee, RequestContext context, CancellationToken ct)
     {
         if (employee.TenantId is not Guid tenantId || employee.Id == 0) return;
-        var profile = await db.EmployeePayrollProfiles.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employee.Id && !p.IsDeleted, ct);
+        // The profile is staged by the caller in this same transaction and may not be saved yet, so the tracked copy
+        // wins over a database read (which would miss it and leave a hire with bank details and no approval gap).
+        var profile = db.EmployeePayrollProfiles.Local
+                .FirstOrDefault(p => p.TenantId == tenantId && p.EmployeeId == employee.Id && !p.IsDeleted)
+            ?? await db.EmployeePayrollProfiles.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employee.Id && !p.IsDeleted, ct);
         if (!CarriesCompensation(employee.Salary, profile?.Iban, profile?.AccountNumber)) return;
         if (await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == employee.Id
                 && g.GapType == GapType && g.ResolvedAtUtc == null, ct))
