@@ -298,10 +298,10 @@ public class EmployeeDuplicateDetectionTests
         await using var db = CreateDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: "1112223334");
+        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: TestIds.ValidIqama(1112223));
         var ctrl = BuildController(db, t);
 
-        var result = await ctrl.CreateEmployee(CreateReq("New Person", identity: ("iqama_number", "1112223334")), BuildService(db), CancellationToken.None);
+        var result = await ctrl.CreateEmployee(CreateReq("New Person", nationality: "Indian", identity: ("iqama_number", TestIds.ValidIqama(1112223))), BuildService(db), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
         Assert.Contains("possible_duplicate", JsonSerializer.Serialize(conflict.Value));
@@ -314,10 +314,10 @@ public class EmployeeDuplicateDetectionTests
         await using var db = CreateDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: "1112223334");
+        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: TestIds.ValidIqama(1112223));
         var ctrl = BuildController(db, t);
 
-        var result = await ctrl.CreateEmployee(CreateReq("New Person", ack: true, identity: ("iqama_number", "1112223334")), BuildService(db), CancellationToken.None);
+        var result = await ctrl.CreateEmployee(CreateReq("New Person", ack: true, nationality: "Indian", identity: ("iqama_number", TestIds.ValidIqama(1112223))), BuildService(db), CancellationToken.None);
 
         Assert.IsType<CreatedAtActionResult>(result.Result);
         Assert.Equal(2, await db.Employees.CountAsync(e => e.TenantId == t));
@@ -332,7 +332,7 @@ public class EmployeeDuplicateDetectionTests
         await SeedCompany(db, t, "Acme");
         var ctrl = BuildController(db, t);
 
-        var result = await ctrl.CreateEmployee(CreateReq("Fresh Hire", identity: ("iqama_number", "0001112223")), BuildService(db), CancellationToken.None);
+        var result = await ctrl.CreateEmployee(CreateReq("Fresh Hire", nationality: "Indian", identity: ("iqama_number", TestIds.ValidIqama(2223334))), BuildService(db), CancellationToken.None);
 
         Assert.IsType<CreatedAtActionResult>(result.Result);
         Assert.Equal(1, await db.Employees.CountAsync(e => e.TenantId == t));
@@ -352,14 +352,14 @@ public class EmployeeDuplicateDetectionTests
 
         // #1 created through the modal/create path with a national ID compliance record.
         var first = await BuildController(db, t)
-            .CreateEmployee(CreateReq("Faisal Al Saud", identity: ("id_number", "1098765432")), BuildService(db), CancellationToken.None);
+            .CreateEmployee(CreateReq("Faisal Al Saud", identity: ("id_number", TestIds.ValidNationalId(98765432))), BuildService(db), CancellationToken.None);
         Assert.IsType<CreatedAtActionResult>(first.Result);
         // The scalar the detector matches on must have been populated by the create mirror.
-        Assert.Equal("1098765432", await db.Employees.Where(e => e.TenantId == t).Select(e => e.IdNumber).SingleAsync());
+        Assert.Equal(TestIds.ValidNationalId(98765432), await db.Employees.Where(e => e.TenantId == t).Select(e => e.IdNumber).SingleAsync());
 
         // #2 with the SAME Hawiyya, no ack → strong duplicate → 409, no second record.
         var second = await BuildController(db, t)
-            .CreateEmployee(CreateReq("Different Name", identity: ("id_number", "1098765432")), BuildService(db), CancellationToken.None);
+            .CreateEmployee(CreateReq("Different Name", identity: ("id_number", TestIds.ValidNationalId(98765432))), BuildService(db), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(second.Result);
         Assert.Contains("possible_duplicate", JsonSerializer.Serialize(conflict.Value));

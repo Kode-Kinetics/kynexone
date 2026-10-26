@@ -54,6 +54,14 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public string EmergencyContactName { get; set; } = string.Empty;
     public string EmergencyContactPhone { get; set; } = string.Empty;
     public string Nationality { get; set; } = string.Empty;
+    /// <summary>ISO 3166 alpha-2 nationality. <see cref="Nationality"/> stays as the reader-compatible text mirror of the catalog's English name.</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(2)]
+    public string? NationalityCode { get; set; }
+    /// <summary>Unset | Confirmed | ProposedAuto | Unresolved. Nothing classifies off the code until HR confirms a class change.</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(12)]
+    public string NationalityMappingState { get; set; } = NationalityMappingStates.Unset;
+    /// <summary>The first joining date, kept when a rehire moves <see cref="JoiningDate"/>. History anchor only; EOSB continuity is not inferred.</summary>
+    public DateOnly? OriginalJoiningDate { get; set; }
     public string CountryCode { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public string Designation { get; set; } = string.Empty;
@@ -198,4 +206,14 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     /// preserves the audit trail and lets a later, fuller field-by-field merge key off it. Null = not merged.
     /// Additive/nullable (migration-discipline: ships with its index in one migration).</summary>
     public int? DuplicateOfEmployeeId { get; set; }
+}
+
+/// <summary>Values of <c>employees.nationality_mapping_state</c> (ck_employees__nationality_mapping_state).</summary>
+public static class NationalityMappingStates
+{
+    public const string Unset = "Unset";
+    public const string Confirmed = "Confirmed";
+    public const string ProposedAuto = "ProposedAuto";
+    public const string Unresolved = "Unresolved";
+    public static readonly string[] All = [Unset, Confirmed, ProposedAuto, Unresolved];
 }

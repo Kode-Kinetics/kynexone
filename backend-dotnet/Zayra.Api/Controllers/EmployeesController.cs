@@ -1192,6 +1192,7 @@ public class EmployeesController : ControllerBase
                 var resolvedDesigId = resolved.DesignationId;
                 AddUnparsedJoiningDateGap(resolved, joining);
                 foreach (var w in resolved.Warnings) RowWarn(rowNum, $"{w}");
+                if (resolved.Errors.Count > 0) { foreach (var e in resolved.Errors) RowError(rowNum, e); skipped++; Outcome(rowNum).Status = "Error"; continue; }
 
                 // ── Readiness landing decision (§7): blank ⇒ Draft; Active + activate-blockers ⇒ Draft + warning ──
                 var (rowStatus, rowReadiness, rowHasPolicy, rowPolicyCountry) = await ResolveRowLandingAsync(
