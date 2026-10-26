@@ -600,9 +600,9 @@ public class GlAdjustmentsController : ControllerBase
 }
 
 /// <summary>Signed: + raises the provision (DR 5110 / CR 2310), − lowers it.</summary>
-public record EosbTrueUpRequest(Guid? CompanyId, string? Period, decimal Amount, string? Reason, string? ReportReference);
+public record EosbTrueUpRequest(Guid? CompanyId, string? Period, decimal Amount, string? Reason, string? ReportReference, Guid? CostCenterId = null);
 /// <param name="SourceAccount">The legacy account label exactly as GET returns it ("2104 - …").</param>
 /// <param name="TargetAccountCode">Optional: a retained-earnings (Equity) or other expense account code for a
 /// prior, closed financial year. Omitted = the contra-expense the account now routes to (5008 / 5009).</param>
-public record LegacyAbsenceReclassRequest(Guid? CompanyId, string? SourceAccount, DateOnly AccountingDate, string? TargetAccountCode, string? Reason);
+public record LegacyAbsenceReclassRequest(Guid? CompanyId, string? SourceAccount, DateOnly AccountingDate, string? TargetAccountCode, string? Reason, Guid? CostCenterId = null);
 public record GlAdjustmentDecisionRequest(string? Note);
