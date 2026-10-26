@@ -9491,6 +9491,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("country_code");
 
+                    b.Property<Guid?>("CreateIdempotencyKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("create_idempotency_key");
+
+                    b.Property<string>("CreateRequestFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("create_request_fingerprint");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -9677,6 +9686,19 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("nationality");
 
+                    b.Property<string>("NationalityCode")
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)")
+                        .HasColumnName("nationality_code");
+
+                    b.Property<string>("NationalityMappingState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasDefaultValue("Unset")
+                        .HasColumnName("nationality_mapping_state");
+
                     b.Property<int?>("NoticePeriodDays")
                         .HasColumnType("integer")
                         .HasColumnName("notice_period_days");
@@ -9685,6 +9707,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("occupation_code");
+
+                    b.Property<DateOnly?>("OriginalJoiningDate")
+                        .HasColumnType("date")
+                        .HasColumnName("original_joining_date");
 
                     b.Property<DateOnly?>("PassportExpiryDate")
                         .HasColumnType("date")
@@ -9917,6 +9943,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_employees_nationality_review")
+                        .HasFilter("nationality_mapping_state IN ('ProposedAuto','Unresolved') AND NOT is_deleted");
+
                     b.HasIndex("TenantId", "BorderNumber")
                         .HasDatabaseName("ix_employees_dup_border_number")
                         .HasFilter("border_number <> ''");
@@ -9926,6 +9956,11 @@ namespace Zayra.Api.Migrations
                         .HasFilter("civil_id <> ''");
 
                     b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CreateIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_employees_tenant_create_idempotency_key")
+                        .HasFilter("create_idempotency_key IS NOT NULL");
 
                     b.HasIndex("TenantId", "DateOfBirth")
                         .HasDatabaseName("ix_employees_dup_dob");
@@ -9979,7 +10014,10 @@ namespace Zayra.Api.Migrations
                         .HasDatabaseName("ix_employees_occupancy")
                         .HasFilter("NOT is_deleted AND status IN ('Active','Offboarded','Suspended')");
 
-                    b.ToTable("employees", (string)null);
+                    b.ToTable("employees", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employees__nationality_mapping_state", "nationality_mapping_state IN ('Unset','Confirmed','ProposedAuto','Unresolved')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeAIQueryLog", b =>
