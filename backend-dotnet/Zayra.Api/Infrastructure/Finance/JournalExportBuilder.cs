@@ -343,7 +343,8 @@ public static class JournalExportBuilder
         IEnumerable<FinanceGlEntry> entries,
         Func<FinanceGlEntry, string> companyCodeOf,
         Func<FinanceGlEntry, string, string?>? externalCodeOf,
-        Func<FinanceGlEntry, string, bool?>? isProfitAndLoss = null)
+        Func<FinanceGlEntry, string, bool?>? isProfitAndLoss = null,
+        Func<FinanceGlEntry, int>? scaleOf = null)
     {
         var raw = new List<JournalExportLine>();
         foreach (var e in entries)
