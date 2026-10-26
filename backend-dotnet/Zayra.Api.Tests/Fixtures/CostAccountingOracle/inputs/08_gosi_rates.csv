@@ -1,0 +1,18 @@
+rule_key,value,applies_to,effective_from,used_for_oracle,note
+gosi.saudi_employee_rate,0.09,"Saudi, cohort PreJuly2024 or Unknown (annuities, employee)",pack default,yes,E001 E002 E005 E006
+gosi.saudi_employer_rate,0.09,"Saudi, cohort PreJuly2024 or Unknown (annuities, employer)",pack default,yes,
+gosi.new_entrant_employee_rate,0.09 / 0.095 / 0.10 / 0.105 / 0.11,"Saudi, cohort NewEntrant (first GOSI registration >= 2024-07-03)",2024-07-01 / 2025-07-01 / 2026-07-01 / 2027-07-01 / 2028-07-01,0.10 (period 2026-09 and 2026-10),E008 only
+gosi.new_entrant_employer_rate,0.09 / 0.095 / 0.10 / 0.105 / 0.11,as above (employer),as above,0.10,
+gosi.saned_rate,0.0075,"Saudi, each side",pack default,yes,not applied to non-Saudi
+gosi.expat_occupational_hazard_rate,0.02,employer; every employee (Saudi and non-Saudi),pack default,yes,component GOSI-OH-ER
+gosi.covered_wage_ceiling_sar,45000,monthly cap on basic+housing,pack default,yes,no employee exceeds it
+gosi.covered_wage_floor_sar,(not seeded),,,no,no clamping floor
+gosi.covered_wage_min_annuities_sar / ..._occupational_hazards_sar,1500 / 400,validator warning only,pack default,no,not a clamp
+,, ,,,
+"COMPONENTS (rounded separately per employee, Math.Round 2dp half-even in the app, half-up here - see README flag F-ROUND)",,,,,
+GOSI-ANN-EE,covered wage x annuity rate,Saudi,,,DED:STATUTORY_EE -> 2101
+GOSI-SANED-EE,covered wage x 0.0075,Saudi,,,DED:STATUTORY_EE -> 2101
+GOSI-ANN-ER,covered wage x annuity rate,Saudi,,,"employer; DED:STATUTORY_ER -> 2106, pair DR 5101"
+GOSI-SANED-ER,covered wage x 0.0075,Saudi,,,employer
+GOSI-OH-ER,covered wage x 0.02,everyone,,,employer
+covered wage,basic + housing (+ GOSI-included bonus in housing slot; oracle bonuses are NOT GOSI-included),,,,

@@ -1,0 +1,32 @@
+cost_centre_code,account_code,account_name,debit,credit,net_dr_minus_cr
+CC-100,5001,Basic Salary Expense,10000.00,0.00,10000.00
+CC-100,5002,Housing Allowance Expense,2500.00,0.00,2500.00
+CC-100,5003,Transport Allowance Expense,800.00,0.00,800.00
+CC-100,5101,Employer Social Insurance Expense,250.00,0.00,250.00
+CC-110,5001,Basic Salary Expense,51000.00,0.00,51000.00
+CC-110,5002,Housing Allowance Expense,12750.00,0.00,12750.00
+CC-110,5003,Transport Allowance Expense,3800.00,0.00,3800.00
+CC-110,5101,Employer Social Insurance Expense,6515.64,0.00,6515.64
+CC-110,6100,Employee Bonus Expense,1000.01,0.00,1000.01
+CC-200,5001,Basic Salary Expense,58666.66,0.00,58666.66
+CC-200,5002,Housing Allowance Expense,14666.66,0.00,14666.66
+CC-200,5003,Transport Allowance Expense,4166.67,0.00,4166.67
+CC-200,5004,Other Allowances Expense,600.00,0.00,600.00
+CC-200,5005,Overtime Expense,2222.22,0.00,2222.22
+CC-200,5101,Employer Social Insurance Expense,6437.50,0.00,6437.50
+CC-200,5110,End of Service Benefit Expense,31156.16,0.00,31156.16
+CC-200,5111,Leave Encashment Expense,2000.00,0.00,2000.00
+CC-200,5113,Final Settlement Deductions (contra),300.00,300.00,0.00
+CC-200,6100,Employee Bonus Expense,1000.00,0.00,1000.00
+CC-300,5001,Basic Salary Expense,18000.00,0.00,18000.00
+CC-300,5002,Housing Allowance Expense,4500.00,0.00,4500.00
+CC-300,5003,Transport Allowance Expense,2600.00,0.00,2600.00
+CC-300,5011,Direct Labour - Basic (COGS),18000.00,0.00,18000.00
+CC-300,5012,Direct Labour - Housing (COGS),4500.00,0.00,4500.00
+CC-300,5101,Employer Social Insurance Expense,2606.26,0.00,2606.26
+CC-300,6100,Employee Bonus Expense,999.99,0.00,999.99
+CC-100,TOTAL,P&L net by cost centre,,,13550.00
+CC-110,TOTAL,P&L net by cost centre,,,75065.65
+CC-200,TOTAL,P&L net by cost centre,,,120915.87
+CC-300,TOTAL,P&L net by cost centre,,,51206.25
+ALL,TOTAL,P&L net all cost centres,,,260737.77

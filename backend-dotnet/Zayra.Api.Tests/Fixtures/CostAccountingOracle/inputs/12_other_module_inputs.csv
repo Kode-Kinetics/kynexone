@@ -1,0 +1,18 @@
+item,employee_code,period,value,detail
+bonus_batch_B1,E001,2026-09,1000.00,approved 2026-09; accrual booked 2899.99 in total (A-BON-1)
+bonus_batch_B1,E002,2026-09,1000.00,
+bonus_batch_B1,E005,2026-09,1000.00,
+bonus_accrued_total,,2026-09,2899.99,un-accrued remainder 100.01 is expensed by payroll Lock
+loan_instalment,E002,2026-09/10,500.00,DED:LOAN -> 2107; loan origination predates M1 and is out of scope
+advance_issued,E003,2026-09,1200.00,"J-ADV-ISS DR 1410 / CR 1000, both uncosted"
+advance_recovery,E003,2026-10,400.00,DED:LOAN -> 2107 via component ADV_RECOVERY
+settlement_wage_base,E009,2026-09,8000.00,basic+housing+transport
+settlement_hire_date,E009,,2020-05-01,
+settlement_last_day,E009,,2026-09-20,
+settlement_service_days_inclusive,E009,,2334,years = 2334/365 = 6.394521
+settlement_eosb,E009,2026-09,31156.16,"0.5*8000*5 + 8000*(6.394521-5), employer termination, Art.84"
+settlement_leave_encashment,E009,2026-09,2000.00,7.5 days x wage/30
+settlement_gross,E009,2026-09,33156.16,
+settlement_recovery,E009,2026-09,300.00,unreturned asset; DED:SETTLEMENT_RECOVERY -> contra 5113
+settlement_approval_date,E009,2026-09,2026-09-21,CC at approval date = CC-200
+E009_prorata,E009,2026-09,20/30,each salary component rounded half-up after proration

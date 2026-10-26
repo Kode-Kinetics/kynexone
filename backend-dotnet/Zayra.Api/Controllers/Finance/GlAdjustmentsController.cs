@@ -37,6 +37,7 @@ namespace Zayra.Api.Controllers.Finance;
 [ApiController]
 [Route("api/finance/gl")]
 [Authorize]
+[Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilter]
 public class GlAdjustmentsController : ControllerBase
 {
     private readonly ZayraDbContext _db;

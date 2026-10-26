@@ -1,0 +1,11 @@
+employee_code,nationality,department,position,override_cost_centre,cost_centre_is_override,basic,housing,transport,hire_date,gosi_cohort,gosi_first_registered_on,note
+E001,Saudi,D-FIN,P-GEN,,false,15000.00,3750.00,1000.00,2022-01-01,PreJuly2024,2019-03-01,dept CC; bonus
+E002,Saudi,D-SAL,P-GEN,,false,9000.00,2250.00,750.00,2022-01-01,PreJuly2024,2021-06-01,dept CC; loan deduction; bonus
+E003,Expat,D-SAL,P-GEN,,false,8000.00,2000.00,500.00,2022-01-01,n/a,,"dept CC; other allowance 300; advance issued M1, recovered M2"
+E004,Expat,D-OPS,P-TECH,,false,5000.00,1250.00,400.00,2022-01-01,n/a,,dept+position have no CC -> company default CC-100
+E005,Saudi,D-OPS,P-SUPV,,false,7000.00,1750.00,500.00,2022-01-01,PreJuly2024,2018-01-01,position CC-300; bonus
+E006,Saudi,D-FIN,P-GEN,,false,6500.00,1625.00,600.00,2022-01-01,Unknown,,transferred D-SAL->D-FIN on 2026-09-16; v1 rule: CC current at Lock (CC-110) for the WHOLE month
+E007,Expat,D-FIN,P-GEN,CC-300,true,11000.00,2750.00,800.00,2022-01-01,n/a,,explicit override CC-300 (department is Finance)
+E008,Saudi,D-SAL,P-GEN,,false,10333.33,2583.33,666.67,2022-01-01,NewEntrant,2025-02-10,halala-awkward salary; overtime
+E009,Expat,D-SAL,P-GEN,,false,6000.00,1500.00,500.00,2020-05-01,n/a,,terminated 2026-09-20; final settlement + EOSB
+E010,Expat,D-SUP,P-GEN,,false,4000.00,1000.00,300.00,2022-01-01,n/a,,dept has no CC; parent dept Finance CC-110

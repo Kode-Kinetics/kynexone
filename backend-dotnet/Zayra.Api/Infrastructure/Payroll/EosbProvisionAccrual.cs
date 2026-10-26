@@ -44,7 +44,10 @@ public static class EosbProvisioningRateKeys
 /// <summary>One employee's measured obligation, ready for the planner.</summary>
 public sealed record EosbObligation(
     int EmployeeId, string EmployeeCode, decimal Obligation, decimal CarriedBefore, bool IsCatchUp,
-    decimal WageBase, decimal ServiceYears, string Rule);
+    decimal WageBase, decimal ServiceYears, string Rule, Guid? CostCentreId = null);
+
+/// <summary>Cost-accounting context for the planner: the expense side splits per cost centre and every line gets a posting key.</summary>
+public sealed record EosbCostContext(GlResolutionContext Gl);
 
 /// <summary>
 /// POD-C2 — turns measured obligations into the provision lines of a payroll Lock journal and the
@@ -67,21 +70,51 @@ public static class EosbProvisionPlanner
     public static (List<FinanceGlEntry> Lines, List<EosbProvisionSnapshot> Snapshots) Build(
         Guid tenantId, Guid? companyId, Guid runId, string period, DateOnly measuredAt, string currency,
         string expenseAccount, string provisionAccount, IEnumerable<EosbObligation> obligations,
-        Guid? postedBy, string postedByName, DateOnly entryDate)
+        Guid? postedBy, string postedByName, DateOnly entryDate, EosbCostContext? cost = null)
     {
         var lines = new List<FinanceGlEntry>();
         var snapshots = new List<EosbProvisionSnapshot>();
-        decimal catchUpRise = 0m, monthlyRise = 0m, fall = 0m;
+        // Per cost centre when costing is on (one bucket, key null, when it is off — the pre-cost-accounting lines exactly).
+        // Keyed by cost centre id, Guid.Empty = no cost centre (a dictionary cannot hold a null key).
+        var catchUpRise = new Dictionary<Guid, decimal>();
+        var monthlyRise = new Dictionary<Guid, decimal>();
+        var fall = new Dictionary<Guid, decimal>();
+        var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
+        var gl = cost?.Gl;
 
-        FinanceGlEntry Line(string debit, string credit, decimal amount, string description, string entityRef) => new()
+        FinanceGlEntry Line(string debit, string credit, decimal amount, string description, string entityRef, Guid? ccId = null)
         {
-            TenantId = tenantId, CompanyId = companyId,
-            SourceModule = FinalSettlementGlDescriptions.SourceModule, SourceEntityId = runId,
-            SourceEntityRef = entityRef, EventType = GlEventTypes.EosbProvisionAccrual,
-            DebitAccount = debit, CreditAccount = credit, Amount = amount, Currency = currency,
-            EntryDate = entryDate, Period = period, Description = description,
-            PostedBy = postedBy, PostedByName = postedByName,
-        };
+            var line = new FinanceGlEntry
+            {
+                TenantId = tenantId, CompanyId = companyId,
+                SourceModule = FinalSettlementGlDescriptions.SourceModule, SourceEntityId = runId,
+                SourceEntityRef = entityRef, EventType = GlEventTypes.EosbProvisionAccrual,
+                DebitAccount = debit, CreditAccount = credit, Amount = amount, Currency = currency,
+                EntryDate = entryDate, Period = period, Description = description,
+                PostedBy = postedBy, PostedByName = postedByName,
+            };
+            if (gl is null) return line;
+            if (ccId is Guid g && gl.CostCentres.TryGetValue(g, out var info))
+            {
+                line.CostCenterId = g; line.CostCenterCode = info.Code; line.CostCenterName = info.Name; line.CostCenterGlSegment = info.GlSegment;
+            }
+            var side = string.IsNullOrEmpty(debit) ? "CR" : "DR";
+            var basis = $"{entityRef}|{side}|{description}|{ccId?.ToString("N") ?? "-"}";
+            var ordinal = keyOrdinals.GetValueOrDefault(basis);
+            keyOrdinals[basis] = ordinal + 1;
+            line.PostingKey = PayrollCostStamper.PostingKey(runId, GlEventTypes.EosbProvisionAccrual, entityRef, side,
+                ccId is null ? "EOSB_PROVISION" : "EARN:EOSB", description, "Eosb", ccId, ordinal);
+            return line;
+        }
+        string ExpenseAt(Guid? ccId)
+        {
+            if (gl is null) return expenseAccount;
+            var (code, name) = GlAccountResolver.AccountFor("EARN:EOSB", PayrollCostStamper.ClassOf(ccId, gl), gl);
+            return $"{code} - {name}";
+        }
+        string CcCode(Guid id) => gl is not null && gl.CostCentres.TryGetValue(id, out var c) ? c.Code : string.Empty;
+        void Add(Dictionary<Guid, decimal> bucket, Guid? cc, decimal amount) { var k = cc ?? Guid.Empty; bucket[k] = bucket.GetValueOrDefault(k) + amount; }
+        static Guid? Real(Guid id) => id == Guid.Empty ? null : id;
 
         foreach (var o in obligations.OrderBy(o => o.EmployeeId))
         {
@@ -94,7 +127,7 @@ public static class EosbProvisionPlanner
                 MeasuredAt = measuredAt, PayrollRunId = runId, Obligation = obligation,
                 CarriedBefore = carried, Movement = movement, IsCatchUp = o.IsCatchUp,
                 WageBase = Math.Round(o.WageBase, 2), ServiceYears = Math.Round(o.ServiceYears, 4),
-                Currency = currency, Rule = o.Rule,
+                Currency = currency, Rule = o.Rule, CostCenterId = gl is null ? null : o.CostCentreId,
             });
             if (movement == 0m) continue;
 
@@ -103,18 +136,21 @@ public static class EosbProvisionPlanner
             if (movement > 0m)
             {
                 lines.Add(Line(string.Empty, provisionAccount, movement, $"{label}: {o.EmployeeCode}", employeeRef));
-                if (o.IsCatchUp) catchUpRise += movement; else monthlyRise += movement;
+                if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
             }
             else
             {
                 lines.Add(Line(provisionAccount, string.Empty, -movement, $"{label}: {o.EmployeeCode}", employeeRef));
-                fall += -movement;
+                Add(fall, gl is null ? null : o.CostCentreId, -movement);
             }
         }
 
-        if (catchUpRise > 0m) lines.Add(Line(expenseAccount, string.Empty, catchUpRise, CatchUpLabel, period));
-        if (monthlyRise > 0m) lines.Add(Line(expenseAccount, string.Empty, monthlyRise, MonthlyLabel, period));
-        if (fall > 0m)        lines.Add(Line(string.Empty, expenseAccount, fall, ReleaseLabel, period));
+        foreach (var (key, amount) in catchUpRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
+            lines.Add(Line(ExpenseAt(Real(key)), string.Empty, amount, CatchUpLabel, period, Real(key)));
+        foreach (var (key, amount) in monthlyRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
+            lines.Add(Line(ExpenseAt(Real(key)), string.Empty, amount, MonthlyLabel, period, Real(key)));
+        foreach (var (key, amount) in fall.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
+            lines.Add(Line(string.Empty, ExpenseAt(Real(key)), amount, ReleaseLabel, period, Real(key)));
         return (lines, snapshots);
     }
 }

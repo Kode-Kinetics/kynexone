@@ -1,0 +1,6 @@
+journal_id,line_no,period,event_type,driver_key,account_code,account_name,side,amount,cost_centre_code,cc_functional_class,description
+VOID-RUN-OC-2026-09,1,2026-10,PayrollVoid,SETTLEMENT_PAYABLE,2320,Final Settlement Payable,CR,33156.16,,,Void contra: Settlement payroll clearing
+VOID-RUN-OC-2026-09,2,2026-10,PayrollVoid,DED:SETTLEMENT_RECOVERY,5113,Final Settlement Deductions (contra),DR,300.00,CC-200,SELLING,Void contra: Payroll deduction: SETTLEMENT_RECOVERY
+VOID-RUN-OC-2026-09,3,2026-10,PayrollVoid,NET_PAYABLE,2100,Salaries Payable,DR,32856.16,,,Void contra: Net salaries payable
+RUN-OC-2026-09-R1,1,2026-10,SettlementPayrollClearing,SETTLEMENT_PAYABLE,2320,Final Settlement Payable,DR,33156.16,,,Settlement payroll clearing
+RUN-OC-2026-09-R1,2,2026-10,PayrollLock,NET_PAYABLE,2100,Salaries Payable,CR,33156.16,,,Net salaries payable

@@ -73,6 +73,10 @@ public partial class LoansController
     {
         var reversal = await AddLoanJournalAsync(loan, original.SourceEntityId, eventType, original.CompanyId,
             original.Currency, original.CreditAccount, original.DebitAccount, original.Amount, date, ct, original.Id);
+        // AM-25: a contra copies the cost centre id and its three snapshots verbatim, and carries the reversal key.
+        reversal.CostCenterId = original.CostCenterId; reversal.CostCenterCode = original.CostCenterCode;
+        reversal.CostCenterName = original.CostCenterName; reversal.CostCenterGlSegment = original.CostCenterGlSegment;
+        reversal.PostingKey = Zayra.Api.Infrastructure.Payroll.PayrollCostStamper.ReversalKey(original.Id);
         original.IsReversed = true;
         return reversal;
     }

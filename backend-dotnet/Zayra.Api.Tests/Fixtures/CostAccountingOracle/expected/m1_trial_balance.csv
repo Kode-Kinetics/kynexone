@@ -1,0 +1,19 @@
+account_code,account_name,type,debit,credit,net_dr_minus_cr
+1000,Cash/Bank,Asset,0.00,1200.00,-1200.00
+1410,Employee Salary Advances,Asset,1200.00,0.00,1200.00
+2100,Salaries Payable,Liability,0.00,136573.52,-136573.52
+2101,Social Insurance Payable (Employee),Liability,0.00,5958.87,-5958.87
+2106,Social Insurance Employer Payable,Liability,0.00,7954.70,-7954.70
+2107,Loan & Advance Deductions Payable,Liability,0.00,500.00,-500.00
+2300,Bonus Payable,Liability,2899.99,2899.99,0.00
+2320,Final Settlement Payable,Liability,33156.16,33156.16,0.00
+5001,Basic Salary Expense,Expense,79833.33,0.00,79833.33
+5002,Housing Allowance Expense,Expense,19958.33,0.00,19958.33
+5003,Transport Allowance Expense,Expense,5850.00,0.00,5850.00
+5004,Other Allowances Expense,Expense,300.00,0.00,300.00
+5005,Overtime Expense,Expense,1234.57,0.00,1234.57
+5101,Employer Social Insurance Expense,Expense,7954.70,0.00,7954.70
+5110,End of Service Benefit Expense,Expense,31156.16,0.00,31156.16
+5111,Leave Encashment Expense,Expense,2000.00,0.00,2000.00
+5113,Final Settlement Deductions (contra),Expense,0.00,300.00,-300.00
+6100,Employee Bonus Expense,Expense,3000.00,0.00,3000.00

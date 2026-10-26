@@ -1,0 +1,22 @@
+effective_months,scope,driver_key,functional_class,account_code,note
+M1+M2,tenant default,EARN:BASIC,,5001,driver default
+M1+M2,tenant default,EARN:HOUSING,,5002,driver default
+M1+M2,tenant default,EARN:TRANSPORT,,5003,driver default
+M1+M2,tenant default,EARN:OTHER_ALLOWANCES,,5004,driver default
+M1+M2,tenant default,EARN:OVERTIME,,5005,driver default
+M1+M2,tenant default,EARN:BONUS,,6100,driver default
+M1+M2,tenant default,EARN:EOSB,,5110,driver default
+M1+M2,tenant default,EARN:LEAVE_ENCASHMENT,,5111,driver default
+M1+M2,tenant default,DED:STATUTORY_EE,,2101,driver default
+M1+M2,tenant default,DED:STATUTORY_ER,,2106,driver default
+M1+M2,tenant default,DED:LOAN,,2107,driver default
+M1+M2,tenant default,DED:SETTLEMENT_RECOVERY,,5113,driver default
+M1+M2,tenant default,EMPLOYER_STATUTORY_EXPENSE,,5101,driver default
+M1+M2,tenant default,NET_PAYABLE,,2100,driver default
+M1+M2,tenant default,BONUS_PAYABLE,,2300,driver default
+M1+M2,tenant default,SETTLEMENT_PAYABLE,,2320,driver default
+M1+M2,tenant default,ADVANCE_RECEIVABLE,,1410,driver default
+M1+M2,tenant default,CASH_BANK,,1000,driver default
+M1+M2,tenant default,ROUNDING,,5199,driver default
+M2 only,company,EARN:BASIC,COGS,5011,re-route by functional class COGS (cost centre CC-300); saved between M1 Lock and M2 Process
+M2 only,company,EARN:HOUSING,COGS,5012,re-route by functional class COGS (cost centre CC-300); saved between M1 Lock and M2 Process
