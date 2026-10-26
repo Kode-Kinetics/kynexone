@@ -508,9 +508,10 @@ public class OrganizationStructureImportController : ControllerBase
                 && ((departmentBranch is not null && departmentBranch.CompanyId != owner)
                     || (departmentCostCenter is not null && departmentCostCenter.CompanyId != owner)))
                 throw new InvalidOperationException($"Department '{code}' links a branch or cost center of another company.");
-            department.BranchId = departmentBranch?.Id;
-            department.CostCenterId = departmentCostCenter?.Id;
-            department.ManagerEmployeeId = string.IsNullOrWhiteSpace(Val(row, "ManagerEmployeeCode")) ? null : employeesByCode[Val(row, "ManagerEmployeeCode").ToUpperInvariant()].Id;
+            // A blank link cell leaves an existing row's link unchanged.
+            if (departmentBranch is not null) department.BranchId = departmentBranch.Id;
+            if (departmentCostCenter is not null) department.CostCenterId = departmentCostCenter.Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "ManagerEmployeeCode"))) department.ManagerEmployeeId = employeesByCode[Val(row, "ManagerEmployeeCode").ToUpperInvariant()].Id;
             department.ApprovedHeadcount = Int(row, "ApprovedHeadcount");
             department.MonthlyBudgetAmount = Dec(row, "MonthlyBudgetAmount");
             department.IsActive = Bool(row, "IsActive", true);
@@ -580,11 +581,14 @@ public class OrganizationStructureImportController : ControllerBase
             designation.TitleEn = Val(row, "TitleEn");
             designation.TitleAr = Val(row, "TitleAr");
             var designationDepartment = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()];
-            designation.DepartmentId = designationDepartment?.Id;
+            if (designationDepartment is not null) designation.DepartmentId = designationDepartment.Id;
             designation.CompanyId ??= designationDepartment?.CompanyId ?? onlyCompanyId;
             var gradeCode = Val(row, "GradeCode", Val(row, "JobGrade"));
-            designation.GradeId = string.IsNullOrWhiteSpace(gradeCode) ? null : grades[gradeCode.ToUpperInvariant()].Id;
-            designation.JobGrade = gradeCode;
+            if (!string.IsNullOrWhiteSpace(gradeCode))
+            {
+                designation.GradeId = grades[gradeCode.ToUpperInvariant()].Id;
+                designation.JobGrade = gradeCode;
+            }
             designation.JobLevel = Val(row, "JobLevel");
             designation.JobDescription = Val(row, "JobDescription");
             designation.IsManagerRole = Bool(row, "IsManagerRole", false);
@@ -609,15 +613,36 @@ public class OrganizationStructureImportController : ControllerBase
                 Bump("positions");
             }
             position.Title = Val(row, "Title");
-            position.CompanyId = string.IsNullOrWhiteSpace(Val(row, "CompanyLegalName")) ? null : companies[Val(row, "CompanyLegalName").ToUpperInvariant()].Id;
+            var previousCompanyId = _db.Entry(position).State == EntityState.Added ? (Guid?)null : position.CompanyId;
+            if (!string.IsNullOrWhiteSpace(Val(row, "CompanyLegalName"))) position.CompanyId = companies[Val(row, "CompanyLegalName").ToUpperInvariant()].Id;
             var positionBranchCode = Val(row, "BranchCode").ToUpperInvariant();
-            position.BranchId = string.IsNullOrWhiteSpace(positionBranchCode) ? null
-                : position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
-                : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
-            position.DepartmentId = string.IsNullOrWhiteSpace(Val(row, "DepartmentCode")) ? null : departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
-            position.CostCenterId = string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")) ? null : CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode")).Id;
-            position.DesignationId = string.IsNullOrWhiteSpace(Val(row, "DesignationCode")) ? null : designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
-            position.GradeId = string.IsNullOrWhiteSpace(Val(row, "GradeCode")) ? null : grades[Val(row, "GradeCode").ToUpperInvariant()].Id;
+            if (!string.IsNullOrWhiteSpace(positionBranchCode))
+                position.BranchId = position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
+                    : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "DepartmentCode"))) position.DepartmentId = departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "CostCenterCode"))) position.CostCenterId = CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode")).Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "DesignationCode"))) position.DesignationId = designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "GradeCode"))) position.GradeId = grades[Val(row, "GradeCode").ToUpperInvariant()].Id;
+            // A blank cell keeps a link, so a position moved to another company must not carry the old company's
+            // branch, department, cost center, designation or grade along with it.
+            if (previousCompanyId is not null && position.CompanyId is Guid newCompanyId && newCompanyId != previousCompanyId)
+            {
+                var foreign = new List<string>();
+                async Task CheckLink<T>(DbSet<T> set, Guid? linkId, Func<T, Guid?> companyOf, string label) where T : class
+                {
+                    if (linkId is not Guid id) return;
+                    var linked = await set.FindAsync(new object[] { id }, ct);
+                    if (linked is not null && companyOf(linked) is Guid owner && owner != newCompanyId) foreign.Add(label);
+                }
+                await CheckLink(_db.Branches, position.BranchId, b => b.CompanyId, "branch");
+                await CheckLink(_db.Departments, position.DepartmentId, d => d.CompanyId, "department");
+                await CheckLink(_db.CostCenters, position.CostCenterId, c => c.CompanyId, "cost center");
+                await CheckLink(_db.Designations, position.DesignationId, d => d.CompanyId, "designation");
+                await CheckLink(_db.Grades, position.GradeId, g => g.CompanyId, "grade");
+                if (foreign.Count > 0)
+                    throw new InvalidOperationException(
+                        $"Position '{code}' moves to another company but keeps its {string.Join(", ", foreign)} from the previous company. Give the new company's {string.Join(", ", foreign)} in the same row.");
+            }
             position.Fte = Dec(row, "Fte", 1m);
             position.BudgetedMonthlyCost = Dec(row, "BudgetedMonthlyCost");
             position.Currency = Val(row, "Currency", "SAR").ToUpperInvariant();
@@ -793,6 +818,7 @@ public class OrganizationStructureImportController : ControllerBase
         AddRows("positions", parsed.Positions, "Code", "Title", required: ["Code", "Title"], known: positionCodes, rows,
             refs: [("CompanyLegalName", companyNames, "Company"), ("BranchCode", branchCodes, "Branch"), ("DepartmentCode", departmentCodes, "Department"), ("CostCenterCode", costCenterCodes, "Cost center"), ("DesignationCode", designationCodes, "Designation"), ("GradeCode", gradeCodes, "Grade")]);
         AddPositionSanityRows(parsed.Positions, rows);
+        await AddPositionCompanyMoveRowsAsync(tenantId, parsed.Positions, companyIdsByName, rows, ct);
         await AddFormGateRowsAsync(tenantId, parsed, rows, ct);
 
         var parentMap = parsed.Departments
@@ -1124,6 +1150,61 @@ public class OrganizationStructureImportController : ControllerBase
                 errors.Add($"Status '{status}' is not valid");
             if (errors.Count > 0)
                 rows.Add(new ImportRowResult(i + 2, $"positions:{code}", Val(row, "Title"), ImportRowStatus.Error, errors, []));
+        }
+    }
+
+    /// <summary>A blank link cell keeps the saved link, so a row that moves a saved position to another company
+    /// must name that company's branch, department, cost center, designation and grade wherever the saved link
+    /// belongs to a different company. Otherwise the position would sit in one company with another's links.</summary>
+    private async Task AddPositionCompanyMoveRowsAsync(Guid tenantId, IReadOnlyList<Dictionary<string, string>> source,
+        Dictionary<string, Guid> companyIdsByName, List<ImportRowResult> rows, CancellationToken ct)
+    {
+        var moving = source
+            .Select((row, i) => (Row: row, Index: i))
+            .Where(x => !string.IsNullOrWhiteSpace(Val(x.Row, "CompanyLegalName")) && companyIdsByName.ContainsKey(Val(x.Row, "CompanyLegalName")))
+            .ToList();
+        if (moving.Count == 0) return;
+
+        var codes = moving.Select(x => Val(x.Row, "Code").ToUpperInvariant()).ToHashSet();
+        var saved = (await _db.Positions.AsNoTracking()
+                .Where(p => p.TenantId == tenantId && !p.IsDeleted)
+                .Select(p => new { p.Code, p.CompanyId, p.BranchId, p.DepartmentId, p.CostCenterId, p.DesignationId, p.GradeId })
+                .ToListAsync(ct))
+            .Where(p => codes.Contains(p.Code.ToUpperInvariant()))
+            .GroupBy(p => p.Code.ToUpperInvariant())
+            .Where(g => g.Count() == 1)
+            .ToDictionary(g => g.Key, g => g.Single());
+        if (saved.Count == 0) return;
+
+        async Task<Dictionary<Guid, Guid?>> CompanyOf<T>(IQueryable<T> set, Func<T, Guid> id, Func<T, Guid?> company) where T : class =>
+            (await set.ToListAsync(ct)).ToDictionary(id, company);
+        var branchCompany = await CompanyOf(_db.Branches.AsNoTracking().Where(x => x.TenantId == tenantId), x => x.Id, x => x.CompanyId);
+        var departmentCompany = await CompanyOf(_db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId), x => x.Id, x => x.CompanyId);
+        var costCenterCompany = await CompanyOf(_db.CostCenters.AsNoTracking().Where(x => x.TenantId == tenantId), x => x.Id, x => x.CompanyId);
+        var designationCompany = await CompanyOf(_db.Designations.AsNoTracking().Where(x => x.TenantId == tenantId), x => x.Id, x => x.CompanyId);
+        var gradeCompany = await CompanyOf(_db.Grades.AsNoTracking().Where(x => x.TenantId == tenantId), x => x.Id, x => x.CompanyId);
+
+        foreach (var (row, i) in moving)
+        {
+            var code = Val(row, "Code");
+            if (!saved.TryGetValue(code.ToUpperInvariant(), out var position)) continue;
+            var target = companyIdsByName[Val(row, "CompanyLegalName")];
+            if (position.CompanyId == target) continue;
+
+            var kept = new List<string>();
+            void Check(string cell, Guid? linkId, Dictionary<Guid, Guid?> companyOf, string label)
+            {
+                if (!string.IsNullOrWhiteSpace(Val(row, cell)) || linkId is not Guid id) return;
+                if (companyOf.TryGetValue(id, out var owner) && owner is Guid o && o != target) kept.Add(label);
+            }
+            Check("BranchCode", position.BranchId, branchCompany, "branch");
+            Check("DepartmentCode", position.DepartmentId, departmentCompany, "department");
+            Check("CostCenterCode", position.CostCenterId, costCenterCompany, "cost center");
+            Check("DesignationCode", position.DesignationId, designationCompany, "designation");
+            Check("GradeCode", position.GradeId, gradeCompany, "grade");
+            if (kept.Count > 0)
+                rows.Add(new ImportRowResult(i + 2, $"positions:{code}", Val(row, "Title"), ImportRowStatus.Error,
+                    [$"This row moves the position to '{Val(row, "CompanyLegalName")}', but its saved {string.Join(", ", kept)} belong to another company. Give the new company's {string.Join(", ", kept)} in this row."], []));
         }
     }
 

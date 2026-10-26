@@ -602,6 +602,42 @@ public class BranchCompanyScopeTests
         (await db.CostCenters.SingleAsync(c => c.Code == "CC-NEW")).CompanyId.Should().Be(w.A.Id);
     }
 
+    [Fact]
+    public async Task CostCenter_ImportOfATenantWideCode_CompanyScopedCallerIsRefused_RowStaysTenantWide()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var cc = await SeedCostCenters(db, w);
+
+        var result = (ImportCommitResult)((OkObjectResult)await CostCenters(db, Caller(w.TenantId, null, w.A.Id))
+            .Import(new CostCenterImportRequest("Code,Name,IsActive\nCC-G,Renamed by company,true"), CancellationToken.None)).Value!;
+
+        result.Rows.Single().Status.Should().Be(ImportRowStatus.Error);
+        result.Updated.Should().Be(0);
+        db.ChangeTracker.Clear();
+        var saved = await db.CostCenters.SingleAsync(c => c.Id == cc.Shared.Id);
+        saved.CompanyId.Should().BeNull();
+        saved.Name.Should().Be("Group");
+    }
+
+    [Fact]
+    public async Task CostCenter_ImportOfATenantWideCode_GroupCallerUpdatesIt_AndItStaysTenantWide()
+    {
+        await using var db = Db();
+        var w = await Seed(db);
+        var cc = await SeedCostCenters(db, w);
+
+        var result = (ImportCommitResult)((OkObjectResult)await CostCenters(db, Caller(w.TenantId))
+            .Import(new CostCenterImportRequest("Code,Name,IsActive\nCC-G,Group renamed,true", w.A.Id), CancellationToken.None)).Value!;
+
+        result.Rows.Single().Status.Should().Be(ImportRowStatus.Ok);
+        result.Updated.Should().Be(1);
+        db.ChangeTracker.Clear();
+        var saved = await db.CostCenters.SingleAsync(c => c.Id == cc.Shared.Id);
+        saved.CompanyId.Should().BeNull("an update keeps the row's own company");
+        saved.Name.Should().Be("Group renamed");
+    }
+
     // ── Refusals do not confirm which sibling companies exist ─────────────────────────────────
 
     [Fact]
