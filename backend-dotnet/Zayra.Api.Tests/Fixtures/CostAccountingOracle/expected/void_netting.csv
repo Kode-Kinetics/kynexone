@@ -1,0 +1,30 @@
+scenario,cost_centre_code,account_code,account_name,net_dr_minus_cr,status
+"void RUN-OC-2026-09 (one employee, E009)",(UNCOSTED),2100,Salaries Payable,0.00,ZERO
+"void RUN-OC-2026-09 (one employee, E009)",(UNCOSTED),2320,Final Settlement Payable,0.00,ZERO
+"void RUN-OC-2026-09 (one employee, E009)",CC-200,5113,Final Settlement Deductions (contra),0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,(UNCOSTED),2100,Salaries Payable,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,(UNCOSTED),2101,Social Insurance Payable (Employee),0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,(UNCOSTED),2106,Social Insurance Employer Payable,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,(UNCOSTED),2107,Loan & Advance Deductions Payable,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,(UNCOSTED),2300,Bonus Payable,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-100,5001,Basic Salary Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-100,5002,Housing Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-100,5003,Transport Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-100,5101,Employer Social Insurance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-110,5001,Basic Salary Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-110,5002,Housing Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-110,5003,Transport Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-110,5101,Employer Social Insurance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-110,6100,Employee Bonus Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-200,5001,Basic Salary Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-200,5002,Housing Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-200,5003,Transport Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-200,5004,Other Allowances Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-200,5005,Overtime Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-200,5101,Employer Social Insurance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-200,6100,Employee Bonus Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-300,5001,Basic Salary Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-300,5002,Housing Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-300,5003,Transport Allowance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-300,5101,Employer Social Insurance Expense,0.00,ZERO
+HYPOTHETICAL whole-run void RUN-REG-2026-09,CC-300,6100,Employee Bonus Expense,0.00,ZERO

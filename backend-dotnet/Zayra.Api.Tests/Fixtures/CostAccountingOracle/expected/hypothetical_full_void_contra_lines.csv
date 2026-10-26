@@ -1,0 +1,30 @@
+journal_id,line_no,period,event_type,driver_key,account_code,account_name,side,amount,cost_centre_code,cc_functional_class,description
+VOID-RUN-REG-2026-09,1,2026-10,PayrollVoid,EARN:BASIC,5001,Basic Salary Expense,CR,5000.00,CC-100,G_AND_A,Payroll earning: BASIC
+VOID-RUN-REG-2026-09,2,2026-10,PayrollVoid,EARN:BASIC,5001,Basic Salary Expense,CR,25500.00,CC-110,G_AND_A,Payroll earning: BASIC
+VOID-RUN-REG-2026-09,3,2026-10,PayrollVoid,EARN:BASIC,5001,Basic Salary Expense,CR,31333.33,CC-200,SELLING,Payroll earning: BASIC
+VOID-RUN-REG-2026-09,4,2026-10,PayrollVoid,EARN:BASIC,5001,Basic Salary Expense,CR,18000.00,CC-300,COGS,Payroll earning: BASIC
+VOID-RUN-REG-2026-09,5,2026-10,PayrollVoid,EARN:HOUSING,5002,Housing Allowance Expense,CR,1250.00,CC-100,G_AND_A,Payroll earning: HOUSING
+VOID-RUN-REG-2026-09,6,2026-10,PayrollVoid,EARN:HOUSING,5002,Housing Allowance Expense,CR,6375.00,CC-110,G_AND_A,Payroll earning: HOUSING
+VOID-RUN-REG-2026-09,7,2026-10,PayrollVoid,EARN:HOUSING,5002,Housing Allowance Expense,CR,7833.33,CC-200,SELLING,Payroll earning: HOUSING
+VOID-RUN-REG-2026-09,8,2026-10,PayrollVoid,EARN:HOUSING,5002,Housing Allowance Expense,CR,4500.00,CC-300,COGS,Payroll earning: HOUSING
+VOID-RUN-REG-2026-09,9,2026-10,PayrollVoid,EARN:TRANSPORT,5003,Transport Allowance Expense,CR,400.00,CC-100,G_AND_A,Payroll earning: TRANSPORT
+VOID-RUN-REG-2026-09,10,2026-10,PayrollVoid,EARN:TRANSPORT,5003,Transport Allowance Expense,CR,1900.00,CC-110,G_AND_A,Payroll earning: TRANSPORT
+VOID-RUN-REG-2026-09,11,2026-10,PayrollVoid,EARN:TRANSPORT,5003,Transport Allowance Expense,CR,2250.00,CC-200,SELLING,Payroll earning: TRANSPORT
+VOID-RUN-REG-2026-09,12,2026-10,PayrollVoid,EARN:TRANSPORT,5003,Transport Allowance Expense,CR,1300.00,CC-300,COGS,Payroll earning: TRANSPORT
+VOID-RUN-REG-2026-09,13,2026-10,PayrollVoid,EARN:OTHER_ALLOWANCES,5004,Other Allowances Expense,CR,300.00,CC-200,SELLING,Payroll earning: OTHER_ALLOWANCES
+VOID-RUN-REG-2026-09,14,2026-10,PayrollVoid,EARN:OVERTIME,5005,Overtime Expense,CR,1234.57,CC-200,SELLING,Payroll earning: OVERTIME
+VOID-RUN-REG-2026-09,15,2026-10,PayrollVoid,BONUS_PAYABLE,2300,Bonus Payable,CR,2899.99,,,Bonus payroll clearing
+VOID-RUN-REG-2026-09,16,2026-10,PayrollVoid,EARN:BONUS,6100,Employee Bonus Expense,CR,33.34,CC-110,G_AND_A,Payroll earning: BONUS (un-accrued)
+VOID-RUN-REG-2026-09,17,2026-10,PayrollVoid,EARN:BONUS,6100,Employee Bonus Expense,CR,33.34,CC-200,SELLING,Payroll earning: BONUS (un-accrued)
+VOID-RUN-REG-2026-09,18,2026-10,PayrollVoid,EARN:BONUS,6100,Employee Bonus Expense,CR,33.33,CC-300,COGS,Payroll earning: BONUS (un-accrued)
+VOID-RUN-REG-2026-09,19,2026-10,PayrollVoid,DED:STATUTORY_EE,2101,Social Insurance Payable (Employee),DR,5510.42,,,Payroll deduction: GOSI-ANN-EE
+VOID-RUN-REG-2026-09,20,2026-10,PayrollVoid,DED:STATUTORY_EE,2101,Social Insurance Payable (Employee),DR,448.45,,,Payroll deduction: GOSI-SANED-EE
+VOID-RUN-REG-2026-09,21,2026-10,PayrollVoid,DED:LOAN,2107,Loan & Advance Deductions Payable,DR,500.00,,,Payroll deduction: LOAN_EMI
+VOID-RUN-REG-2026-09,22,2026-10,PayrollVoid,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,DR,5510.42,,,Payroll deduction: GOSI-ANN-ER
+VOID-RUN-REG-2026-09,23,2026-10,PayrollVoid,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,DR,448.45,,,Payroll deduction: GOSI-SANED-ER
+VOID-RUN-REG-2026-09,24,2026-10,PayrollVoid,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,DR,1995.83,,,Payroll deduction: GOSI-OH-ER
+VOID-RUN-REG-2026-09,25,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,125.00,CC-100,G_AND_A,Employer statutory contribution
+VOID-RUN-REG-2026-09,26,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,3257.82,CC-110,G_AND_A,Employer statutory contribution
+VOID-RUN-REG-2026-09,27,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,3268.75,CC-200,SELLING,Employer statutory contribution
+VOID-RUN-REG-2026-09,28,2026-10,PayrollVoid,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,CR,1303.13,CC-300,COGS,Employer statutory contribution
+VOID-RUN-REG-2026-09,29,2026-10,PayrollVoid,NET_PAYABLE,2100,Salaries Payable,DR,103717.36,,,Net salaries payable

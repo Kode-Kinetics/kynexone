@@ -1,0 +1,4 @@
+employee_code,component_code,source,driver_key,kind,is_employer_contribution,amount,resolved_cost_centre,resolution_source
+E009,EOSB_GRATUITY,Settlement,EARN:EOSB,Earning,false,31156.16,CC-200,Department
+E009,LEAVE_ENCASHMENT,Settlement,EARN:LEAVE_ENCASHMENT,Earning,false,2000.00,CC-200,Department
+E009,SETTLEMENT_RECOVERY,Settlement,DED:SETTLEMENT_RECOVERY,Deduction,false,300.00,CC-200,Department

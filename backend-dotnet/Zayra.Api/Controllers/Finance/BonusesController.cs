@@ -590,6 +590,25 @@ public class BonusesController : ControllerBase
                 var resolved = await Zayra.Api.Infrastructure.Payroll.PayrollCostStamper.ResolveEmployeesAsync(
                     _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct);
                 foreach (var (employeeId, r) in resolved) costOf[employeeId] = r.CostCenterId;
+
+                // A Required bonus-expense account with an employee who has no usable cost centre is refused with M-1 / M-2 (the same body Lock
+                // answers) before anything is written, instead of surfacing as the ledger guard's generic refusal.
+                var (expenseCode, expenseName) = GlAccountResolver.Resolve("EARN:BONUS", glCtx.Overrides, glCtx.DriverDefaults);
+                if (PayrollCostStamper.RuleOf(expenseCode, glCtx) == "Required")
+                {
+                    var unresolved = group.Where(b => b.EmployeeIntId != null && resolved[b.EmployeeIntId.Value].CostCenterId == null).ToList();
+                    if (unresolved.Count > 0)
+                    {
+                        var ids = unresolved.Select(b => b.EmployeeIntId!.Value).Distinct().ToList();
+                        var codes = await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tid, "Employee codes for a refusal body; tenant-pinned and read-only.")
+                            .AsNoTracking().Where(e => ids.Contains(e.Id)).ToDictionaryAsync(e => e.Id, e => e.EmployeeCode, ct);
+                        return UnprocessableEntity(PayrollCostStamper.BuildRefusal(unresolved.Select(b => new CostBlocker(
+                            b.EmployeeIntId!.Value, codes.GetValueOrDefault(b.EmployeeIntId.Value, string.Empty),
+                            resolved[b.EmployeeIntId.Value].Level ?? "company", null, null, null,
+                            resolved[b.EmployeeIntId.Value].UnresolvedReason == "none" ? PayrollCostStamper.RequiredCode : PayrollCostStamper.InvalidCode,
+                            expenseCode, expenseName, b.GrossBonusAmount)).ToList()).Body);
+                    }
+                }
             }
             _db.FinanceGlEntries.AddRange(BonusCostSplit.BuildAccrual(
                 tid, companyId, id, batch.BatchNumber, batch.BatchName, batch.PaymentPeriod, accrualCurrency, grossTotal,

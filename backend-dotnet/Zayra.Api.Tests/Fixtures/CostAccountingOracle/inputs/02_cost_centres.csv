@@ -1,0 +1,5 @@
+code,name,parent_code,functional_class,gl_segment,active
+CC-100,Head Office,,G_AND_A,4100,true
+CC-110,Finance & Admin,CC-100,G_AND_A,4110,true
+CC-200,Sales & Marketing,,SELLING,6200,true
+CC-300,Operations,,COGS,5300,true
