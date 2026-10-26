@@ -71,7 +71,6 @@ public sealed class DeadConfigColumnsMigrationPostgresTests
         var thisMigration = all.SingleOrDefault(m => m.EndsWith(MigrationSuffix, StringComparison.Ordinal));
         thisMigration.Should().NotBeNull("the migration that gives the unmapped columns their defaults exists");
         var previous = all[all.IndexOf(thisMigration!) - 1];
-        all.Last().Should().Be(thisMigration, "nothing may sort after it on this branch until release 2");
 
         // A row written by the old application, before this migration: every column explicit, none at its default.
         await migrator.MigrateAsync(previous);

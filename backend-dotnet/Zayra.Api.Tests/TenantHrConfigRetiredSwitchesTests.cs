@@ -13,7 +13,7 @@ namespace Zayra.Api.Tests;
 /// <summary>
 /// Eleven TenantHrConfig switches were never read by anything (approval routing, import behaviour, hierarchy and payroll
 /// flags). They are retired from the API: GET no longer returns them and PUT neither needs nor applies them. The columns
-/// are no longer mapped by the entity (they stay in the database, with defaults, until a later release drops them). An old client that still sends them is ignored, not refused.
+/// were dropped from the database after the entity stopped mapping them. An old client that still sends them is ignored, not refused.
 /// </summary>
 public class TenantHrConfigRetiredSwitchesTests
 {
