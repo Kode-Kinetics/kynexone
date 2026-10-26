@@ -13,7 +13,7 @@ test.describe('create payload', () => {
     const body = buildCreateRequest({ ...emptyHireForm(), englishName: ' Alex Morgan ', companyId: 'c1', startDate: '2026-11-01', designationId: 'd1' }, ctx);
     expect(body).toMatchObject({ englishName: 'Alex Morgan', companyId: 'c1', joiningDate: '2026-11-01', designationId: 'd1' });
     for (const k of ['arabicName', 'dateOfBirth', 'nationality', 'nationalityCode', 'mobileNumber', 'salaryBreakdown', 'payrollProfile', 'complianceRecords', 'acknowledgedWarnings'] as const) {
-      expect((body as Record<string, unknown>)[k]).toBeUndefined();
+      expect((body as unknown as Record<string, unknown>)[k]).toBeUndefined();
     }
   });
   test('nationality is stored as an ISO-2 code, never as typed text (A1)', () => {
