@@ -24,7 +24,8 @@ const COPY: Array<[string, string, string]> = [
   ['National ID invalid', 'National ID must be 10 digits starting with 1.', 'يجب أن يتكون رقم الهوية الوطنية من 10 أرقام ويبدأ بالرقم 1.'],
   ['Iqama invalid', 'Iqama number must be 10 digits starting with 2.', 'يجب أن يتكون رقم الإقامة من 10 أرقام ويبدأ بالرقم 2.'],
   ['ID checksum', 'This ID number is not valid. Check the digits.', 'رقم الهوية غير صالح. تحقق من الأرقام.'],
-  ['DOB out of range', 'Date of birth must make the employee between 15 and 80 years old.', 'يجب أن يكون عمر الموظف بين 15 و80 سنة.'],
+  ['DOB in the future', 'Date of birth cannot be in the future.', 'لا يمكن أن يكون تاريخ الميلاد في المستقبل.'],
+  ['DOB over 100', 'Date of birth cannot be more than 100 years ago.', 'لا يمكن أن يكون تاريخ الميلاد قبل أكثر من 100 سنة.'],
   ['Phone invalid', 'Enter a valid {country} mobile number.', 'أدخل رقم جوال {country} صحيحًا.'],
   ['IBAN invalid', 'Saudi IBANs have 24 characters and start with SA.', 'يتكون الآيبان السعودي من 24 خانة ويبدأ بـ SA.'],
   ['Work email wrong domain', 'Work email must end in @{domain}.', 'يجب أن ينتهي البريد الإلكتروني الوظيفي بـ \u200e@{domain}.'],
@@ -92,7 +93,7 @@ test.describe('hireValidation', () => {
     expect(keys(validateHire({ ...f, idNumber: '1000000009x', idChecksumOverrideReason: 'Legacy number confirmed on the card' }, ctx, 'draft'))).toEqual(['idNumber']);
   });
   test('date of birth: future and over 100 are hard; 14 is only a server warning (AC 20)', () => {
-    expect(msg(validateHire({ ...four, dob: '2027-01-01' }, ctx, 'draft'), 'dob')).toBe('Date of birth must make the employee between 15 and 80 years old.');
+    expect(msg(validateHire({ ...four, dob: '2027-01-01' }, ctx, 'draft'), 'dob')).toBe('Date of birth cannot be in the future.');
     expect(keys(validateHire({ ...four, dob: '1920-01-01' }, ctx, 'draft'))).toEqual(['dob']);
     expect(validateHire({ ...four, dob: '2012-06-01' }, ctx, 'draft')).toEqual([]);
     expect(validateHire({ ...four, dob: '1990-06-01' }, ctx, 'draft')).toEqual([]);
