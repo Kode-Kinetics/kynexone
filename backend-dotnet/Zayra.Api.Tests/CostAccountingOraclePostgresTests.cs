@@ -328,7 +328,7 @@ public sealed class CostAccountingOraclePostgresTests
         }
     }
 
-    [Fact(Skip = "DEFECT in WP-B (FinanceGlController.SetMappings): a mapping with a fixed cost centre on a NotAllowed account is saved (200) instead of refused with 422 cost_centre_not_allowed / M-3 (oracle S-B2, contract 2.7). WP-B owns the file; this test is the acceptance check for the fix.")]
+    [Fact]
     public async Task SB2_AFixedCostCentreOnANotAllowedAccount_IsRefusedWithM3_AndNothingIsSaved()
     {
         await using var w = await OracleWorld.CreateAsync(_fx);
