@@ -51,11 +51,48 @@ public class EssCompletionHttpTests(EssFixture fx)
         body.GetProperty("progress").GetProperty("done").GetInt32().Should().Be(0);
         // The expatriate is asked for an Iqama, not a national id.
         var id = body.GetProperty("sections").EnumerateArray().Single(s => s.GetProperty("key").GetString() == "id");
-        id.GetProperty("fields").EnumerateArray().Select(f => f.GetProperty("key").GetString()).Should().Equal("iqamaNumber", "borderNumber");
+        id.GetProperty("fields").EnumerateArray().Select(f => f.GetProperty("key").GetString()).Should().Equal("iqamaNumber", "iqamaExpiry", "borderNumber", "passportNumber", "passportExpiry");
         id.GetProperty("requiresStepUp").GetBoolean().Should().BeTrue();
         // unknown section
         using var unknown = await fx.SendAsync(HttpMethod.Get, "/api/ess/completion/payroll", fresh.Token);
         unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Ess_Identity_FollowsTheNationalityClass_Saudi_Gcc_Expat()
+    {
+        async Task<string[]> IdFields(EssEmployeeHandle e)
+        {
+            using var res = await fx.SendAsync(HttpMethod.Get, "/api/ess/completion/id", e.Token);
+            return (await Json(res)).GetProperty("fields").EnumerateArray().Select(f => f.GetProperty("key").GetString()!).ToArray();
+        }
+        (await IdFields(await fx.NewEmployeeAsync("SA"))).Should().Equal("nationalId");
+        (await IdFields(await fx.NewEmployeeAsync("AE"))).Should().Equal("gccNationalId", "gccIdExpiry", "passportNumber", "passportExpiry");
+        (await IdFields(await fx.NewEmployeeAsync("PK"))).Should().Equal("iqamaNumber", "iqamaExpiry", "borderNumber", "passportNumber", "passportExpiry");
+
+        // A GCC national sends their own national ID and passport; HR accepting it writes the nationality's column, not the Iqama.
+        var ae = await fx.NewEmployeeAsync("AE");
+        var step = await fx.StepUpAsync(ae);
+        using var wrong = await Submit(ae, "id", new { iqamaNumber = "2000000006" }, stepUp: step);
+        wrong.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        using var ok = await Submit(ae, "id", new { gccNationalId = "784199012345671", gccIdExpiry = "2030-05-01", passportNumber = "N1234567", passportExpiry = "2031-01-31" }, stepUp: step);
+        ok.StatusCode.Should().Be(HttpStatusCode.OK, await ok.Content.ReadAsStringAsync());
+        var requestId = (await Json(ok)).GetProperty("requestId").GetGuid();
+        using var accept = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{requestId}/approve", fx.HrToken, new { notes = "Seen" });
+        accept.StatusCode.Should().Be(HttpStatusCode.OK, await accept.Content.ReadAsStringAsync());
+        var emp = await fx.WithDbAsync(db => db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == ae.Id));
+        emp.EmiratesId.Should().Be("784199012345671"); emp.EmiratesIdExpiryDate.Should().Be(new DateOnly(2030, 5, 1));
+        emp.PassportNumber.Should().Be("N1234567"); emp.PassportExpiryDate.Should().Be(new DateOnly(2031, 1, 31));
+        emp.IqamaNumber.Should().BeEmpty();
+        // the HR diff shows the expiry as a date (not masked) so the screen can add its Hijri equivalent
+        var again = await fx.NewEmployeeAsync("PK");
+        using var pk = await Submit(again, "id", new { iqamaNumber = "2000000006", iqamaExpiry = "2027-02-02" }, stepUp: await fx.StepUpAsync(again));
+        pk.StatusCode.Should().Be(HttpStatusCode.OK, await pk.Content.ReadAsStringAsync());
+        using var inbox = await fx.SendAsync(HttpMethod.Get, "/api/hr/profile-completion/inbox?section=id", fx.HrNoSensitiveToken);
+        var diff = JsonDocument.Parse(await inbox.Content.ReadAsStringAsync()).RootElement.EnumerateArray()
+            .Single(i => i.GetProperty("employee").GetProperty("id").GetInt32() == again.Id).GetProperty("diff").EnumerateArray()
+            .Single(d => d.GetProperty("field").GetString() == "iqamaExpiry");
+        diff.GetProperty("after").GetString().Should().Be("2027-02-02");
     }
 
     [Fact]

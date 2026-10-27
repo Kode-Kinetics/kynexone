@@ -11,6 +11,7 @@ public class EssSectionRegistryTests
 {
     private static readonly EssEmployeeFacts Saudi = new(NationalityClass.Saudi, "SA", false);
     private static readonly EssEmployeeFacts Expat = new(NationalityClass.Expat, "SA", false);
+    private static readonly EssEmployeeFacts Gcc = new(NationalityClass.Gcc, "SA", false);
 
     [Fact]
     public void EssSection_RejectsUnknownFieldsAndMasksBankOnRead()
@@ -36,7 +37,7 @@ public class EssSectionRegistryTests
     public void SectionRegistry_EveryFieldHasValidatorAndMaxLength()
     {
         ProfileSectionRegistry.All.Select(s => s.Key).Should().Equal(EssSectionKeys.All);
-        foreach (var cls in new NationalityClass?[] { NationalityClass.Saudi, NationalityClass.Expat, null })
+        foreach (var cls in new NationalityClass?[] { NationalityClass.Saudi, NationalityClass.Gcc, NationalityClass.Expat, null })
             foreach (var section in EssSectionKeys.All)
                 foreach (var f in ProfileSectionRegistry.FieldsFor(section, cls))
                 {
@@ -66,10 +67,20 @@ public class EssSectionRegistryTests
 
         // Expat: Iqama or Border Number; the national id column never satisfies it.
         ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, blank, Expat).Should().BeTrue();
-        ProfileSectionRegistry.FieldsFor(EssSectionKeys.Id, NationalityClass.Expat).Select(f => f.Key).Should().Equal("iqamaNumber", "borderNumber");
+        ProfileSectionRegistry.FieldsFor(EssSectionKeys.Id, NationalityClass.Expat).Select(f => f.Key)
+            .Should().Equal("iqamaNumber", "iqamaExpiry", "borderNumber", "passportNumber", "passportExpiry");
         ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { IdNumber = "1000000008" }, Expat).Should().BeTrue();
         ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { IqamaNumber = "2000000006" }, Expat).Should().BeFalse();
         ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { BorderNumber = "3000000001" }, Expat).Should().BeFalse();
+
+        // A GCC national holds their own national ID (never an Iqama or Border Number), plus a passport, each with an expiry.
+        ProfileSectionRegistry.FieldsFor(EssSectionKeys.Id, NationalityClass.Gcc).Select(f => f.Key)
+            .Should().Equal("gccNationalId", "gccIdExpiry", "passportNumber", "passportExpiry");
+        ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { NationalityCode = "AE", IqamaNumber = "2000000006", BorderNumber = "3000000001" }, Gcc).Should().BeTrue();
+        ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { NationalityCode = "AE", EmiratesId = "784199012345671" }, Gcc).Should().BeFalse();
+        ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { NationalityCode = "QA", Qid = "28435600123" }, Gcc).Should().BeFalse();
+        ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { NationalityCode = "KW", CivilId = "289010100123" }, Gcc).Should().BeFalse();
+        ProfileSectionRegistry.IsMissing(EssSectionKeys.Id, new Employee { NationalityCode = "AE", Qid = "28435600123" }, Gcc).Should().BeTrue("the column is the nationality's own");
 
         // The other sections derive from their own columns only.
         ProfileSectionRegistry.IsMissing(EssSectionKeys.Person, blank, Saudi).Should().BeTrue();
@@ -109,6 +120,59 @@ public class EssSectionRegistryTests
         // Arabic-Indic digits are normalised the same way the wizard does.
         SectionValidation.Validate(EssSectionKeys.Id, NationalityClass.Saudi, "SA", new Dictionary<string, string> { ["nationalId"] = "١٠٠٠٠٠٠٠٠٨" })
             .Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SectionValidation_IdentityByClass_GccIdPassportAndExpiries()
+    {
+        Dictionary<string, List<string>> V(NationalityClass c, params (string, string)[] kv) =>
+            SectionValidation.Validate(EssSectionKeys.Id, c, "SA", kv.ToDictionary(x => x.Item1, x => x.Item2));
+        V(NationalityClass.Gcc, ("gccNationalId", "784199012345671"), ("gccIdExpiry", "2030-05-01"), ("passportNumber", "N1234567"), ("passportExpiry", "2031-01-31")).Should().BeEmpty();
+        V(NationalityClass.Gcc, ("gccNationalId", "12")).Should().ContainKey("gccNationalId").WhoseValue.Should().Contain(EmployeeFieldErrors.IdFormatInvalid);
+        V(NationalityClass.Gcc, ("gccNationalId", "78419901234 71!")).Should().ContainKey("gccNationalId");
+        V(NationalityClass.Gcc, ("passportNumber", "AB")).Should().ContainKey("passportNumber").WhoseValue.Should().Contain(EmployeeFieldErrors.InvalidFormat);
+        V(NationalityClass.Gcc, ("gccIdExpiry", "2030-13-45")).Should().ContainKey("gccIdExpiry").WhoseValue.Should().Contain(EmployeeFieldErrors.InvalidFormat);
+        V(NationalityClass.Gcc, ("gccIdExpiry", "01/05/2030")).Should().ContainKey("gccIdExpiry");
+        // An expat's Iqama keeps the wizard's checksum, and its expiry is a real date.
+        V(NationalityClass.Expat, ("iqamaNumber", "2000000006"), ("iqamaExpiry", "2027-02-02"), ("passportNumber", "P7654321"), ("passportExpiry", "2030-02-02")).Should().BeEmpty();
+        V(NationalityClass.Expat, ("iqamaNumber", "2000000007")).Should().ContainKey("iqamaNumber").WhoseValue.Should().Contain(EmployeeFieldErrors.IdChecksumInvalid);
+        V(NationalityClass.Expat, ("iqamaExpiry", "2027-02-30")).Should().ContainKey("iqamaExpiry");
+        // The fields of another class are unknown, not silently accepted.
+        V(NationalityClass.Gcc, ("iqamaNumber", "2000000006")).Should().ContainKey("iqamaNumber").WhoseValue.Should().Contain("unknown_field");
+        V(NationalityClass.Expat, ("gccNationalId", "784199012345671")).Should().ContainKey("gccNationalId");
+        // Required at submit: Gcc needs the GCC id; the expat needs an Iqama or Border Number.
+        SectionValidation.Validate(EssSectionKeys.Id, NationalityClass.Gcc, "SA", new Dictionary<string, string> { ["passportNumber"] = "N1234567" }, requireComplete: true)
+            .Should().ContainKey("gccNationalId").WhoseValue.Should().Contain(EmployeeFieldErrors.Required);
+        SectionValidation.Normalise(EssSectionKeys.Id, NationalityClass.Gcc, "SA", new Dictionary<string, string> { ["gccNationalId"] = " 784199012345671 ", ["passportNumber"] = "n1234567" })
+            .Should().Equal(new Dictionary<string, string> { ["gccNationalId"] = "784199012345671", ["passportNumber"] = "N1234567" });
+    }
+
+    [Fact]
+    public void Registry_GccAndExpatIdentityRoundTrip_ThroughTheNationalitysOwnColumns()
+    {
+        var ae = new Employee { NationalityCode = "AE" };
+        ProfileSectionRegistry.Apply(EssSectionKeys.Id, ae, new Dictionary<string, string> { ["gccNationalId"] = "784199012345671", ["gccIdExpiry"] = "2030-05-01", ["passportNumber"] = "N1234567", ["passportExpiry"] = "2031-01-31" });
+        ae.EmiratesId.Should().Be("784199012345671"); ae.EmiratesIdExpiryDate.Should().Be(new DateOnly(2030, 5, 1));
+        ae.PassportNumber.Should().Be("N1234567"); ae.PassportExpiryDate.Should().Be(new DateOnly(2031, 1, 31));
+        ae.IqamaNumber.Should().BeEmpty();
+        ProfileSectionRegistry.CurrentValue(EssSectionKeys.Id, "gccNationalId", ae).Should().Be("784199012345671");
+        ProfileSectionRegistry.CurrentValue(EssSectionKeys.Id, "gccIdExpiry", ae).Should().Be("2030-05-01");
+        var qa = new Employee { NationalityCode = "QA" };
+        ProfileSectionRegistry.Apply(EssSectionKeys.Id, qa, new Dictionary<string, string> { ["gccNationalId"] = "28435600123", ["gccIdExpiry"] = "2029-03-03" });
+        qa.Qid.Should().Be("28435600123"); qa.QidExpiryDate.Should().Be(new DateOnly(2029, 3, 3));
+        var kw = new Employee { NationalityCode = "KW" };
+        ProfileSectionRegistry.Apply(EssSectionKeys.Id, kw, new Dictionary<string, string> { ["gccNationalId"] = "289010100123", ["gccIdExpiry"] = "2029-03-03" });
+        kw.CivilId.Should().Be("289010100123"); kw.CivilIdExpiryDate.Should().Be(new DateOnly(2029, 3, 3));
+        var pk = new Employee { NationalityCode = "PK" };
+        ProfileSectionRegistry.Apply(EssSectionKeys.Id, pk, new Dictionary<string, string> { ["iqamaNumber"] = "2000000006", ["iqamaExpiry"] = "2027-02-02", ["passportNumber"] = "P7654321" });
+        pk.IqamaNumber.Should().Be("2000000006"); pk.IqamaExpiryDate.Should().Be(new DateOnly(2027, 2, 2)); pk.PassportNumber.Should().Be("P7654321");
+        // identity numbers are masked on read, expiries are not (HR and the employee see the date, with its Hijri equivalent)
+        var gccId = ProfileSectionRegistry.FieldsFor(EssSectionKeys.Id, NationalityClass.Gcc).Single(f => f.Key == "gccNationalId");
+        var passport = ProfileSectionRegistry.FieldsFor(EssSectionKeys.Id, NationalityClass.Gcc).Single(f => f.Key == "passportNumber");
+        var expiry = ProfileSectionRegistry.FieldsFor(EssSectionKeys.Id, NationalityClass.Gcc).Single(f => f.Key == "gccIdExpiry");
+        ProfileSectionRegistry.Mask(gccId, "784199012345671").Should().EndWith("5671").And.StartWith("*");
+        ProfileSectionRegistry.Mask(passport, "N1234567").Should().Be("****4567");
+        ProfileSectionRegistry.Mask(expiry, "2030-05-01").Should().Be("2030-05-01");
     }
 
     [Fact]
