@@ -9,6 +9,7 @@
  * The `engagement` opt-in flag is switched on for both by the platform owner.
  */
 import { saudiNationalId } from './saudiIds';
+import { ensurePayApprover, type PayApprover } from './payApprover';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 
@@ -152,7 +153,7 @@ async function allEmployees(token: string): Promise<any[]> {
   });
 }
 
-async function ensureEmployees(admin: string, companyId: string, units: Awaited<ReturnType<typeof ensureUnits>>): Promise<Map<string, number>> {
+async function ensureEmployees(admin: string, companyId: string, units: Awaited<ReturnType<typeof ensureUnits>>, approver: PayApprover): Promise<Map<string, number>> {
   const ids = new Map<string, number>();
   for (const e of await allEmployees(admin)) ids.set(String(e.employeeCode), Number(e.id));
   for (const p of PEOPLE) {
@@ -193,9 +194,13 @@ async function ensureEmployees(admin: string, companyId: string, units: Awaited<
       },
     }), `create employee ${p.code}`, [200, 201]);
     ids.set(p.code, Number(res.body.id ?? res.body.Id));
+    // A line manager must not be a Draft, so each person's pay is approved by a second person and they are activated as soon as they exist.
+    await approver.approve(ids.get(p.code)!);
+    ok(await call('POST', `/api/employees/${ids.get(p.code)}/activate`, { token: admin, body: { status: 'Active', reason: 'engagement seed' } }), `activate ${p.code}`);
   }
   for (const e of await allEmployees(admin)) {
     if (String(e.status) === 'Active') continue;
+    await approver.approve(Number(e.id));
     ok(await call('POST', `/api/employees/${e.id}/activate`, { token: admin, body: { status: 'Active', reason: 'engagement seed' } }), `activate ${e.employeeCode}`);
   }
   return ids;
@@ -226,7 +231,8 @@ export async function seedEngagementWorld(baseUrl: string): Promise<EngagementWo
   const admin = await login(ACME.admin, ACME.slug);
   const companyId = await company(admin, ACME);
   const units = await ensureUnits(admin, companyId);
-  const ids = await ensureEmployees(admin, companyId, units);
+  const approver = await ensurePayApprover({ apiBase: API, platformToken: platform, tenantId: acmeTenantId, slug: ACME.slug, password: SEED_PASSWORD });
+  const ids = await ensureEmployees(admin, companyId, units, approver);
   await ensureLogins(admin, companyId, ids, ACME.slug);
   const otherAdmin = await login(OTHER.admin, OTHER.slug);
   await company(otherAdmin, OTHER);

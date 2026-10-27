@@ -362,6 +362,12 @@ jobs:
           Auth__LoginThrottle__AccountAttempts: '1000'
           Auth__LoginThrottle__IpFailures: '1000'
           Auth__PasswordVerification__MaxConcurrency: '4'
+          # The bootstrap creates the whole fixture world through one admin; the employee-create and
+          # pay-approval ceilings (10/user, 60/tenant per minute in production) would 429 it. Disposable stack only.
+          RateLimit__Employees__employee-create__PerUser: '1000'
+          RateLimit__Employees__employee-create__PerTenant: '5000'
+          RateLimit__Employees__compensation-approve__PerUser: '1000'
+          RateLimit__Employees__compensation-approve__PerTenant: '5000'
           RateLimit__PlatformLoginPermitLimit: '50'
           ASPNETCORE_ENVIRONMENT: 'Development'
           ASPNETCORE_URLS: 'http://localhost:5117'
@@ -915,6 +921,10 @@ jobs:
           # to the disposable CI stack; docker-compose and deployed environments retain the default.
           LOGIN_PERMIT_LIMIT: '200'
           PLATFORM_LOGIN_PERMIT_LIMIT: '50'
+          EMPLOYEE_CREATE_PER_USER_LIMIT: '1000'
+          EMPLOYEE_CREATE_PER_TENANT_LIMIT: '5000'
+          COMPENSATION_APPROVE_PER_USER_LIMIT: '1000'
+          COMPENSATION_APPROVE_PER_TENANT_LIMIT: '5000'
           LOGIN_ACCOUNT_IP_ATTEMPT_LIMIT: '1000'
           LOGIN_ACCOUNT_ATTEMPT_LIMIT: '1000'
           LOGIN_IP_FAILURE_LIMIT: '1000'

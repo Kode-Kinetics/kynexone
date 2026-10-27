@@ -27,6 +27,7 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { saudiNationalId, saudiIqama } from './saudiIds';
+import { ensurePayApprover, type PayApprover } from './payApprover';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -480,7 +481,7 @@ async function ensureGrade(adminToken: string): Promise<string | null> {
 async function ensureEmployees(
   adminToken: string, fixture: FixtureTenant,
   companies: Array<{ code: string; id: string; countryCode: string }>,
-  gradeId: string | null,
+  gradeId: string | null, approver: PayApprover,
 ): Promise<number> {
   let created = 0;
   for (const company of companies) {
@@ -602,7 +603,14 @@ async function ensureEmployees(
         },
       });
       expectOk(res, `create employee '${code}'`, [200, 201]);
-      if (n === 1) managerId = Number(res.body?.id ?? res.body?.Id) || null;
+      if (n === 1) {
+        managerId = Number(res.body?.id ?? res.body?.Id) || null;
+        // A line manager must not be a Draft (reference validator), so approve its pay (second person) and activate it as soon as it exists.
+        await approver.approve(managerId!);
+        expectOk(await call('POST', `/api/employees/${managerId}/activate`, {
+          token: adminToken, body: { status: 'Active', reason: 'e2e fixture world bootstrap' },
+        }), `activate line manager '${code}'`, [200]);
+      }
       created++;
     }
   }
@@ -624,7 +632,7 @@ const idRecord = (fieldKey: string, fieldLabel: string, fieldValue: string) => {
  * employee it refuses is reported, never forced, and the caller asserts a floor afterwards: silently
  * ending up with zero Active employees is the failure this whole bootstrap exists to prevent.
  */
-async function activateEmployees(adminToken: string, slug: string, floor: number): Promise<number> {
+async function activateEmployees(adminToken: string, slug: string, floor: number, approver: PayApprover): Promise<number> {
   const rows = await allEmployees(adminToken);
   const blocked: string[] = [];
   let active = 0;
@@ -632,6 +640,8 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
   for (const row of rows) {
     const status = String(row.status ?? row.Status ?? '');
     if (status === 'Active') { active++; continue; }
+    // The pay package of a new hire needs a second person before activation.
+    await approver.approve(Number(row.id ?? row.Id));
     const res = await call('POST', `/api/employees/${row.id ?? row.Id}/activate`, {
       token: adminToken, body: { status: 'Active', reason: 'e2e fixture world bootstrap' },
     });
@@ -1310,8 +1320,9 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const userIds = await ensureUsers(platformToken, tenantId, fixture, companies);
     await ensureEntityGrants(adminToken, fixture, userIds, companies);
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
-    manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
-    const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
+    const approver = await ensurePayApprover({ apiBase: API_BASE, platformToken, tenantId, slug: fixture.slug, password: fixture.admin.password });
+    manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId, approver);
+    const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees, approver);
     const portalLogins = await ensureEmployeePortalLogins(adminToken, fixture, companies);
     const salaries = await ensureSalaries(adminToken, companies);
     const documents = await ensureEmployeeDocuments(adminToken, companies);

@@ -15,6 +15,7 @@
  * Deterministic: fixed codes, names and e-mail; the same run twice yields the same world.
  */
 import { saudiNationalId } from './saudiIds';
+import { signInPayApprover } from './payApprover';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -141,6 +142,8 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
     }), 'create the Quality Analyst designation', [200, 201]).body;
   }
 
+  // The pay approver was provisioned with the world (provision.ts); a hire's pay needs a second person before activation.
+  const approver = await signInPayApprover(API, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN.password);
   const existing = await employees(admin, company.id, `${QUALITY.code}-E`);
   let lead: number | null = Number(existing.find((e: any) => e.employeeCode === `${QUALITY.code}-E1`)?.id) || null;
   for (const [index, name] of QUALITY_PEOPLE.entries()) {
@@ -176,10 +179,16 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
         acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by the specs' }],
       },
     }), `create employee ${code}`, [200, 201]);
-    if (index === 0) lead = Number(created.body?.id ?? created.body?.Id);
+    if (index === 0) {
+      lead = Number(created.body?.id ?? created.body?.Id);
+      // A line manager must not be a Draft, so approve the lead's pay and activate it as soon as it exists.
+      await approver.approve(lead!);
+      ok(await call('POST', `/api/employees/${lead}/activate`, { token: admin, body: { status: 'Active', reason: 'learning e2e scenario' } }), `activate ${code}`);
+    }
   }
   for (const e of await employees(admin, company.id, `${QUALITY.code}-E`)) {
     if (e.status === 'Active') continue;
+    await approver.approve(Number(e.id));
     ok(await call('POST', `/api/employees/${e.id}/activate`, { token: admin, body: { status: 'Active', reason: 'learning e2e scenario' } }), `activate ${e.employeeCode}`);
   }
 
