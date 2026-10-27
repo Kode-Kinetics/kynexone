@@ -11,7 +11,7 @@ import { LoadFailedNotice } from '@/src/components/ui/LoadFailedRow';
 import { StatusChip } from '@/src/components/StatusChip';
 
 const input = 'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 100;
 /** Below 768 px a table cannot show seven columns without clipping, so each task becomes a stacked card. */
 const NARROW = '(max-width: 767px)';
 function useNarrow(): boolean {

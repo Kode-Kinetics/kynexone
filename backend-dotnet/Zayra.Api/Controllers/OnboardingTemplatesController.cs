@@ -484,7 +484,7 @@ public class OnboardingTemplatesController : ControllerBase
     {
         if (this.GetTenantId() is not Guid tid) return Unauthorized();
         if (ownerRole is not null && !OnboardingOwnerRoles.IsValid(ownerRole)) return Fail(422, "validation_failed");
-        page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 1, 200);
+        page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 1, 100);
         var mine = CallerOwnerRoles();
         var me = this.GetUserId();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
