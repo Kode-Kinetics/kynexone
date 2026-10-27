@@ -9,6 +9,9 @@ test('HR requests a signature, then the employee signs in person with their own 
   await expect(panel).toBeVisible();
   await expect(panel.getByTestId('signature-row')).toHaveCount(3);
   await expect(panel).toContainText('not a qualified electronic signature');
+  // CD66: profile documents say when a file was not virus-scanned, and refuse a quarantined one
+  await expect(page.getByTestId('doc-scan').first()).toContainText('Not virus-scanned (trusted source)');
+  await expect(page.getByTestId('doc-scan').nth(1)).toContainText('It cannot be downloaded');
 
   // request one more
   await panel.getByLabel('Document to sign').selectOption({ label: 'Handbook - handbook.pdf' });

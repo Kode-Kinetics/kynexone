@@ -47,8 +47,8 @@ const hrEmployee = {
   salary: 0, department: 'Operations', designation: 'Specialist', branch: 'Riyadh', readinessState: 'Ready', activationBlockersCount: 0, profileCompletenessScore: 90, accessState: 'active',
   complianceRecords: [], history: [], transfers: [],
   documents: [
-    { id: 'doc-1', employeeId: 901, documentType: 'Employment contract', fileName: 'contract.pdf', contentType: 'application/pdf', storageUrl: 'x', isRequired: false, approvalStatus: 'Approved', versionNumber: 1, uploadedAtUtc: '2026-10-20T00:00:00Z' },
-    { id: 'doc-4', employeeId: 901, documentType: 'Handbook', fileName: 'handbook.pdf', contentType: 'application/pdf', storageUrl: 'x', isRequired: false, approvalStatus: 'Approved', versionNumber: 1, uploadedAtUtc: '2026-10-20T00:00:00Z' },
+    { id: 'doc-1', employeeId: 901, documentType: 'Employment contract', fileName: 'contract.pdf', contentType: 'application/pdf', storageUrl: 'x', scanStatus: 'not_scanned_trusted_source', isRequired: false, approvalStatus: 'Approved', versionNumber: 1, uploadedAtUtc: '2026-10-20T00:00:00Z' },
+    { id: 'doc-4', employeeId: 901, documentType: 'Handbook', fileName: 'handbook.pdf', contentType: 'application/pdf', storageUrl: 'x', scanStatus: 'quarantined', isRequired: false, approvalStatus: 'Approved', versionNumber: 1, uploadedAtUtc: '2026-10-20T00:00:00Z' },
   ],
 };
 
