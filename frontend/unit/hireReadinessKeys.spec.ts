@@ -70,9 +70,9 @@ test('CD48: the corrected Arabic copy', () => {
   expect(ar['You can leave this for now and add it later from the employee record.']).not.toContain('لاحقاً');
 });
 
-test('CD48: the duplicate panel isolates its separator so it cannot be drawn as an Arabic-Indic zero', () => {
+test('CD48: the duplicate panel joins status and year with a locale separator, never a middle dot in Arabic', () => {
   const panel = fs.readFileSync(path.resolve(process.cwd(), 'src', 'views', 'employees', 'hire', 'fields', 'DuplicatePanel.tsx'), 'utf8');
   expect(panel).not.toContain('٠');
-  expect(panel).not.toMatch(/`\s*·\s*\$\{/);                       // no bare "·" glued into a template string
-  expect(panel).toMatch(/dir="ltr"[^>]*>·<\/span>|>·<\/span>/);       // rendered as its own isolated span
+  expect(panel).not.toMatch(/>·<\/span>/);                            // no hard-coded middle dot in the markup
+  expect(LOCALE_DICTS.ar['{details} · {joined}']).toBe('{details}، {joined}');   // Arabic comma, read naturally in RTL
 });

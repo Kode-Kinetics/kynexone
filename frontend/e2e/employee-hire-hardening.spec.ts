@@ -154,7 +154,8 @@ test.describe('CD26 duplicate panel and rehire copy', () => {
     const panel = page.getByRole('region', { name: 'تطابق محتمل' });
     await expect(panel).toContainText('منتهي الخدمة');
     await expect(panel).toContainText('انضم في 2021');
-    await expect(panel.locator('span[dir="ltr"]', { hasText: /^·$/ })).toHaveCount(1);   // the separator is isolated, a middle dot
+    await expect(panel).toContainText('شركة اختبار، انضم في 2021');   // Arabic comma joins status and year
+    await expect(panel).not.toContainText('·');
     await expect(panel).not.toContainText('٠');
     await expect(panel).toContainText('شركة اختبار');
     await expect(panel).not.toContainText('Terminated');

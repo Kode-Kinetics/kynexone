@@ -108,6 +108,7 @@ const ar: Record<string, string> = {
   'Possible match': 'تطابق محتمل',
   '{status}, {company}': '{status}، {company}',
   'Joined in {year}': 'انضم في {year}',
+  '{details} · {joined}': '{details}، {joined}',
   'A person with these details exists in another company you cannot see.': 'يوجد شخص بهذه البيانات في شركة أخرى لا يمكنك الاطلاع عليها.',
   'Open record': 'فتح السجل',
   'Rehire this person': 'إعادة تعيين هذا الشخص',

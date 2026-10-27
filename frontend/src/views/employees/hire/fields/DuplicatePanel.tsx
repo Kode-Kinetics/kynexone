@@ -41,7 +41,10 @@ export function DuplicatePanel({ matches, companies = [], differentReason, onDif
             {m.canView ? (
               <>
                 <p><span className="font-medium">{m.fullName}</span>{' '}
-                  <span>{companyName(m.companyId) ? t('{status}, {company}', { status: t(duplicateStatusKey(m.status)), company: companyName(m.companyId) }) : t(duplicateStatusKey(m.status))}{m.joinedYear ? <><span aria-hidden="true" dir="ltr" lang="en" className="mx-1 font-sans">·</span>{t('Joined in {year}', { year: plainYear(m.joinedYear) })}</> : null}</span></p>
+                  <span>{(() => {
+                    const details = companyName(m.companyId) ? t('{status}, {company}', { status: t(duplicateStatusKey(m.status)), company: companyName(m.companyId) }) : t(duplicateStatusKey(m.status));
+                    return m.joinedYear ? t('{details} · {joined}', { details, joined: t('Joined in {year}', { year: plainYear(m.joinedYear) }) }) : details;
+                  })()}</span></p>
                 {isNameOnlyMatch(m) ? <p className="mt-0.5 font-medium">{t('Same name — check before continuing.')}</p> : m.matchType === 'strong' ? <p className="mt-0.5">{t('Same ID number')}</p> : null}
               </>
             ) : <p>{t('A person with these details exists in another company you cannot see.')}</p>}
