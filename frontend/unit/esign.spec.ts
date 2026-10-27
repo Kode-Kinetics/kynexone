@@ -58,8 +58,14 @@ test('the sign pages cannot be framed at all, and never cached; the rest of the 
   expect(rules.flatMap(r => r.headers).filter(h => /frame-src|default-src|child-src/.test(h.value))).toEqual([]);
 });
 
-test('a list answer that is not an array reads as no rows, never a crash', () => {
-  expect(asSignatureRows({ items: [], total: 0 })).toEqual([]);
-  expect(asSignatureRows(undefined)).toEqual([]);
-  expect(asSignatureRows([{ documentId: 'd1' }])).toHaveLength(1);
+test('a signatures list is read from a bare array or a paged envelope; anything else is empty', () => {
+  const warn = console.warn; console.warn = () => {};
+  try {
+    expect(asSignatureRows([{ documentId: 'd1' }, { documentId: 'd2' }])).toHaveLength(2);
+    expect(asSignatureRows({ items: [{ documentId: 'd1' }], total: 1 })).toEqual([{ documentId: 'd1' }]);
+    expect(asSignatureRows({ items: 'nope' })).toEqual([]);
+    expect(asSignatureRows(undefined)).toEqual([]);
+    expect(asSignatureRows(null)).toEqual([]);
+    expect(asSignatureRows('garbage')).toEqual([]);
+  } finally { console.warn = warn; }
 });

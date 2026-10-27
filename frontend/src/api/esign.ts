@@ -69,8 +69,17 @@ export async function sha256Hex(blob: Blob, fallback: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** The list endpoints answer an array; anything else (a paged envelope, an empty body) reads as no rows rather than crashing the panel. */
-export const asSignatureRows = (data: unknown): SignatureRow[] => (Array.isArray(data) ? (data as SignatureRow[]) : []);
+/**
+ * The list endpoints answer a bare array (ESignController.ListForAsync). A paged envelope `{ items: [...] }` is read too, so a
+ * future paging change cannot hide real signatures. Anything else reads as no rows, with a warning in development.
+ */
+export const asSignatureRows = (data: unknown): SignatureRow[] => {
+  if (Array.isArray(data)) return data as SignatureRow[];
+  const items = (data as { items?: unknown } | null | undefined)?.items;
+  if (Array.isArray(items)) return items as SignatureRow[];
+  if (process.env.NODE_ENV !== 'production') console.warn('Unexpected signatures list shape; showing no rows.', data);
+  return [];
+};
 
 const asPdfBlob = (data: Blob) => new Blob([data], { type: 'application/pdf' });
 
