@@ -1,0 +1,22 @@
+code,name,type,cost_center_rule,note
+1000,Cash/Bank,Asset,NotAllowed,
+1410,Employee Salary Advances,Asset,NotAllowed,
+2100,Salaries Payable,Liability,NotAllowed,
+2101,Social Insurance Payable (Employee),Liability,NotAllowed,
+2106,Social Insurance Employer Payable,Liability,NotAllowed,
+2107,Loan & Advance Deductions Payable,Liability,NotAllowed,
+2300,Bonus Payable,Liability,NotAllowed,
+2320,Final Settlement Payable,Liability,NotAllowed,
+5001,Basic Salary Expense,Expense,Required,
+5002,Housing Allowance Expense,Expense,Required,
+5003,Transport Allowance Expense,Expense,Required,
+5004,Other Allowances Expense,Expense,Required,
+5005,Overtime Expense,Expense,Required,
+5101,Employer Social Insurance Expense,Expense,Required,
+5110,End of Service Benefit Expense,Expense,Required,
+5111,Leave Encashment Expense,Expense,Required,
+5113,Final Settlement Deductions (contra),Expense,Required,
+5199,Payroll Rounding Differences,Expense,Required,
+6100,Employee Bonus Expense,Expense,Required,
+5011,Direct Labour - Basic (COGS),Expense,Required,M2 only (new account for class re-route)
+5012,Direct Labour - Housing (COGS),Expense,Required,M2 only (new account for class re-route)

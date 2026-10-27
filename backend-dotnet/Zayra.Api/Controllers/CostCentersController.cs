@@ -7,29 +7,33 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
 
 [ApiController]
 [Route("api/cost-centers")]
-[Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+[Authorize]
+[Zayra.Api.Infrastructure.Filters.ReasonLimit]
 public class CostCentersController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;
     private readonly ZayraDbContext _db;
 
-    private static readonly string[] CsvHeaders = { "Code", "Name", "NameAr", "DepartmentCode", "IsActive" };
+    /// <summary>Reason is read only on a row that deactivates an existing cost centre (the form asks for one too); it is recorded in the audit row.</summary>
+    private static readonly string[] CsvHeaders = { "Code", "Name", "NameAr", "DepartmentCode", "IsActive", "Reason" };
 
     /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.
     /// DepartmentCode is deliberately blank: it is a cross-reference, and a tenant that has not yet
     /// imported departments has nothing for it to resolve to.</summary>
     private static readonly string[] CsvExampleRow =
-        { "CC-OPS", "Operations", "", "", "true" };
+        { "CC-OPS", "Operations", "", "", "true", "" };
 
     public CostCentersController(IOrganizationSetupService organization, ZayraDbContext db) { _organization = organization; _db = db; }
 
     [HttpGet]
+    [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<PagedResult<CostCenterDto>>> Search([FromQuery] Guid? companyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
         var tenantId = this.GetTenantId();
@@ -38,6 +42,7 @@ public class CostCentersController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [HasPermission("organization.read", "finance.gl.read")]
     public async Task<ActionResult<CostCenterDto>> Get(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();
@@ -59,8 +64,8 @@ public class CostCentersController : ControllerBase
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-        => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), cancellationToken);
+    public Task<IActionResult> Delete(Guid id, [FromQuery] string? reason, CancellationToken cancellationToken)
+        => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), reason, cancellationToken);
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
@@ -69,7 +74,7 @@ public class CostCentersController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var items = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId.Value && !c.IsDeleted).OrderBy(c => c.Code).ToListAsync(ct);
-        var rows = items.Select(c => (IReadOnlyList<object?>)new object?[] { c.Code, c.Name, string.Empty, string.Empty, c.IsActive ? "true" : "false" });
+        var rows = items.Select(c => (IReadOnlyList<object?>)new object?[] { c.Code, c.Name, string.Empty, string.Empty, c.IsActive ? "true" : "false", string.Empty });
         return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"cost_centers_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
@@ -82,6 +87,7 @@ public class CostCentersController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ImportPreview([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
+        if (!OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;
@@ -94,6 +100,7 @@ public class CostCentersController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> Import([FromBody] CostCenterImportRequest req, CancellationToken ct)
     {
+        if (!OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;
@@ -158,6 +165,12 @@ public class CostCentersController : ControllerBase
 
             existingByCode.TryGetValue(OrgCodes.Normalize(code), out var existing);
 
+            var rowReason = row.GetValueOrDefault("Reason", string.Empty).Trim();
+            if (rowReason.Length > Zayra.Api.Infrastructure.Filters.ReasonLimitAttribute.MaxLength) errors.Add("Reason is longer than 500 characters.");
+            // Deactivating is a recorded decision (M-10): the form asks for a reason, so a file row must carry one.
+            var deactivates = existing is { IsActive: true } && row.TryGetValue("IsActive", out var activeCell) && string.Equals(activeCell.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+            if (deactivates && rowReason.Length == 0) errors.Add($"Reason is required to deactivate cost centre '{code}'. Add a Reason column to the row.");
+
             if (errors.Count == 0)
             {
                 var request = new CostCenterRequest(
@@ -166,7 +179,8 @@ public class CostCentersController : ControllerBase
                     CompanyId: existing is null ? companyId : existing.CompanyId,
                     Code: code,
                     Name: name,
-                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+                    IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase),
+                    Reason: string.IsNullOrWhiteSpace(rowReason) ? null : rowReason);
 
                 // Same rule as the form: the row's company (none = tenant-wide) must be within the grant.
                 if (!OrgWriteRules.MayWriteCompany(this, request.CompanyId))
@@ -191,7 +205,7 @@ public class CostCentersController : ControllerBase
             rowResults.Add(new ImportRowResult(
                 rowNum, code, name,
                 errors.Count > 0 ? ImportRowStatus.Error : warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok,
-                errors, warnings));
+                errors, warnings).WithArabic());
         }
 
         return commit

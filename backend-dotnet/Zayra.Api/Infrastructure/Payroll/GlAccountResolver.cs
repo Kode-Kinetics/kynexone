@@ -108,11 +108,36 @@ public sealed record GlResolutionContext(
     /// </summary>
     public IReadOnlyList<GlDriverRow> InactiveSystemDrivers { get; init; } = Array.Empty<GlDriverRow>();
 
+    // ── Cost accounting (WP-B). All `init`, so neither this record's constructor nor BuildPayrollGlEntries changes arity. ──
+    public IReadOnlyDictionary<string, (string AccountType, string Rule)> AccountRules { get; init; }
+        = new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<(string DriverKey, string Class), (string Code, string Name)> ClassOverrides { get; init; }
+        = new Dictionary<(string, string), (string, string)>();
+    public IReadOnlyDictionary<string, Guid> FixedCostCentres { get; init; } = new Dictionary<string, Guid>(StringComparer.Ordinal);
+    public IReadOnlyDictionary<Guid, GlCostCentreInfo> CostCentres { get; init; } = new Dictionary<Guid, GlCostCentreInfo>();
+    public bool CostAccountingEnabled { get; init; }
+    /// <summary>
+    /// Payroll row id to the functional class its destination account was routed by, for rows whose cost-centre DIMENSION was
+    /// suppressed (the routed account does not accept one). The stamp on such a row is null, so without this the journal builder would
+    /// fall back to the classless account; with it, suppressing the dimension never changes the destination. Empty unless costing is on.
+    /// </summary>
+    public IReadOnlyDictionary<Guid, string> RowRoutingClass { get; init; } = new Dictionary<Guid, string>();
+    public Guid? CompanyDefaultCostCentreId { get; init; }
+    public short CostCentreSmallCellMin { get; init; }
+    /// <summary>Driver keys whose classless override is a COMPANY mapping (not the tenant default). Used by
+    /// <see cref="GlAccountResolver.AccountFor"/> for the precedence company+class &gt; company &gt; tenant+class &gt; tenant.</summary>
+    public IReadOnlySet<string> CompanyScopedOverrides { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+    /// <summary>The (driver, class) pairs whose class override is a COMPANY mapping.</summary>
+    public IReadOnlySet<(string DriverKey, string Class)> CompanyScopedClassOverrides { get; init; } = new HashSet<(string, string)>();
+
     public static readonly GlResolutionContext Empty = new(
         new Dictionary<string, (string, string)>(),
         new Dictionary<string, (string, string)>(),
         Array.Empty<GlDriverRow>());
 }
+
+/// <summary>A cost centre as the posting builders see it (live row of the posting company).</summary>
+public sealed record GlCostCentreInfo(string Code, string Name, string? GlSegment, string? FunctionalClass, Guid? ParentId, bool IsActive);
 
 /// <summary>The kinds of problem the resolver can report for a driver. Stable strings: the GL resolution
 /// API returns them verbatim.</summary>
@@ -175,6 +200,24 @@ public static class GlAccountResolver
         return ("9999", "Unmapped");
     }
 
+    /// <summary>
+    /// Class-aware account choice. Precedence: company+class &gt; company &gt; tenant+class &gt; tenant &gt; driver
+    /// default &gt; built-in catalog. With no class (or no class rows) this is exactly <see cref="Resolve"/>, so a
+    /// tenant that never configures a class posts to the same accounts as before.
+    /// </summary>
+    public static (string Code, string Name) AccountFor(string driverKey, string? ccClass, GlResolutionContext ctx)
+    {
+        if (!string.IsNullOrEmpty(ccClass))
+        {
+            var key = (driverKey, ccClass);
+            var hasClass = ctx.ClassOverrides.TryGetValue(key, out var byClass);
+            if (hasClass && ctx.CompanyScopedClassOverrides.Contains(key)) return byClass;
+            if (ctx.CompanyScopedOverrides.Contains(driverKey) && ctx.Overrides.TryGetValue(driverKey, out var companyPlain)) return companyPlain;
+            if (hasClass) return byClass;
+        }
+        return Resolve(driverKey, ctx.Overrides, ctx.DriverDefaults);
+    }
+
     /// <summary>Driver key → the persisted "&lt;code&gt; - &lt;name&gt;" account label written to the ledger.</summary>
     public static string AccountLabel(string driverKey, GlResolutionContext ctx)
     {
@@ -184,10 +227,17 @@ public static class GlAccountResolver
 
     // ── Raw configuration, loaded once and read by BOTH LoadAsync and DescribeAsync ─────────────
     // One loader so the posting path and the "how does each driver resolve?" API can never disagree.
-    private sealed record MappingRow(string DriverKey, Guid? CompanyId, Guid AccountId, string Code, string Name, bool AccountIsActive);
-    private sealed record AccountRow(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive);
+    private sealed record MappingRow(string DriverKey, Guid? CompanyId, Guid AccountId, string Code, string Name, bool AccountIsActive,
+        string? FunctionalClass = null, Guid? FixedCostCenterId = null);
+    private sealed record AccountRow(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive,
+        string AccountType = "Expense", string CostCenterRule = "Optional");
+    private sealed record CompanyCosting(bool Enabled, Guid? DefaultCostCenterId, short SmallCellMin);
+    /// <summary><see cref="Mappings"/> holds the CLASSLESS rows only (so every pre-existing reader is unchanged);
+    /// the functional-class rows ride separately in <see cref="ClassMappings"/>.</summary>
     private sealed record Snapshot(
-        IReadOnlyList<MappingRow> Mappings, IReadOnlyList<GlDriver> Drivers, IReadOnlyList<AccountRow> Accounts);
+        IReadOnlyList<MappingRow> Mappings, IReadOnlyList<GlDriver> Drivers, IReadOnlyList<AccountRow> Accounts,
+        IReadOnlyList<MappingRow>? ClassMappings = null, CompanyCosting? Costing = null,
+        IReadOnlyList<(Guid Id, GlCostCentreInfo Info)>? CostCentres = null);
 
     private static async Task<Snapshot> LoadSnapshotAsync(
         ZayraDbContext db, Guid tenantId, Guid? companyId, CancellationToken ct)
@@ -206,7 +256,7 @@ public static class GlAccountResolver
             .Join(db.GlAccounts.IgnoreQueryFilters().AsNoTracking()
                     .Where(a => a.TenantId == tenantId && (a.CompanyId == companyId || a.CompanyId == null)),
                   m => m.AccountId, a => a.Id,
-                  (m, a) => new MappingRow(m.DriverKey, m.CompanyId, a.Id, a.Code, a.Name, a.IsActive))
+                  (m, a) => new MappingRow(m.DriverKey, m.CompanyId, a.Id, a.Code, a.Name, a.IsActive, m.FunctionalClass, m.SegmentCostCenterId))
             .ToListAsync(ct);
 
         // IgnoreQueryFilters is intentional: same system-read rationale as the mapping load above —
@@ -222,10 +272,34 @@ public static class GlAccountResolver
                 "GL resolution reads the posting company's chart plus the tenant-default chart regardless of the caller's company claims")
             .AsNoTracking()
             .Where(a => a.CompanyId == companyId || a.CompanyId == null)
-            .Select(a => new AccountRow(a.Id, a.CompanyId, a.Code, a.Name, a.IsActive))
+            .Select(a => new AccountRow(a.Id, a.CompanyId, a.Code, a.Name, a.IsActive, a.AccountType, a.CostCenterRule))
             .ToListAsync(ct);
 
-        return new Snapshot(mapRows, driverRows, accounts);
+        // Cost accounting: the posting company's switch, default cost centre and K, and — only when the switch is on —
+        // its live cost centres. A company with the switch off loads nothing extra, so nothing about its posting moves.
+        CompanyCosting? costing = null;
+        List<(Guid Id, GlCostCentreInfo Info)>? costCentres = null;
+        if (companyId is { } cid)
+        {
+            costing = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.Companies, tenantId,
+                    "GL resolution reads the posting company's costing switch regardless of the caller's company claims")
+                .AsNoTracking().Where(c => c.Id == cid)
+                .Select(c => new CompanyCosting(c.CostAccountingEnabled, c.DefaultCostCenterId, c.CostCentreSmallCellMin))
+                .FirstOrDefaultAsync(ct);
+            if (costing is { Enabled: true })
+            {
+                var rows = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.CostCenters, tenantId,
+                        "GL resolution reads the posting company's own cost centres regardless of the caller's company claims")
+                    .AsNoTracking().Where(c => c.CompanyId == cid && !c.IsDeleted)
+                    .Select(c => new { c.Id, c.Code, c.Name, c.GlSegment, c.FunctionalClass, c.ParentId, c.IsActive })
+                    .ToListAsync(ct);
+                costCentres = rows.Select(c => (c.Id, new GlCostCentreInfo(c.Code, c.Name, c.GlSegment, c.FunctionalClass, c.ParentId, c.IsActive))).ToList();
+            }
+        }
+
+        return new Snapshot(
+            mapRows.Where(m => m.FunctionalClass == null).ToList(), driverRows, accounts,
+            mapRows.Where(m => m.FunctionalClass != null).ToList(), costing, costCentres);
     }
 
     /// <summary>Company row beats the tenant row.</summary>
@@ -277,7 +351,36 @@ public static class GlAccountResolver
                 d.MatchComponentCode, d.EmitsEmployerExpensePair, d.PairedExpenseDriverKey, d.IsSystem, d.SortOrder))
             .ToList();
 
-        var ctx = new GlResolutionContext(overrides, driverDefaults, drivers) { CompanyId = companyId, InactiveSystemDrivers = inactiveSystem };
+        // ── cost accounting (init-only data; nothing above this line changed) ──
+        var classRows = (s.ClassMappings ?? Array.Empty<MappingRow>()).Where(m => m.AccountIsActive)
+            .GroupBy(m => (m.DriverKey, m.FunctionalClass!))
+            .ToDictionary(g => g.Key, g => { var w = CompanyFirst(g, r => r.CompanyId); return (w.Code, w.Name); });
+        var companyClass = (s.ClassMappings ?? Array.Empty<MappingRow>()).Where(m => m.AccountIsActive && m.CompanyId != null)
+            .Select(m => (m.DriverKey, m.FunctionalClass!)).ToHashSet();
+        var companyPlain = s.Mappings.Where(m => m.AccountIsActive && m.CompanyId != null).Select(m => m.DriverKey).ToHashSet(StringComparer.Ordinal);
+        var accountRules = s.Accounts.GroupBy(a => a.Code, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var a = g.OrderByDescending(x => x.CompanyId != null).ThenByDescending(x => x.IsActive).First();
+                return (a.AccountType, a.CostCenterRule);
+            }, StringComparer.Ordinal);
+        // The fixed cost centre of a posting rule is a COMPANY mapping property (a tenant default cannot carry one).
+        var fixedCc = companyId is null
+            ? new Dictionary<string, Guid>(StringComparer.Ordinal)
+            : s.Mappings.Where(m => m.CompanyId == companyId && m.FixedCostCenterId != null)
+                .GroupBy(m => m.DriverKey, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First().FixedCostCenterId!.Value, StringComparer.Ordinal);
+
+        var ctx = new GlResolutionContext(overrides, driverDefaults, drivers)
+        {
+            CompanyId = companyId, InactiveSystemDrivers = inactiveSystem,
+            AccountRules = accountRules, ClassOverrides = classRows, FixedCostCentres = fixedCc,
+            CompanyScopedOverrides = companyPlain, CompanyScopedClassOverrides = companyClass,
+            CostCentres = (s.CostCentres ?? Array.Empty<(Guid, GlCostCentreInfo)>()).ToDictionary(c => c.Id, c => c.Info),
+            CostAccountingEnabled = s.Costing?.Enabled ?? false,
+            CompanyDefaultCostCentreId = s.Costing?.DefaultCostCenterId,
+            CostCentreSmallCellMin = s.Costing?.SmallCellMin ?? 0,
+        };
         return ctx with { Problems = FindProblems(s, ctx) };
     }
 

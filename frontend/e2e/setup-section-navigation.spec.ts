@@ -53,7 +53,7 @@ async function boot(page: Page, options: { url?: string; arabic?: boolean; dark?
       roles: [options.readOnly ? 'Auditor' : 'Admin'],
       permissions: options.readOnly
         ? ['organization.read']
-        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read'],
+        : ['organization.read', 'organization.write', 'organization.costcenter.manage', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read'],
       accountType: 'Group', isGroupScope: !options.companyScoped,
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SAU', isActive: true })),
     });
@@ -533,5 +533,5 @@ test('a company-scoped group administrator sees only company-owned settings, Cos
   await openSetupSection(page, 'Cost centres');
   await expect(sectionHeading(page)).toHaveText('Cost centres');
   await expect(page).toHaveURL(/[?&]tab=costCenters(&|$)/);
-  await expect(page.getByRole('button', { name: 'Add Cost Center', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New cost centre', exact: true })).toBeVisible();
 });

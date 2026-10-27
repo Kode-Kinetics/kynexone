@@ -1,0 +1,15 @@
+account_code,account_name,type,debit,credit,net_dr_minus_cr
+2100,Salaries Payable,Liability,32856.16,127893.29,-95037.13
+2101,Social Insurance Payable (Employee),Liability,0.00,5958.85,-5958.85
+2106,Social Insurance Employer Payable,Liability,0.00,7854.68,-7854.68
+2107,Loan & Advance Deductions Payable,Liability,0.00,900.00,-900.00
+2320,Final Settlement Payable,Liability,33156.16,33156.16,0.00
+5001,Basic Salary Expense,Expense,57833.33,0.00,57833.33
+5002,Housing Allowance Expense,Expense,14458.33,0.00,14458.33
+5003,Transport Allowance Expense,Expense,5516.67,0.00,5516.67
+5004,Other Allowances Expense,Expense,300.00,0.00,300.00
+5005,Overtime Expense,Expense,987.65,0.00,987.65
+5011,Direct Labour - Basic (COGS),Expense,18000.00,0.00,18000.00
+5012,Direct Labour - Housing (COGS),Expense,4500.00,0.00,4500.00
+5101,Employer Social Insurance Expense,Expense,7854.68,0.00,7854.68
+5113,Final Settlement Deductions (contra),Expense,300.00,0.00,300.00

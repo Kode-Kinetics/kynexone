@@ -27,6 +27,16 @@ public interface ITokenService
 public interface IAuditService
 {
     Task WriteAsync(string action, string entityName, string? entityId, RequestContext context, string? metadata, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Adds the audit row to the context WITHOUT saving, so it commits in the SAME SaveChanges as the business change it describes
+    /// (<see cref="WriteAsync"/> saves separately, so a failure between the two leaves a change with no audit row). The context seals the
+    /// row into the per-tenant hash chain at save, under the same advisory lock every audit write takes.
+    /// </summary>
+    /// <param name="beforeAfterJson">The metadata, conventionally <c>{"before":…,"after":…,"reason":…}</c>.</param>
+    /// <param name="companyId">The company the change belongs to (null for a tenant-level change).</param>
+    void Stage(string action, string entityName, string? entityId, RequestContext context, string? beforeAfterJson, Guid? companyId)
+        => throw new NotSupportedException($"{GetType().Name} does not support staged audit rows.");
 }
 
 public interface IMfaService

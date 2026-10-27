@@ -34,6 +34,8 @@ public sealed class ImportLookups
     // company resolves only against unassigned rows).
     public required IReadOnlyDictionary<string, Guid> DeptByCode { get; init; }   // OrgKey(company, CODE upper) -> id
     public required IReadOnlyDictionary<string, Guid> DeptByName { get; init; }   // OrgKey(company, name lower) -> id
+    /// <summary>Each department's own cost centre: an explicit cost-centre cell equal to it is just a copy, anything else is an override.</summary>
+    public IReadOnlyDictionary<Guid, Guid?> DeptCostCentre { get; init; } = new Dictionary<Guid, Guid?>();
     public required IReadOnlyDictionary<string, DesignationRef> DesigByTitle { get; init; } // OrgKey(company, title lower)
     public required IReadOnlyDictionary<string, Grade> GradeByCode { get; init; } // OrgKey(company, CODE upper)
     public required IReadOnlyDictionary<string, Grade> GradeByName { get; init; } // OrgKey(company, name lower)
@@ -115,6 +117,8 @@ public sealed class ResolvedImportRow
     public string BranchNameEn { get; set; } = string.Empty;
     public Guid? CostCenterId { get; set; }
     public string CostCenterCode { get; set; } = string.Empty;
+    /// <summary>True when the row names a cost centre that differs from its department's (an override of where the person's pay posts).</summary>
+    public bool CostCenterIsOverride { get; set; }
     public Guid? DepartmentId { get; set; }
     public Guid? DesignationId { get; set; }
     public Guid? GradeId { get; set; }
@@ -173,7 +177,7 @@ public static class EmployeeImportRowResolver
         // Departments/Designations/Grades: !IsDeleted (matches the authoritative commit filter — parity).
         var departments = await db.Departments.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .Select(d => new { d.Id, d.Code, d.NameEn, d.BranchId, d.CompanyId })
+            .Select(d => new { d.Id, d.Code, d.NameEn, d.BranchId, d.CompanyId, d.CostCenterId })
             .ToListAsync(ct);
         var deptByCode = ImportLookupBuilder.Build(departments, d => ImportLookups.OrgKey(d.CompanyId, d.Code.Trim().ToUpperInvariant()), d => d.Id,
             d => d.Id, d => d.Code, "department-code", k => k, ambiguous);
@@ -219,6 +223,7 @@ public static class EmployeeImportRowResolver
             CostCentersByCode = costCentersByCode,
             DeptByCode = deptByCode,
             DeptByName = deptByName,
+            DeptCostCentre = departments.GroupBy(d => d.Id).ToDictionary(g => g.Key, g => g.First().CostCenterId),
             DesigByTitle = desigByTitle,
             GradeByCode = gradeByCode,
             GradeByName = gradeByName,
@@ -436,6 +441,9 @@ public static class EmployeeImportRowResolver
             r.Warnings.Add($"Department '{raw}' not found — imported as free text without an org link.");
         }
         r.DepartmentId = deptId;
+        // An explicit cost centre that is not the department's own is an override; one equal to it is only a copy (the form door's rule).
+        r.CostCenterIsOverride = r.CostCenterId is Guid explicitCc
+            && explicitCc != (deptId is Guid ownDept && lk.DeptCostCentre.TryGetValue(ownDept, out var deptCc) ? deptCc : null);
 
         // ── Designation: unknown → free text, no FK + gap + warning.
         var desigTitleRaw = V("Designation");

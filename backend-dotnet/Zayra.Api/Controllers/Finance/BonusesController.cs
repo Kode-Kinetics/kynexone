@@ -16,6 +16,7 @@ namespace Zayra.Api.Controllers.Finance;
 [Authorize]
 [ApiController]
 [Route("api/finance/bonuses")]
+[Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilter]
 public class BonusesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
@@ -550,7 +551,25 @@ public class BonusesController : ControllerBase
             .ToListAsync(ct);
         var alreadyAccrued = existingAccrualCompanies.ToHashSet();
 
-        foreach (var group in bonuses.GroupBy(b => b.CompanyId).OrderBy(g => g.Key))
+        // AM-24: a bonus with no company of its own (legacy) is attributed to its EMPLOYEE's company when that company uses cost
+        // accounting, so the ledger never gains a company-less line in a costed tenant. Otherwise it keeps posting exactly as before.
+        var costedEmployeeCompany = new Dictionary<int, Guid>();
+        var unattributed = bonuses.Where(b => b.CompanyId == null && b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value).Distinct().ToList();
+        if (unattributed.Count > 0)
+        {
+            var costedCompanies = (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.Companies, tid,
+                    "Which companies use cost accounting; tenant-pinned and read-only.")
+                .AsNoTracking().Where(c => c.CostAccountingEnabled).Select(c => c.Id).ToListAsync(ct)).ToHashSet();
+            if (costedCompanies.Count > 0)
+                foreach (var e in await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tid,
+                             "The employee's own company, tenant-pinned and read-only.")
+                         .AsNoTracking().Where(e => unattributed.Contains(e.Id) && e.CompanyId != null).Select(e => new { e.Id, e.CompanyId }).ToListAsync(ct))
+                    if (costedCompanies.Contains(e.CompanyId!.Value)) costedEmployeeCompany[e.Id] = e.CompanyId.Value;
+        }
+        Guid? EffectiveCompany(EmployeeBonus b) =>
+            b.CompanyId ?? (b.EmployeeIntId is int ei && costedEmployeeCompany.TryGetValue(ei, out var ec) ? ec : null);
+
+        foreach (var group in bonuses.GroupBy(EffectiveCompany).OrderBy(g => g.Key))
         {
             var companyId = group.Key;
             if (alreadyAccrued.Contains(companyId)) continue;
@@ -562,19 +581,39 @@ public class BonusesController : ControllerBase
             await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, companyId, batch.PaymentPeriod, ct);
 
             var glCtx = await GlAccountResolver.LoadAsync(_db, tid, companyId, ct);
-            _db.FinanceGlEntries.Add(new FinanceGlEntry
+            var accrualCurrency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct);
+            // Cost accounting (WP-C2): with the company's switch on, the expense is split by the employees' resolved cost centres
+            // (largest remainder over their gross amounts); the Bonus Payable side stays one uncosted figure. Off: the single row it always was.
+            var costOf = new Dictionary<int, Guid?>();
+            if (glCtx.CostAccountingEnabled && companyId is Guid costCompany)
             {
-                TenantId = tid, CompanyId = companyId,
-                SourceModule = BonusGlLedger.SourceModule, SourceEntityId = id,
-                SourceEntityRef = batch.BatchNumber, EventType = GlEventTypes.BonusAccrual,
-                DebitAccount = GlAccountResolver.AccountLabel("EARN:BONUS", glCtx),
-                CreditAccount = GlAccountResolver.AccountLabel("BONUS_PAYABLE", glCtx),
-                Amount = grossTotal,
-                Currency = await GlAccountResolver.ResolveCurrencyAsync(_db, tid, companyId, ct),
-                EntryDate = today, Period = batch.PaymentPeriod,
-                Description = $"{BonusGlDescriptions.AccrualPrefix}{batch.BatchName} ({batch.BatchNumber})",
-                PostedBy = uid, PostedByName = GetUserName(),
-            });
+                var resolved = await Zayra.Api.Infrastructure.Payroll.PayrollCostStamper.ResolveEmployeesAsync(
+                    _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx);
+                resolved = BonusCostSplit.ApplyFixedMapping(resolved, glCtx);   // a fixed centre on the EARN:BONUS mapping wins, as in payroll
+                foreach (var (employeeId, r) in resolved) costOf[employeeId] = r.CostCenterId;
+
+                // A Required bonus-expense account with an employee who has no usable cost centre is refused with M-1 / M-2 (the same body Lock
+                // answers) before anything is written, instead of surfacing as the ledger guard's generic refusal.
+                var (expenseCode, expenseName) = GlAccountResolver.Resolve("EARN:BONUS", glCtx.Overrides, glCtx.DriverDefaults);
+                if (PayrollCostStamper.RuleOf(expenseCode, glCtx) == "Required")
+                {
+                    var unresolved = group.Where(b => b.EmployeeIntId != null && resolved[b.EmployeeIntId.Value].CostCenterId == null).ToList();
+                    if (unresolved.Count > 0)
+                    {
+                        var ids = unresolved.Select(b => b.EmployeeIntId!.Value).Distinct().ToList();
+                        var codes = await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tid, "Employee codes for a refusal body; tenant-pinned and read-only.")
+                            .AsNoTracking().Where(e => ids.Contains(e.Id)).ToDictionaryAsync(e => e.Id, e => e.EmployeeCode, ct);
+                        return UnprocessableEntity(PayrollCostStamper.BuildRefusal(unresolved.Select(b => new CostBlocker(
+                            b.EmployeeIntId!.Value, codes.GetValueOrDefault(b.EmployeeIntId.Value, string.Empty),
+                            resolved[b.EmployeeIntId.Value].Level ?? "company", null, null, null,
+                            resolved[b.EmployeeIntId.Value].UnresolvedReason == "none" ? PayrollCostStamper.RequiredCode : PayrollCostStamper.InvalidCode,
+                            expenseCode, expenseName, b.GrossBonusAmount)).ToList(), glCtx.CostCentreSmallCellMin).Body);
+                    }
+                }
+            }
+            _db.FinanceGlEntries.AddRange(BonusCostSplit.BuildAccrual(
+                tid, companyId, id, batch.BatchNumber, batch.BatchName, batch.PaymentPeriod, accrualCurrency, grossTotal,
+                group.Select(b => (b.EmployeeIntId ?? 0, b.GrossBonusAmount)), costOf, glCtx, today, uid, GetUserName()));
         }
 
         await _db.SaveChangesAsync(ct);
@@ -675,27 +714,47 @@ public class BonusesController : ControllerBase
                          && !x.IsReversed
                          && (x.EventType == GlEventTypes.BonusAccrual || x.EventType == GlEventTypes.BonusAccrualLegacy))
                 .ToListAsync(ct);
+            // What each origin row has already been reversed by: the database caps the contras of ONE row at that row's amount.
+            var originIds = accrualEntries.Select(x => x.Id).ToList();
+            var alreadyReversed = (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.FinanceGlEntries, tid,
+                        "Contras already written against these accrual rows, whatever company posted them; tenant-pinned and read-only.")
+                    .AsNoTracking()
+                    .Where(x => x.ReversalOfEntryId != null && originIds.Contains(x.ReversalOfEntryId.Value))
+                    .Select(x => new { Origin = x.ReversalOfEntryId!.Value, x.Amount }).ToListAsync(ct))
+                .GroupBy(x => x.Origin).ToDictionary(g => g.Key, g => (Total: g.Sum(x => x.Amount), Count: g.Count()));
             foreach (var position in openPositions.Where(p => p.Remaining > 0m))
             {
                 await PeriodCloseGuard.ThrowIfClosedAsync(_db, tid, position.CompanyId, batch.PaymentPeriod, ct);
-                var origin = accrualEntries.FirstOrDefault(
-                    x => x.CompanyId == position.CompanyId && x.CreditAccount == position.AccrualAccount);
-                if (origin is null) continue;
-                _db.FinanceGlEntries.Add(new FinanceGlEntry
+                // With cost accounting the accrual is one row per cost centre, so the position (which sums them) can exceed any
+                // single row. The contra is split across the origin rows, largest first, each within its own row and carrying its
+                // cost centre; a row is flagged reversed only when its contra closes it out completely (migration M2).
+                var origins = accrualEntries
+                    .Where(x => x.CompanyId == position.CompanyId && x.CreditAccount == position.AccrualAccount)
+                    .OrderByDescending(x => x.Amount).ThenBy(x => x.CostCenterCode, StringComparer.Ordinal).ToList();
+                var left = position.Remaining;
+                foreach (var origin in origins)
                 {
-                    TenantId = tid, CompanyId = position.CompanyId,
-                    SourceModule = BonusGlLedger.SourceModule, SourceEntityId = id,
-                    SourceEntityRef = batch.BatchNumber, EventType = GlEventTypes.BonusAccrualReversal,
-                    DebitAccount = origin.CreditAccount, CreditAccount = origin.DebitAccount,
-                    Amount = position.Remaining, Currency = position.Currency,
-                    EntryDate = reversalToday, Period = origin.Period,
-                    Description = $"{BonusGlDescriptions.ReversalPrefix}{batch.BatchName} ({batch.BatchNumber}) — {req.Reason}",
-                    PostedBy = uid, PostedByName = GetUserName(),
-                    ReversalOfEntryId = origin.Id,
-                });
-                // Only flag the original spent when the contra closes it out completely; a partially
-                // consumed accrual must stay visible to the payable sub-ledger.
-                if (position.Remaining >= position.Accrued) origin.IsReversed = true;
+                    if (left <= 0m) break;
+                    var room = Math.Round(origin.Amount - alreadyReversed.GetValueOrDefault(origin.Id).Total, 4);
+                    var take = Math.Min(left, room);
+                    if (take <= 0m) continue;
+                    _db.FinanceGlEntries.Add(new FinanceGlEntry
+                    {
+                        TenantId = tid, CompanyId = position.CompanyId,
+                        SourceModule = BonusGlLedger.SourceModule, SourceEntityId = id,
+                        SourceEntityRef = batch.BatchNumber, EventType = GlEventTypes.BonusAccrualReversal,
+                        DebitAccount = origin.CreditAccount, CreditAccount = origin.DebitAccount,
+                        Amount = take, Currency = position.Currency,
+                        EntryDate = reversalToday, Period = origin.Period,
+                        Description = $"{BonusGlDescriptions.ReversalPrefix}{batch.BatchName} ({batch.BatchNumber}) — {req.Reason}",
+                        PostedBy = uid, PostedByName = GetUserName(),
+                        ReversalOfEntryId = origin.Id,
+                        CostCenterId = origin.CostCenterId, CostCenterCode = origin.CostCenterCode, CostCenterName = origin.CostCenterName,
+                        CostCenterGlSegment = origin.CostCenterGlSegment, PostingKey = PayrollCostStamper.ReversalKey(origin.Id, alreadyReversed.GetValueOrDefault(origin.Id).Count),
+                    });
+                    left = Math.Round(left - take, 4);
+                    if (take >= room) origin.IsReversed = true;
+                }
             }
         }
 
@@ -792,11 +851,25 @@ public class BonusesController : ControllerBase
                 payableDebited[position.Key] = payableDebited.GetValueOrDefault(position.Key) + clearable;
 
             var label = $"{batch.BatchName} ({batch.BatchNumber})";
-            var debits = new List<(string Account, decimal Amount, string Note)>();
+            var debits = new List<(string Account, decimal Amount, string Note, Guid? Cc)>();
             var credits = new List<(string Account, decimal Amount, string Note)>();
-            if (clearable > 0m) debits.Add((payableAccount, clearable, BonusGlDescriptions.PaymentPrefix + label));
-            if (unaccrued > 0m) debits.Add((GlAccountResolver.AccountLabel("EARN:BONUS", glCtx), unaccrued,
-                $"{BonusGlDescriptions.PaymentPrefix}{label} (un-accrued)"));
+            if (clearable > 0m) debits.Add((payableAccount, clearable, BonusGlDescriptions.PaymentPrefix + label, null));
+            if (unaccrued > 0m)
+            {
+                // The un-accrued remainder is a genuine expense, so with cost accounting on it is divided over the employees' cost
+                // centres (largest remainder); off, it is the single debit it always was.
+                var costOf = new Dictionary<int, Guid?>();
+                if (glCtx.CostAccountingEnabled && companyId is Guid costCompany)
+                    foreach (var (employeeId, r) in BonusCostSplit.ApplyFixedMapping(await PayrollCostStamper.ResolveEmployeesAsync(
+                                 _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx), glCtx))
+                        costOf[employeeId] = r.CostCenterId;
+                foreach (var (ccId, part) in BonusCostSplit.Split(unaccrued,
+                             group.Select(b => (costOf.GetValueOrDefault(b.EmployeeIntId ?? 0), b.GrossBonusAmount)), glCtx, currency))
+                {
+                    var (xCode, xName, xCc) = BonusCostSplit.RouteExpense(ccId, glCtx);
+                    debits.Add(($"{xCode} - {xName}", part, $"{BonusGlDescriptions.PaymentPrefix}{label} (un-accrued)", xCc));
+                }
+            }
             if (taxTotal > 0m) credits.Add((GlAccountResolver.AccountLabel("DED:TAX", glCtx), taxTotal,
                 BonusGlDescriptions.TaxWithheldPrefix + label));
             if (netTotal > 0m) credits.Add((GlAccountResolver.AccountLabel("CASH_BANK", glCtx), netTotal,
@@ -814,7 +887,8 @@ public class BonusesController : ControllerBase
             {
                 var chunk = Math.Min(dRem, cRem);
                 if (chunk > 0m)
-                    lines.Add(new FinanceGlEntry
+                {
+                    var paymentRow = new FinanceGlEntry
                     {
                         TenantId = tid, CompanyId = companyId,
                         SourceModule = BonusGlLedger.SourceModule, SourceEntityId = id,
@@ -825,7 +899,9 @@ public class BonusesController : ControllerBase
                         Description = credits[ci].Account.Contains("Tax", StringComparison.OrdinalIgnoreCase)
                             ? credits[ci].Note : debits[di].Note,
                         PostedBy = uid, PostedByName = GetUserName(),
-                    });
+                    };
+                    lines.Add(BonusCostSplit.Stamp(paymentRow, debits[di].Cc, glCtx));
+                }
                 dRem -= chunk; cRem -= chunk;
                 if (dRem <= 0m && ++di < debits.Count) dRem = debits[di].Amount;
                 if (cRem <= 0m && ++ci < credits.Count) cRem = credits[ci].Amount;

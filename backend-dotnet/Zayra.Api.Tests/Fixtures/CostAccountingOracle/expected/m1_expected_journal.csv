@@ -1,0 +1,42 @@
+journal_id,line_no,period,event_type,driver_key,account_code,account_name,side,amount,cost_centre_code,cc_functional_class,description
+J-BON-ACCR-2026-09,1,2026-09,BonusAccrual,EARN:BONUS,6100,Employee Bonus Expense,DR,966.67,CC-110,G_AND_A,Bonus accrual
+J-BON-ACCR-2026-09,2,2026-09,BonusAccrual,EARN:BONUS,6100,Employee Bonus Expense,DR,966.66,CC-200,SELLING,Bonus accrual
+J-BON-ACCR-2026-09,3,2026-09,BonusAccrual,EARN:BONUS,6100,Employee Bonus Expense,DR,966.66,CC-300,COGS,Bonus accrual
+J-BON-ACCR-2026-09,4,2026-09,BonusAccrual,BONUS_PAYABLE,2300,Bonus Payable,CR,2899.99,,,Bonus accrual
+RUN-REG-2026-09,1,2026-09,PayrollLock,EARN:BASIC,5001,Basic Salary Expense,DR,5000.00,CC-100,G_AND_A,Payroll earning: BASIC
+RUN-REG-2026-09,2,2026-09,PayrollLock,EARN:BASIC,5001,Basic Salary Expense,DR,25500.00,CC-110,G_AND_A,Payroll earning: BASIC
+RUN-REG-2026-09,3,2026-09,PayrollLock,EARN:BASIC,5001,Basic Salary Expense,DR,31333.33,CC-200,SELLING,Payroll earning: BASIC
+RUN-REG-2026-09,4,2026-09,PayrollLock,EARN:BASIC,5001,Basic Salary Expense,DR,18000.00,CC-300,COGS,Payroll earning: BASIC
+RUN-REG-2026-09,5,2026-09,PayrollLock,EARN:HOUSING,5002,Housing Allowance Expense,DR,1250.00,CC-100,G_AND_A,Payroll earning: HOUSING
+RUN-REG-2026-09,6,2026-09,PayrollLock,EARN:HOUSING,5002,Housing Allowance Expense,DR,6375.00,CC-110,G_AND_A,Payroll earning: HOUSING
+RUN-REG-2026-09,7,2026-09,PayrollLock,EARN:HOUSING,5002,Housing Allowance Expense,DR,7833.33,CC-200,SELLING,Payroll earning: HOUSING
+RUN-REG-2026-09,8,2026-09,PayrollLock,EARN:HOUSING,5002,Housing Allowance Expense,DR,4500.00,CC-300,COGS,Payroll earning: HOUSING
+RUN-REG-2026-09,9,2026-09,PayrollLock,EARN:TRANSPORT,5003,Transport Allowance Expense,DR,400.00,CC-100,G_AND_A,Payroll earning: TRANSPORT
+RUN-REG-2026-09,10,2026-09,PayrollLock,EARN:TRANSPORT,5003,Transport Allowance Expense,DR,1900.00,CC-110,G_AND_A,Payroll earning: TRANSPORT
+RUN-REG-2026-09,11,2026-09,PayrollLock,EARN:TRANSPORT,5003,Transport Allowance Expense,DR,2250.00,CC-200,SELLING,Payroll earning: TRANSPORT
+RUN-REG-2026-09,12,2026-09,PayrollLock,EARN:TRANSPORT,5003,Transport Allowance Expense,DR,1300.00,CC-300,COGS,Payroll earning: TRANSPORT
+RUN-REG-2026-09,13,2026-09,PayrollLock,EARN:OTHER_ALLOWANCES,5004,Other Allowances Expense,DR,300.00,CC-200,SELLING,Payroll earning: OTHER_ALLOWANCES
+RUN-REG-2026-09,14,2026-09,PayrollLock,EARN:OVERTIME,5005,Overtime Expense,DR,1234.57,CC-200,SELLING,Payroll earning: OVERTIME
+RUN-REG-2026-09,15,2026-09,BonusPayrollClearing,BONUS_PAYABLE,2300,Bonus Payable,DR,2899.99,,,Bonus payroll clearing
+RUN-REG-2026-09,16,2026-09,PayrollLock,EARN:BONUS,6100,Employee Bonus Expense,DR,33.34,CC-110,G_AND_A,Payroll earning: BONUS (un-accrued)
+RUN-REG-2026-09,17,2026-09,PayrollLock,EARN:BONUS,6100,Employee Bonus Expense,DR,33.34,CC-200,SELLING,Payroll earning: BONUS (un-accrued)
+RUN-REG-2026-09,18,2026-09,PayrollLock,EARN:BONUS,6100,Employee Bonus Expense,DR,33.33,CC-300,COGS,Payroll earning: BONUS (un-accrued)
+RUN-REG-2026-09,19,2026-09,PayrollLock,DED:STATUTORY_EE,2101,Social Insurance Payable (Employee),CR,5510.42,,,Payroll deduction: GOSI-ANN-EE
+RUN-REG-2026-09,20,2026-09,PayrollLock,DED:STATUTORY_EE,2101,Social Insurance Payable (Employee),CR,448.43,,,Payroll deduction: GOSI-SANED-EE
+RUN-REG-2026-09,21,2026-09,PayrollLock,DED:LOAN,2107,Loan & Advance Deductions Payable,CR,500.00,,,Payroll deduction: LOAN_EMI
+RUN-REG-2026-09,22,2026-09,PayrollLock,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,CR,5510.42,,,Payroll deduction: GOSI-ANN-ER
+RUN-REG-2026-09,23,2026-09,PayrollLock,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,CR,448.43,,,Payroll deduction: GOSI-SANED-ER
+RUN-REG-2026-09,24,2026-09,PayrollLock,DED:STATUTORY_ER,2106,Social Insurance Employer Payable,CR,1995.83,,,Payroll deduction: GOSI-OH-ER
+RUN-REG-2026-09,25,2026-09,PayrollLock,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,DR,125.00,CC-100,G_AND_A,Employer statutory contribution
+RUN-REG-2026-09,26,2026-09,PayrollLock,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,DR,3257.81,CC-110,G_AND_A,Employer statutory contribution
+RUN-REG-2026-09,27,2026-09,PayrollLock,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,DR,3268.75,CC-200,SELLING,Employer statutory contribution
+RUN-REG-2026-09,28,2026-09,PayrollLock,EMPLOYER_STATUTORY_EXPENSE,5101,Employer Social Insurance Expense,DR,1303.12,CC-300,COGS,Employer statutory contribution
+RUN-REG-2026-09,29,2026-09,PayrollLock,NET_PAYABLE,2100,Salaries Payable,CR,103717.38,,,Net salaries payable
+J-SETT-ACCR-2026-09,1,2026-09,SettlementAccrual,EARN:EOSB,5110,End of Service Benefit Expense,DR,31156.16,CC-200,SELLING,Settlement accrual: EOSB_GRATUITY
+J-SETT-ACCR-2026-09,2,2026-09,SettlementAccrual,EARN:LEAVE_ENCASHMENT,5111,Leave Encashment Expense,DR,2000.00,CC-200,SELLING,Settlement accrual: LEAVE_ENCASHMENT
+J-SETT-ACCR-2026-09,3,2026-09,SettlementAccrual,SETTLEMENT_PAYABLE,2320,Final Settlement Payable,CR,33156.16,,,Settlement accrual
+RUN-OC-2026-09,1,2026-09,SettlementPayrollClearing,SETTLEMENT_PAYABLE,2320,Final Settlement Payable,DR,33156.16,,,Settlement payroll clearing
+RUN-OC-2026-09,2,2026-09,PayrollLock,DED:SETTLEMENT_RECOVERY,5113,Final Settlement Deductions (contra),CR,300.00,CC-200,SELLING,Payroll deduction: SETTLEMENT_RECOVERY
+RUN-OC-2026-09,3,2026-09,PayrollLock,NET_PAYABLE,2100,Salaries Payable,CR,32856.16,,,Net salaries payable
+J-ADV-ISS-2026-09,1,2026-09,AdvanceIssue,ADVANCE_RECEIVABLE,1410,Employee Salary Advances,DR,1200.00,,,Salary advance issued
+J-ADV-ISS-2026-09,2,2026-09,AdvanceIssue,CASH_BANK,1000,Cash/Bank,CR,1200.00,,,Salary advance issued

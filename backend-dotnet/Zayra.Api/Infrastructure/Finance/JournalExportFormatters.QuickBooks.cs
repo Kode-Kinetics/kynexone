@@ -20,8 +20,9 @@ namespace Zayra.Api.Infrastructure.Finance;
 /// <item>QuickBooks Desktop reads IIF as Windows-1252. The file is written in that code page; a memo it
 /// cannot represent (Arabic) is replaced by the journal ref, and an account name it cannot represent falls
 /// back to the account code — never a row of "?" characters.</item>
-/// <item>CLASS is a QuickBooks class (cost centre), not a legal entity — left blank, since ledger rows carry
-/// no cost centre yet.</item>
+/// <item>CLASS is a QuickBooks class (cost centre), not a legal entity. It carries the line's cost centre (its ERP
+/// segment when set, else its code) when the journal has any costed line, and stays blank otherwise. A cost centre
+/// Windows-1252 cannot carry (Arabic, emoji) falls back to its code, then to blank — never a placeholder.</item>
 /// </list>
 /// <para>No line-level field has room for the EntryId; the DOCNUM is derived from the ExportId.</para>
 /// </summary>
@@ -36,9 +37,12 @@ public sealed class QuickBooksIifJournalFormatter : IJournalExportFormatter
       + "make sure our account names match yours. The file is Windows-1252 (the code page QuickBooks Desktop "
       + "reads): any memo it cannot represent, such as Arabic text, is replaced by the journal reference, and an "
       + "account name it cannot represent falls back to the account code. One company per QuickBooks file: export "
-      + "each company separately. Dates are MM/DD/YYYY; single currency by construction.";
+      + "each company separately. Dates are MM/DD/YYYY; single currency by construction. CLASS carries the line's cost "
+      + "centre (its ERP segment when set, else its code) as a QuickBooks class: create the classes in QuickBooks first or "
+      + "it creates them as it imports.";
     public string Extension => "iif";
     public string ContentType => "application/octet-stream";
+    public bool CarriesCostCentre => true;
 
     private const string TrnType = "GENERAL JOURNAL";
     // Field initialisers run in textual order: the code-page provider is registered before 1252 is asked for.
@@ -53,20 +57,21 @@ public sealed class QuickBooksIifJournalFormatter : IJournalExportFormatter
         sb.Append("!ENDTRNS\r\n");
 
         var docNums = doc.ShortRefs("KX", 12);
+        var withCc = doc.HasCostCentres;
         foreach (var journal in doc.PostingDocuments())
         {
             var date = journal.AccountingDate.ToString("MM/dd/yyyy", CultureInfo.InvariantCulture);
             for (var i = 0; i < journal.Lines.Count; i++)
             {
                 var l = journal.Lines[i];
-                var amount = JournalAmount.Round(l.Debit) - JournalAmount.Round(l.Credit);
+                var amount = l.RoundedDebit - l.RoundedCredit;
                 sb.Append(i == 0 ? "TRNS" : "SPL").Append("\t\t")
                   .Append(TrnType).Append('\t')
                   .Append(date).Append('\t')
                   .Append(Tsv(Account(l))).Append('\t')
                   .Append('\t')                                   // NAME: employee-level PII deliberately omitted
-                  .Append('\t')                                   // CLASS: no cost centre on ledger rows yet
-                  .Append(JournalAmount.Emit(amount)).Append('\t')
+                  .Append(withCc ? Tsv(ClassOf(l)) : string.Empty).Append('\t')   // CLASS: the cost centre, only when the journal has one
+                  .Append(JournalAmount.Emit(amount, l.Scale)).Append('\t')
                   .Append(docNums[journal.Sequence]).Append('\t')
                   .Append(Tsv(Memo(l.Description, journal.DocumentRef)))
                   .Append("\r\n");
@@ -82,6 +87,9 @@ public sealed class QuickBooksIifJournalFormatter : IJournalExportFormatter
         return !string.IsNullOrWhiteSpace(l.AccountName) && Ansi(l.AccountName) is { } name ? name : l.AccountCode;
     }
 
+    private static string ClassOf(JournalExportLine l) =>
+        Ansi(l.CostCentreErpCode) is { Length: > 0 } erp ? erp : Ansi(l.CostCenterCode) ?? string.Empty;
+
     private static string Memo(string description, string journalRef) =>
         ErpFile.Clip(Ansi(description) is { Length: > 0 } m ? m : Ansi(journalRef) ?? string.Empty, 200);
 
@@ -94,6 +102,7 @@ public sealed class QuickBooksIifJournalFormatter : IJournalExportFormatter
         foreach (var c in s.Normalize(NormalizationForm.FormC))
         {
             if (Representable.Contains(c)) { sb.Append(c); continue; }
+            if (char.IsSurrogate(c)) return null;   // outside the BMP (emoji): 1252 cannot carry it, and a lone half cannot be normalised
             var decomposed = c.ToString().Normalize(NormalizationForm.FormD);
             var baseChar = decomposed[0];
             if (!Representable.Contains(baseChar)
@@ -143,9 +152,11 @@ public sealed class QuickBooksOnlineJournalFormatter : IJournalExportFormatter
         "Columns follow QuickBooks Online's journal-entry import. Account is our external code when mapped, else our "
       + "account code: enable account numbers in QuickBooks or map external codes to your QuickBooks account names. "
       + "Dates are MM/DD/YYYY (US region default — change your company's date format if it differs). One company per "
-      + "QuickBooks company file: export each company separately.";
+      + "QuickBooks company file: export each company separately. Class carries the line's cost centre (its ERP segment "
+      + "when set, else its code) when any line has one; create matching classes in QuickBooks.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
+    public bool CarriesCostCentre => true;
 
     private static readonly string[] Headers =
         { "Journal No", "Journal Date", "Currency", "Memo", "Account", "Debits", "Credits", "Description", "Name", "Location", "Class" };
@@ -156,8 +167,8 @@ public sealed class QuickBooksOnlineJournalFormatter : IJournalExportFormatter
         return ErpFile.Csv(Headers, doc.PostingDocuments().SelectMany(j => j.Lines.Select(l => new object?[]
         {
             new ErpFile.Raw(nums[j.Sequence]), ErpFile.Date(j.AccountingDate, "MM/dd/yyyy"), l.Currency,
-            ErpFile.Clip(j.DocumentRef, 4000), l.ErpAccount, ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit),
-            ErpFile.Clip(l.Description, 4000), string.Empty, string.Empty, string.Empty,
+            ErpFile.Clip(j.DocumentRef, 4000), l.ErpAccount, ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale),
+            ErpFile.Clip(l.Description, 4000), string.Empty, string.Empty, l.CostCentreErpCode,
         })));
     }
 }

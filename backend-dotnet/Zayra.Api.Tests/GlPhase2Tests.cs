@@ -21,6 +21,12 @@ namespace Zayra.Api.Tests;
 /// </summary>
 public class GlPhase2Tests
 {
+    private static async Task Companies(ZayraDbContext db, Guid tid, params Guid[] ids)
+    {
+        foreach (var id in ids) db.Companies.Add(new Company { Id = id, TenantId = tid, LegalNameEn = "Co " + id.ToString("N")[..4] });
+        await db.SaveChangesAsync();
+    }
+
     private static (ZayraDbContext db, SqliteConnection conn) NewDb()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
@@ -68,6 +74,7 @@ public class GlPhase2Tests
 
         var companyA = Guid.NewGuid();
         var companyB = Guid.NewGuid();
+        await Companies(db, tid, companyA, companyB);
         // A company-specific account in each company plus reuse of a tenant-default account.
         var acctA = new GlAccount { TenantId = tid, CompanyId = companyA, Code = "5001A", Name = "A Basic", AccountType = "Expense" };
         var acctB = new GlAccount { TenantId = tid, CompanyId = companyB, Code = "5001B", Name = "B Basic", AccountType = "Expense" };
@@ -103,6 +110,7 @@ public class GlPhase2Tests
 
         var companyA = Guid.NewGuid();
         var companyB = Guid.NewGuid();
+        await Companies(db, tid, companyA, companyB);
         var acctB = new GlAccount { TenantId = tid, CompanyId = companyB, Code = "5001B", Name = "B Basic", AccountType = "Expense" };
         db.GlAccounts.Add(acctB);
         await db.SaveChangesAsync();
@@ -122,6 +130,7 @@ public class GlPhase2Tests
         await GlDriverSeeder.SeedTenantDefaultsAsync(db, tid, CancellationToken.None);
         await db.SaveChangesAsync();
         var company = Guid.NewGuid();
+        await Companies(db, tid, company);
         var acct = new GlAccount { TenantId = tid, CompanyId = company, Code = "5001C", Name = "C Basic", AccountType = "Expense" };
         db.GlAccounts.Add(acct);
         await db.SaveChangesAsync();
@@ -270,8 +279,10 @@ public class GlPhase2Tests
         await GlDriverSeeder.SeedTenantDefaultsAsync(db, tid, CancellationToken.None);
         await db.SaveChangesAsync();
         var ctrl = GlCtrl(db, tid, AllGlPerms);
+        var driverCompany = Guid.NewGuid();
+        await Companies(db, tid, driverCompany);
         // Company-scoped custom driver reusing a system key must be rejected (cross-scope shadow guard).
-        (await ctrl.CreateDriver(Guid.NewGuid(), new GlDriverRequest("NET_PAYABLE", "Hijack", GlDriverCategories.Balancing, "CR", "9998", "Bad", MatchMode: "Any"), CancellationToken.None))
+        (await ctrl.CreateDriver(driverCompany, new GlDriverRequest("NET_PAYABLE", "Hijack", GlDriverCategories.Balancing, "CR", "9998", "Bad", MatchMode: "Any"), CancellationToken.None))
             .Should().BeOfType<BadRequestObjectResult>();
     }
 
@@ -483,6 +494,7 @@ public class GlPhase2Tests
         await db.SaveChangesAsync();
         var companyA = Guid.NewGuid();
         var companyB = Guid.NewGuid();
+        await Companies(db, tid, companyA, companyB);
         // Token scoped to company A only.
         var scope = JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyA } });
         var ctrl = GlCtrl(db, tid, AllGlPerms, scope);

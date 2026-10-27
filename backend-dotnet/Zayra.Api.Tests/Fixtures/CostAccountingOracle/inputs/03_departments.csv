@@ -1,0 +1,5 @@
+code,name,cost_centre_code,parent_department_code
+D-FIN,Finance,CC-110,
+D-SAL,Sales,CC-200,
+D-OPS,Operations,,
+D-SUP,Support Services (sub-dept of Finance),,D-FIN

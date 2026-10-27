@@ -82,6 +82,26 @@ export interface JournalExportManifest {
   unattributedExcluded?: { excluded: boolean; count: number | null; total: number | null; note: string | null };
   outOfPeriodEntryDateCount: number;
   downloadUrl: string | null;
+  /**
+   * Up to 20 example lines. Only people who can download the file get them: for a read-only finance user the API
+   * sends `null` (AM-21), so nothing may assume the list is there.
+   */
+  sample?: JournalExportSampleLine[] | null;
+}
+
+export interface JournalExportSampleLine {
+  lineNo: number;
+  side: string;
+  accountCode: string;
+  accountName: string;
+  amount: number;
+  accountingDate: string;
+  systemPostedDate: string;
+  period: string;
+  journalRef: string;
+  eventType: string;
+  companyCode: string;
+  externalAccountCode: string | null;
 }
 
 export interface JournalExportSummary {
@@ -138,6 +158,8 @@ export interface JournalExportDetail {
   formatter: { key: string; displayName: string; disclaimer: string } | null;
   newRowsInScopeSinceExport: { count: number; total: number; message: string | null };
   journals: JournalExportJournal[];
+  /** The frozen lines, for people who can download the file. `null` for a read-only finance user (AM-21). */
+  lines?: Record<string, unknown>[] | null;
 }
 
 export interface JournalConfirmation {

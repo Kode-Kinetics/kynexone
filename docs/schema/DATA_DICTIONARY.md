@@ -945,6 +945,82 @@ car loan recovered over at least 12 instalments). Generic for every loan type an
 - `integer NOT NULL DEFAULT 1` (1 = no minimum, the behaviour before this column). `ck_loan_types__min_installments` and `ck_loan_policies__min_installments`: `min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)` — a minimum, once set, sits within the longest repayment; 1 stays valid on a legacy row whose `max_installments` is 0 (the `loan_policies` column default). The API refuses min > max on every write.
 - The effective minimum is the stricter of the type's and the policy's, frozen into `employee_loans.policy_snapshot_json` (`MinInstallments`) at application; a snapshot frozen before this column reads as 1. Enforced at application, at approval (re-check against the frozen snapshot) and on a reschedule (instalments kept + new ones). Refusal code `MinInstallments`, never exceptionable.
 
+## Y. Cost-centre accounting foundation (live bridge)
+
+Not part of the 76. Columns, CHECKs that read only new columns, keys and four indexes, **no table**, on the **live** EF schema (migration
+`CostAccountingFoundation`, "M1" of the cost-accounting v1 contract: expand-only, no behaviour change). Capability: a company can
+post payroll, bonus, settlement and EOSB journal lines to a cost centre, and the cost centre travels with the line into the
+ERP export. Nothing here is read yet by posting: every default keeps today's behaviour, and nothing is stamped or enforced
+while `companies.cost_accounting_enabled` is false. No table is added, so there is no ownership, retention or RLS-shape row
+to add; every table below already has one.
+
+**How the keys are made.** Every foreign key to `cost_centers` is composite and tenant-first, `ON DELETE RESTRICT`,
+`MATCH SIMPLE` (a NULL cost centre is skipped), and is created in raw SQL by the migration rather than by the EF model: most
+are `NOT VALID` (existing rows may hold dangling ids; a later migration, M3, validates them once the pre-migration audit query
+is clean), and EF would add an index beside each one where the contract lists them as deliberately unindexed. The targets are
+`uq_cost_centers__tenant_id (tenant_id, id)` and `uq_cost_centers__tenant_company_id (tenant_id, company_id, id)`. `NOT VALID`
+re-checks a row whenever its reference column is written, so the production deploy is gated on `scripts/cost-accounting-preflight-audit.sql` returning zero (or a repair first); that is also why the CHECKs that read existing columns are held back for M3.
+
+### `cost_centers` — cost accounting
+- `parent_id uuid NULL` — the roll-up tree. `fk_cost_centers__parent (tenant_id, parent_id) → cost_centers (tenant_id, id)`, `ck_cost_centers__parent_not_self`. A cycle and depth guard is a trigger in M2.
+- `functional_class varchar(24) NULL` — `COGS`, `SELLING`, `G_AND_A`, `R_AND_D`, `OPERATIONS`, `CAPITALISABLE` (`ck_cost_centers__functional_class`). `CAPITALISABLE` is stored but refused for posting in v1.
+- `gl_segment varchar(30) NULL` — the client's ERP cost-centre value, sent on exports instead of `code`. `ck_cost_centers__gl_segment_format`; `ux_cost_centers_scope_gl_segment` unique `(tenant_id, company_id, gl_segment) NULLS NOT DISTINCT WHERE gl_segment IS NOT NULL AND NOT is_deleted` (serves the export column and the duplicate check).
+- The code-format CHECK on `code` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$`) is **not in M1**: even NOT VALID it would reject an UPDATE of a legacy row. It ships in M3 (`M3_COST_ACCOUNTING_VALIDATION.md`) after `scripts/cost-accounting-preflight-audit.sql` returns zero.
+
+### `gl_accounts` — cost accounting
+- `cost_center_rule varchar(12) NOT NULL DEFAULT 'Optional'` — `Required` | `Optional` | `NotAllowed` (`ck_gl_accounts__cost_center_rule`). The default backfills every account, so no tenant changes behaviour. `Required` on an Asset, Liability or Equity account is refused by the API, not the database.
+
+### `gl_account_mappings` — cost accounting
+- `functional_class varchar(24) NULL` — the cost-centre class a posting rule applies to (`ck_gl_account_mappings__functional_class`, same set). `ux_gl_account_mappings_scope_driver_class` unique `(tenant_id, company_id, driver_key, functional_class) NULLS NOT DISTINCT` **replaces** `ux_gl_account_mappings_scope_driver` in the same migration (identical while every class is NULL; the one DROP of the release, and it only relaxes a unique).
+- `segment_cost_center_id` — existing column, now "the fixed cost centre for this posting rule". `fk_gl_account_mappings__segment_cost_center (tenant_id, segment_cost_center_id) → cost_centers (tenant_id, id)`, **NOT VALID**. The API refuses a fixed cost centre on a tenant-default mapping and on one from another company.
+
+### `companies` — cost accounting
+- `cost_accounting_enabled boolean NOT NULL DEFAULT false` — the costing switch; while false nothing is stamped or enforced.
+- `default_cost_center_id uuid NULL` — fallback of last resort and home of the rounding line. `fk_companies__default_cost_center (tenant_id, id, default_cost_center_id) → cost_centers (tenant_id, company_id, id)`: the cost centre must belong to this company.
+- `cost_centre_small_cell_min smallint NOT NULL DEFAULT 0` — minimum employees per cost centre before a run rolls it up to its parent; 0 = off (`ck_companies__cost_centre_small_cell_min`, `>= 0`).
+
+### `employees` — cost accounting
+- `cost_center_is_override boolean NOT NULL DEFAULT false` — `cost_center_id` is an override only when this is true; otherwise it is a copy of the department's. Backfilled by the migration: true where `cost_center_id` is set and differs from the department's (or the employee has no department). `fk_employees__cost_center (tenant_id, cost_center_id)`, **NOT VALID**. The free-text `cost_center` string is no longer an input.
+
+### `departments` — cost accounting
+- `cost_center_id` — existing column; gains `fk_departments__cost_center (tenant_id, cost_center_id) → cost_centers (tenant_id, id)`, **NOT VALID**, unindexed on purpose (deletes are rare and soft).
+
+### `positions` — cost accounting
+- `cost_center_id` — existing column; gains `fk_positions__cost_center`, **NOT VALID**, unindexed on purpose.
+
+### `timesheet_entries` — cost accounting
+- `cost_center_id` — existing column (already indexed by `ix_timesheet_entries_tenant_cost_centre_date`); gains `fk_timesheet_entries__cost_center`, **NOT VALID**.
+
+### `payroll_earnings` — cost accounting
+- `cost_center_id uuid NULL` — stamped at Lock (null = uncosted); `fk_payroll_earnings__cost_center`, **NOT VALID**, unindexed on purpose (every query is served by `(tenant_id, payroll_run_id, employee_id)`).
+- `cost_center_source varchar(16) NULL` — `Employee`, `Position`, `Department`, `ParentDepartment`, `CompanyDefault`, `MappingFixed`, `RolledUp` (`ck_payroll_earnings__cost_center_source`). The rolled-up cost centre is what is stored.
+
+### `payroll_deductions` — cost accounting
+- `cost_center_id uuid NULL`, `cost_center_source varchar(16) NULL` — as `payroll_earnings` (`fk_payroll_deductions__cost_center`, `ck_payroll_deductions__cost_center_source`). Employer-contribution rows carry the employer expense's cost centre.
+
+### `payroll_slips` — cost accounting
+- `cost_center_id uuid NULL` — the employee-level resolved (rolled-up) cost centre, for headcount and net in the allocation report. `fk_payroll_slips__cost_center`, **NOT VALID**.
+
+### `payroll_runs` — cost accounting
+- `cost_center_resolution_hash varchar(64) NULL` — SHA-256 written on the transition to Approved, re-checked at Lock; NULL = approved while costing was off.
+- `cost_accounting_applied boolean NOT NULL DEFAULT false` — set at Lock; separates a legacy run from a costed one.
+
+### `eosb_provision_snapshots` — cost accounting
+- `cost_center_id uuid NULL` — the employee's cost centre at measurement, for traceability only (`fk_eosb_provision_snapshots__cost_center`, **NOT VALID**).
+
+### `finance_gl_entries` — cost accounting
+- `cost_center_id uuid NULL` — the Expense/Revenue side of the line. `fk_finance_gl_entries__cost_center (tenant_id, company_id, cost_center_id) → cost_centers (tenant_id, company_id, id)`: another company's, another tenant's, a dangling or a group-level (null-company) cost centre is refused. `ck_finance_gl_entries__cost_center_needs_company`.
+- `cost_center_code varchar(30)`, `cost_center_name varchar(200)`, `cost_center_gl_segment varchar(30)` — snapshots at post time, so history survives a rename; `ck_finance_gl_entries__cost_center_pair` ties the id to its code.
+- `posting_key varchar(64) NULL` — the idempotency key (SHA-256 hex). `ux_finance_gl_entries_posting_key` unique `(tenant_id, posting_key) WHERE posting_key IS NOT NULL` (NULL never conflicts: loans, advances and all history).
+- `ix_finance_gl_entries_cc_period` `(tenant_id, cost_center_id, period) WHERE cost_center_id IS NOT NULL` — the cost-centre trial balance and the in-use guard's lookup.
+- CHECKs `amount >= 0`, `debit_account <> '' OR credit_account <> ''` and `currency ~ '^[A-Z]{3}$'` are **not in M1** (they would reject an UPDATE, including an `erp_*` status change, of a legacy row even if NOT VALID); they ship in M3 after the pre-deploy audit returns zero. The append-only trigger is M2.
+
+### `gl_journal_export_lines` — cost accounting
+- `cost_center_code varchar(30)`, `cost_center_name varchar(200)`, `cost_center_gl_segment varchar(30)` — frozen verbatim as emitted, like `external_account_code`; NULL on every pre-existing line, so a regenerated export is byte-identical.
+
+### `gl_journal_exports` — cost accounting
+- `amount_scale smallint NULL` — decimal places of the export's amounts (2 for SAR/AED/QAR, 3 for KWD/BHD/OMR), set when the export is persisted; NULL = taken before this column, which is 2.
+
 ---
 
 ## Views (not tables)
