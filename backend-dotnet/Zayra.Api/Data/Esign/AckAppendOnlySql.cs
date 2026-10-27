@@ -57,18 +57,18 @@ public static class AckAppendOnlySql
     public static string RevokeFromRole(string role)
     {
         if (!Regex.IsMatch(role, "^[A-Za-z_][A-Za-z0-9_]{0,62}$")) throw new ArgumentException("Not a plain role name.", nameof(role));
-        return $"REVOKE UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements FROM \"{role}\";";
+        return $"REVOKE UPDATE, TRUNCATE ON employee_policy_acknowledgements FROM \"{role}\";";
     }
 
     /// <summary>
-    /// The runtime role (<c>kynex_app</c>, the API) keeps INSERT and SELECT only. The purge runs as the job role (<c>kynex_job</c>), which keeps DELETE.
+    /// The runtime role (<c>kynex_app</c>, the API) can no longer UPDATE or empty the table. It keeps DELETE: the platform's manual tenant purge runs as that role, and DELETE is guarded by the append-only trigger (only inside the retention purge scope).
     /// Guarded so a database without the role (a developer database, a test cluster) migrates unchanged.
     /// </summary>
     public const string RevokeFromAppRole = """
         DO $$
         BEGIN
           IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
-            REVOKE UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements FROM kynex_app;
+            REVOKE UPDATE, TRUNCATE ON employee_policy_acknowledgements FROM kynex_app;
           END IF;
         END
         $$;
@@ -79,7 +79,7 @@ public static class AckAppendOnlySql
         DO $$
         BEGIN
           IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
-            GRANT UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements TO kynex_app;
+            GRANT UPDATE, TRUNCATE ON employee_policy_acknowledgements TO kynex_app;
           END IF;
         END
         $$;

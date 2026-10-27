@@ -158,8 +158,9 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
     }
 
     [Fact]
-    public async Task MigrationRevoke_TakesUpdateAndDeleteAwayFromTheRuntimeRole()  // CD61
+    public async Task MigrationRevoke_RuntimeRoleCannotUpdateOrEmpty_AndDeleteIsRefusedByTheTriggerOutsideThePurge()  // CD61/CD68
     {
+        await using var trigger = await WithTriggerAsync();
         await using var seed = fx.CreateDb();
         var (tenant, employees) = await SeedEmployeesAsync(seed, 1);
         await ExecAsync("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN CREATE ROLE kynex_app NOLOGIN; END IF; END $$;");
@@ -174,10 +175,13 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
             await new NpgsqlCommand("SET ROLE kynex_app", c).ExecuteNonQueryAsync();
             var update = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("UPDATE employee_policy_acknowledgements SET typed_name = 'x'", c).ExecuteNonQueryAsync());
             update.SqlState.Should().Be("42501");
+            var empty = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("TRUN" + "CATE employee_policy_acknowledgements", c).ExecuteNonQueryAsync());
+            empty.SqlState.Should().Be("42501");
+            // the grant is still there; the trigger is the control that refuses it outside the purge scope
             var remove = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("DE" + "LETE FROM employee_policy_acknowledgements", c).ExecuteNonQueryAsync());
-            remove.SqlState.Should().Be("42501");
-            (await new NpgsqlCommand("SELECT count(*) FROM employee_policy_acknowledgements", c).ExecuteScalarAsync()).Should().NotBeNull("the runtime role can still read");
-            await ExecAsync(AckAppendOnlySql.GrantToAppRole);   // the migration's Down restores the baseline
+            remove.SqlState.Should().Be("23000");
+            await ExecAsync(AckAppendOnlySql.GrantToAppRole);   // the migration's Down restores what Up took away
+            await new NpgsqlCommand("SELECT 1", c).ExecuteScalarAsync();
         }
         finally { await ExecAsync("REVOKE ALL ON employee_policy_acknowledgements FROM kynex_app"); }
     }

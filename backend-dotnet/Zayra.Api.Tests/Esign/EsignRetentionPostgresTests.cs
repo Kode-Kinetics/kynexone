@@ -213,4 +213,33 @@ public sealed class EsignRetentionPostgresTests(PostgresFixture fx) : PlatformTe
         candidates.Select(c => Guid.Parse(c.EntityId)).Should().BeEquivalentTo([leftLongAgo.AckId]);
         removedLongAgoNoExitRecord.AckId.Should().NotBeEmpty(); leftRecently.AckId.Should().NotBeEmpty();
     }
+
+    [Fact]
+    public async Task TenantErasure_ByThePlatformPurge_RunningAsTheAppRole_StillSucceeds_AfterTheMigrationRevoke()  // CD68
+    {
+        await using var trigger = await WithTriggerAsync();
+        await ExecAsync("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN CREATE ROLE kynex_app NOLOGIN; END IF; END $$;");
+        await ExecAsync("GRANT ALL ON ALL TABLES IN SCHEMA public TO kynex_app");
+        await ExecAsync("GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO kynex_app");
+        try
+        {
+            await ExecAsync(AckAppendOnlySql.RevokeFromAppRole);
+            var s = await SeedAsync();
+            await SoftDeleteTenantAsync(s.Tenant);
+            using var services = new ServiceCollection().AddSingleton<IDocumentStorage>(new InMemoryDocumentStorage()).BuildServiceProvider();
+            var appRoleConnection = new NpgsqlConnectionStringBuilder(fx.ConnectionString) { Options = "-c role=kynex_app", Pooling = false }.ConnectionString;
+            await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(appRoleConnection).Options);
+            (await db.Database.SqlQueryRaw<string>("SELECT current_user AS \"Value\"").ToListAsync()).Single().Should().Be("kynex_app");
+            var controller = CreateController(db); controller.ControllerContext.HttpContext.RequestServices = services;
+            var result = await controller.PurgeTenant(s.Tenant, "PURGE", default);
+            result.Should().BeOfType<OkObjectResult>();
+            (await CountsAsync(s.Tenant)).Should().Be((0, 0));
+        }
+        finally
+        {
+            await ExecAsync(AckAppendOnlySql.GrantToAppRole);
+            await ExecAsync("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM kynex_app");
+            await ExecAsync("REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM kynex_app");
+        }
+    }
 }

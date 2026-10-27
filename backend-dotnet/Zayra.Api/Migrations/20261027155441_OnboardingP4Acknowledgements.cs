@@ -40,7 +40,7 @@ namespace Zayra.Api.Migrations
             DO $$
             BEGIN
               IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
-                REVOKE UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements FROM kynex_app;
+                REVOKE UPDATE, TRUNCATE ON employee_policy_acknowledgements FROM kynex_app;
               END IF;
             END
             $$;
@@ -50,7 +50,7 @@ namespace Zayra.Api.Migrations
             DO $$
             BEGIN
               IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
-                GRANT UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements TO kynex_app;
+                GRANT UPDATE, TRUNCATE ON employee_policy_acknowledgements TO kynex_app;
               END IF;
             END
             $$;
