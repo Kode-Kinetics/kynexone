@@ -47,8 +47,8 @@ export function PdfPreview({ blob, fileName, title }: { blob: Blob | null; fileN
     <div className="space-y-2">
       {url && <iframe data-testid="pdf-preview" src={url} title={title} className="h-[28rem] w-full rounded-xl border border-slate-200 bg-white dark:border-white/10" />}
       <div className="flex flex-wrap gap-3 text-xs">
-        {url && <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-sapphire underline dark:text-cyanAccent"><ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />{t('Open the PDF in a new tab')}</a>}
-        <button type="button" onClick={() => openBlob(blob, fileName)} className="inline-flex items-center gap-1 font-semibold text-sapphire underline dark:text-cyanAccent"><Download className="h-3.5 w-3.5" aria-hidden="true" />{t('Download the PDF')}</button>
+        {url && <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-800 underline dark:text-cyanAccent"><ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />{t('Open the PDF in a new tab')}</a>}
+        <button type="button" onClick={() => openBlob(blob, fileName)} className="inline-flex items-center gap-1 font-semibold text-blue-800 underline dark:text-cyanAccent"><Download className="h-3.5 w-3.5" aria-hidden="true" />{t('Download the PDF')}</button>
         <span className="inline-flex items-center gap-1 text-slate-500"><FileText className="h-3.5 w-3.5" aria-hidden="true" /><bdi dir="ltr">{fileName}</bdi></span>
       </div>
     </div>

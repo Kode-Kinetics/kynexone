@@ -29,6 +29,10 @@ const row = (over: Record<string, unknown> = {}) => ({
 export const AWAITING = [row(), row({ documentId: 'doc-2', title: 'Code of conduct policy', fileName: 'code-of-conduct.pdf' })];
 export const SIGNED = row({ documentId: 'doc-3', title: 'IT acceptable use', fileName: 'it.pdf', status: 'Signed', ackId: 'ack-3', signedAtUtc: '2026-10-25T10:00:00Z', method: 'esign_ess', typedName: EMPLOYEE_NAME, verificationCode: 'ABCD-EFGH-JKLM', certificateDocumentId: 'cert-3' });
 
+/** What the server does, in miniature: case, extra spaces and Arabic diacritics do not matter. */
+const norm = (v: string) => v.normalize('NFKC').replace(/[\u064B-\u065F\u0640]/g, '').toLowerCase().split(/\s+/).filter(Boolean).join(' ');
+const NAMES = [EMPLOYEE_NAME, EMPLOYEE_NAME_AR].map(norm);
+
 const consentFor = (id: string) => ({
   consentVersion: 'ack-1',
   text: 'I confirm that I have read and understood the document above in full. By typing my full name and confirming with my password, I electronically acknowledge it. This is an electronic acknowledgement, not a qualified electronic signature.',
@@ -95,7 +99,7 @@ export async function bootEsign(page: Page, o: EsignMockOptions = {}, path?: str
         log.headers.push(h);
         if (h['x-step-up'] !== 'step-up-token-1') return problem(401, 'step_up_required');
         if (refusal) { const r = refusal; refusal = undefined; return problem(r.status, r.code); }
-        if (![EMPLOYEE_NAME, EMPLOYEE_NAME_AR].includes((body?.typedName ?? '').trim())) return problem(422, 'typed_name_mismatch');
+        if (!NAMES.includes(norm(body?.typedName ?? ''))) return problem(422, 'typed_name_mismatch');
         log.signs.push({ id, ...body });
         rows = rows.map(r => r.documentId === id ? { ...r, status: 'Signed', ackId: 'ack-new', signedAtUtc: '2026-10-27T12:00:00Z', typedName: body.typedName, verificationCode: 'WXYZ-2345-HJKL', certificateDocumentId: 'cert-new', method: 'esign_ess' } : r);
         return reply({ ackId: 'ack-new', signedAtUtc: '2026-10-27T12:00:00Z', recordHash: 'c'.repeat(64), certificateDocumentId: 'cert-new', verificationCode: 'WXYZ-2345-HJKL' }, 201);
@@ -117,7 +121,7 @@ export async function bootEsign(page: Page, o: EsignMockOptions = {}, path?: str
       if (verb === 'sign-on-device' && method === 'POST') {
         log.deviceSigns.push({ id, ...body, stepUp: req.headers()['x-step-up'] });
         if (req.headers()['x-step-up'] !== 'device-token-1') return problem(401, 'step_up_required');
-        if (![EMPLOYEE_NAME, EMPLOYEE_NAME_AR].includes((body?.typedName ?? '').trim())) return problem(422, 'typed_name_mismatch');
+        if (!NAMES.includes(norm(body?.typedName ?? ''))) return problem(422, 'typed_name_mismatch');
         rows = rows.map(r => r.documentId === id ? { ...r, status: 'Signed', ackId: 'ack-dev', signedAtUtc: '2026-10-27T12:00:00Z', typedName: body.typedName, verificationCode: 'DEVC-2345-HJKL', certificateDocumentId: 'cert-dev', method: 'esign_hr_device' } : r);
         return reply({ ackId: 'ack-dev', signedAtUtc: '2026-10-27T12:00:00Z', recordHash: 'd'.repeat(64), certificateDocumentId: 'cert-dev', verificationCode: 'DEVC-2345-HJKL' }, 201);
       }
@@ -135,7 +139,7 @@ export async function bootEsign(page: Page, o: EsignMockOptions = {}, path?: str
     if (/^\/api\/employees\/documents\/[\w-]+\/download$/.test(p)) return pdf();
     if (p === '/api/employees/901') return reply(hrEmployee);
     if (p === '/api/employees') return reply(paged([hrEmployee]));
-    if (p.endsWith('/readiness')) return reply({ employeeId: 901, state: 'Ready', score: 90, progress: { present: 2, requiredTotal: 2 }, policy: { countryCode: 'SA', tier: 'Standard', sources: [] }, blocking: [], warnings: [] });
+    if (p.endsWith('/readiness')) return reply({ employeeId: 901, state: 'Ready', score: 90, progress: { present: 2, requiredTotal: 2 }, policy: { countryCode: 'SA', tier: 'Standard', sources: [] }, blocking: [], payBlocking: [], recommended: [], present: [], expiringSoon: [], disclaimer: 'Synthetic browser fixture.' });
     if (p === '/api/employees/field-catalog') return reply({ countryCode: 'SA', fields: [] });
     if (p === '/api/companies') return reply(paged([{ id: 'c1', legalNameEn: 'Saudi Co', countryCode: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' }]));
     if (['/api/branches', '/api/departments', '/api/designations', '/api/grades', '/api/organization/cost-centers'].includes(p)) return reply(paged([]));

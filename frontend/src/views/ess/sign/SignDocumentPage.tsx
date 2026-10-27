@@ -59,7 +59,7 @@ export function SignDocumentPage({ documentId }: { documentId: string }) {
       idemKey.current = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
       if (problem.code === 'typed_name_mismatch') {
         setFieldError(t('esign.error.typed_name_mismatch'));
-        requestAnimationFrame(() => nameRef.current?.focus());
+        setTimeout(() => nameRef.current?.focus(), 120);   // after the dialog has handed focus back to its opener
       } else if (problem.code === 'already_signed') {
         setFormError(t('esign.error.already_signed'));
       } else {
