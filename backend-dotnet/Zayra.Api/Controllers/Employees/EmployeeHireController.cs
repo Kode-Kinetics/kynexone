@@ -67,9 +67,9 @@ public sealed class EmployeeHireController : ControllerBase
 
         var request = body.Request;
         // A caller who cannot see pay or identity values resumed a form that holds none of them: the server must not read
-        // those empty fields as an instruction to clear what is stored, so it ignores the sensitive blocks entirely.
+        // those empty (or masked) fields as an instruction to clear what is stored. What they typed is still applied.
         if (!User.HasPermission("employees.sensitive"))
-            request = request with { PayrollProfile = null, SalaryBreakdown = null, ComplianceRecords = null };
+            request = await KeepStoredSensitiveValuesAsync(tenantId, id, request, ct);
         var guard = HttpContext.RequestServices.GetService(typeof(IEmployeeInputGuard)) as IEmployeeInputGuard;
         if (guard is not null) request = await guard.EnforceDraftAsync(tenantId, id, request, Context(tenantId), ct);
 
@@ -209,6 +209,41 @@ public sealed class EmployeeHireController : ControllerBase
             notProvided = readiness.PayBlocking.Select(i => new { key = ReviewKey(i), label = i.Label }),
             essSections = Array.Empty<string>(),
         });
+    }
+
+    private static bool BlankOrMasked(string? v) => string.IsNullOrWhiteSpace(v) || v.Contains('\u2022') || v.Contains('*');
+
+    /// <summary>
+    /// CD46: for a caller without <c>employees.sensitive</c>, a blank or masked pay, bank or identity value in an autosave means
+    /// "not shown to me", never "clear it": the stored value is kept. A value they actually typed is applied as before (and still
+    /// opens the pay-approval gap).
+    /// </summary>
+    private async Task<EmployeeCreateRequest> KeepStoredSensitiveValuesAsync(Guid tenantId, int id, EmployeeCreateRequest request, CancellationToken ct)
+    {
+        if (request.PayrollProfile is { } p)
+        {
+            var stored = await _db.EmployeePayrollProfiles.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted, ct);
+            if (stored is not null)
+            {
+                static string? Keep(string? sent, string? kept) => BlankOrMasked(sent) ? kept : sent;
+                request = request with { PayrollProfile = p with
+                {
+                    BankName = Keep(p.BankName, stored.BankName), Iban = Keep(p.Iban, stored.Iban), AccountNumber = Keep(p.AccountNumber, stored.AccountNumber),
+                    PaymentMethod = Keep(p.PaymentMethod, stored.PaymentMethod), SalaryCurrency = Keep(p.SalaryCurrency, stored.SalaryCurrency),
+                    PayrollGroup = Keep(p.PayrollGroup, stored.PayrollGroup), SalaryStructureReference = Keep(p.SalaryStructureReference, stored.SalaryStructureReference),
+                    SocialInsuranceReference = Keep(p.SocialInsuranceReference, stored.SocialInsuranceReference), MolId = Keep(p.MolId, stored.MolId),
+                    BankRoutingCode = Keep(p.BankRoutingCode, stored.BankRoutingCode),
+                } };
+            }
+        }
+        if (request.ComplianceRecords is { } records)
+            request = request with { ComplianceRecords = records.Where(r => !BlankOrMasked(r.FieldValue)).ToList() };
+        if (request.SalaryBreakdown is { } b
+            && (b.BasicSalary ?? 0m) == 0m && (b.HousingAllowance ?? 0m) == 0m && (b.TransportAllowance ?? 0m) == 0m && (b.FoodAllowance ?? 0m) == 0m
+            && (b.MobileAllowance ?? 0m) == 0m && (b.OtherAllowance ?? 0m) == 0m && (b.FixedDeduction ?? 0m) == 0m)
+            request = request with { SalaryBreakdown = null };
+        return request;
     }
 
     /// <summary>CD47: every review item carries a stable key (the client renders its sentence from it); a blank one is sent as "unknown".</summary>
