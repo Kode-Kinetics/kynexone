@@ -692,6 +692,8 @@ public record EmployeeDocumentDto
     public DateTime? VerifiedAtUtc { get; init; }
     public Guid? VerifiedBy { get; init; }
     public string Notes { get; init; } = string.Empty;
+    /// <summary>clean | not_scanned_trusted_source | quarantined | quarantined_pending. "not scanned" is shown as such, never as clean.</summary>
+    public string ScanStatus { get; init; } = "clean";
 
     public static bool IsSensitiveCategory(string? category) =>
         EmployeeDocumentSensitivity.IsSensitive(documentType: null, category);
@@ -727,6 +729,7 @@ public record EmployeeDocumentDto
             VerifiedAtUtc        = d.VerifiedAtUtc,
             VerifiedBy           = d.VerifiedBy,
             Notes                = showProtectedMetadata ? d.Notes : string.Empty,
+            ScanStatus           = d.ScanStatus,
         };
     }
 }
