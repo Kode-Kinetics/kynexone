@@ -103,9 +103,9 @@ public class HireDraftResumeContractTests : IClassFixture<HireIntegrityHttpFixtu
     public async Task GetDraft_ExposesNationalityCodeAndState_AndTheFrontendFixtureIsTheLiveShape()
     {
         var token = await _fx.NewUserAsync("rs1", "employees.write", "employees.read", "employees.sensitive");
-        var (id, _) = await CreateDraftAsync(token, DraftBody($"Resume Shape {Guid.NewGuid():N}", b =>
+        var (id, _) = await CreateDraftAsync(token, DraftBody("Alex Morgan", b =>
         {
-            b["nationalityCode"] = "EG"; b["dateOfBirth"] = "1990-06-01"; b["mobileNumber"] = "+966512345678"; b["workEmail"] = $"shape.{Guid.NewGuid():N}@example.com";
+            b["nationalityCode"] = "EG"; b["dateOfBirth"] = "1990-06-01"; b["mobileNumber"] = "+966512345678"; b["workEmail"] = "alex.morgan@example.com";
             b["employmentType"] = "Full-time";
             b["payrollProfile"] = new { iban = "SA0380000000608010167519", bankName = "Al Rajhi Bank", salaryCurrency = "SAR" };
             b["salaryBreakdown"] = new { basicSalary = 12000.5m, housingAllowance = 3000m, currency = "SAR" };
