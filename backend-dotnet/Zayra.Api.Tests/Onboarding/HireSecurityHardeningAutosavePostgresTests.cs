@@ -27,42 +27,78 @@ public sealed class HireSecurityHardeningAutosavePostgresTests
     private readonly PostgresFixture _fx;
     public HireSecurityHardeningAutosavePostgresTests(PostgresFixture fx) => _fx = fx;
 
+    private async Task<(Guid tenantId, Guid companyId, int employeeId)> SeedDraftAsync()
+    {
+        await using var db = _fx.CreateDb();
+        var tenant = new Tenant { Name = "Autosave", Slug = $"autosave-{Guid.NewGuid():N}", IsActive = true };
+        db.Tenants.Add(tenant);
+        var company = new Company { TenantId = tenant.Id, LegalNameEn = "Autosave Co", CountryCode = "SA", IsActive = true, DefaultCurrency = "SAR", RegistrationNumber = $"RC-{Guid.NewGuid():N}", Jurisdiction = "test" };
+        db.Companies.Add(company);
+        db.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenant.Id, Plan = "Enterprise", Status = "Active", MaxEmployees = 10_000 });
+        await db.SaveChangesAsync();
+        var employee = new Employee { TenantId = tenant.Id, CompanyId = company.Id, EmployeeCode = $"AS-{Guid.NewGuid():N}"[..12], FullName = "Autosave Draft", EnglishName = "Autosave Draft", Status = "Draft", JoiningDate = DateTime.UtcNow.Date };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        return (tenant.Id, company.Id, employee.Id);
+    }
+
+    /// <summary>
+    /// Releases <paramref name="saves"/> autosaves together, all carrying the SAME basis (the stamp the client last saw), and
+    /// returns their status codes. The basis is what defines "the same base": a save sent without one means "whatever is
+    /// current", so one that merely starts after another finished is legitimately a second, sequential save.
+    /// </summary>
+    private async Task<int?[]> RaceAsync(Guid tenantId, Guid companyId, int employeeId, int round, int saves)
+    {
+        DateTime basis;
+        await using (var db = _fx.CreateDb())
+        {
+            var row = await db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == employeeId)
+                .Select(e => new { e.UpdatedAtUtc, e.CreatedAtUtc }).FirstAsync();
+            basis = row.UpdatedAtUtc ?? row.CreatedAtUtc;
+        }
+        var barrier = new TaskCompletionSource();
+        async Task<int?> One(string name)
+        {
+            await using var db = _fx.CreateDb();
+            await db.Database.OpenConnectionAsync();
+            var controller = Controller(db, tenantId);
+            await barrier.Task;
+            var result = await controller.SaveDraft(employeeId, new EmployeeHireController.HireDraftRequest(basis, Request(name, companyId)), default);
+            return (result as ObjectResult)?.StatusCode;
+        }
+        var tasks = Enumerable.Range(0, saves).Select(i => Task.Run(() => One($"Autosave {i} r{round}"))).ToArray();
+        await Task.Delay(300);
+        barrier.SetResult();
+        return (await Task.WhenAll(tasks)).OrderBy(c => c).ToArray();
+    }
+
     [Fact]
     public async Task Autosave_TwoSavesFromTheSameBase_OneIs200_OneIs409()
     {
-        Guid tenantId, companyId; int employeeId;
-        await using (var db = _fx.CreateDb())
-        {
-            var tenant = new Tenant { Name = "Autosave", Slug = $"autosave-{Guid.NewGuid():N}", IsActive = true };
-            db.Tenants.Add(tenant);
-            var company = new Company { TenantId = tenant.Id, LegalNameEn = "Autosave Co", CountryCode = "SA", IsActive = true, DefaultCurrency = "SAR", RegistrationNumber = $"RC-{Guid.NewGuid():N}", Jurisdiction = "test" };
-            db.Companies.Add(company);
-            db.TenantSubscriptions.Add(new TenantSubscription { TenantId = tenant.Id, Plan = "Enterprise", Status = "Active", MaxEmployees = 10_000 });
-            await db.SaveChangesAsync();
-            var employee = new Employee { TenantId = tenant.Id, CompanyId = company.Id, EmployeeCode = $"AS-{Guid.NewGuid():N}"[..12], FullName = "Autosave Draft", EnglishName = "Autosave Draft", Status = "Draft", JoiningDate = DateTime.UtcNow.Date };
-            db.Employees.Add(employee);
-            await db.SaveChangesAsync();
-            tenantId = tenant.Id; companyId = company.Id; employeeId = employee.Id;
-        }
-
+        var (tenantId, companyId, employeeId) = await SeedDraftAsync();
         for (var round = 0; round < 3; round++)
+            (await RaceAsync(tenantId, companyId, employeeId, round, 2)).Should().Equal([200, 409], $"round {round}: exactly one save wins");
+    }
+
+    [Fact]
+    public async Task Autosave_StressFourSavesFromTheSameBase_ExactlyOneWins()
+    {
+        var (tenantId, companyId, employeeId) = await SeedDraftAsync();
+        for (var round = 0; round < 50; round++)
+            (await RaceAsync(tenantId, companyId, employeeId, round, 4)).Should().Equal([200, 409, 409, 409], $"round {round}: exactly one save wins");
+    }
+
+    [Fact]
+    public async Task Autosave_WithoutBasis_ASaveThatStartsAfterAnotherFinished_IsASequentialSave()
+    {
+        // This is what made the original race test flaky: with no basis a save means "whatever is current", so under load
+        // a request that only began after the other completed legitimately succeeds. Same-base exclusion needs a basis.
+        var (tenantId, companyId, employeeId) = await SeedDraftAsync();
+        foreach (var name in new[] { "First", "Second" })
         {
-            var barrier = new TaskCompletionSource();
-            async Task<int?> One(string name)
-            {
-                await using var db = _fx.CreateDb();
-                await db.Database.OpenConnectionAsync();
-                var controller = Controller(db, tenantId);
-                await barrier.Task;
-                var result = await controller.SaveDraft(employeeId, new EmployeeHireController.HireDraftRequest(null, Request(name, companyId)), default);
-                return (result as ObjectResult)?.StatusCode;
-            }
-            var t1 = Task.Run(() => One($"Autosave A {round}"));
-            var t2 = Task.Run(() => One($"Autosave B {round}"));
-            await Task.Delay(300);
-            barrier.SetResult();
-            var codes = (await Task.WhenAll(t1, t2)).OrderBy(c => c).ToArray();
-            codes.Should().Equal([200, 409], $"round {round}: exactly one save wins");
+            await using var db = _fx.CreateDb();
+            var result = await Controller(db, tenantId).SaveDraft(employeeId, new EmployeeHireController.HireDraftRequest(null, Request(name, companyId)), default);
+            (result as ObjectResult)?.StatusCode.Should().Be(200);
         }
     }
 
