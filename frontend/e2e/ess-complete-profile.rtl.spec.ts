@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootEss } from './ess/essMocks';
+import { bootEss, INBOX_ITEMS } from './ess/essMocks';
 
 /** P2: Arabic at 360 px. No horizontal scroll, the page is RTL, and numbers (IBAN, ID, phone) stay left-to-right. */
 test.use({ viewport: { width: 360, height: 780 } });
@@ -41,6 +41,13 @@ test('Arabic HR review at 360 px', async ({ page }, info) => {
   await page.getByTestId('inbox-item').nth(1).getByRole('button', { name: 'مراجعة' }).click();
   await expect(page.getByTestId('inbox-item').nth(1)).toContainText('تذهب إلى المالية');
   expect(await noHorizontalScroll(page)).toBe(true);
+  // AC61 / CD65: the comparison stacks into cards, so nothing scrolls sideways inside it either, and every value keeps its label
+  const region = page.getByTestId('inbox-item').nth(1).getByRole('region');
+  expect(await region.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  const row = page.getByTestId('diff-row').first();
+  await expect(row).toContainText('الحالي');
+  await expect(row).toContainText('المقترح');
+  await expect(page.getByTestId('company-switcher')).toContainText('كل الشركات');
   await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2-hr-review-ar-360.png` : info.outputPath('hr.png'), animations: 'disabled' });
   expect(log.errors).toEqual([]);
 });
@@ -53,4 +60,30 @@ test('Arabic: the expiry shows its Hijri date in Arabic, left-to-right date inpu
   expect(await noHorizontalScroll(page)).toBe(true);
   if (process.env.P2_SHOTS) await page.screenshot({ path: `${process.env.P2_SHOTS}/p2-ess-identity-hijri-ar-360.png`, animations: 'disabled' });
   expect(log.errors).toEqual([]);
+});
+
+test('Arabic: the privacy notice shows the region by name and says the data is hosted outside the Kingdom', async ({ page }) => {
+  await bootEss(page, { locale: 'ar', sections: ['person'] });
+  await page.getByTestId('section-person').click();
+  const form = page.getByTestId('section-form');
+  const text = await form.innerText();
+  expect(text).not.toContain('ess-1');
+  expect(text).not.toContain('us-east');
+  await expect(form).toContainText('الولايات المتحدة (الشرق)');
+  await expect(form).toContainText('خارج المملكة');
+  expect(await noHorizontalScroll(page)).toBe(true);
+});
+
+test('Arabic: the trusted-source and refused scan states at 360 px', async ({ page }, info) => {
+  const item = { ...INBOX_ITEMS[1], documents: [
+    { id: 'd-trusted', kind: 'bank_letter', scanStatus: 'not_scanned_trusted_source', fileName: 'trusted.pdf' },
+    { id: 'd-quar', kind: 'bank_letter', scanStatus: 'quarantined', fileName: 'quarantined.pdf' },
+  ] };
+  await bootEss(page, { locale: 'ar', persona: 'hr', hrItems: [item] });
+  const card = page.getByTestId('inbox-item');
+  await card.getByRole('button', { name: 'مراجعة' }).click();
+  await expect(card).toContainText('لم يُفحص بحثًا عن الفيروسات (مصدر موثوق)');
+  await expect(card).toContainText('حُجب بسبب الفحص الأمني. لا يمكن تنزيله.');
+  expect(await noHorizontalScroll(page)).toBe(true);
+  await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2p4h-scan-states-ar-360.png` : info.outputPath('scan.png'), animations: 'disabled', fullPage: true });
 });

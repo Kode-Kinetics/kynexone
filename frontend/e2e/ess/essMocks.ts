@@ -36,6 +36,8 @@ export interface EssMockOptions {
   hrPermissions?: string[];
   /** Identity fields of an expatriate (Iqama, passport, expiries) instead of the Saudi National ID. */
   idClass?: 'saudi' | 'expat';
+  /** CD58: the inbox omits document ids for a caller without employees.sensitive. */
+  hideDocIds?: boolean;
 }
 
 export const INBOX_ITEMS = [
@@ -116,7 +118,7 @@ export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string)
       docs.push(doc);
       return reply({ id: doc.id, kind, scanStatus: 'Clean' }, 201);
     }
-    if (p === '/api/hr/profile-completion/inbox') return reply(inbox);
+    if (p === '/api/hr/profile-completion/inbox') return reply(o.hideDocIds ? inbox.map(i => ({ ...i, documents: (i.documents ?? []).map(({ id: _id, ...d }: any) => d) })) : inbox);
     m = /^\/api\/ess\/profile-change-requests\/([\w-]+)\/(approve|reject)$/.exec(p);
     if (m && method === 'POST') {
       log.decisions.push({ id: m[1], verb: m[2], body });

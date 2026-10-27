@@ -1,5 +1,6 @@
 'use client';
 
+import { isolateLtr, isolateName } from '../lib/bidi';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, RefreshCw, WalletCards } from 'lucide-react';
@@ -60,7 +61,7 @@ export function PayApprovalsPage() {
                 <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
                   <div><dt className="text-xs text-slate-500 dark:text-slate-400">{t('Gross pay')}</dt><dd className="font-medium" dir="ltr">{fmt.plain.money(item.gross, item.currency)}</dd></div>
                   <div><dt className="text-xs text-slate-500 dark:text-slate-400">{t('Account')}</dt><dd className="font-medium" dir="ltr">{maskedAccount(item.ibanLast4) || '—'}</dd></div>
-                  <div><dt className="text-xs text-slate-500 dark:text-slate-400">{t('Entered by')}</dt><dd className="font-medium">{item.enteredBy ? t('{name} on {when}', { name: item.enteredBy.name, when: when(item.enteredBy.atUtc) }) : '—'}</dd></div>
+                  <div><dt className="text-xs text-slate-500 dark:text-slate-400">{t('Entered by')}</dt><dd className="font-medium">{item.enteredBy ? t('{name} on {when}', { name: isolateName(item.enteredBy.name), when: isolateLtr(when(item.enteredBy.atUtc)) }) : '—'}</dd></div>
                 </dl>
                 <div className="mt-3">
                   <Link className="btn-primary" href={`/pay-approvals/${item.employeeId}`} aria-label={t('Review pay package for {name}', { name: item.name })}>{t('Review')}</Link>

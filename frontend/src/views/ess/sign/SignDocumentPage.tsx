@@ -127,7 +127,7 @@ export function SignDocumentPage({ documentId }: { documentId: string }) {
                 <div id={nameErrorId} role="alert" className="min-h-[1rem] text-xs font-medium text-rose-700 dark:text-rose-300">{fieldError}</div>
                 {formError && <EssNotice tone="error">{formError}</EssNotice>}
                 <div className="flex flex-wrap items-center gap-3">
-                  <button ref={signButtonRef} type="submit" disabled={!ready} className={essPrimaryButton}>
+                  <button ref={signButtonRef} data-testid="sign-submit" type="submit" disabled={!ready} className={essPrimaryButton}>
                     {busy ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <PenLine className="h-4 w-4" aria-hidden="true" />}{busy ? t('Signing…') : t('Sign')}
                   </button>
                   <NotQualifiedBadge />

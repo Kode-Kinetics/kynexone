@@ -96,6 +96,7 @@ test.describe('hire template picker in Arabic at 360 px', () => {
     await expect(page.getByTestId('hire-template-picker')).toBeVisible();
     await page.getByLabel('قالب التوظيف').selectOption('tpl-cashier');
     await expect(page.getByTestId('hire-template-status')).toContainText('تم التطبيق: أمين صندوق فرع');
+    await expect(page.getByTestId('hire-template-status')).not.toContainText('ولم يبق شيء');
     await expectNoHorizontalScroll(page);
     await page.screenshot({ path: process.env.P3_SHOTS ? `${process.env.P3_SHOTS}/p3-hire-template-ar-360.png` : undefined, fullPage: true });
   });

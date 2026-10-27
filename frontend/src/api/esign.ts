@@ -95,6 +95,10 @@ export const esignApi = {
   verify: (ackId: string) => client.get<VerifyResult>(`/api/ess/signatures/${ackId}/verify`).then(r => r.data),
 };
 
+/** CD60: the device step-up token is bound to this employee, this document and the hash of the bytes the employee was shown. */
+export const deviceStepUpBody = (employeeId: number, documentId: string, documentSha256: string, password: string, mfaCode?: string) =>
+  ({ employeeId, documentId, documentSha256, password, mfaCode: mfaCode || undefined });
+
 export const hrEsignApi = {
   list: (employeeId: number) => client.get<SignatureRow[]>(`/api/employees/${employeeId}/signatures`).then(r => asSignatureRows(r.data)),
   consent: (employeeId: number, documentId: string, lang: 'en' | 'ar') => client.get<ConsentView>(`/api/employees/${employeeId}/signatures/${documentId}/consent`, { params: { lang } }).then(r => r.data),
@@ -103,8 +107,8 @@ export const hrEsignApi = {
   /** The stored file through the same authenticated route every employee document uses. */
   download: (documentId: string) => client.get<Blob>(`/api/employees/documents/${documentId}/download`, { responseType: 'blob' }).then(r => asPdfBlob(r.data)),
   /** The EMPLOYEE's own password, typed on HR's device. HR's password is refused. */
-  deviceStepUp: (employeeId: number, password: string, mfaCode?: string) =>
-    client.post<{ stepUpToken: string; expiresAtUtc: string }>('/api/auth/step-up/employee-device', { employeeId, password, mfaCode: mfaCode || undefined }, noRefresh).then(r => r.data),
+  deviceStepUp: (employeeId: number, documentId: string, documentSha256: string, password: string, mfaCode?: string) =>
+    client.post<{ stepUpToken: string; expiresAtUtc: string }>('/api/auth/step-up/employee-device', deviceStepUpBody(employeeId, documentId, documentSha256, password, mfaCode), noRefresh).then(r => r.data),
   signOnDevice: (employeeId: number, documentId: string, body: SignBody, stepUp: string, idempotencyKey: string) =>
     client.post<SignReceipt>(`/api/employees/${employeeId}/signatures/${documentId}/sign-on-device`, body, { ...noRefresh, headers: stepUpHeaders(stepUp, idempotencyKey) }).then(r => r.data),
 };
