@@ -4,6 +4,7 @@ import type { IdType } from './nationality';
 import { formatNational } from './phone';
 import { buildCountryOptions, foldText, type CountryOption } from './nationality';
 import { DEFAULT_ZONE } from './dates';
+import { dateLocale } from '../format';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/min';
 
 export interface HydrateContext {
@@ -33,7 +34,7 @@ export function normaliseDate(v: unknown, timeZone?: string | null): string {
   const at = new Date(t);
   if (Number.isNaN(at.getTime())) return '';
   const zone = (() => { const z = timeZone?.trim() || DEFAULT_ZONE; try { new Intl.DateTimeFormat('en', { timeZone: z }); return z; } catch { return DEFAULT_ZONE; } })();
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(at);
+  const parts = new Intl.DateTimeFormat(dateLocale('en'), { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(at);
   const get = (k: string) => parts.find(p => p.type === k)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
