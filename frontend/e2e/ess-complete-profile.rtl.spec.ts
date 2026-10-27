@@ -87,3 +87,14 @@ test('Arabic: the trusted-source and refused scan states at 360 px', async ({ pa
   expect(await noHorizontalScroll(page)).toBe(true);
   await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2p4h-scan-states-ar-360.png` : info.outputPath('scan.png'), animations: 'disabled', fullPage: true });
 });
+
+test('Arabic: a blocked upload offers Remove and nothing overflows at 360 px', async ({ page }) => {
+  const log = await bootEss(page, { locale: 'ar', sections: ['documents'], seedDocs: [{ id: 'd-quar', kind: 'national_id_copy', scanStatus: 'quarantined', section: 'documents', fileName: 'blocked.pdf' }] });
+  await page.getByTestId('section-documents').click();
+  const remove = page.getByRole('button', { name: /إزالة/ });
+  await expect(remove).toBeVisible();
+  expect(await noHorizontalScroll(page)).toBe(true);
+  await remove.click();
+  await expect(page.getByRole('listitem').filter({ hasText: 'blocked.pdf' })).toHaveCount(0);
+  expect(log.errors).toEqual([]);
+});

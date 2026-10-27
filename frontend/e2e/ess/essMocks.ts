@@ -40,6 +40,8 @@ export interface EssMockOptions {
   hideDocIds?: boolean;
   /** What POST .../documents/{id}/rescan answers: 200 with a scanStatus, or an error status (409 = no longer pending). */
   rescan?: { status: number; scanStatus?: string };
+  /** Uploads already on the server for a section (listed in the section's documents). */
+  seedDocs?: Array<{ id: string; kind: string; scanStatus: string; section: string; fileName?: string }>;
 }
 
 export const INBOX_ITEMS = [
@@ -59,7 +61,7 @@ export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string)
   if (o.idClass === 'expat') SECTIONS.id = { ...SECTIONS.id, fields: [F('iqamaNumber', 'Iqama', '', { maxLength: 10, sensitive: true, required: false }), F('iqamaExpiry', 'Date', '2027-02-02', { maxLength: 10, required: false }), F('passportNumber', 'Passport', '', { maxLength: 20, sensitive: true, required: false }), F('passportExpiry', 'Date', '', { maxLength: 10, required: false })] };
   let inbox = [...(o.hrItems ?? INBOX_ITEMS)];
   let failures = o.stepUpFailures ?? 0;
-  const docs: any[] = [];
+  const docs: any[] = [...(o.seedDocs ?? [])];
   page.on('pageerror', e => log.errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) log.errors.push(m.text()); });
   await page.addInitScript(([locale]) => {
@@ -105,6 +107,9 @@ export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string)
       if (sec?.requiresStepUp && req.headers()['x-step-up'] !== 'step-up-token-1')
         return reply({ type: 'about:blank', status: 401, code: 'step_up_required', titleKey: 'ess.completion.error.step_up_required' }, 401, { 'WWW-Authenticate': 'StepUp purpose="ess.sensitive"' });
       if (body?.values?.phone === 'bad') return reply({ type: 'about:blank', status: 422, code: 'validation_failed', titleKey: 'ess.completion.error.validation_failed', errors: { phone: ['phone_invalid'] } }, 422);
+      // Like the server: a listed file the scan has not cleared refuses the whole submission.
+      if ((body?.documentIds ?? []).some((id: string) => { const d = docs.find(x => x.id === id); return d && !/^(clean|not_scanned_trusted_source)$/i.test(d.scanStatus); }))
+        return reply({ type: 'about:blank', status: 400, code: 'document_quarantined', titleKey: 'ess.completion.error.document_quarantined' }, 400);
       log.submits.push({ key, ...body });
       state[key] = 'Pending';
       return reply({ ...sec, state: 'Pending', requestId: 'req-1', fields: sec.fields, documents: [] });

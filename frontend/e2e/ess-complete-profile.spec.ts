@@ -106,6 +106,36 @@ test('uploads are checked for type and size before they leave the browser, and l
   expect(log.submits[0].documentIds).toEqual(['doc-1']);
 });
 
+test('a blocked upload can be removed, a clean copy attached, and only the clean one is sent', async ({ page }) => {
+  const log = await bootEss(page, { sections: ['documents'], seedDocs: [{ id: 'd-quar', kind: 'national_id_copy', scanStatus: 'quarantined', section: 'documents', fileName: 'blocked.pdf' }] });
+  await page.getByTestId('section-documents').click();
+  const blocked = page.getByRole('listitem').filter({ hasText: 'blocked.pdf' });
+  await expect(blocked).toContainText('Blocked');
+  await expect(blocked).toContainText('Remove it and attach a clean copy.');
+  await expect(page.getByRole('button', { name: 'Send to HR' })).toBeDisabled();   // nothing usable is attached yet
+  await blocked.getByRole('button', { name: 'Remove blocked.pdf' }).click();
+  await expect(page.getByRole('listitem').filter({ hasText: 'blocked.pdf' })).toHaveCount(0);
+  await page.getByLabel('File (PDF, JPG or PNG, up to 5 MB)').setInputFiles({ name: 'clean.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF') });
+  await page.getByRole('button', { name: 'Upload', exact: true }).click();
+  await expect(page.getByRole('listitem').filter({ hasText: 'clean.pdf' })).toContainText('Checked');
+  await page.getByRole('button', { name: 'Send to HR' }).click();
+  await expect(page.getByText('Sent to HR. You will see the result here.')).toBeVisible();
+  expect(log.submits[0].documentIds).toEqual(['doc-2']);
+  expect(JSON.stringify(log.submits)).not.toContain('d-quar');
+});
+
+test('a blocked file the server lists again is shown as removable and is not sent with a bank section', async ({ page }) => {
+  const log = await bootEss(page, { sections: ['bank'], stepUpFailures: 0, seedDocs: [{ id: 'd-quar', kind: 'bank_letter', scanStatus: 'quarantined_pending', section: 'bank', fileName: 'letter.pdf' }] });
+  await page.getByTestId('section-bank').click();
+  await expect(page.getByRole('button', { name: 'Remove letter.pdf' })).toBeVisible();
+  await page.getByLabel('IBAN (required)').fill('SA4420000001234567891234');
+  await page.getByRole('button', { name: 'Send to HR' }).click();
+  await page.getByRole('dialog', { name: 'Confirm it is you' }).getByLabel('Password').fill('Passw0rd!xyz');
+  await page.getByRole('dialog', { name: 'Confirm it is you' }).getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect(page.getByText('Sent to HR. You will see the result here.')).toBeVisible();
+  expect(log.submits[0].documentIds).toEqual([]);
+});
+
 test('an API that predates sections falls back to the original page', async ({ page }) => {
   await bootEss(page, { legacyApi: true });
   await expect(page.getByRole('heading', { name: 'My employee details', exact: true })).toBeVisible();

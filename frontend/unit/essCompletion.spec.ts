@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { getPathMatch } from 'next/dist/shared/lib/router/utils/path-match';
 import nextConfig from '../next.config';
 import { isStepUpRequired, problemOf, SECTION_ORDER } from '../src/api/essCompletion';
+import { isSubmittable, submittableDocumentIds } from '../src/lib/scanState';
 import { onboardingP2Ar, onboardingP2En } from '../src/i18n/onboardingP2';
 
 type HeaderRule = { source: string; headers: { key: string; value: string }[] };
@@ -49,5 +50,21 @@ test('every section has a title, purpose and hint in English and Arabic, and eve
   for (const [key, en] of Object.entries(onboardingP2En)) {
     const names = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map(m => m[1]).sort();
     expect(names(onboardingP2Ar[key]), key).toEqual(names(en));
+  }
+});
+
+test('only files the scan cleared go into a submission; a blocked or still-pending file is never sent', () => {
+  const docs = [
+    { id: 'a', scanStatus: 'clean' }, { id: 'b', scanStatus: 'not_scanned_trusted_source' },
+    { id: 'c', scanStatus: 'quarantined' }, { id: 'd', scanStatus: 'quarantined_pending' }, { id: 'e', scanStatus: '' }, { id: 'f', scanStatus: 'Weird' },
+  ];
+  expect(docs.filter(d => isSubmittable(d.scanStatus)).map(d => d.id)).toEqual(['a', 'b']);
+  expect(submittableDocumentIds(docs)).toEqual(['a', 'b']);
+});
+
+test('the remove copy exists in English and Arabic with the same placeholders', () => {
+  for (const key of ['ess.completion.doc.remove', 'ess.completion.doc.removeNamed', 'ess.completion.doc.unusableNote']) {
+    expect(onboardingP2En[key], key).toBeTruthy();
+    expect(onboardingP2Ar[key], key).toMatch(/\p{Script=Arabic}/u);
   }
 });
