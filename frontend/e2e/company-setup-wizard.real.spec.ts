@@ -90,6 +90,12 @@ async function confirmItsYou(page: Page, password = PASSWORD) {
   await expect(dialog).toHaveCount(0, { timeout: 20_000 });
 }
 
+/** As above when the action might not need it (an admin choice that makes nobody an Admin, or a confirmation still fresh). */
+async function confirmItsYouIfAsked(page: Page, password = PASSWORD) {
+  const dialog = page.getByTestId('step-up-dialog');
+  if (await dialog.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false)) await confirmItsYou(page, password);
+}
+
 async function tenantToken(email: string, password = PASSWORD): Promise<string> {
   const body = ok(await call('POST', '/api/auth/login', { body: { email, password, tenantSlug: SLUG } }), `login ${email}`);
   return (body as any).accessToken ?? (body as any).token;
@@ -296,6 +302,8 @@ test('EN: the seven steps create the company, its setup and an invited super adm
   await expect(create).toBeEnabled();
   await shot(page, info, 'en-7-review');
   await create.click();
+  // Inviting a company super admin makes someone an Admin: the signed-in owner confirms it's them first.
+  await confirmItsYou(page);
   await expectCreated(page, t, EN_CO);
   const adminRow = page.getByTestId('readiness-companyAdmin');
   await expect(adminRow).toContainText(`Send ${INVITED.fullName} their sign-in link`);
@@ -303,8 +311,8 @@ test('EN: the seven steps create the company, its setup and an invited super adm
   // One click sends the invited super admin their sign-in link. This stack has no SMTP, so the server hands the link
   // back once, here, to be passed on through the company's own channel.
   await adminRow.getByRole('button', { name: t('Send sign-in link'), exact: true }).click();
-  // The invited super admin is an Admin: sending them a sign-in link asks the signed-in owner to confirm it's them.
-  await confirmItsYou(page);
+  // The invited super admin is an Admin: the confirmation given at "Create company" is still fresh (five minutes).
+  await confirmItsYouIfAsked(page);
   const linkOutcome = adminRow.getByTestId('sign-in-link-result');
   await expect(linkOutcome).toBeVisible({ timeout: 20_000 });
   const emailed = (await linkOutcome.getAttribute('data-emailed')) === 'true';
@@ -367,6 +375,8 @@ test('AR: the same journey in Arabic, with an existing company admin as the supe
   await expect(create).toBeEnabled();
   await shot(page, info, 'ar-7-review');
   await create.click();
+  // Giving an existing user the Admin role: the signed-in owner confirms it's them first.
+  await confirmItsYou(page);
   await expectCreated(page, t, AR_CO, 'ar');
   await shot(page, info, 'ar-8-created');
 
@@ -461,6 +471,7 @@ test('a double-click on Create makes exactly one company', async ({ page }) => {
   const create = page.getByRole('button', { name: t('Create company'), exact: true });
   await expect(create).toBeEnabled();
   await create.dblclick();
+  await confirmItsYouIfAsked(page);
   await expectCreated(page, t, DOUBLE_CO);
 
   expect(await companiesWithCr(owner, DOUBLE_CO.cr)).toHaveLength(1);

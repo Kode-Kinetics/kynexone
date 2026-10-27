@@ -1,12 +1,14 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CompanySetup;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CompanySetup;
 using Zayra.Api.Infrastructure.Email;
@@ -41,11 +43,18 @@ public class CompanySetupController : ControllerBase
     public const string ApplyPermission = "organization.setup.apply";
 
     private readonly CompanySetupService _setup;
+    private readonly ZayraDbContext _db;
+    private readonly StepUpService? _stepUp;
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notices;
 
     public CompanySetupController(ZayraDbContext db, IOrganizationSetupService organization, IAccessManagementService access,
-        IWorkWeekService workWeek, IEmailService email)
+        IWorkWeekService workWeek, IEmailService email, StepUpService? stepUp = null,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? notices = null)
     {
         _setup = new CompanySetupService(db, organization, access, workWeek, email);
+        _db = db;
+        _stepUp = stepUp;
+        _notices = notices;
     }
 
     [HttpGet("context")]
@@ -139,7 +148,56 @@ public class CompanySetupController : ControllerBase
         // A company super admin may commit their own company's existing-mode draft only (the service checks the draft).
         if (Gate(write: true, companyScoped: true) is { } refused) return refused;
         Guid? key = Guid.TryParse(idempotencyKey, out var parsed) ? parsed : null;
-        return Map(await _setup.CommitAsync(Caller()!, request, key, ct));
+        var caller = Caller()!;
+        // Making someone an Admin — inviting a company super admin, or giving an existing user the role — needs
+        // "Confirm it's you" here too, exactly as on Setup → Users (StepUpService; fails closed).
+        var adminGrant = request is null ? null : await _setup.AdminGrantAsync(caller.TenantId, request.DraftId, ct);
+        if (adminGrant is not null
+            && !(_stepUp is not null && await _stepUp.IsConfirmedAsync(caller.UserId, caller.TenantId, Request.Headers[StepUpService.HeaderName].ToString(), ct)))
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                code = StepUpService.RequiredCode,
+                error = StepUpService.RequiredCode,
+                message = "Confirm it's you to continue: enter your password, and your two-step code if it is on.",
+            });
+        var outcome = await _setup.CommitAsync(caller, request, key, ct);
+        if (adminGrant is not null && outcome.Error is null) await NoticeAdminGrantAsync(caller, adminGrant, ct);
+        return Map(outcome);
+    }
+
+    /// <summary>Every other active Admin is told that a company setup made someone an Admin. Never fails the commit.</summary>
+    private async Task NoticeAdminGrantAsync(CompanySetupCaller caller, CompanySetupCompanyAdmin grant, CancellationToken ct)
+    {
+        if (_notices is null) return;
+        try
+        {
+            var actor = await _db.Users.AsNoTracking().Where(u => u.Id == caller.UserId)
+                .Select(u => string.IsNullOrWhiteSpace(u.FullName) ? u.Email : u.FullName).FirstOrDefaultAsync(ct) ?? "An administrator";
+            var who = grant.FullNameEn ?? grant.Email
+                ?? await _db.Users.AsNoTracking().Where(u => u.Id == grant.ExistingUserId)
+                    .Select(u => string.IsNullOrWhiteSpace(u.FullName) ? u.Email : u.FullName).FirstOrDefaultAsync(ct)
+                ?? "a user";
+            var admins = await _db.Users.AsNoTracking()
+                .Where(u => u.TenantId == caller.TenantId && !u.IsDeleted && u.IsActive && u.Id != caller.UserId
+                    && u.UserRoles.Any(r => r.Role != null && r.Role.NormalizedName == "ADMIN" && r.Role.IsActive && !r.Role.IsDeleted))
+                .Select(u => u.Id).ToListAsync(ct);
+            var sentAt = DateTime.UtcNow;
+            foreach (var recipient in admins)
+                await _notices.EnqueueAsync(new Zayra.Api.Infrastructure.Notifications.NotificationRequest
+                {
+                    TenantId = caller.TenantId,
+                    UserId = recipient,
+                    EventCode = "security.admin_account_action",
+                    EntityName = "User",
+                    EntityId = $"company-setup:{sentAt:yyyyMMddHHmmssfff}",
+                    Title = "An administrator account was changed",
+                    Message = $"{actor} made {who} a company super admin while setting up a company. If this was not expected, contact the workspace owner or KynexOne support now.",
+                }, ct);
+        }
+        catch (Exception)
+        {
+            // The company is already set up; a notice that could not be queued must not turn it into an error.
+        }
     }
 
     [HttpGet("readiness/{companyId:guid}")]

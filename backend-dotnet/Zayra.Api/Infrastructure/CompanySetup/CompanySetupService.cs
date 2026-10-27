@@ -608,6 +608,18 @@ public sealed class CompanySetupService
             .ToDictionaryAsync(u => u.Id, u => u.FullName, ct);
     }
 
+    /// <summary>
+    /// The administrator a draft's commit would create or promote — a newly invited company super admin, or an existing
+    /// user given the Admin role — or null when it makes nobody an Admin. The controller asks the caller to confirm it's
+    /// them before such a commit (StepUpService), as for every other way of making an Admin.
+    /// </summary>
+    public async Task<CompanySetupCompanyAdmin?> AdminGrantAsync(Guid tenantId, Guid draftId, CancellationToken ct)
+    {
+        var draft = await _db.CompanySetupDrafts.AsNoTracking().SingleOrDefaultAsync(d => d.TenantId == tenantId && d.Id == draftId, ct);
+        var admin = draft is null ? null : ReadBody(draft)?.CompanyAdmin;
+        return admin?.Mode is CompanySetupVocabulary.AdminInvite or CompanySetupVocabulary.AdminExisting ? admin : null;
+    }
+
     internal static CompanySetupDraftBody? ReadBody(CompanySetupDraftRecord row)
     {
         try { return JsonSerializer.Deserialize<CompanySetupDraftBody>(row.Body, BodyJson); }
