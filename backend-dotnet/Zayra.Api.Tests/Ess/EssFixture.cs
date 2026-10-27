@@ -75,6 +75,9 @@ public sealed class EssFixture : IAsyncLifetime
     public string HrScopedOtherToken { get; private set; } = null!; // HR limited to the other company
     public string HrDocumentsToken { get; private set; } = null!;   // employees.read + employees.documents + sensitive (the workspace's document download)
     public string HrNoDocumentsToken { get; private set; } = null!;  // employees.write + read + sensitive, but no employees.documents
+    public string HrSecondApproverToken { get; private set; } = null!;  // HR Manager + approvals.decide (a second, different step-2 decider)
+    public string FinanceApproverToken { get; private set; } = null!;   // Finance Approver + approvals.decide + payroll.approve
+    public string FinanceNoPayrollToken { get; private set; } = null!;  // Finance Approver + approvals.decide, but NOT payroll.approve
     public Guid HrUserId { get; private set; }
     public Guid FinanceUserId { get; private set; }
 
@@ -105,14 +108,17 @@ public sealed class EssFixture : IAsyncLifetime
         db.TenantSubscriptions.Add(new TenantSubscription { TenantId = TenantId, Plan = "Enterprise", Status = "Active", MaxEmployees = 1000 });
         var hrManager = new Role { TenantId = TenantId, Name = "HR Manager", NormalizedName = "HR MANAGER" };
         var hrOfficer = new Role { TenantId = TenantId, Name = "HR Officer", NormalizedName = "HR OFFICER" };
-        db.Roles.AddRange(hrManager, hrOfficer);
-        var hr = Staff("hr"); var docs = Staff("hrdocs"); var noSens = Staff("hrnosens"); var ovr = Staff("hroverride"); var fin = Staff("finance"); var scoped = Staff("hrscoped"); var noDocs = Staff("hrnodocs");
+        var financeApprover = new Role { TenantId = TenantId, Name = "Finance Approver", NormalizedName = "FINANCE APPROVER" };
+        db.Roles.AddRange(hrManager, hrOfficer, financeApprover);
+        var hr = Staff("hr"); var docs = Staff("hrdocs"); var noSens = Staff("hrnosens"); var ovr = Staff("hroverride"); var fin = Staff("finance"); var scoped = Staff("hrscoped"); var noDocs = Staff("hrnodocs"); var hr2 = Staff("hr2"); var finAppr = Staff("finappr"); var finNoPay = Staff("finnopay");
         scoped.IsGroupScope = false;   // limited to one company (UserEntityAccess below)
-        db.Users.AddRange(hr, noSens, ovr, fin, scoped, docs, noDocs);
+        db.Users.AddRange(hr, noSens, ovr, fin, scoped, docs, noDocs, hr2, finAppr, finNoPay);
         db.Set<UserRole>().AddRange(new UserRole { UserId = hr.Id, RoleId = hrManager.Id }, new UserRole { UserId = noSens.Id, RoleId = hrOfficer.Id },
-            new UserRole { UserId = ovr.Id, RoleId = hrManager.Id }, new UserRole { UserId = fin.Id, RoleId = hrManager.Id }, new UserRole { UserId = scoped.Id, RoleId = hrOfficer.Id }, new UserRole { UserId = docs.Id, RoleId = hrManager.Id }, new UserRole { UserId = noDocs.Id, RoleId = hrManager.Id });
+            new UserRole { UserId = ovr.Id, RoleId = hrManager.Id }, new UserRole { UserId = fin.Id, RoleId = hrManager.Id }, new UserRole { UserId = scoped.Id, RoleId = hrOfficer.Id }, new UserRole { UserId = docs.Id, RoleId = hrManager.Id }, new UserRole { UserId = noDocs.Id, RoleId = hrManager.Id },
+            new UserRole { UserId = hr2.Id, RoleId = hrManager.Id }, new UserRole { UserId = finAppr.Id, RoleId = financeApprover.Id }, new UserRole { UserId = finNoPay.Id, RoleId = financeApprover.Id });
         db.Set<UserPermissionOverride>().AddRange(
             Grant(hr.Id, "employees.write"), Grant(hr.Id, "employees.read"), Grant(hr.Id, "employees.sensitive"), Grant(hr.Id, "approvals.decide"), Grant(hr.Id, "employees.documents"),
+            Grant(hr2.Id, "approvals.decide"), Grant(finAppr.Id, "approvals.decide"), Grant(finAppr.Id, "payroll.approve"), Grant(finNoPay.Id, "approvals.decide"),
             Grant(noDocs.Id, "employees.write"), Grant(noDocs.Id, "employees.read"), Grant(noDocs.Id, "employees.sensitive"),
             Grant(noSens.Id, "employees.write"), Grant(noSens.Id, "employees.read"), Grant(noSens.Id, "employees.documents"),
             Grant(ovr.Id, "employees.documents"), Grant(ovr.Id, "employees.write"), Grant(ovr.Id, "employees.read"), Grant(ovr.Id, "employees.sensitive"), Grant(ovr.Id, "employees.override_validation"),
@@ -131,6 +137,9 @@ public sealed class EssFixture : IAsyncLifetime
         HrScopedOtherToken = await MintAsync(db, tokens, scoped.Id, false, [OtherCompanyId]);
         HrDocumentsToken = await MintAsync(db, tokens, docs.Id, true);
         HrNoDocumentsToken = await MintAsync(db, tokens, noDocs.Id, true);
+        HrSecondApproverToken = await MintAsync(db, tokens, hr2.Id, true);
+        FinanceApproverToken = await MintAsync(db, tokens, finAppr.Id, true);
+        FinanceNoPayrollToken = await MintAsync(db, tokens, finNoPay.Id, true);
     }
 
     private User Staff(string name) => new()

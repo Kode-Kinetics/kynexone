@@ -63,4 +63,58 @@ public class EssHardeningHttpTests(EssFixture fx)
         (await fx.WithDbAsync(db => db.EmployeeSelfServiceAuditLogs.IgnoreQueryFilters()
             .CountAsync(a => a.EmployeeId == e.Id && a.Action == "ess.completion.inbox_viewed_by_hr" && a.UserId == fx.HrUserId))).Should().BeGreaterThan(0);
     }
+
+    // ── CD59: the bank change needs a Finance step ──────────────────────────────────────────────────────────
+
+    private async Task<Guid> AcceptBankAsync()
+    {
+        var e = await fx.NewEmployeeAsync("SA", configure: x => { x.BankIban = EssCompletionHttpTests.Iban; x.BankName = "SNB"; });
+        using var sub = await new EssCompletionHttpTests(fx).Submit(e, "bank", new { iban = EssCompletionHttpTests.NewIban, bankName = "Riyad Bank" }, stepUp: await fx.StepUpAsync(e));
+        sub.StatusCode.Should().Be(HttpStatusCode.OK, await sub.Content.ReadAsStringAsync());
+        var id = (await EssCompletionHttpTests.Json(sub)).GetProperty("requestId").GetGuid();
+        using var accept = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{id}/approve", fx.HrToken, new { notes = "ok" });
+        accept.StatusCode.Should().Be(HttpStatusCode.Accepted, await accept.Content.ReadAsStringAsync());
+        var changeId = (await EssCompletionHttpTests.Json(accept)).GetProperty("changeRequestId").GetGuid();
+        e.Should().NotBeNull();
+        BankEmployee = e;
+        return (await fx.WithDbAsync(db => db.ApprovalRequests.IgnoreQueryFilters().SingleAsync(x => x.EntityId == changeId.ToString()))).Id;
+    }
+
+    private EssEmployeeHandle BankEmployee { get; set; } = null!;
+
+    private async Task<bool> DecideAsync(Guid approvalId, string token)
+    {
+        using var res = await fx.SendAsync(HttpMethod.Post, $"/api/approval-requests/{approvalId}/decisions", token, new { decision = "Approve", comments = "checked" });
+        return res.IsSuccessStatusCode;
+    }
+
+    [Fact]
+    public async Task Bank_ActiveEmployee_WorkflowHasAFinalFinanceStep_OnlyAPayrollApproverCanDecide()  // CD59
+    {
+        var approvalId = await AcceptBankAsync();
+        var steps = await fx.WithDbAsync(async db =>
+        {
+            var wf = await db.ApprovalWorkflows.IgnoreQueryFilters().Include(w => w.Steps).SingleAsync(w => w.Id == db.ApprovalRequests.IgnoreQueryFilters().Where(r => r.Id == approvalId).Select(r => r.WorkflowId).First());
+            return wf.Steps.OrderBy(s => s.StepOrder).ToList();
+        });
+        steps.Last().ApproverRole.Should().Be("Finance Approver");
+        steps.Last().IsFinalStep.Should().BeTrue();
+
+        (await DecideAsync(approvalId, fx.FinanceToken)).Should().BeTrue();          // step 1 (queue falls to HR Manager)
+        (await DecideAsync(approvalId, fx.HrSecondApproverToken)).Should().BeTrue();   // step 2
+        (await DecideAsync(approvalId, fx.HrToken)).Should().BeFalse("the HR acceptor is never a decider");
+        (await DecideAsync(approvalId, fx.FinanceNoPayrollToken)).Should().BeFalse("the Finance step needs payroll.approve");
+        (await DecideAsync(approvalId, BankEmployee.Token)).Should().BeFalse("the subject never decides");
+        (await fx.WithDbAsync(db => db.ApprovalRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == approvalId))).Status.Should().Be("Pending");
+        (await DecideAsync(approvalId, fx.FinanceApproverToken)).Should().BeTrue();
+        (await fx.WithDbAsync(db => db.ApprovalRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == approvalId))).Status.Should().Be("Approved");
+    }
+
+    [Fact]
+    public async Task Bank_Notification_SaysWhoApproves()  // CD59
+    {
+        await AcceptBankAsync();
+        var body = await fx.WithDbAsync(db => db.EmployeeNotifications.IgnoreQueryFilters().Where(n => n.EmployeeId == BankEmployee.Id && n.NotificationType == "EssBankChange").Select(n => n.Body).SingleAsync());
+        body.Should().Contain("Finance approver").And.Contain("manager").And.Contain("HR manager");
+    }
 }

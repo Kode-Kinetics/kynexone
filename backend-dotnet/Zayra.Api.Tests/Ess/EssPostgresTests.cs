@@ -115,4 +115,21 @@ public sealed class EssPostgresTests(PostgresFixture fx)
         rows[oldLegacyRejected.Id].Status.Should().Be("Rejected");
         rows[oldPending.Id].Status.Should().Be("PendingHR");
     }
+
+    [Fact]
+    public async Task BankSection_ConcurrentAccepts_OnlyOneClaimsTheRequest()  // CD59
+    {
+        await using var seed = fx.CreateDb();
+        var tenant = await PostgresFixture.SeedMinimalTenant(seed);
+        var req = Request(tenant, 7300, "bank");
+        seed.EmployeeProfileChangeRequests.Add(req);
+        await seed.SaveChangesAsync();
+        await using var a = fx.CreateDb(); await using var b = fx.CreateDb();
+        var gate = new TaskCompletionSource();
+        async Task<bool> Claim(ZayraDbContext db) { await gate.Task; return await Zayra.Api.Application.Employees.Ess.EssSectionDecisionService.TryClaimForFinanceAsync(db, tenant, req.Id, default); }
+        var t1 = Claim(a); var t2 = Claim(b);
+        gate.SetResult();
+        (await Task.WhenAll(t1, t2)).Count(x => x).Should().Be(1);
+        (await fx.CreateDb().EmployeeProfileChangeRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == req.Id)).Status.Should().Be("AwaitingFinance");
+    }
 }

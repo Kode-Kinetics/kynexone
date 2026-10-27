@@ -158,6 +158,11 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
 
     // ── bank ────────────────────────────────────────────────────────────────────────────────────────────────
 
+    /// <summary>Atomically moves a section request from PendingHR to AwaitingFinance; false when another accept already did.</summary>
+    public static async Task<bool> TryClaimForFinanceAsync(ZayraDbContext db, Guid tenantId, Guid requestId, CancellationToken ct) =>
+        await db.EmployeeProfileChangeRequests.Where(x => x.TenantId == tenantId && x.Id == requestId && x.Status == "PendingHR")
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.Status, AwaitingFinance), ct) == 1;
+
     private async Task<IActionResult> SendBankToFinanceAsync(EmployeeProfileChangeRequest change, Employee employee, Dictionary<string, string> values,
         RequestContext context, EmployeeActionItem? action, CancellationToken ct)
     {
