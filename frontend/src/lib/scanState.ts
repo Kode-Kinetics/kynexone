@@ -31,3 +31,7 @@ export const canRescan = (raw: string | null | undefined, can: { write: boolean;
 
 /** The status the server answered with, in the words of the existing labels. */
 export const rescanStatusKey = (raw?: string | null) => scanLabelKey(scanState(raw)) ?? 'ess.completion.doc.scan.PendingScan';
+
+/** A file may go into a submission only once the scan cleared it (or its source is trusted). Blocked, pending and unknown files are never sent. */
+export const isSubmittable = (raw?: string | null) => { const s = scanState(raw); return s === 'clean' || s === 'trusted'; };
+export const submittableDocumentIds = (docs: Array<{ id: string; scanStatus?: string | null }>) => docs.filter(d => isSubmittable(d.scanStatus)).map(d => d.id);

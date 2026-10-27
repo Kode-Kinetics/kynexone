@@ -6,6 +6,7 @@ import { Loader2, Send } from 'lucide-react';
 import { essCompletionApi, isStepUpRequired, problemOf, type EssCompletion, type EssDocument, type EssField, type EssSection } from '../../../api/essCompletion';
 import { useLocale } from '../../../contexts/LocaleContext';
 import { hijriLine } from '../../../lib/hire/dates';
+import { submittableDocumentIds } from '../../../lib/scanState';
 import { EssNotice, essInput, essPrimaryButton } from '../../../components/ess/EssParts';
 import { DocumentUploader } from './DocumentUploader';
 import { StepUpDialog } from './StepUpDialog';
@@ -28,6 +29,8 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
   const [dialog, setDialog] = useState(false);
   const retry = useRef<(() => void) | null>(null);
   const [docs, setDocs] = useState<EssDocument[]>(section.documents);
+  // Files the employee detached. Reset whenever the server's list is reloaded: a blocked file listed again is shown (removable) but never sent.
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
   const summaryRef = useRef<HTMLDivElement>(null);
   const formId = useId();
   const editable = canWrite && isEditable(section);
@@ -36,7 +39,10 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
 
   // A different section starts clean. A change of state (after sending, or HR's reply) clears what was typed and the errors, but keeps the confirmation.
   useEffect(() => { setNotice(null); }, [section.key]);
-  useEffect(() => { setValues({}); setErrors({}); setSummary(null); setDocs(section.documents); }, [section.key, section.state, section.requestId, section.documents]);
+  useEffect(() => { setValues({}); setErrors({}); setSummary(null); setDocs(section.documents); setRemoved(new Set()); }, [section.key, section.state, section.requestId, section.documents]);
+
+  const shownDocs = useMemo(() => docs.filter(d => !removed.has(d.id)), [docs, removed]);
+  const sendableIds = useMemo(() => submittableDocumentIds(shownDocs), [shownDocs]);
 
   const freshToken = () => (stepUp.current && Date.now() - stepUp.current.at < 9 * 60_000 ? stepUp.current.token : undefined);
   const requireStepUp = (run: () => void) => { retry.current = run; setDialog(true); };
@@ -47,7 +53,7 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
     setBusy(true); setNotice(null); setErrors({}); setSummary(null);
     try {
       const typed = Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim() !== ''));
-      await essCompletionApi.submit(section.key, { noticeVersion: meta.noticeVersion, confirm, values: confirm ? {} : typed, documentIds: docs.map(d => d.id) }, token);
+      await essCompletionApi.submit(section.key, { noticeVersion: meta.noticeVersion, confirm, values: confirm ? {} : typed, documentIds: sendableIds }, token);
       setNotice({ tone: 'ok', text: t('Sent to HR. You will see the result here.') });
       onChanged();
     } catch (e) {
@@ -140,7 +146,7 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
           {editable && (
             <div className="flex flex-wrap gap-2">
               {confirmOnly && <button type="button" className="rounded-xl border border-sapphire px-4 py-2 text-sm font-semibold text-sapphire dark:border-cyanAccent dark:text-cyanAccent" disabled={busy || Object.values(values).some(v => v.trim())} onClick={() => void send(true)}>{t('Confirm these details')}</button>}
-              <button type="submit" className={essPrimaryButton} disabled={busy || (docsRequired && docs.length === 0)}>
+              <button type="submit" className={essPrimaryButton} disabled={busy || (docsRequired && sendableIds.length === 0)}>
                 {busy ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}{busy ? t('Sending…') : t('Send to HR')}
               </button>
             </div>
@@ -150,14 +156,14 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
 
       {withDocs && (
         <>
-          <DocumentUploader section={section.key} documents={docs} disabled={!canWrite || section.state === 'Pending' || section.state === 'Accepted'} getStepUp={freshToken}
+          <DocumentUploader section={section.key} documents={shownDocs} onRemove={d => setRemoved(prev => new Set(prev).add(d.id))} disabled={!canWrite || section.state === 'Pending' || section.state === 'Accepted'} getStepUp={freshToken}
             onNeedStepUp={requireStepUp} onUploaded={d => setDocs(prev => [...prev, d])} />
           {section.fields.length === 0 && editable && (
-            <button type="button" className={essPrimaryButton} disabled={busy || docs.length === 0} onClick={() => void send(false)}>
+            <button type="button" className={essPrimaryButton} disabled={busy || sendableIds.length === 0} onClick={() => void send(false)}>
               {busy ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}{busy ? t('Sending…') : t('Send to HR')}
             </button>
           )}
-          {docsRequired && docs.length === 0 && editable && <p className="text-xs text-slate-500">{t('Attach at least one file before sending.')}</p>}
+          {docsRequired && sendableIds.length === 0 && editable && <p className="text-xs text-slate-500">{t('Attach at least one file before sending.')}</p>}
         </>
       )}
 

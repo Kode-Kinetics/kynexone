@@ -4,7 +4,7 @@ import { useId, useRef, useState } from 'react';
 import { Loader2, Upload } from 'lucide-react';
 import { ACCEPTED_TYPES, DOCUMENT_KINDS, MAX_ATTACHMENTS, MAX_FILE_BYTES, essCompletionApi, isStepUpRequired, problemOf, type DocumentKind, type EssDocument, type SectionKey } from '../../../api/essCompletion';
 import { useLocale } from '../../../contexts/LocaleContext';
-import { scanLabelKey, scanState } from '../../../lib/scanState';
+import { isSubmittable, scanLabelKey, scanState } from '../../../lib/scanState';
 import { essInput, essPrimaryButton } from '../../../components/ess/EssParts';
 
 const KINDS_BY_SECTION: Record<string, DocumentKind[]> = {
@@ -14,8 +14,8 @@ const KINDS_BY_SECTION: Record<string, DocumentKind[]> = {
 };
 
 /** Attach up to three files to a section. Type, size and count are checked here first; the server checks them again. */
-export function DocumentUploader({ section, documents, disabled, getStepUp, onNeedStepUp, onUploaded }: {
-  section: SectionKey; documents: EssDocument[]; disabled?: boolean;
+export function DocumentUploader({ section, documents, disabled, getStepUp, onNeedStepUp, onUploaded, onRemove }: {
+  section: SectionKey; documents: EssDocument[]; disabled?: boolean; onRemove?: (doc: EssDocument) => void;
   getStepUp: () => string | undefined; onNeedStepUp: (retry: () => void) => void; onUploaded: (doc: EssDocument) => void;
 }) {
   const { t } = useLocale();
@@ -73,12 +73,23 @@ export function DocumentUploader({ section, documents, disabled, getStepUp, onNe
         <h4 className="text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Attached files')}</h4>
         {documents.length === 0 ? <p className="text-xs text-slate-500">{t('No files attached yet.')}</p> : (
           <ul className="mt-1 divide-y divide-slate-100 text-sm dark:divide-white/10">
-            {documents.map(d => (
-              <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span className="min-w-0 break-words"><bdi>{d.fileName ?? t(`ess.completion.doc.${d.kind}`)}</bdi> · {t(`ess.completion.doc.${d.kind}`)}</span>
-                <span className="text-xs font-medium">{scanLabelKey(scanState(d.scanStatus)) ? t(scanLabelKey(scanState(d.scanStatus)) as string) : ''}</span>
-              </li>
-            ))}
+            {documents.map(d => {
+              const name = d.fileName ?? t(`ess.completion.doc.${d.kind}`);
+              const unusable = !isSubmittable(d.scanStatus);
+              return (
+                <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <span className="min-w-0 break-words"><bdi>{name}</bdi> · {t(`ess.completion.doc.${d.kind}`)}</span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium">{scanLabelKey(scanState(d.scanStatus)) ? t(scanLabelKey(scanState(d.scanStatus)) as string) : ''}</span>
+                    {unusable && !disabled && onRemove && (
+                      <button type="button" onClick={() => onRemove(d)} aria-label={t('ess.completion.doc.removeNamed', { name })}
+                        className="rounded-lg border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 dark:border-rose-400/40 dark:text-rose-300">{t('ess.completion.doc.remove')}</button>
+                    )}
+                  </span>
+                  {unusable && <p className="basis-full text-xs text-slate-500 dark:text-slate-400">{t('ess.completion.doc.unusableNote')}</p>}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
