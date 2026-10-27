@@ -1,10 +1,12 @@
 using System.Security.Claims;
+using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using Testcontainers.PostgreSql;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Employees;
@@ -17,22 +19,74 @@ using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
+using Zayra.Api.Tests.TestHelpers;
 
 namespace Zayra.Api.Tests;
 
-// ── Postgres container shared across all tests in this class ───────────────────
+// ── Postgres container: one schema template, one database per test ──────────────
+/// <summary>
+/// One container per fixture; the schema is built once into a template database and every test gets
+/// its own copy (<see cref="TestScope"/>), so no test can see another test's rows. Code running outside
+/// a test (fixture setup) gets one shared copy.
+/// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {
+    private const string TemplateDatabase = "kx_template";
+
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
         .WithImage("postgres:16-alpine")
         .Build();
 
-    public string ConnectionString { get; private set; } = string.Empty;
+    private readonly ConcurrentDictionary<Guid, Lazy<string>> _testDatabases = new();
+    private readonly object _cloneLock = new();
+    private string _serverConnectionString = string.Empty;
+    private string _templateConnectionString = string.Empty;
+    private Lazy<string>? _sharedDatabase;
+    private bool _building;
+
+    /// <summary>The running test's own database (created on first use); outside a test, the shared one.</summary>
+    public string ConnectionString
+    {
+        get
+        {
+            if (_building || _serverConnectionString.Length == 0) return _templateConnectionString;
+            if (TestScope.Current is not { } scope) return _sharedDatabase!.Value;
+            return _testDatabases.GetOrAdd(scope.Id, id => new Lazy<string>(() =>
+            {
+                var database = $"t_{id:N}";
+                var connectionString = Clone(database);
+                scope.OnEnd(() => DropAsync(database, connectionString));
+                return connectionString;
+            })).Value;
+        }
+    }
 
     public async Task InitializeAsync()
     {
         await _container.StartAsync();
-        ConnectionString = _container.GetConnectionString();
+        _serverConnectionString = new NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Pooling = false }.ConnectionString;
+        await using (var admin = new NpgsqlConnection(_serverConnectionString))
+        {
+            await admin.OpenAsync();
+            await using var create = admin.CreateCommand();
+            create.CommandText = $"CREATE DATABASE {TemplateDatabase}";
+            await create.ExecuteNonQueryAsync();
+        }
+        _templateConnectionString = WithDatabase(TemplateDatabase, pooling: false);
+        _sharedDatabase = new Lazy<string>(() => Clone("kx_shared"));
+        _building = true;
+        try
+        {
+            await BuildSchemaAsync();
+        }
+        finally
+        {
+            _building = false;
+        }
+    }
+
+    private async Task BuildSchemaAsync()
+    {
         // Build the full schema from the EF model (faster than running all migrations)
         await using var db = CreateDb();
         await db.Database.EnsureCreatedAsync();
@@ -104,6 +158,34 @@ public sealed class PostgresFixture : IAsyncLifetime
             command.CommandText = ddl;
             await command.ExecuteNonQueryAsync();
         }
+    }
+
+    private string WithDatabase(string database, bool pooling = true) =>
+        new NpgsqlConnectionStringBuilder(_serverConnectionString) { Database = database, Pooling = pooling }.ConnectionString;
+
+    /// <summary>Copies the template. FILE_COPY is the fast strategy for a large, idle template; the template
+    /// is only ever opened without pooling, so no idle connection blocks the copy.</summary>
+    private string Clone(string database)
+    {
+        lock (_cloneLock)
+        {
+            using var admin = new NpgsqlConnection(_serverConnectionString);
+            admin.Open();
+            using var command = admin.CreateCommand();
+            command.CommandText = $"CREATE DATABASE {database} TEMPLATE {TemplateDatabase} STRATEGY FILE_COPY";
+            command.ExecuteNonQuery();
+        }
+        return WithDatabase(database);
+    }
+
+    private async Task DropAsync(string database, string connectionString)
+    {
+        NpgsqlConnection.ClearPool(new NpgsqlConnection(connectionString));
+        await using var admin = new NpgsqlConnection(_serverConnectionString);
+        await admin.OpenAsync();
+        await using var command = admin.CreateCommand();
+        command.CommandText = $"DROP DATABASE IF EXISTS {database} WITH (FORCE)";
+        await command.ExecuteNonQueryAsync();
     }
 
     /// <summary>

@@ -1260,7 +1260,7 @@ public class DashboardController : ControllerBase
             .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
             .OrderByDescending(l => l.CreatedAtUtc)
             .Take(8)
-            .Select(l => new { Module = "Payroll", l.Action, Actor = "System", l.CreatedAtUtc });
+            .Select(l => new { Module = "Payroll", l.Action, Actor = _db.Users.Where(u => u.Id == l.UserId).Select(u => u.FullName).FirstOrDefault() ?? "System", l.CreatedAtUtc });
 
         var leave = _db.LeaveAuditLogs
             .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
@@ -1272,7 +1272,7 @@ public class DashboardController : ControllerBase
             .Where(l => l.TenantId == tenantId && l.CreatedAtUtc >= cutoff)
             .OrderByDescending(l => l.CreatedAtUtc)
             .Take(5)
-            .Select(l => new { Module = "Attendance", l.Action, Actor = "System", l.CreatedAtUtc });
+            .Select(l => new { Module = "Attendance", l.Action, Actor = _db.Users.Where(u => u.Id == l.UserId).Select(u => u.FullName).FirstOrDefault() ?? "System", l.CreatedAtUtc });
 
         var rows = await payroll
             .Concat(leave)

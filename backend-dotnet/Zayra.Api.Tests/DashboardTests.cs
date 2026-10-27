@@ -321,6 +321,30 @@ public class DashboardTests
     }
 
     [Fact]
+    public async Task Full_ActivityFeed_NamesTheUserWhoActed()
+    {
+        var db = CreateDb();
+        var tid = Guid.NewGuid();
+        var payrollOfficer = new User { TenantId = tid, Email = "po@test.local", NormalizedEmail = "PO@TEST.LOCAL", FullName = "Payroll Officer" };
+        db.Users.Add(payrollOfficer);
+        db.PayrollAuditLogs.Add(new PayrollAuditLog
+        {
+            TenantId = tid, Action = "payroll.approved", UserId = payrollOfficer.Id, CreatedAtUtc = DateTime.UtcNow.AddMinutes(-2)
+        });
+        db.AttendanceAuditLogs.Add(new AttendanceAuditLog
+        {
+            TenantId = tid, Action = "attendance.processed", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+        });
+        db.SaveChanges();
+
+        var payload = ExtractFull(await MakeCtrl(db, tid).Full());
+
+        payload.ActivityFeed.Single(f => f.Module == "Payroll").Actor.Should().Be("Payroll Officer");
+        payload.ActivityFeed.Single(f => f.Module == "Attendance").Actor.Should().Be("System",
+            because: "a row no user made is the system's");
+    }
+
+    [Fact]
     public async Task Full_ActivityFeed_OnlyIncludesLast7Days()
     {
         var db = CreateDb();

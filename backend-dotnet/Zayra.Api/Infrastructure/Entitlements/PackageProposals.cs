@@ -185,7 +185,8 @@ public static class SeparationTermEnder
                 db.ComplianceAuditLogs.Add(new ComplianceAuditLog
                 {
                     TenantId = tenantId, EntityType = "Contract", EntityId = term.Id.ToString(), EmployeeId = employeePublicId,
-                    Action = "StatusChanged", PerformedByUserId = performedBy, PerformedByName = "offboarding",
+                    Action = "StatusChanged", PerformedByUserId = performedBy,
+                    PerformedByName = await Zayra.Api.Infrastructure.Audit.AuditActor.NameAsync(db, performedBy, "offboarding", ct),
                     MetadataJson = JsonSerializer.Serialize(new { from = "Active", to = "Terminated", reason = Application.Entitlements.ContractEndReasons.Separated }),
                 });
             }

@@ -85,7 +85,7 @@ public static class OnboardingDefaultChecklist
             EntityId = applicationId.Value.ToString(),
             Action = "DefaultChecklistAttached",
             PerformedByUserId = actorUserId,
-            PerformedByName = "Hire activation",
+            PerformedByName = await Zayra.Api.Infrastructure.Audit.AuditActor.NameAsync(db, actorUserId, "Hire activation", ct),
             NewValuesJson = JsonSerializer.Serialize(new { checklistId, draftId, employeePublicId = employee.PublicId, taskCount = templates.Count }),
         });
         return new(DefaultChecklistOutcome.Attached, checklistId, templates.Count);
