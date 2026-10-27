@@ -39,7 +39,8 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
     public Task<EmployeeCreateRequest> EnforceDraftAsync(Guid tenantId, int? employeeId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct) =>
         RunAsync(tenantId, employeeId, request, EmployeeGuardMode.Draft, context, ct);
 
-    public async Task EnforceActivationAsync(Guid tenantId, int employeeId, RequestContext context, CancellationToken ct)
+    public async Task EnforceActivationAsync(Guid tenantId, int employeeId, RequestContext context, CancellationToken ct,
+        IReadOnlyCollection<AcknowledgedWarning>? acknowledged = null)
     {
         var errors = await EmployeeStoredDataCheck.ErrorsAsync(_db, tenantId, employeeId, _clock, ct);
         if (errors.Count > 0)
