@@ -14,6 +14,7 @@
  *
  * Deterministic: fixed codes, names and e-mail; the same run twice yields the same world.
  */
+import { saudiNationalId } from './saudiIds';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -159,9 +160,8 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
         salaryBreakdown: { basicSalary: 7000, housingAllowance: 1750, transportAllowance: 500, effectiveDate: '2025-01-01', currency: 'SAR' },
         complianceRecords: [
           idRecord('civil_id', 'Civil ID', `1${String(210000000 + seq).slice(0, 9)}`),
-          idRecord('id_number', 'Government ID number', `1${String(310000000 + seq).slice(0, 9)}`),
+          idRecord('id_number', 'Government ID number', saudiNationalId(310000000 + seq)),
           idRecord('gosi_reference', 'GOSI reference', `GOSI-${code}`),
-          idRecord('iqama_number', 'Iqama Number', `2${String(410000000 + seq).slice(0, 9)}`),
           idRecord('emirates_id', 'Emirates ID', `784-1991-${String(1100000 + seq).slice(0, 7)}-1`),
           idRecord('work_permit', 'Work permit number', `WP-${code}`),
           idRecord('passport_number', 'Passport number', `P${String(11000000 + seq).slice(0, 8)}`),
@@ -172,6 +172,8 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
           idRecord('qiwa_contract_reference', 'Qiwa contract reference', `QC-${code}`),
         ],
         acknowledgeDuplicate: true,
+        duplicateOverrideReason: 'E2E fixture world: deterministic synthetic people re-created per run',
+        acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by the specs' }],
       },
     }), `create employee ${code}`, [200, 201]);
     if (index === 0) lead = Number(created.body?.id ?? created.body?.Id);

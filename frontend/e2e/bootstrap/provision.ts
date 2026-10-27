@@ -26,6 +26,7 @@
  */
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { saudiNationalId, saudiIqama } from './saudiIds';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -519,6 +520,7 @@ async function ensureEmployees(
       // because the activation guard's required set IS nationality-aware: it demands an Iqama of a
       // non-Saudi and not of a Saudi. An expatriate with the gap simply never activates.
       const iqamaGap = fixture.slug !== 'intelliflow' && n % 3 === 0;
+      const nationalIsSaudi = isSaudi || iqamaGap;
       const res: Res<any> = await call('POST', '/api/employees', {
         token: adminToken,
         companyId: company.id,
@@ -578,9 +580,12 @@ async function ensureEmployees(
           // supplies the whole set and the oddity is recorded here rather than hidden.
           complianceRecords: [
             idRecord('civil_id', 'Civil ID', `1${String(200000000 + seq).slice(0, 9)}`),
-            idRecord('id_number', 'Government ID number', `1${String(300000000 + seq).slice(0, 9)}`),
+            // ID class must fit the nationality (checksum-valid; Saudi + Iqama prefix is a hard error):
+            // a Saudi national carries a National ID, an expatriate carries an Iqama.
+            ...(nationalIsSaudi
+              ? [idRecord('id_number', 'Government ID number', saudiNationalId(300000000 + seq))]
+              : [idRecord('iqama_number', 'Iqama Number', saudiIqama(400000000 + seq))]),
             idRecord('gosi_reference', 'GOSI reference', `GOSI-${code}`),
-            ...(iqamaGap ? [] : [idRecord('iqama_number', 'Iqama Number', `2${String(400000000 + seq).slice(0, 9)}`)]),
             idRecord('emirates_id', 'Emirates ID', `784-1990-${String(1000000 + seq).slice(0, 7)}-1`),
             idRecord('work_permit', 'Work permit number', `WP-${code}`),
             idRecord('passport_number', 'Passport number', `P${String(10000000 + seq).slice(0, 8)}`),
@@ -591,6 +596,9 @@ async function ensureEmployees(
             idRecord('qiwa_contract_reference', 'Qiwa contract reference', `QC-${code}`),
           ],
           acknowledgeDuplicate: true,
+          duplicateOverrideReason: 'E2E fixture world: deterministic synthetic people re-created per run',
+          // The historical joining date (2024) is load-bearing for payroll / EOSB specs.
+          acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by payroll and EOSB specs' }],
         },
       });
       expectOk(res, `create employee '${code}'`, [200, 201]);

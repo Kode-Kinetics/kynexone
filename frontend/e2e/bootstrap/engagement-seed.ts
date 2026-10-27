@@ -8,6 +8,7 @@
  * the product's way (HR invites, the employee accepts and sets a password). Tenant `eng-other` is the isolation check.
  * The `engagement` opt-in flag is switched on for both by the platform owner.
  */
+import { saudiNationalId } from './saudiIds';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 
@@ -175,9 +176,8 @@ async function ensureEmployees(admin: string, companyId: string, units: Awaited<
         salaryBreakdown: { basicSalary: 7000, housingAllowance: 1500, transportAllowance: 500, effectiveDate: '2024-01-01', currency: 'SAR' },
         complianceRecords: [
           idRecord('civil_id', 'Civil ID', `1${String(210000000 + seq)}`),
-          idRecord('id_number', 'Government ID number', `1${String(310000000 + seq)}`),
+          idRecord('id_number', 'Government ID number', saudiNationalId(310000000 + seq)),
           idRecord('gosi_reference', 'GOSI reference', `GOSI-${p.code}`),
-          idRecord('iqama_number', 'Iqama Number', `2${String(410000000 + seq)}`),
           idRecord('emirates_id', 'Emirates ID', `784-1990-${String(2000000 + seq)}-1`),
           idRecord('work_permit', 'Work permit number', `WP-${p.code}`),
           idRecord('passport_number', 'Passport number', `P${String(20000000 + seq)}`),
@@ -188,6 +188,8 @@ async function ensureEmployees(admin: string, companyId: string, units: Awaited<
           idRecord('qiwa_contract_reference', 'Qiwa contract reference', `QC-${p.code}`),
         ],
         acknowledgeDuplicate: true,
+        duplicateOverrideReason: 'E2E fixture world: deterministic synthetic people re-created per run',
+        acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by the specs' }],
       },
     }), `create employee ${p.code}`, [200, 201]);
     ids.set(p.code, Number(res.body.id ?? res.body.Id));

@@ -1,3 +1,4 @@
+import { saudiNationalId } from './saudiIds';
 import { test as setup } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -153,14 +154,16 @@ setup('seed the CMP merit-planning world (synthetic, API-only)', async () => {
         },
         salaryBreakdown: { basicSalary: basic, housingAllowance: basic / 4, transportAllowance: 500, effectiveDate: joined < '2024-01-01' ? '2024-01-01' : joined, currency },
         complianceRecords: [
-          rec('civil_id', 'Civil ID', `1${String(200000000 + n).slice(0, 9)}`), rec('id_number', 'Government ID number', `1${String(300000000 + n).slice(0, 9)}`),
-          rec('gosi_reference', 'GOSI reference', `GOSI-${code}`), rec('iqama_number', 'Iqama Number', `2${String(400000000 + n).slice(0, 9)}`),
+          rec('civil_id', 'Civil ID', `1${String(200000000 + n).slice(0, 9)}`), rec('id_number', 'Government ID number', saudiNationalId(300000000 + n)),
+          rec('gosi_reference', 'GOSI reference', `GOSI-${code}`),
           rec('emirates_id', 'Emirates ID', `784-1990-${String(1000000 + n).slice(0, 7)}-1`), rec('work_permit', 'Work permit number', `WP-${code}`),
           rec('passport_number', 'Passport number', `P${String(10000000 + n).slice(0, 8)}`), rec('qid', 'Qatar ID', `2${String(8000000 + n).slice(0, 10)}`),
           rec('residency_number', 'Residency number', `RES-${code}`), rec('labor_card_number', 'Labour card number', `LC-${code}`),
           rec('muqeem_reference', 'Muqeem reference', `MQ-${code}`), rec('qiwa_contract_reference', 'Qiwa contract reference', `QC-${code}`),
         ],
         acknowledgeDuplicate: true,
+        duplicateOverrideReason: 'E2E fixture world: deterministic synthetic people re-created per run',
+        acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by the specs' }],
       },
     }), `employee ${code}`, [200, 201]);
     ids[code] = Number(res.body?.id ?? res.body?.Id);
