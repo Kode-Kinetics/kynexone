@@ -89,17 +89,20 @@ public sealed class HireSecurityHardeningAutosavePostgresTests
     }
 
     [Fact]
-    public async Task Autosave_WithoutBasis_ASaveThatStartsAfterAnotherFinished_IsASequentialSave()
+    public async Task Autosave_WithoutBasis_IsRefusedWith400_AndChangesNothing()
     {
-        // This is what made the original race test flaky: with no basis a save means "whatever is current", so under load
-        // a request that only began after the other completed legitimately succeeds. Same-base exclusion needs a basis.
+        // A save with no basis cannot say which version it was made from, so same-base exclusion cannot hold for it.
         var (tenantId, companyId, employeeId) = await SeedDraftAsync();
-        foreach (var name in new[] { "First", "Second" })
-        {
-            await using var db = _fx.CreateDb();
-            var result = await Controller(db, tenantId).SaveDraft(employeeId, new EmployeeHireController.HireDraftRequest(null, Request(name, companyId)), default);
-            (result as ObjectResult)?.StatusCode.Should().Be(200);
-        }
+        await using var db = _fx.CreateDb();
+        var result = await Controller(db, tenantId).SaveDraft(employeeId, new EmployeeHireController.HireDraftRequest(null, Request("No Basis", companyId)), default);
+        var obj = result.Should().BeOfType<ObjectResult>().Subject;
+        obj.StatusCode.Should().Be(400);
+        obj.Value.Should().BeOfType<ProblemDetails>().Which.Title.Should().Be("draft_basis_required");
+        await using var check = _fx.CreateDb();
+        var row = await check.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == employeeId)
+            .Select(e => new { e.UpdatedAtUtc, e.EnglishName }).FirstAsync();
+        row.UpdatedAtUtc.Should().BeNull();
+        row.EnglishName.Should().Be("Autosave Draft");
     }
 
     private static EmployeeHireController Controller(ZayraDbContext db, Guid tenantId)
