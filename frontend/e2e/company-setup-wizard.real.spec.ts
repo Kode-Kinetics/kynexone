@@ -330,7 +330,10 @@ test('EN: the seven steps create the company, its setup and an invited super adm
   expect(rows.map(r => r.legalNameEn)).toEqual([EN_CO.legalNameEn]);
   expect(rows[0].wpsEmployerId).toBe(EN_CO.mol);
   expect(await companiesUsed(owner)).toBe(before + 1);
-  expect(commits).toHaveLength(1);
+  // One click: refused once for "Confirm it's you" (403, nothing written), then the same request — same idempotency
+  // key — repeated once after the owner confirmed.
+  expect(new Set(commits).size).toBe(1);
+  expect(commits.answers.map(a => a.status)).toEqual([403, 201]);
   const readiness = ok(await call('GET', `/api/company-setup/readiness/${rows[0].id}`, { token: owner }), 'readiness') as any[];
   expect(readiness.length).toBeGreaterThan(0);
   expect(pageErrors).toEqual([]);
