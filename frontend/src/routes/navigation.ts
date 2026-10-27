@@ -5,6 +5,7 @@ import {
   BriefcaseBusiness,
   CalendarCheck,
   ClipboardList,
+  ClipboardCheck,
   Clock3,
   Gauge,
   Headphones,
@@ -50,6 +51,7 @@ export const navigationGroups: NavGroup[] = [
     items: [
       { label: 'People', icon: UsersRound, path: '/people', requiredPermissions: ['employees.read'] },
       { label: 'New Hires', icon: UserPlus, path: '/people/new-hires', requiredPermissions: ['employees.write', 'employees.approve'] },
+      { label: 'Profile review', icon: ClipboardCheck, path: '/people/onboarding-review', requiredPermissions: ['employees.write'] },
       { label: 'Org Chart', icon: Network, path: '/org-chart', requiredPermissions: ['employees.read'] },
       { label: 'HR Letters', icon: FileSignature, path: '/hr-letters', requiredPermissions: ['employees.read', 'employees.write'] },
       { label: 'Attendance', icon: Clock3, path: '/attendance', requiredPermissions: ['attendance.read', 'attendance.write', 'attendance.kiosk'] },
@@ -124,6 +126,7 @@ export const navigationHints: Record<string, string> = {
   '/ess': 'Your own workspace: payslips, leave, overtime, HR requests, letters and benefits.',
   '/people': 'Employee records: profiles, contracts, documents and job history.',
   '/people/new-hires': 'Accepted offers and prepared hires waiting to be approved and activated as employees.',
+  '/people/onboarding-review': 'Details employees sent after their first day, waiting for you to accept or send back.',
   '/org-chart': 'Who reports to whom, by department and manager.',
   '/hr-letters': 'Generate salary certificates, experience letters and other HR letters.',
   '/attendance': 'Daily punches, absences and late arrivals, with corrections.',
