@@ -104,7 +104,7 @@ public static class CompensationApprovalGate
     /// (null = unknown, treated as a write).
     /// </summary>
     public static async Task ReconcileAsync(ZayraDbContext db, Employee employee, string? priorFingerprint, RequestContext context,
-        CancellationToken ct, bool forceReopen = false)
+        CancellationToken ct, bool forceReopen = false, Guid? workflowApprover = null)
     {
         if (employee.TenantId is not Guid tenantId || employee.Id == 0) return;
         if (Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(employee.Status)) return;

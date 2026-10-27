@@ -150,4 +150,33 @@ public class HireFinalBatchActivationTests
         await using var db = CreateDb(); var (t, e) = await SeedDraftWithPayAsync(db, basic: false, iban: false);
         (await ActivateAsync(db, t, e)).IsBlocked.Should().BeFalse();
     }
+
+    // ── CD46: the workflow approver of an employee change cannot approve that pay ──
+    [Fact]
+    public async Task WorkflowApprover_OfAPayChange_IsBarredFromApprovingThePay()
+    {
+        await using var db = CreateDb(); var (t, e) = await SeedDraftWithPayAsync(db, basic: true, iban: true);
+        var requester = Guid.NewGuid(); var workflowApprover = Guid.NewGuid();
+        var tracked = await db.Employees.SingleAsync(x => x.Id == e.Id);
+        await CompensationApprovalGate.ReconcileAsync(db, tracked, "different-prior", Ctx(t) with { UserId = requester }, default, workflowApprover: workflowApprover);
+        await db.SaveChangesAsync();
+        var makers = await CompensationApprovalGate.PayWritersSinceApprovalAsync(db, t, e.Id, default);
+        makers.Should().Contain([requester, workflowApprover]);
+        CompensationApprovalGate.RefusalFor(workflowApprover, null, null, makers).Should().NotBeNull();
+    }
+
+    // ── CD46: an out-of-scope duplicate match carries no employee id ──
+    [Fact]
+    public void MaskMatch_OutOfScope_HasNoEmployeeId_InScope_Keeps_It()
+    {
+        var visible = Guid.NewGuid(); var hidden = Guid.NewGuid();
+        var scope = Zayra.Api.Application.Common.EntityScopeContext.ForCompanies([visible]);
+        var inScope = Zayra.Api.Controllers.EmployeesController.MaskMatch(
+            new Zayra.Api.Infrastructure.Employees.DuplicateMatch(41, "E-41", "Seen Person", null, visible, "Active", "strong", ["id"]), scope);
+        var outScope = Zayra.Api.Controllers.EmployeesController.MaskMatch(
+            new Zayra.Api.Infrastructure.Employees.DuplicateMatch(42, "E-42", "Hidden Person", null, hidden, "Active", "strong", ["id"]), scope);
+        inScope.EmployeeId.Should().Be(41);
+        outScope.EmployeeId.Should().Be(0);
+        System.Text.Json.JsonSerializer.Serialize(outScope).Should().NotContain("42").And.NotContain("Hidden Person");
+    }
 }

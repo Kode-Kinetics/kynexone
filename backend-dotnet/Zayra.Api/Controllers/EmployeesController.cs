@@ -3095,7 +3095,7 @@ public class EmployeesController : ControllerBase
 
     /// <summary>Scope-mask a raw detector match: cross-company matches (outside the caller's entity scope)
     /// return canView=false with code/name/branch stripped — never leak a person the caller cannot access.</summary>
-    private static DuplicateMatchDto MaskMatch(DuplicateMatch m, Zayra.Api.Application.Common.EntityScopeContext scope)
+    internal static DuplicateMatchDto MaskMatch(DuplicateMatch m, Zayra.Api.Application.Common.EntityScopeContext scope)
     {
         var canView = scope.CanAccessCompany(m.CompanyId);
         return canView
