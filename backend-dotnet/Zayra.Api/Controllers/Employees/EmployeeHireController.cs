@@ -283,13 +283,7 @@ public sealed class EmployeeHireController : ControllerBase
 
         var profile = await _db.EmployeePayrollProfiles.AsNoTracking()
             .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == id && !p.IsDeleted, ct);
-        var makers = new HashSet<Guid>(await CompensationApprovalGate.PayWritersSinceApprovalAsync(_db, tenantId, id, ct));
-        if (profile?.CreatedBy is Guid pc) makers.Add(pc);
-        if (profile?.UpdatedBy is Guid pu) makers.Add(pu);
-        if (employee.UpdatedBy is Guid eu) makers.Add(eu);
-        var subjectUsers = await ApprovalUnblockSubjects(tenantId, id, employee, ct);
-        var refusal = CompensationApprovalGate.RefusalFor(caller.Value, employee.CreatedBy, subjectUsers.Contains(caller.Value) ? caller.Value : employee.UserAccountId, makers);
-        if (refusal is not null || await CredentialHandlerBar.IsBarredAsync(_db, tenantId, id, caller.Value, DateTime.UtcNow, ct))
+        if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, employee, caller.Value, ct))
             return StatusCode(403, new { error = "second_person_required",
                 message = "A pay package must be approved by someone other than the person who entered it, the employee, or the person who issued the employee's sign-in code." });
 
@@ -319,13 +313,6 @@ public sealed class EmployeeHireController : ControllerBase
         };
         _db.EmployeeImportGaps.Add(gap);
         return gap;
-    }
-
-    private async Task<IReadOnlyCollection<Guid>> ApprovalUnblockSubjects(Guid tenantId, int id, Employee employee, CancellationToken ct)
-    {
-        var users = new HashSet<Guid>(await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(_db, tenantId, id, ct));
-        if (employee.UserAccountId is Guid u) users.Add(u);
-        return users;
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────

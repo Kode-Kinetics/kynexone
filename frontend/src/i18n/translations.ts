@@ -12,6 +12,7 @@ import { glErp } from './glErp';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
+import { payApprovals } from './payApprovals';
 import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
@@ -1500,6 +1501,8 @@ const en: Dict = {
   ...glApiKeys.en,
   // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
   ...signInSecurity.en,
+  // Pay approvals (scoped new-hire pay approval view) — see ./payApprovals.
+  ...payApprovals.en,
   ...reportsAnalytics.en,
   ...approvalChanges.en,
   ...compensation.en,
@@ -2966,6 +2969,7 @@ const ar: Dict = {
   ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...signInSecurity.ar,
+  ...payApprovals.ar,
   ...reportsAnalytics.ar,
   ...approvalChanges.ar,
   ...compensation.ar,

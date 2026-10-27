@@ -39,6 +39,9 @@ public sealed class TenantUserRateLimiter : IDisposable
         new("draft-discard", 10, 60, TimeSpan.FromMinutes(1)),
         new("compensation-approve", 10, 60, TimeSpan.FromMinutes(1)),
         new("nationality-confirm", 30, 200, TimeSpan.FromMinutes(1)),
+        // The scoped pay approval view (OD4): reading a package shows bank details, so reads are capped too.
+        new("pay-approval-read", 30, 200, TimeSpan.FromMinutes(1)),
+        new("pay-approval-decide", 10, 60, TimeSpan.FromMinutes(1)),
     ];
 
     private readonly Dictionary<string, PartitionedRateLimiter<(string Tenant, string User)>> _limiters = new(StringComparer.Ordinal);
