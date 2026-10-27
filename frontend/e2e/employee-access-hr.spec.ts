@@ -232,7 +232,9 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
     if (pathname === '/api/companies') return json({ items: [{ ...COMPANY, ...(opts.noDomain ? { emailDomain: '' } : {}) }], total: 1, page: 1, pageSize: 100 });
     if (pathname === '/api/tenant-admin/localization') return json({ defaultTimezone: 'Asia/Riyadh', currencyCode: 'SAR', countryCode: 'SA' });
     if (pathname === '/api/admin/master-data/values') return json([]);
-    if (pathname === '/api/features/disabled-keys' || pathname === '/api/features/modules' || pathname === '/api/notifications' || pathname.includes('help-text')) return json([]);
+    // hire_wizard_v2 is opt-in: the server lists it as disabled until the platform switches it on, so these specs drive the legacy Add Employee dialog (CD57, CD19).
+    if (pathname === '/api/features/disabled-keys') return json(['hire_wizard_v2']);
+    if (pathname === '/api/features/modules' || pathname === '/api/notifications' || pathname.includes('help-text')) return json([]);
     return json({ items: [], total: 0, page: 1, pageSize: 100 });
   });
 

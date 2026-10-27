@@ -75,7 +75,7 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         Guid tenantId, Guid? companyId, EmployeeReadinessSnapshot snapshot, RequestContext ctx, CancellationToken ct)
     {
         var policy = await _resolver.ResolveAsync(tenantId, companyId, snapshot.CountryCode, snapshot.Nationality, ct);
-        return await _evaluator.EnsureActivatableAsync(snapshot, policy, ctx, ct);
+        return await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.EnsureActivatableAsync(_db, tenantId, _evaluator, snapshot, policy, ct);
     }
 
     public async Task<EmployeeReadinessSnapshot?> BuildSnapshotAsync(Guid tenantId, int employeeId, CancellationToken ct)
@@ -94,6 +94,7 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         // Durable advisory self-heal: close import gaps the operator has since completed, fold still-open
         // ones back in so the NeedsAttention signal survives this edit (activation stays unblocked).
         readiness = await ImportGapHealer.HealAndMergeAsync(_db, employee, readiness, ct);
+        readiness = await Onboarding.EmployeeStoredDataCheck.MergeBlockersAsync(_db, employee.TenantId.Value, employee.Id, employee.Status, readiness, ct);   // CD28
         employee.ReadinessState = readiness.State;
         employee.ActivationBlockersCount = readiness.Blocking.Count;
         employee.ReadinessEvaluatedAtUtc = System.DateTime.UtcNow;
@@ -107,12 +108,13 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
     {
         var employee = await _db.Employees.AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted)
-            .Select(e => new { e.CountryCode, e.Nationality, e.CompanyId })
+            .Select(e => new { e.CountryCode, e.Nationality, e.CompanyId, e.Status })
             .FirstOrDefaultAsync(ct);
         if (employee is null) return null;
         var snapshot = await BuildSnapshotAsync(tenantId, employeeId, ct);
         if (snapshot is null) return null;
         var policy = await _resolver.ResolveAsync(tenantId, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
-        return (_evaluator.Evaluate(snapshot, policy), policy);
+        var evaluated = await Onboarding.EmployeeStoredDataCheck.MergeBlockersAsync(_db, tenantId, employeeId, employee.Status, _evaluator.Evaluate(snapshot, policy), ct);   // CD28
+        return (evaluated, policy);
     }
 }

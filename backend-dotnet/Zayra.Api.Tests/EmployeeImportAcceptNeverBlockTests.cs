@@ -25,6 +25,10 @@ namespace Zayra.Api.Tests;
 [Collection("Integration")]
 public class EmployeeImportAcceptNeverBlockTests
 {
+    // Imported joining dates inside the 30-day window: an older date is flagged for review (joining_backdated), which these
+    // tests are not about. The hire/import validation floor is by design (40-ARCH 3.5).
+    private static string Recent => DateTime.UtcNow.AddDays(-5).ToString("yyyy-MM-dd");
+
     // The import preview is the commit run in a rolled-back transaction, so its tests need a real database.
     private readonly PostgresFixture? _fx;
     public EmployeeImportAcceptNeverBlockTests(PostgresFixture fx) => _fx = fx;
@@ -278,7 +282,7 @@ public class EmployeeImportAcceptNeverBlockTests
         var ctrl = ImportController(db, tenantId);
         var csv =
             $"EmployeeCode,FullName,Department,JoiningDate,CountryCode\n" +
-            $"E1,Alice,Ghost Dept,2024-01-01,{ImportCountry}\n";
+            $"E1,Alice,Ghost Dept,{Recent},{ImportCountry}\n";
         await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
         var e1 = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "E1");
@@ -306,9 +310,9 @@ public class EmployeeImportAcceptNeverBlockTests
 
         // 30 people with an unknown-department gap → all NeedsAttention; 2 clean → Ready.
         var sb = new System.Text.StringBuilder("EmployeeCode,FullName,Department,JoiningDate,CountryCode\n");
-        for (int i = 1; i <= 30; i++) sb.Append($"G{i},Person {i},Ghost Dept,2024-01-01,{ImportCountry}\n");
-        sb.Append($"C1,Clean One,,2024-01-01,{ImportCountry}\n");
-        sb.Append($"C2,Clean Two,,2024-01-01,{ImportCountry}\n");
+        for (int i = 1; i <= 30; i++) sb.Append($"G{i},Person {i},Ghost Dept,{Recent},{ImportCountry}\n");
+        sb.Append($"C1,Clean One,,{Recent},{ImportCountry}\n");
+        sb.Append($"C2,Clean Two,,{Recent},{ImportCountry}\n");
         var import = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(sb.ToString()), CancellationToken.None));
         var batchId = (Guid)import.GetType().GetProperty("importBatchId")!.GetValue(import)!;
 

@@ -522,12 +522,19 @@ public class EmployeesController : ControllerBase
     [HttpGet("field-catalog")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer")]
     [HasPermission("employees.read")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("field-catalog")]
     public async Task<IActionResult> FieldCatalog(
         [FromQuery] Guid? companyId, [FromQuery] string? countryCode, [FromQuery] string? nationality,
         CancellationToken ct = default,
         [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
     {
         var tenantId = RequireTenant();
+        // N4: a company outside the caller's tenant or entity scope is refused, with the same answer as a company
+        // that does not exist (no way to probe which ids are real).
+        if (companyId is Guid requestedCompany
+            && (!this.GetEntityScope().CanAccessCompany(requestedCompany)
+                || !await _db.Companies.AsNoTracking().AnyAsync(c => c.TenantId == tenantId && c.Id == requestedCompany, ct)))
+            return NotFound(new { error = "company_not_found", message = "That company is not available." });
         // Explicit countryCode wins, else the company's — this endpoint publishes that rule in its own
         // response, and it is now the SAME helper every write path and the readiness resolver use, so
         // the documentation and the behaviour cannot drift apart again.
@@ -1200,6 +1207,9 @@ public class EmployeesController : ControllerBase
                 var resolvedDesigId = resolved.DesignationId;
                 AddUnparsedJoiningDateGap(resolved, joining);
                 foreach (var w in resolved.Warnings) RowWarn(rowNum, $"{w}");
+                // A too-long value is left to the storage guard below, which refuses the whole file naming row and column.
+                if (resolved.Errors.Any(e => !Zayra.Api.Infrastructure.Employees.Onboarding.ImportRowValidation.IsStorageBound(e)))
+                { foreach (var e in resolved.Errors) RowError(rowNum, e); skipped++; Outcome(rowNum).Status = "Error"; continue; }
 
                 // ── Readiness landing decision (§7): blank ⇒ Draft; Active + activate-blockers ⇒ Draft + warning ──
                 var (rowStatus, rowReadiness, rowHasPolicy, rowPolicyCountry) = await ResolveRowLandingAsync(
@@ -1778,6 +1788,10 @@ public class EmployeesController : ControllerBase
             // whose address is on the wrong domain, already someone's login, … gets none and shows as blocked.
             await new EmployeeLoginProvisioner(_db).EnsureStagedLoginsAsync(
                 tenantId, createdRowMeta.Select(m => m.Emp).ToList(), Context() with { TenantId = tenantId }, ct);
+
+            // A new hire that lands outside the active workforce with pay or bank details waits for Finance like a created one.
+            foreach (var (_, (payEmp, _)) in batchPayroll.Where(b => !repairExistingCodes.Contains(b.Key)))
+                await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, payEmp, null, Context(), ct);
 
             // Single persist covering Pass 2 links, the advisory re-stamp, the gap rows, the work-email audit and the logins.
             if (await PersistAsync("links") is { } finalSaveError) return finalSaveError;
@@ -2817,7 +2831,7 @@ public class EmployeesController : ControllerBase
             await hierarchy.SetManagerAsync(RequireTenant(), id, req.ManagerEmployeeId, Context(), ct);
             return NoContent();
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     // ── Reporting lines ───────────────────────────────────────────────────────
@@ -2850,7 +2864,7 @@ public class EmployeesController : ControllerBase
             var line = await hierarchy.AddReportingLineAsync(RequireTenant(), id, req, Context(), ct);
             return Created($"/api/employees/{id}/reporting-lines/{line.Id}", line);
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     [HttpDelete("{id:int}/reporting-lines/{lineId:guid}")]
@@ -2879,7 +2893,7 @@ public class EmployeesController : ControllerBase
         {
             return Ok(await hierarchy.ResolveHierarchyAsync(RequireTenant(), id, maxDepth, ct));
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     [HttpGet("{id:int}/workflow-approvers")]
@@ -2896,7 +2910,7 @@ public class EmployeesController : ControllerBase
         {
             return Ok(await hierarchy.ResolveWorkflowApproversAsync(RequireTenant(), id, workflowType, ct));
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (HierarchyRefusedException ex) { return Controllers.Employees.EmployeeHireController.BuildProblem(HttpContext.TraceIdentifier, 400, HierarchyRefusedException.Code, ex.Message); }
     }
 
     public record SetManagerRequest(int? ManagerEmployeeId);
@@ -2913,8 +2927,13 @@ public class EmployeesController : ControllerBase
 
     [HttpPost]
     [HasPermission("employees.write")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("employee-create")]
+    [RequestSizeLimit(65_536)]
+    [Zayra.Api.Infrastructure.Employees.Onboarding.IdempotentEmployeeCreate]
     public async Task<ActionResult<EmployeeDetailDto>> CreateEmployee(EmployeeCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
+        if (Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Refusal(request.AcknowledgeDuplicate, request.DuplicateOverrideReason,
+                User.HasPermission(Zayra.Api.Infrastructure.Employees.Onboarding.DuplicateOverridePolicy.Permission), HttpContext.TraceIdentifier) is { } overrideRefused) return overrideRefused;
         try
         {
             var tenantId = RequireTenant();
@@ -2995,6 +3014,8 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpPost("duplicate-check")]
     [HasPermission("employees.write")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("duplicate-check")]
+    [Zayra.Api.Infrastructure.Employees.Onboarding.BoundDuplicateCheck]
     public async Task<ActionResult<DuplicateCheckResponse>> DuplicateCheck([FromBody] DuplicateCheckRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -3036,6 +3057,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpPost("derive-work-email")]
     [HasPermission("employees.write")]
+    [Zayra.Api.Infrastructure.Http.TenantUserRateLimit("derive-work-email")]
     public async Task<ActionResult<DeriveWorkEmailResponse>> DeriveWorkEmail([FromBody] DeriveWorkEmailRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -3098,13 +3120,13 @@ public class EmployeesController : ControllerBase
 
     /// <summary>Scope-mask a raw detector match: cross-company matches (outside the caller's entity scope)
     /// return canView=false with code/name/branch stripped — never leak a person the caller cannot access.</summary>
-    private static DuplicateMatchDto MaskMatch(DuplicateMatch m, Zayra.Api.Application.Common.EntityScopeContext scope)
+    internal static DuplicateMatchDto MaskMatch(DuplicateMatch m, Zayra.Api.Application.Common.EntityScopeContext scope)
     {
         var canView = scope.CanAccessCompany(m.CompanyId);
         return canView
             ? new DuplicateMatchDto(m.EmployeeId, m.EmployeeCode, m.FullName, string.IsNullOrWhiteSpace(m.Branch) ? null : m.Branch,
                 m.CompanyId?.ToString(), m.Status, m.MatchType, m.Signals.ToList(), true)
-            : new DuplicateMatchDto(m.EmployeeId, string.Empty, "A matching record exists in another company", null,
+            : new DuplicateMatchDto(0, string.Empty, "A matching record exists in another company", null,
                 null, string.Empty, m.MatchType, new[] { "Contact a group administrator" }, false);
     }
 
@@ -6508,7 +6530,7 @@ public class EmployeesController : ControllerBase
     private static string FirstNonEmpty(params string[] values) => values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "Unnamed Employee";
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id") ?? throw new UnauthorizedAccessException("Tenant claim missing."));
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
-    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
+    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant(), Permissions: User.EffectivePermissions());
     private async Task<bool> CanAccessEmployeeAsync(int employeeId, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();

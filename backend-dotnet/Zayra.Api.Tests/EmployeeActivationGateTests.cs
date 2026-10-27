@@ -249,7 +249,7 @@ public class EmployeeActivationGateTests
     {
         await using var db = CreateDb();
         var fx = await SeedTenant(db);
-        const string csv = "FullName,CountryCode,Nationality,Status,GosiReference,IqamaNumber\nReady Expat,SA,Indian,Active,GOSI-9,2000000009\n";
+        var csv = $"FullName,CountryCode,Nationality,Status,GosiReference,IqamaNumber\nReady Expat,SA,Indian,Active,GOSI-9,{TestIds.ValidIqama(9)}\n";
         await ImportJson(Controller(db, fx.TenantId), csv);
         (await db.Employees.AsNoTracking().SingleAsync(e => e.TenantId == fx.TenantId)).Status.Should().Be("Active");
     }
@@ -363,12 +363,12 @@ public class EmployeeActivationGateTests
         await using var db = CreateDb();
         var fx = await SeedTenant(db);
         // Registry-driven CSV column → first-class Employee scalar the readiness pay-gate reads (Δ20).
-        const string csv =
+        var csv =
             "FullName,CountryCode,Nationality,IqamaNumber,IqamaExpiry\n" +
-            "Iqama Holder,SA,Indian,2000000123,2030-06-30\n";
+            $"Iqama Holder,SA,Indian,{TestIds.ValidIqama(123)},2030-06-30\n";
         await ImportJson(Controller(db, fx.TenantId), csv);
         var emp = await db.Employees.AsNoTracking().SingleAsync(e => e.TenantId == fx.TenantId);
-        emp.IqamaNumber.Should().Be("2000000123");
+        emp.IqamaNumber.Should().Be(TestIds.ValidIqama(123));
         emp.IqamaExpiryDate.Should().Be(new DateOnly(2030, 6, 30));
     }
 

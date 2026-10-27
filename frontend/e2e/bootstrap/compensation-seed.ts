@@ -1,6 +1,8 @@
+import { saudiNationalId } from './saudiIds';
 import { test as setup } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { ensurePayApprover } from './payApprover';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { CMP_WORLD, type CmpWorld } from './compensationWorld';
 
@@ -109,6 +111,9 @@ setup('seed the CMP merit-planning world (synthetic, API-only)', async () => {
     ok(await call('POST', `/api/platform/tenants/${tenantId}/users`, { token: platform, body: { email, password: PASSWORD, fullName: name, roleName: role, entityScope: 'group' } }), `user ${email}`);
   }
 
+  // A hire's pay package needs a second person (payroll.approve + employees.sensitive) before activation.
+  const approver = await ensurePayApprover({ apiBase: API, platformToken: platform, tenantId, slug, password: PASSWORD });
+
   // Org units and grade.
   const ensureDept = async (code: string, en: string, ar: string) => {
     const list = items((await call('GET', '/api/departments?page=1&pageSize=100', { token: admin, companyId })).body);
@@ -153,17 +158,22 @@ setup('seed the CMP merit-planning world (synthetic, API-only)', async () => {
         },
         salaryBreakdown: { basicSalary: basic, housingAllowance: basic / 4, transportAllowance: 500, effectiveDate: joined < '2024-01-01' ? '2024-01-01' : joined, currency },
         complianceRecords: [
-          rec('civil_id', 'Civil ID', `1${String(200000000 + n).slice(0, 9)}`), rec('id_number', 'Government ID number', `1${String(300000000 + n).slice(0, 9)}`),
-          rec('gosi_reference', 'GOSI reference', `GOSI-${code}`), rec('iqama_number', 'Iqama Number', `2${String(400000000 + n).slice(0, 9)}`),
+          rec('civil_id', 'Civil ID', `1${String(200000000 + n).slice(0, 9)}`), rec('id_number', 'Government ID number', saudiNationalId(300000000 + n)),
+          rec('gosi_reference', 'GOSI reference', `GOSI-${code}`),
           rec('emirates_id', 'Emirates ID', `784-1990-${String(1000000 + n).slice(0, 7)}-1`), rec('work_permit', 'Work permit number', `WP-${code}`),
           rec('passport_number', 'Passport number', `P${String(10000000 + n).slice(0, 8)}`), rec('qid', 'Qatar ID', `2${String(8000000 + n).slice(0, 10)}`),
           rec('residency_number', 'Residency number', `RES-${code}`), rec('labor_card_number', 'Labour card number', `LC-${code}`),
           rec('muqeem_reference', 'Muqeem reference', `MQ-${code}`), rec('qiwa_contract_reference', 'Qiwa contract reference', `QC-${code}`),
         ],
         acknowledgeDuplicate: true,
+        duplicateOverrideReason: 'E2E fixture world: deterministic synthetic people re-created per run',
+        acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by the specs' }],
       },
     }), `employee ${code}`, [200, 201]);
     ids[code] = Number(res.body?.id ?? res.body?.Id);
+    // A line manager must not be a Draft, so the manager is activated as soon as it exists.
+    await approver.approve(ids[code]);
+    if (code === 'CMP-E1') ok(await call('POST', `/api/employees/${ids[code]}/activate`, { token: admin, body: { status: 'Active', reason: 'CMP synthetic seed' } }), `activate ${code}`);
   }
   for (const code of Object.keys(ids)) {
     const r = await call('POST', `/api/employees/${ids[code]}/activate`, { token: admin, body: { status: 'Active', reason: 'CMP synthetic seed' } });

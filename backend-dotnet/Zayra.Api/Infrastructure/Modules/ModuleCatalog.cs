@@ -160,7 +160,7 @@ public static class ModuleCatalog
             LockReason = CoreHrReason,
             RoutePrefixes =
             [
-                "/api/employees", "/api/employee-access", "/api/employee-completion", "/api/branches", "/api/departments", "/api/designations",
+                "/api/employees", "/api/employee-access", "/api/employee-completion", "/api/pay-approvals", "/api/branches", "/api/departments", "/api/designations",
                 "/api/grades", "/api/cost-centers", "/api/locations", "/api/positions",
                 "/api/companies", "/api/organization", "/api/reference", "/api/establishment",
                 "/api/jobs", "/api/planning",
@@ -525,6 +525,10 @@ public static class ModuleCatalog
                 "Selfie attendance collects a face image, so it is an opt-in feature only the platform team can switch "
                 + "on, and only once the owner's DPIA sign-off and KSA data-residency confirmation are recorded on the "
                 + "flag. Tenant Admin cannot switch it. See OptInFeatures.",
+            [FeatureKeys.HireWizardV2] =
+                "The step-by-step hire wizard (/people/new) is an opt-in feature switched on per tenant by the platform team "
+                + "while it is being rolled out. It owns no API route of its own: the hire endpoints are the Employees module's. "
+                + "It is off unless enabled, and Tenant Admin cannot switch it. See OptInFeatures.",
             [FeatureKeys.Compensation] =
                 "Merit planning and pay benchmarking is an opt-in feature switched on per tenant by the platform team while it is "
                 + "rolled out. It is off unless enabled, and Tenant Admin cannot switch it. See OptInFeatures.",

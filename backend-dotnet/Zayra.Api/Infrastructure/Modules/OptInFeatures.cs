@@ -23,6 +23,7 @@ public static class OptInFeatures
     public static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> RoutePrefixes =
         new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
+            [FeatureKeys.HireWizardV2] = [],
             [FeatureKeys.ReleaseA] =
             [
                 "/api/entitlements",       // R1 matrix, R2 HR package view

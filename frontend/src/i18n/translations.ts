@@ -4,6 +4,7 @@ import { releaseA } from './releaseA';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
+import { hireWizard } from './hireWizard';
 import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
@@ -13,6 +14,7 @@ import { glErp } from './glErp';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
+import { payApprovals } from './payApprovals';
 import { userPasswordReset } from './userPasswordReset';
 import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
@@ -1494,6 +1496,7 @@ const en: Dict = {
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
+  ...hireWizard.en,
   ...setupExperience.en,
   ...glSetup.en,
   ...costCentres.en,
@@ -1503,6 +1506,8 @@ const en: Dict = {
   ...glApiKeys.en,
   // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
   ...signInSecurity.en,
+  // Pay approvals (scoped new-hire pay approval view) — see ./payApprovals.
+  ...payApprovals.en,
   // Resetting another user's password, readable user statuses — see ./userPasswordReset.
   ...userPasswordReset.en,
   ...reportsAnalytics.en,
@@ -1846,7 +1851,7 @@ const ar: Dict = {
   'Expired': 'منتهي الصلاحية',
   'Archived': 'مؤرشف',
   'Confirmed': 'مؤكد',
-  'Terminated': 'منتهية خدمته',
+  'Terminated': 'منتهي الخدمة',
   'Offboarded': 'تمت إنهاء الخدمة',
 
   // ── Leave module ──────────────────────────────────────────────────────────
@@ -2964,6 +2969,7 @@ const ar: Dict = {
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
+  ...hireWizard.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
   ...costCentres.ar,
@@ -2972,6 +2978,7 @@ const ar: Dict = {
   ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...signInSecurity.ar,
+  ...payApprovals.ar,
   ...userPasswordReset.ar,
   ...reportsAnalytics.ar,
   ...approvalChanges.ar,

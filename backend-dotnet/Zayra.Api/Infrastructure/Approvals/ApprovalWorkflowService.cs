@@ -1271,6 +1271,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         if (await Zayra.Api.Application.Employees.EmployeeChangeApplier
                 .ValidateManagerChangeAsync(_db, employee, changes, null, cancellationToken) is { } managerRejection)
             throw new InvalidOperationException(managerRejection.Message);
+        var priorPay = await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.LiveFingerprintAsync(_db, approval.TenantId, employee.Id, cancellationToken);
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
         // ONE shared applier with EmployeesController (Application/Employees/EmployeeChangeApplier).
@@ -1304,6 +1305,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             await _establishmentGuard.EnforceAsync(approval.TenantId, employee.DepartmentId, employee.DesignationId,
                 excludeEmployeeId: employee.Id, path: "approval", context, cancellationToken);
         }
+        // An approved change to a hire's pay also waits for Finance's approval of the package (the requester is the maker).
+        await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, priorPay, context with { UserId = change.RequestedByUserId ?? approverId }, cancellationToken, workflowApprover: approverId);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = approverId;
         change.Status = EmployeeChangeStatuses.ApprovedApplied;
