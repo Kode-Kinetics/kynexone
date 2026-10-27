@@ -21,6 +21,8 @@ export interface EmployeeRecordState {
   detail: LoadState<EmployeeDetail>;
   readiness: LoadState<EmployeeReadiness>;
   refreshRecord(): Promise<void>;
+  /** Re-reads the record without the full-page loading state, so a field the user is working in keeps its place. */
+  reloadRecordQuietly(): Promise<void>;
   refreshReadiness(): Promise<void>;
 }
 
@@ -105,6 +107,11 @@ export function useEmployeeRecord(employeeId: number): EmployeeRecordState {
     ]);
   }, [loadDetail, loadReadiness]);
 
+  const reloadRecordQuietly = useCallback(async () => {
+    const targetEmployeeId = employeeIdRef.current;
+    await loadDetail(targetEmployeeId, ++detailGeneration.current);
+  }, [loadDetail]);
+
   const refreshReadiness = useCallback(async () => {
     const targetEmployeeId = employeeIdRef.current;
     const nextGeneration = ++readinessGeneration.current;
@@ -112,5 +119,5 @@ export function useEmployeeRecord(employeeId: number): EmployeeRecordState {
     await loadReadiness(targetEmployeeId, nextGeneration);
   }, [loadReadiness]);
 
-  return { detail, readiness, refreshRecord, refreshReadiness };
+  return { detail, readiness, refreshRecord, reloadRecordQuietly, refreshReadiness };
 }

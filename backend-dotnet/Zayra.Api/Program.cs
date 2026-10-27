@@ -223,10 +223,7 @@ var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get
 var extraOrigins = (builder.Configuration["CORS_EXTRA_ORIGINS"] ?? string.Empty)
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 allowedOrigins = allowedOrigins.Concat(extraOrigins).Distinct().ToArray();
-builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => policy
-    .WithOrigins(allowedOrigins)
-    .AllowAnyMethod()
-    .AllowAnyHeader()));
+builder.Services.AddCors(options => options.AddPolicy("kynexone", policy => Zayra.Api.KynexOneCorsPolicy.Apply(policy, allowedOrigins)));
 
 // Accepts either Npgsql keyword form or a postgres:// URI. Managed-Postgres consoles hand out
 // URIs; Npgsql parses only keyword form. See PostgresConnectionString for what that cost.
@@ -506,6 +503,9 @@ builder.Services.AddSingleton<Zayra.Api.Infrastructure.Finance.IBankConfirmation
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.JournalExportService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.BankConfirmationService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler>();
+// AM-22: enforces identity separation of duties on journal-export create (the controller takes it as an optional dependency).
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.IJournalExportSeparationOfDuties,
+    Zayra.Api.Infrastructure.Finance.CostAccountingJournalExportSeparationOfDuties>();
 
 // Data protection encrypts MFA, Qiwa, and notification-provider secrets at rest. The key
 // ring MUST outlive a container: ephemeral default keys make every protected value unreadable
@@ -985,7 +985,7 @@ app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILo
     if (drain.IsDraining)
         return Results.Json(new { status = "draining", utc = DateTime.UtcNow }, statusCode: StatusCodes.Status503ServiceUnavailable);
 
-    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, includeDetail: false);
+    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, includeDetail: false, logger: lf.CreateLogger("LedgerProtection"));
     if (evidence.Status == "ready") return Results.Ok(PublicReadiness.From(evidence));
     LogReadinessRefusal(evidence, lf);
     return Results.Json(PublicReadiness.From(evidence), statusCode: StatusCodes.Status503ServiceUnavailable);
@@ -993,7 +993,7 @@ app.MapGet("/health/ready", async (ZayraDbContext db, IConfiguration config, ILo
 
 app.MapGet("/health/ready/details", async (ZayraDbContext db, IConfiguration config, ILoggerFactory lf, CancellationToken ct) =>
 {
-    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct);
+    var evidence = await ProductionReadinessEvidence.BuildReadinessAsync(db, config, ct, logger: lf.CreateLogger("LedgerProtection"));
     if (evidence.Status == "ready") return Results.Ok(evidence);
     LogReadinessRefusal(evidence, lf);
     return Results.Json(evidence, statusCode: StatusCodes.Status503ServiceUnavailable);
@@ -1160,6 +1160,9 @@ using (var scope = app.Services.CreateScope())
 
     var authSeeder = scope.ServiceProvider.GetRequiredService<IAuthSeeder>();
     await TrySeedAsync("AuthSeeder", () => authSeeder.SeedAsync(), logger);
+
+    // Report (never refuse) when the application's own database role can switch off the ledger triggers; /health/ready repeats it.
+    await Zayra.Api.Infrastructure.Operations.LedgerProtection.ReportAsync(scope.ServiceProvider.GetRequiredService<ZayraDbContext>(), logger, CancellationToken.None);
 
     // A dedicated deployment is Production OR anything flagged DEDICATED_DEPLOYMENT / CLIENT_DEPLOYMENT.
     // It gates the one-time platform-owner bootstrap below.

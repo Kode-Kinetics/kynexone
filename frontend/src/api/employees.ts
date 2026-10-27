@@ -125,7 +125,9 @@ export interface EmployeeCreateRequest {
   departmentId?: string;
   designationId?: string;
   gradeId?: string;
+  /** Absent = no change. Guid.Empty = the explicit None (no override). A cost centre that is not the department's is an override and needs `costCenterReason`. */
   costCenterId?: string;
+  costCenterReason?: string;
   jobTitle?: string;
   reportingManagerEmployeeId?: number;
   secondLevelManagerEmployeeId?: number;
@@ -320,7 +322,12 @@ export interface EmployeeEntity {
   departmentId?: string;
   designationId?: string;
   gradeId?: string;
+  positionId?: string | null;
   costCenterId?: string;
+  /** Sent once the server reports it (AM-30 follow-up); until then the screen infers it. */
+  costCenterIsOverride?: boolean;
+  /** The server's own answer to where this person's cost lands (sent on the detail read). */
+  costCentreResolution?: import('../lib/employeeCostCentre').ServerResolution | null;
   department: string;
   designation: string;
   branch: string;
@@ -840,8 +847,8 @@ export const employeesApi = {
     client.post(`/api/employees/${id}/bank-details/confirm`, { note }).then((r) => r.data),
 
   /** Sends only the changed fields; sensitive fields (salary, passport, bank…) return 202 and go to an approval workflow. */
-  update: (id: number, effectiveDate: string, changes: Record<string, unknown>) =>
-    client.put(`/api/employees/${id}`, { effectiveDate, changes }),
+  update: (id: number, effectiveDate: string, changes: Record<string, unknown>, options?: { costCenterReason?: string }) =>
+    client.put(`/api/employees/${id}`, { effectiveDate, changes, ...(options?.costCenterReason ? { costCenterReason: options.costCenterReason } : {}) }),
 
   remove: (id: number) => client.delete(`/api/employees/${id}`),
 

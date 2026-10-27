@@ -122,13 +122,18 @@ public sealed class TimesheetService : ITimesheetService
         var costCentreIds = incoming.Where(e => e.CostCenterId.HasValue).Select(e => e.CostCenterId!.Value).Distinct().ToList();
         if (costCentreIds.Count > 0)
         {
-            var known = await _db.CostCenters.AsNoTracking()
-                .Where(c => c.TenantId == tenantId && costCentreIds.Contains(c.Id))
-                .Select(c => c.Id)
-                .ToListAsync(ct);
-            foreach (var missing in costCentreIds.Except(known))
-                violations.Add(new TimesheetViolation(null, "unknown_cost_centre",
-                    $"Cost centre {missing} does not exist in this tenant."));
+            // The one cost-centre validator, limited to the employee's company (the timesheet's). A cost centre the timesheet already
+            // carries is not a new assignment, so a cost centre deactivated since does not block re-saving the sheet.
+            var alreadyOnSheet = timesheet.Entries.Where(e => e.CostCenterId.HasValue).Select(e => e.CostCenterId!.Value).ToHashSet();
+            var validator = new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db);
+            foreach (var id in costCentreIds)
+            {
+                var check = await validator.ValidateAsync(tenantId, timesheet.CompanyId, id, forNewAssignment: !alreadyOnSheet.Contains(id), ct);
+                if (check.IsValid) continue;
+                violations.Add(check.Code == Zayra.Api.Infrastructure.Payroll.CostCentreRefCodes.NotFound
+                    ? new TimesheetViolation(null, "unknown_cost_centre", $"Cost centre {id} does not exist in this tenant.")
+                    : new TimesheetViolation(null, check.Code!, check.Message!));
+            }
         }
 
         if (violations.Count > 0) throw new TimesheetValidationException(violations);

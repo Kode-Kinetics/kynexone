@@ -1,0 +1,14 @@
+key,value,note
+company,ACME-SA,fictional; generic
+currency,SAR,scale 2
+cost_accounting_enabled,true,M1 and M2
+default_cost_centre,CC-100,company fallback of last resort and ROUNDING home
+cost_centre_small_cell_min,0,roll-up OFF
+account_rule_preset,Expense=Required; Asset/Liability=NotAllowed,explicit user action
+eosb_provisioning,off,settlement expenses full gratuity
+periods,"2026-09 (M1), 2026-10 (M2)",
+gosi_annuity_each_side,9% existing/unknown cohort; 10% new entrant (2026-07 step),app KSA pack; see inputs/08_gosi_rates.csv
+gosi_saned_each_side,0.75%,Saudis only
+gosi_occ_hazard_employer,2%,all employees
+gosi_base,"basic+housing, cap 45000",
+rounding,"each employee x component row rounded to 2dp half-up, THEN grouped",

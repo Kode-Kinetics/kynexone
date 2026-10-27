@@ -569,6 +569,9 @@ public class EstablishmentController : ControllerBase
     public async Task<IActionResult> ReconcileDepartments(CancellationToken ct)
     {
         if (!HasPermission(WritePermission)) return Forbid();
+        // Stamping a department id moves where a person resolves to for cost (no department -> the company default; a department -> its cost centre),
+        // so it is a cost-attribution write: the cost-centre permission too (contract 2.9, S-027).
+        if (!OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         // Touches employees tenant-wide ⇒ group scope required (same rule as level-mapping/apply).
         if (!this.GetEntityScope().IsGroupLevel) return Forbid();
         var tenantId = this.GetTenantId()!.Value;
@@ -586,14 +589,26 @@ public class EstablishmentController : ControllerBase
             .ToListAsync(ct);
 
         var resolved = new List<object>();
-        int ambiguous = 0, unmatched = 0;
+        int ambiguous = 0, unmatched = 0, lockedIntoRun = 0;
+        var guard = new Zayra.Api.Infrastructure.Payroll.CostAttributionGuard(_db);
         foreach (var employee in candidates)
         {
             if (!deptsByName.TryGetValue((employee.CompanyId, employee.Department), out var matches)
                 && !deptsByName.TryGetValue((null, employee.Department), out matches)) { unmatched++; continue; }
             if (matches.Count != 1) { ambiguous++; continue; }
+            // AM-9 door guard: someone in a run awaiting finance review or lock is left alone (still unlinked; this job is idempotent, so a later run
+            // after the run is reopened or locked stamps them) and counted, rather than refusing the whole repair.
+            var attributionBefore = Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.AttributionState.Of(employee);
+            try
+            {
+                await guard.EnsureEmployeeUnchangedAsync(tenantId, employee.CompanyId, employee.Id,
+                    new Zayra.Api.Infrastructure.Payroll.ResolverEmployee(attributionBefore.DepartmentId, attributionBefore.PositionId, attributionBefore.CostCenterId, attributionBefore.IsOverride),
+                    new Zayra.Api.Infrastructure.Payroll.ResolverEmployee(matches[0].Id, attributionBefore.PositionId, attributionBefore.CostCenterId, attributionBefore.IsOverride), ct);
+            }
+            catch (Zayra.Api.Application.Organization.CostCentreRuleException) { lockedIntoRun++; continue; }
             employee.DepartmentId = matches[0].Id;
             employee.UpdatedAtUtc = DateTime.UtcNow;
+            await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, this.GetUserId(), ct);
             resolved.Add(new { employeeId = employee.Id, employee.EmployeeCode, departmentId = matches[0].Id, departmentName = matches[0].NameEn });
         }
         if (resolved.Count > 0) await _db.SaveChangesAsync(ct);
@@ -602,7 +617,7 @@ public class EstablishmentController : ControllerBase
             await _audit.WriteAsync("establishment.departments_reconciled", "Employee", tenantId.ToString(), Context(),
                 JsonSerializer.Serialize(new { resolvedCount = resolved.Count, ambiguous, unmatched, resolved }), ct);
 
-        return Ok(new { resolvedCount = resolved.Count, ambiguous, unmatched });
+        return Ok(new { resolvedCount = resolved.Count, ambiguous, unmatched, lockedIntoRun });
     }
 
     private async Task<object?> ComputeMappingImpactAsync(Guid tenantId, Guid designationId, Guid? targetLevelId, CancellationToken ct)

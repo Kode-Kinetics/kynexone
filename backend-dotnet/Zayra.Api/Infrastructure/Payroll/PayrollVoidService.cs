@@ -811,6 +811,13 @@ public sealed class PayrollVoidService
         PostedByName      = actorName,
         IsReversed        = false,
         ReversalOfEntryId = linkToOriginal ? orig.Id : null,
+        // A linked contra copies the cost centre id and its three snapshots verbatim (AM-25) and carries the reversal key, so a void
+        // nets every cost centre to zero and a second void fails at the database.
+        CostCenterId        = linkToOriginal ? orig.CostCenterId : null,
+        CostCenterCode      = linkToOriginal ? orig.CostCenterCode : null,
+        CostCenterName      = linkToOriginal ? orig.CostCenterName : null,
+        CostCenterGlSegment = linkToOriginal ? orig.CostCenterGlSegment : null,
+        PostingKey          = linkToOriginal ? PayrollCostStamper.ReversalKey(orig.Id) : null,
     };
 
     /// <summary>

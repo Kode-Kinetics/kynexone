@@ -706,7 +706,7 @@ public class EmployeeModuleTests
         await using var db = CreateDb();
         var tenantId = await SeedTenantAndEmployeeRole(db);
         var company = await SeedCompany(db, tenantId, "Widget Corp");
-        var ctrl = CreateController(db, tenantId);
+        var ctrl = CreateController(db, tenantId, null, "organization.costcenter.manage");
 
         const string csv =
             "EmployeeCode,FullName,CompanyLegalName,CostCenterCode,JoiningDate\n" +
@@ -839,7 +839,7 @@ public class EmployeeModuleTests
         await db.SaveChangesAsync();
     }
 
-    private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId, Guid? userId = null)
+    private static EmployeesController CreateController(ZayraDbContext db, Guid tenantId, Guid? userId = null, params string[] extraPermissions)
     {
         // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
         TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
@@ -863,7 +863,7 @@ public class EmployeeModuleTests
             new Claim("permission", "employees.read"),
             new Claim("permission", "employees.write"),
             new Claim("permission", "employees.sensitive")
-        }, "Test"));
+        }.Concat(extraPermissions.Select(p => new Claim("permission", p))), "Test"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = user } };
         return controller;
     }

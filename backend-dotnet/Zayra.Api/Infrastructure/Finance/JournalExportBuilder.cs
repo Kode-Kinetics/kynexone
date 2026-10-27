@@ -18,7 +18,9 @@ public sealed record JournalExportFilter(
     bool SuppressReversedPairs = false,
     // Double-post guard override: only legal together with ReplacesExportId (a "Replacement" export).
     bool IncludePreviouslyConfirmed = false,
-    Guid? ReplacesExportId = null);
+    Guid? ReplacesExportId = null,
+    // S-039: export despite uncosted posted lines on an account whose cost-centre rule is now Required.
+    bool AcknowledgeUncostedRequired = false);
 
 /// <summary>What the ledger yielded for a filter, BEFORE any single-currency document is built.</summary>
 public sealed class JournalExportSelection
@@ -78,6 +80,9 @@ public static class JournalExportErrors
     public const string PriorPartlyRecorded = "prior_export_partly_recorded";
     public const string GroupExportLive = "group_export_live";
     public const string RowsAlreadyConfirmed = "rows_already_confirmed";
+    public const string CostCentreTotalMismatch = "cost_centre_total_mismatch";
+    public const string UncostedRequiredLines = "uncosted_required_lines";
+    public const string UnsafeCompanyCode = "unsafe_company_code";
 }
 
 /// <summary>Rounded DR/CR of one company inside an export — every company must balance on its own.</summary>
@@ -98,7 +103,8 @@ public sealed record JournalTieOut(
     int EmittedLineCount,
     int ExpectedLineCount,
     IReadOnlyList<string> AccountDeltas,
-    IReadOnlyList<CompanyBalance>? ByCompany = null)
+    IReadOnlyList<CompanyBalance>? ByCompany = null,
+    IReadOnlyList<string>? CostCentreDeltas = null)
 {
     public decimal Delta => RoundedDebits - RoundedCredits;
 }
@@ -330,10 +336,17 @@ public static class JournalExportBuilder
     /// stamps each line with ITS company, never a "GROUP" placeholder).</param>
     /// <param name="externalCodeOf">The GL account's external (ERP) code for (row, internal account code),
     /// or null to send our own code.</param>
+    /// <param name="scaleOf">The decimal scale a row is written at. Null = the currency's own scale (KWD/BHD/OMR 3, else 2). The export service passes
+    /// <see cref="ScaleResolver"/> so a company that has not switched cost accounting on keeps its two-decimal files byte for byte.</param>
+    /// <param name="isProfitAndLoss">Whether the account with this code is a P&amp;L (Expense/Revenue) account for this row:
+    /// true, false, or null when unknown. A two-sided row's cost centre is the Expense/Revenue side's, so it lands on that
+    /// line only (see <see cref="CostSides"/>).</param>
     public static List<JournalExportLine> Expand(
         IEnumerable<FinanceGlEntry> entries,
         Func<FinanceGlEntry, string> companyCodeOf,
-        Func<FinanceGlEntry, string, string?>? externalCodeOf)
+        Func<FinanceGlEntry, string, string?>? externalCodeOf,
+        Func<FinanceGlEntry, string, bool?>? isProfitAndLoss = null,
+        Func<FinanceGlEntry, int>? scaleOf = null)
     {
         var raw = new List<JournalExportLine>();
         foreach (var e in entries)
@@ -341,10 +354,11 @@ public static class JournalExportBuilder
             var accounting = DeriveAccountingDate(e);
             var journalRef = JournalRef(e);
             var companyCode = companyCodeOf(e);
+            var (ccDr, ccCr) = CostSides(e, isProfitAndLoss);
             if (!string.IsNullOrEmpty(e.DebitAccount))
-                raw.Add(NewLine(e, "DR", e.DebitAccount, accounting, journalRef, companyCode, externalCodeOf));
+                raw.Add(NewLine(e, "DR", e.DebitAccount, accounting, journalRef, companyCode, externalCodeOf, ccDr, scaleOf));
             if (!string.IsNullOrEmpty(e.CreditAccount))
-                raw.Add(NewLine(e, "CR", e.CreditAccount, accounting, journalRef, companyCode, externalCodeOf));
+                raw.Add(NewLine(e, "CR", e.CreditAccount, accounting, journalRef, companyCode, externalCodeOf, ccCr, scaleOf));
         }
 
         return raw
@@ -357,9 +371,34 @@ public static class JournalExportBuilder
             .ToList();
     }
 
+    /// <summary>Currency scale for companies with cost accounting on; the legacy two decimals for everyone else (rows with no company included).</summary>
+    public static Func<FinanceGlEntry, int> ScaleResolver(IReadOnlySet<Guid> costedCompanyIds) =>
+        e => e.CompanyId is { } id && costedCompanyIds.Contains(id) ? JournalAmount.ScaleFor(e.Currency) : JournalAmount.Scale;
+
+    /// <summary>
+    /// Which line(s) of a ledger row carry its cost-centre snapshot. A one-sided row: its only line. A two-sided row
+    /// (bonus, loan, advance): the Expense/Revenue side — never the payable or the bank. When the classification cannot pick
+    /// exactly one side (unknown accounts, or two P&amp;L sides) the snapshot stays on both rather than being dropped.
+    /// </summary>
+    internal static (bool Dr, bool Cr) CostSides(FinanceGlEntry e, Func<FinanceGlEntry, string, bool?>? isProfitAndLoss)
+    {
+        if (string.IsNullOrEmpty(e.CostCenterCode)) return (false, false);
+        var hasDr = !string.IsNullOrEmpty(e.DebitAccount);
+        var hasCr = !string.IsNullOrEmpty(e.CreditAccount);
+        if (hasDr != hasCr) return (hasDr, hasCr);
+        if (!hasDr) return (false, false);
+        var d = isProfitAndLoss?.Invoke(e, SplitAccountLabel(e.DebitAccount).Code);
+        var c = isProfitAndLoss?.Invoke(e, SplitAccountLabel(e.CreditAccount).Code);
+        if (d == true && c != true) return (true, false);
+        if (c == true && d != true) return (false, true);
+        if (d == false && c != false) return (false, true);
+        if (c == false && d != false) return (true, false);
+        return (true, true);
+    }
+
     private static JournalExportLine NewLine(
         FinanceGlEntry e, string side, string accountLabel, DateOnly accountingDate, string journalRef, string companyCode,
-        Func<FinanceGlEntry, string, string?>? externalCodeOf)
+        Func<FinanceGlEntry, string, string?>? externalCodeOf, bool costed, Func<FinanceGlEntry, int>? scaleOf = null)
     {
         var (code, name) = SplitAccountLabel(accountLabel);
         var external = externalCodeOf?.Invoke(e, code);
@@ -368,9 +407,26 @@ public static class JournalExportBuilder
             AccountCode: code, AccountName: name, Amount: e.Amount, Currency: e.Currency,
             AccountingDate: accountingDate, SystemPostedDate: e.EntryDate, Period: e.Period,
             JournalRef: journalRef, Description: e.Description, SourceModule: e.SourceModule,
-            SourceEntityId: e.SourceEntityId, SourceEntityRef: e.SourceEntityRef, EventType: e.EventType,
+            SourceEntityId: e.SourceEntityId, SourceEntityRef: ExportReference(e), EventType: e.EventType,
             CompanyId: e.CompanyId, CompanyCode: companyCode, IsReversed: e.IsReversed,
-            ExternalAccountCode: string.IsNullOrWhiteSpace(external) ? null : external.Trim());
+            ExternalAccountCode: string.IsNullOrWhiteSpace(external) ? null : external.Trim(),
+            Scale: scaleOf?.Invoke(e) ?? JournalAmount.ScaleFor(e.Currency),
+            CostCenterCode: costed ? e.CostCenterCode : null,
+            CostCenterName: costed ? Zayra.Api.Application.Organization.CostCentreText.StripDirectionControls(e.CostCenterName) : null,
+            CostCenterGlSegment: costed ? e.CostCenterGlSegment : null);
+    }
+
+    /// <summary>
+    /// The reference an ERP file carries for a ledger row. EOSB provision and settlement lines are one line per employee and keep the employee link in
+    /// <c>SourceEntityRef</c> inside the system (their sub-ledger is rebuilt from it); that link is an employee identifier and must not leave. Exports
+    /// carry a period label for the provision movement and a settlement-level reference for the settlement lines instead.
+    /// </summary>
+    public static string ExportReference(FinanceGlEntry e)
+    {
+        if (e.SourceModule != FinalSettlementGlDescriptions.SourceModule || !int.TryParse(e.SourceEntityRef, out _)) return e.SourceEntityRef;
+        return e.EventType == GlEventTypes.EosbProvisionAccrual
+            ? $"EOSB-{e.Period}"
+            : $"SETTLEMENT-{e.SourceEntityId.ToString("N")[..12].ToUpperInvariant()}";
     }
 
     /// <summary>
@@ -426,10 +482,11 @@ public static class JournalExportBuilder
     /// </list>
     /// A failure returns Ok=false and the caller must refuse (422): no file, no artifact row.
     /// </summary>
-    public static JournalTieOut Verify(IReadOnlyList<JournalExportLine> lines, IReadOnlyList<FinanceGlEntry> source)
+    public static JournalTieOut Verify(IReadOnlyList<JournalExportLine> lines, IReadOnlyList<FinanceGlEntry> source,
+        Func<FinanceGlEntry, string, bool?>? isProfitAndLoss = null)
     {
-        var roundedDr = lines.Sum(l => JournalAmount.Round(l.Debit));
-        var roundedCr = lines.Sum(l => JournalAmount.Round(l.Credit));
+        var roundedDr = lines.Sum(l => l.RoundedDebit);
+        var roundedCr = lines.Sum(l => l.RoundedCredit);
         var sourceDr = source.Where(e => !string.IsNullOrEmpty(e.DebitAccount)).Sum(e => e.Amount);
         var sourceCr = source.Where(e => !string.IsNullOrEmpty(e.CreditAccount)).Sum(e => e.Amount);
 
@@ -450,12 +507,35 @@ public static class JournalExportBuilder
         foreach (var l in lines)
             Accumulate(actualByAccount, l.Side + "|" + l.AccountCode, l.Amount);
 
+        // The scale is the journal's currency scale (the selection is single-currency by the time it is tied out).
+        var scale = lines.Count > 0 ? lines[0].Scale : JournalAmount.ScaleFor(source.FirstOrDefault()?.Currency);
         var deltas = new List<string>();
         foreach (var key in expectedByAccount.Keys.Union(actualByAccount.Keys, StringComparer.Ordinal).OrderBy(k => k, StringComparer.Ordinal))
         {
-            var exp = JournalAmount.Round(expectedByAccount.GetValueOrDefault(key));
-            var act = JournalAmount.Round(actualByAccount.GetValueOrDefault(key));
+            var exp = JournalAmount.Round(expectedByAccount.GetValueOrDefault(key), scale);
+            var act = JournalAmount.Round(actualByAccount.GetValueOrDefault(key), scale);
             if (exp != act) deltas.Add($"{key}: expected {exp}, exported {act}");
+        }
+
+        // Per cost centre, recomputed from the SOURCE rows with the same side rule: a cost centre's debits and credits in
+        // the file must equal what the ledger rows carry, or the ERP's cost-centre report would not tie to our own.
+        var ccDeltas = new List<string>();
+        var expectedByCc = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        foreach (var e in source.Where(e => !string.IsNullOrEmpty(e.CostCenterCode)))
+        {
+            var (onDr, onCr) = CostSides(e, isProfitAndLoss);
+            var co = e.CompanyId?.ToString("N") ?? "-";
+            if (onDr && !string.IsNullOrEmpty(e.DebitAccount)) Accumulate(expectedByCc, $"{co}|DR|{e.CostCenterCode}", e.Amount);
+            if (onCr && !string.IsNullOrEmpty(e.CreditAccount)) Accumulate(expectedByCc, $"{co}|CR|{e.CostCenterCode}", e.Amount);
+        }
+        var actualByCc = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        foreach (var l in lines.Where(l => !string.IsNullOrEmpty(l.CostCenterCode)))
+            Accumulate(actualByCc, $"{l.CompanyId?.ToString("N") ?? "-"}|{l.Side}|{l.CostCenterCode}", l.Amount);
+        foreach (var key in expectedByCc.Keys.Union(actualByCc.Keys, StringComparer.Ordinal).OrderBy(k => k, StringComparer.Ordinal))
+        {
+            var exp = JournalAmount.Round(expectedByCc.GetValueOrDefault(key), scale);
+            var act = JournalAmount.Round(actualByCc.GetValueOrDefault(key), scale);
+            if (exp != act) ccDeltas.Add($"{key[(key.IndexOf('|') + 1)..]}: expected {exp}, exported {act}");
         }
 
         // Per legal entity: an ERP books each company's journal into that company's ledger, so a file that
@@ -464,17 +544,18 @@ public static class JournalExportBuilder
         // string must each balance, never offset each other.
         var byCompany = JournalLegalEntities.Of(lines)
             .Select(g => new CompanyBalance(g.CompanyCode, g.CompanyId,
-                g.Lines.Sum(l => JournalAmount.Round(l.Debit)), g.Lines.Sum(l => JournalAmount.Round(l.Credit)), g.Lines.Count))
+                g.Lines.Sum(l => l.RoundedDebit), g.Lines.Sum(l => l.RoundedCredit), g.Lines.Count))
             .ToList();
 
         string? failure = null;
         if (lines.Count != expected) failure = "line_count_mismatch";
         else if (deltas.Count > 0) failure = "account_total_mismatch";
+        else if (ccDeltas.Count > 0) failure = JournalExportErrors.CostCentreTotalMismatch;
         else if (roundedDr != roundedCr) failure = "debits_credits_unbalanced";
         else if (byCompany.Any(c => !c.Balanced)) failure = JournalExportErrors.CompanyUnbalanced;
 
         return new JournalTieOut(failure is null, failure, roundedDr, roundedCr, sourceDr, sourceCr,
-            lines.Count, expected, deltas, byCompany);
+            lines.Count, expected, deltas, byCompany, ccDeltas);
 
         static void Accumulate(Dictionary<string, decimal> map, string key, decimal amount) =>
             map[key] = map.GetValueOrDefault(key) + amount;

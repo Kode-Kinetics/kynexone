@@ -63,6 +63,9 @@ export function buildEmployeeEditChanges(
       throw new Error(`The employee field "${key}" is no longer available. Reopen the employee and try again.`);
     }
     if (key.startsWith('salaryBreakdown.')) continue;
+    // AM-30: attribution is changed only through the cost-centre field's Override and Remove dialogs, which carry a reason.
+    // A department change already moves the person to the new department's cost centre on the server.
+    if (key === 'costCenter') continue;
     const value = form[key].trim();
     if (field.type === 'number') {
       if (!value) {

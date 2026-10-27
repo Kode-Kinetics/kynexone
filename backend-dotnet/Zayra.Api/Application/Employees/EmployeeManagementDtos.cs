@@ -53,7 +53,10 @@ public record EmployeeCreateRequest(
     // dup). Set only when the operator dismisses the warning; the create then records an audited override.
     bool AcknowledgeDuplicate = false,
     // CD26: end of a fixed-term contract. Stored on Employee.ContractEndDate; CD17 rules in the input guard.
-    DateOnly? ContractEndDate = null);
+    DateOnly? ContractEndDate = null,
+    // Cost-centre accounting (contract 2.9, M-10): why the employee's cost-centre override is being set or removed. Required (422
+    // cost_centre_reason_required) whenever the request changes the override; recorded in the employee.cost_centre_override.changed audit row.
+    string? CostCenterReason = null);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,
@@ -141,6 +144,9 @@ public record EmployeeTransferCreateRequest(
 /// so newly-added entity fields never auto-serialize. Sensitive fields are populated
 /// only when includeSensitive=true (i.e. CanViewSensitive() returned true for the caller).
 /// </summary>
+/// <summary>The server-resolved cost attribution of one employee. Source: Employee|Position|Department|ParentDepartment|CompanyDefault|None; Level is the blocker vocabulary.</summary>
+public sealed record EmployeeCostCentreResolutionDto(Guid? CostCenterId, string? Code, string? Name, string? NameAr, string Source, string? Level, string? UnresolvedReason);
+
 public record EmployeeDetailDto
 {
     // ── Identity ──────────────────────────────────────────────────────────────────
@@ -191,6 +197,10 @@ public record EmployeeDetailDto
     public Guid? DesignationId { get; init; }
     public Guid? GradeId { get; init; }
     public Guid? CostCenterId { get; init; }
+    /// <summary>True when <see cref="CostCenterId"/> is an explicit per-employee override (the resolver reads it only then).</summary>
+    public bool CostCenterIsOverride { get; init; }
+    /// <summary>Where this employee's cost lands, resolved by the server (<c>CostCentreResolver</c>). Set on the detail read.</summary>
+    public EmployeeCostCentreResolutionDto? CostCentreResolution { get; init; }
     public Guid? PositionId { get; init; }
     public int? ManagerEmployeeId { get; init; }
     public int? SecondLevelManagerEmployeeId { get; init; }
@@ -327,6 +337,7 @@ public record EmployeeDetailDto
             DesignationId                 = e.DesignationId,
             GradeId                       = e.GradeId,
             CostCenterId                  = e.CostCenterId,
+            CostCenterIsOverride          = e.CostCenterIsOverride,
             PositionId                    = e.PositionId,
             ManagerEmployeeId             = e.ManagerEmployeeId,
             SecondLevelManagerEmployeeId  = e.SecondLevelManagerEmployeeId,

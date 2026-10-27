@@ -9,6 +9,10 @@ public class PayrollRun : ITenantOwned, ICompanyScopedOperational
     public int Year { get; set; }
     public int Month { get; set; }
     public string Status { get; set; } = "Draft";
+    /// <summary>Cost-accounting M1: SHA-256 of the cost-centre resolution at Approve, re-checked at Lock. Null = not costed.</summary>
+    public string? CostCenterResolutionHash { get; set; }
+    /// <summary>Cost-accounting M1: set at Lock when the run was stamped with cost centres (a costed run, not a legacy one).</summary>
+    public bool CostAccountingApplied { get; set; }
     // POD-B2 — run TYPE. Exactly one non-voided Regular run may exist per (tenant, company, year, month);
     // any number of OffCycle/Supplementary/Correction runs may coexist for the same period.
     // Enforced by the partial unique indexes IX_payroll_runs_tenant_id_company_id_year_month and
@@ -225,6 +229,8 @@ public class PayrollSlip : ITenantOwned, ICompanyScopedOperational
     public Guid RunId { get; set; }
     public int EmployeeId { get; set; }
     public string EmployeeCode { get; set; } = string.Empty;
+    /// <summary>Cost-accounting M1: the employee-level resolved cost centre (headcount and net in the allocation report).</summary>
+    public Guid? CostCenterId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string Department { get; set; } = string.Empty;
     public decimal BasicSalary { get; set; }

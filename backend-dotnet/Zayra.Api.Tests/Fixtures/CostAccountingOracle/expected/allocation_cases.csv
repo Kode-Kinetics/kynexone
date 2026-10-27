@@ -1,0 +1,7 @@
+case,total_minor,cost_centre_code,weight_minor,floor_minor,fractional_remainder,gets_extra_minor,final_minor,final_amount
+BON-ACCR: accrual 2899.99 over bonus weights,289999,CC-110,100000,96666,1/3,yes,96667,966.67
+BON-ACCR: accrual 2899.99 over bonus weights,289999,CC-200,100000,96666,1/3,no,96666,966.66
+BON-ACCR: accrual 2899.99 over bonus weights,289999,CC-300,100000,96666,1/3,no,96666,966.66
+BON-REMAINDER: un-accrued 100.01 over bonus weights,10001,CC-110,100000,3333,2/3,yes,3334,33.34
+BON-REMAINDER: un-accrued 100.01 over bonus weights,10001,CC-200,100000,3333,2/3,yes,3334,33.34
+BON-REMAINDER: un-accrued 100.01 over bonus weights,10001,CC-300,100000,3333,2/3,no,3333,33.33

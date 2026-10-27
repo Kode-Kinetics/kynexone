@@ -18,6 +18,7 @@ namespace Zayra.Api.Controllers.Finance;
 [Authorize]
 [ApiController]
 [Route("api/finance/loans")]
+[Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilter]
 public partial class LoansController : ControllerBase
 {
     private readonly ZayraDbContext _db;

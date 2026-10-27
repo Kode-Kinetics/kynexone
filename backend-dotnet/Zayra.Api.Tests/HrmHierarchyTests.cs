@@ -556,10 +556,10 @@ public class HrmHierarchyTests
     }
 
     // Internal so ApprovalPolicyTests can reuse the controller builder
-    internal static EmployeesController BuildImportControllerInternal(ZayraDbContext db, Guid tenantId)
-        => BuildImportController(db, tenantId);
+    internal static EmployeesController BuildImportControllerInternal(ZayraDbContext db, Guid tenantId, params string[] permissions)
+        => BuildImportController(db, tenantId, permissions);
 
-    private static EmployeesController BuildImportController(ZayraDbContext db, Guid tenantId)
+    private static EmployeesController BuildImportController(ZayraDbContext db, Guid tenantId, params string[] permissions)
     {
         var controller = new EmployeesController(
             db,
@@ -581,7 +581,7 @@ public class HrmHierarchyTests
                     new Claim("tenant_id", tenantId.ToString()),
                     new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
                     new Claim(ClaimTypes.Role, "Admin"),
-                }, "Test"))
+                }.Concat(permissions.Select(p => new Claim("permission", p))), "Test"))
             }
         };
         return controller;

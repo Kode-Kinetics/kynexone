@@ -3783,7 +3783,8 @@
         "errors": [],
         "warnings": [
           "Company 'Pilot Demo' has no branches yet — everyone imported without a branch. Create the company's branches in Organization setup, then assign them."
-        ]
+        ],
+        "warningsAr": null
       },
       {
         "row": 3,
@@ -3802,7 +3803,8 @@
         "errors": [],
         "warnings": [
           "Company 'Pilot Demo' has no branches yet — everyone imported without a branch. Create the company's branches in Organization setup, then assign them."
-        ]
+        ],
+        "warningsAr": null
       }
     ]
   },

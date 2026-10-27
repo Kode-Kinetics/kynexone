@@ -254,6 +254,9 @@ public static class Csv
     public static string Escape(string s)
     {
         s ??= string.Empty;
+        // Direction marks and overrides can reorder what a reader sees; no cell needs them.
+        if (s.Any(Zayra.Api.Application.Organization.CostCentreText.IsDirectionControl))
+            s = Zayra.Api.Application.Organization.CostCentreText.StripDirectionControls(s);
         // Neutralize formula injection: a value starting with a trigger char becomes text.
         if (s.Length > 0 && Array.IndexOf(FormulaTriggers, s[0]) >= 0)
             s = "'" + s;

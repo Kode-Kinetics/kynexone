@@ -14,6 +14,8 @@ using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -91,6 +93,7 @@ public class OrganizationStructureImportController : ControllerBase
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PackageChecksum == checksum && x.Status != "Committed", ct);
 
         var parsed = ParsePackage(req);
+        if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var validation = await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct);
         var reconciliation = await BuildReconciliationAsync(tenantId, parsed, validation, ct);
         var errors = validation.Rows.SelectMany(x => x.Errors).ToList();
@@ -209,6 +212,7 @@ public class OrganizationStructureImportController : ControllerBase
     {
         var tenantId = GetTenantId();
         var parsed = ParsePackage(req);
+        if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         return Ok(await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct));
     }
 
@@ -217,6 +221,7 @@ public class OrganizationStructureImportController : ControllerBase
     {
         var tenantId = GetTenantId();
         var parsed = ParsePackage(req);
+        if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var validation = await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct);
         if (validation.HasBlockingErrors)
             return UnprocessableEntity(validation);
@@ -230,6 +235,8 @@ public class OrganizationStructureImportController : ControllerBase
         // commit, 100% of the time.
         var counts = new Dictionary<string, int>();
 
+        try
+        {
         if (!_db.Database.IsRelational())
         {
             // Preserved branch: the in-memory provider the fast unit tests use has neither
@@ -275,6 +282,9 @@ public class OrganizationStructureImportController : ControllerBase
             });
         }
 
+        }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+
         // The audit rows (one per entity, then the bulk marker) are written inside ApplyStructureAsync, in the
         // same transaction as the data: there is no committed import without its trail.
         return Ok(validation with { Applied = counts, Committed = true });
@@ -295,8 +305,13 @@ public class OrganizationStructureImportController : ControllerBase
         void Bump(string key) => counts[key] = counts.GetValueOrDefault(key) + 1;
         // One audit row per entity, with the Setup forms' own action names, written in THIS transaction (see Commit).
         var audited = new List<(string Action, string Entity, Guid Id, string Key)>();
+        // Attribution moves, staged with the company once the data is saved (strict separation of duties).
+        var attribution = new List<(string Entity, Guid Id, Guid? CompanyId, object Before, object After)>();
         void Audit(string action, string entity, Guid id, string key) => audited.Add((action, entity, id, key));
         var pendingCompanyCreates = 0;
+
+        // The preview already refused these; the commit re-checks inside the transaction so a run that moved to review in between is still honoured (409).
+        if ((await FindAttributionRefusalsAsync(tenantId, parsed, ct)).FirstOrDefault() is { } refusal) throw refusal.Error;
 
         var companies = SavedIndex.Of(await _db.Companies.Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct), x => x.LegalNameEn, "company");
         foreach (var row in parsed.Companies)
@@ -437,12 +452,17 @@ public class OrganizationStructureImportController : ControllerBase
             if (costCenters.TryGetValue(((Guid?)company.Id, code.Trim().ToUpperInvariant()), out var cc))
             {
                 cc.Name = Val(row, "Name");
+                var activeBefore = cc.IsActive;
                 cc.IsActive = Bool(row, "IsActive", true);
+                if (activeBefore != cc.IsActive) attribution.Add((nameof(CostCenter), cc.Id, cc.CompanyId, new { isActive = activeBefore }, new { isActive = cc.IsActive }));
                 cc.UpdatedAtUtc = DateTime.UtcNow;
                 Audit("organization.cost_center_updated", nameof(CostCenter), cc.Id, code);
             }
             else
             {
+                // A code is printed on journal exports: the same format rule as the form (contract 1.1).
+                if (!CostCentreCode.IsValid(OrgCodes.Normalize(code)))
+                    throw new InvalidOperationException($"Cost center code '{code}': {CostCentreCode.Rule}");
                 cc = new CostCenter { TenantId = tenantId, CompanyId = company.Id, Code = OrgCodes.Normalize(code), Name = Val(row, "Name"), IsActive = Bool(row, "IsActive", true), CreatedBy = GetUserId() };
                 _db.CostCenters.Add(cc);
                 Audit("organization.cost_center_created", nameof(CostCenter), cc.Id, code);
@@ -509,20 +529,36 @@ public class OrganizationStructureImportController : ControllerBase
                     || (departmentCostCenter is not null && departmentCostCenter.CompanyId != owner)))
                 throw new InvalidOperationException($"Department '{code}' links a branch or cost center of another company.");
             // A blank link cell leaves an existing row's link unchanged.
+            var departmentIsNew = _db.Entry(department).State == EntityState.Added;
+            var departmentCostCentreBefore = department.CostCenterId;
+            var departmentParentBefore = department.ParentDepartmentId;
             if (departmentBranch is not null) department.BranchId = departmentBranch.Id;
-            if (departmentCostCenter is not null) department.CostCenterId = departmentCostCenter.Id;
+            if (departmentCostCenter is not null)
+            {
+                if (!departmentCostCenter.IsActive && departmentCostCenter.Id != department.CostCenterId)
+                    throw new InvalidOperationException($"Department '{code}' links cost center '{departmentCostCenter.Code}', which is inactive.");
+                department.CostCenterId = departmentCostCenter.Id;
+            }
             if (!string.IsNullOrWhiteSpace(Val(row, "ManagerEmployeeCode"))) department.ManagerEmployeeId = employeesByCode[Val(row, "ManagerEmployeeCode").ToUpperInvariant()].Id;
             department.ApprovedHeadcount = Int(row, "ApprovedHeadcount");
             department.MonthlyBudgetAmount = Dec(row, "MonthlyBudgetAmount");
             department.IsActive = Bool(row, "IsActive", true);
             department.UpdatedAtUtc = DateTime.UtcNow;
             if (_db.Entry(department).State != EntityState.Added) Audit("organization.department_updated", nameof(Department), department.Id, code);
+            if (!departmentIsNew && departmentCostCentreBefore != department.CostCenterId)
+                attribution.Add((nameof(Department), department.Id, department.CompanyId, new { costCenterId = departmentCostCentreBefore, parentDepartmentId = departmentParentBefore }, new { costCenterId = department.CostCenterId, parentDepartmentId = departmentParentBefore }));
         }
         foreach (var row in parsed.Departments)
         {
             var parentCode = Val(row, "ParentDepartmentCode");
             if (!string.IsNullOrWhiteSpace(parentCode))
-                departments[Val(row, "Code").ToUpperInvariant()].ParentDepartmentId = departments[parentCode.ToUpperInvariant()].Id;
+            {
+                var child = departments[Val(row, "Code").ToUpperInvariant()];
+                var parentBefore = child.ParentDepartmentId;
+                child.ParentDepartmentId = departments[parentCode.ToUpperInvariant()].Id;
+                if (_db.Entry(child).State != EntityState.Added && parentBefore != child.ParentDepartmentId)
+                    attribution.Add((nameof(Department), child.Id, child.CompanyId, new { parentDepartmentId = parentBefore }, new { parentDepartmentId = child.ParentDepartmentId }));
+            }
         }
 
         await _db.SaveChangesAsync(ct);
@@ -620,7 +656,17 @@ public class OrganizationStructureImportController : ControllerBase
                 position.BranchId = position.CompanyId.HasValue ? branches[(position.CompanyId.Value, positionBranchCode)].Id
                     : branches.Values.Single(x => string.Equals(x.Code, positionBranchCode, StringComparison.OrdinalIgnoreCase)).Id;
             if (!string.IsNullOrWhiteSpace(Val(row, "DepartmentCode"))) position.DepartmentId = departments[Val(row, "DepartmentCode").ToUpperInvariant()].Id;
-            if (!string.IsNullOrWhiteSpace(Val(row, "CostCenterCode"))) position.CostCenterId = CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode")).Id;
+            if (!string.IsNullOrWhiteSpace(Val(row, "CostCenterCode")))
+            {
+                var positionCostCenter = CostCenterFor(position.CompanyId ?? onlyCompanyId, Val(row, "CostCenterCode"));
+                if (!positionCostCenter.IsActive && positionCostCenter.Id != position.CostCenterId)
+                    throw new InvalidOperationException($"Position '{code}' links cost center '{positionCostCenter.Code}', which is inactive.");
+                if (position.CompanyId is Guid positionCompany && positionCostCenter.CompanyId != positionCompany)
+                    throw new InvalidOperationException($"Position '{code}' links a cost center of another company.");
+                if (_db.Entry(position).State != EntityState.Added && position.CostCenterId != positionCostCenter.Id)
+                    attribution.Add((nameof(Position), position.Id, position.CompanyId, new { costCenterId = position.CostCenterId }, new { costCenterId = positionCostCenter.Id }));
+                position.CostCenterId = positionCostCenter.Id;
+            }
             if (!string.IsNullOrWhiteSpace(Val(row, "DesignationCode"))) position.DesignationId = designations[Val(row, "DesignationCode").ToUpperInvariant()].Id;
             if (!string.IsNullOrWhiteSpace(Val(row, "GradeCode"))) position.GradeId = grades[Val(row, "GradeCode").ToUpperInvariant()].Id;
             // A blank cell keeps a link, so a position moved to another company must not carry the old company's
@@ -662,6 +708,8 @@ public class OrganizationStructureImportController : ControllerBase
         // Setup forms, tagged with the import as the source.
         var context = BuildContext(tenantId);
         var at = DateTime.UtcNow;
+        foreach (var (entity, id, companyId, before, after) in attribution)
+            CostAttributionAudit.Stage(_audit, context, entity, id, companyId, before, after);
         foreach (var (action, entity, id, key) in audited.DistinctBy(a => (a.Action, a.Id)))
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), at, action, entity, id.ToString(), context,
                 JsonSerializer.Serialize(new { source = "organization_structure_import", key })));
@@ -780,7 +828,9 @@ public class OrganizationStructureImportController : ControllerBase
             refs: [("CompanyLegalName", companyNames, "Company")], duplicateScopeKey: "CompanyLegalName");
         Merge(branchCodes, parsed.Branches.Select(x => Val(x, "Code")));
         AddRows("costCenters", parsed.CostCenters, "Code", "Name", required: ["CompanyLegalName", "Code", "Name"], known: costCenterCodes, rows,
-            refs: [("CompanyLegalName", companyNames, "Company")]);
+            refs: [("CompanyLegalName", companyNames, "Company")],
+            // A code is printed on journal exports: the same format rule the commit applies to a new row and the form applies (contract 1.1).
+            newCodeError: code => CostCentreCode.IsValid(OrgCodes.Normalize(code)) ? null : $"Cost center code '{code}': {CostCentreCode.Rule}");
         Merge(costCenterCodes, parsed.CostCenters.Select(x => Val(x, "Code")));
         AddRows("grades", parsed.Grades, "Code", "Name", required: ["Code", "Name"], known: gradeCodes, rows);
         AddGradeSanityRows(parsed.Grades, rows);
@@ -820,6 +870,8 @@ public class OrganizationStructureImportController : ControllerBase
         AddPositionSanityRows(parsed.Positions, rows);
         await AddPositionCompanyMoveRowsAsync(tenantId, parsed.Positions, companyIdsByName, rows, ct);
         await AddFormGateRowsAsync(tenantId, parsed, rows, ct);
+        foreach (var f in await FindAttributionRefusalsAsync(tenantId, parsed, ct))
+            rows.Add(new ImportRowResult(f.Index + 2, f.Key, f.Name, ImportRowStatus.Error, [f.Error.Message], []));
 
         var parentMap = parsed.Departments
             .Where(x => !string.IsNullOrWhiteSpace(Val(x, "Code")) && !string.IsNullOrWhiteSpace(Val(x, "ParentDepartmentCode")))
@@ -846,7 +898,7 @@ public class OrganizationStructureImportController : ControllerBase
             Received: parsed.TotalRows,
             Errors: errors,
             Warnings: rows.Count(x => x.Status == ImportRowStatus.Warning),
-            Rows: rows,
+            Rows: rows.Select(r => r.WithArabic()).ToList(),
             HasBlockingErrors: errors > 0,
             Committed: false,
             Applied: new Dictionary<string, int>());
@@ -1048,7 +1100,7 @@ public class OrganizationStructureImportController : ControllerBase
         public static SavedIndex<T> Of<T>(IEnumerable<T> rows, Func<T, string> key, string label) => new(rows, key, label);
     }
 
-    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null, string? duplicateScopeKey = null)
+    private static void AddRows(string section, IReadOnlyList<Dictionary<string, string>> source, string codeKey, string nameKey, string[] required, HashSet<string> known, List<ImportRowResult> rows, (string Key, HashSet<string> Known, string Label)[]? refs = null, string? duplicateScopeKey = null, Func<string, string?>? newCodeError = null)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < source.Count; i++)
@@ -1067,6 +1119,9 @@ public class OrganizationStructureImportController : ControllerBase
                     + (duplicateScopeKey is null ? string.Empty : $" for {duplicateScopeKey} '{Val(row, duplicateScopeKey)}'"));
             if (!string.IsNullOrWhiteSpace(code) && known.Contains(code))
                 warnings.Add($"{section} record '{code}' already exists and will be updated");
+            // A code that is not saved yet must satisfy the master-data rule now, not when the commit reaches the row.
+            else if (!string.IsNullOrWhiteSpace(code) && newCodeError?.Invoke(code) is { } codeError)
+                errors.Add(codeError);
             foreach (var (key, knownRefs, label) in refs ?? [])
             {
                 var value = Val(row, key);
@@ -1246,6 +1301,83 @@ public class OrganizationStructureImportController : ControllerBase
         foreach (var value in values)
             if (!string.IsNullOrWhiteSpace(value)) target.Add(value);
     }
+
+    private sealed record AttributionFinding(string Section, int Index, string Key, string Name, CostCentreRuleException Error);
+
+    /// <summary>
+    /// The form doors for what this package would change: a department's or position's cost centre, a department's parent (M-7 / AM-9, only when someone
+    /// in a run awaiting finance review or lock would resolve differently) and a cost centre's active state (the same guard, then the M-8 in-use check).
+    /// Determined against the saved state, row by row, so the preview names the row; a blank link cell keeps the saved link, as the commit does.
+    /// </summary>
+    private async Task<List<AttributionFinding>> FindAttributionRefusalsAsync(Guid tenantId, ParsedOrgPackage parsed, CancellationToken ct)
+    {
+        var findings = new List<AttributionFinding>();
+        if (parsed.Departments.Count == 0 && parsed.Positions.Count == 0 && parsed.CostCenters.Count == 0) return findings;
+        var guard = new CostAttributionGuard(_db);
+
+        var companyIds = (await _db.Companies.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => new { x.Id, x.LegalNameEn }).ToListAsync(ct))
+            .GroupBy(x => x.LegalNameEn.Trim(), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
+        var costCentres = await _db.CostCenters.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct);
+        var departments = (await _db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct))
+            .GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var positions = (await _db.Positions.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync(ct))
+            .GroupBy(x => x.Code.Trim(), StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        // A cost centre that exists only in this package has no id yet; naming it is still a change of link.
+        Guid? CostCentreId(Guid? companyId, string code)
+        {
+            var match = costCentres.FirstOrDefault(c => c.CompanyId == companyId && string.Equals(c.Code.Trim(), code, StringComparison.OrdinalIgnoreCase))
+                        ?? costCentres.FirstOrDefault(c => string.Equals(c.Code.Trim(), code, StringComparison.OrdinalIgnoreCase));
+            return match?.Id ?? Guid.NewGuid();
+        }
+
+        for (var i = 0; i < parsed.CostCenters.Count; i++)
+        {
+            var row = parsed.CostCenters[i];
+            if (!companyIds.TryGetValue(Val(row, "CompanyLegalName"), out var companyId)) continue;
+            var existing = costCentres.FirstOrDefault(c => c.CompanyId == companyId && string.Equals(c.Code.Trim(), Val(row, "Code"), StringComparison.OrdinalIgnoreCase));
+            if (existing is null || Bool(row, "IsActive", true) == existing.IsActive) continue;
+            try
+            {
+                await guard.EnsureCostCentreUnchangedAsync(tenantId, existing.CompanyId, existing.Id, ct);
+                if (existing.IsActive) await OrganizationSetupService.EnsureCostCentreNotInUseAsync(_db, tenantId, existing, ct);
+            }
+            catch (CostCentreRuleException ex) { findings.Add(new AttributionFinding("costCenters", i, $"costCenters:{existing.Code}", Val(row, "Name"), ex)); }
+        }
+
+        for (var i = 0; i < parsed.Departments.Count; i++)
+        {
+            var row = parsed.Departments[i];
+            if (!departments.TryGetValue(Val(row, "Code"), out var existing)) continue;
+            var newCostCentre = existing.CostCenterId;
+            if (Val(row, "CostCenterCode") is { Length: > 0 } ccCode) newCostCentre = CostCentreId(existing.CompanyId, ccCode);
+            var newParent = existing.ParentDepartmentId;
+            if (Val(row, "ParentDepartmentCode") is { Length: > 0 } parentCode)
+                newParent = departments.TryGetValue(parentCode, out var parent) ? parent.Id : Guid.NewGuid();
+            if (newCostCentre == existing.CostCenterId && newParent == existing.ParentDepartmentId) continue;
+            try { await guard.EnsureDepartmentUnchangedAsync(tenantId, existing.CompanyId, existing.Id, newParent, newCostCentre, ct); }
+            catch (CostCentreRuleException ex) { findings.Add(new AttributionFinding("departments", i, $"departments:{existing.Code}", Val(row, "NameEn"), ex)); }
+        }
+
+        for (var i = 0; i < parsed.Positions.Count; i++)
+        {
+            var row = parsed.Positions[i];
+            if (!positions.TryGetValue(Val(row, "Code"), out var existing)) continue;
+            if (Val(row, "CostCenterCode") is not { Length: > 0 } ccCode) continue;
+            var newCostCentre = CostCentreId(existing.CompanyId, ccCode);
+            if (newCostCentre == existing.CostCenterId) continue;
+            try { await guard.EnsurePositionUnchangedAsync(tenantId, existing.CompanyId, existing.Id, newCostCentre, ct); }
+            catch (CostCentreRuleException ex) { findings.Add(new AttributionFinding("positions", i, $"positions:{existing.Code}", Val(row, "Title"), ex)); }
+        }
+
+        return findings;
+    }
+
+    /// <summary>A package that carries cost centres, or links a department or position to one, re-points cost: it needs the cost-centre permission.</summary>
+    private bool PackageSetsCostAttribution(ParsedOrgPackage parsed) =>
+        parsed.CostCenters.Count > 0
+        || parsed.Departments.Any(r => HasValue(r, "CostCenterCode") || HasValue(r, "ParentDepartmentCode"))
+        || parsed.Positions.Any(r => HasValue(r, "CostCenterCode"));
 
     private static ParsedOrgPackage ParsePackage(OrganizationStructureImportRequest req) => new(
         Csv.Parse(req.CompaniesCsv ?? string.Empty),

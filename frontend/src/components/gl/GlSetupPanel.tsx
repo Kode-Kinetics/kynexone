@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react';
-import { AlertTriangle, BookOpen, Building2, CalendarCheck, CheckCircle2, Coins, HandCoins, KeyRound, Landmark, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, BookOpen, Building2, CalendarCheck, CheckCircle2, Coins, Split, HandCoins, KeyRound, Landmark, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
@@ -15,10 +15,11 @@ import { StatutoryRatesPanel, type StatutoryCountry } from './StatutoryRatesPane
 import { GlPeriodsPanel } from './GlPeriodsPanel';
 import { ErpApiKeysPanel } from './ErpApiKeysPanel';
 import { EosbProvisionPanel } from './EosbProvisionPanel';
+import { CostAccountingPanel } from './CostAccountingPanel';
 import { problemLabel, problemRank, routeRowId, useScopedResource } from './glUi';
 import type { SetupNavigationGuard } from '../../hooks/useSetupNavigationGuard';
 
-type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'periods' | 'eosb' | 'erpApi';
+type SubTab = 'coa' | 'drivers' | 'companyRates' | 'statutory' | 'costAccounting' | 'periods' | 'eosb' | 'erpApi';
 
 interface Props {
   companies: CompanyDto[];
@@ -82,6 +83,7 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave, requestedTa
           { id: 'drivers' as const, label: t('Posting Drivers'), icon: Landmark, show: driversRead },
           { id: 'companyRates' as const, label: t('Company Rates'), icon: Coins, show: ratesRead },
           { id: 'statutory' as const, label: t('Statutory Rates'), icon: ShieldCheck, show: statutoryRead },
+          { id: 'costAccounting' as const, label: t('Cost accounting'), icon: Split, show: glRead },
           { id: 'periods' as const, label: t('Accounting periods'), icon: CalendarCheck, show: glRead },
           { id: 'eosb' as const, label: t('End-of-service provision'), icon: HandCoins, show: glRead },
           { id: 'erpApi' as const, label: t('ERP API access'), icon: KeyRound, show: erpApiManage },
@@ -298,6 +300,7 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave, requestedTa
             costCenters={costCenters}
             resolve={resolve}
             onRoutingChanged={refreshRouting}
+            onOpenCostAccounting={glRead ? () => selectTab('costAccounting') : undefined}
           />
         )}
         {activeTab === 'drivers' && (
@@ -323,6 +326,9 @@ export function GlSetupPanel({ companies, costCenters, confirmLeave, requestedTa
             canOverride={statutoryOverride}
             canApprove={canApprove}
           />
+        )}
+        {activeTab === 'costAccounting' && (
+          <CostAccountingPanel companies={companies} scope={scope} costCenters={costCenters} canManage={glManage} onOpenTab={(tab) => selectTab(tab)} />
         )}
         {activeTab === 'periods' && <GlPeriodsPanel companyId={scope} />}
         {activeTab === 'eosb' && (

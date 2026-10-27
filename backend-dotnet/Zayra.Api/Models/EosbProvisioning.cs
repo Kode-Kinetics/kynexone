@@ -27,6 +27,8 @@ public class EosbProvisionSnapshot : ITenantOwned, ICompanyScopedOperational
     public DateOnly MeasuredAt { get; set; }
     /// <summary>The run whose Lock journal carries the movement (and whose void removes this row).</summary>
     public Guid PayrollRunId { get; set; }
+    /// <summary>Cost-accounting M1: the employee's resolved cost centre at measurement, for traceability only.</summary>
+    public Guid? CostCenterId { get; set; }
     /// <summary>Statutory obligation at <see cref="MeasuredAt"/> (Art. 84 full award, see the planner).</summary>
     public decimal Obligation { get; set; }
     /// <summary>The provision already carried for this employee before this month's movement.</summary>
@@ -78,6 +80,9 @@ public class GlAdjustmentRequest : ITenantOwned, ICompanyScopedOperational
     public string? DecidedByName { get; set; }
     public DateTime? DecidedAtUtc { get; set; }
     public string? DecisionNote { get; set; }
+    /// <summary>Cost-accounting v1 (WP-C3, AM-36): the optional cost centre the profit-and-loss line of the journal carries (null = none).
+    /// Validated by the one cost-centre reference check when requested; stamped, with its snapshots, on that line at approval.</summary>
+    public Guid? CostCenterId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
 }

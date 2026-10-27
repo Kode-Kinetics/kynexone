@@ -121,7 +121,7 @@ public static class PrivilegedMfaPolicy
         "payroll.structure_manage", "payroll.rates.manage", "payroll.rates.statutory_override",
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields
         "loans.write", "loans.approve", "loans.policy_manage",
-        "finance.gl.manage", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
+        "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
         "finance.gl.period.reopen", // un-freezes closed books
         // Employee records and bulk changes.
         "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates",
@@ -130,6 +130,8 @@ public static class PrivilegedMfaPolicy
         "employees.bulk_import", "employees.access.issue", "employees.access.reset", "dashboard.export", "reports.export", "reports.schedule", "audit.export",
         // Organisation, policy and configuration.
         "organization.write", "organization.delete", "organization.establishment.write", "organization.setup.apply",
+        // Re-pointing a department, position or employee to another cost centre moves where payroll cost posts.
+        "organization.costcenter.manage",
         "leave.policy_manage", "leave.cancel", "overtime.policy_manage", "attendance.policy_manage", "notifications.manage", "localization.manage",
         "shifts.write", "shifts.manage", "qiwa.configure", "qiwa.sync",
         // Attendance that drives pay.

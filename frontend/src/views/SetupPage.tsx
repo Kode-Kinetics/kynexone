@@ -59,7 +59,6 @@ import type {
   GradePayScaleComponentRequest,
   GradePackageComponentOption,
   CostCenterDto,
-  CostCenterRequest,
 } from '../api/organization';
 import {
   masterDataApi,
@@ -89,6 +88,8 @@ import { notifyGradesChanged } from '../lib/gradeEvents';
 import { GradePackageEditor } from '../components/setup/GradePackageEditor';
 import { linesToSave, unknownCodes } from '../lib/gradePackage';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
+import { toDepartmentPreview } from '../lib/orgImportPreview';
+import { CostCentreMasterPanel } from '../components/setup/CostCentreMasterPanel';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
@@ -721,6 +722,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
 function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const t = useT();
+  const { locale } = useLocale();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<DepartmentDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -789,7 +791,9 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             entityName="Departments"
             onExport={async () => { const csv = await departmentsApi.export(); downloadCsv(csv, 'departments.csv'); }}
             onDownloadTemplate={async () => { const csv = await departmentsApi.importTemplate(); downloadCsv(csv, 'departments-template.csv'); }}
-            onImport={async (csv) => { const r = await departmentsApi.import(csv, importCompanyId); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
+            importHelp={msg('Leave a cost-centre or parent cell blank to keep the current value. Write [CLEAR] to remove it.')}
+            onPreview={async (csv) => { const r = await departmentsApi.importPreview(csv, importCompanyId); return toDepartmentPreview(r.data, r.linksToClearHeader, locale); }}
+            onImport={async (csv, _key, options) => { const r = await departmentsApi.import(csv, importCompanyId, options); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
       >
@@ -1172,114 +1176,6 @@ function GradesTab() {
                   minSalary={form.minSalary} maxSalary={form.maxSalary} currency={form.currency || undefined} onCatalogue={setCatalogue} />}
           </div>
 
-          <FormField label={t('Status')}><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>
-        </div>
-      </Modal>
-      {confirmDialog}
-    </>
-  );
-}
-
-// ─── Cost Centers ───────────────────────────────────────────────────────────
-
-function CostCentersTab({ companies }: { companies: CompanyDto[] }) {
-  const t = useT();
-  const { confirm, dialog: confirmDialog } = useConfirm();
-  const [items, setItems] = useState<CostCenterDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState<CostCenterDto | null>(null);
-  useSetupEditorState(modalOpen);
-  const [form, setForm] = useState<CostCenterRequest>(emptyCostCenter());
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
-  // Addendum B: a cost centre belongs to one company; the switcher's company is the default for a new one.
-  const org = useOrgCompanies(companies);
-  const [companyFilter, setCompanyFilter] = useState('');
-  const unassignedCount = items.filter((c) => !c.companyId).length;
-  const shown = filterByCompany(items, companyFilter);
-  const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await costCentersApi.listAll()); } catch { /**/ }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  const openNew = () => { setEditing(null); setForm(emptyCostCenter(org.defaultCompanyId || undefined)); setError(''); setModalOpen(true); };
-  const openEdit = (c: CostCenterDto) => {
-    setEditing(c);
-    setForm({ companyId: c.companyId, code: c.code, name: c.name, nameAr: c.nameAr ?? '', isActive: c.isActive });
-    setError('');
-    setModalOpen(true);
-  };
-  const handleSave = async () => {
-    if (!form.code.trim() || !form.name.trim()) { setError(t('Code and name are required')); return; }
-    if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
-    setSaving(true); setError('');
-    try {
-      if (editing) await costCentersApi.update(editing.id, form);
-      else await costCentersApi.create(form);
-      setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
-    finally { setSaving(false); }
-  };
-  const f = (key: keyof CostCenterRequest, v: string | boolean | undefined) => setForm((x) => ({ ...x, [key]: v }));
-  const deleteCostCenter = async (id: string) => {
-    if (!(await confirm({ title: t('Delete cost center'), message: t('Delete this cost center?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
-    setDeleting(id);
-    try { await costCentersApi.remove(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setDeleting(null); }
-  };
-
-  return (
-    <>
-      <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
-      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Cost Center')} loading={loading} empty={shown.length === 0} emptyLabel={msg('No cost centres yet')} emptyHint={msg('Add your first cost centre, or import a CSV.')}
-        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
-        actions={
-          <ImportExportToolbar
-            entityName="Cost Centers"
-            onExport={async () => { const csv = await costCentersApi.export(); downloadCsv(csv, 'cost-centers.csv'); }}
-            onDownloadTemplate={async () => { const csv = await costCentersApi.importTemplate(); downloadCsv(csv, 'cost-centers-template.csv'); }}
-            onImport={async (csv) => { const r = await costCentersApi.import(csv, importCompanyId); load(); return r; }}
-          />
-        }
-      >
-        {shown.map((c) => (
-          <tr key={c.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-            <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{c.code}</td>
-            <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{c.name}</td>
-            <td className="px-4 py-3"><CompanyCell name={org.nameOf(c.companyId)} /></td>
-            <td className="px-4 py-3"><ActiveBadge active={c.isActive} /></td>
-            <td className="px-4 py-3">
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={() => openEdit(c)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                <button type="button" onClick={() => deleteCostCenter(c.id)} disabled={deleting === c.id} aria-label={t('Delete cost center')} className={DELETE_ROW_BUTTON}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
-                </button>
-              </div>
-            </td>
-          </tr>
-        ))}
-      </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? t('Edit Cost Center') : t('Add Cost Center')} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
-        <FormError error={error} />
-        <div className="space-y-3">
-          <FormField label={t('Company')} required>
-            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => f('companyId', v || undefined)}
-              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
-          </FormField>
-          <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="HR-OPS" /></FormField>
-          <FormField label={t('Name')} required><input value={form.name} onChange={(e) => f('name', e.target.value)} className="input w-full" placeholder="HR Operations" /></FormField>
-          <FormField label={t('Name (AR)')}>
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" lang="ar" />
-              <TransliterateButton source={form.name} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
-            </div>
-          </FormField>
           <FormField label={t('Status')}><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>
         </div>
       </Modal>
@@ -2517,9 +2413,6 @@ const emptyGrade = (): GradeRequest => ({
   minSalary: 0, midSalary: 0, maxSalary: 0, currency: '', isActive: true,
 });
 
-const emptyCostCenter = (companyId?: string): CostCenterRequest => ({
-  companyId, code: '', name: '', nameAr: '', isActive: true,
-});
 
 // ─── SetupPage ───────────────────────────────────────────────────────────────
 
@@ -2797,7 +2690,7 @@ export function SetupPage() {
       case 'departments': return <DepartmentsTab costCenters={costCenters} />;
       case 'designations': return <DesignationsTab grades={grades} />;
       case 'grades': return <GradesTab />;
-      case 'costCenters': return <CostCentersTab companies={companies} />;
+      case 'costCenters': return <CostCentreMasterPanel companies={companies} />;
       case 'masterData': return <MasterDataTab />;
       case 'numberingRules': return <NumberingRulesTab />;
       case 'systemSettings': return <SystemSettingsTab />;
