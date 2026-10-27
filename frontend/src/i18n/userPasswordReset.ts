@@ -42,6 +42,10 @@ const ar: Record<string, string> = {
   "Invited": "مدعو",
   "Deactivated": "معطّل",
 
+  // Create User: the password typed there is only temporary
+  "This is a temporary password. Give it to them in person; they choose their own the first time they sign in.":
+    "هذه كلمة مرور مؤقتة. سلّمها للمستخدم شخصيًا، وسيختار كلمة المرور الخاصة به عند أول تسجيل دخول.",
+
   // The sign-in page: choosing your own password after a temporary one
   "Choose your own password": "اختر كلمة المرور الخاصة بك",
   "Your administrator gave you a temporary password. Choose a new one that only you know to finish signing in.":

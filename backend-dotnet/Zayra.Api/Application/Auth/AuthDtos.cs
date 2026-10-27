@@ -38,9 +38,9 @@ public record AcceptInvitationRequest(
     [param: RequiredWorkspace] string TenantSlug);
 
 public record CreateUserRequest(
-    [Required, EmailAddress] string Email,
-    [Required] string FullName,
-    [Required, MinLength(10)] string Password,
+    [Required, EmailAddress, MaxLength(256)] string Email,
+    [Required, MaxLength(180)] string FullName,
+    [Required, MinLength(10), MaxLength(128)] string Password,
     IReadOnlyCollection<string> Roles,
     Guid? CompanyId = null,
     bool IsGroupScope = false);
@@ -150,7 +150,7 @@ public record EmployeeLoginLinkResultDto(
     public bool HandOverInPerson { get; init; }
 }
 
-public record AccessModeRequest([Required] string AccessMode, string? Reason);
+public record AccessModeRequest([Required, MaxLength(40)] string AccessMode, [MaxLength(500)] string? Reason);
 
 public record PermissionOverrideRequest([Required] string PermissionKey, [Required] string Effect, string? Reason, DateTime? ExpiresAtUtc);
 
@@ -345,10 +345,10 @@ public record UserListDto(
     bool MfaEnabled = false);
 
 public record UpdateUserRequest(
-    string? FullName,
-    string? PhoneNumber,
-    string? PreferredLanguage,
-    string? Timezone);
+    [MaxLength(180)] string? FullName,
+    [MaxLength(40)] string? PhoneNumber,
+    [MaxLength(10)] string? PreferredLanguage,
+    [MaxLength(80)] string? Timezone);
 
 public record ChangePasswordRequest(
     [System.ComponentModel.DataAnnotations.Required] string CurrentPassword,
@@ -560,7 +560,7 @@ public record MfaSelfDisableRequest(string? TotpCode = null, string? BackupCode 
 public record MfaDisableRequest(
     [System.ComponentModel.DataAnnotations.Required] string TotpCode);
 
-public record ReasonRequest(string? Reason);
+public record ReasonRequest([MaxLength(500)] string? Reason);
 
 public record PermissionGrantorDto(
     Guid Id,

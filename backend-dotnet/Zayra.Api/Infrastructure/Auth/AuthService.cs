@@ -107,7 +107,7 @@ public class AuthService : IAuthService
                 UserAgent     = context.UserAgent,
             });
             await _auditService.WriteAsync("auth.login_failed", "User", null, context,
-                $"{{\"email\":\"{request.Email}\",\"reason\":\"{failReason}\"}}", cancellationToken);
+                System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, reason = failReason }), cancellationToken);
             var refused = new UnauthorizedAccessException("Invalid email, password, or tenant.");
             if (failReason == "user_not_found") LoginFailureKind.MarkUnknownAccount(refused);
             throw refused;
@@ -140,7 +140,7 @@ public class AuthService : IAuthService
             });
             await _auditService.WriteAsync("auth.login_blocked_lockout", "User", user.Id.ToString(),
                 context with { UserId = user.Id, TenantId = user.TenantId },
-                $"{{\"email\":\"{request.Email}\",\"lockoutEnd\":\"{user.LockoutEnd:O}\"}}", cancellationToken);
+                System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, lockoutEnd = user.LockoutEnd }), cancellationToken);
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         }
 
@@ -174,7 +174,7 @@ public class AuthService : IAuthService
                 await _db.SaveChangesAsync(cancellationToken);
                 await _auditService.WriteAsync("auth.login_failed", "User", user.Id.ToString(),
                     context with { UserId = user.Id, TenantId = user.TenantId },
-                    $"{{\"email\":\"{request.Email}\",\"reason\":\"password_mismatch_known_device\"}}", cancellationToken);
+                    System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, reason = "password_mismatch_known_device" }), cancellationToken);
                 if (distrusted)
                 {
                     await _auditService.WriteAsync("auth.known_device_distrusted", "User", user.Id.ToString(),
@@ -215,7 +215,7 @@ public class AuthService : IAuthService
                 nowLocked ? "auth.account_locked" : "auth.login_failed",
                 "User", user.Id.ToString(),
                 context with { UserId = user.Id, TenantId = user.TenantId },
-                $"{{\"email\":\"{request.Email}\",\"failedCount\":{user.FailedLoginCount},\"reason\":\"password_mismatch\"}}",
+                System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, failedCount = user.FailedLoginCount, reason = "password_mismatch" }),
                 cancellationToken);
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         }
@@ -1038,11 +1038,21 @@ public class AuthService : IAuthService
                 "User",
                 user.Id.ToString(),
                 auditContext,
-                "{\"sessionsRevoked\":true}"));
+                // The link's id: an administrator-issued link's audit (access.password_reset_link_issued) names the same one.
+                System.Text.Json.JsonSerializer.Serialize(new { sessionsRevoked = true, resetTokenId = reference.Id })));
             await _db.SaveChangesAsync(ct);
         }
 
         await RunCredentialTransactionAsync(ResetOnceAsync, reference.TenantId, auditId, cancellationToken);
+
+        // The owner hears about every password change made through a link, whoever held the link.
+        var changed = await _db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == reference.UserId, cancellationToken);
+        if (changed is not null)
+            await NotifyAccountOwnerAsync(changed, "security.password_reset_completed", auditId.ToString("N"),
+                "Your KynexOne password was changed",
+                "The password for your account was just changed using a reset link, and you were signed out everywhere. "
+                + "If this was not you, contact your administrator straight away.",
+                cancellationToken);
     }
 
     /// <summary>

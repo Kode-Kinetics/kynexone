@@ -382,7 +382,8 @@ public class AccessController : ControllerBase
     /// stored only as a hash — the administrator learns a one-shot link, never a password.
     /// </summary>
     [HttpPost("users/{userId:guid}/password-reset-link")]
-    public async Task<IActionResult> IssuePasswordResetLink(Guid userId, CancellationToken cancellationToken)
+    public async Task<IActionResult> IssuePasswordResetLink(Guid userId, CancellationToken cancellationToken,
+        [FromServices] Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
         try
         {
@@ -455,6 +456,21 @@ public class AccessController : ControllerBase
                 IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
             });
             await _db.SaveChangesAsync(cancellationToken);
+
+            // A link an administrator was shown is a credential someone else holds: the owner is told, so a link they
+            // did not ask for is noticed. An emailed link reached them directly and needs no second message.
+            if (!emailSent && notifications is not null)
+                await notifications.EnqueueAsync(new Zayra.Api.Infrastructure.Notifications.NotificationRequest
+                {
+                    TenantId = tenantId.Value,
+                    UserId = userId,
+                    EventCode = "security.password_reset_link_handed_over",
+                    EntityName = "User",
+                    EntityId = $"{userId:D}:{link.ExpiresAtUtc:yyyyMMddHHmmss}",
+                    Title = "A password reset link was created for your account",
+                    Message = "An administrator created a one-time link to set a new password on your KynexOne account. It expires in 1 hour. "
+                        + "If you did not ask for this, contact your administrator now.",
+                }, cancellationToken);
 
             return Ok(new
             {
