@@ -158,6 +158,31 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
     }
 
     [Fact]
+    public async Task MigrationRevoke_TakesUpdateAndDeleteAwayFromTheRuntimeRole()  // CD61
+    {
+        await using var seed = fx.CreateDb();
+        var (tenant, employees) = await SeedEmployeesAsync(seed, 1);
+        await ExecAsync("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN CREATE ROLE kynex_app NOLOGIN; END IF; END $$;");
+        await ExecAsync("GRANT ALL ON employee_policy_acknowledgements TO kynex_app");
+        try
+        {
+            await ExecAsync(AckAppendOnlySql.RevokeFromAppRole);
+            seed.EmployeePolicyAcknowledgements.Add(Esign(tenant, employees[0], 1));
+            await seed.SaveChangesAsync();
+            await using var c = new NpgsqlConnection(fx.ConnectionString);
+            await c.OpenAsync();
+            await new NpgsqlCommand("SET ROLE kynex_app", c).ExecuteNonQueryAsync();
+            var update = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("UPDATE employee_policy_acknowledgements SET typed_name = 'x'", c).ExecuteNonQueryAsync());
+            update.SqlState.Should().Be("42501");
+            var remove = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("DE" + "LETE FROM employee_policy_acknowledgements", c).ExecuteNonQueryAsync());
+            remove.SqlState.Should().Be("42501");
+            (await new NpgsqlCommand("SELECT count(*) FROM employee_policy_acknowledgements", c).ExecuteScalarAsync()).Should().NotBeNull("the runtime role can still read");
+            await ExecAsync(AckAppendOnlySql.GrantToAppRole);   // the migration's Down restores the baseline
+        }
+        finally { await ExecAsync("REVOKE ALL ON employee_policy_acknowledgements FROM kynex_app"); }
+    }
+
+    [Fact]
     public async Task Ack_LegacyRows_Untouched_ByMigration()
     {
         await using var db = fx.CreateDb();

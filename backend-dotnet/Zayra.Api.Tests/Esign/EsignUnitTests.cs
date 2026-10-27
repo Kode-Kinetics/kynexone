@@ -204,11 +204,14 @@ public class EsignUnitTests
     [InlineData("CreateFunction")]
     [InlineData("CreateTrigger")]
     [InlineData("Drop")]
+    [InlineData("RevokeFromAppRole")]
+    [InlineData("GrantToAppRole")]
     public void P4Migration_CarriesTheSameAppendOnlySqlAsTheSharedConstant(string name)
     {
         var migration = typeof(Zayra.Api.Data.ZayraDbContext).Assembly.GetTypes().Single(x => x.Name == "OnboardingP4Acknowledgements");
         var inMigration = (string)migration.GetField(name, BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
         var shared = (string)typeof(Zayra.Api.Data.Esign.AckAppendOnlySql).GetField(name)!.GetRawConstantValue()!;
+        shared.Should().NotBeNullOrWhiteSpace();
         inMigration.Should().Be(shared);
     }
 }
