@@ -66,6 +66,10 @@ public sealed class EmployeeHireController : ControllerBase
             return Problem(409, "draft_changed_elsewhere", "This draft was changed in another window. Reload it before saving.");
 
         var request = body.Request;
+        // A caller who cannot see pay or identity values resumed a form that holds none of them: the server must not read
+        // those empty fields as an instruction to clear what is stored, so it ignores the sensitive blocks entirely.
+        if (!User.HasPermission("employees.sensitive"))
+            request = request with { PayrollProfile = null, SalaryBreakdown = null, ComplianceRecords = null };
         var guard = HttpContext.RequestServices.GetService(typeof(IEmployeeInputGuard)) as IEmployeeInputGuard;
         if (guard is not null) request = await guard.EnforceDraftAsync(tenantId, id, request, Context(tenantId), ct);
 

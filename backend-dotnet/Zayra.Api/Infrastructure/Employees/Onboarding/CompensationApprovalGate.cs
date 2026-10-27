@@ -137,6 +137,12 @@ public static class CompensationApprovalGate
             db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, priorFingerprint is null && approved == NoApproval ? CreatedAction : WrittenAction,
                 "Employee", employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), context with { TenantId = tenantId },
                 JsonSerializer.Serialize(Fingerprint(package.Salary, package.Iban))));
+        // The person who approved the change in the workflow has also seen and signed these figures: they are a second
+        // pair of eyes already, but never the Finance approver of the same package.
+        if (written && workflowApprover is Guid wf && wf != context.UserId)
+            db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, WrittenAction,
+                "Employee", employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), context with { TenantId = tenantId, UserId = wf },
+                JsonSerializer.Serialize(Fingerprint(package.Salary, package.Iban))));
     }
 
     /// <summary>

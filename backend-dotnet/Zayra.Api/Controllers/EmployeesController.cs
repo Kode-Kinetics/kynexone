@@ -3101,7 +3101,7 @@ public class EmployeesController : ControllerBase
         return canView
             ? new DuplicateMatchDto(m.EmployeeId, m.EmployeeCode, m.FullName, string.IsNullOrWhiteSpace(m.Branch) ? null : m.Branch,
                 m.CompanyId?.ToString(), m.Status, m.MatchType, m.Signals.ToList(), true)
-            : new DuplicateMatchDto(m.EmployeeId, string.Empty, "A matching record exists in another company", null,
+            : new DuplicateMatchDto(0, string.Empty, "A matching record exists in another company", null,
                 null, string.Empty, m.MatchType, new[] { "Contact a group administrator" }, false);
     }
 
