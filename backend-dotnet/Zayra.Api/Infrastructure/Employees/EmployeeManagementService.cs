@@ -444,7 +444,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // occupying→occupying and are deliberately NOT gated (mandated reinstatement is never refused).
         if (_activationGuard.ShouldGate(oldStatus, request.Status))
         {
-            if (_inputGuard is not null) await _inputGuard.EnforceActivationAsync(tenantId, id, context, ct);   // CD28
+            if (_inputGuard is not null) await _inputGuard.EnforceActivationAsync(tenantId, id, context, ct, request.AcknowledgedWarnings);   // CD28/CD44
             var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, ct);
             if (gateSnapshot is not null)
                 await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, ct);

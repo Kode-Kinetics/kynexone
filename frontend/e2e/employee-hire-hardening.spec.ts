@@ -152,7 +152,11 @@ test.describe('CD26 duplicate panel and rehire copy', () => {
     await page.getByLabel(L.ar.name).fill('Alex Morgan');
     await page.getByLabel(L.ar.name).blur();
     const panel = page.getByRole('region', { name: 'تطابق محتمل' });
-    await expect(panel).toContainText('منتهية خدمته');
+    await expect(panel).toContainText('منتهي الخدمة');
+    await expect(panel).toContainText('انضم في 2021');
+    await expect(panel).toContainText('شركة اختبار، انضم في 2021');   // Arabic comma joins status and year
+    await expect(panel).not.toContainText('·');
+    await expect(panel).not.toContainText('٠');
     await expect(panel).toContainText('شركة اختبار');
     await expect(panel).not.toContainText('Terminated');
   });
@@ -196,7 +200,7 @@ test.describe('lead review: no Self-Service promise on Review', () => {
   test('AR', async ({ page }) => {
     await bootHire(page, { locale: 'ar' });
     await basics(page, L.ar); await next(page, L.ar); await next(page, L.ar); await next(page, L.ar);
-    await expect(page.getByText('يمكنك تركه الآن وإضافته لاحقاً من ملف الموظف.')).toBeVisible();
+    await expect(page.getByText('يمكنك تركه الآن وإضافته لاحقًا من ملف الموظف.')).toBeVisible();
     await expect(page.getByText('الخدمة الذاتية')).toHaveCount(0);
   });
 });

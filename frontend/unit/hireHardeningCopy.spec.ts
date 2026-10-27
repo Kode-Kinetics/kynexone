@@ -37,12 +37,12 @@ test.describe('lead review fixes', () => {
     const { translate } = await import('../src/i18n/translations');
     expect(plainYear(2021)).toBe('2021');
     expect(translate('en', 'Joined in {year}', { year: plainYear(2021) })).toBe('Joined in 2021');
-    expect(translate('ar', 'Joined in {year}', { year: plainYear(2021) })).toBe('التحق عام 2021');
+    expect(translate('ar', 'Joined in {year}', { year: plainYear(2021) })).toBe('انضم في 2021');
   });
   test('no wizard sentence promises Self-Service completion; Review copy is neutral', () => {
     for (const k of Object.keys(hireWizard.ar)) expect(k, k).not.toMatch(/self-service|pre-?boarding/i);
     for (const v of Object.values(hireWizard.ar)) expect(v).not.toContain('الخدمة الذاتية');
     expect(LOCALE_DICTS.en['You can leave this for now and add it later from the employee record.']).toBeTruthy();
-    expect(LOCALE_DICTS.ar['You can leave this for now and add it later from the employee record.']).toBe('يمكنك تركه الآن وإضافته لاحقاً من ملف الموظف.');
+    expect(LOCALE_DICTS.ar['You can leave this for now and add it later from the employee record.']).toBe('يمكنك تركه الآن وإضافته لاحقًا من ملف الموظف.');
   });
 });

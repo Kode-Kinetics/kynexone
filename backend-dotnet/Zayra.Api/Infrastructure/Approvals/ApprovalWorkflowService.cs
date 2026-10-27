@@ -1306,7 +1306,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
                 excludeEmployeeId: employee.Id, path: "approval", context, cancellationToken);
         }
         // An approved change to a hire's pay also waits for Finance's approval of the package (the requester is the maker).
-        await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, priorPay, context with { UserId = change.RequestedByUserId ?? approverId }, cancellationToken);
+        await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, priorPay, context with { UserId = change.RequestedByUserId ?? approverId }, cancellationToken, workflowApprover: approverId);
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = approverId;
         change.Status = EmployeeChangeStatuses.ApprovedApplied;

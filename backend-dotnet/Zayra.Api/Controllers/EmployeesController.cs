@@ -3095,13 +3095,13 @@ public class EmployeesController : ControllerBase
 
     /// <summary>Scope-mask a raw detector match: cross-company matches (outside the caller's entity scope)
     /// return canView=false with code/name/branch stripped — never leak a person the caller cannot access.</summary>
-    private static DuplicateMatchDto MaskMatch(DuplicateMatch m, Zayra.Api.Application.Common.EntityScopeContext scope)
+    internal static DuplicateMatchDto MaskMatch(DuplicateMatch m, Zayra.Api.Application.Common.EntityScopeContext scope)
     {
         var canView = scope.CanAccessCompany(m.CompanyId);
         return canView
             ? new DuplicateMatchDto(m.EmployeeId, m.EmployeeCode, m.FullName, string.IsNullOrWhiteSpace(m.Branch) ? null : m.Branch,
                 m.CompanyId?.ToString(), m.Status, m.MatchType, m.Signals.ToList(), true)
-            : new DuplicateMatchDto(m.EmployeeId, string.Empty, "A matching record exists in another company", null,
+            : new DuplicateMatchDto(0, string.Empty, "A matching record exists in another company", null,
                 null, string.Empty, m.MatchType, new[] { "Contact a group administrator" }, false);
     }
 

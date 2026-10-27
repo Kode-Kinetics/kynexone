@@ -13,7 +13,7 @@ test('I-2/I-8: known hire-review keys render through t() in English and Arabic',
 });
 
 test('unknown keys fall back to the server label, then to the key', () => {
-  expect(reviewItemLabel({ key: 'IqamaNumber', label: 'Iqama number' }, tIn('ar'))).toBe('Iqama number');
+  expect(reviewItemLabel({ key: 'SomeFutureKey', label: 'Some future label' }, tIn('ar'))).toBe('Some future label');
   expect(reviewItemLabel({ key: 'X', label: '' }, tIn('en'))).toBe('X');
 });
 
