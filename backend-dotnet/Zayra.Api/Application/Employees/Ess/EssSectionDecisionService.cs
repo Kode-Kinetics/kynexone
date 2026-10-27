@@ -141,10 +141,10 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
         ClearRequested(action, section);
         StageAudit(change, employee, context, values, section);
         await db.SaveChangesAsync(ct);
-        return new OkObjectResult(change);
+        return new OkObjectResult(EssDecisionView.From(change, employee, user));
     }
 
-    public async Task<IActionResult> RejectAsync(EmployeeProfileChangeRequest change, ProfileChangeDecisionDto request, Guid? deciderId, CancellationToken ct)
+    public async Task<IActionResult> RejectAsync(EmployeeProfileChangeRequest change, Employee employee, ProfileChangeDecisionDto request, ClaimsPrincipal user, Guid? deciderId, CancellationToken ct)
     {
         var notes = request.Notes?.Trim();
         if (string.IsNullOrEmpty(notes) || notes.Length > 500) return EssProblem.Create(Http, 400, EssProblemCodes.NoteRequired);
@@ -161,7 +161,7 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
             EntityName = nameof(EmployeeProfileChangeRequest), EntityId = change.Id.ToString(),
         });
         await db.SaveChangesAsync(ct);
-        return new OkObjectResult(change);
+        return new OkObjectResult(EssDecisionView.From(change, employee, user));
     }
 
     // ── bank ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -252,7 +252,7 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
         // so they cannot be the approver. Reads the saved figure, hence after the save above.
         await CompensationApprovalGate.ReconcileAsync(db, employee, prior, context, ct, forceReopen: true);
         await db.SaveChangesAsync(ct);
-        return new OkObjectResult(change);
+        return new OkObjectResult(EssDecisionView.From(change, employee, Http.User));
     }
 
     private void ClearRequested(EmployeeActionItem? action, string section)

@@ -396,8 +396,12 @@ public class EmployeeSelfServiceController : ControllerBase
         if (change.Status != "PendingHR") return Conflict(new { message = "Profile change request is already decided." });
         if (await ProfileChangeDecisionRefusalAsync(tenantId, change, "reject", cancellationToken) is { } refusal) return refusal;
         if (change.Section is not null)   // P2: send one section back with a note; nothing else reopens
+        {
+            var rejectedEmployee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken);
+            if (rejectedEmployee is null) return NotFound();
             return await HttpContext.RequestServices.GetRequiredService<Zayra.Api.Application.Employees.Ess.EssSectionDecisionService>()
-                .RejectAsync(change, request, GetUserId(), cancellationToken);
+                .RejectAsync(change, rejectedEmployee, request, User, GetUserId(), cancellationToken);
+        }
         if (change.Reason == EmployeeCompletionController.RequestReason &&
             (string.IsNullOrWhiteSpace(request.Notes) || request.Notes.Trim().Length > 500))
             return BadRequest(new { message = "Give a correction note of up to 500 characters." });
