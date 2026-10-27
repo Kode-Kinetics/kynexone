@@ -871,7 +871,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && !x.IsDeleted
             && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken);
         if (document is null) return NotFound();
-        if (document.ScanStatus != "Clean") return Conflict(new { code = "document_quarantined", message = "This file is not available: it did not pass the security scan." });   // P2
+        if (!Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(document.ScanStatus)) return Conflict(new { code = "document_quarantined", message = "This file is not available: it did not pass the security scan." });   // P2
         byte[] bytes;
         try { bytes = await Storage.GetBytesAsync(tenantId, document.StorageUrl, cancellationToken); }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or DirectoryNotFoundException)

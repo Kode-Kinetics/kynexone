@@ -18,7 +18,7 @@ namespace Zayra.Api.Controllers;
 [Authorize]   // the audience is exactly the holders of employees.write (HasPermission on each action); deciding stays on the HR-role-gated approve/reject routes
 [NoStore]
 [Route("api/hr/profile-completion")]
-public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentStorage storage) : ControllerBase
+public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentStorage storage, IMalwareScanner scanner) : ControllerBase
 {
     private const int PageSize = 50;
     private static readonly string[] Statuses = ["PendingHR", "AwaitingFinance", "Approved", "Rejected", "Expired"];
@@ -83,6 +83,28 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
         return Ok(items);
     }
 
+    /// <summary>Runs the scanner again over a file it could not judge (<c>quarantined_pending</c>). A file that was FOUND to be infected is never cleared this way.</summary>
+    [HttpPost("documents/{id:guid}/rescan")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> Rescan(Guid id, CancellationToken ct)
+    {
+        if (!User.HasPermission("employees.read") || !User.HasPermission("employees.documents")) return Forbid();
+        var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
+        var doc = await db.EmployeeDocuments.FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == id && d.SourceSection != null && !d.IsDeleted, ct);
+        if (doc is null || doc.EmployeeId is null) return EssProblem.Create(HttpContext, 404, EssProblemCodes.NotFound);
+        if (doc.ScanStatus != ScanStatuses.QuarantinedPending) return EssProblem.Create(HttpContext, 409, EssProblemCodes.DocumentQuarantined);
+        byte[] bytes;
+        try { bytes = await storage.GetBytesAsync(tenantId, doc.StorageUrl, ct); }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or DirectoryNotFoundException)
+        { return EssProblem.Create(HttpContext, 404, EssProblemCodes.NotFound); }
+        var result = await scanner.ScanAsync(bytes, doc.FileName, ct);
+        doc.ScanStatus = ScanStatuses.Of(result.Verdict);
+        var uid = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var u) ? u : (Guid?)null;
+        EssScanAudit.Record(db, tenantId, doc, result, uid, "ess.completion.document_rescanned", HttpContext);
+        await db.SaveChangesAsync(ct);
+        return Ok(new { id = doc.Id, scanStatus = doc.ScanStatus });
+    }
+
     [HttpGet("documents/{id:guid}/download")]
     [HasPermission("employees.write")]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct)
@@ -94,7 +116,7 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
         var doc = await db.EmployeeDocuments.FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == id && d.SourceSection != null && !d.IsDeleted, ct);
         if (doc is null || doc.EmployeeId is null) return EssProblem.Create(HttpContext, 404, EssProblemCodes.NotFound);
         if (EmployeeDocumentDto.IsSensitiveDocument(doc.DocumentType, doc.DocumentCategory) && !User.HasPermission("employees.sensitive")) return Forbid();
-        if (doc.ScanStatus != "Clean") return EssProblem.Create(HttpContext, 409, EssProblemCodes.DocumentQuarantined);
+        if (!ScanStatuses.IsServable(doc.ScanStatus)) return EssProblem.Create(HttpContext, 409, EssProblemCodes.DocumentQuarantined);
         byte[] bytes;
         try { bytes = await storage.GetBytesAsync(tenantId, doc.StorageUrl, ct); }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or DirectoryNotFoundException)

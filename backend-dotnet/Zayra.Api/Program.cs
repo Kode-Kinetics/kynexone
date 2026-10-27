@@ -586,7 +586,9 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Za
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.MfaTrustedDeviceRetentionRule>();
 // P2 — ESS profile completion: step-up proof, malware-scan hook (no-op until an engine is plugged in), section requests/decisions, 30-day purge of rejected submissions.
 builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.IStepUpService, Zayra.Api.Infrastructure.Auth.StepUp.StepUpService>();
-builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.IMalwareScanner, Zayra.Api.Application.Employees.Ess.NoopMalwareScanner>();
+// Upload scanning: Uploads:MalwareScan:Mode = TrustedSource (default, marks files "not scanned") | ClamAv (self-hosted clamd; fail closed).
+var malwareScanner = Zayra.Api.Application.Employees.Ess.MalwareScannerRegistration.Create(builder.Configuration);
+builder.Services.AddSingleton<Zayra.Api.Application.Employees.Ess.IMalwareScanner>(malwareScanner);
 builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.IEssSectionRequester, Zayra.Api.Application.Employees.Ess.EssSectionRequester>();
 builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.EssSectionDecisionService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.EssCompletionRejectedRetentionRule>();

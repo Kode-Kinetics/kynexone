@@ -61,7 +61,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         {
             progress = new { done = sections.Count(s => s.State == EssCompletion.Accepted), total = sections.Count },
             noticeVersion = EssCompletion.NoticeVersion,
-            hosting = config["Ess:HostingRegion"] ?? "us-east",
+            hosting = EssCompletion.HostingRegionOrDefault(config["Ess:HostingRegion"]),
             sections,
         });
     }
@@ -128,7 +128,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         var documents = documentIds.Count == 0 ? [] : await db.EmployeeDocuments.AsNoTracking()
             .Where(d => d.TenantId == ctx.TenantId && d.EmployeeId == ctx.Employee.Id && d.SourceSection == section && !d.IsDeleted && documentIds.Contains(d.Id)).ToListAsync(ct);
         if (documents.Count != documentIds.Count) errors["documents"] = [EmployeeFieldErrors.InvalidFormat];
-        else if (documents.Any(d => d.ScanStatus == "Quarantined")) return EssProblem.Create(HttpContext, 400, EssProblemCodes.DocumentQuarantined);
+        else if (documents.Any(d => !ScanStatuses.IsServable(d.ScanStatus))) return EssProblem.Create(HttpContext, 400, EssProblemCodes.DocumentQuarantined);
         if (section == EssSectionKeys.Documents && documents.Count == 0) errors["documents"] = [EmployeeFieldErrors.Required];
         if (errors.Count > 0) return EssProblem.Validation(HttpContext, 422, EssProblemCodes.ValidationFailed, errors);
 
@@ -221,7 +221,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         {
             TenantId = ctx.TenantId, CompanyId = ctx.Employee.CompanyId, EmployeeId = ctx.Employee.Id, DocumentType = DocumentTypeByKind[kind], DocumentCategory = kind,
             FileName = stored.FileName, ContentType = verdict.ContentType, StorageUrl = stored.StorageUrl, ApprovalStatus = "Pending", IsRequired = false,
-            UploadedBy = ctx.UserId, SourceSection = section, ScanStatus = scan.ToString(),
+            UploadedBy = ctx.UserId, SourceSection = section, ScanStatus = ScanStatuses.Of(scan.Verdict),
         };
         db.EmployeeDocuments.Add(doc);
         db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
@@ -229,6 +229,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
             TenantId = ctx.TenantId, EmployeeId = ctx.Employee.Id, UserId = ctx.UserId, Action = "ess.completion.document_uploaded",
             EntityName = nameof(EmployeeDocument), EntityId = doc.Id.ToString(),
         });
+        EssScanAudit.Record(db, ctx.TenantId, doc, scan, ctx.UserId, "ess.completion.document_scanned", HttpContext);
         await db.SaveChangesAsync(ct);
         return Created($"/api/ess/documents/{doc.Id}", new { id = doc.Id, kind, scanStatus = doc.ScanStatus });
     }
@@ -243,7 +244,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         var employee = await db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted && (x.Status == "Active" || x.Status == "Invited"), ct);
         if (employee is null) return null;
         var country = employee.CompanyId is null ? null : await db.Companies.AsNoTracking().Where(c => c.Id == employee.CompanyId).Select(c => c.CountryCode).FirstOrDefaultAsync(ct);
-        var hasId = await db.EmployeeDocuments.AsNoTracking().AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && !d.IsDeleted && d.ScanStatus != "Quarantined" && IdDocumentTypes.Contains(d.DocumentType)
+        var hasId = await db.EmployeeDocuments.AsNoTracking().AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && !d.IsDeleted && (d.ScanStatus == ScanStatuses.Clean || d.ScanStatus == ScanStatuses.NotScannedTrustedSource) && IdDocumentTypes.Contains(d.DocumentType)
             // A copy the employee has only just sent is not "held" until HR accepts it; a copy HR (or the hire) already holds is.
             && (d.SourceSection == null || d.ApprovalStatus == "Approved"), ct);
         var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uid) ? uid : (Guid?)null;

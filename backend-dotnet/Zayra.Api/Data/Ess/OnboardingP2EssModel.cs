@@ -46,8 +46,8 @@ public static class OnboardingP2EssModel
         modelBuilder.Entity<EmployeeDocument>(entity =>
         {
             entity.ToTable("employee_documents", t =>
-                t.HasCheckConstraint(ScanStatusCheck, "scan_status IN ('Clean','PendingScan','Quarantined')"));
-            entity.Property(x => x.ScanStatus).HasMaxLength(12).HasDefaultValue("Clean").IsRequired();
+                t.HasCheckConstraint(ScanStatusCheck, "scan_status IN ('clean','not_scanned_trusted_source','quarantined','quarantined_pending')"));
+            entity.Property(x => x.ScanStatus).HasMaxLength(32).HasDefaultValue("clean").IsRequired();
             entity.Property(x => x.SourceSection).HasMaxLength(24);
         });
     }

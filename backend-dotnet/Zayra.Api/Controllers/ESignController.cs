@@ -124,7 +124,7 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
         if (doc is null) return Err(404, EsignProblemCodes.NotFound);
         if (await db.EmployeePolicyAcknowledgements.AsNoTracking().AnyAsync(a => a.TenantId == tenantId && a.EmployeeId == id && a.PolicyId == documentId, ct)) return Err(409, EsignProblemCodes.AlreadySigned);
         if (RestrictedEmployeeDocumentTypes.IsRestricted(doc.DocumentType) || string.Equals(doc.DocumentType, EsignConstants.DocumentType, StringComparison.OrdinalIgnoreCase)
-            || EmployeeDocumentDto.IsSensitiveDocument(doc.DocumentType, doc.DocumentCategory) || doc.ScanStatus != "Clean"
+            || EmployeeDocumentDto.IsSensitiveDocument(doc.DocumentType, doc.DocumentCategory) || !ScanStatuses.IsServable(doc.ScanStatus)
             || !string.Equals(doc.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase))
             return Err(422, EsignProblemCodes.DocumentNotSignable);
         var bytes = await ReadAsync(tenantId, doc, ct);
@@ -290,7 +290,7 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
 
     private Task<EmployeeDocument?> OwnSignableAsync(Guid tenantId, int employeeId, Guid documentId, CancellationToken ct) =>
         db.EmployeeDocuments.AsNoTracking().FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == documentId && d.EmployeeId == employeeId && !d.IsDeleted
-            && d.SignatureRequiredAtUtc != null && d.ScanStatus == "Clean", ct);
+            && d.SignatureRequiredAtUtc != null && (d.ScanStatus == ScanStatuses.Clean || d.ScanStatus == ScanStatuses.NotScannedTrustedSource), ct);
 
     private async Task<byte[]?> ReadAsync(Guid tenantId, EmployeeDocument doc, CancellationToken ct)
     {
@@ -300,7 +300,7 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
 
     private async Task<List<object>> ListForAsync(Guid tenantId, int employeeId, CancellationToken ct)
     {
-        var docs = await db.EmployeeDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.EmployeeId == employeeId && !d.IsDeleted && d.SignatureRequiredAtUtc != null && d.ScanStatus == "Clean")
+        var docs = await db.EmployeeDocuments.AsNoTracking().Where(d => d.TenantId == tenantId && d.EmployeeId == employeeId && !d.IsDeleted && d.SignatureRequiredAtUtc != null && (d.ScanStatus == ScanStatuses.Clean || d.ScanStatus == ScanStatuses.NotScannedTrustedSource))
             .OrderByDescending(d => d.SignatureRequiredAtUtc).ToListAsync(ct);
         var ids = docs.Select(d => d.Id).ToList();
         var acks = await db.EmployeePolicyAcknowledgements.AsNoTracking().Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && ids.Contains(a.PolicyId)).ToListAsync(ct);

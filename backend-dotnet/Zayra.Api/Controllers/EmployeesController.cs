@@ -3515,7 +3515,7 @@ public class EmployeesController : ControllerBase
         }
 
         // P2: a file the upload scan has not passed (ESS completion uploads) is not served to HR either.
-        if (document.ScanStatus != "Clean") return Conflict(new { code = "document_quarantined", message = "This file is not available: it did not pass the security scan." });
+        if (!Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(document.ScanStatus)) return Conflict(new { code = "document_quarantined", message = "This file is not available: it did not pass the security scan." });
 
         byte[] contents;
         try

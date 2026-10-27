@@ -39,7 +39,7 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
     {
         var tenant = c.TenantId;
         var doc = await db.EmployeeDocuments.AsNoTracking().FirstOrDefaultAsync(d => d.TenantId == tenant && d.Id == c.DocumentId && d.EmployeeId == c.EmployeeId
-            && !d.IsDeleted && d.SignatureRequiredAtUtc != null && d.ScanStatus == "Clean", ct);
+            && !d.IsDeleted && d.SignatureRequiredAtUtc != null && (d.ScanStatus == ScanStatuses.Clean || d.ScanStatus == ScanStatuses.NotScannedTrustedSource), ct);
         var employee = doc is null ? null : await db.Employees.AsNoTracking().FirstOrDefaultAsync(e => e.TenantId == tenant && e.Id == c.EmployeeId && !e.IsDeleted, ct);
         if (doc is null || employee is null) return Fail(404, EsignProblemCodes.NotFound);
 

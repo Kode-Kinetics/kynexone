@@ -33,6 +33,10 @@ public static class EssCompletion
 {
     /// <summary>Version of the privacy notice the employee is shown. A submit must echo it (PDPL: notice before collection).</summary>
     public const string NoticeVersion = "ess-1";
+    /// <summary>The hosting regions the privacy notice can name (a key; the screen supplies the human text).</summary>
+    public static readonly IReadOnlyList<string> HostingRegions = ["us-east", "us-west", "eu-west", "eu-central", "me-sa"];
+    public static string HostingRegionOrDefault(string? configured) =>
+        configured is not null && HostingRegions.Contains(configured.Trim(), StringComparer.Ordinal) ? configured.Trim() : "us-east";
     public const int MaxSubmissionsPerDay = 5;
     public const int MaxAttachmentsPerSection = 3;
     public const long MaxFileBytes = 5L * 1024 * 1024;
@@ -52,20 +56,6 @@ public static class EssCompletion
 
     /// <summary>The legacy (pre-section) request reason; maps to person + emergency.</summary>
     public const string LegacyReason = "Employee profile completion";
-}
-
-public enum ScanVerdict { Clean, PendingScan, Quarantined }
-
-/// <summary>Malware scan hook for ESS uploads. The default is a no-op; a real engine plugs in here without touching the flow.</summary>
-public interface IMalwareScanner
-{
-    Task<ScanVerdict> ScanAsync(ReadOnlyMemory<byte> bytes, string fileName, CancellationToken ct);
-}
-
-public sealed class NoopMalwareScanner : IMalwareScanner
-{
-    public Task<ScanVerdict> ScanAsync(ReadOnlyMemory<byte> bytes, string fileName, CancellationToken ct) =>
-        Task.FromResult(ScanVerdict.Clean);
 }
 
 /// <summary>Contract C-1: the only thing P3 calls. Asks the employee to complete the named sections.</summary>
