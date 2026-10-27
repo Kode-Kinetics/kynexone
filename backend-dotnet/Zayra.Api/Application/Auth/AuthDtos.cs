@@ -354,9 +354,14 @@ public record ChangePasswordRequest(
     [System.ComponentModel.DataAnnotations.Required] string CurrentPassword,
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MinLength(10)] string NewPassword);
 
+/// <summary>
+/// An administrator sets a TEMPORARY password for another user. It is always single-purpose: the user must replace
+/// it at their next sign-in (there is no "keep this password" option), so the administrator never knows a password
+/// the user actually uses. <see cref="Reason"/> is required and lands in the audit trail.
+/// </summary>
 public record AdminResetPasswordRequest(
-    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MinLength(10)] string NewPassword,
-    bool MustChangePassword = true);
+    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MinLength(10), System.ComponentModel.DataAnnotations.MaxLength(128)] string NewPassword,
+    [System.ComponentModel.DataAnnotations.MaxLength(500)] string? Reason = null);
 
 /// <summary>
 /// The controlled password-reset link an administrator issues on a user's behalf. The raw
@@ -434,7 +439,18 @@ public record MfaStatusDto(
 public record AuthLoginResult(AuthResponse? Tokens, MfaChallengeDto? Challenge, bool RequiresMfaEnrollment = false, MfaChallengeDto? EnrollmentChallenge = null)
 {
     public bool RequiresMfa => Challenge is not null;
+
+    /// <summary>
+    /// The password proven was a temporary one an administrator set. No session is issued: the caller gets a
+    /// single-use, short-lived token for POST /api/auth/reset-password and must choose their own password first.
+    /// </summary>
+    public PasswordChangeChallengeDto? PasswordChange { get; init; }
 }
+
+/// <summary>A reset token minted by sign-in itself, after the temporary password was proven.</summary>
+/// <param name="TenantSlug">The workspace the sign-in resolved (it may have come from the email's domain), which
+/// POST /api/auth/reset-password needs alongside the token.</param>
+public record PasswordChangeChallengeDto(string ResetToken, int ExpiresInSeconds, string TenantSlug);
 
 /// <summary>Temporary secret + provisioning URI returned during TOTP setup.
 /// The provisioning URI contains the base32 secret embedded and is safe to return once.

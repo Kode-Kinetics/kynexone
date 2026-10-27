@@ -2043,33 +2043,37 @@ public class AccessManagementService : IAccessManagementService
             cancellationToken);
     }
 
-    public async Task AdminResetPasswordAsync(Guid tenantId, Guid userId, AdminResetPasswordRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
+    /// <summary>Shortest and longest reason an administrator must give for setting someone's temporary password.</summary>
+    internal const int AdminPasswordReasonMin = 3, AdminPasswordReasonMax = 500;
+
+    /// <inheritdoc />
+    public async Task AuthorizeAdminPasswordSetAsync(Guid tenantId, Guid userId, string? reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
     {
+        if (context.UserId is null)
+            throw new InvalidOperationException("Sign in as an administrator of this workspace.");
+        var trimmed = reason?.Trim() ?? string.Empty;
+        if (trimmed.Length is < AdminPasswordReasonMin or > AdminPasswordReasonMax)
+            throw new InvalidOperationException($"Give a reason ({AdminPasswordReasonMin}–{AdminPasswordReasonMax} characters). It is kept in the audit log.");
+        // Never yourself: your own password changes through My account, which proves the current one.
+        if (userId == context.UserId)
+            throw new InvalidOperationException("You cannot set your own password here. Use Change password in your account instead.");
+
         var user = await _db.Users
             .Include(x => x.EmployeeUserAccounts)
             .ApplyEntityScope(_db, tenantId, entityScope)
+            .AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
+        AdminPasswordSetGuard.ThrowIfAccountCannotTakeOne(user);
+        if (string.Equals(AuthCurrentEligibility.PrimaryAccess(user)?.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "This person has no portal login, so there is no password to set. Invite them to the portal first.");
+
         await WorkEmailSetterRule.ThrowIfCallerIsSetterForLoginAsync(_db, tenantId, userId, context.UserId, cancellationToken);
-        // The endpoint is disabled (AccessController answers 409), but the method must not be a ceiling bypass.
+        // PRIVILEGE CEILING: whoever sets the password knows it, so setting one for a user above you is a takeover.
         await EnsureMayManageAccountAsync(tenantId, context,
             await LoadAccessUser(tenantId, userId, entityScope, cancellationToken) ?? throw new InvalidOperationException("User not found."),
             cancellationToken);
-        user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
-        user.MustChangePassword = request.MustChangePassword;
-        user.LastPasswordChangedAt = DateTime.UtcNow;
-        user.UpdatedAtUtc = DateTime.UtcNow;
-        user.IsActive = true;
-        // Clear the invitation flag so the new password can be used immediately to log in
-        foreach (var link in user.EmployeeUserAccounts.Where(x => !x.IsDeleted))
-        {
-            link.RequiresPasswordSetup = false;
-            link.Status = "Active";
-            link.UpdatedAtUtc = DateTime.UtcNow;
-        }
-        await RevokeActiveRefreshTokensAsync(userId, context, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.admin_password_reset", "User", user.Id.ToString(), context, null, cancellationToken);
     }
 
     /// <summary>How long an administrator-issued reset link stays redeemable. Matches the

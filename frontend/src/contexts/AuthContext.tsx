@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { authApi, isMfaChallenge, isMfaEnrollment } from '../api/auth';
+import { authApi, isMfaChallenge, isMfaEnrollment, isPasswordChangeRequired } from '../api/auth';
 import type { AuthResponse, AuthUser, MfaChallengeCode } from '../api/auth';
 import { afterMeFailure, afterMeSuccess, type AuthLoadError } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from '../api/clearSession';
@@ -19,7 +19,7 @@ export interface MfaEnrollmentPendingState {
   expiresInSeconds: number;
 }
 
-export type LoginOutcome = 'authenticated' | 'mfa' | 'mfa-enroll';
+export type LoginOutcome = 'authenticated' | 'mfa' | 'mfa-enroll' | 'password-change';
 export type AuthorizationRefreshStatus = 'idle' | 'checking' | 'unavailable';
 
 interface AuthContextValue {
@@ -41,6 +41,11 @@ interface AuthContextValue {
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
   login: (email: string, password: string, tenantSlug?: string) => Promise<LoginOutcome>;
+  /**
+   * After 'password-change': replace the administrator's temporary password with the person's own, then sign in
+   * with it (which may still ask for a two-step code). The temporary password itself is refused (400).
+   */
+  completePasswordChange: (newPassword: string) => Promise<LoginOutcome>;
   /**
    * Complete login after the code step: the app's 6-digit code (a string), or `{ backupCode }`.
    * `rememberDevice` only when the choice was offered; it is never sent with a backup code.
@@ -73,6 +78,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [mfaPending, setMfaPending] = useState<MfaPendingState | null>(null);
   const [mfaEnrollmentPending, setMfaEnrollmentPending] = useState<MfaEnrollmentPendingState | null>(null);
+  // Held in memory only, for the "choose your own password" step; never stored.
+  const passwordChangePending = useRef<{ email: string; resetToken: string; tenantSlug: string } | null>(null);
 
   const [authError, setAuthError] = useState<AuthLoadError | null>(null);
   const [authorizationRefreshStatus, setAuthorizationRefreshStatus] = useState<AuthorizationRefreshStatus>('idle');
@@ -161,6 +168,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string, tenantSlug?: string) => {
     const res = await authApi.login(email, password, tenantSlug);
+    if (isPasswordChangeRequired(res)) {
+      passwordChangePending.current = { email, resetToken: res.resetToken, tenantSlug: res.tenantSlug };
+      setMfaPending(null);
+      setMfaEnrollmentPending(null);
+      return 'password-change';
+    }
+    passwordChangePending.current = null;
     if (isMfaChallenge(res)) {
       // Credentials verified; TOTP step required before tokens are issued.
       const days = Number(res.rememberDeviceDays);
@@ -188,6 +202,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(withResetNotice(res));
     return 'authenticated';
   }, []);
+
+  const completePasswordChange = useCallback(async (newPassword: string): Promise<LoginOutcome> => {
+    const pending = passwordChangePending.current;
+    if (!pending) throw new Error('No password change in progress.');
+    await authApi.resetPassword(pending.resetToken, newPassword, pending.tenantSlug);
+    passwordChangePending.current = null;
+    return login(pending.email, newPassword, pending.tenantSlug);
+  }, [login]);
 
   const verifyMfaChallenge = useCallback(async (code: string | MfaChallengeCode, rememberDevice?: boolean) => {
     if (!mfaPending) throw new Error('No MFA challenge in progress.');
@@ -249,7 +271,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, authError, retryAuth, authorizationRefreshStatus, retryAuthorization: refreshAuthorization, mfaPending, mfaEnrollmentPending, login, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
+    <AuthContext.Provider value={{ user, isLoading, authError, retryAuth, authorizationRefreshStatus, retryAuthorization: refreshAuthorization, mfaPending, mfaEnrollmentPending, login, completePasswordChange, verifyMfaChallenge, beginMfaEnrollment, logout, hasPermission, hasRole }}>
       {children}
     </AuthContext.Provider>
   );

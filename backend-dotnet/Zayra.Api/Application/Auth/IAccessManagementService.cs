@@ -27,7 +27,12 @@ public interface IAccessManagementService
     Task SuspendUserAsync(Guid tenantId, Guid userId, string reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task LockUserAsync(Guid tenantId, Guid userId, string reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task UnlockUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
-    Task AdminResetPasswordAsync(Guid tenantId, Guid userId, AdminResetPasswordRequest request, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>
+    /// May the caller set a temporary password for this user? Throws <see cref="InvalidOperationException"/> (or the
+    /// ceiling exception) when not: a reason is required, never yourself, the user must be in your scope, below your
+    /// ceiling, and hold an active local login. The password itself is written by IAuthService.AdminSetTemporaryPasswordAsync.
+    /// </summary>
+    Task AuthorizeAdminPasswordSetAsync(Guid tenantId, Guid userId, string? reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
 
     /// <summary>
     /// Mints the controlled, single-use, one-hour password-reset link that replaced the

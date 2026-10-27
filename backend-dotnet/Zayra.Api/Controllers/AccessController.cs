@@ -25,16 +25,19 @@ public class AccessController : ControllerBase
 {
     private readonly IAccessManagementService _accessManagement;
     private readonly ZayraDbContext _db;
+    private readonly IAuthService? _authService;
     private readonly IEmailService _emailService;
 
     public AccessController(
         IAccessManagementService accessManagement,
         ZayraDbContext db,
-        IEmailService emailService)
+        IEmailService emailService,
+        IAuthService? authService = null)
     {
         _accessManagement = accessManagement;
         _db = db;
         _emailService = emailService;
+        _authService = authService;
     }
 
     [HttpGet("roles")]
@@ -329,21 +332,37 @@ public class AccessController : ControllerBase
     }
 
     /// <summary>
-    /// Deliberately and permanently disabled: an administrator must never choose another person's
-    /// password. <see cref="IssuePasswordResetLink"/> is the supported replacement, and the message
-    /// now names it — previously this 409 was a dead end with no reachable alternative, so the
-    /// product's "Reset password" action could not succeed at all.
+    /// Sets a TEMPORARY password for another user — the in-person alternative to <see cref="IssuePasswordResetLink"/>
+    /// when the user cannot receive email. The administrator knows this password, so it can only ever be spent on
+    /// choosing a new one: sign-in proves it, opens no session, and asks for the user's own password
+    /// (AuthService.LoginAsync, Phase 4a''). Every session, reset link and open challenge ends, and the user is notified.
+    ///
+    /// AUTHORIZATION: the class-level <c>security.manage</c> and the account ceiling, never yourself, a reason is
+    /// required (audited). 400 for an account that cannot take one (no login, SSO, not yet set up, inactive) or a
+    /// password the workspace policy rejects; 403 above your ceiling; the caller becomes a credential handler.
     /// </summary>
     [HttpPost("users/{userId:guid}/admin-reset-password")]
     public async Task<IActionResult> AdminResetPassword(Guid userId, AdminResetPasswordRequest request, CancellationToken cancellationToken)
     {
-        await Task.CompletedTask;
-        return Conflict(new
+        try
         {
-            error = "temporary_password_flow_disabled",
-            message = "Setting a password on a user's behalf is disabled. Send a password-reset link instead.",
-            useEndpoint = $"POST /api/access/users/{userId}/password-reset-link"
-        });
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
+            if (_authService is null) return StatusCode(StatusCodes.Status503ServiceUnavailable);
+            var context = GetContext();
+            await _accessManagement.AuthorizeAdminPasswordSetAsync(tenantId.Value, userId, request.Reason, ManagementScope(), context, cancellationToken);
+            await _authService.AdminSetTemporaryPasswordAsync(tenantId.Value, userId, request.NewPassword, request.Reason!.Trim(), context, cancellationToken);
+            return Ok(new
+            {
+                userId,
+                mustChangePassword = true,
+                sessionsRevoked = true,
+                message = "Temporary password set. Give it to the user in person or over a trusted channel — they must choose their own password when they next sign in. They were signed out everywhere."
+            });
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.admin_password_reset", "User", userId.ToString()); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     /// <summary>

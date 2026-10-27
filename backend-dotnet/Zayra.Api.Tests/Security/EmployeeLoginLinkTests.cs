@@ -1043,13 +1043,15 @@ public sealed class EmployeeLoginLinkTests
             Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result)
                 .NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
 
-        // The (retired, still callable) administrator reset: the administrator chose the password.
+        // The administrator's temporary password: the administrator chose (and knows) the password.
         await using (var db = _fixture.CreateRetryingDb())
         {
             var controller = Controller(db, w, w.AdminId);
             var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new JwtTokenService(Jwt));
-            await service.AdminResetPasswordAsync(w.TenantId, login, new AdminResetPasswordRequest(OwnersOwnPassword, MustChangePassword: false),
-                EntityScopeContext.FromClaims(controller.User), new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId), default);
+            var context = new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId);
+            await service.AuthorizeAdminPasswordSetAsync(w.TenantId, login, "Locked out, asked in person",
+                EntityScopeContext.FromClaims(controller.User), context, default);
+            await Auth(db).AdminSetTemporaryPasswordAsync(w.TenantId, login, OwnersOwnPassword, "Locked out, asked in person", context, default);
         }
 
         await AssertCredentialHandlerRefusedAsync(w, w.AdminId, login, employeeId);

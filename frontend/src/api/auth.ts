@@ -147,7 +147,24 @@ export interface MfaEnrollmentResponse {
   message: string;
 }
 
-export type LoginResponse = AuthResponse | MfaChallengeResponse | MfaEnrollmentResponse;
+/**
+ * The password proven was a temporary one an administrator set (Users → Reset password → Set a temporary
+ * password). No session yet: `resetToken` (single use, ~15 minutes) goes to POST /api/auth/reset-password with
+ * the person's own new password, then they sign in with it. `tenantSlug` is the workspace the sign-in resolved.
+ */
+export interface PasswordChangeRequiredResponse {
+  passwordChangeRequired: true;
+  resetToken: string;
+  expiresInSeconds: number;
+  tenantSlug: string;
+  message: string;
+}
+
+export type LoginResponse = AuthResponse | MfaChallengeResponse | MfaEnrollmentResponse | PasswordChangeRequiredResponse;
+
+export function isPasswordChangeRequired(r: LoginResponse): r is PasswordChangeRequiredResponse {
+  return (r as PasswordChangeRequiredResponse).passwordChangeRequired === true;
+}
 
 export function isMfaChallenge(r: LoginResponse): r is MfaChallengeResponse {
   return (r as MfaChallengeResponse).mfaRequired === true;
