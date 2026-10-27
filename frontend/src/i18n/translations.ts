@@ -41,6 +41,7 @@ import { setupSections } from './setupSections';
 import { attendanceRules } from './attendanceRules';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
+import { onboardingP2 } from './onboardingP2';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1497,6 +1498,7 @@ const en: Dict = {
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
   ...hireWizard.en,
+  ...onboardingP2.en,
   ...setupExperience.en,
   ...glSetup.en,
   ...costCentres.en,
@@ -2970,6 +2972,7 @@ const ar: Dict = {
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
   ...hireWizard.ar,
+  ...onboardingP2.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
   ...costCentres.ar,

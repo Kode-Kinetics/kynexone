@@ -26,6 +26,16 @@ public class EmployeeProfileChangeRequest : ITenantOwned
     public Guid? CreatedBy { get; set; }
     public DateTime? DecidedAtUtc { get; set; }
     public Guid? DecidedBy { get; set; }
+
+    // P2 (ESS completion): per-section requests. NULL section = a legacy request (the 2026-10 blob, or any other ESS change).
+    /// <summary>One of <c>ProfileSectionRegistry</c> keys; NULL for a legacy request.</summary>
+    public string? Section { get; set; }
+    /// <summary>The privacy-notice version the employee saw when submitting.</summary>
+    public string? NoticeVersion { get; set; }
+    /// <summary>When the employee re-proved their identity for a sensitive section.</summary>
+    public DateTime? StepUpAtUtc { get; set; }
+    /// <summary>HR's note when a section was sent back (replaces the notification smuggle for new rows).</summary>
+    public string? ReviewNote { get; set; }
 }
 
 /// <summary>
@@ -252,6 +262,8 @@ public class EmployeeActionItem : ITenantOwned
     public string Status { get; set; } = "Open";
     public DateTime? DueAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    /// <summary>P2: comma list of profile-section keys HR (or a hire template) asked for. NULL = every missing section.</summary>
+    public string? RequestedSections { get; set; }
 }
 
 public class EmployeeSentimentPulse : ITenantOwned

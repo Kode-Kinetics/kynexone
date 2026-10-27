@@ -30,4 +30,8 @@ public class EmployeeDocument : ITenantOwned, ICompanyScopedOperational
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }
     public Guid? DeletedBy { get; set; }
+    /// <summary>P2: Clean | PendingScan | Quarantined. Only Clean is downloadable. Default Clean keeps every existing row readable.</summary>
+    public string ScanStatus { get; set; } = "Clean";
+    /// <summary>P2: the ESS completion section an upload was made for (NULL for every other document).</summary>
+    public string? SourceSection { get; set; }
 }

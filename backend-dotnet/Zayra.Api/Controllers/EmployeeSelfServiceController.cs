@@ -331,7 +331,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var visibleEmployeeIds = _db.Employees.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted).Select(x => x.Id);
         return Ok(await _db.EmployeeProfileChangeRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && visibleEmployeeIds.Contains(x.EmployeeId))
+            .Where(x => x.TenantId == tenantId && x.Section == null && visibleEmployeeIds.Contains(x.EmployeeId))   // P2: section requests are read via /api/hr/profile-completion/inbox (masked)
             .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
     }
 
@@ -352,6 +352,9 @@ public class EmployeeSelfServiceController : ControllerBase
         if (GetUserId() is Guid deciderId
             && await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, tenantId, employee.Id, deciderId, DateTime.UtcNow, cancellationToken))
             return BadRequest(new { error = "credential_handler_cannot_decide", message = Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message });
+        if (change.Section is not null)   // P2: a profile section is applied through the section registry, never this switch
+            return await HttpContext.RequestServices.GetRequiredService<Zayra.Api.Application.Employees.Ess.EssSectionDecisionService>()
+                .ApproveAsync(change, employee, request, User, GetUserId(), cancellationToken);
         var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? new();
         foreach (var (field, value) in values)
         {
@@ -392,6 +395,9 @@ public class EmployeeSelfServiceController : ControllerBase
         if (change is null) return NotFound();
         if (change.Status != "PendingHR") return Conflict(new { message = "Profile change request is already decided." });
         if (await ProfileChangeDecisionRefusalAsync(tenantId, change, "reject", cancellationToken) is { } refusal) return refusal;
+        if (change.Section is not null)   // P2: send one section back with a note; nothing else reopens
+            return await HttpContext.RequestServices.GetRequiredService<Zayra.Api.Application.Employees.Ess.EssSectionDecisionService>()
+                .RejectAsync(change, request, GetUserId(), cancellationToken);
         if (change.Reason == EmployeeCompletionController.RequestReason &&
             (string.IsNullOrWhiteSpace(request.Notes) || request.Notes.Trim().Length > 500))
             return BadRequest(new { message = "Give a correction note of up to 500 characters." });
@@ -439,7 +445,7 @@ public class EmployeeSelfServiceController : ControllerBase
         if (change.CreatedBy is Guid requester && requester == callerUserId)
             return BadRequest(SubjectDecisionBar.Refusal(
                 $"You cannot {verb} a profile change you submitted. Another HR user must decide it."));
-        if (change.Reason == EmployeeCompletionController.RequestReason && callerUserId is Guid reviewerId
+        if ((change.Reason == EmployeeCompletionController.RequestReason || change.Section is not null) && callerUserId is Guid reviewerId
             && await Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.IsBarredAsync(_db, tenantId, change.EmployeeId, reviewerId, DateTime.UtcNow, cancellationToken))
             return BadRequest(new { error = "credential_handler_cannot_decide", message = Zayra.Api.Infrastructure.Auth.CredentialHandlerBar.Message });
         return null;
@@ -865,12 +871,14 @@ public class EmployeeSelfServiceController : ControllerBase
         var document = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == id && !x.IsDeleted
             && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()), cancellationToken);
         if (document is null) return NotFound();
+        if (document.ScanStatus != "Clean") return Conflict(new { code = "document_quarantined", message = "This file is not available: it did not pass the security scan." });   // P2
         byte[] bytes;
         try { bytes = await Storage.GetBytesAsync(tenantId, document.StorageUrl, cancellationToken); }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or DirectoryNotFoundException)
         {
             return NotFound(new { message = "Stored document file was not found." });
         }
+        Response.Headers["X-Content-Type-Options"] = "nosniff";   // P2
         document.LastDownloadedAtUtc = DateTime.UtcNow;
         document.LastDownloadedBy = GetUserId();
         await _db.SaveChangesAsync(cancellationToken);
@@ -1620,7 +1628,7 @@ public record ESSDashboardDto(
     string? AttendanceTodaySource = null,
     IReadOnlyCollection<ESSLoansSummaryDto>? LoanSummaries = null);
 public record ProfileChangeRequestDto(Dictionary<string, object?> Changes, string? Reason);
-public record ProfileChangeDecisionDto(string? Notes);
+public record ProfileChangeDecisionDto(string? Notes, string? OverrideReason = null);
 public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);
 /// <param name="StatutoryEventDate">KSA statutory leave: the date of the event (death, birth, marriage).</param>
 /// <param name="SeparateEventReason">KSA bereavement, birth or marriage leave: why this is a separate event

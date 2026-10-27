@@ -5577,6 +5577,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         SuccessionModelConfiguration.Configure(modelBuilder);
         // Cost-centre accounting M1 (columns, CHECKs, indexes; the cost-centre foreign keys are raw SQL in the migration).
         CostAccountingModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
+        // P2 — ESS profile completion sections (migration OnboardingP2EssSections).
+        Zayra.Api.Data.Ess.OnboardingP2EssModel.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

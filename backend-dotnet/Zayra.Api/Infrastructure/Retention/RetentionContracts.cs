@@ -26,9 +26,12 @@ public static class RetentionRuleKeys
     /// <summary>A trusted browser (two-step sign-in) expired or revoked more than 30 days ago: the row is deleted.</summary>
     public const string MfaTrustedDeviceExpired = "auth.mfa-trusted-device-expired";
 
+    /// <summary>P2: an ESS profile-section submission HR sent back and the employee never corrected for 30 days: its values are cleared.</summary>
+    public const string EssCompletionRejectedExpired = "ess.completion-rejected-expired";
+
     public static readonly IReadOnlyList<string> All =
         [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired, SuccessionPostEmployment,
-         CompanySetupDraftIdle, MfaTrustedDeviceExpired];
+         CompanySetupDraftIdle, MfaTrustedDeviceExpired, EssCompletionRejectedExpired];
 }
 
 /// <summary>

@@ -584,6 +584,12 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Za
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.SoftDeletedTenantRule>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.CompanySetupDraftRetentionRule>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.MfaTrustedDeviceRetentionRule>();
+// P2 — ESS profile completion: step-up proof, malware-scan hook (no-op until an engine is plugged in), section requests/decisions, 30-day purge of rejected submissions.
+builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.IStepUpService, Zayra.Api.Infrastructure.Auth.StepUp.StepUpService>();
+builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.IMalwareScanner, Zayra.Api.Application.Employees.Ess.NoopMalwareScanner>();
+builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.IEssSectionRequester, Zayra.Api.Application.Employees.Ess.EssSectionRequester>();
+builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.EssSectionDecisionService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.EssCompletionRejectedRetentionRule>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
 
 // Approved employee changes with a FUTURE effective date (bank details included) take effect when that date
