@@ -12,6 +12,8 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   nationalityCode?: string;
   contractEndDate?: string;
   duplicateOverrideReason?: string;
+  /** Sent with duplicateOverrideReason when an authorised user confirms "this is a different person"; the server refuses a strong match otherwise. */
+  acknowledgeDuplicate?: boolean;
   acknowledgedWarnings?: AcknowledgedWarning[];
 };
 export interface PayloadContext { companyCountry: string; currency: string; /** The company's email domain; a work-email local part is sent as local@domain. */ emailDomain?: string }
@@ -93,6 +95,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     complianceRecords: records.length ? records : undefined,
     acknowledgedWarnings: extras.acknowledgedWarnings?.length ? extras.acknowledgedWarnings : undefined,
     duplicateOverrideReason: extras.duplicateOverrideReason,
+    acknowledgeDuplicate: extras.duplicateOverrideReason?.trim() ? true : undefined,
   };
   if (form.idChecksumOverrideReason.trim() && body.acknowledgedWarnings === undefined && !blank(form.idNumber)) {
     body.acknowledgedWarnings = [{ code: 'id_checksum_invalid', reason: form.idChecksumOverrideReason.trim() }];

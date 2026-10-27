@@ -2,19 +2,52 @@ import type { EmployeeDetail } from '../../api/employees';
 import { emptyHireForm, type HireForm } from './hireForm';
 import type { IdType } from './nationality';
 import { formatNational } from './phone';
+import { buildCountryOptions, foldText, type CountryOption } from './nationality';
+import { DEFAULT_ZONE } from './dates';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/min';
 
-export interface HydrateContext { emailDomain?: string; companyCountry: string }
+export interface HydrateContext {
+  emailDomain?: string; companyCountry: string;
+  /** IANA zone date-times are cut in (the tenant/company zone). Defaults to Riyadh. */
+  timeZone?: string;
+  /** The nationality catalog the picker shows; the built-in ISO list when the API list has not arrived. */
+  countryOptions?: readonly CountryOption[];
+}
 
 const text = (v: unknown) => (typeof v === 'string' ? v : '');
 const amount = (v: number | undefined | null) => (typeof v === 'number' && v > 0 ? String(v) : '');
 
-/** The nationality as an ISO-2 code: the record's code when it has one, else a nationality that already is a code. */
-function nationalityOf(d: EmployeeDetail & { nationalityCode?: string }): string {
+/**
+ * A calendar date (YYYY-MM-DD) from whatever the API sent. The employee read serialises DateTime fields as
+ * `2026-11-01T00:00:00Z`; a date input and isRealDate only take the date, and the date is the one in the company zone.
+ * A value with no offset is already a local calendar value and keeps its date.
+ */
+export function normaliseDate(v: unknown, timeZone?: string | null): string {
+  const t = typeof v === 'string' ? v.trim() : '';
+  if (!t) return '';
+  const plain = /^(\d{4}-\d{2}-\d{2})$/.exec(t);
+  if (plain) return plain[1];
+  const local = /^(\d{4}-\d{2}-\d{2})T[\d:.]*$/.exec(t);
+  if (local) return local[1];
+  if (!/^\d{4}-\d{2}-\d{2}T.*(Z|[+-]\d{2}:?\d{2})$/i.test(t)) return '';
+  const at = new Date(t);
+  if (Number.isNaN(at.getTime())) return '';
+  const zone = (() => { const z = timeZone?.trim() || DEFAULT_ZONE; try { new Intl.DateTimeFormat('en', { timeZone: z }); return z; } catch { return DEFAULT_ZONE; } })();
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(at);
+  const get = (k: string) => parts.find(p => p.type === k)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/** The nationality as an ISO-2 code: the record's code; else a nationality that already is a code; else its country name looked up in the catalog. */
+function nationalityOf(d: EmployeeDetail, options?: readonly CountryOption[]): string {
   const code = text(d.nationalityCode).toUpperCase();
   if (/^[A-Z]{2}$/.test(code)) return code;
-  const n = text(d.nationality).toUpperCase();
-  return /^[A-Z]{2}$/.test(n) ? n : '';
+  const raw = text(d.nationality).trim();
+  if (/^[A-Za-z]{2}$/.test(raw)) return raw.toUpperCase();
+  if (!raw) return '';
+  const key = foldText(raw);
+  const list = options?.length ? options : buildCountryOptions();
+  return list.find(o => foldText(o.nameEn) === key || foldText(o.nameAr) === key)?.code ?? '';
 }
 
 /**
@@ -28,9 +61,10 @@ export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireFo
   const work = text(d.workEmail).trim();
   const workLocal = work && domain && work.toLowerCase().endsWith(`@${domain}`) ? work.slice(0, work.length - domain.length - 1) : work;
 
+  const day = (v: unknown) => normaliseDate(v, ctx.timeZone);
   const identities: Array<[IdType, string, string | undefined]> = [
-    ['nationalId', text(d.idNumber), undefined], ['iqama', text(d.iqamaNumber), d.iqamaExpiryDate],
-    ['border', text(d.borderNumber), undefined], ['gccId', text(d.civilId), d.civilIdExpiryDate],
+    ['nationalId', text(d.idNumber), undefined], ['iqama', text(d.iqamaNumber), day(d.iqamaExpiryDate)],
+    ['border', text(d.borderNumber), undefined], ['gccId', text(d.civilId), day(d.civilIdExpiryDate)],
   ];
   const primary = identities.find(([, n]) => n.trim() !== '');
   const passport = text(d.passportNumber).trim();
@@ -45,17 +79,17 @@ export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireFo
 
   return {
     ...f,
-    englishName: text(d.englishName) || text(d.fullName), companyId: text(d.companyId), startDate: text(d.joiningDate), designationId: text(d.designationId), gradeId: text(d.gradeId),
+    englishName: text(d.englishName) || text(d.fullName), companyId: text(d.companyId), startDate: day(d.joiningDate), designationId: text(d.designationId), gradeId: text(d.gradeId),
     branchId: text(d.branchId), departmentId: text(d.departmentId), managerId: d.managerEmployeeId ? String(d.managerEmployeeId) : '',
     workEmailLocal: workLocal, arabicName: text(d.arabicName), preferredName: text(d.preferredName), gender: text(d.gender), maritalStatus: text(d.maritalStatus),
-    nationalityCode: nationalityOf(d), dob: text(d.dateOfBirth), mobileCountry, mobileNational, personalEmail: text(d.personalEmail),
+    nationalityCode: nationalityOf(d, ctx.countryOptions), dob: day(d.dateOfBirth), mobileCountry, mobileNational, personalEmail: text(d.personalEmail),
     employmentType: text(d.employmentType), contractType: text(d.contractType),
-    contractEndDate: text((d as { contractEndDate?: string }).contractEndDate), probationEndDate: text(d.probationEndDate), workLocation: text(d.workLocation),
+    contractEndDate: day((d as { contractEndDate?: string }).contractEndDate), probationEndDate: day(d.probationEndDate), workLocation: text(d.workLocation),
     iban: text(d.payrollProfile?.iban) || text(d.bankIban), molId: text(d.payrollProfile?.molId),
     basic: amount(d.salaryBreakdown?.basicSalary), housing: amount(d.salaryBreakdown?.housingAllowance), transport: amount(d.salaryBreakdown?.transportAllowance), other: amount(d.salaryBreakdown?.otherAllowance),
     ...(primary
-      ? { idType: primary[0], idNumber: primary[1], idExpiry: text(primary[2]), passportNumber: passport, passportExpiry: text(d.passportExpiryDate) }
-      : passport ? { idType: 'passport' as const, idNumber: passport, idExpiry: text(d.passportExpiryDate) } : {}),
+      ? { idType: primary[0], idNumber: primary[1], idExpiry: text(primary[2]), passportNumber: passport, passportExpiry: day(d.passportExpiryDate) }
+      : passport ? { idType: 'passport' as const, idNumber: passport, idExpiry: day(d.passportExpiryDate) } : {}),
   };
 }
 

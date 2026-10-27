@@ -316,6 +316,9 @@ export interface EmployeeEntity {
   dateOfBirth?: string;
   maritalStatus: string;
   nationality: string;
+  /** ISO 3166 alpha-2 nationality as stored (null when none is chosen). */
+  nationalityCode?: string | null;
+  nationalityMappingState?: string;
   countryCode: string;
   companyId?: string;
   branchId?: string;
