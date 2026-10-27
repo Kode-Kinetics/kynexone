@@ -59,7 +59,9 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
             }).ToList();
             var attached = EssSectionDecisionService.ReadDocumentIds(x.Request.RequestedChangesJson)
                 .Select(id => docs.FirstOrDefault(d => d.Id == id)).Where(d => d is not null)
-                .Select(d => new { id = mayRevealSensitive ? (Guid?)d!.Id : null, kind = d!.DocumentCategory, scanStatus = d.ScanStatus, fileName = d.FileName }).ToList();
+                .Select(d => mayRevealSensitive
+                    ? (object)new { id = d!.Id, kind = d.DocumentCategory, scanStatus = d.ScanStatus, fileName = d.FileName }
+                    : new { kind = d!.DocumentCategory, scanStatus = d.ScanStatus, fileName = d.FileName }).ToList();
             return new
             {
                 requestId = x.Request.Id,

@@ -283,7 +283,7 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
         return Ok(new
         {
             consentVersion = version, text = ConsentCatalog.Text(version, lang ?? "en"), textAr = ConsentCatalog.Text(version, "ar"), textEn = ConsentCatalog.Text(version, "en"),
-            textSha256 = ConsentCatalog.TextSha256(version), documentSha256 = SignatureChain.Sha256Hex(bytes), documentVersion = doc.VersionNumber,
+            textSha256 = ConsentCatalog.TextSha256(version), order = ConsentCatalog.Order(lang), documentSha256 = SignatureChain.Sha256Hex(bytes), documentVersion = doc.VersionNumber,
             title = doc.DocumentType, fileName = doc.FileName, integrityFlagged = doc.IntegrityFlaggedAtUtc is not null,
         });
     }

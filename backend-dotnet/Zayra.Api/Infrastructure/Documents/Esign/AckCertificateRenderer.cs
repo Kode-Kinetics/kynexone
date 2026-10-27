@@ -19,7 +19,7 @@ public sealed record AckCertificateData(
 public static class AckCertificateRenderer
 {
     public const string StatementEn = "Electronic acknowledgement - this is not a qualified electronic signature.";
-    public const string StatementAr = "إقرار إلكتروني - وهذا ليس توقيعاً إلكترونياً مؤهلاً.";
+    public const string StatementAr = "إقرار إلكتروني - وهذا ليس توقيعًا إلكترونيًا معتمدًا.";
     public const string TitleEn = "Certificate of electronic acknowledgement";
     public const string TitleAr = "شهادة إقرار إلكتروني";
 
