@@ -122,4 +122,23 @@ const ar: Record<string, string> = {
   'onboarding.error.generic': 'تعذر إكمال الطلب. حاول مرة أخرى.',
 };
 
-export const onboardingP3 = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };
+/** English for the machine keys (owner, status, section, problem). Every other key is its own English sentence. */
+const namespacedEn: Record<string, string> = {
+  'onboarding.owner.HR': 'HR', 'onboarding.owner.IT': 'IT', 'onboarding.owner.Manager': 'Line manager', 'onboarding.owner.Payroll': 'Payroll',
+  'onboarding.owner.Finance': 'Finance', 'onboarding.owner.Admin': 'Administration', 'onboarding.owner.Gov': 'Government relations', 'onboarding.owner.Employee': 'The employee',
+  'onboarding.status.Pending': 'Pending', 'onboarding.status.InProgress': 'In progress', 'onboarding.status.Blocked': 'Blocked', 'onboarding.status.Completed': 'Completed', 'onboarding.status.Skipped': 'Skipped',
+  'onboarding.section.person': 'Personal details', 'onboarding.section.emergency': 'Emergency contact', 'onboarding.section.arabicName': 'Arabic name',
+  'onboarding.section.id': 'ID or Iqama', 'onboarding.section.bank': 'Bank account', 'onboarding.section.documents': 'Documents',
+  'onboarding.error.template_name_taken': 'A template with this name already exists in this company. Choose another name.',
+  'onboarding.error.template_match_conflict': 'Another active template already matches the same designation, grade and branch. Change the match keys or turn the other template off.',
+  'onboarding.error.template_company_mismatch': 'You cannot manage templates in this company.',
+  'onboarding.error.task_evidence_required': 'Upload a document for this task before completing it.',
+  'onboarding.error.due_override_reason_required': 'Give a reason of at least 5 characters to change the due date.',
+  'onboarding.error.activation_blocked_by_tasks': 'This employee cannot be activated: open onboarding tasks must be finished first.',
+  'onboarding.error.invalid_reference': 'One of the chosen options is not available.',
+  'onboarding.error.validation_failed': 'Check the highlighted fields and try again.',
+  'onboarding.error.duplicate_task_title': 'Each task in a checklist needs a different title.',
+  'onboarding.error.generic': 'The request could not be completed. Try again.',
+};
+
+export const onboardingP3 = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, namespacedEn[key] ?? key])) };
