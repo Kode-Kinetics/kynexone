@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The VENDOR's export tool for moving one customer off the retired hosted service onto its own
+    installation (WP13.1). Never shipped to clients and never referenced by Zayra.Api.
+
+    It reads the source database's catalogue, not the EF model, so it works against any hosted version
+    (including d8fd0dbf) without compiling that version's code: every table with a tenant_id column is
+    exported WHERE tenant_id = @tenant.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>kynexone-tenant-exporter</AssemblyName>
+    <RootNamespace>KynexOne.TenantExporter</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="8.0.5" />
+    <PackageReference Include="AWSSDK.S3" Version="3.7.400.1" />
+  </ItemGroup>
+
+</Project>
