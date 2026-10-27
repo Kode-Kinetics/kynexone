@@ -198,7 +198,9 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
 
         // Tenant-wide for the same reason as the other passes; scope masking happens in the controller. Case-insensitive
         // equality is a cheap pre-filter; the exact normalised comparison below decides.
-        var q = _db.Employees.AsNoTracking().IgnoreQueryFilters().Where(x => x.TenantId == tenantId && !x.IsDeleted);
+        var q = Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Name-only duplicate pass is authoritative tenant-wide across companies; masking happens in the controller.")
+            .AsNoTracking().Where(x => !x.IsDeleted);
         if (excludeId is int ex) q = q.Where(x => x.Id != ex);
         // Pre-filter: both the first and the last word must appear (a lone common first name must not flood the set).
         string? enFirst = null, enLast = null, arFirst = null, arLast = null;
