@@ -257,6 +257,51 @@ public class EssDecisionHttpTests(EssFixture fx)
         (await fx.WithDbAsync(db => db.EmployeeProfileChangeRequests.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == e.Id && x.Section == "person"))).Should().Be(2);
     }
 
+    private async Task<Guid> SubmitId(EssEmployeeHandle e)
+    {
+        using var res = await Employee.Submit(e, "id", new { nationalId = "1000000008" }, stepUp: await fx.StepUpAsync(e));
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+        return (await EssCompletionHttpTests.Json(res)).GetProperty("requestId").GetGuid();
+    }
+
+    [Fact]
+    public async Task Reject_ReturnsTheMaskedReviewShape_ToAReviewerWithoutSensitivePermission()
+    {
+        var e = await fx.NewEmployeeAsync("SA", configure: x => { x.BankIban = Iban; x.BankName = "SNB"; });
+        var id = await SubmitId(e);
+        var bank = await SubmitBank(e);
+        foreach (var request in new[] { id, bank })
+        {
+            using var res = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{request}/reject", fx.HrNoSensitiveToken, new { notes = "Please re-check this one." });
+            res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+            var raw = await res.Content.ReadAsStringAsync();
+            raw.Should().NotContain("1000000008").And.NotContain(NewIban).And.NotContain(Iban).And.NotContain("requestedChangesJson");
+            raw.Should().Contain("Please re-check this one.", "the reject note stays readable");
+        }
+        // the stored request keeps what the employee typed so they can correct it
+        (await fx.WithDbAsync(db => db.EmployeeProfileChangeRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == id))).Status.Should().Be("Rejected");
+    }
+
+    [Fact]
+    public async Task Reject_WithSensitivePermission_FollowsTheInboxRules()
+    {
+        var e = await fx.NewEmployeeAsync("SA");
+        var id = await SubmitId(e);
+        using var res = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{id}/reject", fx.HrToken, new { notes = "Please re-check this one." });
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+        (await res.Content.ReadAsStringAsync()).Should().Contain("1000000008").And.NotContain("requestedChangesJson");
+    }
+
+    [Fact]
+    public async Task Accept_Identity_ReturnsNoFullIdNumber_ToAReviewerWithoutSensitivePermission()
+    {
+        var e = await fx.NewEmployeeAsync("SA");
+        var id = await SubmitId(e);
+        using var res = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{id}/approve", fx.HrNoSensitiveToken, new { notes = "ok" });
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+        (await res.Content.ReadAsStringAsync()).Should().NotContain("1000000008").And.NotContain("requestedChangesJson");
+    }
+
     [Fact]
     public async Task HrTrigger_AdditiveSections_AndDefaultsToAllMissing()
     {
