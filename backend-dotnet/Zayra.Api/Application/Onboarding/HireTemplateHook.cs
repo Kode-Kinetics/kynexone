@@ -33,6 +33,10 @@ public static class HireTemplateHook
             var generator = new ChecklistGenerator(db);
             var checklistId = await generator.ResolveChecklistAsync(tenantId, companyId, template?.ChecklistId, ct);
             if (checklistId is Guid id) await generator.EnsureAsync(tenantId, employee, id, startDateKnown, ct);
+            // Contract C-1: the template's ESS sections become the employee's completion request (P2's requester).
+            var sections = (template?.EssCompletionSections ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (sections.Length > 0)
+                await new Zayra.Api.Application.Employees.Ess.EssSectionRequester(db).RequestAsync(tenantId, employee.Id, sections, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

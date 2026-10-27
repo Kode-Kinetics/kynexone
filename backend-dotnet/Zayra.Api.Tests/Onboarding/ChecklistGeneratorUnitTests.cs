@@ -254,4 +254,23 @@ public class ChecklistGeneratorUnitTests
         saudi.Should().HaveCount(12).And.NotContain(x => x.Contains("Muqeem") || x.Contains("Iqama issuance") || x.Contains("fitness"));
         ChecklistPlanner.Plan(templates, NationalityClasses.Expat, new DateOnly(2026, 11, 8)).Should().HaveCount(15);
     }
+
+    // Train wiring: P3's template asks P2's section requester (contract C-1) once the hire exists.
+    [Fact]
+    public async Task HireTemplate_WithEssSections_RaisesTheCompletionRequestForThoseSections()
+    {
+        await using var db = Db();
+        var tenant = Guid.NewGuid();
+        var company = new Company { TenantId = tenant, LegalNameEn = "Co", TradeName = "Co", CountryCode = "SA", Jurisdiction = "t", RegistrationNumber = "RC-1", DefaultCurrency = "SAR", IsActive = true };
+        db.Companies.Add(company);
+        var employee = new Employee { TenantId = tenant, CompanyId = company.Id, EmployeeCode = "E1", FullName = "A B", EnglishName = "A B", Status = "Draft" };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
+        var template = new HireTemplate { TenantId = tenant, CompanyId = company.Id, Name = "T", EssCompletionSections = "id,bank", IsActive = true };
+
+        await HireTemplateHook.GenerateAsync(db, tenant, employee, template, startDateKnown: true, default);
+
+        var item = await db.EmployeeActionItems.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == employee.Id);
+        item.RequestedSections.Should().Be("id,bank");
+    }
 }
