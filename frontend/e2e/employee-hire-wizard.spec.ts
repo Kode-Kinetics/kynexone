@@ -304,7 +304,8 @@ test.describe('duplicates, autosave, guard, review (desktop)', () => {
     const api = await bootHire(page, { conflictOnPut: true });
     await basics(page);
     await saveDraft(page);
-    await page.getByLabel('Preferred name').fill('x').catch(() => {});
+    // The draft exists once the saved indicator shows; an edit typed before that is the first version's, not a change.
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
     await page.getByLabel('English full name').fill('Alex Morgan Two');
     await expect(page.getByRole('alert').filter({ hasText: 'This draft was changed somewhere else. Reload to continue.' })).toBeVisible({ timeout: 5000 });
     const n = api.puts.length;
