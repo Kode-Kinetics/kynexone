@@ -4,6 +4,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Finance;
 
 namespace Zayra.Api.Controllers;
 
@@ -26,14 +27,23 @@ internal static class CostCenterEndpoints
         return row is null ? (false, null) : (true, row.CompanyId);
     }
 
+    /// <summary>422 with the M-10 text in both languages, the same body the class-change refusal carries.</summary>
+    private static ObjectResult ReasonRequired(ControllerBase c) => c.StatusCode(422, CostCentreRuleException.ReasonRequired().ToPayload());
+
     public static async Task<ActionResult<CostCenterDto>> CreateAsync(
         ControllerBase c, IOrganizationSetupService organization, CostCenterRequest request, RequestContext context,
         Func<CostCenterDto, ActionResult> created, CancellationToken ct)
     {
         var tenantId = c.GetTenantId();
         if (tenantId is null) return c.Unauthorized();
+        if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
         if (!OrgWriteRules.MayWriteCompany(c, request.CompanyId)) return c.Forbid();
+        // The functional class routes expense to P&L lines: a finance decision, not an HR one (AM-10).
+        if (!string.IsNullOrWhiteSpace(request.FunctionalClass) && !OrgWriteRules.MayDecideFunctionalClass(c)) return c.Forbid();
+        // M-10: setting a functional class on create is a finance decision that is recorded with its reason.
+        if (!string.IsNullOrWhiteSpace(request.FunctionalClass) && !CostAccountingGuards.HasReason(request.Reason)) return ReasonRequired(c);
         try { return created(await organization.CreateCostCenterAsync(tenantId.Value, request, context, ct)); }
+        catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
     }
 
@@ -43,24 +53,40 @@ internal static class CostCenterEndpoints
     {
         var tenantId = c.GetTenantId();
         if (tenantId is null) return c.Unauthorized();
+        if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
         var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
         if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return c.NotFound();
         if (!OrgWriteRules.MayWriteCompany(c, request.CompanyId)) return c.Forbid();
+        if (request.FunctionalClass is not null)
+        {
+            var currentClass = await db.CostCenters.AsNoTracking().Where(x => x.TenantId == tenantId.Value && x.Id == id)
+                .Select(x => x.FunctionalClass).FirstOrDefaultAsync(ct);
+            var requested = string.IsNullOrWhiteSpace(request.FunctionalClass) ? null : request.FunctionalClass.Trim().ToUpperInvariant();
+            if (!string.Equals(requested, currentClass, StringComparison.Ordinal) && !OrgWriteRules.MayDecideFunctionalClass(c)) return c.Forbid();
+        }
+        // M-10: deactivating and moving to another company are recorded with a reason (a class change is checked by the service).
+        var live = await db.CostCenters.AsNoTracking().Where(x => x.TenantId == tenantId.Value && x.Id == id)
+            .Select(x => new { x.IsActive }).FirstAsync(ct);
+        if (((live.IsActive && !request.IsActive) || request.CompanyId != current) && !CostAccountingGuards.HasReason(request.Reason)) return ReasonRequired(c);
         try
         {
             var costCenter = await organization.UpdateCostCenterAsync(tenantId.Value, id, request, context, ct);
             return costCenter is null ? c.NotFound() : c.Ok(costCenter);
         }
+        catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
     }
 
     public static async Task<IActionResult> DeleteAsync(
-        ControllerBase c, IOrganizationSetupService organization, ZayraDbContext db, Guid id, RequestContext context, CancellationToken ct)
+        ControllerBase c, IOrganizationSetupService organization, ZayraDbContext db, Guid id, RequestContext context, string? reason, CancellationToken ct)
     {
         var tenantId = c.GetTenantId();
         if (tenantId is null) return c.Unauthorized();
+        if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
         var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
         if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return c.NotFound();
-        return await organization.DeleteCostCenterAsync(tenantId.Value, id, context, ct) ? c.NoContent() : c.NotFound();
+        if (!CostAccountingGuards.HasReason(reason)) return ReasonRequired(c);
+        try { return await organization.DeleteCostCenterAsync(tenantId.Value, id, context, ct, reason) ? c.NoContent() : c.NotFound(); }
+        catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
     }
 }

@@ -396,6 +396,11 @@ public class PayrollEarning : ITenantOwned
     /// run that has already been processed.
     /// </summary>
     public string? GlDriverKey { get; set; }
+    /// <summary>Cost-accounting M1: the cost centre stamped on this line at Lock (null = uncosted).</summary>
+    public Guid? CostCenterId { get; set; }
+    /// <summary>Cost-accounting M1: how <see cref="CostCenterId"/> was resolved — Employee, Position, Department,
+    /// ParentDepartment, CompanyDefault, MappingFixed or RolledUp.</summary>
+    public string? CostCenterSource { get; set; }
 }
 
 public class PayrollDeduction : ITenantOwned, ICompanyScopedOperational
@@ -424,6 +429,11 @@ public class PayrollDeduction : ITenantOwned, ICompanyScopedOperational
     /// run that has already been processed.
     /// </summary>
     public string? GlDriverKey { get; set; }
+    /// <summary>Cost-accounting M1: the cost centre stamped on this line at Lock (null = uncosted).</summary>
+    public Guid? CostCenterId { get; set; }
+    /// <summary>Cost-accounting M1: how <see cref="CostCenterId"/> was resolved — Employee, Position, Department,
+    /// ParentDepartment, CompanyDefault, MappingFixed or RolledUp.</summary>
+    public string? CostCenterSource { get; set; }
 }
 
 public class BenefitPlan : ITenantOwned, ICompanyScoped

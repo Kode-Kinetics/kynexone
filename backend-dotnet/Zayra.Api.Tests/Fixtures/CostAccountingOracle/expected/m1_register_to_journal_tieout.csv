@@ -1,0 +1,6 @@
+cost_centre,register_gross_plus_employer_gosi,settlement_net_cost,register_total,journal_pnl_net,difference,explanation
+CC-100,6775.00,0.00,6775.00,6775.00,0.00,
+CC-110,38032.81,0.00,38032.81,38032.82,0.01,"bonus LR allocation: CC-110 +0.01, CC-200 0.00, CC-300 -0.01 (net 0) (see allocation_cases.csv)"
+CC-200,47219.98,32856.16,80076.14,80076.14,0.00,
+CC-300,26103.12,0.00,26103.12,26103.11,-0.01,"bonus LR allocation: CC-110 +0.01, CC-200 0.00, CC-300 -0.01 (net 0) (see allocation_cases.csv)"
+ALL,118130.91,32856.16,150987.07,150987.07,0.00,must be 0.00

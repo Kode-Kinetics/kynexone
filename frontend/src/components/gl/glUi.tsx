@@ -4,6 +4,7 @@ import { cloneElement, isValidElement, useCallback, useEffect, useId, useRef, us
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import { describeApiError } from '../../lib/apiError';
+import { pickServerMessage } from '../../lib/glCostAccounting';
 import { Modal } from '../Modal';
 
 // Small presentational helpers shared across the GL / rates configuration panels.
@@ -48,10 +49,10 @@ export function Field({
   );
 }
 
-export function FieldError({ error }: { error: string }) {
+export function FieldError({ error, testId }: { error: string; testId?: string }) {
   if (!error) return null;
   return (
-    <p role="alert" className="mb-3 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
+    <p role="alert" data-testid={testId} className="mb-3 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
       {error}
     </p>
   );
@@ -81,25 +82,47 @@ export function Badge({
   tone = 'slate',
   children,
   title,
+  testId,
+  label,
+  wrap,
 }: {
+  wrap?: boolean;
   tone?: Tone;
   children: ReactNode;
   title?: string;
+  testId?: string;
+  /** A full accessible name for a badge whose text alone is not enough ("Cost centre rule: Required"). */
+  label?: string;
 }) {
   return (
     <span
       title={title}
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClass[tone]}`}
+      data-testid={testId}
+      {...(label ? { role: 'img' as const, 'aria-label': label } : {})}
+      className={`inline-flex items-center gap-1 ${wrap ? 'text-start' : 'whitespace-nowrap'} rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClass[tone]}`}
     >
       {children}
     </span>
   );
 }
 
-export function InheritedBadge() {
+/**
+ * `short` is for tight tables: the visible word is "Group" on one line; the full sentence stays in the tooltip and is
+ * read by screen readers (so a row still contains "Inherited from group" as text).
+ */
+export function InheritedBadge({ short }: { short?: boolean } = {}) {
   const t = useT();
+  const title = t('Set at group level and not overridden for this company.');
+  if (short) {
+    return (
+      <Badge tone="slate" title={title} testId="cc-inherited-badge">
+        <span aria-hidden="true">{t('Group')}</span>
+        <span className="sr-only">{t('Inherited from group')}</span>
+      </Badge>
+    );
+  }
   return (
-    <Badge tone="slate" title={t('Set at group level and not overridden for this company.')}>
+    <Badge tone="slate" title={title}>
       {t('Inherited from group')}
     </Badge>
   );
@@ -342,10 +365,17 @@ export function useScopedResource<T>(key: string, fetcher: () => Promise<T>, ena
   };
 }
 
-/** The server's own refusal sentence (shown verbatim), else a translated description. */
-export function serverMessage(err: unknown, t: Translator): string {
-  const msg = (err as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
-  return typeof msg === 'string' && msg.trim() ? msg.trim() : describeApiError(err, t);
+/** The page's language, set on <html> by the locale provider; handlers that have no hook read it from here. */
+function pageLocale(): string {
+  return typeof document === 'undefined' ? 'en' : document.documentElement.lang || 'en';
+}
+
+/**
+ * The server's own refusal sentence (shown verbatim) in the viewer's language (`messageAr` for Arabic, `message`
+ * otherwise), else a translated description.
+ */
+export function serverMessage(err: unknown, t: Translator, locale: string = pageLocale()): string {
+  return pickServerMessage((err as { response?: { data?: unknown } })?.response?.data, locale) ?? describeApiError(err, t);
 }
 
 export function errorStatus(err: unknown): number | undefined {
@@ -427,5 +457,7 @@ export function todayIso(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** Tighter header cell for tables that must fit beside Setup's menu. */
+export const thCompact = 'px-2 py-2 text-start align-bottom font-medium';
 export const thClass = 'px-3 py-2 text-start font-medium';
 export const theadClass = 'bg-slate-50 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400';

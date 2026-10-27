@@ -122,7 +122,7 @@ public class EstablishmentEnforcementPathTests
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-            new Claim(ClaimTypes.Role, "Admin"),
+            new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "organization.costcenter.manage"),
             new Claim("permission", "employees.read"),
             new Claim("permission", "employees.write"),
             new Claim("permission", "organization.establishment.write"),

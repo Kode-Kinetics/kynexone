@@ -46,6 +46,28 @@ public class AuditService : IAuditService
         await _db.SaveChangesAsync(cancellationToken);
     }
 
+    /// <inheritdoc />
+    public void Stage(string action, string entityName, string? entityId, RequestContext context, string? beforeAfterJson, Guid? companyId)
+    {
+        if (context.TenantId is null)
+            throw new InvalidOperationException("A staged audit row needs the tenant it belongs to.");
+        // PreviousHash / EntryHash / CreatedAtUtc ordering are set by ZayraDbContext when the row is saved: it sees every pending
+        // row of the unit of work together and chains them under the per-tenant advisory lock.
+        _db.AuditLogs.Add(new AuditLog
+        {
+            Action = action,
+            EntityName = entityName,
+            EntityId = entityId,
+            TenantId = context.TenantId,
+            CompanyId = companyId,
+            UserId = context.UserId,
+            IpAddress = context.IpAddress,
+            UserAgent = context.UserAgent,
+            Metadata = NormalizeMetadata(beforeAfterJson),
+            CreatedAtUtc = DateTime.UtcNow,
+        });
+    }
+
     // The audit_logs.metadata column is Postgres type `json` (ZayraDbContext + schema.sql). A caller
     // passing a bare, non-JSON string (e.g. "Approved") makes the INSERT fail with a 22P02 invalid-json
     // error, which — because the business change was already committed before the audit write — surfaces

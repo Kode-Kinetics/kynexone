@@ -277,9 +277,20 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         }
     }
 
+    /// <summary>
+    /// EF routes <c>SaveChangesAsync(ct)</c> here (through base), so this single override guards the parameterless-async path
+    /// and a direct <c>SaveChangesAsync(bool, ct)</c> call alike, exactly once. The sync twin is <c>SaveChanges(bool)</c>.
+    /// </summary>
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        await EnforceFinanceGlEntryIntegrityAsync(cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnforceAuditLogAppendOnly();
+        EnforceFinanceGlEntryIntegrityAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         ClearWelcomeCodesOnAccessChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         RevokeTrustedBrowsersOnCredentialChangeAsync(CancellationToken.None, synchronous: true).GetAwaiter().GetResult();
         // The tenant write guard is pure ChangeTracker inspection (no DB I/O), so it runs on the
@@ -509,6 +520,14 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             prev = row.EntryHash;
         }
     }
+
+    // ── Cost accounting AM-11: ledger-line integrity ──────────────────────────────────────────────────
+    // Required / NotAllowed / P&L-side, company-required, reversal-mirror checks for new finance_gl_entries rows.
+    // Lives here (not in a Program.cs interceptor) so every context, however it was built, applies it. Pure
+    // ChangeTracker inspection plus batched no-tracking reads, and a no-op for a save with no ledger rows.
+    private Task EnforceFinanceGlEntryIntegrityAsync(CancellationToken ct, bool synchronous = false)
+        => Infrastructure.Finance.FinanceGlEntryGuard.EnforceAsync(this, synchronous, ct);
+    // ── end cost accounting guard ─────────────────────────────────────────────────────────────────────
 
     private void EnforceAuditLogAppendOnly()
     {
@@ -5548,6 +5567,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         LearningModelConfiguration.Configure(modelBuilder);
         // SUC — succession and career development (same append-only convention).
         SuccessionModelConfiguration.Configure(modelBuilder);
+        // Cost-centre accounting M1 (columns, CHECKs, indexes; the cost-centre foreign keys are raw SQL in the migration).
+        CostAccountingModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

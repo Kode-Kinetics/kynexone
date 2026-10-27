@@ -7,6 +7,8 @@ import { employeeCompletion } from './employeeCompletion';
 import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
+import { costCentres } from './costCentres';
+import { payrollCostCentres } from './payrollCostCentres';
 import { glErp } from './glErp';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
@@ -1493,6 +1495,8 @@ const en: Dict = {
   ...employeeCompletion.en,
   ...setupExperience.en,
   ...glSetup.en,
+  ...costCentres.en,
+  ...payrollCostCentres.en,
   ...glErp.en,
   ...statutoryRules.en,
   ...glApiKeys.en,
@@ -2959,6 +2963,8 @@ const ar: Dict = {
   ...employeeCompletion.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
+  ...costCentres.ar,
+  ...payrollCostCentres.ar,
   ...glErp.ar,
   ...statutoryRules.ar,
   ...glApiKeys.ar,

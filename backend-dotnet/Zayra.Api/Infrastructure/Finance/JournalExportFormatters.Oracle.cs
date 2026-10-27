@@ -19,7 +19,8 @@ internal static class OracleOptions
             "GROUP_ID to run Journal Import for. Blank derives a stable 9-digit number from the export id.", 15),
         new JournalExportOptionSpec("segments", "Account segments", DefaultSegments,
             "Accounting flexfield, one segment per '|': {company} = company ERP code, {account} = account "
-          + "(external code when mapped), anything else is literal. Example: {company}|000|{account}|0000.", 240),
+          + "(external code when mapped), {costcenter} = the line's cost centre (its ERP segment when set, else its code; "
+          + "blank on lines with no cost centre), anything else is literal. Example: {company}|{account}|{costcenter}|0000.", 240),
     };
 
     public static (string Ledger, string Source, string? Category, string Group, string Segments) Read(JournalExportDocument doc) =>
@@ -50,11 +51,13 @@ public sealed class OracleGlInterfaceCsvFormatter : IJournalExportFormatter
         "Oracle E-Business Suite GL_INTERFACE staging rows (STATUS = NEW) for Journal Import. Set Ledger ID, journal "
       + "source and category to values that exist in your instance, and the account segments to your accounting "
       + "flexfield. REFERENCE10 is the line description, REFERENCE21 our ledger entry id, REFERENCE22 the export id. "
-      + "ACCOUNTING_DATE is the in-period accounting date, not our system posting timestamp. For Oracle Fusion "
-      + "Cloud use the FBDI format instead.";
+      + "ACCOUNTING_DATE is the in-period accounting date, not our system posting timestamp. Cost centres: add "
+      + "{costcenter} to the account segments (for example {company}|{account}|{costcenter}) to send each line's cost "
+      + "centre in the segment where your flexfield holds it. For Oracle Fusion Cloud use the FBDI format instead.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
     public IReadOnlyList<JournalExportOptionSpec> Options => OracleOptions.Specs;
+    public bool CarriesCostCentre => true;
 
     public byte[] Format(JournalExportDocument doc)
     {
@@ -78,7 +81,7 @@ public sealed class OracleGlInterfaceCsvFormatter : IJournalExportFormatter
             row.AddRange(Enumerable.Range(0, segCount).Select(i => (object?)(i < segs.Length ? segs[i] : string.Empty)));
             row.AddRange(new object?[]
             {
-                ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit),
+                ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale),
                 OracleOptions.BatchName(doc, j), ErpFile.Clip($"{doc.Kind} export {doc.ExportId}", 240),
                 ErpFile.Clip(j.DocumentRef, 100), ErpFile.Clip(j.Description, 240),
                 ErpFile.Clip(l.Description, 240), l.EntryId, doc.ExportId, new ErpFile.Raw(group),
@@ -115,10 +118,13 @@ public sealed class OracleFusionFbdiJournalFormatter : IJournalExportFormatter
         "Positional GlInterface.csv for Oracle Fusion's Import Journals FBDI (no header row; columns 1–67 of the "
       + "GL_INTERFACE sheet). Zip it as the template expects, then run Load Interface File for Import. Ledger ID, "
       + "source, category and the 30-segment account layout must match your Fusion instance. Validate one file in a "
-      + "test pod before production: Oracle revises the template between releases.";
+      + "test pod before production: Oracle revises the template between releases. Cost centres: add {costcenter} to "
+      + "the account segments (for example {company}|{account}|{costcenter}) to send each line's cost centre in the "
+      + "segment where your flexfield holds it.";
     public string Extension => "csv";
     public string ContentType => "text/csv";
     public IReadOnlyList<JournalExportOptionSpec> Options => OracleOptions.Specs;
+    public bool CarriesCostCentre => true;
 
     public byte[] Format(JournalExportDocument doc)
     {
@@ -135,7 +141,7 @@ public sealed class OracleFusionFbdiJournalFormatter : IJournalExportFormatter
             row.AddRange(Enumerable.Range(0, 30).Select(i => (object?)(i < segs.Length ? segs[i] : string.Empty)));
             row.AddRange(new object?[]
             {
-                ErpFile.AmtOrBlank(l.Debit), ErpFile.AmtOrBlank(l.Credit), string.Empty, string.Empty,
+                ErpFile.AmtOrBlank(l.Debit, l.Scale), ErpFile.AmtOrBlank(l.Credit, l.Scale), string.Empty, string.Empty,
                 OracleOptions.BatchName(doc, j), ErpFile.Clip($"{doc.Kind} export {doc.ExportId}", 240), string.Empty,
                 ErpFile.Clip(j.DocumentRef, 100), ErpFile.Clip(j.Description, 240), ErpFile.Clip(j.DocumentRef, 240),
                 string.Empty, string.Empty, string.Empty, ErpFile.Clip(l.Description, 240),

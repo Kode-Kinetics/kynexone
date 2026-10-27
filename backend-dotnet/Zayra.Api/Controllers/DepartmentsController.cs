@@ -14,6 +14,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/departments")]
 [Authorize(Roles = "Admin,HR Manager,HR Officer,Auditor")]
+[Zayra.Api.Infrastructure.Filters.ReasonLimit]
 public class DepartmentsController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;
@@ -56,6 +57,8 @@ public class DepartmentsController : ControllerBase
     public async Task<ActionResult<DepartmentDto>> Create(DepartmentRequest request, CancellationToken cancellationToken)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
+        // A cost centre or a parent department decides where the department's people cost to: that is the cost-centre permission, not plain org write.
+        if ((request.CostCenterId is not null || request.ParentDepartmentId is not null) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -75,6 +78,11 @@ public class DepartmentsController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var current = await _db.Departments.AsNoTracking().Where(d => d.TenantId == tenantId.Value && d.Id == id)
+                .Select(d => new { d.CostCenterId, d.ParentDepartmentId }).FirstOrDefaultAsync(cancellationToken);
+            if (current is not null
+                && (request.CostCenterId != current.CostCenterId || request.ParentDepartmentId != current.ParentDepartmentId)
+                && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
             var department = await _organization.UpdateDepartmentAsync(tenantId.Value, id, request, Context(), cancellationToken);
             return department is null ? NotFound() : Ok(department);
         }
@@ -140,6 +148,10 @@ public class DepartmentsController : ControllerBase
     public IActionResult ImportTemplate() =>
         File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "departments_import_template.csv");
 
+    /// <summary>A department file that names a cost centre or a parent department on any row re-points cost: it needs the cost-centre permission.</summary>
+    private static bool CsvSetsCostAttribution(string csv) => Csv.Parse(csv).Any(r =>
+        !string.IsNullOrWhiteSpace(r.GetValueOrDefault("CostCenterCode")) || !string.IsNullOrWhiteSpace(r.GetValueOrDefault("ParentDepartmentCode")));
+
     // ── Import Preview ────────────────────────────────────────────────────────
 
     [HttpPost("import-preview")]
@@ -147,6 +159,7 @@ public class DepartmentsController : ControllerBase
     public async Task<IActionResult> ImportPreview([FromBody] DeptImportRequest req, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
+        if (CsvSetsCostAttribution(req.Csv) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;
@@ -162,12 +175,13 @@ public class DepartmentsController : ControllerBase
     public async Task<IActionResult> Import([FromBody] DeptImportRequest req, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
+        if (CsvSetsCostAttribution(req.Csv) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         Guid companyId;
         try { companyId = await _organization.ResolveOwningCompanyAsync(tenantId.Value, req.CompanyId, ct); }
         catch (InvalidOperationException ex) { return BadRequest(OrganizationRuleException.Payload(ex)); }
-        return await RunCommitAsync(tenantId.Value, companyId, req.Csv, ct);
+        return await RunCommitAsync(tenantId.Value, companyId, req.Csv, req.AcknowledgeClearedLinks, req.Reason, ct);
     }
 
     // ── Shared logic ──────────────────────────────────────────────────────────
@@ -214,6 +228,8 @@ public class DepartmentsController : ControllerBase
 
         var rows = Csv.Parse(csv);
         var importRows = ValidateRows(rows, existingByCode, costCentersByCode, empByCode);
+        // Acc R17: say how many existing links the file would clear, so nobody commits that by accident.
+        Response.Headers["X-Links-To-Clear"] = MarkLinkClears(importRows, existingByCode).ToString();
         int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
 
         foreach (var row in importRows)
@@ -226,13 +242,24 @@ public class DepartmentsController : ControllerBase
         return Ok(new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, ToRowResults(importRows)));
     }
 
-    private async Task<IActionResult> RunCommitAsync(Guid tenantId, Guid companyId, string csv, CancellationToken ct)
+    private async Task<IActionResult> RunCommitAsync(Guid tenantId, Guid companyId, string csv, bool acknowledgeClearedLinks, string? reason, CancellationToken ct)
     {
         var (refusal, existingByCode, costCentersByCode, empByCode) = await LoadLookupsAsync(tenantId, companyId, ct);
         if (refusal is not null) return refusal;
 
         var rows = Csv.Parse(csv);
         var importRows = ValidateRows(rows, existingByCode, costCentersByCode, empByCode);
+        var linksToClear = MarkLinkClears(importRows, existingByCode);
+        if (linksToClear > 0 && !acknowledgeClearedLinks)
+            return Conflict(new
+            {
+                error = "links_clear_not_acknowledged",
+                message = $"This file would clear {linksToClear} existing cost-centre or parent link(s). Review the preview and confirm to continue.",
+                messageAr = $"سيؤدي هذا الملف إلى إزالة {linksToClear} من ارتباطات مركز التكلفة أو القسم الأعلى الحالية. راجع المعاينة ثم أكد للمتابعة.",
+                linksToClear,
+            });
+        if (linksToClear > 0 && string.IsNullOrWhiteSpace(reason))
+            return StatusCode(422, CostCentreRuleException.ReasonRequired().ToPayload());
         var context = Context();
 
         // Code → id for everything that exists, growing as the batch writes. Parent resolution is
@@ -259,13 +286,13 @@ public class DepartmentsController : ControllerBase
             {
                 if (existing is not null)
                 {
-                    await _organization.UpdateDepartmentAsync(tenantId, existing.Id, BuildRequest(row, existing, parentId, companyId, costCentersByCode, empByCode), context, ct);
+                    await _organization.UpdateDepartmentAsync(tenantId, existing.Id, BuildRequest(row, existing, parentId, companyId, costCentersByCode, empByCode, reason), context, ct);
                     idByCode[key] = existing.Id;
                     updated++;
                 }
                 else
                 {
-                    var dto = await _organization.CreateDepartmentAsync(tenantId, BuildRequest(row, null, parentId, companyId, costCentersByCode, empByCode), context, ct);
+                    var dto = await _organization.CreateDepartmentAsync(tenantId, BuildRequest(row, null, parentId, companyId, costCentersByCode, empByCode, reason), context, ct);
                     idByCode[key] = dto.Id;
                     created++;
                 }
@@ -295,7 +322,7 @@ public class DepartmentsController : ControllerBase
             existingByCode.TryGetValue(key, out var existing);
             try
             {
-                await _organization.UpdateDepartmentAsync(tenantId, id, BuildRequest(row, existing, parentId, companyId, costCentersByCode, empByCode), context, ct);
+                await _organization.UpdateDepartmentAsync(tenantId, id, BuildRequest(row, existing, parentId, companyId, costCentersByCode, empByCode, reason), context, ct);
             }
             catch (InvalidOperationException ex) { row.Errors.Add(ex.Message); }
         }
@@ -315,16 +342,35 @@ public class DepartmentsController : ControllerBase
         Guid? parentId,
         Guid companyId,
         IReadOnlyDictionary<string, Guid> costCentersByCode,
-        IReadOnlyDictionary<string, int> empByCode) =>
+        IReadOnlyDictionary<string, int> empByCode,
+        string? reason = null) =>
         new(BranchId: existing?.BranchId,
-            ParentDepartmentId: parentId,
-            CostCenterId: string.IsNullOrWhiteSpace(row.CostCenterCode) ? null : costCentersByCode[OrgCodes.Normalize(row.CostCenterCode)],
+            // A BLANK link cell on an existing row means "no change" (Acc R17); only the explicit [CLEAR] token clears.
+            ParentDepartmentId: row.ClearParent ? null : string.IsNullOrWhiteSpace(row.ParentCode) ? existing?.ParentDepartmentId : parentId,
+            CostCenterId: row.ClearCostCenter ? null : string.IsNullOrWhiteSpace(row.CostCenterCode) ? existing?.CostCenterId : costCentersByCode[OrgCodes.Normalize(row.CostCenterCode)],
             Code: row.Code,
             NameEn: row.NameEn,
             NameAr: row.NameAr,
             ManagerEmployeeId: string.IsNullOrWhiteSpace(row.ManagerCode) ? null : empByCode[OrgCodes.Normalize(row.ManagerCode)],
             IsActive: row.IsActive,
-            CompanyId: companyId);
+            CompanyId: companyId,
+            Reason: row.ClearParent || row.ClearCostCenter ? reason : null);
+
+    private const string ClearToken = "[CLEAR]";
+    private static bool IsClearToken(string value) => string.Equals(value, ClearToken, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Flags each row that would clear an EXISTING department's link and returns how many links that is.</summary>
+    private static int MarkLinkClears(IEnumerable<DeptImportRow> rows, IReadOnlyDictionary<string, Department> existingByCode)
+    {
+        var total = 0;
+        foreach (var row in rows.Where(r => r.Errors.Count == 0))
+        {
+            if (!existingByCode.TryGetValue(OrgCodes.Normalize(row.Code), out var existing)) continue;
+            if (row.ClearCostCenter && existing.CostCenterId is not null) { row.Warnings.Add("Clears the cost centre link of this existing department."); total++; }
+            if (row.ClearParent && existing.ParentDepartmentId is not null) { row.Warnings.Add("Clears the parent department link of this existing department."); total++; }
+        }
+        return total;
+    }
 
     private static List<DeptImportRow> ValidateRows(
         IReadOnlyList<Dictionary<string, string>> rows,
@@ -338,15 +384,19 @@ public class DepartmentsController : ControllerBase
         for (int i = 0; i < rows.Count; i++)
         {
             var row = rows[i];
+            var parentRaw = row.GetValueOrDefault("ParentDepartmentCode", string.Empty).Trim();
+            var costCentreRaw = row.GetValueOrDefault("CostCenterCode", string.Empty).Trim();
             var importRow = new DeptImportRow(
                 RowNumber: i + 2,
                 Code: row.GetValueOrDefault("Code", string.Empty).Trim(),
                 NameEn: row.GetValueOrDefault("NameEn", string.Empty).Trim(),
                 NameAr: row.GetValueOrDefault("NameAr", string.Empty).Trim(),
-                ParentCode: row.GetValueOrDefault("ParentDepartmentCode", string.Empty).Trim(),
+                ParentCode: IsClearToken(parentRaw) ? string.Empty : parentRaw,
                 ManagerCode: row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim(),
-                CostCenterCode: row.GetValueOrDefault("CostCenterCode", string.Empty).Trim(),
-                IsActive: !row.TryGetValue("IsActive", out var activeVal) || !string.Equals(activeVal.Trim(), "false", StringComparison.OrdinalIgnoreCase));
+                CostCenterCode: IsClearToken(costCentreRaw) ? string.Empty : costCentreRaw,
+                IsActive: !row.TryGetValue("IsActive", out var activeVal) || !string.Equals(activeVal.Trim(), "false", StringComparison.OrdinalIgnoreCase),
+                ClearParent: IsClearToken(parentRaw),
+                ClearCostCenter: IsClearToken(costCentreRaw));
 
             if (string.IsNullOrWhiteSpace(importRow.Code)) importRow.Errors.Add("Code is required");
             else if (importRow.Code.Length > 20) importRow.Errors.Add("Code must be at most 20 characters");
@@ -435,7 +485,7 @@ public class DepartmentsController : ControllerBase
             row.NameEn,
             row.Errors.Count > 0 ? ImportRowStatus.Error : row.Warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok,
             row.Errors,
-            row.Warnings)).ToList();
+            row.Warnings).WithArabic()).ToList();
 
     private static string NormalizeCode(string code) => OrgCodes.Normalize(code);
 
@@ -449,7 +499,9 @@ public class DepartmentsController : ControllerBase
         string ParentCode,
         string ManagerCode,
         string CostCenterCode,
-        bool IsActive)
+        bool IsActive,
+        bool ClearParent = false,
+        bool ClearCostCenter = false)
     {
         public List<string> Errors { get; } = new();
         public List<string> Warnings { get; } = new();
@@ -457,4 +509,4 @@ public class DepartmentsController : ControllerBase
 }
 
 /// <summary>CompanyId: the company the file's departments belong to (Addendum B). Optional only when the tenant has one company.</summary>
-public record DeptImportRequest(string Csv, Guid? CompanyId = null);
+public record DeptImportRequest(string Csv, Guid? CompanyId = null, bool AcknowledgeClearedLinks = false, string? Reason = null);

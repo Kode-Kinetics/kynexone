@@ -175,10 +175,15 @@ public static class EmployeeChangeApplier
         ZayraDbContext db, Guid tenantId, Employee employee, IReadOnlyDictionary<string, JsonElement> changes,
         Guid? actorUserId, CancellationToken ct)
     {
+        // A "costCenter" code is resolved and validated first, so a refused patch has touched nothing.
+        var costCentre = await EmployeeOrgFieldResolver.PrepareCostCentreAsync(db, tenantId, employee, changes, ct);
+        var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
         var unknown = Apply(employee, changes);
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
         await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct);
-        await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, ct);
+        await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, ct, costCentre);
+        await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(db, tenantId, employee, attributionBefore, ct);
+        await EmployeeOrgFieldResolver.StageAttributionAuditAsync(db, tenantId, employee, attributionBefore, actorUserId, ct);
         await EmployeeBankProfileSync.SyncAsync(db, employee, changes.Keys, ct);
         return unknown;
     }

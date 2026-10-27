@@ -833,7 +833,9 @@ jobs:
     # Chromium suite starts (about 1,040 tests since the Setup design wave; 29+ minutes on its own).
     # 45 minutes cut that run off mid-suite with no failure, so keep enough headroom for the full gate
     # and cleanup. A passing run still bills only the minutes it uses.
-    timeout-minutes: 60
+    # The suite already ran 47-58 min on main before the cost-accounting specs; 60 cut it off and a failed
+    # Browser Pilot on main skips the deploy gates. The cap only stops runaways; minutes are billed as used.
+    timeout-minutes: 90
     needs: [backend-tests, frontend-build]
     # THE E2E TARGET CONTRACT (frontend/e2e/identity/env.ts), declared ONCE for every step; see the
     # same block in chrome-security-gate. BUILD_COMMIT also reaches `docker compose --build`, which

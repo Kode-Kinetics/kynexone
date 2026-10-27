@@ -63,7 +63,7 @@ public sealed class DropDeadConfigColumnsMigrationPostgresTests
         thisMigration.Should().NotBeNull("the migration that drops the unread columns exists");
         var previous = all[all.IndexOf(thisMigration!) - 1];
         previous.Should().EndWith("_StopMappingDeadConfigColumns", "release 2 follows release 1 directly");
-        all.Last().Should().Be(thisMigration);
+        // Later migrations may follow this one; the test pins only that release 2 directly follows release 1.
 
         await migrator.MigrateAsync(previous);
         const string tenant = "'10000000-0000-0000-0000-0000000000d2'";

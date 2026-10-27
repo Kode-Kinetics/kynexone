@@ -1,5 +1,8 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
 
@@ -13,6 +16,31 @@ namespace Zayra.Api.Controllers;
 /// </summary>
 internal static class OrgWriteRules
 {
+    /// <summary>The permission that gates re-pointing where cost goes (cost-centre master data, and the cost attribution of departments, positions and employees).</summary>
+    public const string CostCentreManage = "organization.costcenter.manage";
+
+    /// <summary>The functional class of a cost centre routes expense to P&amp;L lines: a finance decision.</summary>
+    public const string FunctionalClassManage = "finance.gl.manage";
+
+    public static bool MayManageCostCentres(ControllerBase c) => c.User.HasPermission(CostCentreManage);
+    public static bool MayDecideFunctionalClass(ControllerBase c) => c.User.HasPermission(FunctionalClassManage);
+
+    /// <summary>
+    /// Whether an employee patch (the "Changes" dictionary of a PUT or a change request) would move where the person's cost goes: it names a
+    /// department or cost centre that differs (ignoring case and padding) from the one on the record. Clearing a cost centre counts.
+    /// </summary>
+    public static bool MovesEmployeeAttribution(Employee employee, IReadOnlyDictionary<string, JsonElement> changes)
+    {
+        static string Text(JsonElement e) => e.ValueKind == JsonValueKind.String ? (e.GetString() ?? string.Empty).Trim() : string.Empty;
+        foreach (var (key, value) in changes)
+        {
+            var current = key switch { "department" => employee.Department, "costCenter" => employee.CostCenter, _ => null };
+            if (current is null && key is not ("department" or "costCenter")) continue;
+            if (!string.Equals(Text(value), (current ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
     /// <summary>Tenant-wide master data (departments, designations, grades, company lifecycle):
     /// a group grant is required.</summary>
     public static bool GroupGrant(ControllerBase c) => c.HasGroupEntityScope();

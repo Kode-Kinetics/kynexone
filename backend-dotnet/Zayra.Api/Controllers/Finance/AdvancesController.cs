@@ -19,6 +19,7 @@ namespace Zayra.Api.Controllers.Finance;
 [Authorize]
 [ApiController]
 [Route("api/finance/advances")]
+[Zayra.Api.Infrastructure.Finance.GlCostCentreRuleFilter]
 public class AdvancesController : ControllerBase
 {
     private readonly ZayraDbContext _db;

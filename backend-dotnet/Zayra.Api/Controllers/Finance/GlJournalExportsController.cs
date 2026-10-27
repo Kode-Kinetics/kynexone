@@ -41,12 +41,16 @@ public class GlJournalExportsController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly JournalExportService _exports;
     private readonly PeriodHandoffReconciler _reconciler;
+    private readonly IJournalExportSeparationOfDuties? _sod;
 
-    public GlJournalExportsController(ZayraDbContext db, JournalExportService exports, PeriodHandoffReconciler reconciler)
+    /// <param name="sod">Optional seam for AM-14 (see <see cref="IJournalExportSeparationOfDuties"/>): null = no check.</param>
+    public GlJournalExportsController(ZayraDbContext db, JournalExportService exports, PeriodHandoffReconciler reconciler,
+        IJournalExportSeparationOfDuties? sod = null)
     {
         _db = db;
         _exports = exports;
         _reconciler = reconciler;
+        _sod = sod;
     }
 
     // ── Formats ───────────────────────────────────────────────────────────────────────────────────
@@ -80,7 +84,8 @@ public class GlJournalExportsController : ControllerBase
         CancellationToken ct = default,
         // Appended after ct so positional callers keep compiling; MVC binds by name.
         [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
-        [FromQuery(Name = "options")] Dictionary<string, string>? options = null)
+        [FromQuery(Name = "options")] Dictionary<string, string>? options = null,
+        [FromQuery] bool acknowledgeUncostedRequired = false)
     {
         if (!CanRead()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -89,11 +94,12 @@ public class GlJournalExportsController : ControllerBase
         if (FilterError(period, runId) is { } filterErr) return filterErr;
 
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
-            includePreviouslyConfirmed, replacesExportId);
+            includePreviouslyConfirmed, replacesExportId, acknowledgeUncostedRequired);
         var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct, options);
-        if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
+        if (refusal is not null) return StatusCode(refusal.Status, RedactTieOutDetail(refusal.Payload));
 
-        return Ok(Manifest(build!, null, sampleLines: true));
+        // Line samples (descriptions, amounts, cost centres) are for export holders; a reader keeps counts and totals.
+        return Ok(Manifest(build!, null, sampleLines: CanDownload()));
     }
 
     // ── Create the artifact ───────────────────────────────────────────────────────────────────────
@@ -110,17 +116,40 @@ public class GlJournalExportsController : ControllerBase
         CancellationToken ct = default,
         // Appended after ct so positional callers keep compiling; MVC binds by name.
         [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
-        [FromQuery(Name = "options")] Dictionary<string, string>? options = null)
+        [FromQuery(Name = "options")] Dictionary<string, string>? options = null,
+        [FromQuery] bool acknowledgeUncostedRequired = false)
     {
         if (!CanExport()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         if (ScopeError(companyId) is { } scopeErr) return scopeErr;
         if (UnattributedScopeError(includeUnattributed) is { } unattributedErr) return unattributedErr;
         if (FilterError(period, runId) is { } filterErr) return filterErr;
+        if (runId is { } requestedRun)
+        {
+            // The run decides the period (and company) the file is built and checked for; a client value that disagrees is refused.
+            var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tid.Value,
+                    "Export create reads the run's own period and company so the request cannot name a different one; the SoD and export steps apply the caller's scope.")
+                .AsNoTracking().Where(r => r.Id == requestedRun).Select(r => new { r.CompanyId, r.Year, r.Month }).FirstOrDefaultAsync(ct);
+            if (run is not null)
+            {
+                var runPeriod = $"{run.Year:0000}-{run.Month:00}";
+                if ((!string.IsNullOrWhiteSpace(period) && !string.Equals(period.Trim(), runPeriod, StringComparison.Ordinal))
+                    || (companyId is { } requestedCompany && run.CompanyId is { } runCompany && requestedCompany != runCompany))
+                    return UnprocessableEntity(new
+                    {
+                        error = "period_run_mismatch", code = "period_run_mismatch",
+                        message = "The period or company does not match the payroll run. Leave them out, or use the run's own period and company.",
+                        messageAr = "الفترة أو الشركة لا تطابق مسير الرواتب. اتركهما فارغتين أو استخدم فترة المسير وشركته.",
+                    });
+                period = runPeriod;
+            }
+        }
 
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
-            includePreviouslyConfirmed, replacesExportId);
+            includePreviouslyConfirmed, replacesExportId, acknowledgeUncostedRequired);
         var groupCaller = this.GetEntityScope().IsGroupLevel;
+
+        if (await SeparationOfDutiesRefusalAsync(tid.Value, filter, ct) is { } sodRefusal) return sodRefusal;
 
         return await SerialisedAsync(async () =>
         {
@@ -298,19 +327,20 @@ public class GlJournalExportsController : ControllerBase
             newRowsInScopeSinceExport = new
             {
                 count = newSince.Count,
-                total = JournalAmount.Round(newSince.Sum(e => e.Amount)),
+                total = JournalAmount.Round(newSince.Sum(e => e.Amount), export.AmountScale ?? JournalAmount.Scale),
                 message = newSince.Count == 0 ? null
                     : "GL rows have been posted into this scope since the export was taken (a void contra is dated "
                     + "into the ORIGINAL period; loans/advances post continuously). The exported file is still valid "
                     + "for what it contained — a supplementary export is owed.",
             },
-            lines = lines.Select(l => new
+            // finance.gl.read keeps metadata and totals; the frozen line detail is for export holders.
+            lines = CanDownload() ? (object)lines.Select(l => new
             {
                 l.LineNo, l.Side, l.AccountCode, l.AccountName, l.Amount, l.Currency,
                 l.AccountingDate, l.SystemPostedDate, l.Period, l.JournalRef, l.Description,
                 l.SourceModule, l.SourceEntityRef, l.EventType, entryId = l.FinanceGlEntryId,
                 l.ReversalOfEntryId, l.IsReversed,
-            }).ToList(),
+            }).ToList() : null,
         });
     }
 
@@ -323,7 +353,7 @@ public class GlJournalExportsController : ControllerBase
     [ErpApiKeyAccess(ErpApiKeyScopes.ExportsRead), EnableRateLimiting(ErpApiKeyDefaults.RateLimitPolicy)]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct)
     {
-        if (!CanRead()) return Forbid();
+        if (!CanDownload()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
         var export = await LoadAsync(tid.Value, id, ct);
         if (export is null) return NotFound();
@@ -338,11 +368,18 @@ public class GlJournalExportsController : ControllerBase
         var (bytes, _, formatter, refusal) = await _exports.RegenerateAsync(export, ct);
         if (refusal is not null) return StatusCode(refusal.Status, refusal.Payload);
 
+        var viaKey = ErpApiKeyPrincipal.IsApiKey(User);
         WriteAudit("finance.gl.journal_export.downloaded", "GlJournalExport", export.Id.ToString(), export.CompanyId, new
         {
             export.FileName,
             export.FormatKey,
             export.LineCount,
+            // Who took the file and exactly which bytes: the hash and length tie the audit row to the artifact.
+            fileHash = export.FileHash,
+            byteLength = bytes!.Length,
+            actorKind = viaKey ? "api_key" : "user",
+            apiKeyId = viaKey && Guid.TryParse(User.FindFirst(ErpApiKeyDefaults.KeyIdClaim)?.Value, out var keyId) ? keyId : (Guid?)null,
+            apiKeyCreatedBy = ErpApiKeyPrincipal.CreatorOf(User),
         });
         await _db.SaveChangesAsync(ct);
 
@@ -368,7 +405,7 @@ public class GlJournalExportsController : ControllerBase
     {
         if (!CanConfirm()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        return await SerialisedAsync(async () => (await ConfirmCoreAsync(tid.Value, id, req, ct), true), ct);
+        return await GuardedEvidenceAsync(() => SerialisedAsync(async () => (await ConfirmCoreAsync(tid.Value, id, req, ct), true), ct));
     }
 
     private async Task<IActionResult> ConfirmCoreAsync(Guid tid, Guid id, ErpImportConfirmationRequest req, CancellationToken ct)
@@ -394,6 +431,10 @@ public class GlJournalExportsController : ControllerBase
                 message = "An ERP document number is required: it is the evidence that the journal was imported. "
                         + "A status with no artifact behind it is what this endpoint exists to replace.",
             });
+        if (reference.Length > ErpDocumentNumberMax)
+            return TextTooLong("erp_document_number_too_long", "The ERP document number", ErpDocumentNumberMax, "رقم مستند الـ ERP");
+        if (req.Notes is { Length: > ErpNotesMax })
+            return TextTooLong("notes_too_long", "The notes", ErpNotesMax, "الملاحظات");
 
         if (export.Status == GlJournalExportStatuses.Confirmed)
             return string.Equals(export.ErpDocumentNumber, reference, StringComparison.OrdinalIgnoreCase)
@@ -507,6 +548,8 @@ public class GlJournalExportsController : ControllerBase
         var reason = (req.Reason ?? string.Empty).Trim();
         if (reason.Length == 0)
             return BadRequest(new { error = "rejection_reason_required", message = "A rejection reason is required." });
+        if (reason.Length > ErpNotesMax)
+            return TextTooLong("rejection_reason_too_long", "The rejection reason", ErpNotesMax, "سبب الرفض");
         if (PerJournalDecisionsError(export) is { } perJournal) return perJournal;
         if (export.Status == GlJournalExportStatuses.Confirmed)
             return Conflict(new
@@ -547,7 +590,7 @@ public class GlJournalExportsController : ControllerBase
     public async Task<IActionResult> ConfirmJournals(Guid id, [FromBody] ErpJournalConfirmationRequest req, CancellationToken ct)
     {
         if (!CanConfirm()) return Forbid();
-        return await SerialisedAsync(async () => (await ConfirmJournalsCoreAsync(id, req, ct), true), ct);
+        return await GuardedEvidenceAsync(() => SerialisedAsync(async () => (await ConfirmJournalsCoreAsync(id, req, ct), true), ct));
     }
 
     private async Task<IActionResult> ConfirmJournalsCoreAsync(Guid id, ErpJournalConfirmationRequest req, CancellationToken ct)
@@ -857,6 +900,38 @@ public class GlJournalExportsController : ControllerBase
     /// both in id order — are held until commit, so concurrent decisions serialise and none overwrites another.
     /// The action says whether to commit: a refusal that wrote its own audit row commits, a failed insert rolls back.
     /// </summary>
+    /// <summary>
+    /// The ledger's own evidence rule (M2) refuses, at COMMIT, to change the ERP document number of a row the ERP already holds. That is a conflict the
+    /// caller can act on, not a server fault: nothing was written (the transaction rolled back), and the answer carries no database text.
+    /// </summary>
+    private async Task<IActionResult> GuardedEvidenceAsync(Func<Task<IActionResult>> run)
+    {
+        try { return await run(); }
+        catch (Exception ex) when (IsErpEvidenceRefusal(ex))
+        {
+            _db.ChangeTracker.Clear();
+            return Conflict(new
+            {
+                error = "erp_document_conflict",
+                message = "Your ERP already holds these ledger rows under a different document number, so this confirmation was not recorded. "
+                        + "Two numbers for one journal means it was imported twice: investigate in your ERP before recording another.",
+                messageAr = "نظام تخطيط الموارد لديكم يحتفظ بهذه القيود برقم مستند مختلف، لذا لم يُسجَّل هذا التأكيد. "
+                          + "وجود رقمين لقيد واحد يعني أنه استُورد مرتين: تحققوا في النظام قبل تسجيل رقم آخر.",
+            });
+        }
+    }
+
+    private bool IsErpEvidenceRefusal(Exception ex)
+    {
+        // The ledger's table name comes from the model, so this refusal match is not a second place that names the table.
+        var ledger = _db.Model.FindEntityType(typeof(FinanceGlEntry))?.GetTableName();
+        if (string.IsNullOrEmpty(ledger)) return false;
+        for (var e = ex; e is not null; e = e.InnerException)
+            if (e is Npgsql.PostgresException { SqlState: "23514" or "23001" } pg && pg.MessageText.Contains(ledger, StringComparison.Ordinal))
+                return true;
+        return false;
+    }
+
     private async Task<IActionResult> SerialisedAsync(Func<Task<(IActionResult Result, bool Commit)>> action, CancellationToken ct)
     {
         if (!_db.Database.IsRelational())
@@ -943,6 +1018,17 @@ public class GlJournalExportsController : ControllerBase
         new(string.IsNullOrWhiteSpace(e.Period) ? null : e.Period, e.PayrollRunId, e.CompanyId,
             string.IsNullOrWhiteSpace(e.Currency) ? null : e.Currency, e.IncludeUnattributed, false);
 
+    /// <summary>Column limits of gl_journal_exports.erp_document_number and notes / rejection_reason.</summary>
+    private const int ErpDocumentNumberMax = 120, ErpNotesMax = 1000;
+
+    private IActionResult TextTooLong(string code, string what, int max, string whatAr) => UnprocessableEntity(new
+    {
+        error = code, code,
+        message = $"{what} can be at most {max} characters. Nothing was recorded.",
+        messageAr = $"يجب ألا يتجاوز {whatAr} {max} حرفًا. لم يُسجَّل أي شيء.",
+        maxLength = max,
+    });
+
     private IActionResult? FilterError(string? period, Guid? runId)
     {
         if (runId is not null) return null;
@@ -967,8 +1053,8 @@ public class GlJournalExportsController : ControllerBase
         companyCode = build.CompanyCode,
         entryCount = build.Document.EntryCount,
         lineCount = build.Document.Lines.Count,
-        totalDebits = JournalAmount.Round(build.TieOut.RoundedDebits),
-        totalCredits = JournalAmount.Round(build.TieOut.RoundedCredits),
+        totalDebits = JournalAmount.Round(build.TieOut.RoundedDebits, build.Document.Lines.Count > 0 ? build.Document.Lines[0].Scale : JournalAmount.ScaleFor(build.Document.Currency)),
+        totalCredits = JournalAmount.Round(build.TieOut.RoundedCredits, build.Document.Lines.Count > 0 ? build.Document.Lines[0].Scale : JournalAmount.ScaleFor(build.Document.Currency)),
         // Each company's journal balances on its own — the per-company check the gate enforced.
         byCompany = (build.TieOut.ByCompany ?? Array.Empty<CompanyBalance>()).Select(b => new
         {
@@ -976,11 +1062,14 @@ public class GlJournalExportsController : ControllerBase
             balanced = b.Balanced, lines = b.Lines,
         }).ToList(),
         journalCount = build.Document.PostingDocuments().Count,
+        // Cost accounting: whether any line carries a cost centre. Per-cost-centre amounts are deliberately not in the
+        // manifest — a cost centre with one employee would disclose that person's pay to a metadata reader.
+        hasCostCentres = build.Document.HasCostCentres,
         // The double-post guard at work: rows an ERP-confirmed export already holds, left out of this file.
         previouslyConfirmedExcluded = new
         {
             count = build.Selection.PreviouslyConfirmedExcludedCount,
-            total = JournalAmount.Round(build.Selection.PreviouslyConfirmedExcludedTotal),
+            total = JournalAmount.Round(build.Selection.PreviouslyConfirmedExcludedTotal, JournalAmount.ScaleForAll(build.Selection.Currencies)),
             exportIds = build.Selection.PreviouslyConfirmedExportIds,
         },
         warnings = build.Warnings ?? Array.Empty<string>(),
@@ -1083,6 +1172,20 @@ public class GlJournalExportsController : ControllerBase
         return this.GetEntityScope().IsGroupLevel ? null : Forbid();
     }
 
+    /// <summary>AM-21: a tie-out failure names cost centres and amounts, for export or manage holders; a read-only user gets the count and a generic message.</summary>
+    internal object RedactTieOutDetail(object payload)
+    {
+        if (HasPermission("finance.gl.export") || HasPermission("finance.gl.manage")) return payload;
+        if (System.Text.Json.JsonSerializer.SerializeToNode(payload) is not System.Text.Json.Nodes.JsonObject body
+            || body["costCentreDeltas"] is not System.Text.Json.Nodes.JsonArray deltas) return payload;
+        var count = deltas.Count;
+        body.Remove("costCentreDeltas");
+        body["costCentreDeltaCount"] = count;
+        if (count > 0)
+            body["message"] = "The export does not tie out to the GL, so no file was produced. Ask a finance user with export access for the details.";
+        return body;
+    }
+
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
@@ -1101,11 +1204,20 @@ public class GlJournalExportsController : ControllerBase
     /// <c>finance.erp.confirm || finance.gl.manage</c>, on the stated assumption that a tenant could "define"
     /// the two narrower keys to turn segregation on. It could not: the catalog is global and seeded, and
     /// neither key was in it, so both collapsed to <c>finance.gl.manage</c> and the maker could always
-    /// attest their own export. <c>finance.gl.export</c> is dropped (nothing distinguishes it from
-    /// <c>finance.gl.manage</c> in this product); <c>finance.erp.confirm</c> is now a catalog key.</para>
+    /// attest their own export. <c>finance.erp.confirm</c> is now a catalog key, and <c>finance.gl.export</c> was added
+    /// later (AM-19) as the key for taking the file, see <see cref="CanDownload"/>.</para>
     /// </summary>
     private bool CanRead() => HasPermission("finance.gl.read") || HasPermission("finance.gl.manage");
     private bool CanExport() => HasPermission("finance.gl.manage");
+
+    /// <summary>
+    /// Taking the file (and seeing its lines) is an export-holder act: <c>finance.gl.read</c> alone keeps metadata and totals.
+    /// The export holder is <c>finance.gl.export</c> (AM-19), granted to every role that held <c>finance.gl.manage</c> when it
+    /// was introduced (seeded bundles and migration GrantFinanceGlExport). An ERP API key that
+    /// holds the read scope may pull files: creating the key with that scope is the explicit grant, and every pull is audited
+    /// with the key's id and creator.
+    /// </summary>
+    private bool CanDownload() => HasPermission("finance.gl.export") || (ErpApiKeyPrincipal.IsApiKey(User) && HasPermission("finance.gl.read"));
     private bool CanConfirm() => HasPermission(ErpConfirmPermission);
 
     /// <summary>Confirm or reject that the client's ERP imported a journal export — the checker key.</summary>
@@ -1150,6 +1262,30 @@ public class GlJournalExportsController : ControllerBase
                 : "You exported this journal, so you cannot also record that the ERP rejected it. A different user " +
                   "with ERP confirmation rights must record the rejection.",
             exportId = export.Id,
+        });
+    }
+
+    /// <summary>
+    /// AM-14: asks the registered rule whether the caller changed the cost-accounting
+    /// set-up for this company and period. A refusal is audited and writes nothing else. No registration = no check.
+    /// </summary>
+    private async Task<IActionResult?> SeparationOfDutiesRefusalAsync(Guid tenantId, JournalExportFilter filter, CancellationToken ct)
+    {
+        if (_sod is null) return null;
+        if (this.GetUserId() is not Guid actor) return Forbid();   // identity cannot be checked: refuse, as the ERP decision does
+        if (!await _sod.IsBarredAsync(new JournalExportSodRequest(tenantId, filter.CompanyId, filter.Period, filter.PayrollRunId, actor), ct))
+            return null;
+
+        WriteAudit("finance.gl.journal_export.create_refused", "GlJournalExport", string.Empty, filter.CompanyId, new
+        {
+            error = "separation_of_duties", filter.Period, filter.PayrollRunId,
+        });
+        await _db.SaveChangesAsync(ct);
+        return StatusCode(StatusCodes.Status403Forbidden, new
+        {
+            error = "separation_of_duties",
+            message = "You changed the cost-accounting set-up this journal is built from for this company and period, so you "
+                    + "cannot also create its export. A different user with export rights must create it.",
         });
     }
 

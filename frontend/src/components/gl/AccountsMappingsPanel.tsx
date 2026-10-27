@@ -1,7 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Pencil, Plus, RotateCcw, Search, Upload } from 'lucide-react';
+import { AlertCircle, Ban, Download, Info, Pencil, Plus, RotateCcw, Search, Upload } from 'lucide-react';
 import { notifyApiError } from '../../api/client';
 import {
   financeGlApi,
@@ -11,12 +12,42 @@ import {
   type GlAccountImportResult,
   type GlMappingRow,
   type GlResolveResponse,
+  type GlRulePresetResult,
 } from '../../api/financeGl';
 import type { CostCenterDto } from '../../api/organization';
+import { BdiMessage } from '../BdiMessage';
+import { msg } from '../../i18n/translations';
 import { useT } from '../../hooks/useT';
+import {
+  addClassRule,
+  apiErrorCode,
+  cleanRule,
+  COST_CENTRE_RULES,
+  draftFromRow,
+  duplicateClass,
+  exclusiveState,
+  fixedCostCentreOptions,
+  FUNCTIONAL_CLASSES,
+  isLockedIntoApprovedRun,
+  mappingsChanged,
+  matchesRuleFilter,
+  removeClassRule,
+  RESERVED_CLASS,
+  ruleBlockedForType,
+  setBaseAccount,
+  setBaseClass,
+  setClassRuleAccount,
+  setFixedCostCentre,
+  textDir,
+  toMappingInputs,
+  unusedClasses,
+  type CostCentreRule,
+  type DriverDraft,
+} from '../../lib/glCostAccounting';
 import { useAppToast } from '../ui/AppToast';
 import { Modal } from '../Modal';
 import {
+  thCompact,
   accountTypeLabel,
   ActiveBadge,
   Badge,
@@ -26,6 +57,8 @@ import {
   FieldError,
   InheritedBadge,
   PanelState,
+  Spinner,
+  WarningNote,
   problemLabel,
   problemRank,
   routeRowId,
@@ -53,11 +86,8 @@ interface Props {
   costCenters: CostCenterDto[];
   resolve: ResolveResource;
   onRoutingChanged: () => void;
-}
-
-interface MapEdit {
-  accountId: string;
-  segmentCostCenterId: string;
+  /** Opens the Cost accounting tab (readiness and the switch). Absent when this reader cannot see it. */
+  onOpenCostAccounting?: () => void;
 }
 
 interface Loaded {
@@ -69,6 +99,9 @@ interface Loaded {
 const isForce = (err: unknown): boolean =>
   Boolean((err as { response?: { data?: { requiresForce?: boolean } } })?.response?.data?.requiresForce);
 
+const RULE_ICON: Record<CostCentreRule, typeof AlertCircle | null> = { Required: AlertCircle, Optional: null, NotAllowed: Ban };
+const RULE_TONE = { Required: 'amber', Optional: 'slate', NotAllowed: 'slate' } as const;
+
 /** Group rows by account type in the chart's natural order; unknown types go last. */
 const TYPE_ORDER: string[] = [...GL_ACCOUNT_TYPES];
 const typeIndex = (type: string) => {
@@ -76,7 +109,7 @@ const typeIndex = (type: string) => {
   return i < 0 ? TYPE_ORDER.length : i;
 };
 
-export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters, resolve, onRoutingChanged }: Props) {
+export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters, resolve, onRoutingChanged, onOpenCostAccounting }: Props) {
   const t = useT();
   const toast = useAppToast();
   const { confirm, dialog } = useConfirm();
@@ -105,30 +138,49 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   const rows = useMemo(() => res.data?.maps ?? [], [res.data]);
   const writable = canManage && res.ready;
 
-  const [edits, setEdits] = useState<Record<string, MapEdit>>({});
+  // Cost accounting is a per-company switch: its state decides whether the rules below apply yet. A failed read just
+  // leaves the note out; it never blocks the chart.
+  const costing = useScopedResource(`costing:${scope ?? 'group'}`, () => financeGlApi.costAccountingReadiness(scope!), inCompanyView);
+  const costingOff = inCompanyView && costing.data?.settings?.enabled === false;
+
+  // M-7: a payroll run awaits finance review or lock, so the server refuses any change to what it would post.
+  const [locked, setLocked] = useState<string | null>(null);
+  const ruleLabel = useCallback(
+    (rule: CostCentreRule) => (rule === 'Required' ? t('Required') : rule === 'Optional' ? t('Optional') : t('Not allowed')),
+    [t],
+  );
+  const ruleHint = useCallback(
+    (rule: CostCentreRule) =>
+      rule === 'Required'
+        ? t('Every posting to this account must carry a cost centre.')
+        : rule === 'Optional'
+          ? t('A cost centre is added when one is known.')
+          : t('Postings to this account never carry a cost centre.'),
+    [t],
+  );
+
+  // The mapping being edited: one draft per driver (base row + class rows), rebuilt whenever the rows are reloaded.
+  const baseDrafts = useMemo(() => rows.map((r) => draftFromRow(r, inCompanyView)), [rows, inCompanyView]);
+  const [drafts, setDrafts] = useState<Record<string, DriverDraft>>({});
   useEffect(() => {
-    setEdits(
-      Object.fromEntries(
-        rows.map((r) => [
-          r.driverKey,
-          // A company view starts inherited rows unset (no override); an existing company
-          // override (or the group mapping in group view) pre-fills the select.
-          { accountId: r.inherited ? '' : r.mappedAccountId ?? '', segmentCostCenterId: r.inherited ? '' : r.segmentCostCenterId ?? '' },
-        ]),
-      ),
-    );
-  }, [rows]);
+    setDrafts(Object.fromEntries(baseDrafts.map((d) => [d.driverKey, d])));
+    setMapReason('');
+    setMapError('');
+  }, [baseDrafts]);
+  const [mapReason, setMapReason] = useState('');
+  const [mapError, setMapError] = useState('');
+  // M-7 on the mapping save: the server's sentence, and every control off until the user tries again.
+  const [mapLocked, setMapLocked] = useState<string | null>(null);
+  const [announce, setAnnounce] = useState('');
 
   const reloadAll = async () => {
     await res.reload();
     onRoutingChanged();
   };
 
-  // Cost centers a mapping in this scope may tag: tenant-global + this company's own.
-  const visibleCostCenters = useMemo(
-    () => costCenters.filter((c) => c.isActive && (!c.companyId || c.companyId === scope)),
-    [costCenters, scope],
-  );
+  // Cost centres a fixed posting rule may use: this company's own active ones. Never a group (null-company) one, and
+  // none in the group view: a fixed cost centre is set per company (AM-4).
+  const fixedOptions = useMemo(() => [...fixedCostCentreOptions(costCenters, scope)].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true })), [costCenters, scope]);
 
   // Accounts a mapping in this scope may point at: own + inherited group defaults (active only).
   const selectableAccounts = useMemo(
@@ -145,39 +197,56 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
     [ownAccounts, groupDefaults],
   );
 
-  const dirty = useMemo(
-    () =>
-      rows.some((r) => {
-        const e = edits[r.driverKey];
-        if (!e) return false;
-        const base = r.inherited ? '' : r.mappedAccountId ?? '';
-        const baseSeg = r.inherited ? '' : r.segmentCostCenterId ?? '';
-        return e.accountId !== base || e.segmentCostCenterId !== baseSeg;
-      }),
-    [rows, edits],
-  );
+  const draftList = useMemo(() => baseDrafts.map((b) => drafts[b.driverKey] ?? b), [baseDrafts, drafts]);
+  // What a select currently shows, to set its direction (see textDir).
+  const selectedAccountText = (id: string, placeholder: string) => accountLabel(id) ?? placeholder;
+  const selectedCostCentreText = (id: string) => {
+    const c = fixedOptions.find((x) => x.id === id);
+    return c ? `${c.code} — ${c.name}` : t('None');
+  };
 
-  const setEdit = (driverKey: string, patch: Partial<MapEdit>) =>
-    setEdits((prev) => ({ ...prev, [driverKey]: { ...prev[driverKey], ...patch } }));
+  const dirty = useMemo(() => mappingsChanged(baseDrafts, draftList), [baseDrafts, draftList]);
+  const hasDuplicate = draftList.some((d) => duplicateClass(d) !== null);
+
+  const updateDraft = (driverKey: string, fn: (d: DriverDraft) => DriverDraft) =>
+    setDrafts((prev) => {
+      const current = prev[driverKey] ?? baseDrafts.find((b) => b.driverKey === driverKey);
+      return current ? { ...prev, [driverKey]: fn(current) } : prev;
+    });
+
+  const classLabel = useCallback(
+    (cls: string) => {
+      switch (cls) {
+        case 'COGS': return t('Cost of goods sold');
+        case 'SELLING': return t('Selling');
+        case 'G_AND_A': return t('General & administrative');
+        case 'R_AND_D': return t('Research & development');
+        case 'OPERATIONS': return t('Operations');
+        case RESERVED_CLASS: return t('Capitalisable (reserved)');
+        default: return cls;
+      }
+    },
+    [t],
+  );
 
   // ── Mapping save ───────────────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const saveMappings = async () => {
-    if (!writable) return;
+    if (!writable || !mapReason.trim()) return;
     setSaving(true);
+    setMapError('');
     try {
-      const payload = Object.entries(edits)
-        .filter(([, e]) => e.accountId)
-        .map(([driverKey, e]) => ({ driverKey, accountId: e.accountId, segmentCostCenterId: e.segmentCostCenterId || null }));
-      await financeGlApi.setMappings(payload, scope);
+      await financeGlApi.setMappings(toMappingInputs(draftList), scope, mapReason);
       toast.success(t('Mappings saved.'));
       await reloadAll();
     } catch (e) {
-      notifyApiError(e);
+      if (isLockedIntoApprovedRun(e)) setMapLocked(serverMessage(e, t));
+      else setMapError(serverMessage(e, t));
     } finally {
       setSaving(false);
     }
   };
+  const mapEditable = canManage && !mapLocked;
 
   // ── Load standard payroll chart (group scope) ─────────────────────────────
   const [seeding, setSeeding] = useState(false);
@@ -285,12 +354,13 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   };
 
   // ── Account create / edit / delete ─────────────────────────────────────────
-  const [newAcct, setNewAcct] = useState({ code: '', name: '', accountType: 'Expense', externalCode: '' });
+  const [newAcct, setNewAcct] = useState({ code: '', name: '', accountType: 'Expense', externalCode: '', costCenterRule: 'Optional' as CostCentreRule });
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
   const [editing, setEditing] = useState<GlAccount | null>(null);
-  const [editForm, setEditForm] = useState({ code: '', name: '', accountType: 'Expense', isActive: true, externalCode: '' });
+  const [editForm, setEditForm] = useState({ code: '', name: '', accountType: 'Expense', isActive: true, externalCode: '', costCenterRule: 'Optional' as CostCentreRule });
   const [editError, setEditError] = useState('');
+  const [editRuleError, setEditRuleError] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -299,14 +369,18 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
       setAddError(t('Enter an account code and a name.'));
       return;
     }
+    if (ruleBlockedForType(newAcct.costCenterRule, newAcct.accountType)) {
+      setAddError(t('Only expense and income accounts can require a cost centre.'));
+      return;
+    }
     setAdding(true);
     setAddError('');
     try {
       await financeGlApi.createAccount(
-        { code: newAcct.code.trim(), name: newAcct.name.trim(), accountType: newAcct.accountType, isActive: true, externalCode: newAcct.externalCode.trim() || null },
+        { code: newAcct.code.trim(), name: newAcct.name.trim(), accountType: newAcct.accountType, isActive: true, externalCode: newAcct.externalCode.trim() || null, ...(newAcct.costCenterRule !== 'Optional' ? { costCenterRule: newAcct.costCenterRule } : {}) },
         scope,
       );
-      setNewAcct({ code: '', name: '', accountType: newAcct.accountType, externalCode: '' });
+      setNewAcct({ code: '', name: '', accountType: newAcct.accountType, externalCode: '', costCenterRule: 'Optional' });
       toast.success(t('Account added.'));
       await reloadAll();
     } catch (e) {
@@ -318,8 +392,9 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
 
   const openEdit = (a: GlAccount) => {
     setEditing(a);
-    setEditForm({ code: a.code, name: a.name, accountType: a.accountType === 'Revenue' ? 'Income' : a.accountType, isActive: a.isActive, externalCode: a.externalCode ?? '' });
+    setEditForm({ code: a.code, name: a.name, accountType: a.accountType === 'Revenue' ? 'Income' : a.accountType, isActive: a.isActive, externalCode: a.externalCode ?? '', costCenterRule: cleanRule(a.costCenterRule) });
     setEditError('');
+    setEditRuleError('');
   };
 
   const saveEdit = async (force = false): Promise<void> => {
@@ -328,14 +403,24 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
       setEditError(t('Enter an account code and a name.'));
       return;
     }
+    // The rule is never rewritten for the user: a type that cannot carry a Required rule stops the save.
+    if (ruleBlockedForType(editForm.costCenterRule, editForm.accountType)) {
+      setEditRuleError(t('Only expense and income accounts can require a cost centre.'));
+      return;
+    }
     // Deactivating a mapped account is confirmed below, when the server says it is still mapped.
     setSavingEdit(true);
     setEditError('');
+    setEditRuleError('');
     try {
       await financeGlApi.updateAccount(
         editing.id,
-        // Always sent: '' clears the ERP code on the server, a value replaces it.
-        { code: editForm.code.trim(), name: editForm.name.trim(), accountType: editForm.accountType, isActive: editForm.isActive, externalCode: editForm.externalCode.trim() },
+        // Always sent: '' clears the ERP code on the server, a value replaces it. A server that predates cost accounting
+        // sends no rule, and then none is sent back.
+        {
+          code: editForm.code.trim(), name: editForm.name.trim(), accountType: editForm.accountType, isActive: editForm.isActive, externalCode: editForm.externalCode.trim(),
+          ...(editing.costCenterRule !== undefined ? { costCenterRule: editForm.costCenterRule } : {}),
+        },
         { force },
       );
       setEditing(null);
@@ -352,8 +437,11 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
         });
         if (ok) return saveEdit(true);
         setEditError(t('Deactivation cancelled. The account is still mapped.'));
+      } else if (apiErrorCode(err) === 'cost_centre_rule_invalid_for_type') {
+        setEditRuleError(serverMessage(err, t));
       } else {
         // 409 once the account has been posted to: the server's sentence says why.
+        if (isLockedIntoApprovedRun(err)) setLocked(serverMessage(err, t));
         setEditError(serverMessage(err, t));
       }
     } finally {
@@ -384,6 +472,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   // ── Chart search / filter / grouping ───────────────────────────────────────
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
+  const [ruleFilter, setRuleFilter] = useState('');
   const chartRows = useMemo(() => {
     const q = query.trim().toLowerCase();
     const all = [
@@ -392,9 +481,10 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
     ];
     return all
       .filter(({ account: a }) => !typeFilter || (typeFilter === 'Income' ? a.accountType === 'Income' || a.accountType === 'Revenue' : a.accountType === typeFilter))
+      .filter(({ account: a }) => matchesRuleFilter(a, ruleFilter))
       .filter(({ account: a }) => !q || a.code.toLowerCase().includes(q) || a.name.toLowerCase().includes(q) || (a.externalCode ?? '').toLowerCase().includes(q))
       .sort((x, y) => typeIndex(x.account.accountType) - typeIndex(y.account.accountType) || x.account.code.localeCompare(y.account.code, undefined, { numeric: true }));
-  }, [ownAccounts, groupDefaults, query, typeFilter]);
+  }, [ownAccounts, groupDefaults, query, typeFilter, ruleFilter]);
   const groups = useMemo(() => {
     const out: { type: string; rows: typeof chartRows }[] = [];
     for (const r of chartRows) {
@@ -408,6 +498,54 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
   const totalAccounts = ownAccounts.length + groupDefaults.length;
 
   const overrideCount = rows.filter((r) => !r.inherited && r.mappedAccountId).length;
+
+  // ── Apply the recommended cost centre rules (preview first, then a reason) ──
+  const [presetOpen, setPresetOpen] = useState(false);
+  const [preset, setPreset] = useState<GlRulePresetResult | null>(null);
+  const [presetLoading, setPresetLoading] = useState(false);
+  const [presetLoadError, setPresetLoadError] = useState('');
+  const [presetReason, setPresetReason] = useState('');
+  const [presetBusy, setPresetBusy] = useState(false);
+  const [presetError, setPresetError] = useState('');
+
+  const loadPreset = async () => {
+    setPresetLoading(true);
+    setPresetLoadError('');
+    try {
+      setPreset(await financeGlApi.previewRulePreset(scope));
+    } catch (e) {
+      setPreset(null);
+      setPresetLoadError(serverMessage(e, t));
+    } finally {
+      setPresetLoading(false);
+    }
+  };
+  const openPreset = () => {
+    setPresetOpen(true);
+    setPreset(null);
+    setPresetReason('');
+    setPresetError('');
+    void loadPreset();
+  };
+  const applyPreset = async () => {
+    if (!presetReason.trim()) {
+      setPresetError(t('Enter a reason for this change.'));
+      return;
+    }
+    setPresetBusy(true);
+    setPresetError('');
+    try {
+      const r = await financeGlApi.applyRulePreset(presetReason.trim(), scope);
+      setPresetOpen(false);
+      toast.success(t('{count, plural, one {Rules applied to # account.} other {Rules applied to # accounts.}}', { count: r.changed }));
+      await reloadAll();
+    } catch (e) {
+      if (isLockedIntoApprovedRun(e)) setLocked(serverMessage(e, t));
+      setPresetError(serverMessage(e, t));
+    } finally {
+      setPresetBusy(false);
+    }
+  };
 
   // ── "Where does it post?" — problems first ─────────────────────────────────
   const routeRows = useMemo(
@@ -517,6 +655,9 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
             </button>
             {canManage && (
               <>
+                <button type="button" onClick={openPreset} disabled={!writable || !!locked} data-testid="cc-acct-preset-open" className="btn-secondary h-8 px-3 text-xs disabled:opacity-60">
+                  {t('Apply recommended rules')}
+                </button>
                 <input
                   ref={fileInput}
                   type="file"
@@ -533,6 +674,29 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
             )}
           </div>
         </div>
+
+        <div role="note" data-testid="cc-acct-explainer" className="mb-3 flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:bg-white/[0.04] dark:text-slate-300">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sapphire dark:text-cyanAccent" aria-hidden />
+          <p>{t('Account type says what kind of money an account holds (asset, liability, equity, income or expense); a cost centre says which team or department the cost belongs to, and only income and expense accounts can carry one.')}</p>
+        </div>
+        {costingOff && (
+          <div data-testid="cc-acct-costing-off-note">
+            <WarningNote>
+              {t('Cost accounting is off for this company. These rules apply once you turn it on.')}
+              {onOpenCostAccounting && (
+                <button type="button" onClick={onOpenCostAccounting} className="ms-2 font-semibold underline underline-offset-2 hover:no-underline">
+                  {t('Open Cost accounting')}
+                </button>
+              )}
+            </WarningNote>
+          </div>
+        )}
+        {locked && (
+          <div role="alert" data-testid="cc-acct-locked-banner" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+            <p>{locked}</p>
+            <button type="button" onClick={() => setLocked(null)} className="btn-secondary h-7 px-2 text-xs">{t('Retry')}</button>
+          </div>
+        )}
 
         {!inCompanyView && canManage && (
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-slate-200 px-3 py-2 dark:border-white/10">
@@ -572,6 +736,21 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               </option>
             ))}
           </select>
+          <select
+            value={ruleFilter}
+            onChange={(e) => setRuleFilter(e.target.value)}
+            data-setup-filter
+            data-testid="cc-acct-rule-filter"
+            aria-label={t('Filter by cost centre rule')}
+            className="select h-8 text-xs"
+          >
+            <option value="">{t('All rules')}</option>
+            {COST_CENTRE_RULES.map((rule) => (
+              <option key={rule} value={rule}>
+                {ruleLabel(rule)}
+              </option>
+            ))}
+          </select>
         </div>
 
         <PanelState
@@ -588,22 +767,34 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           }
         >
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-coa-heading">
-            <table className="w-full min-w-[820px] text-sm">
+            {/* Fixed layout: every column shares the width the page gives it (about 640px beside Setup's menu), long text wraps or is cut with a title, and nothing needs a horizontal scrollbar. */}
+            <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[8%]" />
+                <col className="w-[13%]" />
+                <col className="w-[27%]" />
+                <col className="w-[9%]" />
+                <col className="w-[14%]" />
+                <col className="w-[8%]" />
+                <col className="w-[8%]" />
+                <col className="w-[13%]" />
+              </colgroup>
               <thead className={theadClass}>
                 <tr>
-                  <th scope="col" className={thClass}>{t('Code')}</th>
-                  <th scope="col" className={thClass}>{t('ERP account code')}</th>
-                  <th scope="col" className={thClass}>{t('Name')}</th>
-                  <th scope="col" className={thClass}>{t('Type')}</th>
-                  <th scope="col" className={thClass}>{t('Scope')}</th>
-                  <th scope="col" className={thClass}>{t('Status')}</th>
-                  <th scope="col" className={`${thClass} text-end`}>{t('Actions')}</th>
+                  <th scope="col" className={thCompact}>{t('Code')}</th>
+                  <th scope="col" className={thCompact}>{t('ERP account code')}</th>
+                  <th scope="col" className={thCompact}>{t('Name')}</th>
+                  <th scope="col" className={thCompact}>{t('Type')}</th>
+                  <th scope="col" className={thCompact}>{t('Cost centre rule')}</th>
+                  <th scope="col" className={thCompact}>{t('Scope')}</th>
+                  <th scope="col" className={thCompact}>{t('Status')}</th>
+                  <th scope="col" className={`${thCompact} text-end`}>{t('Actions')}</th>
                 </tr>
               </thead>
               <tbody>
                 {groups.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-6 text-center text-xs text-slate-500">
+                    <td colSpan={8} className="px-3 py-6 text-center text-xs text-slate-500">
                       {t('No accounts match your search.')}
                     </td>
                   </tr>
@@ -611,26 +802,42 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                 {groups.map((g) => (
                   <Fragment key={g.type}>
                     <tr className="border-t border-slate-200 bg-slate-50/70 dark:border-white/10 dark:bg-white/[0.02]">
-                      <th scope="colgroup" colSpan={7} className="px-3 py-1.5 text-start text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      <th scope="colgroup" colSpan={8} className="px-3 py-1.5 text-start text-xs font-semibold text-slate-600 dark:text-slate-300">
                         {t('{type} ({count})', { type: accountTypeLabel(t, g.type), count: g.rows.length })}
                       </th>
                     </tr>
                     {g.rows.map(({ account: a, inherited }) => (
                       <tr key={a.id} className="border-t border-slate-100 dark:border-white/5">
-                        <td className="px-3 py-2 font-mono text-xs">{a.code}</td>
-                        <td className="px-3 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">
-                          {a.externalCode ? a.externalCode : <><span className="text-slate-400" aria-hidden>—</span><span className="sr-only">{t('No ERP account code')}</span></>}
+                        <td className="px-2 py-2 font-mono text-xs"><bdi dir="ltr" className="break-all">{a.code}</bdi></td>
+                        <td className="px-2 py-2 font-mono text-xs text-slate-600 dark:text-slate-300">
+                          {a.externalCode ? <bdi dir="ltr" className="break-all">{a.externalCode}</bdi> : <><span className="text-slate-400" aria-hidden>—</span><span className="sr-only">{t('No ERP account code')}</span></>}
                         </td>
-                        <td className="px-3 py-2">{a.name}</td>
-                        <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{accountTypeLabel(t, a.accountType)}</td>
-                        <td className="px-3 py-2">
-                          {inherited ? <InheritedBadge /> : inCompanyView ? <Badge tone="violet">{t('Company')}</Badge> : <Badge tone="sapphire">{t('Group')}</Badge>}
+                        <td className="px-2 py-2"><span data-testid={`cc-acct-name-${a.code}`} dir="auto" title={a.name} className="block overflow-hidden text-ellipsis whitespace-nowrap">{a.name}</span></td>
+                        <td className="px-2 py-2 text-xs text-slate-600 dark:text-slate-300">{accountTypeLabel(t, a.accountType)}</td>
+                        <td className="px-2 py-2">
+                          {(() => {
+                            const rule = cleanRule(a.costCenterRule);
+                            const Icon = RULE_ICON[rule];
+                            return (
+                              <Badge
+                                tone={RULE_TONE[rule]}
+                                testId={`cc-acct-rule-${a.code}`}
+                                label={inherited ? t('Rule: {rule} (inherited)', { rule: ruleLabel(rule) }) : t('Cost centre rule: {rule}', { rule: ruleLabel(rule) })}
+                              >
+                                {Icon && <Icon className="h-3 w-3" aria-hidden />}
+                                {ruleLabel(rule)}
+                              </Badge>
+                            );
+                          })()}
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-2">
+                          {inherited ? <InheritedBadge short /> : inCompanyView ? <Badge tone="violet">{t('Company')}</Badge> : <Badge tone="sapphire">{t('Group')}</Badge>}
+                        </td>
+                        <td className="px-2 py-2">
                           <ActiveBadge active={a.isActive} />
                         </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center justify-end gap-1.5">
+                        <td className="px-2 py-2">
+                          <div className="flex flex-col items-end gap-1.5">
                             {canManage && !inherited ? (
                               <>
                                 <button type="button" onClick={() => openEdit(a)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
@@ -666,23 +873,37 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               {inCompanyView ? t('Add a company account') : t('Add a group account')}
             </p>
             <FieldError error={addError} />
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[120px_1fr_160px_160px_auto] sm:items-end">
-              <Field label={t('Code')} required>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="w-28"><Field label={t('Code')} required>
                 <input value={newAcct.code} onChange={(e) => setNewAcct((x) => ({ ...x, code: e.target.value }))} className="input h-8 w-full font-mono text-xs" placeholder="5006" />
-              </Field>
-              <Field label={t('Name')} required>
+              </Field></div>
+              <div className="min-w-[11rem] flex-1"><Field label={t('Name')} required>
                 <input value={newAcct.name} onChange={(e) => setNewAcct((x) => ({ ...x, name: e.target.value }))} className="input h-8 w-full text-xs" placeholder={t('Account name')} />
-              </Field>
-              <Field label={t('Type')}>
-                <select value={newAcct.accountType} onChange={(e) => setNewAcct((x) => ({ ...x, accountType: e.target.value }))} className="select h-8 w-full text-xs">
+              </Field></div>
+              <div className="w-36"><Field label={t('Type')}>
+                <select value={newAcct.accountType} onChange={(e) => setNewAcct((x) => ({ ...x, accountType: e.target.value }))} className="select h-8 w-full text-xs" aria-describedby="gl-new-type-hint">
                   {GL_ACCOUNT_TYPES.map((type) => (
                     <option key={type} value={type}>
                       {accountTypeLabel(t, type)}
                     </option>
                   ))}
                 </select>
-              </Field>
-              <Field label={t('ERP account code')}>
+              </Field></div>
+              <div className="w-40"><Field label={t('Cost centre rule')}>
+                <select
+                  value={newAcct.costCenterRule}
+                  onChange={(e) => setNewAcct((x) => ({ ...x, costCenterRule: e.target.value as CostCentreRule }))}
+                  data-testid="cc-acct-form-rule"
+                  className="select h-8 w-full text-xs"
+                >
+                  {COST_CENTRE_RULES.map((rule) => (
+                    <option key={rule} value={rule} disabled={ruleBlockedForType(rule, newAcct.accountType)}>
+                      {ruleLabel(rule)}
+                    </option>
+                  ))}
+                </select>
+              </Field></div>
+              <div className="w-40"><Field label={t('ERP account code')}>
                 <input
                   value={newAcct.externalCode}
                   onChange={(e) => setNewAcct((x) => ({ ...x, externalCode: e.target.value }))}
@@ -691,11 +912,14 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                   placeholder={t('Optional')}
                   aria-describedby="gl-new-erp-code-hint"
                 />
-              </Field>
+              </Field></div>
               <button type="button" onClick={addAccount} disabled={adding || !writable} className="btn-secondary h-8 px-3 text-xs disabled:opacity-60">
                 <Plus className="h-3 w-3" aria-hidden /> {t('Add account')}
               </button>
             </div>
+            <p id="gl-new-type-hint" data-testid="cc-acct-type-hint" className="mt-1.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+              {t('What kind of account this is. Cost centres are set separately, in Cost centre rule.')}
+            </p>
             <p id="gl-new-erp-code-hint" className="mt-1.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
               {t('ERP account code')}: {t('The account code in your ERP if it differs from this one. Journal exports use it.')}
             </p>
@@ -722,11 +946,47 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
             </p>
           </div>
           {canManage && (
-            <button type="button" onClick={saveMappings} disabled={saving || !dirty || !writable} className="btn-primary text-xs disabled:opacity-60">
+            <button
+              type="button"
+              onClick={saveMappings}
+              disabled={saving || !dirty || !writable || !mapReason.trim() || hasDuplicate || !!mapLocked}
+              data-testid="cc-map-save"
+              className="btn-primary text-xs disabled:opacity-60"
+            >
               {saving ? t('Saving…') : t('Save mappings')}
             </button>
           )}
         </div>
+
+        <div className="mb-3 space-y-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+          <p>{t('Functional class: use a different account for cost centres of this class, for example Selling or Operations.')}</p>
+          <p>{t('Fixed cost centre: always post this line to one cost centre, whatever the employee\'s own cost centre.')}</p>
+          <p id="cc-map-account-first-hint">{t('Choose an account for a line before setting its functional class or fixed cost centre.')}</p>
+          {!inCompanyView && (
+            <p id="cc-map-group-hint" data-testid="cc-map-group-scope-hint" className="font-medium text-slate-600 dark:text-slate-300">
+              {t('Fixed cost centres are set per company. Switch to a company to set one.')}
+            </p>
+          )}
+        </div>
+
+        {mapLocked && (
+          <div role="alert" data-testid="cc-map-locked-banner" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+            <p>{mapLocked}</p>
+            <div className="flex items-center gap-2">
+              <Link href="/payroll" className="font-semibold underline underline-offset-2 hover:no-underline">{t('Open the approved run')}</Link>
+              <button type="button" onClick={() => setMapLocked(null)} className="btn-secondary h-7 px-2 text-xs">{t('Retry')}</button>
+            </div>
+          </div>
+        )}
+        <FieldError error={mapError} testId="cc-map-error" />
+
+        {canManage && dirty && (
+          <div className="mb-3 max-w-xl">
+            <Field label={t('Reason for this change')} required hint={t('Recorded in the audit log.')}>
+              <input value={mapReason} onChange={(e) => setMapReason(e.target.value)} disabled={!!mapLocked} data-testid="cc-map-reason" className="input w-full" maxLength={500} />
+            </Field>
+          </div>
+        )}
 
         <PanelState
           loading={res.loading && !res.data}
@@ -736,91 +996,210 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           emptyLabel={inCompanyView ? t('No posting drivers are set up yet. Ask a group administrator to load the standard payroll chart.') : t('No posting drivers are set up yet. Load the standard payroll chart above to get started.')}
         >
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10 outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:focus-visible:ring-cyanAccent" tabIndex={0} role="group" aria-labelledby="gl-map-heading">
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[24%]" />
+                <col className="w-[23%]" />
+                <col className="w-[17%]" />
+                <col className="w-[19%]" />
+                <col className="w-[17%]" />
+              </colgroup>
               <thead className={theadClass}>
                 <tr>
-                  <th scope="col" className={thClass}>{t('Posting line')}</th>
-                  <th scope="col" className={thClass}>{t('Category')}</th>
-                  <th scope="col" className={thClass}>{t('Account')}</th>
-                  <th scope="col" className={thClass}>{t('Cost centre tag')}</th>
-                  <th scope="col" className={`${thClass} text-end`}>{t('Actions')}</th>
+                  <th scope="col" className={thCompact}>{t('Posting line')}</th>
+                  <th scope="col" className={thCompact}>{t('Account')}</th>
+                  <th scope="col" className={thCompact}>{t('Functional class')}</th>
+                  <th scope="col" className={thCompact}>{t('Fixed cost centre')}</th>
+                  <th scope="col" className={`${thCompact} text-end`}>{t('Actions')}</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  const e = edits[r.driverKey] ?? { accountId: '', segmentCostCenterId: '' };
-                  const isOverridden = inCompanyView && e.accountId !== '';
+                  const d = drafts[r.driverKey] ?? baseDrafts.find((b) => b.driverKey === r.driverKey);
+                  if (!d) return null;
+                  const ex = exclusiveState(d, inCompanyView);
+                  const dup = duplicateClass(d);
+                  const isOverridden = inCompanyView && d.accountId !== '';
                   const inheritedAccount = inCompanyView && r.inherited ? accountLabel(r.mappedAccountId) : null;
+                  const hintId = `cc-map-excl-${r.driverKey.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+                  const hint = (
+                    <p id={hintId} data-testid={`cc-map-exclusive-hint-${r.driverKey}`} className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                      {t('A posting rule uses either a functional class or a fixed cost centre, not both.')}
+                    </p>
+                  );
+                  const unused = unusedClasses(d);
                   return (
-                    <tr key={r.driverKey} className="border-t border-slate-100 dark:border-white/5">
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-slate-800 dark:text-slate-100">{r.label}</span>
-                          {isOverridden && <Badge tone="violet">{t('Company override')}</Badge>}
-                          {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge />}
-                        </div>
-                        <p className="text-[11px] text-slate-500">
-                          {inheritedAccount && !isOverridden
-                            ? t('Fallback {account} · inherits {inherited}', { account: r.defaultAccount, inherited: inheritedAccount })
-                            : t('Fallback {account}', { account: r.defaultAccount })}
-                        </p>
-                      </td>
-                      <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{driverCategoryLabel(t, r.category)}</td>
-                      <td className="px-3 py-2">
-                        <select
-                          aria-label={t('Account for {line}', { line: r.label })}
-                          value={e.accountId}
-                          disabled={!canManage}
-                          onChange={(ev) => setEdit(r.driverKey, { accountId: ev.target.value, ...(ev.target.value ? {} : { segmentCostCenterId: '' }) })}
-                          className="select w-full min-w-[200px] text-xs disabled:opacity-60"
-                        >
-                          <option value="">{inCompanyView ? t('Inherit group mapping') : t('Use the fallback account')}</option>
-                          {selectableAccounts.map((a) => (
-                            <option key={a.id} value={a.id}>
-                              {inCompanyView && a.companyId === null
-                                ? t('{code} — {name} (group)', { code: a.code, name: a.name })
-                                : `${a.code} — ${a.name}`}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-3 py-2">
-                        <select
-                          aria-label={t('Cost centre tag for {line}', { line: r.label })}
-                          title={t('Optional cost centre stamped on this posting line')}
-                          value={e.segmentCostCenterId}
-                          disabled={!canManage || !e.accountId}
-                          onChange={(ev) => setEdit(r.driverKey, { segmentCostCenterId: ev.target.value })}
-                          className="select w-full text-xs disabled:opacity-50"
-                        >
-                          <option value="">{t('No cost centre')}</option>
-                          {visibleCostCenters.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.code}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-3 py-2 text-end">
-                        {canManage && isOverridden ? (
-                          <button
-                            type="button"
-                            onClick={() => setEdit(r.driverKey, { accountId: '', segmentCostCenterId: '' })}
-                            className="btn-secondary h-7 px-2 text-xs"
+                    <Fragment key={r.driverKey}>
+                      <tr data-testid={`cc-map-row-${r.driverKey}`} className="border-t border-slate-100 dark:border-white/5">
+                        <td className="px-2 py-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="break-words text-slate-800 dark:text-slate-100">{r.label}</span>
+                            {isOverridden && <Badge tone="violet" wrap>{t('Company override')}</Badge>}
+                            {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge short />}
+                          </div>
+                          <p className="text-[11px] text-slate-500">{driverCategoryLabel(t, r.category)}</p>
+                          <p className="break-words text-[11px] text-slate-500">
+                            {inheritedAccount && !isOverridden
+                              ? <BdiMessage testId={`cc-map-fallback-${r.driverKey}`} message={msg('Fallback {account} · inherits {inherited}')} values={{ account: r.defaultAccount, inherited: inheritedAccount }} />
+                              : <BdiMessage testId={`cc-map-fallback-${r.driverKey}`} message={msg('Fallback {account}')} values={{ account: r.defaultAccount }} />}
+                          </p>
+                        </td>
+                        <td className="px-2 py-2">
+                          <select
+                            aria-label={t('Account for {line}', { line: r.label })}
+                            dir={textDir(selectedAccountText(d.accountId, inCompanyView ? t('Inherit group mapping') : t('Use the fallback account')))}
+                            value={d.accountId}
+                            disabled={!mapEditable}
+                            onChange={(ev) => updateDraft(r.driverKey, (x) => setBaseAccount(x, ev.target.value))}
+                            className="select w-full min-w-0 text-xs disabled:opacity-60"
                           >
-                            <RotateCcw className="h-3 w-3" aria-hidden /> {t('Use group mapping')}
-                          </button>
-                        ) : (
-                          <span className="text-[11px] text-slate-400" aria-hidden>—</span>
-                        )}
-                      </td>
-                    </tr>
+                            <option value="">{inCompanyView ? t('Inherit group mapping') : t('Use the fallback account')}</option>
+                            {selectableAccounts.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {inCompanyView && a.companyId === null
+                                  ? t('{code} — {name} (group)', { code: a.code, name: a.name })
+                                  : `${a.code} — ${a.name}`}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-2 py-2">
+                          <select
+                            aria-label={t('Functional class for {line}', { line: r.label })}
+                            value={d.cls}
+                            disabled={!mapEditable || ex.classDisabled}
+                            aria-describedby={ex.why === 'fixed' ? hintId : ex.why === 'account' ? 'cc-map-account-first-hint' : undefined}
+                            data-testid={`cc-map-class-${r.driverKey}`}
+                            onChange={(ev) => updateDraft(r.driverKey, (x) => setBaseClass(x, ev.target.value))}
+                            className="select w-full min-w-0 text-xs disabled:opacity-60"
+                          >
+                            <option value="">{t('Any class')}</option>
+                            {FUNCTIONAL_CLASSES.map((c) => (
+                              <option key={c} value={c} disabled={c === RESERVED_CLASS}>
+                                {classLabel(c)}
+                              </option>
+                            ))}
+                          </select>
+                          {ex.why === 'fixed' && hint}
+                          {dup && (
+                            <p role="alert" data-testid={`cc-map-dup-error-${r.driverKey}`} className="mt-1 text-[11px] font-medium text-rose-700 dark:text-rose-300">
+                              {t('This line already has a rule for this class.')}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          <select
+                            aria-label={t('Fixed cost centre for {line}', { line: r.label })}
+                            dir={textDir(selectedCostCentreText(d.fixedCostCentreId))}
+                            value={d.fixedCostCentreId}
+                            disabled={!mapEditable || ex.fixedDisabled}
+                            aria-describedby={ex.why === 'group' ? 'cc-map-group-hint' : ex.why === 'class' ? hintId : ex.why === 'account' ? 'cc-map-account-first-hint' : undefined}
+                            data-testid={`cc-map-fixed-${r.driverKey}`}
+                            onChange={(ev) => updateDraft(r.driverKey, (x) => setFixedCostCentre(x, ev.target.value))}
+                            className="select w-full min-w-0 text-xs disabled:opacity-50"
+                          >
+                            <option value="">{t('None')}</option>
+                            {fixedOptions.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {`${c.code} — ${c.name}`}
+                              </option>
+                            ))}
+                          </select>
+                          {ex.why === 'class' && hint}
+                        </td>
+                        <td className="px-2 py-2 text-end">
+                          <div className="flex flex-col items-end gap-1.5">
+                            {mapEditable && (
+                              <select
+                                value=""
+                                aria-label={t('Add rule for a class')}
+                                data-testid={`cc-map-add-class-${r.driverKey}`}
+                                onChange={(ev) => {
+                                  const cls = ev.target.value;
+                                  if (!cls) return;
+                                  updateDraft(r.driverKey, (x) => addClassRule(x, cls));
+                                  setAnnounce(t('Added a rule for {class}.', { class: classLabel(cls) }));
+                                }}
+                                className="select h-8 w-full min-w-0 text-xs"
+                              >
+                                <option value="">{t('Add rule for a class')}</option>
+                                {unused.map((c) => (
+                                  <option key={c} value={c} disabled={c === RESERVED_CLASS}>
+                                    {classLabel(c)}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            {mapEditable && isOverridden && (
+                              <button
+                                type="button"
+                                onClick={() => updateDraft(r.driverKey, (x) => setBaseAccount(x, ''))}
+                                className="btn-secondary h-7 px-2 text-xs"
+                              >
+                                <RotateCcw className="h-3 w-3" aria-hidden /> {t('Use group mapping')}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {d.classRules.map((rule) => (
+                        <tr key={rule.cls} data-testid={`cc-map-class-row-${r.driverKey}-${rule.cls}`} className="border-t border-slate-100 bg-slate-50/50 dark:border-white/5 dark:bg-white/[0.02]">
+                          <td className="border-s-2 border-violet-200 py-2 ps-4 pe-2 dark:border-violet-500/30">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-xs font-medium text-slate-700 dark:text-slate-200">{t('{class} rule', { class: classLabel(rule.cls) })}</span>
+                              {rule.inherited && <InheritedBadge />}
+                            </div>
+                          </td>
+                          <td className="px-2 py-2">
+                            <select
+                              aria-label={t('Class rule for {line}: {class}', { line: r.label, class: classLabel(rule.cls) })}
+                              dir={textDir(selectedAccountText(rule.accountId, rule.inherited ? t('Inherit group mapping') : t('Use the fallback account')))}
+                              value={rule.accountId}
+                              disabled={!mapEditable}
+                              onChange={(ev) => updateDraft(r.driverKey, (x) => setClassRuleAccount(x, rule.cls, ev.target.value))}
+                              className="select w-full min-w-0 text-xs disabled:opacity-60"
+                            >
+                              <option value="">{rule.inherited ? t('Inherit group mapping') : t('Use the fallback account')}</option>
+                              {selectableAccounts.map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  {inCompanyView && a.companyId === null
+                                    ? t('{code} — {name} (group)', { code: a.code, name: a.name })
+                                    : `${a.code} — ${a.name}`}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-2 py-2 text-xs text-slate-600 dark:text-slate-300">{classLabel(rule.cls)}</td>
+                          <td className="px-2 py-2 text-[11px] text-slate-400" aria-hidden>—</td>
+                          <td className="px-2 py-2 text-end">
+                            {mapEditable && !rule.inherited ? (
+                              <button
+                                type="button"
+                                data-testid={`cc-map-remove-${r.driverKey}-${rule.cls}`}
+                                aria-label={t('Remove the rule for {line}: {class}', { line: r.label, class: classLabel(rule.cls) })}
+                                onClick={() => {
+                                  updateDraft(r.driverKey, (x) => removeClassRule(x, rule.cls));
+                                  setAnnounce(t('Removed the rule for {class}.', { class: classLabel(rule.cls) }));
+                                  requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-testid="cc-map-class-${r.driverKey}"]`)?.focus());
+                                }}
+                                className="btn-secondary h-7 px-2 text-xs"
+                              >
+                                {t('Remove rule')}
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-slate-400" aria-hidden>—</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
                   );
                 })}
               </tbody>
             </table>
           </div>
         </PanelState>
+        <p role="status" className="sr-only">{announce}</p>
       </section>
 
       {/* Edit account modal */}
@@ -844,7 +1223,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           <Field label={t('Code')} required hint={t('A code that has been posted to cannot be changed.')}>
             <input value={editForm.code} onChange={(e) => setEditForm((x) => ({ ...x, code: e.target.value }))} className="input w-full font-mono" />
           </Field>
-          <Field label={t('Type')}>
+          <Field label={t('Type')} hint={t('What kind of account this is. Cost centres are set separately, in Cost centre rule.')}>
             <select value={editForm.accountType} onChange={(e) => setEditForm((x) => ({ ...x, accountType: e.target.value }))} className="select w-full">
               {GL_ACCOUNT_TYPES.map((type) => (
                 <option key={type} value={type}>
@@ -862,6 +1241,37 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               <option value="false">{t('Inactive')}</option>
             </select>
           </Field>
+          {editing?.costCenterRule !== undefined && (
+            <div className="sm:col-span-2">
+              <Field
+                label={t('Cost centre rule')}
+                hint={
+                  ruleBlockedForType('Required', editForm.accountType)
+                    ? `${ruleHint(editForm.costCenterRule)} ${t('Only expense and income accounts can require a cost centre.')}`
+                    : ruleHint(editForm.costCenterRule)
+                }
+              >
+                <select
+                  value={editForm.costCenterRule}
+                  onChange={(e) => setEditForm((x) => ({ ...x, costCenterRule: e.target.value as CostCentreRule }))}
+                  disabled={!!locked}
+                  data-testid="cc-acct-edit-rule"
+                  className="select w-full"
+                >
+                  {COST_CENTRE_RULES.map((rule) => (
+                    <option key={rule} value={rule} disabled={ruleBlockedForType(rule, editForm.accountType)}>
+                      {ruleLabel(rule)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {editRuleError && (
+                <p role="alert" data-testid="cc-acct-edit-rule-error" className="mt-1.5 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
+                  {editRuleError}
+                </p>
+              )}
+            </div>
+          )}
           <div className="sm:col-span-2">
             <Field label={t('ERP account code')} hint={t('The account code in your ERP if it differs from this one. Journal exports use it.')}>
               <input
@@ -873,6 +1283,81 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
               />
             </Field>
           </div>
+        </div>
+      </Modal>
+
+      {/* Apply the recommended cost centre rules */}
+      <Modal
+        isOpen={presetOpen}
+        title={t('Apply recommended cost centre rules?')}
+        onClose={() => setPresetOpen(false)}
+        footer={
+          <>
+            <button type="button" onClick={() => setPresetOpen(false)} className="btn-secondary">
+              {t('Cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void applyPreset()}
+              disabled={presetBusy || presetLoading || !preset || preset.changed === 0 || !presetReason.trim() || !!locked}
+              data-testid="cc-acct-preset-apply"
+              className="btn-primary disabled:opacity-60"
+            >
+              {presetBusy ? t('Saving…') : t('Apply rules')}
+            </button>
+          </>
+        }
+      >
+        <div data-testid="cc-acct-preset-dialog" className="space-y-3">
+          <FieldError error={presetError} />
+          {presetLoading && <Spinner />}
+          {presetLoadError && !presetLoading && (
+            <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">
+              <p>{t('The preview could not be loaded.')} {presetLoadError}</p>
+              <button type="button" onClick={() => void loadPreset()} className="btn-secondary h-8 px-3 text-xs">{t('Retry')}</button>
+            </div>
+          )}
+          {preset && !presetLoading && (
+            <>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                {t('Expense and income accounts become Required. Asset, liability and equity accounts become Not allowed.')}
+              </p>
+              {preset.changed === 0 ? (
+                <p data-testid="cc-acct-preset-nochange" role="status" className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">
+                  {t('All accounts already follow the recommended rules.')}
+                </p>
+              ) : (
+                <>
+                  <p data-testid="cc-acct-preset-count" role="status" className="text-sm font-semibold text-slate-900 dark:text-white">
+                    {t('{count, plural, one {# account will change.} other {# accounts will change.}}', { count: preset.changed })}
+                  </p>
+                  <table className="w-full text-sm">
+                    <caption className="sr-only">{t('Apply recommended cost centre rules?')}</caption>
+                    <thead className={theadClass}>
+                      <tr>
+                        <th scope="col" className={thClass}>{t('Account type')}</th>
+                        <th scope="col" className={thClass}>{t('Becomes')}</th>
+                        <th scope="col" className={`${thClass} text-end`}>{t('Accounts')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {preset.byType.map((row) => (
+                        <tr key={`${row.accountType}-${row.to}`} className="border-t border-slate-100 dark:border-white/5">
+                          <td className="px-3 py-1.5">{accountTypeLabel(t, row.accountType)}</td>
+                          <td className="px-3 py-1.5">{ruleLabel(cleanRule(row.to))}</td>
+                          <td className="px-3 py-1.5 text-end tabular-nums">{row.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              <p className="text-xs text-slate-500 dark:text-slate-400">{t('Nothing changes in payroll until Cost accounting is turned on.')}</p>
+              <Field label={t('Reason for this change')} required hint={t('Recorded in the audit log.')}>
+                <input value={presetReason} onChange={(e) => setPresetReason(e.target.value)} data-testid="cc-acct-preset-reason" className="input w-full" maxLength={500} />
+              </Field>
+            </>
+          )}
         </div>
       </Modal>
 

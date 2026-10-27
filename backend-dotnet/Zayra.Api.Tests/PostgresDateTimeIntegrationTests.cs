@@ -104,6 +104,14 @@ public sealed class PostgresFixture : IAsyncLifetime
             command.CommandText = ddl;
             await command.ExecuteNonQueryAsync();
         }
+        // Cost accounting M2 (FinanceGlEntriesAppendOnly): the append-only ledger, the reversal and ERP rules, the cost-centre guards and the
+        // payroll stamp freeze — the migration's own text, so every integration test that posts to the ledger runs under the triggers.
+        foreach (var ddl in Zayra.Api.Migrations.FinanceGlEntriesAppendOnly.PostgresOnlyDdl)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = ddl;
+            await command.ExecuteNonQueryAsync();
+        }
     }
 
     /// <summary>

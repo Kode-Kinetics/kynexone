@@ -96,15 +96,22 @@ public static class FinalSettlementGlLedger
         Guid tenantId, EmployeeFinalSettlement settlement, IReadOnlyList<FinalSettlementLine> lines,
         string period, GlResolutionContext gl, Guid? postedBy, string postedByName,
         decimal provisionConsumed = 0m, string? provisionAccount = null,
-        IReadOnlyList<(string Account, decimal Amount)>? provisionReleases = null)
+        IReadOnlyList<(string Account, decimal Amount)>? provisionReleases = null,
+        Guid? costCentreId = null)
     {
         var entries = new List<FinanceGlEntry>();
+        var costed = gl.CostAccountingEnabled;
+        var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var currency = settlement.Currency;
         var employeeRef = EosbProvisionLedger.EmployeeRef(settlement.EmployeeId);
 
-        FinanceGlEntry Line(string debit, string credit, decimal amount, string description, string eventType, string entityRef)
-            => new()
+        // Cost accounting (WP-C2): the EXPENSE lines (the gratuity / leave / notice debits and the provision-release credit on the expense
+        // account) carry the leaver's cost centre resolved at the approval date; the payable (2320) and provision (2310) sides never do.
+        FinanceGlEntry Line(string debit, string credit, decimal amount, string description, string eventType, string entityRef,
+            Guid? ccId = null, string driverKey = "")
+        {
+            var line = new FinanceGlEntry
             {
                 TenantId = tenantId, CompanyId = settlement.CompanyId,
                 SourceModule = FinalSettlementGlDescriptions.SourceModule,
@@ -116,6 +123,21 @@ public static class FinalSettlementGlLedger
                 Description = description,
                 PostedBy = postedBy, PostedByName = postedByName,
             };
+            if (!costed) return line;
+            if (ccId is Guid g && gl.CostCentres.TryGetValue(g, out var info))
+            {
+                line.CostCenterId = g; line.CostCenterCode = info.Code; line.CostCenterName = info.Name; line.CostCenterGlSegment = info.GlSegment;
+            }
+            var side = string.IsNullOrEmpty(debit) ? "CR" : "DR";
+            var basis = $"{eventType}|{entityRef}|{side}|{driverKey}|{description}|{ccId?.ToString("N") ?? "-"}";
+            var ordinal = keyOrdinals.GetValueOrDefault(basis);
+            keyOrdinals[basis] = ordinal + 1;
+            line.PostingKey = PayrollCostStamper.PostingKey(settlement.Id, eventType, entityRef, side, driverKey, description, "Settlement", ccId, ordinal);
+            return line;
+        }
+        string ExpenseLabel(string driver) =>
+            costed ? $"{GlAccountResolver.AccountFor(driver, PayrollCostStamper.ClassOf(costCentreId, gl), gl).Code} - {GlAccountResolver.AccountFor(driver, PayrollCostStamper.ClassOf(costCentreId, gl), gl).Name}"
+                   : GlAccountResolver.AccountLabel(driver, gl);
 
         // ── DEBITS: one per earning component, on the component's OWN expense account ────────────────
         var gratuityRelief = Math.Min(Math.Max(0m, provisionConsumed), settlement.GratuityAmount);
@@ -136,15 +158,15 @@ public static class FinalSettlementGlLedger
             {
                 var relieved = Math.Min(gratuityRelief, amount);
                 entries.Add(Line(provisionAccount!, string.Empty, relieved,
-                    $"{FinalSettlementGlDescriptions.ProvisionReliefPrefix}{settlement.EmployeeCode}",
+                    $"{FinalSettlementGlDescriptions.ProvisionReliefPrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
                     GlEventTypes.EosbProvisionConsumption, employeeRef));
                 amount = Math.Round(amount - relieved, 2);
                 if (amount <= 0m) continue;
             }
 
-            entries.Add(Line(GlAccountResolver.AccountLabel(ExpenseDriverFor(grp.Key), gl), string.Empty, amount,
+            entries.Add(Line(ExpenseLabel(ExpenseDriverFor(grp.Key)), string.Empty, amount,
                 $"{FinalSettlementGlDescriptions.AccrualPrefix}{grp.Key}",
-                GlEventTypes.SettlementAccrual, FinalSettlementGlDescriptions.SettlementRef(settlement.Id)));
+                GlEventTypes.SettlementAccrual, FinalSettlementGlDescriptions.SettlementRef(settlement.Id), costCentreId, ExpenseDriverFor(grp.Key)));
         }
 
         // ── POD-C2: release whatever provision is LEFT for this leaver ───────────────────────────────
@@ -159,18 +181,18 @@ public static class FinalSettlementGlLedger
             {
                 var amount = Math.Round(released, 2);
                 entries.Add(Line(account, string.Empty, amount,
-                    $"{FinalSettlementGlDescriptions.ProvisionReleasePrefix}{settlement.EmployeeCode}",
+                    $"{FinalSettlementGlDescriptions.ProvisionReleasePrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
                     GlEventTypes.EosbProvisionConsumption, employeeRef));
-                entries.Add(Line(string.Empty, GlAccountResolver.AccountLabel(ExpenseDriverFor(FinalSettlementComponents.Gratuity), gl), amount,
-                    $"{FinalSettlementGlDescriptions.ProvisionReleasePrefix}{settlement.EmployeeCode}",
-                    GlEventTypes.EosbProvisionConsumption, employeeRef));
+                entries.Add(Line(string.Empty, ExpenseLabel(ExpenseDriverFor(FinalSettlementComponents.Gratuity)), amount,
+                    $"{FinalSettlementGlDescriptions.ProvisionReleasePrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
+                    GlEventTypes.EosbProvisionConsumption, employeeRef, costCentreId, ExpenseDriverFor(FinalSettlementComponents.Gratuity)));
             }
 
         // ── CREDIT: the payable, at the GROSS of the earning lines ───────────────────────────────────
         var gross = Math.Round(lines.Where(l => l.LineType == FinalSettlementLineTypes.Earning).Sum(l => l.Amount), 2);
         if (gross > 0m)
             entries.Add(Line(string.Empty, GlAccountResolver.AccountLabel(PayableDriver, gl), gross,
-                $"{FinalSettlementGlDescriptions.AccrualPrefix}{settlement.EmployeeCode} — payable",
+                $"{FinalSettlementGlDescriptions.AccrualPrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)} — payable",
                 GlEventTypes.SettlementAccrual, FinalSettlementGlDescriptions.SettlementRef(settlement.Id)));
 
         var dr = entries.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
