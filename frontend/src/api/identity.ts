@@ -25,6 +25,8 @@ export interface UserListItem {
   createdAtUtc: string;
   /** Two-step sign-in is set up for this login. Absent from an older API: treated as not set up. */
   mfaEnabled?: boolean;
+  /** The workspace owner: no other Admin can change this account (access_owner_protected). */
+  isOwner?: boolean;
 }
 
 /** A login as the employee-link dialog shows it. */
@@ -365,6 +367,10 @@ export const usersApi = {
    */
   resetMfa: (userId: string, reason: string) =>
     client.post(`/api/access/users/${encodeURIComponent(userId)}/mfa/reset`, { reason }).then(() => undefined),
+
+  /** The workspace owner hands ownership to another active Admin. 204; 400 with a message otherwise. */
+  makeOwner: (userId: string) =>
+    client.post(`/api/access/users/${encodeURIComponent(userId)}/make-owner`).then(() => undefined),
 
   delete: (userId: string) =>
     client.delete(`/api/access/users/${userId}`),

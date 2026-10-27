@@ -173,7 +173,20 @@ export function UsersTab() {
   // yourself, and only for someone who has two-step set up. The server enforces all three again.
   const canManageUsers = hasPermission('security.manage');
   const isMe = (u: UserListItem) => (!!me && me.id.toLowerCase() === u.id.toLowerCase()) || isSelf(ceiling, u.id);
-  const canResetTwoStep = (u: UserListItem) => canManageUsers && u.mfaEnabled === true && !isMe(u);
+  // The workspace owner's account is changed by nobody else (the server refuses: access_owner_protected).
+  const protectedOwner = (u: UserListItem) => u.isOwner === true && !isMe(u);
+  // Whether YOU are the owner is read from your own account, not from whichever page of the list is showing.
+  const [callerIsOwner, setCallerIsOwner] = useState(false);
+  const [ownerCheck, setOwnerCheck] = useState(0);
+  useEffect(() => {
+    if (!me?.id) return;
+    let live = true;
+    usersApi.get(me.id).then(u => { if (live) setCallerIsOwner(u?.isOwner === true); }).catch(() => { if (live) setCallerIsOwner(false); });
+    return () => { live = false; };
+  }, [me?.id, ownerCheck]);
+  const meIsOwner = callerIsOwner;
+  const canMakeOwner = (u: UserListItem) => meIsOwner && !isMe(u) && u.status === 'Active' && u.roles.includes('Admin');
+  const canResetTwoStep = (u: UserListItem) => canManageUsers && u.mfaEnabled === true && !isMe(u) && !protectedOwner(u);
 
   const pageSize = 20;
 
@@ -235,6 +248,7 @@ export function UsersTab() {
       else if (type === 'lock') await usersApi.lock(userId, actionReason);
       else if (type === 'unlock') await usersApi.unlock(userId);
       else if (type === 'delete') await usersApi.delete(userId);
+      else if (type === 'make-owner') { await usersApi.makeOwner(userId); setOwnerCheck(n => n + 1); }
       setShowAction(null); setActionReason('');
       load();
     } catch (e: unknown) {
@@ -333,7 +347,15 @@ export function UsersTab() {
             ) : users.map(u => (
               <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                 <td className="px-4 py-3">
-                  <p className="font-medium text-slate-800 dark:text-slate-200">{u.fullName}</p>
+                  <p className="flex items-center gap-1.5 font-medium text-slate-800 dark:text-slate-200">
+                    {u.fullName}
+                    {u.isOwner && (
+                      <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-800"
+                        title={t('Workspace owner: no other administrator can change this account.')} data-testid="user-owner-badge">
+                        {t('Owner')}
+                      </span>
+                    )}
+                  </p>
                   <p className="text-xs text-slate-500">{u.email}</p>
                   {u.mfaEnabled && (
                     <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-700 rtl:text-[13px] dark:text-emerald-400" data-testid="user-two-step-on">
@@ -361,6 +383,7 @@ export function UsersTab() {
                     <button title="View Access" onClick={() => setSelected(u)} className="rounded p-1 hover:bg-slate-100 dark:hover:bg-slate-700">
                       <Eye className="h-3.5 w-3.5 text-slate-500" />
                     </button>
+                    {!protectedOwner(u) && (<>
                     <button title="Edit User" onClick={() => openEdit(u)} className="rounded p-1 hover:bg-violet-100 dark:hover:bg-violet-900/30">
                       <Edit2 className="h-3.5 w-3.5 text-violet-500" />
                     </button>
@@ -392,6 +415,17 @@ export function UsersTab() {
                     <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
+                    </>)}
+                    {canMakeOwner(u) && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAction({ type: 'make-owner', userId: u.id })}
+                        className="ms-1 whitespace-nowrap rounded-lg border border-amber-200 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                        data-testid="user-make-owner"
+                      >
+                        {t('Make owner')}
+                      </button>
+                    )}
                     {canResetTwoStep(u) && (
                       <button
                         type="button"
@@ -471,8 +505,13 @@ export function UsersTab() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900">
             <h3 className={`text-base font-semibold capitalize mb-4 ${showAction.type === 'delete' ? 'text-red-600 dark:text-red-400' : 'text-slate-800 dark:text-slate-200'}`}>
-              {showAction.type.replace('-', ' ')} User
+              {showAction.type === 'make-owner' ? t('Make workspace owner?') : `${showAction.type.replace('-', ' ')} User`}
             </h3>
+            {showAction.type === 'make-owner' && (
+              <p className="mb-4 text-sm text-slate-600 dark:text-slate-400" data-testid="make-owner-explainer">
+                {t('{name} will become the workspace owner, and no other administrator will be able to change their account. You stay an Admin, but you will no longer be protected.', { name: users.find(x => x.id === showAction.userId)?.fullName ?? '' })}
+              </p>
+            )}
             {showAction.type === 'delete' && (
               <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">
                 This will permanently remove the user's access. This action cannot be undone.
