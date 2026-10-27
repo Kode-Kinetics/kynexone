@@ -45,6 +45,7 @@ public static class PrivilegeCeiling
         public const string OwnRole = "access_own_role";
         public const string ReservedRoleName = "access_reserved_role_name";
         public const string RoleHolderAbove = "access_role_holder_above";
+        public const string OwnerProtected = "access_owner_protected";
     }
 
     /// <summary>
@@ -263,6 +264,9 @@ public static class PrivilegeCeiling
             Codes.RoleHolderAbove => (
                 $"'{role}' is held by an Admin or by someone with access you do not have{(missing.Count > 0 ? $" ({list})" : string.Empty)}. Changing it would change their access; only an Admin, or someone with at least that access, can.",
                 $"دور '{role}' يملكه مسؤول نظام أو شخص لديه صلاحيات لا تملكها{(missing.Count > 0 ? $" ({list})" : string.Empty)}. تعديله يغيّر صلاحياتهم؛ لا يمكن ذلك إلا لمسؤول نظام أو لمن يملك هذه الصلاحيات على الأقل."),
+            Codes.OwnerProtected => (
+                "This user is the workspace owner. No other administrator can change the owner's account, roles or sign-in. The owner can hand ownership to another Admin first.",
+                "هذا المستخدم هو مالك مساحة العمل. لا يمكن لأي مسؤول آخر تغيير حساب المالك أو أدواره أو تسجيل دخوله. يمكن للمالك نقل الملكية إلى مسؤول آخر أولًا."),
             Codes.OwnRole => (
                 $"You hold the '{role}' role, so you cannot change it. Ask another administrator.",
                 $"أنت تملك دور '{role}'، لذلك لا يمكنك تعديله. اطلب ذلك من مسؤول آخر."),

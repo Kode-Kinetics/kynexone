@@ -102,10 +102,11 @@ schema names a column but not its type, the type is inferred from `CONVENTIONS.m
 ### `users`
 - **Purpose** — every **tenant** login: tenant staff and employees on ESS.
 - **Tier** T · **Domain** Identity
-- **Keys** — **`tenant_id NOT NULL`** (platform operators live in `platform_users`), `normalized_email` (unique per tenant), `password_hash`, `status` (§9), `lockout_end`, `failed_login_count`, `mfa_enabled`, `mfa_secret_encrypted`, `mfa_recovery_hashes jsonb`, `employee_id` (nullable, unique), `notification_prefs jsonb`, **`deleted_at`**
+- **Keys** — **`tenant_id NOT NULL`** (platform operators live in `platform_users`), `normalized_email` (unique per tenant), `password_hash`, `status` (§9), `lockout_end`, `failed_login_count`, `mfa_enabled`, `mfa_secret_encrypted`, `mfa_recovery_hashes jsonb`, `employee_id` (nullable, unique), `notification_prefs jsonb`, **`deleted_at`**, **`is_workspace_owner`** (bool, default false; `UNIQUE (tenant_id) WHERE is_workspace_owner` — at most one owner per tenant)
 - **Rel** — `(tenant_id, employee_id) → employees` (1:1, SET NULL); parent of `user_roles`, `auth_sessions`, `auth_tokens`, `notifications`.
 - **Lifecycle** — created by admin invitation or ESS enrolment; `status` disables; `deleted_at` soft-deletes; PDPL purge anonymises rather than removes, because audit rows reference the id.
 - **Retention** `P`
+- **Owner** — `is_workspace_owner` marks the one Admin no other Admin may act against (suspend, lock, delete, demote, no-login, password or two-step reset). Only the owner transfers it; KynexOne support sets it when the owner is gone. It lives on the user's own row so the owner is always of the same tenant and the database enforces one per tenant.
 - **Note** — revision 4 (§5 decision 2) made `tenant_id` **NOT NULL** and moved platform operators to `platform_users`. **`TARGET_SCHEMA.md` §6 Risk 3 still lists `users` as nullable-tenant and is stale** — gap 1 below.
 
 ### `roles`

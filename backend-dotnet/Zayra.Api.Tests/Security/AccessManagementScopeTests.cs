@@ -300,7 +300,7 @@ public class AccessManagementScopeTests
             User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(claims, "test"))
         };
         if (selectedCompany is not null) http.Request.Headers[ZayraDbContext.CompanySelectionHeader] = selectedCompany.ToString();
-        return new AccessController(CreateService(db), db, null!)
+        return new AccessController(CreateService(db), db, null!, stepUp: StepUpTestKit.AlwaysConfirmed(db))
         {
             ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = http }
         };

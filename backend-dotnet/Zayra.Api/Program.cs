@@ -342,6 +342,7 @@ builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.StepUpService>();
 builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.EmployeeAccessService>();
 builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
