@@ -188,7 +188,13 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
             return EssProblem.StepUpRequired(HttpContext);
         if (form.File is null || form.File.Length == 0) return EssProblem.Create(HttpContext, 400, EssProblemCodes.UploadRejected, Rejected("file", "required"));
         if (form.File.Length > EssCompletion.MaxFileBytes) return EssProblem.Create(HttpContext, 400, EssProblemCodes.UploadRejected, Rejected("file", "too_large"));
-        var existing = await db.EmployeeDocuments.AsNoTracking().CountAsync(d => d.TenantId == ctx.TenantId && d.EmployeeId == ctx.Employee.Id && d.SourceSection == section && !d.IsDeleted, ct);
+        // Files of a request HR sent back are on their way out (30-day rule) and must not keep the employee from sending corrected ones.
+        var sentBack = (await db.EmployeeProfileChangeRequests.AsNoTracking()
+                .Where(r => r.TenantId == ctx.TenantId && r.EmployeeId == ctx.Employee.Id && r.Section == section && (r.Status == "Rejected" || r.Status == "Expired"))
+                .Select(r => r.RequestedChangesJson).ToListAsync(ct))
+            .SelectMany(EssSectionDecisionService.ReadDocumentIds).ToHashSet();
+        var live = await db.EmployeeDocuments.AsNoTracking().Where(d => d.TenantId == ctx.TenantId && d.EmployeeId == ctx.Employee.Id && d.SourceSection == section && !d.IsDeleted).Select(d => d.Id).ToListAsync(ct);
+        var existing = live.Count(id => !sentBack.Contains(id));
         if (existing >= EssCompletion.MaxAttachmentsPerSection) return EssProblem.Create(HttpContext, 400, EssProblemCodes.UploadRejected, Rejected("file", "too_many"));
 
         byte[] bytes;
