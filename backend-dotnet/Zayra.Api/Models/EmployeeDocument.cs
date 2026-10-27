@@ -34,4 +34,9 @@ public class EmployeeDocument : ITenantOwned, ICompanyScopedOperational
     public string ScanStatus { get; set; } = "Clean";
     /// <summary>P2: the ESS completion section an upload was made for (NULL for every other document).</summary>
     public string? SourceSection { get; set; }
+    /// <summary>P4: set when HR asks the employee to sign (acknowledge) this document. NULL for every other document.</summary>
+    public DateTime? SignatureRequiredAtUtc { get; set; }
+    public Guid? SignatureRequestedBy { get; set; }
+    /// <summary>P4: set when a verification found the stored bytes no longer match what was signed. Signing is then disabled.</summary>
+    public DateTime? IntegrityFlaggedAtUtc { get; set; }
 }
