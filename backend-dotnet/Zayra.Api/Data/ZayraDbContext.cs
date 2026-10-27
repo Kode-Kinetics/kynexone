@@ -5556,6 +5556,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         LearningModelConfiguration.Configure(modelBuilder);
         // SUC — succession and career development (same append-only convention).
         SuccessionModelConfiguration.Configure(modelBuilder);
+        // P2 — ESS profile completion sections (migration OnboardingP2EssSections).
+        Zayra.Api.Data.Ess.OnboardingP2EssModel.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);
