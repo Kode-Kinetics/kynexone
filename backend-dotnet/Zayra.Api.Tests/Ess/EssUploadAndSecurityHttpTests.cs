@@ -128,6 +128,9 @@ public class EssUploadAndSecurityHttpTests(EssFixture fx)
             own.StatusCode.Should().Be(HttpStatusCode.Conflict);
             using var hr = await fx.SendAsync(HttpMethod.Get, $"/api/hr/profile-completion/documents/{id}/download", fx.HrToken);
             hr.StatusCode.Should().Be(HttpStatusCode.Conflict);
+            // ...and neither does the general employee-documents download that HR uses from the employee workspace
+            using var general = await fx.SendAsync(HttpMethod.Get, $"/api/employees/documents/{id}/download", fx.HrDocumentsToken);
+            general.StatusCode.Should().Be(HttpStatusCode.Conflict);
             // A quarantined file cannot be attached to a submission.
             using var attach = await fx.SendAsync(HttpMethod.Post, "/api/ess/completion/documents/submit-probe", e.Token);
             attach.StatusCode.Should().Be(HttpStatusCode.NotFound);
@@ -159,6 +162,37 @@ public class EssUploadAndSecurityHttpTests(EssFixture fx)
         finance.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         using var missing = await fx.SendAsync(HttpMethod.Get, $"/api/hr/profile-completion/documents/{Guid.NewGuid()}/download", fx.HrToken);
         missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Documents_Section_StaysListedAfterUpload_AndHrAcceptsTheFiles()  // AC53/AC57
+    {
+        var e = await fx.NewEmployeeAsync("PK");
+        var (up, body) = await Upload(e, "documents", "iqama_copy", Pdf, "iqama.pdf");
+        up.StatusCode.Should().Be(HttpStatusCode.Created);
+        var docId = body.GetProperty("id").GetGuid();
+        // An uploaded copy is not "held" until HR accepts it: after a page reload the section is still asked for, with the file shown.
+        using (var list = await fx.SendAsync(HttpMethod.Get, "/api/ess/completion/documents", e.Token))
+        {
+            var section = await EssCompletionHttpTests.Json(list);
+            section.GetProperty("state").GetString().Should().Be(EssCompletion.Missing);
+            section.GetProperty("documents").EnumerateArray().Select(d => d.GetProperty("id").GetGuid()).Should().Equal(docId);
+        }
+        using var empty = await fx.SendAsync(HttpMethod.Post, "/api/ess/completion/documents/submit", e.Token, new { noticeVersion = EssCompletion.NoticeVersion, confirm = false, values = new { }, documentIds = Array.Empty<Guid>() });
+        empty.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        using var sent = await fx.SendAsync(HttpMethod.Post, "/api/ess/completion/documents/submit", e.Token, new { noticeVersion = EssCompletion.NoticeVersion, confirm = false, values = new { }, documentIds = new[] { docId } });
+        sent.StatusCode.Should().Be(HttpStatusCode.OK, await sent.Content.ReadAsStringAsync());
+        var requestId = (await EssCompletionHttpTests.Json(sent)).GetProperty("requestId").GetGuid();
+        // the file travels with the request into HR's inbox
+        using var inbox = await fx.SendAsync(HttpMethod.Get, "/api/hr/profile-completion/inbox?section=documents", fx.HrToken);
+        JsonDocument.Parse(await inbox.Content.ReadAsStringAsync()).RootElement.EnumerateArray()
+            .Single(i => i.GetProperty("requestId").GetGuid() == requestId).GetProperty("documents").EnumerateArray()
+            .Select(d => d.GetProperty("id").GetGuid()).Should().Equal(docId);
+        using var accept = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{requestId}/approve", fx.HrToken, new { notes = "Seen" });
+        accept.StatusCode.Should().Be(HttpStatusCode.OK, await accept.Content.ReadAsStringAsync());
+        (await fx.WithDbAsync(db => db.EmployeeDocuments.IgnoreQueryFilters().SingleAsync(d => d.Id == docId))).ApprovalStatus.Should().Be("Approved");
+        using var after = await fx.SendAsync(HttpMethod.Get, "/api/ess/completion/documents", e.Token);
+        (await EssCompletionHttpTests.Json(after)).GetProperty("state").GetString().Should().Be(EssCompletion.Accepted);
     }
 
     [Fact]

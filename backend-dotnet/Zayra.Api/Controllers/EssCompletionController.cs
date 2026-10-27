@@ -226,7 +226,9 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         var employee = await db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted && (x.Status == "Active" || x.Status == "Invited"), ct);
         if (employee is null) return null;
         var country = employee.CompanyId is null ? null : await db.Companies.AsNoTracking().Where(c => c.Id == employee.CompanyId).Select(c => c.CountryCode).FirstOrDefaultAsync(ct);
-        var hasId = await db.EmployeeDocuments.AsNoTracking().AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && !d.IsDeleted && d.ScanStatus != "Quarantined" && IdDocumentTypes.Contains(d.DocumentType), ct);
+        var hasId = await db.EmployeeDocuments.AsNoTracking().AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && !d.IsDeleted && d.ScanStatus != "Quarantined" && IdDocumentTypes.Contains(d.DocumentType)
+            // A copy the employee has only just sent is not "held" until HR accepts it; a copy HR (or the hire) already holds is.
+            && (d.SourceSection == null || d.ApprovalStatus == "Approved"), ct);
         var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uid) ? uid : (Guid?)null;
         return new Ctx(employee, tenantId, userId, EssSectionDecisionService.ClassOf(employee), country, hasId);
     }

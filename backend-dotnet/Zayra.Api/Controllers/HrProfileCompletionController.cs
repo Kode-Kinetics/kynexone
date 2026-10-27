@@ -14,7 +14,7 @@ namespace Zayra.Api.Controllers;
 
 /// <summary>HR's side of "Complete your profile": the inbox of submitted sections with a before/after, and the attached files.</summary>
 [ApiController]
-[Authorize(Roles = "Admin,HR Manager,HR Officer")]
+[Authorize]   // the audience is exactly the holders of employees.write (HasPermission on each action); deciding stays on the HR-role-gated approve/reject routes
 [NoStore]
 [Route("api/hr/profile-completion")]
 public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentStorage storage) : ControllerBase
