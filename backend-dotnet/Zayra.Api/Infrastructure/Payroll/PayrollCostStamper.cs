@@ -35,6 +35,8 @@ public sealed class PayrollCostPlan
     public int UncostedEmployees { get; init; }
     public decimal UncostedAmount { get; init; }
     /// <summary>Per-row decisions keyed by row id (earnings and deductions), applied to the entities by <see cref="PayrollCostStamper.Apply"/>.</summary>
+    /// <summary>Row id to the functional class that routed its account, only for rows whose cost-centre dimension was dropped (NotAllowed).</summary>
+    internal IReadOnlyDictionary<Guid, string> RoutingClasses { get; init; } = new Dictionary<Guid, string>();
     internal IReadOnlyDictionary<Guid, (Guid? CostCenterId, string? Source)> Rows { get; init; } = new Dictionary<Guid, (Guid?, string?)>();
     public IReadOnlyDictionary<int, string> EmployeeCodes { get; init; } = new Dictionary<int, string>();
     /// <summary>Rolled-up-from map for the audit record (employee id to original cost centre), only when the small-cell roll-up changed something.</summary>
@@ -119,6 +121,7 @@ public static class PayrollCostStamper
 
         // 3. Decide every costable row.
         var rows = new Dictionary<Guid, (Guid?, string?)>();
+        var routing = new Dictionary<Guid, string>();
         var blockers = new Dictionary<(int Emp, string Reason, string Account), CostBlocker>();
         var uncosted = new Dictionary<int, decimal>();
         var fallback = new Dictionary<int, decimal>();
@@ -142,7 +145,13 @@ public static class PayrollCostStamper
 
             var account = GlAccountResolver.AccountFor(driverKey, ClassOf(ccId, ctx), ctx);
             var rule = RuleOf(account.Code, ctx);
-            if (rule == "NotAllowed") { rows[rowId] = (null, null); return; }
+            if (rule == "NotAllowed")
+            {
+                rows[rowId] = (null, null);
+                // The dimension is dropped, the destination is not: remember the class the account was routed by.
+                if (ClassOf(ccId, ctx) is { } routedClass) routing[rowId] = routedClass;
+                return;
+            }
 
             if (ccId is Guid id && ClassOf(id, ctx) == ReservedClass)
             {
@@ -198,6 +207,7 @@ public static class PayrollCostStamper
             Enabled = true,
             Employees = final,
             Rows = rows,
+            RoutingClasses = routing,
             Blockers = blockers.Values.OrderBy(b => b.Reason, StringComparer.Ordinal).ThenBy(b => b.AccountCode, StringComparer.Ordinal)
                 .ThenBy(b => b.EmployeeCode, StringComparer.Ordinal).ToList(),
             FallbackEmployees = fallback.Count,
@@ -420,6 +430,9 @@ public static class PayrollCostStamper
 
         foreach (var (id, v) in plan.Employees.OrderBy(kv => kv.Key))
             sb.Append("emp|").Append(id).Append('|').Append(v.CostCenterId?.ToString("N") ?? "unresolved").Append('|').Append(v.Source ?? "-").Append('\n');
+
+        foreach (var (rowId, cls) in plan.RoutingClasses.OrderBy(kv => kv.Key))
+            sb.Append("route|").Append(rowId.ToString("N")).Append('|').Append(cls).Append('\n');
 
         var inPlay = new HashSet<Guid>(plan.Employees.Values.Where(v => v.CostCenterId != null).Select(v => v.CostCenterId!.Value));
         foreach (var l in lines) if (l.CostCenterId is Guid c) inPlay.Add(c);

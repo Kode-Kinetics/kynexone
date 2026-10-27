@@ -31,6 +31,33 @@ public static class BonusCostSplit
         return result.Count == 0 ? new() { (null, total) } : result;
     }
 
+    public const string BonusDriver = "EARN:BONUS";
+
+    /// <summary>
+    /// A fixed cost centre on the company's EARN:BONUS mapping wins over every employee's own resolution, exactly as it does for
+    /// payroll rows. An active fixed centre resolves every employee to it; a fixed centre that is missing or inactive leaves them all
+    /// unresolved. No fixed mapping, or costing off: the resolutions come back untouched.
+    /// </summary>
+    public static Dictionary<int, CostCentreResolution> ApplyFixedMapping(Dictionary<int, CostCentreResolution> resolved, GlResolutionContext ctx)
+    {
+        if (!ctx.CostAccountingEnabled || !ctx.FixedCostCentres.TryGetValue(BonusDriver, out var fixedId)) return resolved;
+        var replacement = ctx.CostCentres.TryGetValue(fixedId, out var cc) && cc.IsActive
+            ? new CostCentreResolution(fixedId, "MappingFixed", "mapping", null)
+            : CostCentreResolution.Unresolved("mapping_cost_centre_invalid", "mapping");
+        return resolved.Keys.ToDictionary(k => k, _ => replacement);
+    }
+
+    /// <summary>
+    /// The bonus expense account for a cost centre, and the dimension the line may carry: the account is routed by the centre's
+    /// functional class, and when that account's cost-centre rule is NotAllowed the account stays but the dimension is dropped.
+    /// </summary>
+    public static (string Code, string Name, Guid? CcId) RouteExpense(Guid? ccId, GlResolutionContext ctx)
+    {
+        var (code, name) = GlAccountResolver.AccountFor(BonusDriver, PayrollCostStamper.ClassOf(ccId, ctx), ctx);
+        if (ctx.CostAccountingEnabled && PayrollCostStamper.RuleOf(code, ctx) == "NotAllowed") ccId = null;
+        return (code, name, ccId);
+    }
+
     /// <summary>Copies a cost centre onto a ledger line (id and the three snapshots) from the posting company's live cost centres.</summary>
     public static FinanceGlEntry Stamp(FinanceGlEntry line, Guid? ccId, GlResolutionContext ctx)
     {
@@ -54,9 +81,17 @@ public static class BonusCostSplit
         var lines = new List<FinanceGlEntry>();
         var buckets = Split(total, employees.Select(e => (costCentreOf.GetValueOrDefault(e.EmployeeId), e.Gross)), ctx, currency);
         var ordinals = new Dictionary<Guid, int>();   // Guid.Empty = no cost centre (a dictionary cannot hold a null key)
-        foreach (var (ccId, amount) in buckets.OrderBy(b => b.CcId is Guid g && ctx.CostCentres.TryGetValue(g, out var c) ? c.Code : string.Empty, StringComparer.Ordinal))
+        // Buckets whose account does not take a cost centre lose the dimension; those landing on the same account merge into one row.
+        var routed = new List<(Guid? CcId, string Code, string Name, decimal Amount)>();
+        foreach (var (bucketCc, bucketAmount) in buckets.OrderBy(b => b.CcId is Guid g && ctx.CostCentres.TryGetValue(g, out var c) ? c.Code : string.Empty, StringComparer.Ordinal))
         {
-            var (code, name) = GlAccountResolver.AccountFor("EARN:BONUS", PayrollCostStamper.ClassOf(ccId, ctx), ctx);
+            var (rCode, rName, rCc) = RouteExpense(bucketCc, ctx);
+            var at = routed.FindIndex(r => r.CcId == rCc && r.Code == rCode);
+            if (at >= 0) routed[at] = routed[at] with { Amount = routed[at].Amount + bucketAmount };
+            else routed.Add((rCc, rCode, rName, bucketAmount));
+        }
+        foreach (var (ccId, code, name, amount) in routed)
+        {
             var line = new FinanceGlEntry
             {
                 TenantId = tenantId, CompanyId = companyId,

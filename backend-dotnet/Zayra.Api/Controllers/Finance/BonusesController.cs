@@ -589,6 +589,7 @@ public class BonusesController : ControllerBase
             {
                 var resolved = await Zayra.Api.Infrastructure.Payroll.PayrollCostStamper.ResolveEmployeesAsync(
                     _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx);
+                resolved = BonusCostSplit.ApplyFixedMapping(resolved, glCtx);   // a fixed centre on the EARN:BONUS mapping wins, as in payroll
                 foreach (var (employeeId, r) in resolved) costOf[employeeId] = r.CostCenterId;
 
                 // A Required bonus-expense account with an employee who has no usable cost centre is refused with M-1 / M-2 (the same body Lock
@@ -859,14 +860,14 @@ public class BonusesController : ControllerBase
                 // centres (largest remainder); off, it is the single debit it always was.
                 var costOf = new Dictionary<int, Guid?>();
                 if (glCtx.CostAccountingEnabled && companyId is Guid costCompany)
-                    foreach (var (employeeId, r) in await PayrollCostStamper.ResolveEmployeesAsync(
-                                 _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx))
+                    foreach (var (employeeId, r) in BonusCostSplit.ApplyFixedMapping(await PayrollCostStamper.ResolveEmployeesAsync(
+                                 _db, tid, costCompany, group.Where(b => b.EmployeeIntId != null).Select(b => b.EmployeeIntId!.Value), ct, glCtx), glCtx))
                         costOf[employeeId] = r.CostCenterId;
                 foreach (var (ccId, part) in BonusCostSplit.Split(unaccrued,
                              group.Select(b => (costOf.GetValueOrDefault(b.EmployeeIntId ?? 0), b.GrossBonusAmount)), glCtx, currency))
                 {
-                    var (xCode, xName) = GlAccountResolver.AccountFor("EARN:BONUS", PayrollCostStamper.ClassOf(ccId, glCtx), glCtx);
-                    debits.Add(($"{xCode} - {xName}", part, $"{BonusGlDescriptions.PaymentPrefix}{label} (un-accrued)", ccId));
+                    var (xCode, xName, xCc) = BonusCostSplit.RouteExpense(ccId, glCtx);
+                    debits.Add(($"{xCode} - {xName}", part, $"{BonusGlDescriptions.PaymentPrefix}{label} (un-accrued)", xCc));
                 }
             }
             if (taxTotal > 0m) credits.Add((GlAccountResolver.AccountLabel("DED:TAX", glCtx), taxTotal,

@@ -8867,6 +8867,7 @@ public partial class PayrollController : ControllerBase
             ? await PayrollCostStamper.PlanAsync(_db, tenantId, costCompanyId, earnings, dedxns, glCtx, ct)
             : PayrollCostPlan.Off;
         PayrollCostStamper.Apply(costPlan, earnings, dedxns);
+        if (costPlan.RoutingClasses.Count > 0) glCtx = glCtx with { RowRoutingClass = costPlan.RoutingClasses };
         var (lines, _, _) = BuildPayrollGlEntries(
             tenantId, id, period, earnings, dedxns, run.TotalNetSalary, postedBy, postedByName, currency, glCtx);
 
@@ -9130,12 +9131,17 @@ public partial class PayrollController : ControllerBase
         }
         // The same, routed by the functional class of the cost centre the line lands on (precedence in
         // GlAccountResolver.AccountFor). With no cost centre or no class rows this is exactly Account().
-        string AccountAt(string driverKey, Guid? ccId)
+        string AccountAt(string driverKey, Guid? ccId, string? routedClass = null)
         {
-            var (code, name) = GlAccountResolver.AccountFor(driverKey, PayrollCostStamper.ClassOf(ccId, gl), gl);
+            var (code, name) = GlAccountResolver.AccountFor(driverKey, routedClass ?? PayrollCostStamper.ClassOf(ccId, gl), gl);
             return $"{code} - {name}";
         }
         Guid? CcOf(Guid? stamped) => costed ? stamped : null;
+        // A row's destination is decided by (stamped cost centre, routing class). The class is only carried separately when the stamp
+        // was suppressed (the routed account takes no cost centre), so dropping the dimension never moves the amount to another account.
+        (Guid? Cc, string? Cls) RouteOf(Guid rowId, Guid? stamped) =>
+            (CcOf(stamped), costed && stamped is null && gl.RowRoutingClass.TryGetValue(rowId, out var cls) ? cls : null);
+        string RouteSort((Guid? Cc, string? Cls) r) => CcCode(r.Cc) + "|" + (r.Cls ?? string.Empty);
         string CcCode(Guid? id) => id is Guid g && gl.CostCentres.TryGetValue(g, out var c) ? c.Code : string.Empty;
         FinanceGlEntry At(FinanceGlEntry line, Guid? ccId, string driverKey, string componentCode, string source)
         {
@@ -9154,21 +9160,24 @@ public partial class PayrollController : ControllerBase
 
         // Splits a total over the cost centres of the rows behind it by LARGEST REMAINDER on the currency's minor units, so the
         // parts add up to the total to the last halala (contract 2.6). Weights are each cost centre's rows in minor units.
-        List<(Guid? CcId, decimal Amount)> Split(decimal total, IEnumerable<PayrollEarning> rows)
+        List<(Guid? CcId, string? Cls, decimal Amount)> Split(decimal total, IEnumerable<PayrollEarning> rows)
         {
-            if (!costed) return new() { (null, total) };
-            var byCc = rows.GroupBy(r => r.CostCenterId)
-                .Select(g => (CcId: g.Key, Code: CcCode(g.Key), Weight: g.Sum(r => CurrencyMinorUnits.ToMinor(r.Amount, currency))))
+            if (!costed) return new() { (null, null, total) };
+            // The allocation key is the cost-centre code alone unless a routing class rides with it (null-stamp rows only), so the
+            // order and tie-breaks of every existing split are unchanged.
+            string KeyOf((Guid? Cc, string? Cls) r) => r.Cls is null ? CcCode(r.Cc) : CcCode(r.Cc) + "|" + r.Cls;
+            var byCc = rows.GroupBy(r => RouteOf(r.Id, r.CostCenterId))
+                .Select(g => (Route: g.Key, Code: KeyOf(g.Key), Weight: g.Sum(r => CurrencyMinorUnits.ToMinor(r.Amount, currency))))
                 .ToList();
             var parts = LargestRemainder.Allocate(CurrencyMinorUnits.ToMinor(total, currency), byCc.Select(c => (c.Code, Math.Max(0L, c.Weight))).ToList());
-            var result = new List<(Guid?, decimal)>();
+            var result = new List<(Guid?, string?, decimal)>();
             foreach (var (code, minor) in parts)
             {
                 if (minor == 0) continue;
-                var cc = byCc.FirstOrDefault(c => c.Code == (code ?? string.Empty)).CcId;
-                result.Add((cc, CurrencyMinorUnits.FromMinor(minor, currency)));
+                var route = byCc.FirstOrDefault(c => c.Code == (code ?? string.Empty)).Route;
+                result.Add((route.Cc, route.Cls, CurrencyMinorUnits.FromMinor(minor, currency)));
             }
-            return result.Count == 0 ? new() { (null, total) } : result;
+            return result.Count == 0 ? new() { (null, null, total) } : result;
         }
 
         // ── Earnings (Debit side) ──────────────────────────────────────────────
@@ -9219,29 +9228,29 @@ public partial class PayrollController : ControllerBase
                 continue;   // re-emitted below as accrual clearing + per-component un-accrued remainder
             }
             var driver = driverKey;
-            foreach (var sub in grp.GroupBy(e => CcOf(e.CostCenterId)).OrderBy(g => CcCode(g.Key), StringComparer.Ordinal))
+            foreach (var sub in grp.GroupBy(e => RouteOf(e.Id, e.CostCenterId)).OrderBy(g => RouteSort(g.Key), StringComparer.Ordinal))
                 lines.Add(At(new FinanceGlEntry
                 {
                     TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                     SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                    DebitAccount  = AccountAt(driver, sub.Key), CreditAccount = string.Empty,
+                    DebitAccount  = AccountAt(driver, sub.Key.Cc, sub.Key.Cls), CreditAccount = string.Empty,
                     Amount = sub.Sum(e => e.Amount), Currency = currency,
                     EntryDate = today, Period = period,
                     Description = $"Payroll earning: {grp.Key}",
                     PostedBy = postedBy, PostedByName = postedByName,
-                }, sub.Key, driver, grp.Key, src));
+                }, sub.Key.Cc, driver, grp.Key, src));
         }
 
         // One un-accrued remainder slice of a deferred (bonus / settlement) component: a single line, or — costing on — one per cost
         // centre, divided by largest remainder over the employees' amounts so the parts add up to the slice exactly.
         void EmitUnaccrued(string code, string driver, string src, decimal share, IReadOnlyList<PayrollEarning> rows)
         {
-            foreach (var (ccId, amount) in Split(share, rows))
+            foreach (var (ccId, cls, amount) in Split(share, rows))
                 lines.Add(At(new FinanceGlEntry
                 {
                     TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                     SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                    DebitAccount = AccountAt(driver, ccId), CreditAccount = string.Empty,
+                    DebitAccount = AccountAt(driver, ccId, cls), CreditAccount = string.Empty,
                     Amount = amount, Currency = currency,
                     EntryDate = today, Period = period,
                     Description = $"Payroll earning: {code} (un-accrued)",
@@ -9380,43 +9389,43 @@ public partial class PayrollController : ControllerBase
         // ── Deductions (Credit side) ──────────────────────────────────────────
         // Employer-expense pairs accumulate per paired-expense driver key (and cost centre) so a client-defined pair
         // (via a custom driver) balances the same way the system DED:STATUTORY_ER row does.
-        var employerExpenseByPair = new Dictionary<(string PairKey, Guid? CcId), decimal>();
+        var employerExpenseByPair = new Dictionary<(string PairKey, Guid? CcId, string? Cls), decimal>();
         foreach (var grp in deductions.GroupBy(d => new { d.ComponentCode, d.Source }))
         {
             // Pinned driver → persisted driver store → compiled switch (see ResolveDeductionRouting).
             var (driver, isEmployerSide, pairKey) = ResolveDeductionRouting(
                 gl.Drivers, grp.Key.ComponentCode, grp.Key.Source, PinnedGlDriver(grp.Select(d => d.GlDriverKey)));
             if (isEmployerSide)
-                foreach (var sub in grp.GroupBy(d => CcOf(d.CostCenterId)))
-                    employerExpenseByPair[(pairKey, sub.Key)] = employerExpenseByPair.GetValueOrDefault((pairKey, sub.Key)) + sub.Sum(d => d.Amount);
+                foreach (var sub in grp.GroupBy(d => RouteOf(d.Id, d.CostCenterId)))
+                    employerExpenseByPair[(pairKey, sub.Key.Cc, sub.Key.Cls)] = employerExpenseByPair.GetValueOrDefault((pairKey, sub.Key.Cc, sub.Key.Cls)) + sub.Sum(d => d.Amount);
 
             // A liability credit (and every employer-side credit) is one UNCOSTED line; a contra-EXPENSE credit
             // (attendance, leave, settlement recovery) is a cost reduction and carries the cost centre.
             var creditCosted = costed && !isEmployerSide && PayrollCostStamper.IsCostableDriver(driver, gl);
-            foreach (var sub in creditCosted ? grp.GroupBy(d => CcOf(d.CostCenterId)).OrderBy(g => CcCode(g.Key), StringComparer.Ordinal).ToList()
-                                              : new[] { grp.GroupBy(_ => (Guid?)null).Single() }.ToList())
+            foreach (var sub in creditCosted ? grp.GroupBy(d => RouteOf(d.Id, d.CostCenterId)).OrderBy(g => RouteSort(g.Key), StringComparer.Ordinal).ToList()
+                                              : new[] { grp.GroupBy(_ => ((Guid?)null, (string?)null)).Single() }.ToList())
                 lines.Add(At(new FinanceGlEntry
                 {
                     TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                     SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                    DebitAccount = string.Empty, CreditAccount = creditCosted ? AccountAt(driver, sub.Key) : Account(driver),
+                    DebitAccount = string.Empty, CreditAccount = creditCosted ? AccountAt(driver, sub.Key.Item1, sub.Key.Item2) : Account(driver),
                     Amount = sub.Sum(d => d.Amount), Currency = currency,
                     EntryDate = today, Period = period,
                     Description = $"{PayrollGlDescriptions.DeductionPrefix}{grp.Key.ComponentCode}",
                     PostedBy = postedBy, PostedByName = postedByName,
-                }, sub.Key, driver, grp.Key.ComponentCode, grp.Key.Source));
+                }, sub.Key.Item1, driver, grp.Key.ComponentCode, grp.Key.Source));
         }
 
         // Employer statutory contribution: DR expense to balance the CR liability above.
-        foreach (var ((pairKey, ccId), amount) in employerExpenseByPair
-                     .OrderBy(kv => kv.Key.PairKey, StringComparer.Ordinal).ThenBy(kv => CcCode(kv.Key.CcId), StringComparer.Ordinal))
+        foreach (var ((pairKey, ccId, cls), amount) in employerExpenseByPair
+                     .OrderBy(kv => kv.Key.PairKey, StringComparer.Ordinal).ThenBy(kv => RouteSort((kv.Key.CcId, kv.Key.Cls)), StringComparer.Ordinal))
         {
             if (amount <= 0) continue;
             lines.Add(At(new FinanceGlEntry
             {
                 TenantId = tenantId, CompanyId = gl.CompanyId, SourceModule = "Payroll", SourceEntityId = runId,
                 SourceEntityRef = period, EventType = GlEventTypes.Accrual,
-                DebitAccount = AccountAt(pairKey, ccId), CreditAccount = string.Empty,
+                DebitAccount = AccountAt(pairKey, ccId, cls), CreditAccount = string.Empty,
                 Amount = amount, Currency = currency,
                 EntryDate = today, Period = period,
                 Description = PayrollGlDescriptions.EmployerStatutory,
