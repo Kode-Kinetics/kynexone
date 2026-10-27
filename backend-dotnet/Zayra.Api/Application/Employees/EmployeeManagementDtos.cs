@@ -53,7 +53,9 @@ public record EmployeeCreateRequest(
     // dup). Set only when the operator dismisses the warning; the create then records an audited override.
     bool AcknowledgeDuplicate = false,
     // CD26: end of a fixed-term contract. Stored on Employee.ContractEndDate; CD17 rules in the input guard.
-    DateOnly? ContractEndDate = null);
+    DateOnly? ContractEndDate = null,
+    // P3: the hire template the wizard applied; used only to raise the hire's onboarding checklist (the form already carries the defaults).
+    Guid? HireTemplateId = null);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,

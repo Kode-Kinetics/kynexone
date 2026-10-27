@@ -163,6 +163,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
+        var hireTemplate = await Zayra.Api.Application.Onboarding.HireTemplateHook.RequireAsync(_db, tenantId, employee.CompanyId, request.HireTemplateId, cancellationToken);   // P3
         // GOVERNING JURISDICTION — explicit countryCode wins, else the employing company's. Same ordering
         // rationale as the work email below: it is resolved once the legal entity is final.
         await DeriveEmployeeCountryAsync(employee, tenantId, cancellationToken);
@@ -249,6 +250,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             await PersistAsync();
         }
+        await Zayra.Api.Application.Onboarding.HireTemplateHook.GenerateAsync(_db, tenantId, employee, hireTemplate, request.JoiningDate.HasValue, cancellationToken);   // P3
         // Stamp the readiness badge now that the employee + payroll/compliance rows are persisted.
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -322,6 +324,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
         await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        var hireTemplate = await Zayra.Api.Application.Onboarding.HireTemplateHook.RequireAsync(_db, tenantId, employee.CompanyId, request.HireTemplateId, cancellationToken);   // P3
         // GOVERNING JURISDICTION against the (possibly reassigned) EMPLOYING company — a stated country is
         // kept, a blank one adopts the company's, so editing a record heals a country left blank by an
         // earlier create or import.
@@ -359,6 +362,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _db.SaveChangesAsync(cancellationToken);
             await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
         }
+        // P3: the joining date moved (CD54) and/or a hire template was chosen: tasks follow the date, the checklist is raised once.
+        if (request.JoiningDate.HasValue) await new Zayra.Api.Application.Onboarding.ChecklistGenerator(_db).RebaseAsync(tenantId, employee.PublicId, DateOnly.FromDateTime(employee.JoiningDate), cancellationToken);
+        await Zayra.Api.Application.Onboarding.HireTemplateHook.GenerateAsync(_db, tenantId, employee, hireTemplate, request.JoiningDate.HasValue, cancellationToken);
         await Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, priorPay, context, cancellationToken);
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
