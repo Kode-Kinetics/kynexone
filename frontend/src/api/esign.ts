@@ -69,10 +69,13 @@ export async function sha256Hex(blob: Blob, fallback: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** The list endpoints answer an array; anything else (a paged envelope, an empty body) reads as no rows rather than crashing the panel. */
+export const asSignatureRows = (data: unknown): SignatureRow[] => (Array.isArray(data) ? (data as SignatureRow[]) : []);
+
 const asPdfBlob = (data: Blob) => new Blob([data], { type: 'application/pdf' });
 
 export const esignApi = {
-  list: () => client.get<SignatureRow[]>('/api/ess/signatures').then(r => r.data),
+  list: () => client.get<SignatureRow[]>('/api/ess/signatures').then(r => asSignatureRows(r.data)),
   consent: (documentId: string, lang: 'en' | 'ar') => client.get<ConsentView>(`/api/ess/signatures/${documentId}/consent`, { params: { lang } }).then(r => r.data),
   document: (documentId: string) => client.get<Blob>(`/api/ess/signatures/${documentId}/document`, { responseType: 'blob' }).then(r => asPdfBlob(r.data)),
   certificate: (ackId: string) => client.get<Blob>(`/api/ess/signatures/${ackId}/certificate`, { responseType: 'blob' }).then(r => asPdfBlob(r.data)),
@@ -84,7 +87,7 @@ export const esignApi = {
 };
 
 export const hrEsignApi = {
-  list: (employeeId: number) => client.get<SignatureRow[]>(`/api/employees/${employeeId}/signatures`).then(r => r.data),
+  list: (employeeId: number) => client.get<SignatureRow[]>(`/api/employees/${employeeId}/signatures`).then(r => asSignatureRows(r.data)),
   consent: (employeeId: number, documentId: string, lang: 'en' | 'ar') => client.get<ConsentView>(`/api/employees/${employeeId}/signatures/${documentId}/consent`, { params: { lang } }).then(r => r.data),
   request: (employeeId: number, documentId: string) => client.post<{ documentId: string; requestedAtUtc: string }>(`/api/employees/${employeeId}/signature-requests`, { documentId }).then(r => r.data),
   verify: (employeeId: number, ackId: string) => client.get<VerifyResult>(`/api/employees/${employeeId}/signatures/${ackId}/verify`).then(r => r.data),

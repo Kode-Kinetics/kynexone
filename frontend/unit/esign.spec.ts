@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { getPathMatch } from 'next/dist/shared/lib/router/utils/path-match';
 import nextConfig from '../next.config';
-import { problemOf, sha256Hex } from '../src/api/esign';
+import { asSignatureRows, problemOf, sha256Hex } from '../src/api/esign';
 import { onboardingP4Ar, onboardingP4En } from '../src/i18n/onboardingP4';
 import { ESS_SECTIONS, activeEssPage } from '../src/routes/essSections';
 
@@ -56,4 +56,10 @@ test('the sign pages cannot be framed at all, and never cached; the rest of the 
   expect(headersFor('/ess/documents')['x-frame-options']).toBe('SAMEORIGIN');
   // no rule relaxes the policy for the preview: nothing sets frame-src, default-src or child-src anywhere
   expect(rules.flatMap(r => r.headers).filter(h => /frame-src|default-src|child-src/.test(h.value))).toEqual([]);
+});
+
+test('a list answer that is not an array reads as no rows, never a crash', () => {
+  expect(asSignatureRows({ items: [], total: 0 })).toEqual([]);
+  expect(asSignatureRows(undefined)).toEqual([]);
+  expect(asSignatureRows([{ documentId: 'd1' }])).toHaveLength(1);
 });
