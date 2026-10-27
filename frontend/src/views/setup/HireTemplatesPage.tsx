@@ -113,7 +113,7 @@ export function HireTemplatesPanel({ companyId: scopeCompany, companies: given, 
     onConfirm: async () => {
       try {
         const r = await onboardingTemplatesApi.hire.remove(h.id);
-        setNotice({ kind: 'ok', text: r.outcome === 'deleted' ? t('Removed.') : t('Turned off, not deleted: {count} items already use it. You can restore it.', { count: String(r.used) }) });
+        setNotice({ kind: 'ok', text: r.outcome === 'deleted' ? t('Removed.') : t('Turned off, not deleted: {count, plural, one {# item already uses it} other {# items already use it}}. You can restore it.', { count: Number(r.used) }) });
       } catch (e) { fail(e); }
       setConfirm(null); await load();
     },
@@ -124,7 +124,7 @@ export function HireTemplatesPanel({ companyId: scopeCompany, companies: given, 
     if (!target) return;
     try {
       const r = await onboardingTemplatesApi.hire.copyTo(h.id, target);
-      setNotice({ kind: 'ok', text: r.dropped.length > 0 ? t('Copied. {count} settings have no match in the other company and were left empty. Check the copy.', { count: String(r.dropped.length) }) : t('Copied to the other company. The two lists are independent from now on.') });
+      setNotice({ kind: 'ok', text: r.dropped.length > 0 ? t('Copied. {count, plural, one {# setting has} other {# settings have}} no match in the other company and were left empty. Check the copy.', { count: Number(r.dropped.length) }) : t('Copied to the other company. The two lists are independent from now on.') });
     } catch (e) { fail(e); }
   };
 
@@ -167,7 +167,7 @@ export function HireTemplatesPanel({ companyId: scopeCompany, companies: given, 
                     {off && <StatusChip label={h.isDeleted ? t('Removed') : t('Turned off')} tone="slate" />}
                   </div>
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('Matches: {keys}', { keys: keyText(h) })}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{t('{count} tasks', { count: String(h.checklistTaskCount ?? 0) })}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{t('{count, plural, one {# task} other {# tasks}}', { count: Number(h.checklistTaskCount ?? 0) })}</p>
                   <div className="mt-3 flex flex-wrap items-end gap-2">
                     {!off && <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => { setNotice(null); setTried(false); setForm(fromTemplate(h)); setDirty(false); }}>{t('Edit')}</button>}
                     {off ? <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => { void restore(h); }}>{t('Restore')}</button> : <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => remove(h)}>{t('Remove')}</button>}
@@ -236,6 +236,7 @@ export function HireTemplatesPanel({ companyId: scopeCompany, companies: given, 
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={e => change({ isActive: e.target.checked })} />{t('Available in the Add Employee wizard')}</label>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setForm(null)}>{t('Cancel')}</button>
+              {/* !bg-blue-700: .btn-primary is 4.49:1 outside .tenant-app-shell, where this portalled drawer sits (see FU-1 in 05-DECISIONS.md). */}
               <button type="button" className="btn-primary !bg-blue-700" disabled={saving} onClick={() => { void save(); }}>{t('Save hire template')}</button>
             </div>
           </div>

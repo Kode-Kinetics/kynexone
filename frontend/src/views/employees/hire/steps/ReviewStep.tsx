@@ -102,7 +102,7 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
         <Row label={t('Work email')} value={workEmail} ltr />
         {hireTemplate && <Row label={t('Hire template')} value={ar && hireTemplate.nameAr ? hireTemplate.nameAr : hireTemplate.name} />}
         {raised && (
-          <Row label={t('Onboarding checklist')} value={t('{tasks} tasks, {blocking} block activation', { tasks: String(raised.length), blocking: String(raised.filter(x => x.blocksActivation).length) })}>
+          <Row label={t('Onboarding checklist')} value={t('{tasks, plural, one {# task} other {# tasks}}, {blocking, plural, one {# blocks activation} other {# block activation}}', { tasks: Number(raised.length), blocking: Number(raised.filter(x => x.blocksActivation).length) })}>
             <ul data-testid="review-checklist" className="mt-1 list-disc ps-5 text-xs font-normal text-slate-600 dark:text-slate-300">
               {raised.map(x => <li key={x.templateTaskId}>{ar && x.titleAr ? x.titleAr : x.title}</li>)}
             </ul>

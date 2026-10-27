@@ -36,7 +36,7 @@ test.describe('hire template picker', () => {
     await page.getByLabel('Department').selectOption('dept-2');
     await page.getByLabel('Hire template').selectOption('tpl-cashier');
     await expect(page.getByLabel('Department')).toHaveValue('dept-2');
-    await expect(page.getByTestId('hire-template-status')).toContainText('left as you entered them');
+    await expect(page.getByTestId('hire-template-status')).toContainText('left as you entered');
   });
 
   test('Undo puts back what the template filled and keeps what the person changed afterwards', async ({ page }) => {
@@ -63,7 +63,7 @@ test.describe('hire template picker', () => {
     await expect(page.getByRole('heading', { level: 2, name: 'Review and create' })).toBeVisible();
     await expect(page.getByTestId('review-checklist')).toContainText('Create the company mailbox');
     await expect(page.getByTestId('review-checklist')).not.toContainText('Iqama');
-    await expect(page.getByText('2 tasks, 1 block activation')).toBeVisible();
+    await expect(page.getByText('2 tasks, 1 blocks activation')).toBeVisible();
     await page.getByRole('button', { name: 'Create employee draft' }).click();
     await expect(page.getByRole('heading', { name: 'Alex Morgan has been added as a draft.' })).toBeVisible();
     expect(api.creates[0].body.hireTemplateId).toBe('tpl-cashier');

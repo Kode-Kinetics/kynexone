@@ -69,7 +69,7 @@ export function OnboardingChecklistTemplatesPanel({ companyId: scopeCompany, com
   };
   const addStarter = async () => {
     setStarterBusy(true); setNotice(null);
-    try { const doc = await onboardingTemplatesApi.checklists.copyStarter('ksa', companyId); setNotice({ kind: 'ok', text: t('Added the Saudi starter checklist with {count} tasks. Edit it to fit your company.', { count: String(doc.tasks.length) }) }); await load(); }
+    try { const doc = await onboardingTemplatesApi.checklists.copyStarter('ksa', companyId); setNotice({ kind: 'ok', text: t('Added the Saudi starter checklist with {count, plural, one {# task} other {# tasks}}. Edit it to fit your company.', { count: Number(doc.tasks.length) }) }); await load(); }
     catch (e) { fail(e); } finally { setStarterBusy(false); }
   };
   const copy = async (row: ChecklistSummary) => {
@@ -85,7 +85,7 @@ export function OnboardingChecklistTemplatesPanel({ companyId: scopeCompany, com
     onConfirm: async () => {
       try {
         const r = await onboardingTemplatesApi.checklists.remove(row.id);
-        setNotice({ kind: 'ok', text: r.outcome === 'deleted' ? t('Removed.') : t('Turned off, not deleted: {count} items already use it. You can restore it.', { count: String(r.used) }) });
+        setNotice({ kind: 'ok', text: r.outcome === 'deleted' ? t('Removed.') : t('Turned off, not deleted: {count, plural, one {# item already uses it} other {# items already use it}}. You can restore it.', { count: Number(r.used) }) });
         setConfirm(null); await load();
       } catch (e) { fail(e); setConfirm(null); }
     },
@@ -136,7 +136,7 @@ export function OnboardingChecklistTemplatesPanel({ companyId: scopeCompany, com
                     {row.isDefault && <StatusChip label={t('Default for new hires')} tone="blue" />}
                     {off && <StatusChip label={row.isDeleted ? t('Removed') : t('Turned off')} tone="slate" />}
                   </div>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('{count} tasks', { count: String(row.taskCount) })}</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('{count, plural, one {# task} other {# tasks}}', { count: Number(row.taskCount) })}</p>
                   <div className="mt-3 flex flex-wrap items-end gap-2">
                     {!off && <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => { void open(row.id); }}>{t('Edit')}</button>}
                     {off ? <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => { void restore(row); }}>{t('Restore')}</button>
@@ -285,7 +285,7 @@ function ChecklistEditor({ draft, companyId, onChange, onClose, onSaved, onError
             <div><label htmlFor={`${uid}-ps`} className="block text-xs font-medium">{t('Joining date')}</label>
               <input id={`${uid}-ps`} type="date" className={input} dir="ltr" value={start} onChange={e => setStart(e.target.value)} /></div>
           </div>
-          <p role="status" aria-live="polite" className="mt-2 text-xs text-slate-500">{t('{count} tasks for this hire.', { count: String(preview.length) })}</p>
+          <p role="status" aria-live="polite" className="mt-2 text-xs text-slate-500">{t('{count, plural, one {# task for this hire.} other {# tasks for this hire.}}', { count: Number(preview.length) })}</p>
           <ul className="mt-1 space-y-1 text-sm">
             {preview.map((p, i) => <li key={i}>{p.title} <span className="text-xs text-slate-500">({t(`onboarding.owner.${p.ownerRole}`)}, {p.dueDate ?? t('Due when the start date is set')})</span>{p.blocksActivation && <span className="ms-1 text-xs font-medium text-amber-800">{t('Blocks activation')}</span>}</li>)}
           </ul>
@@ -293,7 +293,8 @@ function ChecklistEditor({ draft, companyId, onChange, onClose, onSaved, onError
 
         <div className="flex justify-end gap-2">
           <button type="button" className="btn-secondary" onClick={onClose}>{t('Cancel')}</button>
-          <button type="button" className="btn-primary !bg-blue-700" disabled={saving} onClick={() => { void save(); }}>{t('Save checklist')}</button>
+          {/* !bg-blue-700: .btn-primary is 4.49:1 outside .tenant-app-shell, where this portalled drawer sits (see FU-1 in 05-DECISIONS.md). */}
+              <button type="button" className="btn-primary !bg-blue-700" disabled={saving} onClick={() => { void save(); }}>{t('Save checklist')}</button>
         </div>
       </div>
     </SettingsDrawer>

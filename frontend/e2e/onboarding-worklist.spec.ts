@@ -44,7 +44,7 @@ test('lists open tasks with an overdue badge in text, and completes one', async 
   await expect(page.getByTestId('worklist-row-b')).toContainText('Due when the start date is set');
   await expect(page.getByTestId('worklist-row-b')).toContainText('Blocks activation');
   await page.getByTestId('worklist-row-a').getByRole('button', { name: 'Mark complete' }).click();
-  await expect(page.getByText('1 tasks completed.')).toBeVisible();
+  await expect(page.getByText('1 task completed.')).toBeVisible();
   expect(patches).toEqual([{ id: 'a', body: { status: 'Completed' } }]);
   await expect(page.getByTestId('worklist-row-a')).toHaveCount(0);
 });
@@ -57,7 +57,7 @@ test('bulk complete asks first, and a task that needs a document is reported, no
   await page.getByRole('button', { name: 'Complete selected' }).click();
   await expect(page.getByRole('dialog')).toContainText('2 tasks will be marked completed.');
   await page.getByRole('dialog').getByRole('button', { name: 'Complete', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: '1 tasks completed' })).toContainText('1 tasks completed, 1 could not be: Upload a document for this task before completing it.');
+  await expect(page.getByRole('alert').filter({ hasText: '1 task completed' })).toContainText('1 task completed, 1 could not be: Upload a document for this task before completing it.');
   expect(patches.map(p => p.id).sort()).toEqual(['a', 'b']);
 });
 
@@ -70,14 +70,26 @@ test('filters go to the server and an empty list says so', async ({ page }) => {
   expect(queries.at(-1)).toContain('overdue=true');
 });
 
-test('Arabic at 360 px keeps the table reachable', async ({ page }) => {
-  await page.setViewportSize({ width: 360, height: 780 });
-  await boot(page, [item('a', { titleAr: 'مهمة الرواتب' })], 'ar');
-  await expect(page.getByTestId('worklist-table')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId('worklist-row-a')).toContainText('مهمة الرواتب');
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
-  await page.screenshot({ path: process.env.P3_SHOTS ? `${process.env.P3_SHOTS}/p3-worklist-ar-360.png` : undefined });
-});
+for (const [locale, name] of [['en', 'English'], ['ar', 'Arabic']] as const) {
+  test(`${name} at 360 px: each task is a stacked card and the page never scrolls sideways`, async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 780 });
+    const long = 'Collect the signed offer letter, passport copy and the bank letter from the new joiner before day one';
+    const items = [item('a', { title: long, titleAr: 'جمع خطاب العرض الموقع ونسخة جواز السفر وخطاب البنك من الموظف الجديد قبل اليوم الأول', employee: { id: 11, code: 'E-0000011-LONG', name: 'Abdulrahman Mohammed Al-Ghamdi Al-Harbi', startDate: '2026-11-08' } }), item('b', { blocksActivation: true })];
+    await boot(page, items, locale);
+    await expect(page.getByTestId('worklist-cards')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('worklist-table')).toHaveCount(0);
+    await expect(page.getByTestId('worklist-row-a')).toContainText(locale === 'ar' ? 'جمع خطاب العرض' : 'Collect the signed offer letter');
+    await expect(page.getByTestId('worklist-row-a').getByRole('button', { name: locale === 'ar' ? 'وضع علامة إنجاز' : 'Mark complete' })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+    const axe = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).exclude('nextjs-portal').analyze();
+    expect(axe.violations.filter(v => v.impact === 'critical' || v.impact === 'serious').map(v => v.id)).toEqual([]);
+    // Every card sits inside the viewport: nothing is clipped at either edge.
+    const edges = await page.getByTestId('worklist-cards').locator('li').evaluateAll(els => els.map(e => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right)]; }));
+    for (const [l, r] of edges) { expect(l).toBeGreaterThanOrEqual(0); expect(r).toBeLessThanOrEqual(360); }
+    if (locale === 'ar') await page.screenshot({ path: process.env.P3_SHOTS ? `${process.env.P3_SHOTS}/p3-worklist-ar-360.png` : undefined, fullPage: true });
+    else await page.screenshot({ path: process.env.P3_SHOTS ? `${process.env.P3_SHOTS}/p3-worklist-en-360.png` : undefined, fullPage: true });
+  });
+}
 
 test('screenshot: the worklist in English at 1440 px', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });

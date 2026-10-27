@@ -52,7 +52,7 @@ export function TemplatePicker({ choices, applied, onApply, onUndo }: {
         {applied && (
           <p className="mt-2 inline-flex flex-wrap items-center gap-2 rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1 text-sm text-emerald-900 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-100">
             <span>{t('Applied: {name}', { name: name(applied.template) })}</span>
-            <span className="text-xs">{t('{filled} fields filled, {kept} left as you entered them.', { filled: String(filled), kept: String(applied.kept.length) })}</span>
+            <span className="text-xs">{t('{filled, plural, one {# field filled} other {# fields filled}}, {kept, plural, one {# left as you entered it.} other {# left as you entered them.}}', { filled, kept: applied.kept.length })}</span>
             <button type="button" className="font-semibold underline" onClick={onUndo}>{t('Undo')}</button>
           </p>
         )}

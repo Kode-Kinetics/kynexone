@@ -42,7 +42,7 @@ test.describe('checklist templates', () => {
     const preview = editor.getByTestId('checklist-preview');
     await preview.getByLabel('Joining date').fill('2026-11-08');
     await preview.getByLabel('For a').selectOption('saudi');
-    await expect(preview).toContainText('1 tasks for this hire.');
+    await expect(preview).toContainText('1 task for this hire.');
     await expect(preview).not.toContainText('Issue the Iqama');
     await preview.getByLabel('For a').selectOption('expat');
     await expect(preview).toContainText('2 tasks for this hire.');
