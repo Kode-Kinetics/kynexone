@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using UglyToad.PdfPig;
@@ -194,8 +195,20 @@ public class EsignUnitTests
         var indexes = db.Model.FindEntityType(typeof(Zayra.Api.Models.EmployeeDocument))!.GetIndexes().ToList();
         // Two indexes starting (tenant, employee): the unfiltered lookup index and the filtered sign-pending one. They must
         // never collapse into one, or the migration drops the lookup index every employee-documents query relies on.
-        indexes.Where(i => i.Properties.Count >= 2 && i.Properties[0].Name == "TenantId" && i.Properties[1].Name == "EmployeeId" && i.Filter is null)
+        indexes.Where(i => i.Properties.Count >= 2 && i.Properties[0].Name == "TenantId" && i.Properties[1].Name == "EmployeeId" && i.GetFilter() is null)
             .Should().ContainSingle(i => i.Properties.Count == 2);
-        indexes.Should().Contain(i => i.GetDatabaseName() == "ix_empdoc_sign_pending" && i.Filter != null);
+        indexes.Should().Contain(i => i.GetDatabaseName() == "ix_empdoc_sign_pending" && i.GetFilter() != null);
+    }
+
+    [Theory]
+    [InlineData("CreateFunction")]
+    [InlineData("CreateTrigger")]
+    [InlineData("Drop")]
+    public void P4Migration_CarriesTheSameAppendOnlySqlAsTheSharedConstant(string name)
+    {
+        var migration = typeof(Zayra.Api.Data.ZayraDbContext).Assembly.GetTypes().Single(x => x.Name == "OnboardingP4Acknowledgements");
+        var inMigration = (string)migration.GetField(name, BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
+        var shared = (string)typeof(Zayra.Api.Data.Esign.AckAppendOnlySql).GetField(name)!.GetRawConstantValue()!;
+        inMigration.Should().Be(shared);
     }
 }

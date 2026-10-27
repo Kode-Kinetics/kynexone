@@ -8,6 +8,40 @@ namespace Zayra.Api.Migrations
     /// <inheritdoc />
     public partial class OnboardingP4Acknowledgements : Migration
     {
+    // Same text as Zayra.Api.Data.Esign.AckAppendOnlySql (pinned equal by EsignUnitTests).
+    private const string CreateFunction = """
+            CREATE OR REPLACE FUNCTION ack_append_only_guard() RETURNS trigger AS $$
+            BEGIN
+              IF TG_OP = 'UPDATE' THEN
+                RAISE EXCEPTION 'employee_policy_acknowledgements is append-only: a record cannot be updated' USING ERRCODE = '23000';
+              ELSIF TG_OP = 'DELETE' THEN
+                IF coalesce(current_setting('app.retention_purge', true), '') = 'on' THEN
+                  RETURN OLD;
+                END IF;
+                RAISE EXCEPTION 'employee_policy_acknowledgements is append-only: a record cannot be deleted outside the retention purge' USING ERRCODE = '23000';
+              ELSIF TG_OP = 'TRUNCATE' THEN
+                RAISE EXCEPTION 'employee_policy_acknowledgements is append-only: it cannot be truncated' USING ERRCODE = '23000';
+              END IF;
+              RETURN NULL;
+            END;
+            $$ LANGUAGE plpgsql;
+            """;
+
+    private const string CreateTrigger = """
+            DROP TRIGGER IF EXISTS trg_ack_append_only ON employee_policy_acknowledgements;
+            CREATE TRIGGER trg_ack_append_only BEFORE UPDATE OR DELETE ON employee_policy_acknowledgements
+              FOR EACH ROW EXECUTE FUNCTION ack_append_only_guard();
+            DROP TRIGGER IF EXISTS trg_ack_no_truncate ON employee_policy_acknowledgements;
+            CREATE TRIGGER trg_ack_no_truncate BEFORE TRUNCATE ON employee_policy_acknowledgements
+              FOR EACH STATEMENT EXECUTE FUNCTION ack_append_only_guard();
+            """;
+
+    private const string Drop = """
+            DROP TRIGGER IF EXISTS trg_ack_append_only ON employee_policy_acknowledgements;
+            DROP TRIGGER IF EXISTS trg_ack_no_truncate ON employee_policy_acknowledgements;
+            DROP FUNCTION IF EXISTS ack_append_only_guard();
+            """;
+
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -203,16 +237,16 @@ namespace Zayra.Api.Migrations
                 onDelete: ReferentialAction.Restrict);
 
             // Append-only evidence: an update is always refused, a delete only inside the retention purge, and the table
-            // cannot be emptied in one statement. EF cannot model triggers, so the SQL lives in AckAppendOnlySql and the
-            // tests and this migration share one text.
-            migrationBuilder.Sql(Zayra.Api.Data.Esign.AckAppendOnlySql.CreateFunction);
-            migrationBuilder.Sql(Zayra.Api.Data.Esign.AckAppendOnlySql.CreateTrigger);
+            // cannot be emptied in one statement. EF cannot model triggers. The text is declared here so the
+            // destructive-migration guard can read it; a test pins it equal to AckAppendOnlySql.
+            migrationBuilder.Sql(CreateFunction);
+            migrationBuilder.Sql(CreateTrigger);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql(Zayra.Api.Data.Esign.AckAppendOnlySql.Drop);
+            migrationBuilder.Sql(Drop);
 
             migrationBuilder.DropForeignKey(
                 name: "fk_epa__certificate_document",
