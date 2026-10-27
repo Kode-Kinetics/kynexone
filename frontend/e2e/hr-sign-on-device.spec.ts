@@ -46,7 +46,7 @@ test('HR requests a signature, then the employee signs in person with their own 
   for (const a of log.deviceAuths) expect(a).toMatchObject({ documentId: 'doc-1', documentSha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
   expect(log.deviceAuths[1].documentSha256).toBe(log.deviceSigns[0].documentSha256);
   expect(log.deviceSigns).toHaveLength(1);
-  expect(log.deviceSigns[0]).toMatchObject({ stepUp: 'device-token-1', typedName: EMPLOYEE_NAME, consentVersion: 'ack-1' });
+  expect(log.deviceSigns[0]).toMatchObject({ stepUp: 'device-token-1', typedName: EMPLOYEE_NAME, consentVersion: 'ack-2' });
 
   await panel.getByTestId('signature-row').filter({ hasText: 'IT acceptable use' }).getByRole('button', { name: 'Check the record' }).click();
   await expect(panel.getByRole('status').filter({ hasText: 'The record is intact' })).toBeVisible();

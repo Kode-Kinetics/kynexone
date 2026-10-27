@@ -50,12 +50,14 @@ export function SignOnDeviceDialog({ open, employeeId, employeeName, row, onClos
     if (!row || !consent || !blob) return;
     setBusy(true); setError(null);
     try {
+      // The hash of the bytes on screen is what the step-up token is bound to, together with this employee and this document.
+      const documentSha256 = await sha256Hex(blob, consent.documentSha256);
       // 1. The employee proves it is them (their password, on this device). HR's own password is refused by the server.
-      const token = (await hrEsignApi.deviceStepUp(employeeId, password, code)).stepUpToken;
+      const token = (await hrEsignApi.deviceStepUp(employeeId, row.documentId, documentSha256, password, code)).stepUpToken;
       setPassword(''); setCode('');
       // 2. The server records the acknowledgement: signer = employee, witness = the HR user holding the device.
       const receipt = await hrEsignApi.signOnDevice(employeeId, row.documentId,
-        { documentSha256: await sha256Hex(blob, consent.documentSha256), consentVersion: consent.consentVersion, typedName: name.trim(), language: locale === 'ar' ? 'ar' : 'en', deviceId: deviceId() }, token, idem.current);
+        { documentSha256, consentVersion: consent.consentVersion, typedName: name.trim(), language: locale === 'ar' ? 'ar' : 'en', deviceId: deviceId() }, token, idem.current);
       onSigned(receipt);
     } catch (e) {
       const problem = problemOf(e);
