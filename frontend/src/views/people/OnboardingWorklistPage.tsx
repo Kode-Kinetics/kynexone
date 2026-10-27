@@ -11,6 +11,7 @@ import { LoadFailedNotice } from '@/src/components/ui/LoadFailedRow';
 import { StatusChip } from '@/src/components/StatusChip';
 
 const input = 'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
+const PAGE_SIZE = 200;
 const STATUSES = ['Pending', 'InProgress', 'Blocked'] as const;
 
 /** Open onboarding tasks across employees for the roles the signed-in person works. */
@@ -32,7 +33,7 @@ export function OnboardingWorklistPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await onboardingTemplatesApi.worklist({ ownerRole: ownerRole || undefined, status: status || undefined, overdue: overdue || undefined });
+      const r = await onboardingTemplatesApi.worklist({ page: 1, pageSize: PAGE_SIZE, ownerRole: ownerRole || undefined, status: status || undefined, overdue: overdue || undefined });
       setItems(r.items); setTotal(r.total); setLoadError(null); setSelected(new Set());
     } catch (e) { setItems([]); setLoadError(e); } finally { setLoading(false); }
   }, [ownerRole, status, overdue]);
@@ -69,6 +70,7 @@ export function OnboardingWorklistPage() {
         <button type="button" className="btn-primary ms-auto" disabled={selected.size === 0} onClick={askBulk}>{t('Complete selected')}</button>
       </div>
       {notice && <div role={notice.kind === 'error' ? 'alert' : 'status'} className={`rounded-lg border px-4 py-3 text-sm ${notice.kind === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>{notice.text}</div>}
+      {!loading && loadError == null && total > items.length && <p role="status" className="text-sm text-amber-800">{t('Showing the first {shown} of {total} tasks. Narrow the filters to see the rest.', { shown: String(items.length), total: String(total) })}</p>}
       {loading ? <p role="status" className="text-sm text-slate-500">{t('Loading…')}</p>
         : loadError != null ? <div className="surface"><LoadFailedNotice error={loadError} onRetry={() => { void load(); }} /></div>
         : items.length === 0 ? <p className="surface p-6 text-sm text-slate-600 dark:text-slate-300" data-testid="worklist-empty">{t('No open onboarding tasks for you right now.')}</p>

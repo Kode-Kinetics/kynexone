@@ -218,8 +218,8 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
-            x.Key.StartsWith("performance.") || x.Key == "onboarding.templates.manage" ||
-            x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
+            x.Key.StartsWith("performance.") ||
+            x.Key is "onboarding.templates.manage" or "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
             "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
             // CMP: runs merit cycles and is the default first approval step (never on a worksheet carrying their own pay).

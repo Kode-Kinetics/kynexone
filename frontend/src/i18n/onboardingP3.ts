@@ -103,6 +103,11 @@ const ar: Record<string, string> = {
   '{count} tasks completed.': 'تم إكمال {count} مهمة.',
   '{count} tasks will be marked completed.': 'سيتم وضع علامة إنجاز على {count} مهمة.',
   '{done} tasks completed, {refused} could not be: {reason}': 'تم إكمال {done} مهمة وتعذر إكمال {refused}: {reason}',
+  'Showing the first {shown} of {total} tasks. Narrow the filters to see the rest.': 'يتم عرض أول {shown} من {total} مهمة. ضيّق عوامل التصفية لرؤية الباقي.',
+  'Onboarding checklist templates': 'قوالب قوائم مهام الانضمام',
+  'The tasks every new hire gets, who does them and when they are due, per company.': 'المهام التي يحصل عليها كل موظف جديد، ومن ينفذها وموعد استحقاقها، لكل شركة.',
+  'Hire templates': 'قوالب التوظيف',
+  'Presets that fill the Add Employee form for a kind of hire and pick its onboarding checklist.': 'إعدادات مسبقة تعبّئ نموذج إضافة موظف لنوع من التعيين وتختار قائمة مهام الانضمام الخاصة به.',
   // Owners, statuses, sections
   'onboarding.owner.HR': 'الموارد البشرية', 'onboarding.owner.IT': 'تقنية المعلومات', 'onboarding.owner.Manager': 'المدير المباشر', 'onboarding.owner.Payroll': 'الرواتب',
   'onboarding.owner.Finance': 'المالية', 'onboarding.owner.Admin': 'الشؤون الإدارية', 'onboarding.owner.Gov': 'العلاقات الحكومية', 'onboarding.owner.Employee': 'الموظف',

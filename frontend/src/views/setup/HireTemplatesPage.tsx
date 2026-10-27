@@ -236,7 +236,7 @@ export function HireTemplatesPanel({ companyId: scopeCompany, companies: given, 
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={e => change({ isActive: e.target.checked })} />{t('Available in the Add Employee wizard')}</label>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => setForm(null)}>{t('Cancel')}</button>
-              <button type="button" className="btn-primary" disabled={saving} onClick={() => { void save(); }}>{t('Save hire template')}</button>
+              <button type="button" className="btn-primary !bg-blue-700" disabled={saving} onClick={() => { void save(); }}>{t('Save hire template')}</button>
             </div>
           </div>
         )}

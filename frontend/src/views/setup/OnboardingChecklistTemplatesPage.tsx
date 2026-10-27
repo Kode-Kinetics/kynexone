@@ -293,7 +293,7 @@ function ChecklistEditor({ draft, companyId, onChange, onClose, onSaved, onError
 
         <div className="flex justify-end gap-2">
           <button type="button" className="btn-secondary" onClick={onClose}>{t('Cancel')}</button>
-          <button type="button" className="btn-primary" disabled={saving} onClick={() => { void save(); }}>{t('Save checklist')}</button>
+          <button type="button" className="btn-primary !bg-blue-700" disabled={saving} onClick={() => { void save(); }}>{t('Save checklist')}</button>
         </div>
       </div>
     </SettingsDrawer>
