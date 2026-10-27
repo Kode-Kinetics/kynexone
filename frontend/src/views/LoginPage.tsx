@@ -21,6 +21,7 @@ import { takeSignInNotice, type SignInNotice } from '../lib/signInNotice';
 import { dateLocale } from '../lib/format';
 import { markResetNoticeSeen } from '../components/ResetCodeNotice';
 import { homePathFor } from '../lib/homePath';
+import { getPublicInstallation } from '../api/publicInstallation';
 
 /** Shapes, not words: nothing here to translate. */
 const EMAIL_PLACEHOLDER = 'name@company.com';
@@ -93,6 +94,15 @@ function LoginCard() {
   const from         = askedFor ?? homePathFor(user);
 
   const [mode,         setMode]         = useState<Mode>('login');
+  /* An installation nobody has set up yet has no organisation to sign in to (`--setup-organisation`, WP2). */
+  const [notSetUp,     setNotSetUp]     = useState(false);
+  useEffect(() => {
+    let live = true;
+    getPublicInstallation()
+      .then(info => { if (live) setNotSetUp(!info.setupComplete); })
+      .catch(() => { /* unknown: let sign-in say what is wrong */ });
+    return () => { live = false; };
+  }, []);
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
   const [tenantSlug,   setTenantSlug]   = useState('');
@@ -451,6 +461,12 @@ function LoginCard() {
                 {mode === 'login' && (
                   <>
                     <Head title={t('Sign in')} />
+                    {notSetUp && (
+                      <div className="lx-fault" role="status" data-testid="login-not-set-up">
+                        <AlertCircle aria-hidden />
+                        <p>{t('This installation has not been set up yet. Your IT team creates the organisation and its first administrator with the setup command.')}</p>
+                      </div>
+                    )}
                     <form onSubmit={handleLogin} noValidate className="lx-form">
                       <Field legend={t('Email')} htmlFor="li-em">
                         {/* Emails and passwords are left-to-right in every language. */}

@@ -17,6 +17,15 @@ public static class WorkspaceResolver
     /// <summary>The workspace slug for <paramref name="email"/>'s domain, or null.</summary>
     public static async Task<string?> ResolveSlugAsync(ZayraDbContext db, string? email, CancellationToken ct)
     {
+        // A client installation holds exactly one organisation (--setup-organisation): sign-in never needs a
+        // Company ID. Domain routing below only matters for a database that still holds several (a converted one).
+        var organisations = await db.Tenants.AsNoTracking()
+            .Where(t => t.IsActive)
+            .Select(t => t.Slug)
+            .Take(2)
+            .ToListAsync(ct);
+        if (organisations.Count == 1) return organisations[0];
+
         var domain = DomainOf(email);
         if (domain is null) return null;
         // Anonymous request: system scope, every tenant's companies are visible by design (routing only). Bounded.
