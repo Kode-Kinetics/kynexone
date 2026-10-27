@@ -15,6 +15,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { describeApiError } from '../../lib/apiError';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
+import { EmployeeSignaturesPanel } from './EmployeeSignaturesPanel';
 
 export function EmployeeComplianceDocumentsSection({ employee, readiness, panel, returnTo }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; panel?: string; returnTo: string }) {
   const { hasPermission } = useAuth();
@@ -90,5 +91,6 @@ export function EmployeeComplianceDocumentsSection({ employee, readiness, panel,
       </div>}
       {documents.length ? <ul className="mt-4 grid gap-3 sm:grid-cols-2">{documents.map(document => <li key={document.id} className="flex gap-3 rounded-xl border border-slate-200 p-4 dark:border-white/10"><FileText className="h-5 w-5 text-blue-600" /><div><p className="font-bold">{document.documentType}</p><p className="text-sm text-slate-500">{document.fileName} · {document.approvalStatus}</p></div></li>)}</ul> : <p className="mt-3 text-sm text-slate-500">No documents are recorded for this employee.</p>}
     </div>
+    {canManageDocuments && <EmployeeSignaturesPanel employee={employee} />}
   </section>;
 }

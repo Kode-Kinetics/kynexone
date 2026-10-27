@@ -64,7 +64,7 @@ const AR_SAME_ALLOWED: Record<string, string> = {
 };
 
 /** Not a sentence fragment even though it matches the shape: namespaced machine keys (suc. = succession, src/i18n/succession.ts). */
-const NAMESPACED = /^(enum|error|suc|ess)\./;
+const NAMESPACED = /^(enum|error|suc|ess|esign)\./;
 
 /** Formatting is the formatter's job; its own locale literals are the point of it. */
 const LOCALE_RATCHET_EXCLUDED = new Set(['src/lib/format.ts']);

@@ -38,6 +38,7 @@ import { attendanceRules } from './attendanceRules';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
 import { onboardingP2 } from './onboardingP2';
+import { onboardingP4 } from './onboardingP4';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1495,6 +1496,7 @@ const en: Dict = {
   ...employeeCompletion.en,
   ...hireWizard.en,
   ...onboardingP2.en,
+  ...onboardingP4.en,
   ...setupExperience.en,
   ...glSetup.en,
   ...glErp.en,
@@ -2963,6 +2965,7 @@ const ar: Dict = {
   ...employeeCompletion.ar,
   ...hireWizard.ar,
   ...onboardingP2.ar,
+  ...onboardingP4.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
   ...glErp.ar,

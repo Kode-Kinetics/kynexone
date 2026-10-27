@@ -65,16 +65,7 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
         var me = await ResolveSelfAsync(ct);
         if (me is null) return Err(409, EsignProblemCodes.EssNotLinked);
         var doc = await OwnSignableAsync(me.Value.TenantId, me.Value.EmployeeId, documentId, ct);
-        if (doc is null) return Err(404, EsignProblemCodes.NotFound);
-        var bytes = await ReadAsync(me.Value.TenantId, doc, ct);
-        if (bytes is null) return Err(404, EsignProblemCodes.NotFound);
-        var version = ConsentCatalog.Current;
-        return Ok(new
-        {
-            consentVersion = version, text = ConsentCatalog.Text(version, lang ?? "en"), textAr = ConsentCatalog.Text(version, "ar"), textEn = ConsentCatalog.Text(version, "en"),
-            textSha256 = ConsentCatalog.TextSha256(version), documentSha256 = SignatureChain.Sha256Hex(bytes), documentVersion = doc.VersionNumber,
-            title = doc.DocumentType, fileName = doc.FileName, integrityFlagged = doc.IntegrityFlaggedAtUtc is not null,
-        });
+        return doc is null ? Err(404, EsignProblemCodes.NotFound) : await ConsentResultAsync(me.Value.TenantId, doc, lang, ct);
     }
 
     [HttpPost("api/ess/signatures/{documentId:guid}/sign")]
@@ -152,6 +143,18 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
         var tenantId = TenantId();
         if (!await db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == id && !e.IsDeleted, ct)) return Err(404, EsignProblemCodes.NotFound);
         return Ok(await ListForAsync(tenantId, id, ct));
+    }
+
+    /// <summary>The wording and the file's hash for HR's device, from the same source the employee's own screen uses.</summary>
+    [HttpGet("api/employees/{id:int}/signatures/{documentId:guid}/consent")]
+    [HasPermission("employees.read")]
+    public async Task<IActionResult> ConsentForEmployee(int id, Guid documentId, [FromQuery] string? lang, CancellationToken ct)
+    {
+        if (!HrMayManageDocuments(requireWrite: false)) return Forbid();
+        var tenantId = TenantId();
+        if (!await db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == id && !e.IsDeleted, ct)) return Err(404, EsignProblemCodes.NotFound);
+        var doc = await OwnSignableAsync(tenantId, id, documentId, ct);
+        return doc is null ? Err(404, EsignProblemCodes.NotFound) : await ConsentResultAsync(tenantId, doc, lang, ct);
     }
 
     [HttpGet("api/employees/{id:int}/signatures/{ackId:guid}/verify")]
@@ -247,6 +250,19 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
         if (!await db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted, ct)) return null;   // out-of-scope employees do not resolve
         return await db.EmployeeUserAccounts.AsNoTracking().Where(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.Status == "Active" && a.UserId != null)
             .OrderByDescending(a => a.IsPrimary).Select(a => a.UserId).FirstOrDefaultAsync(ct);
+    }
+
+    private async Task<IActionResult> ConsentResultAsync(Guid tenantId, EmployeeDocument doc, string? lang, CancellationToken ct)
+    {
+        var bytes = await ReadAsync(tenantId, doc, ct);
+        if (bytes is null) return Err(404, EsignProblemCodes.NotFound);
+        var version = ConsentCatalog.Current;
+        return Ok(new
+        {
+            consentVersion = version, text = ConsentCatalog.Text(version, lang ?? "en"), textAr = ConsentCatalog.Text(version, "ar"), textEn = ConsentCatalog.Text(version, "en"),
+            textSha256 = ConsentCatalog.TextSha256(version), documentSha256 = SignatureChain.Sha256Hex(bytes), documentVersion = doc.VersionNumber,
+            title = doc.DocumentType, fileName = doc.FileName, integrityFlagged = doc.IntegrityFlaggedAtUtc is not null,
+        });
     }
 
     private Task<EmployeeDocument?> OwnSignableAsync(Guid tenantId, int employeeId, Guid documentId, CancellationToken ct) =>
