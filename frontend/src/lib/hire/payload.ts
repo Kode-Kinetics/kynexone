@@ -12,6 +12,8 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   nationalityCode?: string;
   contractEndDate?: string;
   duplicateOverrideReason?: string;
+  /** Sent with duplicateOverrideReason when an authorised user confirms "this is a different person"; the server refuses a strong match otherwise. */
+  acknowledgeDuplicate?: boolean;
   acknowledgedWarnings?: AcknowledgedWarning[];
   /** P3: the hire template the wizard applied; the server uses it only to raise the onboarding checklist. */
   hireTemplateId?: string;
@@ -96,6 +98,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     acknowledgedWarnings: extras.acknowledgedWarnings?.length ? extras.acknowledgedWarnings : undefined,
     duplicateOverrideReason: extras.duplicateOverrideReason,
     hireTemplateId: extras.hireTemplateId,
+    acknowledgeDuplicate: extras.duplicateOverrideReason?.trim() ? true : undefined,
   };
   if (form.idChecksumOverrideReason.trim() && body.acknowledgedWarnings === undefined && !blank(form.idNumber)) {
     body.acknowledgedWarnings = [{ code: 'id_checksum_invalid', reason: form.idChecksumOverrideReason.trim() }];

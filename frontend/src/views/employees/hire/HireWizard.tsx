@@ -23,7 +23,7 @@ import { draftLoadProblem, formFromEmployee, isResumable } from '@/src/lib/hire/
 import type { SaBank } from '@/src/lib/hire/iban';
 import { defaultIdType, type CountryOption } from '@/src/lib/hire/nationality';
 import { buildCreateRequest, newIdempotencyKey, type AcknowledgedWarning } from '@/src/lib/hire/payload';
-import { parseHireProblem, serverFieldIssue, type ServerWarning } from '@/src/lib/hire/problem';
+import { parseHireProblem, serverFieldIssue, type HireProblem, type ServerWarning } from '@/src/lib/hire/problem';
 import { serverFieldToForm } from '@/src/lib/hire/serverFields';
 import { ErrorSummary } from './fields/ErrorSummary';
 import { DiscardDialog, WarningAckDialog } from './fields/Dialogs';
@@ -69,6 +69,7 @@ export function HireWizard() {
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [countryOptions, setCountryOptions] = useState<CountryOption[] | undefined>(undefined);
+  const nationalityOptions = useRef<CountryOption[] | undefined>(undefined);
   const [form, setForm] = useState<HireForm>(emptyHireForm);
   const initial = useRef<HireForm>(form);
   const [step, setStep] = useState<Step>(1);
@@ -129,7 +130,7 @@ export function HireWizard() {
           if (!isResumable(d, resumeId)) { setResume({ state: 'notDraft', id: resumeId }); }
           else {
             const co = companies.find(c => c.id === d.companyId);
-            const hydrated = formFromEmployee(d, { emailDomain: co?.emailDomain || undefined, companyCountry: normalizeCountryCode(co?.countryCode) || 'SA' });
+            const hydrated = formFromEmployee(d, { emailDomain: co?.emailDomain || undefined, companyCountry: normalizeCountryCode(co?.countryCode) || 'SA', timeZone: zone, countryOptions: nationalityOptions.current });
             initial.current = hydrated;
             setForm(hydrated);
             setSavedForm(hydrated);
@@ -147,7 +148,7 @@ export function HireWizard() {
     }).catch(() => { if (!cancelled) { setLoadFailed(true); setLoaded(true); } });
     employeeHireApi.saBanks().then(list => { if (!cancelled && list) setBanks(list); });
     employeeHireApi.nationalities().then(list => {
-      if (!cancelled && list?.length) setCountryOptions(list.map((n: ApiNationality) => ({ code: n.code, nameEn: n.nameEn, nameAr: n.nameAr })));
+      if (!cancelled && list?.length) { const opts = list.map((n: ApiNationality) => ({ code: n.code, nameEn: n.nameEn, nameAr: n.nameAr })); nationalityOptions.current = opts; setCountryOptions(opts); }
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -218,6 +219,7 @@ export function HireWizard() {
   // ── autosave ────────────────────────────────────────────────────────────
   const latest = useRef({ ctx, companyCountry, currency, emailDomain: undefined as string | undefined, acks, draft, hireTemplateId: undefined as string | undefined });
   latest.current = { ctx, companyCountry, currency, emailDomain: company?.emailDomain || undefined, acks, draft, hireTemplateId: applied?.template.id };
+  const problemHandler = useRef<(p: HireProblem) => void>(() => {});
   const autosave = useRef<ReturnType<typeof createAutosave<{ form: HireForm }>> | null>(null);
   if (!autosave.current) {
     autosave.current = createAutosave<{ form: HireForm }>({
@@ -228,6 +230,7 @@ export function HireWizard() {
         setSavedForm(f);
         return res;
       },
+      onProblem: p => problemHandler.current(p),
       onState: (s, at) => { setSaveState(s); if (at) setSavedAt(at); if (s === 'conflict') setNotice({ key: 'This draft was changed somewhere else. Reload to continue.', action: 'reload' }); },
     });
   }
@@ -270,8 +273,7 @@ export function HireWizard() {
     else { pending.current = { kind: 'summary' }; setTick(n => n + 1); }
   }, [step]);
 
-  const handleFailure = useCallback((e: unknown) => {
-    const p = parseHireProblem(e);
+  const handleProblem = useCallback((p: HireProblem) => {
     switch (p.kind) {
       case 'validation': {
         const list: FieldIssue[] = [];
@@ -295,6 +297,8 @@ export function HireWizard() {
       default: setNotice({ key: 'The employee could not be saved. Check your connection and try again.' });
     }
   }, [showIssues]);
+  const handleFailure = useCallback((e: unknown) => handleProblem(parseHireProblem(e)), [handleProblem]);
+  problemHandler.current = handleProblem;
 
   /** Create the draft row (once), or flush the autosave when it exists. Resolves true when the server holds what is on screen. */
   const persist = useCallback(async (extraAcks?: AcknowledgedWarning[]): Promise<number | null> => {

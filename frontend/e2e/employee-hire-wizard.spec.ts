@@ -253,7 +253,7 @@ test.describe('person, pickers and validation (desktop)', () => {
     await expect(page.getByTestId('saved-indicator')).toBeVisible();
     expect(api.creates).toHaveLength(2);
     expect(api.creates[1].key).toBe(api.creates[0].key);
-    expect(api.creates[1].body.acknowledgedWarnings).toEqual([{ code: 'joining_backdated_over_30d', reason: 'Hired before paperwork was entered' }]);
+    expect(api.creates[1].body.acknowledgedWarnings).toEqual([{ code: 'joining_backdated', reason: 'Hired before paperwork was entered' }]);
   });
 });
 
@@ -273,6 +273,10 @@ test.describe('duplicates, autosave, guard, review (desktop)', () => {
     await panel.getByLabel('Reason').fill('Different date of birth on the ID');
     await panel.getByRole('button', { name: 'Confirm different person' }).click();
     await expect(panel).toContainText('Marked as a different person');
+    await page.getByLabel('Start date').fill('2026-11-01');
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body).toMatchObject({ acknowledgeDuplicate: true, duplicateOverrideReason: 'Different date of birth on the ID' });
   });
 
   test('G14/AC45: a terminated match offers Rehire, which posts to the rehire endpoint', async ({ page }) => {

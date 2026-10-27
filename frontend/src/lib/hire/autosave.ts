@@ -1,3 +1,5 @@
+import { parseHireProblem, type HireProblem } from './problem';
+
 export type AutosaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'conflict' | 'error';
 
 export interface AutosaveOptions<P> {
@@ -7,11 +9,14 @@ export interface AutosaveOptions<P> {
   /** Saves `payload` against the version the previous save returned. Throws an axios-like error; 409 = changed elsewhere. */
   save: (payload: P, baseUpdatedAtUtc: string) => Promise<{ updatedAtUtc: string }>;
   onState?: (state: AutosaveState, savedAtUtc?: string) => void;
+  /** A save failed for a reason that is not a conflict (a warning to answer, a validation message, a generic error). Autosave stays live. */
+  onProblem?: (problem: HireProblem) => void;
 }
 
 /**
  * Debounced, version-checked autosave for the server-side hire draft (pattern of companySetup/useDraftAutosave).
- * Nothing is saved until a draft row exists (`adopt`). A 409 stops autosave for good: it never overwrites the other copy.
+ * Nothing is saved until a draft row exists (`adopt`). Only the problem code `draft_changed_elsewhere` stops autosave for good
+ * (it never overwrites the other copy); every other failure leaves autosave live so the next edit retries.
  */
 export function createAutosave<P>(options: AutosaveOptions<P>) {
   const delay = options.delayMs ?? 1200;
@@ -38,9 +43,11 @@ export function createAutosave<P>(options: AutosaveOptions<P>) {
       emit(dirty ? 'pending' : 'saved', res.updatedAtUtc);
       return true;
     }).catch(err => {
-      if ((err as { response?: { status?: number } })?.response?.status === 409) { conflict = true; emit('conflict'); return false; }
+      const problem = parseHireProblem(err);
+      if (problem.kind === 'draft_conflict') { conflict = true; emit('conflict'); return false; }
       dirty = true;
       emit('error');
+      if (problem.kind !== 'network') options.onProblem?.(problem);
       return false;
     }).finally(() => { inFlight = null; });
     inFlight = run;

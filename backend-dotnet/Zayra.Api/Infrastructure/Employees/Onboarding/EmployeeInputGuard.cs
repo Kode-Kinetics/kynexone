@@ -122,7 +122,8 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
             consumed[w.Code] = ack;
             if (w.RequiresPermission) RequireAllowed(mayOverride);
         }
-        if (unacknowledged.Count > 0) throw new EmployeeWarningsRequireAckException(unacknowledged);
+        // CD28/CD67: a draft autosave never fights typing. Its warnings surface at Review/Create/Activate, where they can be answered.
+        if (unacknowledged.Count > 0 && mode != EmployeeGuardMode.Draft) throw new EmployeeWarningsRequireAckException(unacknowledged);
 
         // Only the acknowledgements that were actually needed travel on, so the audit row lists real overrides.
         // The grade band is also checked by the employee service against the MERGED pay package (the request's figures
