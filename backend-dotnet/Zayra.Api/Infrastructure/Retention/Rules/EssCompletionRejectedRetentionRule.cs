@@ -82,11 +82,22 @@ public sealed class EssCompletionRejectedRetentionRule : IRetentionRule
         return new { updated, filesDeleted = deleted };
     }
 
-    /// <summary>Removes the document rows and, after them, the stored objects (best effort: a failure leaves an orphan object, never a dangling row).</summary>
+    /// <summary>
+    /// Removes the document rows and, after them, the stored objects (best effort: a failure leaves an orphan object, never a dangling row).
+    /// A file is only ever removed while it is an unapproved upload that no live (pending, awaiting-Finance or accepted) request lists:
+    /// the employee's resubmission reuses existing document ids, and an approved file belongs to the employee record.
+    /// </summary>
     private static async Task<int> DeleteFilesAsync(JobExecutionContext ctx, IReadOnlyCollection<Guid> ids, CancellationToken ct)
     {
         if (ids.Count == 0) return 0;
-        var docs = ScopedBypass.TenantWide(ctx.Db.EmployeeDocuments, ctx.TenantId, Scope).Where(d => ids.Contains(d.Id) && d.SourceSection != null);
+        var candidates = await ScopedBypass.TenantWide(ctx.Db.EmployeeDocuments, ctx.TenantId, Scope).AsNoTracking()
+            .Where(d => ids.Contains(d.Id) && d.SourceSection != null && d.ApprovalStatus == "Pending")
+            .Select(d => new { d.Id, d.EmployeeId }).ToListAsync(ct);
+        if (candidates.Count == 0) return 0;
+        var inUse = await AttachedIdsAsync(ctx, candidates.Select(d => d.EmployeeId).Distinct().ToList(), ct);
+        var deletable = candidates.Select(d => d.Id).Where(id => !inUse.Contains(id)).ToList();
+        if (deletable.Count == 0) return 0;
+        var docs = ScopedBypass.TenantWide(ctx.Db.EmployeeDocuments, ctx.TenantId, Scope).Where(d => deletable.Contains(d.Id) && d.SourceSection != null && d.ApprovalStatus == "Pending");
         var keys = await docs.Select(d => d.StorageUrl).ToListAsync(ct);
         var removed = await docs.ExecuteDeleteAsync(ct);
         if (ctx.Services.GetService(typeof(IDocumentStorage)) is IDocumentStorage storage)
