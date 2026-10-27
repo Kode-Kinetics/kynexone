@@ -57,7 +57,9 @@ public static class OnboardingP4EsignModel
         {
             entity.Property(x => x.SignatureRequiredAtUtc).HasColumnName("signature_required_at");
             entity.Property(x => x.IntegrityFlaggedAtUtc).HasColumnName("integrity_flagged_at");
-            entity.HasIndex(x => new { x.TenantId, x.EmployeeId }).HasDatabaseName(SignPendingIndex).HasFilter("signature_required_at IS NOT NULL");
+            // Keyed on the request time as well: EF identifies an index by its columns, so (tenant, employee) alone would re-define the
+            // general employee-documents index into this filtered one and the migration would drop the general lookup index.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.SignatureRequiredAtUtc }).HasDatabaseName(SignPendingIndex).HasFilter("signature_required_at IS NOT NULL");
         });
     }
 }

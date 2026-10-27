@@ -185,4 +185,17 @@ public class EsignUnitTests
         }
         throw new FileNotFoundException(relative);
     }
+
+    [Fact]
+    public void EmployeeDocuments_KeepTheGeneralTenantEmployeeIndex_AlongsideTheSignPendingOne()
+    {
+        using var db = new Zayra.Api.Data.ZayraDbContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<Zayra.Api.Data.ZayraDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var indexes = db.Model.FindEntityType(typeof(Zayra.Api.Models.EmployeeDocument))!.GetIndexes().ToList();
+        // Two indexes starting (tenant, employee): the unfiltered lookup index and the filtered sign-pending one. They must
+        // never collapse into one, or the migration drops the lookup index every employee-documents query relies on.
+        indexes.Where(i => i.Properties.Count >= 2 && i.Properties[0].Name == "TenantId" && i.Properties[1].Name == "EmployeeId" && i.Filter is null)
+            .Should().ContainSingle(i => i.Properties.Count == 2);
+        indexes.Should().Contain(i => i.GetDatabaseName() == "ix_empdoc_sign_pending" && i.Filter != null);
+    }
 }
