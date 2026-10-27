@@ -4,10 +4,13 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { employeeHireApi, type HireReview } from '@/src/api/employeeHire';
+import { useAuth } from '@/src/contexts/AuthContext';
 import { reviewItemLabel } from '@/src/lib/hire/reviewLabels';
+import { PAY_APPROVE_PERMISSION, PAY_GAP_KEY } from '@/src/lib/payApprovals';
 
 export function SuccessStep({ id, name, rehired = false }: { id: number; name: string; rehired?: boolean }) {
   const { t } = useLocale();
+  const { hasPermission } = useAuth();
   const [review, setReview] = useState<HireReview | null | 'failed'>(null);
   useEffect(() => { employeeHireApi.review(id).then(setReview).catch(() => setReview('failed')); }, [id]);
   const blockers = review && review !== 'failed' ? review.blockers : [];
@@ -20,7 +23,15 @@ export function SuccessStep({ id, name, rehired = false }: { id: number; name: s
         {review === null && <p className="text-slate-500">{t('Checking what is left…')}</p>}
         {review === 'failed' && <p className="text-slate-500">{t('Readiness could not be loaded. Open the record to see it.')}</p>}
         {review && review !== 'failed' && (blockers.length
-          ? <ul className="mt-1 list-disc ps-5">{blockers.map(b => <li key={b.key}>{reviewItemLabel(b, t)}</li>)}</ul>
+          ? <ul className="mt-1 list-disc ps-5">{blockers.map(b => (
+            <li key={b.key}>
+              {reviewItemLabel(b, t)}
+              {/* OD4: a Finance approver decides the pay package from its own scoped view, without employees.sensitive. */}
+              {b.key === PAY_GAP_KEY && hasPermission(PAY_APPROVE_PERMISSION) && (
+                <> · <Link className="font-semibold text-sapphire underline dark:text-blue-300" href={`/pay-approvals/${id}`}>{t('Review the pay package')}</Link></>
+              )}
+            </li>
+          ))}</ul>
           : <p>{t('Nothing is blocking activation.')}</p>)}
         {warnings.length > 0 && (
           <>
