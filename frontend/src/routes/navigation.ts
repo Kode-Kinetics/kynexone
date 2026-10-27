@@ -1,4 +1,5 @@
 import {
+  ListChecks,
   Building2,
   BarChart3,
   MessageSquareText,
@@ -52,6 +53,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'People', icon: UsersRound, path: '/people', requiredPermissions: ['employees.read'] },
       { label: 'New Hires', icon: UserPlus, path: '/people/new-hires', requiredPermissions: ['employees.write', 'employees.approve'] },
       { label: 'Profile review', icon: ClipboardCheck, path: '/people/onboarding-review', requiredPermissions: ['employees.write'] },
+      { label: 'Onboarding Tasks', icon: ListChecks, path: '/people/onboarding-tasks', requiredPermissions: ['employees.read'] },
       { label: 'Org Chart', icon: Network, path: '/org-chart', requiredPermissions: ['employees.read'] },
       { label: 'HR Letters', icon: FileSignature, path: '/hr-letters', requiredPermissions: ['employees.read', 'employees.write'] },
       { label: 'Attendance', icon: Clock3, path: '/attendance', requiredPermissions: ['attendance.read', 'attendance.write', 'attendance.kiosk'] },
@@ -129,6 +131,7 @@ export const navigationHints: Record<string, string> = {
   '/people': 'Employee records: profiles, contracts, documents and job history.',
   '/people/new-hires': 'Accepted offers and prepared hires waiting to be approved and activated as employees.',
   '/people/onboarding-review': 'Details employees sent after their first day, waiting for you to accept or send back.',
+  '/people/onboarding-tasks': 'Open onboarding tasks for new hires: who does each one and when it is due.',
   '/org-chart': 'Who reports to whom, by department and manager.',
   '/hr-letters': 'Generate salary certificates, experience letters and other HR letters.',
   '/attendance': 'Daily punches, absences and late arrivals, with corrections.',

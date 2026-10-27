@@ -142,7 +142,10 @@ public class TableBudgetRatchetTests
         // are sessions that rotate and die on sign-out (a trusted browser must outlive them), mfa_challenge_tokens are
         // single-use five-minute credentials, and the known-device cookie is a stateless lockout hint nobody can revoke.
         // Retention: expired or revoked rows deleted after 30 days (MfaTrustedDeviceRetentionRule).
-        DeclaredDbSets().Should().HaveCount(375,
+        // P3 hire_templates (375 -> 376): per-company hire presets (match keys designation/grade/branch, non-pay defaults, checklist).
+        // No existing table can carry it: onboarding_checklists has no match semantics and a different lifecycle, and the grade master
+        // stays the only pay source (a template holds no money). Owner HR; kept for the life of the company (config, no personal data).
+        DeclaredDbSets().Should().HaveCount(376,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

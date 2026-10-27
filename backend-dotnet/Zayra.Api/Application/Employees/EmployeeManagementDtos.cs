@@ -56,7 +56,9 @@ public record EmployeeCreateRequest(
     DateOnly? ContractEndDate = null,
     // Cost-centre accounting (contract 2.9, M-10): why the employee's cost-centre override is being set or removed. Required (422
     // cost_centre_reason_required) whenever the request changes the override; recorded in the employee.cost_centre_override.changed audit row.
-    string? CostCenterReason = null);
+    string? CostCenterReason = null,
+    // P3: the hire template the wizard applied; used only to raise the hire's onboarding checklist (the form already carries the defaults).
+    Guid? HireTemplateId = null);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,
