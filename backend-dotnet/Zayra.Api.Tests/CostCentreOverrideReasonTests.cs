@@ -76,7 +76,9 @@ public class CostCentreOverrideReasonTests
         (await w.Db.Employees.CountAsync(e => e.EmployeeCode == "E1")).Should().Be(0, "a refused save creates nobody");
 
         await Service(w.Db).CreateAsync(w.Tenant, Form(w, "E1", w.Own.Id, Reason), Ctx(w.Tenant), default);
-        (await LastOverrideRow(w)).GetProperty("reason").GetString().Should().Be(Reason);
+        // A hire's first attribution is recorded as the initial attribution (it does not count toward lock separation of duties).
+        var initial = await w.Db.AuditLogs.SingleAsync(a => a.Action == "employee.cost_attribution_initialised");
+        JsonDocument.Parse(initial.Metadata!).RootElement.GetProperty("reason").GetString().Should().Be(Reason);
     }
 
     [Fact]
