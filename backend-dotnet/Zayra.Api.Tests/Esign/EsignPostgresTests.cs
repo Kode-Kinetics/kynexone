@@ -73,13 +73,15 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
         return (tenant, [.. ids]);
     }
 
+    private static byte[] Pdf(params byte[] extra) => [.. EsignFixture.PdfBytes, .. extra];
+
     private static InMemoryDocumentStorage NewStorage() => new();
 
     private static async Task<Guid> NewDocAsync(ZayraDbContext db, InMemoryDocumentStorage storage, Guid tenant, int employee, byte[]? bytes = null)
     {
         var id = Guid.NewGuid();
         var key = $"storage/documents/{tenant:N}/{id:N}.pdf";
-        storage.Objects[key] = bytes ?? [.. EsignFixture.PdfBytes, .. Guid.NewGuid().ToByteArray()];
+        storage.Objects[key] = bytes ?? Pdf(Guid.NewGuid().ToByteArray());
         db.EmployeeDocuments.Add(new EmployeeDocument
         {
             Id = id, TenantId = tenant, EmployeeId = employee, DocumentType = "Employment contract", DocumentCategory = "Contract", FileName = "c.pdf", ContentType = "application/pdf",
@@ -214,7 +216,7 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
         var jobs = new List<(SignCommand Cmd, byte[] Bytes)>();
         foreach (var e in employees)
         {
-            var bytes = new byte[] { .. EsignFixture.PdfBytes, .. Guid.NewGuid().ToByteArray() };
+            var bytes = Pdf(Guid.NewGuid().ToByteArray());
             var doc = await NewDocAsync(seed, storage, tenant, e, bytes);
             jobs.Add((Cmd(tenant, e, doc, bytes), bytes));
         }
@@ -249,7 +251,7 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
         await using var seed = fx.CreateDb();
         var (tenant, employees) = await SeedEmployeesAsync(seed, 1);
         var storage = NewStorage();
-        var bytes = new byte[] { .. EsignFixture.PdfBytes, 7 };
+        var bytes = Pdf((byte)7);
         var doc = await NewDocAsync(seed, storage, tenant, employees[0], bytes);
         var user = Guid.NewGuid();
         // two simultaneous attempts on the same document: exactly one record
@@ -279,7 +281,7 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
         await using var seed = fx.CreateDb();
         var (tenant, employees) = await SeedEmployeesAsync(seed, 2);
         var storage = NewStorage();
-        var bytes1 = new byte[] { .. EsignFixture.PdfBytes, 1 }; var bytes2 = new byte[] { .. EsignFixture.PdfBytes, 2 };
+        var bytes1 = Pdf((byte)1); var bytes2 = Pdf((byte)2);
         var doc1 = await NewDocAsync(seed, storage, tenant, employees[0], bytes1);
         var doc2 = await NewDocAsync(seed, storage, tenant, employees[1], bytes2);
         var token = Guid.NewGuid().ToString("N");
@@ -303,7 +305,7 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
         var acks = new List<Guid>();
         foreach (var e in employees)
         {
-            var bytes = new byte[] { .. EsignFixture.PdfBytes, (byte)e };
+            var bytes = Pdf((byte)e);
             var doc = await NewDocAsync(seed, storage, tenant, e, bytes);
             await using var db = fx.CreateDb();
             var o = await new PolicySigningService(db, storage, new FakeStepUp()).SignAsync(Cmd(tenant, e, doc, bytes), default);

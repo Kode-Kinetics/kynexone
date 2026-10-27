@@ -41,6 +41,7 @@ public static class OnboardingP4EsignModel
             entity.Property(x => x.DeviceId).HasMaxLength(64);
             entity.Property(x => x.Language).HasMaxLength(2);
             entity.Property(x => x.AuthMethod).HasMaxLength(24);
+            entity.Property(x => x.StepUpAtUtc).HasColumnName("step_up_at");
             entity.Property(x => x.PrevHash).HasMaxLength(64).IsFixedLength();
             entity.Property(x => x.RecordHash).HasMaxLength(64).IsFixedLength();
             // One chain per tenant, no gap and no fork: a second writer taking the same sequence number loses on this index.
@@ -54,6 +55,8 @@ public static class OnboardingP4EsignModel
 
         modelBuilder.Entity<EmployeeDocument>(entity =>
         {
+            entity.Property(x => x.SignatureRequiredAtUtc).HasColumnName("signature_required_at");
+            entity.Property(x => x.IntegrityFlaggedAtUtc).HasColumnName("integrity_flagged_at");
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId }).HasDatabaseName(SignPendingIndex).HasFilter("signature_required_at IS NOT NULL");
         });
     }

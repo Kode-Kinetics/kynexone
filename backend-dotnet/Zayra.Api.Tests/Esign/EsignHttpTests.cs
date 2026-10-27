@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Zayra.Api.Application.Employees.Ess;
 using Zayra.Api.Application.Esign;
 using Zayra.Api.Models;
@@ -319,7 +320,7 @@ public class EsignHttpTests(EsignFixture fx)
         using var scope = fx.Host.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<Zayra.Api.Application.Employees.IEmployeeManagementService>();
         foreach (var id in new[] { doc.Id, ack.CertificateDocumentId!.Value })
-            await Assert.ThrowsAsync<InvalidOperationException>(() => svc.ArchiveDocumentAsync(fx.TenantId, e.Id, id, new Zayra.Api.Application.Common.RequestContext(fx.HrUserId, "test", null, fx.TenantId), default));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => svc.ArchiveDocumentAsync(fx.TenantId, e.Id, id, new Zayra.Api.Application.Auth.RequestContext("127.0.0.1", "test", fx.HrUserId, fx.TenantId), default));
     }
 
     [Fact]
