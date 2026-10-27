@@ -9,6 +9,7 @@ import { formatIsoDate } from '@/src/lib/hire/dates';
 import { ConfirmDialog, type ConfirmState } from '@/src/components/ui/ConfirmDialog';
 import { LoadFailedNotice } from '@/src/components/ui/LoadFailedRow';
 import { StatusChip } from '@/src/components/StatusChip';
+import { SkipTaskDialog } from './SkipTaskDialog';
 
 const input = 'rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
 const PAGE_SIZE = 100;
@@ -39,6 +40,7 @@ export function OnboardingWorklistPage() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const [skipping, setSkipping] = useState<WorklistItem | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -105,7 +107,10 @@ export function OnboardingWorklistPage() {
                     <dd>{i.dueDate ? formatIsoDate(i.dueDate, locale) : <span className="text-slate-500">{t('Due when the start date is set')}</span>}{i.overdue && <span className="ms-2"><StatusChip label={t('Overdue')} tone="rose" /></span>}</dd>
                     <dt className="text-slate-500">{t('Status')}</dt><dd>{t(`onboarding.status.${i.status}`)}</dd>
                   </dl>
-                  <button type="button" className="btn-secondary h-9 w-full px-3 text-sm" onClick={() => { void complete([i.taskId]); }}>{t('Mark complete')}</button>
+                  <div className="flex gap-2">
+                    <button type="button" className="btn-secondary h-9 flex-1 px-3 text-sm" onClick={() => { void complete([i.taskId]); }}>{t('Mark complete')}</button>
+                    <button type="button" className="btn-secondary h-9 flex-1 px-3 text-sm" aria-label={t('Skip {task}', { task: ar && i.titleAr ? i.titleAr : i.title })} onClick={() => setSkipping(i)}>{t('Skip')}</button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -127,7 +132,7 @@ export function OnboardingWorklistPage() {
                     <td className="p-2">{t(`onboarding.owner.${i.ownerRole}`)}</td>
                     <td className="p-2">{i.dueDate ? formatIsoDate(i.dueDate, locale) : <span className="text-slate-500">{t('Due when the start date is set')}</span>}{i.overdue && <span className="ms-2"><StatusChip label={t('Overdue')} tone="rose" /></span>}</td>
                     <td className="p-2">{t(`onboarding.status.${i.status}`)}</td>
-                    <td className="p-2 text-end"><button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => { void complete([i.taskId]); }}>{t('Mark complete')}</button></td>
+                    <td className="p-2 text-end"><div className="inline-flex gap-2"><button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => { void complete([i.taskId]); }}>{t('Mark complete')}</button><button type="button" className="btn-secondary h-8 px-3 text-xs" aria-label={t('Skip {task}', { task: ar && i.titleAr ? i.titleAr : i.title })} onClick={() => setSkipping(i)}>{t('Skip')}</button></div></td>
                   </tr>
                 ))}
               </tbody>
@@ -136,6 +141,7 @@ export function OnboardingWorklistPage() {
           )
         )}
       <ConfirmDialog state={confirm} onCancel={() => setConfirm(null)} />
+      <SkipTaskDialog task={skipping} onClose={() => setSkipping(null)} onSkipped={() => { setSkipping(null); setNotice({ kind: 'ok', text: t('Task skipped.') }); void load(); }} />
     </div>
   );
 }

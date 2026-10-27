@@ -1,7 +1,7 @@
 /** The problem codes the onboarding template endpoints return; each has an English and an Arabic sentence (key onboarding.error.<code>). */
 export const ONBOARDING_PROBLEM_CODES = [
   'template_name_taken', 'template_match_conflict', 'template_company_mismatch', 'task_evidence_required', 'due_override_reason_required',
-  'activation_blocked_by_tasks', 'invalid_reference', 'validation_failed', 'duplicate_task_title',
+  'activation_blocked_by_tasks', 'invalid_reference', 'validation_failed', 'duplicate_task_title', 'skip_reason_required',
 ] as const;
 
 export function onboardingProblemKey(err: unknown): string {
@@ -10,3 +10,7 @@ export function onboardingProblemKey(err: unknown): string {
   if (code === 'validation_failed' && JSON.stringify(data?.errors ?? {}).includes('duplicate_task_title')) return 'onboarding.error.duplicate_task_title';
   return (ONBOARDING_PROBLEM_CODES as readonly string[]).includes(code) ? `onboarding.error.${code}` : 'onboarding.error.generic';
 }
+
+/** A task that holds back activation can be skipped only with a reason of at least five characters (the server answers 422 skip_reason_required). */
+export const SKIP_REASON_MIN = 5;
+export const skipReasonOk = (blocksActivation: boolean, reason: string) => !blocksActivation || reason.trim().length >= SKIP_REASON_MIN;

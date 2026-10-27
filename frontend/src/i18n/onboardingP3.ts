@@ -124,7 +124,17 @@ const ar: Record<string, string> = {
   'onboarding.error.invalid_reference': 'أحد الخيارات المحددة غير متاح.',
   'onboarding.error.validation_failed': 'تحقق من الحقول المحددة ثم أعد المحاولة.',
   'onboarding.error.duplicate_task_title': 'يجب أن يكون لكل مهمة في القائمة عنوان مختلف.',
+  'onboarding.error.skip_reason_required': 'اكتب سبب التجاوز (5 أحرف على الأقل): هذه المهمة تمنع تفعيل الموظف.',
   'onboarding.error.generic': 'تعذر إكمال الطلب. حاول مرة أخرى.',
+  'Skip': 'تجاوز',
+  'Skip this task?': 'تجاوز هذه المهمة؟',
+  'Skip {task}': 'تجاوز {task}',
+  'Reason (required, at least 5 characters)': 'السبب (مطلوب، 5 أحرف على الأقل)',
+  'Reason (optional)': 'السبب (اختياري)',
+  'This task blocks activation. Say why it can be skipped; the reason is kept on the record.': 'هذه المهمة تمنع التفعيل. اكتب سبب جواز تجاوزها؛ يُحفظ السبب في السجل.',
+  'Skip task': 'تجاوز المهمة',
+  'Skipping…': 'جارٍ التجاوز…',
+  'Task skipped.': 'تم تجاوز المهمة.',
 };
 
 /** English for the machine keys (owner, status, section, problem). Every other key is its own English sentence. */
@@ -143,6 +153,7 @@ const namespacedEn: Record<string, string> = {
   'onboarding.error.invalid_reference': 'One of the chosen options is not available.',
   'onboarding.error.validation_failed': 'Check the highlighted fields and try again.',
   'onboarding.error.duplicate_task_title': 'Each task in a checklist needs a different title.',
+  'onboarding.error.skip_reason_required': 'Give a reason of at least 5 characters for skipping: this task holds back activation.',
   'onboarding.error.generic': 'The request could not be completed. Try again.',
 };
 
