@@ -18,7 +18,7 @@ export type SetupModuleSectionId =
   | 'openingBalances'
   | 'leaveTypes' | 'leavePolicies' | 'holidayCalendars' | 'shiftDefinitions' | 'shiftPolicy' | 'attendanceRules' | 'overtimePolicies' | 'attendanceDevices'
   | 'benefitPlans' | 'loanTypes' | 'loanPolicies' | 'advancePolicy' | 'bonusTypes' | 'payslipTemplates'
-  | 'onboardingChecklists' | 'performanceScorecards' | 'letterTemplates' | 'engagementPrivacy'
+  | 'onboardingChecklists' | 'onboardingChecklistTemplates' | 'hireTemplates' | 'performanceScorecards' | 'letterTemplates' | 'engagementPrivacy'
   | 'taxPolicies' | 'complianceProfiles' | 'saudiCompliance' | 'countryPayrollKeys'
   | 'users' | 'roles' | 'permissionMatrix' | 'permissions' | 'permissionGrantors' | 'approvalAuthorities' | 'approvalDelegations' | 'signInSecurity' | 'accessLog'
   | 'localization' | 'branding' | 'helpText' | 'modules' | 'planBilling';
@@ -78,6 +78,8 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
 
   // Talent & employee services
   { id: 'onboardingChecklists', group: 'talentServices', label: msg('Onboarding checklists'), description: msg('The tasks a new joiner and their team complete, as reusable checklists.'), permissions: ['recruitment.write'], roles: ['Admin', 'HR Manager'], modulePath: '/recruitment', featureKey: 'recruitment' },
+  { id: 'onboardingChecklistTemplates', group: 'talentServices', label: msg('Onboarding checklist templates'), description: msg('The tasks every new hire gets, who does them and when they are due, per company.'), permissions: ['onboarding.templates.manage'], roles: ['Admin', 'HR Manager'], modulePath: '/people' },
+  { id: 'hireTemplates', group: 'talentServices', label: msg('Hire templates'), description: msg('Presets that fill the Add Employee form for a kind of hire and pick its onboarding checklist.'), permissions: ['onboarding.templates.manage'], roles: ['Admin', 'HR Manager'], modulePath: '/people' },
   { id: 'performanceScorecards', group: 'talentServices', label: msg('Review scorecards'), description: msg('The review forms and rating scales used in performance cycles.'), permissions: ['performance.cycle_manage'], modulePath: '/performance', featureKey: 'performance' },
   { id: 'letterTemplates', group: 'talentServices', label: msg('Letter templates'), description: msg('Salary certificates, experience letters and other HR letters.'), permissions: ['employees.write'], roles: ['Admin', 'HR Manager'], modulePath: '/hr-letters' },
   { id: 'engagementPrivacy', group: 'talentServices', label: msg('Survey privacy'), description: msg('The smallest group whose survey results can be shown.'), permissions: ['engagement.manage'], modulePath: '/engagement', featureKey: 'engagement' },
