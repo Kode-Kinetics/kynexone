@@ -470,6 +470,59 @@ test('Arabic: RTL, translated headings, classes and refusals; codes stay left to
   await expect(tid(page, 'cc-form-error')).toHaveText('يوجد مسير رواتب لهذه الشركة بانتظار المراجعة المالية أو القفل؛ أعد فتح المسير أولًا.');
 });
 
+// ── Layout at CI's 1280x720: the menu of the LAST row must open inside the viewport, and no column may be cut ──
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`${locale}: the LAST row's menu opens fully inside the viewport and every item is clickable`, async ({ page }, info) => {
+    await boot(page, { locale });
+    await tid(page, 'cc-master-view-flat').click();
+    const last = tid(page, 'cc-master-table').locator('tbody tr').last();
+    const trigger = last.getByRole('button', { name: /More actions|المزيد من الإجراءات/ });
+    await trigger.click();
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible();
+    await shot(page, info, `cc-master-lastrow-menu-${locale}-${info.project.name}`);
+    const vp = page.viewportSize()!;
+    const box = (await menu.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(vp.height);
+    expect(box.x + box.width).toBeLessThanOrEqual(vp.width);
+    const items = menu.getByRole('menuitem');
+    expect(await items.count()).toBeGreaterThanOrEqual(2);
+    for (let i = 0; i < (await items.count()); i++) {
+      await expect(items.nth(i)).toBeVisible();
+      await items.nth(i).click({ trial: true }); // fails unless the item is on screen and not covered
+    }
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
+  for (const view of ['tree', 'flat'] as const) {
+    test(`${locale}: every ${view} column header is fully visible with no horizontal clipping`, async ({ page }) => {
+      await boot(page, { locale });
+      if (view === 'flat') await tid(page, 'cc-master-view-flat').click();
+      const table = tid(page, 'cc-master-table');
+      await expect(table).toBeVisible();
+      const vp = page.viewportSize()!;
+      const wrap = (await table.locator('xpath=..').boundingBox())!;
+      const heads = table.locator('thead th');
+      expect(await heads.count()).toBe(8);
+      for (let i = 0; i < 8; i++) {
+        const b = (await heads.nth(i).boundingBox())!;
+        expect(b.x, `header ${i} start`).toBeGreaterThanOrEqual(wrap.x - 0.5);
+        expect(b.x + b.width, `header ${i} end`).toBeLessThanOrEqual(wrap.x + wrap.width + 0.5);
+        expect(b.x + b.width, `header ${i} in viewport`).toBeLessThanOrEqual(vp.width);
+        expect(b.x).toBeGreaterThanOrEqual(0);
+      }
+      // No horizontal scroll: the table fits the box the page gives it.
+      const overflow = await table.locator('xpath=..').evaluate((el) => el.scrollWidth - el.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(1);
+    });
+  }
+}
+
 test('Arabic: the in-use dialog is translated, with plural counts', async ({ page }, info) => {
   const { ctl } = await boot(page, { locale: 'ar' });
   await tid(page, 'cc-master-view-flat').click();

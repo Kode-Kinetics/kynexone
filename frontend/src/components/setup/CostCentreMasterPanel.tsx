@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import { ChevronRight, MoreHorizontal, Pencil, Plus, Lock } from 'lucide-react';
@@ -65,7 +65,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const [actionReason, setActionReason] = useState('');
   const [actionError, setActionError] = useState('');
   const [inUse, setInUse] = useState<{ item: CostCenterDto; counts: Record<string, number> } | null>(null);
-  const [menu, setMenu] = useState<{ id: string; top: number; start: number; viaKeyboard: boolean } | null>(null);
+  const [menu, setMenu] = useState<{ id: string; top: number; above: number; start: number; viaKeyboard: boolean } | null>(null);
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const load = useCallback(async () => {
@@ -180,7 +180,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
     const el = triggerRefs.current.get(item.id);
     const rect = el?.getBoundingClientRect();
     const rtl = typeof document !== 'undefined' && document.documentElement.dir === 'rtl';
-    setMenu({ id: item.id, top: (rect?.bottom ?? 0) + 4, start: rtl ? (rect?.left ?? 0) : (rect?.right ?? 0), viaKeyboard });
+    setMenu({ id: item.id, top: (rect?.bottom ?? 0) + 4, above: (rect?.top ?? 0) - 4, start: rtl ? (rect?.left ?? 0) : (rect?.right ?? 0), viaKeyboard });
   };
   const closeMenu = (restoreFocus = true) => {
     const id = menu?.id;
@@ -256,7 +256,12 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
         : rows.length === 0 ? <p className="py-10 text-center text-sm text-slate-500 dark:text-slate-400">{t('No cost centres match your filters.')}</p>
         : (
           <div className="surface overflow-x-auto" tabIndex={0} role="group" aria-label={t('Cost centres')}>
-            <table data-testid="cc-master-table" className="w-full text-sm">
+            {/* Fixed layout: the columns share the width the page gives them (about 640px beside Setup's menu); long text wraps and nothing is cut. */}
+            <table data-testid="cc-master-table" className="w-full table-fixed text-sm">
+              <colgroup>
+                <col className="w-[15%]" /><col className="w-[15%]" /><col className="w-[10%]" /><col className="w-[12%]" />
+                <col className="w-[14%]" /><col className="w-[8%]" /><col className="w-[9%]" /><col className="w-[17%]" />
+              </colgroup>
               <thead className="bg-slate-50 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
                 <tr>
                   {['Code', 'Name', 'ERP code', 'Functional class', 'Company', 'In use', 'Status'].map((h) => <th key={h} scope="col" className="px-3 py-2 text-start font-medium">{t(h)}</th>)}
@@ -266,7 +271,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
               <tbody>
                 {rows.map(({ item, depth, hasChildren }) => (
                   <tr key={item.id} data-testid={`cc-master-row-${item.code}`} data-depth={depth} className="border-t border-slate-100 dark:border-white/5">
-                    <td className="whitespace-nowrap px-3 py-2 font-mono text-xs" style={{ paddingInlineStart: `${12 + depth * 16}px` }}>
+                    <td className="px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]" style={{ paddingInlineStart: `${12 + depth * 16}px` }}>
                       <span className="inline-flex items-center gap-1">
                         {hasChildren ? (
                           <button type="button" data-testid={`cc-master-expand-${item.code}`} aria-expanded={expanded.has(item.id)} aria-label={expanded.has(item.id) ? t('Collapse {code}', { code: item.code }) : t('Expand {code}', { code: item.code })} onClick={() => toggle(item.id)} className="grid h-6 w-6 place-items-center rounded text-slate-600 hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-300 dark:hover:bg-white/10">
@@ -277,15 +282,15 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
                         {depth > 0 && <span className="sr-only">{t('Level {level}', { level: depth + 1 })}</span>}
                       </span>
                     </td>
-                    <td className="min-w-[7rem] px-3 py-2"><bdi dir="auto">{display(item)}</bdi></td>
-                    <td className="px-3 py-2 font-mono text-xs">{item.glSegment ? <bdi dir="ltr">{item.glSegment}</bdi> : <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>}</td>
+                    <td className="px-3 py-2 [overflow-wrap:anywhere]"><bdi dir="auto">{display(item)}</bdi></td>
+                    <td className="px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">{item.glSegment ? <bdi dir="ltr">{item.glSegment}</bdi> : <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>}</td>
                     <td className="px-3 py-2 text-xs">{item.functionalClass ? classLabel(item.functionalClass) : <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>}</td>
                     <td className="px-3 py-2 text-xs">
                       {item.companyId ? org.nameOf(item.companyId) : (
-                        <span data-testid={`cc-master-nocompany-chip-${item.code}`} className="inline-block max-w-[11rem] rounded-md bg-rose-50 px-2 py-1 text-start text-xs font-semibold leading-snug text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('No company: cannot be used for posting. Assign a company.')}</span>
+                        <span data-testid={`cc-master-nocompany-chip-${item.code}`} className="inline-block max-w-full rounded-md bg-rose-50 px-2 py-1 text-start text-xs font-semibold leading-snug text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('No company: cannot be used for posting. Assign a company.')}</span>
                       )}
                     </td>
-                    <td data-testid={`cc-master-inuse-${item.code}`} className="whitespace-nowrap px-3 py-2 text-xs">
+                    <td data-testid={`cc-master-inuse-${item.code}`} className="px-3 py-2 text-xs">
                       {inUseTotalOf(item) === null ? <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>
                         : inUseTotalOf(item) === 0 ? <span className="text-slate-500 dark:text-slate-400">{t('Not in use')}</span>
                         : <Badge tone="amber"><span title={t('{count} in use', { count: inUseTotalOf(item) ?? 0 })}><span aria-hidden>{inUseTotalOf(item)}</span><span className="sr-only">{t('{count} in use', { count: inUseTotalOf(item) ?? 0 })}</span></span></Badge>}
@@ -293,7 +298,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
                     <td className="px-3 py-2"><Badge tone={item.isActive ? 'emerald' : 'slate'}>{item.isActive ? t('Active') : t('Inactive')}</Badge></td>
                     <td className="px-3 py-2">
                       {canManage && (
-                        <div className="flex items-center gap-1">
+                        <div className="flex flex-wrap items-center gap-1">
                           <button type="button" onClick={() => openEdit(item)} className="btn-secondary h-8 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden /> {t('Edit')}</button>
                           <button
                             type="button"
@@ -472,11 +477,31 @@ function Labelled({ label, required, hint, error, children }: {
 
 /** The ⋯ menu: arrow keys move, Escape closes and returns focus, a click elsewhere closes. */
 function RowMenu({ menu, onClose, labels, onDeactivate, onDelete }: {
-  menu: { top: number; start: number; viaKeyboard: boolean }; onClose: (restoreFocus?: boolean) => void;
+  menu: { top: number; above: number; start: number; viaKeyboard: boolean }; onClose: (restoreFocus?: boolean) => void;
   labels: { deactivate: string; delete: string }; onDeactivate: () => void; onDelete: () => void;
 }) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
-  useEffect(() => { refs.current[0]?.focus(); }, []);
+  const box = useRef<HTMLDivElement>(null);
+  // Below the button when it fits, otherwise flipped above it; clamped so it is always inside the viewport.
+  const [top, setTop] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const h = box.current?.offsetHeight ?? 0;
+    const room = window.innerHeight - menu.top - 8;
+    const y = h <= room ? menu.top : menu.above - h >= 8 ? menu.above - h : Math.max(8, window.innerHeight - h - 8);
+    setTop(y);
+  }, [menu.top, menu.above]);
+  useEffect(() => { if (top !== null) refs.current[0]?.focus(); }, [top]);
+  // A scroll or resize moves the button away from the menu, so the menu closes rather than float loose.
+  useEffect(() => {
+    // Closes only when the button really moved out from under the menu (a scroll event can trail the click that opened it).
+    const away = () => {
+      const t = document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]');
+      if (!t || Math.abs(t.getBoundingClientRect().top - (menu.above + 4)) > 1) onClose(false);
+    };
+    window.addEventListener('scroll', away, true);
+    window.addEventListener('resize', away);
+    return () => { window.removeEventListener('scroll', away, true); window.removeEventListener('resize', away); };
+  }, [onClose, menu.above]);
   useEffect(() => {
     const onDown = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest('[role="menu"]') && !(e.target as HTMLElement).closest('[aria-haspopup="menu"]')) onClose(false); };
     document.addEventListener('mousedown', onDown);
@@ -491,7 +516,8 @@ function RowMenu({ menu, onClose, labels, onDeactivate, onDelete }: {
   return createPortal(
     <div
       role="menu"
-      style={{ position: 'fixed', top: menu.top, ...(rtl ? { left: menu.start } : { right: `calc(100vw - ${menu.start}px)` }) }}
+      ref={box}
+      style={{ position: 'fixed', top: top ?? menu.top, visibility: top === null ? 'hidden' : 'visible', ...(rtl ? { left: menu.start } : { right: `calc(100vw - ${menu.start}px)` }) }}
       className="z-50 min-w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-slate-900"
       onKeyDown={(e) => {
         if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
