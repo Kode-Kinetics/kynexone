@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Payroll;
 using System.Data;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
@@ -108,7 +109,23 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken)) with
         {
             SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
+            CostCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken),
         };
+    }
+
+    /// <summary>
+    /// Where this employee's cost lands, from the same resolver payroll posts with (one snapshot of the employee's company, so one read per
+    /// request). Organisation data like <c>CostCenterId</c> beside it, so it is not masked. An employee with no company resolves to none.
+    /// </summary>
+    private async Task<EmployeeCostCentreResolutionDto> ResolveCostCentreAsync(Guid tenantId, Employee employee, CancellationToken cancellationToken)
+    {
+        if (employee.CompanyId is not Guid companyId) return new(null, null, null, null, "None", null, "none");
+        var snapshot = await Zayra.Api.Infrastructure.Payroll.CostCentreResolver.LoadSnapshotAsync(_db, tenantId, companyId, cancellationToken);
+        var resolution = Zayra.Api.Infrastructure.Payroll.CostCentreResolver.Resolve(Zayra.Api.Infrastructure.Payroll.ResolverEmployee.From(employee), snapshot);
+        if (resolution.CostCenterId is not Guid id) return new(null, null, null, null, "None", resolution.Level, resolution.UnresolvedReason ?? "none");
+        var master = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id)
+            .Select(c => new { c.Code, c.Name, c.NameAr }).FirstOrDefaultAsync(cancellationToken);
+        return new(id, master?.Code, master?.Name, master?.NameAr, resolution.Source ?? "None", resolution.Level, null);
     }
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
@@ -150,7 +167,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
-        await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        var hireAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
@@ -184,6 +201,9 @@ public class EmployeeManagementService : IEmployeeManagementService
                     employee.EmployeeCode = await AllocateEmployeeCodeAsync(tenantId, request, context, cancellationToken);
                 _db.Employees.Add(employee);
                 await _db.SaveChangesAsync(cancellationToken);
+                // The hire's first attribution stays on the trail, as an action that does not count toward lock SoD (only a change to an existing employee does).
+                await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, hireAttributionBefore, context.UserId, cancellationToken,
+                    reason: request.CostCenterReason, initial: true, overrideAlreadyAudited: true);
                 await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
                 await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
@@ -298,7 +318,10 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
-        await ApplyEmployee(employee, request, tenantId, cancellationToken);
+        var editAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
+        // A change to an EXISTING employee's attribution counts toward lock SoD; the form already staged the override row with its reason.
+        await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, editAttributionBefore, context.UserId, cancellationToken,
+            overrideAlreadyAudited: true);
         // GOVERNING JURISDICTION against the (possibly reassigned) EMPLOYING company — a stated country is
         // kept, a blank one adopts the company's, so editing a record heals a country left blank by an
         // earlier create or import.
@@ -1437,8 +1460,49 @@ public class EmployeeManagementService : IEmployeeManagementService
         return new EmployeeStatusSummaryDto(items);
     }
 
-    private async Task ApplyEmployee(Employee employee, EmployeeCreateRequest request, Guid tenantId, CancellationToken cancellationToken)
+    /// <summary>
+    /// The form door for the employee's cost centre (contract 2.9). Null means "no change" (the form sends every field back on each save), a value equal
+    /// to the stored one is carried through untouched, <see cref="Guid.Empty"/> is the explicit "None" (remove the override and inherit the department's),
+    /// and a new one is validated by the one validator against the employee's own company. An explicit cost centre that differs from the department's is
+    /// an override; one equal to the department's is just a copy. Setting, re-pointing or removing the override needs a reason (M-10), which the audit row keeps.
+    /// </summary>
+    private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null, string? reason = null, bool hire = false)
     {
+        if (requested is not Guid costCenterId) return;
+        var wasOverride = employee.CostCenterIsOverride;
+        var wasCostCentre = employee.CostCenterId;
+        var remove = costCenterId == Guid.Empty;
+        if (remove ? !wasOverride : costCenterId == employee.CostCenterId) return;
+        if (!remove)
+            await new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db)
+                .EnsureAsync(tenantId, employee.CompanyId, costCenterId, forNewAssignment: true, cancellationToken);
+        var departmentCostCentre = departmentId is Guid d
+            ? await _db.Departments.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == d).Select(x => x.CostCenterId).FirstOrDefaultAsync(cancellationToken)
+            : null;
+        Guid? newCostCentre = remove ? departmentCostCentre : costCenterId;
+        var newOverride = !remove && costCenterId != departmentCostCentre;
+        var overrideChanged = wasOverride != newOverride || (newOverride && wasCostCentre != newCostCentre);
+        if (overrideChanged && string.IsNullOrWhiteSpace(reason))
+            throw Zayra.Api.Application.Organization.CostCentreRuleException.ReasonRequired();
+        employee.CostCenterId = newCostCentre;
+        employee.CostCenterIsOverride = newOverride;
+        // The audit action finance's separation-of-duties check reads; staged, so it commits with the employee.
+        // A hire's first attribution is recorded once, as the initial attribution (with this reason), by the create flow.
+        if (overrideChanged && !hire)
+            _audit.Stage("employee.cost_centre_override.changed", nameof(Employee),
+                employee.Id != 0 ? employee.Id.ToString() : employee.PublicId.ToString(),
+                (context ?? new RequestContext(null, null, null)) with { TenantId = tenantId },
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    before = new { @override = wasOverride, costCenterId = wasCostCentre },
+                    after = new { @override = employee.CostCenterIsOverride, costCenterId = employee.CostCenterId },
+                    reason = reason!.Trim(),
+                }), employee.CompanyId);
+    }
+
+    private async Task<Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.AttributionState> ApplyEmployee(Employee employee, EmployeeCreateRequest request, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null)
+    {
+        var attributionBefore = Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.AttributionState.Of(employee);
         employee.EnglishName = Clean(request.EnglishName);
         employee.ArabicName = Clean(request.ArabicName);
         employee.FullName = employee.EnglishName;
@@ -1459,8 +1523,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
         employee.GradeId = request.GradeId;
-        employee.CostCenterId = request.CostCenterId;
+        await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken, context, request.CostCenterReason, hire: employee.Id == 0 && _db.Entry(employee).State == EntityState.Detached);
         employee.PositionId = request.PositionId;
+        // AM-9: someone in a run awaiting finance review or lock cannot be moved to another cost centre until the run is reopened or locked.
+        await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
         employee.Branch = request.BranchId is null ? employee.Branch : await _db.Branches.Where(x => x.TenantId == tenantId && x.Id == request.BranchId).Select(x => x.NameEn).FirstOrDefaultAsync(cancellationToken) ?? employee.Branch;
         var department = request.DepartmentId is null ? null : await _db.Departments
             .Where(x => x.TenantId == tenantId && x.Id == request.DepartmentId && x.IsActive && !x.IsDeleted)
@@ -1504,6 +1570,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // fallback would read the wrong company or none. Both callers run DeriveEmployeeCountryAsync once
         // the legal entity is settled.
         employee.CountryCode = request.ComplianceRecords?.FirstOrDefault()?.CountryCode ?? employee.CountryCode;
+        return attributionBefore;
     }
 
     /// <summary>

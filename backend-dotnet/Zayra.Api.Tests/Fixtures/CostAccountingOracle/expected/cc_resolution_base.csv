@@ -1,0 +1,11 @@
+employee_code,nationality,department,position,override_cc,expected_cost_centre,expected_source,note
+E001,Saudi,D-FIN,P-GEN,,CC-110,Department,dept CC; bonus
+E002,Saudi,D-SAL,P-GEN,,CC-200,Department,dept CC; loan deduction; bonus
+E003,Expat,D-SAL,P-GEN,,CC-200,Department,"dept CC; other allowance 300; advance issued M1, recovered M2"
+E004,Expat,D-OPS,P-TECH,,CC-100,CompanyDefault,dept+position have no CC -> company default CC-100
+E005,Saudi,D-OPS,P-SUPV,,CC-300,Position,position CC-300; bonus
+E006,Saudi,D-FIN,P-GEN,,CC-110,Department,transferred D-SAL->D-FIN on 2026-09-16; v1 rule: CC current at Lock (CC-110) for the WHOLE month
+E007,Expat,D-FIN,P-GEN,CC-300,CC-300,Employee,explicit override CC-300 (department is Finance)
+E008,Saudi,D-SAL,P-GEN,,CC-200,Department,halala-awkward salary; overtime
+E009,Expat,D-SAL,P-GEN,,CC-200,Department,terminated 2026-09-20; final settlement + EOSB
+E010,Expat,D-SUP,P-GEN,,CC-110,ParentDepartment,dept has no CC; parent dept Finance CC-110

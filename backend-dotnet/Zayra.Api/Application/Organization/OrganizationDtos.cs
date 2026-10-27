@@ -104,7 +104,9 @@ public record DepartmentRequest(
     [MaxLength(180)] string? NameAr,
     int? ManagerEmployeeId,
     bool IsActive = true,
-    Guid? CompanyId = null);
+    Guid? CompanyId = null,
+    // Cost-accounting v1: the reason for clearing a cost-centre or parent link (recorded in the audit row).
+    string? Reason = null);
 
 public record DesignationDto(
     Guid Id,
@@ -171,14 +173,25 @@ public record GradePayScaleComponentRequest(
     int SortOrder = 0,
     bool IsActive = true);
 
-public record CostCenterDto(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive, string? NameAr = null);
+public record CostCenterDto(Guid Id, Guid? CompanyId, string Code, string Name, bool IsActive, string? NameAr = null,
+    Guid? ParentId = null, string? FunctionalClass = null, string? GlSegment = null,
+    CostCentreInUse? InUse = null, int InUseTotal = 0, bool CodeLocked = false);
+
+/// <summary>Live references to a cost centre, per referencing table (M-8), and the posted ledger lines that freeze its code (M-9; not a live reference).</summary>
+public sealed record CostCentreInUse(int Departments, int Positions, int Employees, int Mappings, int CompanyDefault, int Children, int PostedLedgerLines);
 
 public record CostCenterRequest(
     Guid? CompanyId,
     [Required, MaxLength(40)] string Code,
     [Required, MaxLength(160)] string Name,
     bool IsActive = true,
-    [MaxLength(160)] string? NameAr = null);
+    [MaxLength(160)] string? NameAr = null,
+    // Cost-accounting v1. On an update, null leaves the stored value alone; Guid.Empty / "" clears it.
+    Guid? ParentId = null,
+    [MaxLength(24)] string? FunctionalClass = null,
+    [MaxLength(30)] string? GlSegment = null,
+    // Required when the functional class changes (M-10); recorded in the audit row.
+    string? Reason = null);
 
 public static class OrganizationMappings
 {
@@ -252,5 +265,6 @@ public static class OrganizationMappings
         c.Id, c.ComponentCode, c.ComponentName, c.ComponentType, c.CalculationType,
         c.Amount, c.Percentage, c.IsTaxable, c.Frequency, c.SortOrder, c.IsActive);
 
-    public static CostCenterDto ToDto(this CostCenter costCenter) => new(costCenter.Id, costCenter.CompanyId, costCenter.Code, costCenter.Name, costCenter.IsActive, costCenter.NameAr);
+    public static CostCenterDto ToDto(this CostCenter costCenter) => new(costCenter.Id, costCenter.CompanyId, costCenter.Code, costCenter.Name, costCenter.IsActive, costCenter.NameAr,
+        costCenter.ParentId, costCenter.FunctionalClass, costCenter.GlSegment);
 }

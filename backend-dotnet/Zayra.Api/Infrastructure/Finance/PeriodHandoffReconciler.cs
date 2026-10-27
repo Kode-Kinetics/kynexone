@@ -44,8 +44,11 @@ public sealed class PeriodHandoffReconciler
         }, ct);
 
         var lines = JournalExportBuilder.Expand(selection.Entries, "-");
-        var postedDr = JournalAmount.Round(lines.Sum(l => l.Debit));
-        var postedCr = JournalAmount.Round(lines.Sum(l => l.Credit));
+        // Ledger-derived money is rounded at the scale of its currency (KWD/BHD/OMR 3, else 2); a total that spans
+        // currencies keeps the legacy 2 dp. Payment-side money (payroll tables are 2 dp, contract D-1) stays at 2.
+        var scale = JournalAmount.ScaleForAll(selection.Entries.Select(e => e.Currency));
+        var postedDr = JournalAmount.Round(lines.Sum(l => l.Debit), scale);
+        var postedCr = JournalAmount.Round(lines.Sum(l => l.Credit), scale);
         var glBalanced = postedDr == postedCr;
         if (!glBalanced) blockers.Add("gl_unbalanced");
         if (selection.UnpostableEntryIds.Count > 0) blockers.Add("unpostable_gl_entries");
@@ -62,10 +65,10 @@ public sealed class PeriodHandoffReconciler
             unpostableEntryIds = selection.UnpostableEntryIds,
             unattributedExcluded = new { count = selection.UnattributedExcludedCount, total = selection.UnattributedExcludedTotal },
             byCurrency = selection.Entries.GroupBy(e => e.Currency)
-                .Select(g => new { currency = g.Key, entries = g.Count(), total = JournalAmount.Round(g.Sum(x => x.Amount)) })
+                .Select(g => new { currency = g.Key, entries = g.Count(), total = JournalAmount.Round(g.Sum(x => x.Amount), JournalAmount.ScaleFor(g.Key)) })
                 .OrderBy(x => x.currency, StringComparer.Ordinal).ToList(),
             byEventType = selection.Entries.GroupBy(e => e.EventType)
-                .Select(g => new { eventType = g.Key, entries = g.Count(), total = JournalAmount.Round(g.Sum(x => x.Amount)) })
+                .Select(g => new { eventType = g.Key, entries = g.Count(), total = JournalAmount.Round(g.Sum(x => x.Amount), scale) })
                 .OrderBy(x => x.eventType, StringComparer.Ordinal).ToList(),
         };
 
@@ -107,7 +110,7 @@ public sealed class PeriodHandoffReconciler
 
         var newSince = JournalExportBuilder.NewSinceExport(selection.Entries, coveredEntryIds);
         // Same arithmetic as postedDr (sum, then round), so a fully handed-over period reconciles to zero.
-        var exportedTotal = JournalAmount.Round(distinctLines.Where(l => l.Side == "DR").Sum(l => l.Amount));
+        var exportedTotal = JournalAmount.Round(distinctLines.Where(l => l.Side == "DR").Sum(l => l.Amount), scale);
 
         if (exports.Count == 0) blockers.Add("never_exported");
         else if (newSince.Count > 0) blockers.Add("gl_rows_posted_since_last_export");
@@ -133,7 +136,7 @@ public sealed class PeriodHandoffReconciler
             newRowsInScopeSinceExport = new
             {
                 count = newSince.Count,
-                total = JournalAmount.Round(newSince.Sum(e => e.Amount)),
+                total = JournalAmount.Round(newSince.Sum(e => e.Amount), scale),
                 entryIds = newSince.Take(50).Select(e => e.Id).ToList(),
             },
             all = exports.Select(x => new
@@ -267,7 +270,7 @@ public sealed class PeriodHandoffReconciler
             .Where(e => e.EventType == GlEventTypes.NetSettlement && !e.IsReversed && !string.IsNullOrEmpty(e.CreditAccount)
                         // Cash/cheque wages recorded outside the bank file are never bank-confirmed.
                         && (e.SourceEntityRef == null || !e.SourceEntityRef.StartsWith(Zayra.Api.Infrastructure.Payroll.PaymentBatchExclusions.OutsidePaymentRefPrefix)))
-            .Sum(e => e.Amount));
+            .Sum(e => e.Amount), scale);
 
         var returnPeriod = returnsDetail
             .Select(r => r.valueDate.HasValue ? $"{r.valueDate.Value.Year}-{r.valueDate.Value.Month:D2}" : nowPeriod)
@@ -275,13 +278,13 @@ public sealed class PeriodHandoffReconciler
         var returnPeriodClosed = overall.FailedTotal > 0
             && await PeriodCloseGuard.IsClosedAsync(_db, tenantId, filter.CompanyId, returnPeriod, ct);
 
-        var postedMinusExported = JournalAmount.Round(postedDr - exportedTotal);
+        var postedMinusExported = JournalAmount.Round(postedDr - exportedTotal, scale);
 
         var deltas = new
         {
             postedMinusExported,
             paymentCoverageDelta = JournalAmount.Round(overall.ReconciliationDelta),
-            settledToGlMinusPaidConfirmed = JournalAmount.Round(settledToGl - overall.PaidTotal),
+            settledToGlMinusPaidConfirmed = JournalAmount.Round(settledToGl - overall.PaidTotal, scale),
             unconfirmed = new { overall.UnconfirmedCount, total = JournalAmount.Round(overall.UnconfirmedTotal) },
             // THE GL SEAM, REPORTED NOT POSTED. The B1 net settlement credited Cash/Bank for the whole batch;
             // a returned payment means that much cash never left. The correction is

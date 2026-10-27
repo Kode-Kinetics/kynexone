@@ -50,6 +50,7 @@ public class BranchCompanyScopeTests
             new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new(ClaimTypes.Role, "HR Manager"),
             new("permission", "organization.read"),
+            new("permission", "organization.costcenter.manage"),
         };
         if (companyScope.Length == 0) claims.Add(new Claim("is_group_scope", "true"));
         else claims.AddRange(companyScope.Select(c => new Claim("entity_access", JsonSerializer.Serialize(new { c, r = "HR Manager" }))));
@@ -539,7 +540,7 @@ public class BranchCompanyScopeTests
             .Should().BeOfType<NotFoundResult>("moving another company's cost centre out of it");
         (await CostCenters(db, ScopedA()).Update(cc.Shared.Id, new CostCenterRequest(null, "CC-G", "renamed"), CancellationToken.None)).Result
             .Should().BeOfType<NotFoundResult>();
-        (await CostCenters(db, ScopedA()).Delete(cc.B.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+        (await CostCenters(db, ScopedA()).Delete(cc.B.Id, "Removed in test", CancellationToken.None)).Should().BeOfType<NotFoundResult>();
 
         db.ChangeTracker.Clear();
         (await db.CostCenters.CountAsync(c => c.TenantId == w.TenantId)).Should().Be(3);
@@ -567,7 +568,7 @@ public class BranchCompanyScopeTests
             (await Organization(db, Caller(w.TenantId, selected)).CreateCostCenter(new CostCenterRequest(null, $"CC-G{(selected is null ? 2 : 3)}", "Group 2"), CancellationToken.None)).Result
                 .Should().BeOfType<CreatedResult>();
         }
-        (await CostCenters(db, Caller(w.TenantId, w.A.Id)).Delete(cc.B.Id, CancellationToken.None)).Should().BeOfType<NoContentResult>();
+        (await CostCenters(db, Caller(w.TenantId, w.A.Id)).Delete(cc.B.Id, "Removed in test", CancellationToken.None)).Should().BeOfType<NoContentResult>();
     }
 
     [Fact]
@@ -578,7 +579,7 @@ public class BranchCompanyScopeTests
         var cc = await SeedCostCenters(db, w);
         (await CostCenters(db, Caller(w.TenantId)).Update(cc.Foreign.Id, new CostCenterRequest(null, "CC-F", "x"), CancellationToken.None)).Result
             .Should().BeOfType<NotFoundResult>();
-        (await CostCenters(db, Caller(w.TenantId)).Delete(cc.Foreign.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+        (await CostCenters(db, Caller(w.TenantId)).Delete(cc.Foreign.Id, "Removed in test", CancellationToken.None)).Should().BeOfType<NotFoundResult>();
     }
 
     [Fact]

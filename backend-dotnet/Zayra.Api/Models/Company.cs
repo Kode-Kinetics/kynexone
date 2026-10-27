@@ -30,6 +30,13 @@ public class Company : ITenantOwned
     /// Optional; null = not recorded. Captured by the create-company wizard.</summary>
     public string? UnifiedNationalNumber { get; set; }
     public string DefaultCurrency { get; set; } = "USD";
+    /// <summary>Cost-accounting M1: the costing switch. While false nothing is stamped or enforced, so journals and exports
+    /// are byte-identical to before the feature.</summary>
+    public bool CostAccountingEnabled { get; set; }
+    /// <summary>Cost-accounting M1: the company's fallback cost centre (and home of the rounding line). Must belong to this company.</summary>
+    public Guid? DefaultCostCenterId { get; set; }
+    /// <summary>Cost-accounting M1: minimum employees per cost centre before it is rolled up to its parent in a run. 0 = off.</summary>
+    public short CostCentreSmallCellMin { get; set; }
     // Company email domain (e.g. "acme.sa") used to auto-derive employee work emails. Empty = not set;
     // employees then fall back to manual work-email entry (never blocks create/import). Format-validated
     // (host domain, lowercased) at the company-form boundary; sets the HR string only — no mailbox is

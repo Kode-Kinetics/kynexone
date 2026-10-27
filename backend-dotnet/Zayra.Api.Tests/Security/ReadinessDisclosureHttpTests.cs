@@ -41,8 +41,8 @@ public sealed class ReadinessDisclosureHttpTests
         response.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.ServiceUnavailable);
         var body = await JsonAsync(response);
         body.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(
-            new[] { "status", "utc", "pendingMigrations" },
-            "the anonymous readiness probe must not disclose tenant counts, worker names, SMTP/Qiwa "
+            new[] { "status", "utc", "pendingMigrations", "ledgerProtection" },
+            "ledgerProtection (enforced or degraded) is the one added field: a single word, no role names. The anonymous readiness probe must not disclose tenant counts, worker names, SMTP/Qiwa "
             + "modes or queue depths");
         body.GetProperty("status").GetString().Should().BeOneOf("ready", "not_ready");
 

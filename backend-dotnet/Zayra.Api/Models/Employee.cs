@@ -63,6 +63,9 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public Guid? DesignationId { get; set; }
     public Guid? GradeId { get; set; }
     public Guid? CostCenterId { get; set; }
+    /// <summary>Cost-accounting M1: true when <see cref="CostCenterId"/> was set for this employee on purpose (an override);
+    /// false when it is only a copy of the department's cost centre made when the department changed.</summary>
+    public bool CostCenterIsOverride { get; set; }
     public Guid? PositionId { get; set; }
     public string WorkLocation { get; set; } = string.Empty;
     public string Branch { get; set; } = string.Empty;

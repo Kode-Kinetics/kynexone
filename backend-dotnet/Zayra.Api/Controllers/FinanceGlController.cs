@@ -10,6 +10,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Seed;
 using Zayra.Api.Models;
@@ -38,7 +39,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/finance/gl")]
 [Authorize]
-public class FinanceGlController : ControllerBase
+public partial class FinanceGlController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     public FinanceGlController(ZayraDbContext db) => _db = db;
@@ -57,6 +58,15 @@ public class FinanceGlController : ControllerBase
     public const string ExternalCodeHeader = "ExternalCode";
     private static readonly string[] ExportHeaders = { "Code", "Name", "Type", "IsActive", ExternalCodeHeader };
     public const int ExternalCodeMaxLength = 60;
+    /// <summary>Cost-accounting M1: the cost-centre rule an account may carry.</summary>
+    public static readonly IReadOnlyList<string> CostCenterRules = new[] { "Required", "Optional", "NotAllowed" };
+    /// <summary>Functional classes of a cost centre. CAPITALISABLE is stored but refused for posting in v1.</summary>
+    public static readonly IReadOnlyList<string> FunctionalClasses = new[] { "COGS", "SELLING", "G_AND_A", "R_AND_D", "OPERATIONS", "CAPITALISABLE" };
+    public const string ReservedFunctionalClass = "CAPITALISABLE";
+    /// <summary>Only profit-and-loss accounts may require a cost centre (the contract's Expense and Revenue; the chart calls revenue "Income").</summary>
+    public static bool IsProfitAndLossType(string? type) =>
+        string.Equals(type, "Expense", StringComparison.OrdinalIgnoreCase) || string.Equals(type, "Income", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "Revenue", StringComparison.OrdinalIgnoreCase);
     private static readonly Regex ExternalCodePattern = new(@"^[A-Za-z0-9.\-_/ ]{0,60}$", RegexOptions.CultureInvariant);
 
     // ── Chart of accounts ────────────────────────────────────────────────────
@@ -82,22 +92,24 @@ public class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
 
         var code = (req.Code ?? "").Trim();
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Code and Name are required." });
         if (CodeProblem(code) is { } codeErr) return BadRequest(new { code = "GL_ACCOUNT_CODE_INVALID", message = codeErr });
         if (CanonicalAccountType(req.AccountType) is not { } type) return BadRequest(AccountTypeRefusal(req.AccountType));
         if (ExternalCodeProblem(req.ExternalCode) is { } extErr) return BadRequest(new { code = "GL_EXTERNAL_CODE_INVALID", message = extErr });
+        var createRule = req.CostCenterRule ?? "Optional";
+        if (RuleProblem(createRule, type) is { } ruleErr) return ruleErr;
         // IgnoreQueryFilters is intentional: the scope was authorised above (ScopeError); the WHERE
         // re-applies exact tenant+company scope so the uniqueness check sees the correct scope's rows.
         if (await _db.GlAccounts.IgnoreQueryFilters().AnyAsync(a => a.TenantId == tid && a.CompanyId == companyId && a.Code == code, ct))
             return BadRequest(new { message = $"Account code '{code}' already exists in this scope." });
         var acct = new GlAccount { TenantId = tid.Value, CompanyId = companyId, Code = code, Name = req.Name.Trim(), AccountType = type, IsActive = req.IsActive,
-            ExternalCode = NormalizeExternalCode(req.ExternalCode) };
+            ExternalCode = NormalizeExternalCode(req.ExternalCode), CostCenterRule = createRule };
         _db.GlAccounts.Add(acct);
         await WriteAudit("finance.gl.account.created", "GlAccount", acct.Id.ToString(), companyId,
-            new { code = acct.Code, name = acct.Name, accountType = acct.AccountType, acct.IsActive, externalCode = acct.ExternalCode, companyId }, ct);
+            new { code = acct.Code, name = acct.Name, accountType = acct.AccountType, acct.IsActive, externalCode = acct.ExternalCode, costCenterRule = acct.CostCenterRule, companyId }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, companyId));
     }
@@ -112,6 +124,20 @@ public class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        // A request that carries a cost-centre rule is a posting-rule change: it runs as the company's sole cost-attribution
+        // writer (advisory lock + transaction) so the M-7 check below cannot race an Approve. Every other edit is unchanged.
+        if (req.CostCenterRule is null) return await UpdateAccountCoreAsync(tid.Value, id, req, ct);
+        // IgnoreQueryFilters is intentional: system/config read — scope authorised below; WHERE re-applies exact tenant scope.
+        var owner = await ScopedBypass.TenantWide(_db.GlAccounts, tid.Value, "Resolve the account's company before taking the cost-accounting lock; scope is authorised right after.")
+            .AsNoTracking().Where(a => a.Id == id).Select(a => new { a.CompanyId }).FirstOrDefaultAsync(ct);
+        if (owner is null) return NotFound();
+        if (ScopeError(owner.CompanyId) is { } ownerErr) return ownerErr;
+        return await CostAccountingGuards.SerializeAsync(_db, tid.Value, owner.CompanyId, () => UpdateAccountCoreAsync(tid.Value, id, req, ct), ct);
+    }
+
+    private async Task<IActionResult> UpdateAccountCoreAsync(Guid tidValue, Guid id, GlAccountRequest req, CancellationToken ct)
+    {
+        Guid? tid = tidValue;
         // Residual Phase-1 guard graduated to server: blank name must 400, not 500 on Trim().
         if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Name is required." });
         if (CanonicalAccountType(req.AccountType) is not { } type) return BadRequest(AccountTypeRefusal(req.AccountType));
@@ -127,7 +153,13 @@ public class FinanceGlController : ControllerBase
         if (await AccountChangeProblemAsync(tid.Value, acct, newCode, newName, type, req.IsActive, ct) is { } problem)
             return problem;
 
-        var before = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode };
+        var newRule = req.CostCenterRule ?? acct.CostCenterRule;
+        if (RuleProblem(newRule, type) is { } ruleErr) return ruleErr;
+        var ruleChanged = !string.Equals(newRule, acct.CostCenterRule, StringComparison.Ordinal);
+        if (ruleChanged && await CostAccountingGuards.HasRunAwaitingFinanceOrLockAsync(_db, tid.Value, acct.CompanyId, ct))
+            return Conflict(CostAccountingGuards.LockedIntoApprovedRunBody);
+
+        var before = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode, costCenterRule = acct.CostCenterRule };
         // A re-code (allowed only while no journal names the account) must carry the driver defaults that
         // name the old code with it, in the same SaveChanges; otherwise an unmapped driver keeps resolving
         // the old code, which is no longer in the chart (and Lock now refuses that).
@@ -135,11 +167,15 @@ public class FinanceGlController : ControllerBase
             ? await RepointDriverDefaultsAsync(tid.Value, acct, newCode, newName, ct)
             : new List<string>();
         acct.Code = newCode; acct.Name = newName; acct.AccountType = type; acct.IsActive = req.IsActive; acct.UpdatedAtUtc = DateTime.UtcNow;
+        acct.CostCenterRule = newRule;
         // null = leave the ERP code as it is; "" (or whitespace) = clear it.
         if (req.ExternalCode is not null) acct.ExternalCode = NormalizeExternalCode(req.ExternalCode);
         await WriteAudit("finance.gl.account.updated", "GlAccount", acct.Id.ToString(), acct.CompanyId,
-            new { before, after = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode }, companyId = acct.CompanyId,
+            new { before, after = new { acct.Code, acct.Name, acct.AccountType, acct.IsActive, acct.ExternalCode, costCenterRule = acct.CostCenterRule }, companyId = acct.CompanyId,
                   driverDefaultsRepointed = repointedDrivers }, ct);
+        if (ruleChanged)
+            await WriteAudit("finance.gl.account.rule_changed", "GlAccount", acct.Id.ToString(), acct.CompanyId,
+                new { accountCode = acct.Code, before = new { costCenterRule = before.costCenterRule }, after = new { costCenterRule = acct.CostCenterRule }, companyId = acct.CompanyId }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(acct, acct.CompanyId));
     }
@@ -191,7 +227,7 @@ public class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         var isDryRun = dryRun ?? true;
 
         if (file is null || file.Length == 0)
@@ -297,9 +333,16 @@ public class FinanceGlController : ControllerBase
         var maps = await _db.GlAccountMappings.IgnoreQueryFilters().AsNoTracking()
             .Where(m => m.TenantId == tid && (m.CompanyId == companyId || m.CompanyId == null))
             .ToListAsync(ct);
-        var byDriver = maps
+        var byDriver = maps.Where(m => m.FunctionalClass == null)
             .GroupBy(m => m.DriverKey)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(m => m.CompanyId != null).First());
+        // Functional-class rows ride beside the driver's classless row; company beats tenant for the same (driver, class).
+        var classRulesByDriver = maps.Where(m => m.FunctionalClass != null)
+            .GroupBy(m => (m.DriverKey, m.FunctionalClass))
+            .Select(g => g.OrderByDescending(m => m.CompanyId != null).First())
+            .GroupBy(m => m.DriverKey)
+            .ToDictionary(g => g.Key, g => g.OrderBy(m => m.FunctionalClass, StringComparer.Ordinal)
+                .Select(m => new { functionalClass = m.FunctionalClass, accountId = m.AccountId, inherited = companyId is not null && m.CompanyId == null }).ToList());
 
         var result = drivers.Select(d => new
         {
@@ -311,6 +354,7 @@ public class FinanceGlController : ControllerBase
             defaultAccount = $"{d.DefaultCode} - {d.DefaultName}",
             mappedAccountId = byDriver.TryGetValue(d.Key, out var m) ? m.AccountId : (Guid?)null,
             segmentCostCenterId = byDriver.TryGetValue(d.Key, out var m2) ? m2.SegmentCostCenterId : null,
+            classRules = classRulesByDriver.TryGetValue(d.Key, out var cr) ? cr.Cast<object>().ToList() : new List<object>(),
             inherited = companyId is not null && byDriver.TryGetValue(d.Key, out var m3) && m3.CompanyId == null,
         });
         return Ok(result);
@@ -322,18 +366,34 @@ public class FinanceGlController : ControllerBase
     /// account whose type the driver accepts (earnings → Expense, deductions → the type the catalog
     /// declares, NET_PAYABLE → Liability).</summary>
     [HttpPut("mappings")]
-    public async Task<IActionResult> SetMappings([FromQuery] Guid? companyId, [FromBody] List<GlMappingRequest> mappings, CancellationToken ct)
+    public async Task<IActionResult> SetMappings([FromQuery] Guid? companyId, [FromBody] GlMappingsBody body, CancellationToken ct, [FromQuery] string? reason = null)
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
-        mappings ??= new List<GlMappingRequest>();
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
+        var mappings = body?.Mappings ?? new List<GlMappingRequest>();
+        // The reason is read from the body; the query value is kept for one release and loses to a non-blank body reason.
+        reason = string.IsNullOrWhiteSpace(body?.Reason) ? reason : body!.Reason;
+        // The whole save is one cost-attribution write: advisory lock + transaction, so the M-7 check cannot race an Approve.
+        return await CostAccountingGuards.SerializeAsync(_db, tid.Value, companyId, () => SetMappingsCoreAsync(tid.Value, companyId, mappings, reason, ct), ct);
+    }
 
-        var dupes = mappings.GroupBy(m => (m.DriverKey ?? "").Trim(), StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+    private static string? NormalizeClass(string? c) => string.IsNullOrWhiteSpace(c) ? null : c.Trim();
+
+    private async Task<IActionResult> SetMappingsCoreAsync(Guid tid, Guid? companyId, List<GlMappingRequest> mappings, string? reason, CancellationToken ct)
+    {
+        // (driver, class) is the key (AM-16); a driver may carry one classless row plus one row per class.
+        var dupes = mappings.GroupBy(m => ((m.DriverKey ?? "").Trim(), NormalizeClass(m.FunctionalClass)), new DriverClassComparer())
+            .Where(g => g.Count() > 1).Select(g => g.Key).ToList();
         if (dupes.Count > 0)
-            return BadRequest(new { code = "GL_MAPPING_DUPLICATE_DRIVER", message = $"Each driver may be mapped once. Repeated: {string.Join(", ", dupes)}." });
+        {
+            var classless = dupes.Where(d => d.Item2 is null).Select(d => d.Item1).ToList();
+            if (classless.Count > 0)
+                return BadRequest(new { code = "GL_MAPPING_DUPLICATE_DRIVER", message = $"Each driver may be mapped once. Repeated: {string.Join(", ", classless)}." });
+            return BadRequest(new { code = "GL_MAPPING_DUPLICATE_DRIVER_CLASS", message = $"Each driver may be mapped once per functional class. Repeated: {string.Join(", ", dupes.Select(d => $"{d.Item1} ({d.Item2})"))}." });
+        }
 
-        var drivers = await LoadScopedDriversAsync(tid.Value, companyId, ct);
+        var drivers = await LoadScopedDriversAsync(tid, companyId, ct);
         var driverByKey = drivers.ToDictionary(d => d.Key, StringComparer.Ordinal);
 
         // Account cross-scope rule: a mapping may only reference an account visible to its scope —
@@ -342,27 +402,52 @@ public class FinanceGlController : ControllerBase
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var accountSet = await _db.GlAccounts.IgnoreQueryFilters()
             .Where(a => a.TenantId == tid && (companyId != null ? (a.CompanyId == companyId || a.CompanyId == null) : a.CompanyId == null))
-            .Select(a => new { a.Id, a.Code, a.Name, a.AccountType, a.IsActive }).ToListAsync(ct);
+            .Select(a => new { a.Id, a.Code, a.Name, a.AccountType, a.IsActive, a.CostCenterRule }).ToListAsync(ct);
         var accounts = accountSet.ToDictionary(a => a.Id);
 
-        // Cost-center overlay must be visible to the scope (tenant-global cost centers + company scope).
-        // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
-        var validCostCenters = await _db.CostCenters.IgnoreQueryFilters()
-            .Where(c => c.TenantId == tid && !c.IsDeleted && (c.CompanyId == null || c.CompanyId == companyId))
-            .Select(c => c.Id).ToListAsync(ct);
-        var costCenters = validCostCenters.ToHashSet();
+        // Fixed cost centre (AM-4, AM-16): company mappings only, and the cost centre must be a live, active row of THAT company.
+        var fixedIds = mappings.Where(m => m.SegmentCostCenterId.HasValue).Select(m => m.SegmentCostCenterId!.Value).Distinct().ToList();
+        var fixedRows = fixedIds.Count == 0
+            ? new Dictionary<Guid, (Guid? CompanyId, bool IsActive, bool IsDeleted)>()
+            : (await ScopedBypass.TenantWide(_db.CostCenters, tid, "A mapping's fixed cost centre is validated against its own company; foreign and group-level rows are rejected here.")
+                .AsNoTracking().Where(c => fixedIds.Contains(c.Id)).Select(c => new { c.Id, c.CompanyId, c.IsActive, c.IsDeleted }).ToListAsync(ct))
+                .ToDictionary(c => c.Id, c => (c.CompanyId, c.IsActive, c.IsDeleted));
 
         // IgnoreQueryFilters is intentional: system/config read — scope authorised above (or seeder), WHERE re-applies exact tenant+company scope; never reads another tenant.
         var existing = await _db.GlAccountMappings.IgnoreQueryFilters()
             .Where(m => m.TenantId == tid && m.CompanyId == companyId).ToListAsync(ct);
-        var prevByDriver = existing.GroupBy(m => m.DriverKey).ToDictionary(g => g.Key, g => g.First());
+        var prevByKey = existing.GroupBy(m => (m.DriverKey, m.FunctionalClass), new DriverClassComparer())
+            .ToDictionary(g => g.Key, g => g.First(), new DriverClassComparer());
 
         foreach (var m in mappings)
         {
+            var cls = NormalizeClass(m.FunctionalClass);
             if (!driverByKey.TryGetValue(m.DriverKey ?? "", out var driver)) return BadRequest(new { message = $"Unknown driver '{m.DriverKey}' in this scope." });
             if (!accounts.TryGetValue(m.AccountId, out var account)) return BadRequest(new { message = $"Account '{m.AccountId}' is not visible to this scope." });
-            if (m.SegmentCostCenterId is { } cc && !costCenters.Contains(cc)) return BadRequest(new { message = $"Cost center '{cc}' is not visible to this scope." });
-            var changed = !prevByDriver.TryGetValue(m.DriverKey!, out var prev) || prev.AccountId != m.AccountId;
+            if (cls is not null && !FunctionalClasses.Contains(cls, StringComparer.Ordinal))
+                return UnprocessableEntity(CostAccountingGuards.Error("functional_class_invalid", $"'{cls}' is not a functional class. Use one of {string.Join(", ", FunctionalClasses.Where(c => c != ReservedFunctionalClass))}.",
+                    "التصنيف الوظيفي للتكلفة غير صالح."));
+            if (cls == ReservedFunctionalClass)
+                return UnprocessableEntity(CostAccountingGuards.Error("functional_class_reserved", "The Capitalisable class is reserved and cannot be used for posting yet.",
+                    "التصنيف «قابلة للرسملة» محجوز لاستخدام لاحق ولا يمكن استخدامه في الترحيل حاليًا."));
+            if (m.SegmentCostCenterId is { } cc)
+            {
+                if (cls is not null)
+                    return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_with_class", "A posting rule is either for one functional class or fixed to one cost centre, not both.",
+                        "تُحدَّد قاعدة الترحيل إما بتصنيف وظيفي للتكلفة واحد أو بمركز تكلفة ثابت واحد، وليس بكليهما."));
+                if (companyId is null)
+                    return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_requires_company", "Fixed cost centres are set per company. Switch to a company to set one.",
+                        "تُحدَّد مراكز التكلفة الثابتة لكل شركة. اختر شركة معيّنة لتحديد مركز."));
+                if (!fixedRows.TryGetValue(cc, out var row) || row.CompanyId != companyId || !row.IsActive || row.IsDeleted)
+                    return UnprocessableEntity(CostAccountingGuards.Error("fixed_cost_centre_invalid", "The fixed cost centre must be an active cost centre of this company.",
+                        "يجب أن يكون مركز التكلفة الثابت مركزًا نشطًا تابعًا لهذه الشركة."));
+                // M-3 (oracle S-B2): a fixed cost centre on an account that does not accept one could never post, so it is refused here.
+                if (string.Equals(account.CostCenterRule, "NotAllowed", StringComparison.Ordinal))
+                    return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_not_allowed",
+                        $"Account {account.Code} {account.Name} does not accept a cost centre. Remove the cost centre from this posting rule or change the account's cost centre rule.",
+                        GlCostCentreRuleFilterAttribute.ArabicFor("cost_centre_not_allowed")));
+            }
+            var changed = !prevByKey.TryGetValue((m.DriverKey!, cls), out var prev) || prev.AccountId != m.AccountId;
             if (!changed) continue;
             if (!account.IsActive)
                 return BadRequest(new { code = "GL_MAPPING_INACTIVE_ACCOUNT", message = $"'{account.Code} - {account.Name}' is inactive. Activate it or choose another account for {driver.Label}." });
@@ -375,17 +460,21 @@ public class FinanceGlController : ControllerBase
                 });
         }
 
-        // Per-driver before→after diff for the audit trail (who repointed which driver, from what to what,
-        // and which cost-centre tag it carries).
+        // Per-(driver, class) before→after diff for the audit trail (who repointed which driver, from what to what,
+        // which functional class, and which cost centre it carries).
         var diff = mappings
-            .Where(m => !prevByDriver.TryGetValue(m.DriverKey, out var old) || old.AccountId != m.AccountId || old.SegmentCostCenterId != m.SegmentCostCenterId)
-            .Select(m => new
+            .Select(m => (Req: m, Cls: NormalizeClass(m.FunctionalClass)))
+            .Where(x => !prevByKey.TryGetValue((x.Req.DriverKey, x.Cls), out var old) || old.AccountId != x.Req.AccountId || old.SegmentCostCenterId != x.Req.SegmentCostCenterId)
+            .Select(x =>
             {
-                m.DriverKey,
-                oldAccount = prevByDriver.TryGetValue(m.DriverKey, out var o) ? o.AccountId : (Guid?)null,
-                newAccount = m.AccountId,
-                oldCostCenter = prevByDriver.TryGetValue(m.DriverKey, out var oc) ? oc.SegmentCostCenterId : null,
-                newCostCenter = m.SegmentCostCenterId,
+                prevByKey.TryGetValue((x.Req.DriverKey, x.Cls), out var o);
+                return new
+                {
+                    x.Req.DriverKey,
+                    oldAccount = o?.AccountId, newAccount = x.Req.AccountId,
+                    oldClass = o?.FunctionalClass, newClass = x.Cls,
+                    oldCostCenter = o?.SegmentCostCenterId, newCostCenter = x.Req.SegmentCostCenterId,
+                };
             })
             .ToList();
         // Only the drivers this scope LISTS (the active ones GET /mappings returns, which is all the UI can
@@ -393,19 +482,44 @@ public class FinanceGlController : ControllerBase
         // a driver that is switched off (or otherwise not listed) is left exactly as it is: the caller
         // could not have sent it, so its absence is not a decision to delete it.
         var replaceable = existing.Where(m => driverByKey.ContainsKey(m.DriverKey)).ToList();
-        var removed = replaceable.Select(m => m.DriverKey).Distinct().Except(mappings.Select(m => m.DriverKey)).ToList();
+        var sentKeys = mappings.Select(m => (m.DriverKey, NormalizeClass(m.FunctionalClass))).ToHashSet(new DriverClassComparer());
+        var removedRows = replaceable.Where(m => !sentKeys.Contains((m.DriverKey, m.FunctionalClass))).ToList();
+        var removed = removedRows.Select(m => new { m.DriverKey, functionalClass = m.FunctionalClass, hadCostCenter = m.SegmentCostCenterId != null }).ToList();
+
+        if (diff.Count > 0 || removed.Count > 0)
+        {
+            // M-7 (AM-9): a mapping edit while a run awaits finance review or lock would change what it posts.
+            if (await CostAccountingGuards.HasRunAwaitingFinanceOrLockAsync(_db, tid, companyId, ct))
+                return Conflict(CostAccountingGuards.LockedIntoApprovedRunBody);
+
+            // M-10: a reason is required when the save touches classes or fixed cost centres, or whenever costing is on
+            // (plain account re-pointing for a tenant that has never used the feature keeps its legacy contract).
+            var touchesCosting = diff.Any(d => d.oldClass != null || d.newClass != null || d.oldCostCenter != null || d.newCostCenter != null)
+                                 || removedRows.Any(r => r.FunctionalClass != null || r.SegmentCostCenterId != null);
+            var costingOn = await ScopedBypass.TenantWide(_db.Companies, tid, "Whether costing is on decides if a mapping change needs a reason; read across the tenant for a tenant-default save.")
+                .AsNoTracking().AnyAsync(c => (companyId == null || c.Id == companyId) && c.CostAccountingEnabled, ct);
+            if ((touchesCosting || costingOn) && !CostAccountingGuards.HasReason(reason))
+                return UnprocessableEntity(CostAccountingGuards.ReasonRequiredBody);
+        }
 
         _db.GlAccountMappings.RemoveRange(replaceable);
         foreach (var m in mappings)
             _db.GlAccountMappings.Add(new GlAccountMapping
             {
-                TenantId = tid.Value, CompanyId = companyId, DriverKey = m.DriverKey,
+                TenantId = tid, CompanyId = companyId, DriverKey = m.DriverKey, FunctionalClass = NormalizeClass(m.FunctionalClass),
                 AccountId = m.AccountId, SegmentCostCenterId = m.SegmentCostCenterId, IsActive = true,
             });
         await WriteAudit("finance.gl.mapping.saved", "GlAccountMapping", companyId?.ToString() ?? "tenant-default", companyId,
-            new { companyId, changed = diff, removed, count = mappings.Count }, ct);
+            new { companyId, reason = reason?.Trim(), changed = diff, removed, count = mappings.Count }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(new { count = mappings.Count, changed = diff.Count, removed = removed.Count });
+    }
+
+    /// <summary>Equality on (driver, class) with the class compared ordinally; a null class is its own key.</summary>
+    private sealed class DriverClassComparer : IEqualityComparer<(string, string?)>
+    {
+        public bool Equals((string, string?) x, (string, string?) y) => string.Equals(x.Item1, y.Item1, StringComparison.Ordinal) && string.Equals(x.Item2, y.Item2, StringComparison.Ordinal);
+        public int GetHashCode((string, string?) k) => HashCode.Combine(k.Item1, k.Item2);
     }
 
     // ── Driver store (extensible posting drivers) ─────────────────────────────
@@ -430,7 +544,7 @@ public class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.drivers.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
 
         var validation = await ValidateDriverAsync(tid.Value, companyId, req, null, ct);
         if (validation is not null) return validation;
@@ -649,7 +763,7 @@ public class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         if (!IsValidPeriod(period)) return BadRequest(new { message = "Period must be in YYYY-MM format." });
 
         // IgnoreQueryFilters is intentional: scope authorised above (ScopeError); WHERE re-applies exact
@@ -684,7 +798,7 @@ public class FinanceGlController : ControllerBase
     {
         if (!HasPermission(PeriodReopenPermission)) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         if (string.IsNullOrWhiteSpace(req?.Reason))
             return BadRequest(new { message = "A reason is required to reopen a closed period (audited)." });
 
@@ -772,6 +886,21 @@ public class FinanceGlController : ControllerBase
             GlDriverCategories.Deduction => new[] { "Liability", "Asset", "Expense" },
             _ => new[] { CanonicalAccountType(d.AccountType) ?? d.AccountType },
         };
+    }
+
+    /// <summary>Validates a cost-centre rule against the account type: the value must be one of the three, and Required is
+    /// refused on Asset, Liability and Equity accounts (422 — the database cannot see the type of a ledger label).</summary>
+    private IActionResult? RuleProblem(string rule, string accountType)
+    {
+        if (!CostCenterRules.Contains(rule, StringComparer.Ordinal))
+            return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_rule_invalid",
+                $"The cost centre rule must be one of {string.Join(", ", CostCenterRules)}.",
+                "يجب أن تكون قاعدة مركز التكلفة أحد الخيارات: إلزامي (Required) أو اختياري (Optional) أو غير مسموح (NotAllowed)."));
+        if (rule == "Required" && !IsProfitAndLossType(accountType))
+            return UnprocessableEntity(CostAccountingGuards.Error("cost_centre_rule_invalid_for_type",
+                "Only expense and income accounts can require a cost centre.",
+                "لا يمكن إلزام مركز التكلفة إلا في حسابات المصروفات والإيرادات."));
+        return null;
     }
 
     private IQueryable<GlAccount> ScopeAccounts(Guid tid, Guid? companyId) =>
@@ -1013,6 +1142,18 @@ public class FinanceGlController : ControllerBase
     /// requires CanAccessCompany; a group-default (companyId==null) scope requires a GROUP grant —
     /// judged by HasGroupEntityScope (the caller's grant), not GetEntityScope (which narrows to the
     /// company selected in the switcher and used to 403 a group admin viewing one company).</summary>
+    /// <summary>For WRITES that name a company: the caller's grant (<see cref="ScopeError"/>), and the company must be a live company
+    /// of the caller's own tenant, so a group-scope admin cannot write rows under another tenant's company id (404).</summary>
+    private async Task<IActionResult?> WriteScopeErrorAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (ScopeError(companyId) is { } err) return err;
+        if (companyId is not { } id) return null;
+        var exists = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                "A GL write names a company; it must exist in the caller's tenant whatever company the switcher shows.")
+            .AsNoTracking().AnyAsync(c => c.Id == id, ct);
+        return exists ? null : NotFound(new { error = "company_not_found", message = "Company not found." });
+    }
+
     private IActionResult? ScopeError(Guid? companyId)
     {
         if (companyId is null)
@@ -1041,7 +1182,7 @@ public class FinanceGlController : ControllerBase
         await Task.CompletedTask;
     }
 
-    private static object ToDto(GlAccount a, Guid? _) => new { a.Id, a.CompanyId, a.Code, a.Name, a.AccountType, a.IsActive, a.ExternalCode };
+    private static object ToDto(GlAccount a, Guid? _) => new { a.Id, a.CompanyId, a.Code, a.Name, a.AccountType, a.IsActive, a.ExternalCode, costCenterRule = a.CostCenterRule };
 
     private static object ToDriverDto(GlDriver d, Guid? viewCompanyId) => new
     {
@@ -1055,8 +1196,62 @@ public class FinanceGlController : ControllerBase
 public record GlPeriodActionRequest(string? Reason = null);
 /// <param name="ExternalCode">The account code in the client's ERP. Create: optional. Update: null leaves it
 /// unchanged, "" clears it.</param>
-public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true, string? ExternalCode = null);
-public record GlMappingRequest(string DriverKey, Guid AccountId, Guid? SegmentCostCenterId = null);
+/// <param name="CostCenterRule">Required | Optional | NotAllowed. Create: null = Optional. Update: null leaves the rule unchanged.</param>
+public record GlAccountRequest(string Code, string Name, string AccountType = "Expense", bool IsActive = true, string? ExternalCode = null, string? CostCenterRule = null);
+/// <param name="FunctionalClass">Cost-centre functional class this row applies to; null = every class. Mutually exclusive with a fixed cost centre.</param>
+public record GlMappingRequest(string DriverKey, Guid AccountId, Guid? SegmentCostCenterId = null, string? FunctionalClass = null);
+
+/// <summary>The body of <c>PUT /mappings</c>: <c>{ "reason": "...", "mappings": [...] }</c>. The legacy bare array (<c>[...]</c>) still binds, with no body
+/// reason, for one release; the controller then falls back to the <c>?reason=</c> query value. A non-blank body reason wins over the query one.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(GlMappingsBodyConverter))]
+public sealed class GlMappingsBody : System.Collections.Generic.IEnumerable<GlMappingRequest>
+{
+    public List<GlMappingRequest> Mappings { get; set; } = new();
+    public string? Reason { get; set; }
+    public void Add(GlMappingRequest m) => Mappings.Add(m);
+    public IEnumerator<GlMappingRequest> GetEnumerator() => Mappings.GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    public static implicit operator GlMappingsBody(List<GlMappingRequest> mappings) => new() { Mappings = mappings };
+}
+
+public sealed class GlMappingsBodyConverter : System.Text.Json.Serialization.JsonConverter<GlMappingsBody>
+{
+    public override GlMappingsBody? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null) return null;
+        if (reader.TokenType == JsonTokenType.StartArray)
+            return new GlMappingsBody { Mappings = JsonSerializer.Deserialize<List<GlMappingRequest>>(ref reader, options) ?? new() };
+        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("Expected an object or an array of mappings.");
+        var body = new GlMappingsBody();
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            var name = reader.GetString() ?? "";
+            reader.Read();
+            if (name.Equals("reason", StringComparison.OrdinalIgnoreCase))
+                body.Reason = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
+            else if (name.Equals("mappings", StringComparison.OrdinalIgnoreCase))
+                body.Mappings = JsonSerializer.Deserialize<List<GlMappingRequest>>(ref reader, options) ?? new();
+            else reader.Skip();
+        }
+        return body;
+    }
+
+    public override void Write(Utf8JsonWriter writer, GlMappingsBody value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("reason", value.Reason);
+        writer.WritePropertyName("mappings");
+        JsonSerializer.Serialize(writer, value.Mappings, options);
+        writer.WriteEndObject();
+    }
+}
+public record CostCentreRulePresetRequest(string? Reason);
+/// <param name="Enabled">null = unchanged.</param>
+/// <param name="DefaultCostCenterId">null = unchanged (use <paramref name="ClearDefaultCostCenter"/> to remove).</param>
+/// <param name="SmallCellMin">null = unchanged.</param>
+public record CostAccountingSettingsRequest(
+    bool? Enabled = null, Guid? DefaultCostCenterId = null, bool ClearDefaultCostCenter = false, short? SmallCellMin = null,
+    string? Reason = null, bool AcknowledgeBlockers = false);
 public record GlDriverRequest(
     string Key, string Label, string Category, string PostingSide, string DefaultCode, string DefaultName,
     string AccountType = "Expense", string? MatchSource = null, string MatchMode = "Exact",

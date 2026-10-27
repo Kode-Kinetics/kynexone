@@ -15,6 +15,8 @@ const headings = ['Start with the person', 'Place them in the organization', 'Se
 const stepNames = ['Person', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
 
 interface MockOptions {
+  /** The reader lacks organization.costcenter.manage (an HR Officer): the cost centre is not theirs to set. */
+  noCostCentreManage?: boolean;
   quick?: boolean;
   multipleCompanies?: boolean;
   missingCountry?: boolean;
@@ -70,7 +72,7 @@ async function boot(page: Page, options: MockOptions = {}) {
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
     if (path === '/api/auth/me') return reply({
       id: 'wizard-reviewer', tenantId: 'wizard-tenant', tenantSlug: 'wizard-fixture', fullName: 'HR Reviewer',
-      roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve'],
+      roles: [options.noCostCentreManage ? 'HR Officer' : 'HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve', ...(options.noCostCentreManage ? [] : ['organization.costcenter.manage'])],
       isGroupScope: !!options.multipleCompanies, accountType: options.multipleCompanies ? 'Group' : 'SingleCompany',
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: 'TEST', countryCode: item.countryCode, isActive: true })),
     });
@@ -965,4 +967,60 @@ test('KSA identity step: border number and passport first, post-hire documents g
   // Nothing issued after hire is sent as "required".
   expect(records.filter(r => ['iqama_number', 'gosi_reference', 'qiwa_contract_reference'].includes(r.fieldKey)).every(r => !r.isRequired)).toBe(true);
   expect(errors).toEqual([]);
+});
+
+// ═════ AM-30: the create form sends a cost centre only when its user is allowed to, and an override carries a reason ═════
+
+test('AM-30: a user without the cost-centre permission sees the department\'s cost centre but the request carries none (the server would refuse it)', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true, noCostCentreManage: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
+  await expandOptional(dialog, 'More employment details');
+  await expect(dialog.getByTestId('cc-create-readonly-note')).toHaveText('Only HR managers and admins can change this.');
+  await expect(dialog.getByRole('combobox', { name: 'Cost center', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({ departmentId: 'department-wizard' });
+  expect(creates[0]).not.toHaveProperty('costCenterId');
+  expect(creates[0]).not.toHaveProperty('costCenterReason');
+  expect(errors).toEqual([]);
+});
+
+test('AM-30: the department\'s own cost centre is a plain copy (no reason); a different one is an override that needs a reason before Create', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
+  await expandOptional(dialog, 'More employment details');
+  const select = dialog.getByRole('combobox', { name: 'Cost center', exact: true });
+  await expect(select).toHaveValue('cost-wizard');
+  await expect(dialog.getByTestId('cc-create-reason')).toHaveCount(0);
+  await select.selectOption('cost-finance');
+  await expect(dialog.getByTestId('cc-create-reason')).toBeVisible();
+  // The step will not advance without the reason, and the error is on the step that owns the field.
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.getByText('Enter a reason for this change.')).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: headings[1], exact: true })).toBeVisible();
+  expect(creates).toHaveLength(0);
+  await dialog.getByTestId('cc-create-reason').fill(' Cross-charged to finance ');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates[0]).toMatchObject({ departmentId: 'department-wizard', costCenterId: 'cost-finance', costCenterReason: 'Cross-charged to finance' });
+  expect(errors).toEqual([]);
+});
+
+test('AM-30: choosing the department\'s own cost centre sends it without a reason', async ({ page }) => {
+  const { dialog, creates } = await boot(page, { quick: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await finishCreated(dialog);
+  expect(creates[0]).toMatchObject({ costCenterId: 'cost-wizard' });
+  expect(creates[0]).not.toHaveProperty('costCenterReason');
 });

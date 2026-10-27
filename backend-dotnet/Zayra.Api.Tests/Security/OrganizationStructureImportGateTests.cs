@@ -54,7 +54,7 @@ public sealed class OrganizationStructureImportGateTests
                 User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                 {
                     new Claim("tenant_id", tenant.ToString()), new Claim("sub", Guid.NewGuid().ToString()),
-                    new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim(ClaimTypes.Role, "Admin"),
+                    new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "organization.costcenter.manage"),
                     new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
                 }, "Test")),
             },

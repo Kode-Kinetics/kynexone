@@ -175,6 +175,11 @@ public class PlanningController : ControllerBase
             if (companyId is null || !this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
         }
 
+        // Re-pointing the department's cost centre is the cost-centre permission, not the establishment one.
+        if (body.CostCenterId is Guid asked
+            && (asked == Guid.Empty ? dept.CostCenterId is not null : asked != dept.CostCenterId)
+            && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
+
         var before = new { dept.ApprovedHeadcount, dept.MonthlyBudgetAmount, dept.CostCenterId };
         var newApproved = Math.Max(0, body.ApprovedHeadcount);
         var newBudget = Math.Max(0, body.MonthlyBudgetAmount);
@@ -182,13 +187,35 @@ public class PlanningController : ControllerBase
         if (changedEnvelope && string.IsNullOrWhiteSpace(body.Reason))
             return BadRequest(new { message = "A reason is required when changing the approved headcount or monthly budget." });
 
+        if (body.CostCenterId is Guid newCc)
+        {
+            var target = newCc == Guid.Empty ? (Guid?)null : newCc;
+            if (target != dept.CostCenterId)
+            {
+                try { await new Zayra.Api.Infrastructure.Payroll.CostAttributionGuard(_db).EnsureDepartmentUnchangedAsync(tenantId, dept.CompanyId, dept.Id, dept.ParentDepartmentId, target, ct); }
+                catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+            }
+        }
+
+        // The one cost-centre validator: the department's own company, active when the cost centre is new to this department.
+        if (body.CostCenterId is Guid requestedCc && requestedCc != Guid.Empty)
+        {
+            var check = await new Zayra.Api.Infrastructure.Payroll.CostCentreRefValidator(_db)
+                .ValidateAsync(tenantId, dept.CompanyId, requestedCc, forNewAssignment: requestedCc != dept.CostCenterId, ct);
+            if (!check.IsValid) return BadRequest(new { error = check.Code, message = check.Message });
+        }
+
         dept.ApprovedHeadcount = newApproved;
         dept.MonthlyBudgetAmount = newBudget;
+        var costCentreBefore = dept.CostCenterId;
         if (body.CostCenterId.HasValue)
             dept.CostCenterId = body.CostCenterId.Value == Guid.Empty ? null : body.CostCenterId.Value;
+        if (costCentreBefore != dept.CostCenterId)
+            Zayra.Api.Infrastructure.Finance.CostAttributionAudit.Stage(_audit, Context(), "Department", dept.Id, dept.CompanyId,
+                new { costCenterId = costCentreBefore }, new { costCenterId = dept.CostCenterId }, body.Reason);
         dept.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("establishment.budget_updated", "Department", dept.Id.ToString(), Context(),
+        // Staged, so the audit row commits in the same SaveChanges as the change.
+        _audit.Stage("establishment.budget_updated", "Department", dept.Id.ToString(), Context(),
             JsonSerializer.Serialize(new
             {
                 scope = "envelope",
@@ -198,7 +225,8 @@ public class PlanningController : ControllerBase
                 reason = body.Reason,
                 before,
                 after = new { dept.ApprovedHeadcount, dept.MonthlyBudgetAmount, dept.CostCenterId }
-            }), ct);
+            }), dept.CompanyId);
+        await _db.SaveChangesAsync(ct);
         return Ok(new { dept.Id, dept.ApprovedHeadcount, dept.MonthlyBudgetAmount, dept.CostCenterId });
     }
 

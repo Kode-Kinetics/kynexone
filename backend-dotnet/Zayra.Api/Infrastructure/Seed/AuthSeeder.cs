@@ -183,7 +183,7 @@ public class AuthSeeder : IAuthSeeder
         // reset = Admin, HR Manager (employee-access contract, Amendment 3 F1).
         await EnsureRole(tenantId, "HR Director", "Senior HR leader with strategic visibility", permissions.Where(x =>
             (x.Key.StartsWith("employees.") && !x.Key.StartsWith("employees.access.")) || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
-            x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
+            x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || (x.Key.StartsWith("organization.") && x.Key != "organization.costcenter.manage") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") || x.Key.StartsWith("compliance.") || x.Key.StartsWith("reports.") ||
             x.Key.StartsWith("recruitment.") || x.Key is "payroll.read" or "loans.read" or "audit.read" or
@@ -243,7 +243,7 @@ public class AuthSeeder : IAuthSeeder
             "payroll.run_delete",
             "approvals.read", "approvals.decide", "reports.read", "notifications.read",
             // Phase 2 GL + non-statutory rates (NOT statutory_override / author_predicates — higher trust).
-            "finance.gl.read", "finance.gl.manage", "finance.gl.drivers.manage",
+            "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
             "payroll.rates.read", "payroll.rates.manage"
         }), 4, true, cancellationToken);
 
@@ -406,6 +406,7 @@ public class AuthSeeder : IAuthSeeder
             ("organization.write", "Organization", "Create and update organization master data"),
             ("organization.delete", "Organization", "Delete organization master data"),
             ("organization.establishment.write", "Organization", "Edit staffing budgets and establishment envelopes (departmental headcount by level)"),
+            ("organization.costcenter.manage", "Organization", "Create, edit, deactivate and import cost centres, and change which cost centre a department, position or employee costs to"),
             // Attendance
             ("attendance.read", "Attendance", "Read attendance records"),
             ("attendance.write", "Attendance", "Create and update attendance records"),
@@ -517,6 +518,8 @@ public class AuthSeeder : IAuthSeeder
             // Finance — GL configuration (Phase 2)
             ("finance.gl.read", "Finance", "View chart of accounts and payroll GL mappings"),
             ("finance.gl.manage", "Finance", "Manage GL accounts, mappings and per-company overrides"),
+            // Taking a journal-export file (download and its line detail). finance.gl.read keeps metadata and totals only (AM-19/AM-21).
+            ("finance.gl.export", "Finance", "Download GL journal export files and see their line detail"),
             ("finance.gl.drivers.manage", "Finance", "Manage custom GL posting drivers"),
             ("finance.gl.drivers.author_predicates", "Finance", "Author non-Exact GL driver predicates and employer-expense pairs (Admin/vendor)"),
             // Reopening a closed GL period un-freezes finalised books. Admin-only by default (Admin holds every

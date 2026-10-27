@@ -17,6 +17,10 @@ public class GlAccount : ITenantOwned, ICompanyScoped
     /// <summary>The account string the client's ERP expects (e.g. "6100", "01-000-6100-00"). Journal
     /// exports send this instead of <see cref="Code"/> when set.</summary>
     public string? ExternalCode { get; set; }
+    /// <summary>Cost-accounting M1: whether a journal line on this account may / must carry a cost centre —
+    /// Required | Optional | NotAllowed. Default Optional, so no existing account changes behaviour. Required is refused
+    /// on Asset, Liability and Equity accounts by the API (not the database).</summary>
+    public string CostCenterRule { get; set; } = "Optional";
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
@@ -38,6 +42,9 @@ public class GlAccountMapping : ITenantOwned, ICompanyScoped
     public Guid AccountId { get; set; }
     // Model A segment overlay: optional cost-center tag stamped on this posting line.
     public Guid? SegmentCostCenterId { get; set; }
+    /// <summary>Cost-accounting M1: the cost-centre functional class this mapping applies to (null = every class).
+    /// A mapping with <see cref="SegmentCostCenterId"/> set must leave this null (API rule).</summary>
+    public string? FunctionalClass { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }

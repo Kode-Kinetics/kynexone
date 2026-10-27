@@ -19,7 +19,7 @@ public static class ProductionReadinessEvidence
     /// migration parity and the worker fleet, so the tenant counts, queue counters and SMTP mode are
     /// not computed at all (they are not returned either — see <see cref="PublicReadiness"/>).
     /// </param>
-    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct, bool includeDetail = true)
+    public static async Task<ReadinessEvidence> BuildReadinessAsync(ZayraDbContext db, IConfiguration config, CancellationToken ct, bool includeDetail = true, Microsoft.Extensions.Logging.ILogger? logger = null)
     {
         var dbProbe = await ProbeDatabaseAsync(db, ct);
         var tenantCounts = dbProbe.Healthy && includeDetail
@@ -54,7 +54,8 @@ public static class ProductionReadinessEvidence
             tenantCounts?.Active ?? 0,
             pendingMigrations,
             queues,
-            Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(config) ? true : null);
+            Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(config) ? true : null,
+            dbProbe.Healthy ? await LedgerProtection.ReportAsync(db, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, ct) : LedgerProtection.Enforced);
     }
 
     /// <summary>Pure status rule: ready iff the DB is reachable AND no migrations are pending.</summary>
@@ -406,7 +407,8 @@ public sealed record ReadinessEvidence(
     int PendingMigrations,
     QueueHealthEvidence Queues,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    bool? MfaDisabledForTesting = null);
+    bool? MfaDisabledForTesting = null,
+    string LedgerProtection = "enforced");
 
 /// <summary>
 /// The ONLY body the anonymous <c>/health/ready</c> returns. Render's health check reads the status
@@ -415,12 +417,12 @@ public sealed record ReadinessEvidence(
 /// told an anonymous caller how many customers we have and how outbound mail is wired, so it moved
 /// behind the PlatformAdmin policy at <c>/health/ready/details</c>.
 /// </summary>
-public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations)
+public sealed record PublicReadiness(string Status, DateTime Utc, int PendingMigrations, string LedgerProtection)
 {
     // MfaDisabledForTesting is deliberately NOT here: telling an anonymous caller that tenant MFA is off
     // is reconnaissance. It is reported only at the PlatformAdmin-gated /health/ready/details.
     public static PublicReadiness From(ReadinessEvidence evidence)
-        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations);
+        => new(evidence.Status, evidence.Utc, evidence.PendingMigrations, evidence.LedgerProtection);
 }
 
 public sealed record ReadinessDependencies(

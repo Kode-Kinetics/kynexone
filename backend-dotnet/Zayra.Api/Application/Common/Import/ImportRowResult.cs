@@ -6,6 +6,8 @@ public record ImportRowResult(
     string? EntityName,
     ImportRowStatus Status,
     IReadOnlyList<string> Errors,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<string?>? ErrorsAr = null,
+    IReadOnlyList<string?>? WarningsAr = null);
 
 public enum ImportRowStatus { Ok, Warning, Error, Skipped }

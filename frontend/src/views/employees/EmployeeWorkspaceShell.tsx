@@ -40,6 +40,8 @@ interface EmployeeWorkspaceShellProps {
   savedNotice?: string;
   onRetryReadiness(): void;
   onEmployeeChanged?(): void;
+  /** The employee's cost centre was saved: re-read the record in place. */
+  onCostCentreChanged?(): void;
 }
 
 const destinations: Array<{ id: EmployeeSection; label: string; icon: typeof LayoutDashboard }> = [
@@ -66,6 +68,7 @@ export function EmployeeWorkspaceShell({
   savedNotice,
   onRetryReadiness,
   onEmployeeChanged,
+  onCostCentreChanged,
 }: EmployeeWorkspaceShellProps) {
   const { hasPermission } = useAuth();
   const { t } = useLocale();
@@ -87,7 +90,7 @@ export function EmployeeWorkspaceShell({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 id="employee-workspace-heading" tabIndex={-1} className="truncate text-2xl font-extrabold text-slate-950 outline-none dark:text-white">
+              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" className="truncate text-2xl font-extrabold text-slate-950 outline-none dark:text-white">
                 {employee.fullName}
               </h1>
               <span className="rounded-md bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200">{employee.status}</span>
@@ -154,7 +157,7 @@ export function EmployeeWorkspaceShell({
           {savedNotice && <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">{t(savedNotice)}</p>}
           {section === 'overview' && <EmployeeOverview employee={employee} readiness={readiness.data} returnTo={returnTo} />}
           {section === 'personal' && <EmployeePersonalSection employee={employee} canWrite={canWrite} returnTo={returnTo} />}
-          {section === 'employment' && <EmployeeEmploymentSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
+          {section === 'employment' && <EmployeeEmploymentSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} onEmployeeChanged={onCostCentreChanged} />}
           {section === 'pay-benefits' && <EmployeePayBenefitsSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
           {section === 'compliance-documents' && <EmployeeComplianceDocumentsSection employee={employee} readiness={readiness.data} panel={panel} returnTo={returnTo} />}
           {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} onEmployeeChanged={onEmployeeChanged} />}

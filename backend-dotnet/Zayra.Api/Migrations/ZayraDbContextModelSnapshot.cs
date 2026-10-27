@@ -7052,6 +7052,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("approval_status");
 
+                    b.Property<bool>("CostAccountingEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("cost_accounting_enabled");
+
+                    b.Property<short>("CostCentreSmallCellMin")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("smallint")
+                        .HasDefaultValue((short)0)
+                        .HasColumnName("cost_centre_small_cell_min");
+
                     b.Property<string>("CountryCode")
                         .IsRequired()
                         .HasColumnType("text")
@@ -7064,6 +7076,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CreatedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
+
+                    b.Property<Guid?>("DefaultCostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("default_cost_center_id");
 
                     b.Property<string>("DefaultCurrency")
                         .IsRequired()
@@ -7176,7 +7192,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "RegistrationNumber");
 
-                    b.ToTable("companies", (string)null);
+                    b.ToTable("companies", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_companies__cost_centre_small_cell_min", "cost_centre_small_cell_min >= 0");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.CompanyComplianceProfile", b =>
@@ -8577,6 +8596,16 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("deleted_by");
 
+                    b.Property<string>("FunctionalClass")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("functional_class");
+
+                    b.Property<string>("GlSegment")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("gl_segment");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
@@ -8594,6 +8623,10 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(160)
                         .HasColumnType("character varying(160)")
                         .HasColumnName("name_ar");
+
+                    b.Property<Guid?>("ParentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("parent_id");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
@@ -8618,7 +8651,21 @@ namespace Zayra.Api.Migrations
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "Code"), false);
 
-                    b.ToTable("cost_centers", (string)null);
+                    b.HasIndex("TenantId", "CompanyId", "GlSegment")
+                        .IsUnique()
+                        .HasDatabaseName("ux_cost_centers_scope_gl_segment")
+                        .HasFilter("gl_segment IS NOT NULL AND NOT is_deleted");
+
+                    NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "GlSegment"), false);
+
+                    b.ToTable("cost_centers", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_cost_centers__functional_class", "functional_class IS NULL OR functional_class IN ('COGS', 'SELLING', 'G_AND_A', 'R_AND_D', 'OPERATIONS', 'CAPITALISABLE')");
+
+                            t.HasCheckConstraint("ck_cost_centers__gl_segment_format", "gl_segment IS NULL OR gl_segment ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,29}$'");
+
+                            t.HasCheckConstraint("ck_cost_centers__parent_not_self", "parent_id IS NULL OR parent_id <> id");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.CountryPayrollRule", b =>
@@ -9485,6 +9532,12 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CostCenterId")
                         .HasColumnType("uuid")
                         .HasColumnName("cost_center_id");
+
+                    b.Property<bool>("CostCenterIsOverride")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("cost_center_is_override");
 
                     b.Property<string>("CountryCode")
                         .IsRequired()
@@ -14524,6 +14577,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cost_center_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -14859,6 +14916,25 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
+                    b.Property<string>("CostCenterCode")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("cost_center_code");
+
+                    b.Property<string>("CostCenterGlSegment")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("cost_center_gl_segment");
+
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cost_center_id");
+
+                    b.Property<string>("CostCenterName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("cost_center_name");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -14930,6 +15006,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("posted_by_name");
 
+                    b.Property<string>("PostingKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("posting_key");
+
                     b.Property<Guid?>("ReversalOfEntryId")
                         .HasColumnType("uuid")
                         .HasColumnName("reversal_of_entry_id");
@@ -14958,13 +15039,27 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "Period");
 
+                    b.HasIndex("TenantId", "PostingKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_finance_gl_entries_posting_key")
+                        .HasFilter("posting_key IS NOT NULL");
+
                     b.HasIndex("TenantId", "CompanyId", "Period");
+
+                    b.HasIndex("TenantId", "CostCenterId", "Period")
+                        .HasDatabaseName("ix_finance_gl_entries_cc_period")
+                        .HasFilter("cost_center_id IS NOT NULL");
 
                     b.HasIndex("TenantId", "EventType", "SourceEntityRef");
 
                     b.HasIndex("TenantId", "SourceModule", "SourceEntityId");
 
-                    b.ToTable("finance_gl_entries", (string)null);
+                    b.ToTable("finance_gl_entries", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_finance_gl_entries__cost_center_needs_company", "cost_center_id IS NULL OR company_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_finance_gl_entries__cost_center_pair", "(cost_center_id IS NULL) = (cost_center_code IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.FiscalYear", b =>
@@ -15163,6 +15258,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
+                    b.Property<string>("CostCenterRule")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasDefaultValue("Optional")
+                        .HasColumnName("cost_center_rule");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -15195,7 +15298,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId", "Code");
 
-                    b.ToTable("gl_accounts", (string)null);
+                    b.ToTable("gl_accounts", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_gl_accounts__cost_center_rule", "cost_center_rule IN ('Required', 'Optional', 'NotAllowed')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.GlAccountMapping", b =>
@@ -15222,6 +15328,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("driver_key");
 
+                    b.Property<string>("FunctionalClass")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("functional_class");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
@@ -15246,7 +15357,16 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "CompanyId", "DriverKey");
 
-                    b.ToTable("gl_account_mappings", (string)null);
+                    b.HasIndex("TenantId", "CompanyId", "DriverKey", "FunctionalClass")
+                        .IsUnique()
+                        .HasDatabaseName("ux_gl_account_mappings_scope_driver_class");
+
+                    NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "DriverKey", "FunctionalClass"), false);
+
+                    b.ToTable("gl_account_mappings", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_gl_account_mappings__functional_class", "functional_class IS NULL OR functional_class IN ('COGS', 'SELLING', 'G_AND_A', 'R_AND_D', 'OPERATIONS', 'CAPITALISABLE')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.GlAdjustmentRequest", b =>
@@ -15268,6 +15388,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CompanyId")
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cost_center_id");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -15477,6 +15601,10 @@ namespace Zayra.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<short?>("AmountScale")
+                        .HasColumnType("smallint")
+                        .HasColumnName("amount_scale");
 
                     b.Property<string>("CompanyCode")
                         .IsRequired()
@@ -15695,6 +15823,21 @@ namespace Zayra.Api.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("company_code");
+
+                    b.Property<string>("CostCenterCode")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("cost_center_code");
+
+                    b.Property<string>("CostCenterGlSegment")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)")
+                        .HasColumnName("cost_center_gl_segment");
+
+                    b.Property<string>("CostCenterName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("cost_center_name");
 
                     b.Property<string>("Currency")
                         .IsRequired()
@@ -25314,6 +25457,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("component_name");
 
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cost_center_id");
+
+                    b.Property<string>("CostCenterSource")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("cost_center_source");
+
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
@@ -25348,7 +25500,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "PayrollRunId", "EmployeeId");
 
-                    b.ToTable("payroll_deductions", (string)null);
+                    b.ToTable("payroll_deductions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payroll_deductions__cost_center_source", "cost_center_source IS NULL OR cost_center_source IN ('Employee', 'Position', 'Department', 'ParentDepartment', 'CompanyDefault', 'MappingFixed', 'RolledUp')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.PayrollEarning", b =>
@@ -25372,6 +25527,15 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("component_name");
+
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cost_center_id");
+
+                    b.Property<string>("CostCenterSource")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("cost_center_source");
 
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
@@ -25399,7 +25563,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "PayrollRunId", "EmployeeId");
 
-                    b.ToTable("payroll_earnings", (string)null);
+                    b.ToTable("payroll_earnings", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payroll_earnings__cost_center_source", "cost_center_source IS NULL OR cost_center_source IN ('Employee', 'Position', 'Department', 'ParentDepartment', 'CompanyDefault', 'MappingFixed', 'RolledUp')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.PayrollEmployeeReceivable", b =>
@@ -25775,6 +25942,17 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
+                    b.Property<bool>("CostAccountingApplied")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("cost_accounting_applied");
+
+                    b.Property<string>("CostCenterResolutionHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("cost_center_resolution_hash");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -26146,6 +26324,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("CompanyId")
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cost_center_id");
 
                     b.Property<decimal>("Deductions")
                         .HasPrecision(12, 2)

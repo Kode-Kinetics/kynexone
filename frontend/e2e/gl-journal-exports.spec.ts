@@ -63,6 +63,8 @@ interface BootOptions {
   groupScope?: boolean;
   /** 'periods' opens Setup → GL & rates → Accounting periods instead of the payroll GL Journal tab. */
   screen?: 'journal' | 'periods';
+  /** AM-21: finance.gl.read without the export permission. The API sends no `sample` or `lines`, and refuses the download. */
+  readerOnly?: boolean;
 }
 
 async function boot(page: Page, options: BootOptions = {}): Promise<State> {
@@ -111,7 +113,8 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
 
     const gl = '/api/finance/gl/journal-exports';
     if (path === `${gl}/formats`) return reply(formats);
-    if (path === `${gl}/preview`) return reply(manifest(null, 'Supplementary'));
+    const forViewer = (m: JournalExportManifest): JournalExportManifest => (options.readerOnly ? { ...m, sample: null } : m);
+    if (path === `${gl}/preview`) return reply(forViewer(manifest(null, 'Supplementary')));
     if (path === gl && request.method() === 'POST') {
       state.creates.push(url.search);
       if (state.doublePost) return reply({
@@ -126,9 +129,10 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
         erpDocumentNumber: null, erpPostedAtUtc: null, confirmedByName: null, confirmedAtUtc: null, rejectionReason: null, notes: null,
         kind: 'Supplementary', replacesExportId: null, formatVersion: 2, confirmedJournalCount: 0,
       }];
-      return reply(created, 201);
+      return reply(forViewer(created), 201);
     }
     if (path === gl) { state.listCalls.push(url.search); return reply(state.history); }
+    if (path === `${gl}/exp-1/download` && options.readerOnly) return reply({ message: 'Downloading journal files needs the export permission.' }, 403);
     if (path === `${gl}/exp-1/download`) return route.fulfill({
       status: 200, contentType: 'text/csv',
       headers: { 'content-disposition': 'attachment; filename="journal-GROUP-2026-07-SAR-generic-csv-5F0C2A9E.csv"' },
@@ -152,6 +156,7 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
     if (path === `${gl}/exp-1`) return reply({
       export: state.history[0], formatter: null,
       newRowsInScopeSinceExport: { count: 0, total: 0, message: null }, journals: state.journals,
+      ...(options.readerOnly ? { lines: null } : {}),
     });
     // Other payroll reads are outside this contract: answer 404 so each screen takes its own empty/error path.
     if (path.startsWith('/api/payroll/')) return reply({ message: 'Not part of this fixture.' }, 404);
@@ -353,4 +358,82 @@ test('a double-clicked Lock sends one request, shows no error, and each run name
   await expect(card).toContainText('Locked');
   expect(lockCalls).toEqual(['POST']);
   await expect(page.getByText(/already locked/)).toHaveCount(0);
+});
+
+test('AM-21: a read-only finance user gets totals and balances, a plain note about the missing line detail, and a clear refusal on download', async ({ page }) => {
+  const state = await boot(page, { readerOnly: true });
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Check balances' }).click();
+  const manifestCard = page.getByTestId('journal-export-manifest');
+  await expect(manifestCard.getByText('Balanced')).toHaveCount(2);
+  await expect(manifestCard.getByTestId('journal-export-lines-hidden')).toHaveText('Line detail is shown to people who can download the file. You can see totals and balances.');
+
+  await page.getByRole('button', { name: 'Create export file' }).click();
+  await expect(manifestCard.getByText(/File created:/)).toBeVisible();
+  await manifestCard.getByRole('button', { name: 'Download file' }).click();
+  await expect(page.getByTestId('journal-export-refusal')).toContainText('Your access lets you see totals and balances, but not download the file.');
+  // The outcome list (built from `journals`, never from `lines`) still renders.
+  await expect(page.getByTestId('journal-export-outcome-exp-1').getByText('2026-07-Payroll-11111111-Accrual')).toBeVisible();
+  expect(state.errors).toEqual([]);
+});
+
+test('an export holder gets no "line detail hidden" note', async ({ page }) => {
+  await boot(page);
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Check balances' }).click();
+  await expect(page.getByTestId('journal-export-manifest').getByText('Balanced')).toHaveCount(2);
+  await expect(page.getByTestId('journal-export-lines-hidden')).toHaveCount(0);
+});
+
+test('AM-5: the GL Journal tab says when its runs or its journal could not be loaded, and Retry reloads them', async ({ page }) => {
+  const run = {
+    id: 'run-sep', companyId: 'co-a', year: 2026, month: 9, status: 'Approved', runType: 'Regular', totalGrossSalary: 1000,
+    totalDeductions: 0, totalNetSalary: 1000, totalEmployerStatutoryCost: 0, employeeCount: 1,
+    createdAtUtc: '2026-09-10T00:00:00Z', processedAtUtc: '2026-09-10T00:00:00Z', lockedAtUtc: null,
+  };
+  const calls = { runs: 0, journal: 0 };
+  await page.addInitScript(() => {
+    localStorage.setItem('zayra_access_token', 'gl-export-browser-fixture');
+    localStorage.setItem('kynexone-locale-choice-v2', 'en');
+  });
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
+    if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
+    if (path === '/api/auth/me') return reply({
+      id: 'gl-reviewer', tenantId: 'gl-tenant', tenantSlug: 'gl-fixture', fullName: 'Finance Reviewer', roles: ['Admin'],
+      permissions: ['payroll.read', 'finance.gl.read', 'dashboard.read'], accountType: 'Group', isGroupScope: true,
+      companies: [companyA].map(c => ({ id: c.id, name: c.name, code: c.id, countryCode: 'SA', isActive: true })),
+    });
+    if (path === '/api/payroll/companies') return reply([companyA]);
+    if (path === '/api/payroll/runs') {
+      calls.runs += 1;
+      return calls.runs === 1 ? reply({ code: 'internal_error', message: 'boom', traceId: 't1' }, 500) : reply({ items: [run], total: 1, page: 1, pageSize: 100 });
+    }
+    if (path === '/api/payroll/runs/run-sep/gl-journal') {
+      calls.journal += 1;
+      return calls.journal === 1
+        ? reply({ code: 'bad_request', message: 'The journal for this run could not be built.' }, 422)
+        : reply({ period: '2026-09', currency: 'SAR', totalDebits: 1000, totalCredits: 1000, isBalanced: true, entries: [] });
+    }
+    if (path.startsWith('/api/finance/gl/journal-exports')) return reply([]);
+    if (path.startsWith('/api/payroll/')) return reply({ message: 'Not part of this fixture.' }, 404);
+    return reply({ items: [], total: 0, page: 1, pageSize: 100 });
+  });
+  await page.goto('/payroll');
+  await page.getByRole('tab', { name: /GL Journal/ }).click();
+  const runsError = page.getByRole('alert').filter({ hasText: 'This could not be loaded.' });
+  await expect(runsError).toBeVisible();
+  await runsError.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(runsError).toHaveCount(0);
+  await page.getByLabel('Select payroll run for GL journal').selectOption('run-sep');
+  await page.getByRole('button', { name: 'Generate Journal' }).click();
+  const journalError = page.getByRole('alert').filter({ hasText: 'The journal for this run could not be built.' });
+  await expect(journalError).toBeVisible();
+  await journalError.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByText('Journal is balanced — Debits = Credits')).toBeVisible();
+  // The Payroll page has other readers of the run list, so only "at least one retry" is asserted for it.
+  expect(calls.runs).toBeGreaterThanOrEqual(2);
+  expect(calls.journal).toBe(2);
 });

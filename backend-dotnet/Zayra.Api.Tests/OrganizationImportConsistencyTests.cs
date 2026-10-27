@@ -33,7 +33,7 @@ public class OrganizationImportConsistencyTests
                         new Claim("tenant_id", tenantId.ToString()),
                         new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                         new Claim("sub", Guid.NewGuid().ToString()),
-                        new Claim(ClaimTypes.Role, "Admin"),
+                        new Claim(ClaimTypes.Role, "Admin"), new Claim("permission", "organization.costcenter.manage"),
                         new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
                     }, "Test"))
                 }
