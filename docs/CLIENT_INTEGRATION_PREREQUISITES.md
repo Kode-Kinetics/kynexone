@@ -30,4 +30,4 @@ This is the agreed placement for the deferred work, not an existing live Jawazat
 
 Track each item in the client's onboarding record with owner, status, evidence reference and target date. Keep secret values out of that record. Final exit, Iqama renewal, cancellation and extension are not delivered by the current exit/re-entry slice; agree any additional scope separately.
 
-Internal-workflow setup and recovery: [Jawazat operations](superpowers/jawazat-operations.md). Other deployment and data-migration gates continue to apply: [deployment playbook](DEPLOYMENT_MULTI_CLIENT.md) and [loan operations](superpowers/standalone-loans-operations.md).
+Internal-workflow setup and recovery: [Jawazat operations](superpowers/jawazat-operations.md). Other deployment and data-migration gates continue to apply: [client installation guide](CLIENT_INSTALLATION.md) and [loan operations](superpowers/standalone-loans-operations.md).

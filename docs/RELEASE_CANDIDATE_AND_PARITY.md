@@ -1,5 +1,7 @@
 # Release Candidate, Deployment Parity & Two-Tier Rollback (F11)
 
+> **Hosted-era document.** The two-tier (Vercel + Render) parity check is retired: a client release ships the API and web as one version (`docs/product-handbook/06-operations-and-release.md`). The release-manifest rules still apply.
+
 A release is **one commit on both tiers**. This document says how to record what a commit is, how
 to prove a deployment is that commit end to end, and how to get back when it is not.
 

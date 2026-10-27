@@ -2,57 +2,56 @@
 
 ## Release identity and ownership
 
-A release is a pinned source candidate plus compatible schema, tier builds and configuration. The release owner coordinates engineering, database, security and customer acceptance. Merge, CI success, deployment and tenant enablement are distinct events. At the documented October 11 observation, the reviewed source candidate was newer than the deployed revision; this must be resolved before the candidate is represented as live.
+A release is one version number (`KYNEXONE_VERSION`) that names a matching API image, web image and database schema, built from one pinned source SHA by the `release` workflow and shipped as an offline bundle (`kynexone-<version>.tar.gz` with its `.sha256`) or pushed to the image registry. The API and web are always released together, so there is no tier-parity question at an installation: the API's `/health/live` and the web's `/build-info` report the same version and commit.
 
-The repository's existing deployment and parity runbooks remain the authoritative engineering procedures. This guide explains their operating gates without assuming that all current hosting settings or credentials have been independently inspected.
+KynexOne's supplier owns building, signing and publishing a release and issuing licences. The organisation's IT team (or the implementation partner) owns installing it, upgrading, backups and the server. Merge, CI success, release publication and an installation's upgrade are distinct events.
 
-## Before promotion
+## Before publishing a release
 
-1. Identify the source SHA, accepted module scope and affected tenant/company behavior. Generate or retrieve the release manifest for that exact candidate and check required CI conclusions.
-2. Confirm compatibility and migration visibility. Reconcile the expected migration manifest to database history; model drift and undiscoverable migrations are failures, not documentation exceptions.
-3. Review financial and statutory changes. The latest GL release requires a read-only inventory of affected overtime rules, company overrides, reserved account codes and open Saudi payroll runs before promotion. Verify actual policies with the responsible client/domain reviewer.
-4. Confirm a tested recoverable database checkpoint and document-store recovery arrangement. The existence of a managed database service does not prove a usable backup or restore time.
-5. Check environment variable presence and applicable feature gates privately. Record names and validation results, never credential values. Off-by-default connections remain off until their separate acceptance is complete.
-6. Agree the monitoring owner, user communications, decision window and rollback trigger for the release. Production promotion follows the authorized release process.
+1. Identify the source SHA and the modules and behaviour it changes. Generate the release manifest for that exact candidate (`scripts/release_manifest.py --commit <sha> --out release-manifest.json`) and check the required CI conclusions, including `client-install` (a clean install and an upgrade with the kit) and `licence-report` (third-party licences against the allow-list).
+2. Confirm migration visibility. Reconcile the expected migration manifest to the migration history; model drift and undiscoverable migrations are failures. Migrations must be additive, so the previous version keeps running on the upgraded database (the rollback path below depends on it).
+3. Review financial and statutory changes with the responsible domain reviewer, including any effect on open payroll runs at an installation.
+4. Check that the release notes say which settings in `.env` are new or changed, and which optional features stay off by default.
 
-## Migration and deployment sequence
+## Installing and upgrading
 
-The documented pipeline runs backend/security and frontend checks, then applies production EF migrations through the gated migration job before triggering Render deployment. Render readiness should refuse a candidate whose expected schema is missing. Vercel can deploy the frontend on a main push while the backend waits for its production gate, which creates a compatibility risk even if each tier is individually healthy.
+Installation and upgrade are done with the kit; see the [client installation guide](../CLIENT_INSTALLATION.md) §2 and §12. An upgrade:
 
-Use the existing release scripts in a prepared repository environment:
+1. verifies the bundle's checksums and refuses when the licence's support period has ended;
+2. takes a backup (database, documents, settings);
+3. switches maintenance mode on — users see a "being updated" notice and background workers pause;
+4. loads the new images, applies the database migrations and waits for readiness, which refuses a build whose expected schema is missing;
+5. runs smoke checks and switches maintenance off.
 
-```bash
-./scripts/release_manifest.py --commit <accepted-sha> --out release-manifest.json
-./scripts/check_deployment_parity.py --frontend https://kynexone.vercel.app --api https://zayra-ai-workforce.onrender.com --candidate <accepted-sha>
-```
-
-Confirm readiness, source parity and configured tenant gates after promotion. Then run the accepted cross-role smoke journey, including a fresh persisted read and critical authorization refusal. Mobile and workers are outside the two-tier parity check and require their own compatible release records.
+After an upgrade, confirm the version on **Organisation Admin → Licence** or `scripts/status.sh`, then run the accepted cross-role smoke journey, including a fresh persisted read and a critical authorization refusal. The mobile app and KynexBridge are released separately and must stay compatible with the server versions in support.
 
 ## Monitoring and triage
 
-Monitor API liveness and readiness separately, frontend/API build identities, failed authentication, business-request errors, migration failures, background job status, document retrieval and integration reconciliation. Define alert thresholds from observed operating behavior and the contracted service scope; no measured production availability or contractual SLA is established here.
+`scripts/status.sh` reports the containers, readiness, the version, the licence and its usage. Monitor API liveness and readiness separately, failed authentication, business-request errors, migration failures, background job status, document retrieval, disk space, backup success and integration reconciliation. No measured availability or contractual SLA is established here; those come from the organisation's support agreement.
 
-For an incident, record time, affected release, tenant/company, sanitized correlation IDs, expected versus actual result and financial exposure. Determine whether the fault is access, configuration, schema, data, client build, API behavior or external provider failure before changing the system. Avoid repeated redeployments as diagnosis. For financial duplicates or uncertain bank outcomes, pause the affected operation and reconcile external evidence before retrying.
+For an incident, record time, version, company, sanitized correlation IDs, expected versus actual result and financial exposure. Determine whether the fault is access, licence, configuration, schema, data, client build, API behavior, server resources or an external provider before changing the system. For financial duplicates or uncertain bank outcomes, pause the affected operation and reconcile external evidence before retrying.
 
-Preserve relevant logs and immutable record history. Do not delete financial evidence or broaden access to make a failed process pass. A user-facing error should name a useful next step while excluding internal secrets and unrelated personnel information.
+Preserve relevant logs (`docker compose logs`) and immutable record history. Do not delete financial evidence or broaden access to make a failed process pass. A user-facing error should name a useful next step while excluding internal secrets and unrelated personnel information.
 
 ## Recovery and rollback
 
-Start with deployment parity. If the UI is ahead of a known-good backend, the existing procedure can restore a matching Vercel deployment by promoting its previous alias rather than rebuilding. Backend rollback uses the approved previous image and requires readiness verification. Schema rollback is a separate decision: additive structures can usually remain, while destructive downgrade may be refused once real financial evidence exists.
+If an upgrade fails, KynexOne stays in maintenance and the script prints the two ways back:
 
-Before any schema reversal, take an approved recovery checkpoint, confirm the currently serving code no longer uses structures to be removed, and test the exact down migration against representative nonproduction data. Preserve loan, approval, ERP confirmation and benefit histories. Prefer a forward corrective release where downgrade would lose evidence or remove policy enforcement.
+1. **Previous version**: set `KYNEXONE_VERSION` back and run `docker compose up -d backend web`. Because migrations are additive, the previous version runs on the upgraded database.
+2. **Restore** the backup the upgrade took, which also returns the version. A restore replaces the database (including the data-protection keys), the documents and the settings, and refuses while the application runs.
 
-After recovery, rerun parity, readiness, impacted business and negative authorization journeys. Reconcile payroll/GL/payment records affected during the incident. Complete the incident record with cause, actual customer impact, corrective change and evidence of recovery.
+Prefer a forward corrective release where a restore would lose work entered after the upgrade. Never run a down migration at an installation. After recovery, check readiness, the version and the impacted business and negative authorization journeys, and reconcile payroll/GL/payment records affected during the incident.
 
 ## Mobile release and support boundary
 
-The mobile README documents Expo/EAS production, preview and development channels and fingerprint-based runtime compatibility. Native dependencies or configuration changes require a new store binary. Supported OTA publishing uses the repository's profile-specific scripts; a JavaScript update cannot repair a missing native module or reach an incompatible runtime.
+The mobile README documents Expo/EAS channels and fingerprint-based runtime compatibility. The same store app serves every installation: on first start it asks for the organisation's server (QR code or typed HTTPS address). Native dependencies or configuration changes require a new store binary; a JavaScript update cannot repair a missing native module or reach an incompatible runtime. Push notifications are off unless the installation switches them on.
 
-Before public distribution, accept physical iOS/Android behavior, MFA screen protection, push credentials, connectivity recovery, upgrades, rollback and Arabic layout. The README describes uncompleted biometric backend and offline replay work. Store approval, real-device results and supported OS versions must be recorded rather than inferred from an application ID.
+Before public distribution, accept physical iOS/Android behavior, server selection, MFA screen protection, connectivity recovery, upgrades and Arabic layout. Store approval, real-device results and supported OS versions must be recorded rather than inferred from an application ID.
 
 ## Sources
 
-- [Deployment and rollback runbook](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/docs/DEPLOY_ROLLBACK_RUNBOOK.md)
-- [Release identity and parity](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/docs/RELEASE_CANDIDATE_AND_PARITY.md)
-- [October 11 financial/statutory rollout requirements](https://github.com/Kode-Kinetics/kynexone/pull/223)
-- [Mobile release procedure](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/mobile/README.md)
+- [Client installation guide](../CLIENT_INSTALLATION.md)
+- [Installation kit](../../deploy/client/README.md)
+- [Release bundle builder](../../deploy/release/make-bundle.sh)
+- [Release identity and parity](../RELEASE_CANDIDATE_AND_PARITY.md)
+- [Mobile release procedure](../../mobile/README.md)

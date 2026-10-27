@@ -4,6 +4,14 @@
 **Approved abstraction:** `Zayra.Api/Infrastructure/Data/ScopedBypass.cs`
 **Status at Wave 0 close:** 209 raw call sites across 55 files (ratcheted down from 210)
 
+> **Client-installed product (current).** An installation holds one organisation, so the tenant half of
+> every bypass below no longer separates customers: the only boundary a bypass can cross is between the
+> organisation's companies. The register stays authoritative for the company restriction. The tenant
+> predicate, `TenantWide`'s tenant argument and this register's tenant column are removed with the
+> single-organisation schema restructure, together with the ratchet counts; until then the ratchet
+> (`QueryFilterBypassRatchetTests`) still applies unchanged. Wording below that says "cross-tenant" or
+> "subscriber" describes the retired hosted product.
+
 ---
 
 ## 1. Why this register exists

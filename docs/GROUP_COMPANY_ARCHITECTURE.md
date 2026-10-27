@@ -1,6 +1,6 @@
-# Group → Company Architecture
+# Organisation → Company Architecture
 
-**Summary.** Zayra models a customer as a Tenant (the group / subscriber — the hard multi-tenancy boundary) that owns one or more Companies (legal entities — the compliance and operational boundary). Companies own Branches (physical work locations) and are organized through Departments. Company-level data isolation is enforced in the data layer via two EF Core global-query-filter tiers over `ICompanyScoped` / `ICompanyScopedOperational`, plus write-side CompanyId stamping/validation in `ZayraDbContext.SaveChangesAsync`. A tenant's `AccountType` (`SingleCompany` | `Group`) decides whether the multi-company product surface is unlocked at all.
+**Summary.** A KynexOne installation serves one **Organisation** (the group), created once by `--setup-organisation`, which owns one or more Companies (legal entities — the compliance and operational boundary). Until the single-organisation schema restructure, the organisation is stored as the only row of `tenants` and every row still carries its `TenantId`. Companies own Branches (physical work locations) and are organized through Departments. Company-level data isolation is enforced in the data layer via two EF Core global-query-filter tiers over `ICompanyScoped` / `ICompanyScopedOperational`, plus write-side CompanyId stamping/validation in `ZayraDbContext.SaveChangesAsync`. The licence's `AccountType` (`SingleCompany` | `Group`), copied onto the organisation when the licence is imported, decides whether the multi-company product surface is unlocked at all.
 
 ---
 
@@ -8,11 +8,11 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ TENANT  (customer / group)               HARD ISOLATION BOUNDARY         │
-│  Tenant.cs — Id, Name, Slug, AccountType, IsActive                       │
-│  EF global tenant filter on every ITenantOwned/INullableTenantOwned      │
-│  entity. Cross-group access is impossible: no claim, grant, or scope     │
-│  mode ever crosses a TenantId.                                           │
+│ ORGANISATION  (the installation's one group)                             │
+│  Tenant.cs — Id, Name, Slug ("main"), AccountType, IsActive              │
+│  Exactly one row; created only by --setup-organisation. The EF tenant    │
+│  filter on ITenantOwned/INullableTenantOwned still applies until the     │
+│  schema restructure removes TenantId.                                    │
 │                                                                          │
 │   ┌────────────────────────────┐   ┌────────────────────────────┐        │
 │   │ COMPANY  (legal entity)    │   │ COMPANY                    │        │
@@ -36,25 +36,25 @@
 
 | Boundary | Entity | Nature | Enforcement |
 |---|---|---|---|
-| Customer / group | `Domain/Entities/Tenant.cs` | **Hard isolation.** One tenant = one subscribing customer (a group of companies or a single company). | EF global query filter on every tenant-owned entity (`Data/ZayraDbContext.cs`, `ApplyTenantQueryFilters`); `TenantOwnershipBootAssertion` fails boot if an entity carries `TenantId` without the interface. Cross-tenant access has no code path. |
+| Organisation (group) | `Domain/Entities/Tenant.cs` | The installation's one organisation (a group of companies or a single company). There is no second organisation to isolate from. | `OrganisationProvisioningService` is the only code that inserts it (`OrganisationCreationDoorTests`). The EF tenant filter (`Data/ZayraDbContext.cs`, `ApplyTenantQueryFilters`) and `TenantOwnershipBootAssertion` remain until the restructure. |
 | Legal entity / compliance / operations | `Models/Company.cs` | Carries the legal identity: `LegalNameEn/Ar`, `RegistrationNumber`, `TaxNumber`, `WpsEmployerId`, `GosiEmployerId`, `QiwaEstablishmentId`, `CountryCode`, `Jurisdiction`, `DefaultCurrency`. Payroll runs, attendance, leave, finance and compliance records hang off it. | Company-tier EF query filters + write-side stamping (below). Per-entity governance via `CompanyTaxPolicy` / `CompanyComplianceProfile` (`Models/CompanyGovernance.cs`). |
 | Physical / work location | `Branch` | Non-nullable `Guid CompanyId` child — a branch cannot exist outside a company. Visibility follows the parent Company. | Deliberately allow-listed out of the scoped-filter interface in `Infrastructure/Boot/CompanyScopeBootAssertion.cs` (the nullable-CompanyId interface contract cannot apply to a non-nullable FK). |
 | Organizational | `Department` | Hierarchy for reporting lines and data scoping (`DataScopeLevel.Department`). | Organizational, not an isolation boundary; relates to Company through the org structure. |
 
 ## 2. AccountType: SingleCompany vs Group
 
-`Tenant.AccountType` (`Domain/Entities/Tenant.cs`) is a **product-behavior** switch, deliberately distinct from `TenantSubscription.MaxCompanies`, which stays the commercial limit: *AccountType drives what the product does; MaxCompanies drives how much of it the customer paid for* (verbatim intent from the `TenantAccountTypes` doc comment).
+The account type comes from the licence (`LicencePayload.AccountType`) and is copied onto the organisation by `LicenceImporter`. It is a **product-behavior** switch, distinct from the licence's `MaxCompanies` limit: *AccountType drives what the product does; MaxCompanies drives how many companies the licence allows*.
 
-- **`SingleCompany`** (default for existing and new tenants): the tenant operates exactly one internal default company. `CompaniesController` blocks creating a second active company for non-Group tenants regardless of MaxCompanies (`Controllers/CompaniesController.cs:92-101`). The frontend shows no company switcher; the company dimension exists in the schema but is invisible to the customer.
-- **`Group`**: unlocks multi-company provisioning, the company switcher, and group-admin surfaces. Set by Platform Admin (`PlatformController.SetAccountType`, `Controllers/PlatformController.cs:934-970`) or auto-promoted by `CompanyScopeBackfill` step 5 when a tenant already operates >1 active company.
-- **Downgrade guard**: `Group → SingleCompany` is rejected while the tenant has multiple active companies ("Deactivate the extra companies first", `PlatformController.cs:951-961`).
+- **`SingleCompany`** (the default): the organisation operates exactly one company. `CompanyCreationGate` blocks creating a second active company whatever `MaxCompanies` says. The frontend shows no company switcher; the company dimension exists in the schema but is invisible to the user.
+- **`Group`**: unlocks multi-company provisioning, the company switcher and group-admin surfaces. `CompanyCreationGate` enforces the licence's `MaxCompanies`. `CompanyScopeBackfill` step 5 still promotes an organisation that already operates more than one active company.
+- **Downgrade guard**: importing a `SingleCompany` licence is refused while the organisation has more than one active company ("Deactivate the extra companies or obtain a Group licence", `LicenceImporter`).
 
 ## 3. The two company-scoping tiers
 
 Defined in `Domain/Entities/ICompanyScoped.cs`; filter composition in `Data/ZayraDbContext.cs` (`SetTenantFilterNonNull` / `SetTenantFilterNullable`, ~lines 2740-2816). Both tiers AND a company predicate into the single per-entity `HasQueryFilter` alongside the tenant and soft-delete predicates. The naming contract is strict: the property MUST be exactly `CompanyId` of type `Guid?`.
 
 ### `ICompanyScoped` (base) — config / templates
-`CompanyId == null` means **"tenant-wide / shared across companies"** and is visible to every user in the tenant. Use only for configuration and template entities (e.g. `LeavePolicy`, `SalaryStructure`, tenant-default `CompanyTaxPolicy` rows).
+`CompanyId == null` means **"organisation-wide / shared across companies"** and is visible to every user in the organisation. Use only for configuration and template entities (e.g. `LeavePolicy`, `SalaryStructure`, organisation-default `CompanyTaxPolicy` rows).
 
 Filter: `_isGroupScope || CompanyId == null || _companyScopeIds.Contains(CompanyId)`
 
@@ -77,13 +77,13 @@ Read filters cannot stop a request from *writing* into another company, and a fo
 
 **Added rows, `CompanyId` null** → server-side resolution, in order:
 1. **(a) Owning employee's company** — via `EmployeeId` (int/int?) or `EmployeeIntId` linkage. The "safe route": ESS and manager flows never carry a company explicitly. Actor must have access to the resolved company.
-2. **(b) Tenant has exactly one active company** → that company (the SingleCompany case).
-3. **(c) Actor's scope covers exactly one of the tenant's active companies** → that one.
-4. **(d) Otherwise FAIL CLOSED** — `InvalidOperationException("company_scope_required…")`: Group tenants require explicit company context.
+2. **(b) The organisation has exactly one active company** → that company (the SingleCompany case).
+3. **(c) Actor's scope covers exactly one of the organisation's active companies** → that one.
+4. **(d) Otherwise FAIL CLOSED** — `InvalidOperationException("company_scope_required…")`: Group organisations require explicit company context.
 5. (Zero active companies → no company dimension yet; null passes through.)
 
 **Modified rows** → reassigning or nulling-out a non-null `CompanyId` is blocked (`company_reassignment_blocked`) — inter-company transfers must arrive as an explicit workflow that opts in. Assigning a previously-null `CompanyId` is allowed (repair) but access-validated.
 
 ## 6. Data backfill and boot order
 
-On startup: `MigrateAsync` → `CompanyScopeBackfill.RunAsync` (`Infrastructure/Boot/CompanyScopeBackfill.cs`, idempotent, config-gated by `CompanyScope:Backfill`) → `CompanyScopeBootAssertion`. The backfill ensures every active tenant has a default company, assigns employees, walks employee-linked operational tables per company, sweeps stragglers to the default company, and promotes multi-company tenants to `AccountType = Group`. Details in the migration runbook (`docs/GROUP_COMPANY_MIGRATION_RUNBOOK.md`).
+On startup: `MigrateAsync` → `CompanyScopeBackfill.RunAsync` (`Infrastructure/Boot/CompanyScopeBackfill.cs`, idempotent, config-gated by `CompanyScope:Backfill`) → `CompanyScopeBootAssertion`. The backfill ensures the organisation has a default company, assigns employees, walks employee-linked operational tables per company, sweeps stragglers to the default company, and promotes a multi-company organisation to `AccountType = Group`. Details in the migration runbook (`docs/GROUP_COMPANY_MIGRATION_RUNBOOK.md`).

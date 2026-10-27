@@ -18,9 +18,9 @@ It extends the existing company operations manual and process-flow playbook. It 
 
 ## Evidence convention
 
-**Implemented** means current source contains a capability. **Bounded tested** means a referenced acceptance record covers a particular release, environment and scenario. **Gated** means deployment or tenant enablement is required before use. **Not established** means completion has not been demonstrated by the reviewed evidence. A successful automated check does not establish external bank acceptance, public mobile distribution or independent certification.
+**Implemented** means current source contains a capability. **Bounded tested** means a referenced acceptance record covers a particular release, environment and scenario. **Gated** means licensing or the organisation's module switch is required before use. **Not established** means completion has not been demonstrated by the reviewed evidence. A successful automated check does not establish external bank acceptance, public mobile distribution or independent certification.
 
-The reviewed source candidate is `76985c559e9b51c246a4a48ab88e0e14eedc1ae1`. At 04:55:02 UTC on 11 October, the observed deployed revision was `0e54b4f51e4cea94fd03f934ae92e20ce7cc1d0d`; release reconciliation remains necessary before newer source behavior is represented as deployed. Health responses identify builds; they do not certify customer workflows or tenant settings.
+The reviewed source candidate is `76985c559e9b51c246a4a48ab88e0e14eedc1ae1`. KynexOne is installed on each organisation's own server, so what an organisation runs is the release version on that server (`scripts/status.sh`). Health responses identify builds; they do not certify customer workflows or an installation's settings.
 
 ## Documentation control
 
@@ -32,5 +32,5 @@ Each customer should receive a concise deployment schedule listing legal entitie
 
 - [Pinned repository](https://github.com/Kode-Kinetics/kynexone/tree/76985c559e9b51c246a4a48ab88e0e14eedc1ae1)
 - [GL and statutory release work, PR 223](https://github.com/Kode-Kinetics/kynexone/pull/223): implementation and verification claims are attributed to that delivery report until independently reproduced on the deployment.
-- [Observed frontend build](https://kynexone.vercel.app/build-info) and [API build](https://zayra-ai-workforce.onrender.com/health/live)
+- [Client installation guide](../CLIENT_INSTALLATION.md)
 

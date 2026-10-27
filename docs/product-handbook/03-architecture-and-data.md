@@ -2,27 +2,33 @@
 
 ## Service architecture
 
-The reviewed stack consists of a Next.js/TypeScript web application on Vercel, a .NET 8/EF Core enterprise API on Render, PostgreSQL on Neon and S3-compatible document storage identified in the repository as Backblaze B2. A React Native/Expo mobile client uses the same API. The repository also contains a Node AI service; its presence does not establish the topology or readiness of every deployed AI capability.
+KynexOne is installed on the organisation's own server and serves that one organisation. The installation kit ([`deploy/client/`](../../deploy/client/README.md)) runs every component as a container behind one HTTPS address; nothing depends on a hosted service. See the [client installation guide](../CLIENT_INSTALLATION.md).
 
 | Component | Responsibility | Operating implication |
 |---|---|---|
-| Web client | Role-aware workforce interaction and presentation | Frontend release must remain compatible with API release and enabled features |
-| Enterprise API | Authorization, validation, business state, persistence and audit | Business invariants must be enforced here, including direct-call refusals |
-| PostgreSQL | Operational records, policy history, approvals and financial evidence | Migrations, uniqueness and concurrency behavior are release dependencies |
-| Document storage | Employee documents and receipt bytes | Authorization must protect both metadata and actual downloads |
-| Mobile client | Role-based ESS and approval journeys | Store binaries and OTA runtime compatibility require separate evidence |
-| AI capability | Advisory assistance and selected insights | Sensitive actions require normal permissions and authoritative workflows |
+| Reverse proxy (Caddy) | The one public address; TLS (internal CA, Let's Encrypt or the organisation's certificate) | Only ports 80 and 443 are published |
+| Web client (Next.js) | Role-aware workforce interaction and presentation | Shipped in the same release as the API; the two always carry one version |
+| Enterprise API (.NET 8) | Authorization, validation, business state, persistence, audit, licence enforcement | Business invariants must be enforced here, including direct-call refusals |
+| PostgreSQL 16 | Operational records, policy history, approvals, financial evidence, data-protection keys, the installation licence | Backed up by `backup.sh`; migrations apply on install and upgrade |
+| Redis | Caching and rate limiting | Holds nothing that must survive a restore |
+| Document storage | Employee documents and receipt bytes, in a local volume or the organisation's S3-compatible store | Authorization must protect both metadata and actual downloads |
+| Mobile client (Expo) | Role-based ESS and approval journeys | Pointed at the organisation's server on first start; HTTPS only |
+| KynexBridge | Polls attendance devices on a branch network and posts to the API | Installed on that network, not on the KynexOne server |
+| AI capability | Advisory assistance and selected insights | Off unless `AI_PROVIDER` is set and the licence grants an allowance |
 
-Internal `Zayra.*` namespaces and the historical API hostname are retained build identities. They should not be renamed as a branding cleanup without a migration plan. 
+Internal `Zayra.*` namespaces are retained build identities. They should not be renamed as a branding cleanup without a migration plan.
+
+## The licence
+
+A signed licence file (ECDSA P-256) states the installation id it belongs to, the organisation, the limits (employees, users, administrators, companies), the modules and optional features, the monthly AI allowance, the support period and the expiry with grace days. The API verifies the signature whenever it loads the licence and reloads it every minute, so an imported licence takes effect without a restart. Limits are enforced at the action that would exceed them; after grace, everything except sign-in and licence administration answers "licence expired". A missing or invalid licence never deletes data.
+
 ## Business and isolation model
 
-A **Tenant** is the subscriber/group boundary. A **Company** is a legal entity and operational/compliance boundary within that tenant. A **Branch** is a work location belonging to a company. Departments represent organization and reporting rather than a separate customer boundary. Grades help define salary and benefit defaults; cost centers support workforce/financial classification. A company's country, jurisdiction and currency determine which rule context its payroll should use.
+The **Organisation** is the installation's one top-level boundary; it is created once, by the installer, and there is no second organisation. A **Company** is a legal entity and operational/compliance boundary within it. A **Branch** is a work location belonging to a company. Departments represent organization and reporting rather than a separate customer boundary. Grades help define salary and benefit defaults; cost centers support workforce/financial classification. A company's country, jurisdiction and currency determine which rule context its payroll should use. How many companies may exist is a licence limit.
 
-Tenant account type controls SingleCompany versus Group product behavior. Company quotas are a separate subscription consideration. A SingleCompany tenant cannot create a second active company merely because its commercial limit permits one. Downgrading a Group tenant requires resolving additional active companies.
+The data layer still carries an organisation key (`TenantId`) on every row and filters by it, alongside two company-scoping tiers; the schema restructure for a single organisation removes that key. Shared configuration/templates may use a null company to represent organisation-wide defaults. Operational records with an unassigned company are excluded from ordinary company-scoped users, preventing a missing assignment from becoming shared data. Organisation-scoped repair access is limited to organisation administrators. Write-side enforcement resolves a new operational record's company from the employee, a sole active company or a sole permitted scope; ambiguity fails rather than guessing.
 
-The documented data-layer design combines tenant filtering with two company-scoping tiers. Shared configuration/templates may use a null company to represent tenant-wide defaults. Operational records with an unassigned company are excluded from ordinary company-scoped users, preventing a missing assignment from becoming shared data. Group-scoped repair access remains within the same tenant. Write-side enforcement resolves a new operational record's company from the employee, a sole active company or a sole permitted scope; ambiguity fails rather than guessing.
-
-These controls are design statements, not a claim of mathematically impossible leakage. Acceptance must include read, write, export, attachment, background-worker and privileged-bypass cases. Jobs without an interactive context require deliberate tenant/company handling. An inter-company transfer must use a defined workflow and preserve original-company financial authority.
+These controls are design statements, not a claim of mathematically impossible leakage. Acceptance must include read, write, export, attachment, background-worker and privileged-bypass cases between companies. Jobs without an interactive context require deliberate company handling. An inter-company transfer must use a defined workflow and preserve original-company financial authority.
 
 ## Data authority and lifecycle
 
@@ -53,5 +59,5 @@ An accepted release should include a pinned source SHA, matching tier identifier
 
 - [Repository stack](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/README.md)
 - [Frontend dependency manifest](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/frontend/package.json)
-- [Tenant/company architecture](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/docs/GROUP_COMPANY_ARCHITECTURE.md)
-- [Deployment and rollback](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/docs/DEPLOY_ROLLBACK_RUNBOOK.md)
+- [Organisation/company architecture](https://github.com/Kode-Kinetics/kynexone/blob/76985c559e9b51c246a4a48ab88e0e14eedc1ae1/docs/GROUP_COMPANY_ARCHITECTURE.md)
+- [Client installation guide](../CLIENT_INSTALLATION.md)

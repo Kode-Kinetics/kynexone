@@ -1,5 +1,7 @@
 # Deploy & Rollback Runbook (P0-4)
 
+> **Hosted-era runbook.** The Render/Vercel/Neon pipeline described here is retired; installations upgrade and roll back with the kit (`docs/CLIENT_INSTALLATION.md` §12). The data checks below (migration pre-checks, exposure queries) still apply and are read by tests, so this file stays here.
+
 Covers the migration-gated deploy pipeline and how to roll back a bad release without
 tenant-wide `42703`/`42P01` outages. Read this before promoting or reverting a backend release.
 

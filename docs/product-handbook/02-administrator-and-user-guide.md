@@ -4,13 +4,13 @@ This guide describes the controlled operating sequence for the reviewed product.
 
 ## 1. Configure an organization
 
-**Owner:** authorized administrator and HR. **Prerequisites:** active tenant, agreed legal entity scope and country/jurisdiction, separate operational approvers and a signed configuration workbook.
+**Owner:** authorized administrator and HR. **Prerequisites:** an installed KynexOne with a valid licence, agreed legal entity scope and country/jurisdiction, separate operational approvers and a signed configuration workbook.
 
-Create the company with legal identifiers, currency and applicable jurisdiction. Add branches, departments, cost centers and grades before employee placement. Configure leave, attendance, salary and benefit policies for the intended company. Decide whether the tenant operates as SingleCompany or Group: the group account type enables multi-company surfaces; a commercial company allowance alone does not unlock the behavior. Assign each user an appropriate company scope and permissions.
+Create the company with legal identifiers, currency and applicable jurisdiction. Add branches, departments, cost centers and grades before employee placement. Configure leave, attendance, salary and benefit policies for the intended company. Whether the organisation operates as SingleCompany or Group comes from its licence: the Group account type enables multi-company surfaces, and the licence's company limit caps how many companies may exist. Assign each user an appropriate company scope and permissions.
 
 Save and reload every configuration. Check the resolved company, currency, policy dates and grade defaults from a second authorized session. Then use a company-restricted user to confirm sibling-company records are inaccessible. Avoid changing a default while a linked process is pending unless its governing workflow allows the change. Operational records must retain their original company and history; a personnel transfer is a governed process, not a direct reassignment of financial rows.
 
-**Recovery:** if a record has the wrong placement, correct draft data through the supported editor before activation. If financial or approval history exists, use the relevant amendment or transfer process. Escalate unexpected company visibility with tenant/company identifiers and record IDs, without exporting another company's personnel data.
+**Recovery:** if a record has the wrong placement, correct draft data through the supported editor before activation. If financial or approval history exists, use the relevant amendment or transfer process. Escalate unexpected company visibility with company identifiers and record IDs, without exporting another company's personnel data.
 
 ## 2. Recruit, hire and activate
 
@@ -38,7 +38,7 @@ During Add Employee, review eligible grade defaults in Employment and Review. Op
 
 The approver reviews each proposal in Approvals. Multi-step routes create the entitlement only after the final independent decision. Pending requests do not change the employee package. Use Edit terms for an additional-benefit amendment or Adjust existing benefit for an authorized grade exception. Ending an additional benefit requires a last covered day and a fresh approval; mandatory benefits cannot be removed through this flow. A review date flags review and does not itself end coverage.
 
-Verify both the approval record and the resulting employee assignment after reload. Check that grade defaults remain unchanged, employee-visible terms exclude confidential HR justification, and history identifies the original policy and subsequent decisions. Changed company, grade or policy facts can invalidate a pending proposal: withdraw and resubmit rather than approving stale terms. Tenants using the separate `release_a` package authority must stay on that controlled path; this guide does not certify unfinished offer/renewal exceptions there.
+Verify both the approval record and the resulting employee assignment after reload. Check that grade defaults remain unchanged, employee-visible terms exclude confidential HR justification, and history identifies the original policy and subsequent decisions. Changed company, grade or policy facts can invalidate a pending proposal: withdraw and resubmit rather than approving stale terms. Organisations using the separate `release_a` package authority must stay on that controlled path; this guide does not certify unfinished offer/renewal exceptions there.
 
 ## 5. Submit a benefit reimbursement
 
@@ -79,6 +79,30 @@ For rescheduling or receipt/disbursement reversals, request the controlled corre
 Record separation and assigned tasks. Review settlement inputs, end-of-service calculation and remaining payroll-linked obligations. Independently approve the outcome, process the relevant payroll and record external settlement evidence separately. Confirm access removal and retained historical evidence. Standalone loans continue as receivables and require separate finance collection.
 
 Verify partial failures independently: an offboarding task completion must not conceal failed access revocation or unrecorded external payment. Restore or correct only through the authorized process. The full exit-to-payment-to-access-removal journey remains a required customer acceptance gate.
+
+## 9. Installation administration
+
+**Owner:** organisation administrator, with the organisation's IT team for anything on the server. The commands are in the [client installation guide](../CLIENT_INSTALLATION.md).
+
+**Licence.** **Organisation Admin → Licence** shows the licensee, edition, state (Valid, Grace, Expired or Missing; a licence with a broken signature, for another installation or not yet valid shows as Missing), expiry and support dates, and usage against each limit (active employees, active users, companies). Import a renewed or changed licence on the same tab; it takes effect within a minute without a restart. When a limit is reached, the action that would exceed it is refused and nothing existing changes. After the grace days, only sign-in and this tab keep working until a valid licence is imported; no data is removed.
+
+**Installation id.** The installation id identifies this server to the supplier and is written into the licence. Send it (from the Licence tab or `scripts/status.sh`) when asking for a licence. A licence issued for another installation is refused. A restore onto a new server keeps the id, because it lives in the database.
+
+**Maintenance.** The Licence tab can switch maintenance mode on and off. While it is on, users see a "being updated" notice and background workers pause; administrators can still sign in to switch it off. Upgrades switch it on and off themselves; if one stops half way, maintenance stays on until it is resolved.
+
+**Mobile app.** The Licence tab shows the QR code employees scan in the KynexOne app to connect to this server.
+
+**Backups.** Backups are taken on the server with `scripts/backup.sh`, nightly and before every upgrade, and must be copied off the server. A restore replaces everything since the backup was taken; agree it with the business before running it.
+
+| The organisation's administrators can | They cannot |
+|---|---|
+| Create companies, branches, departments, grades and policies within the licence's limits | Exceed a licence limit, or switch on a module the licence does not include |
+| Manage users, roles, permissions and company scopes | Edit the licence or extend its dates |
+| Switch optional modules on or off within the licence | Switch off statutory modules a company's country requires |
+| Import a licence, switch maintenance, show the mobile QR code | Create a second organisation on the installation |
+| (IT team) change SMTP, storage, AI, push and TLS settings in `.env` | Undo a payroll lock or approval history by editing the database |
+
+**Recovery:** for "licence expired" or "licence missing", check the dates and the installation id on the Licence tab and ask the supplier for a corrected licence. For a "being updated" notice that does not clear, read the upgrade's output before switching maintenance off.
 
 ## Sources
 
