@@ -59,6 +59,7 @@ const ar: Record<string, string> = {
   "Password does not meet the workspace security policy.": "كلمة المرور لا تستوفي سياسة الأمان في شركتك.",
   "That took too long. Sign in again with the temporary password.": "انتهت المهلة. سجّل الدخول مجددًا بكلمة المرور المؤقتة.",
   "Your password could not be changed. Try again in a moment.": "تعذّر تغيير كلمة المرور. حاول مرة أخرى بعد قليل.",
+  "Your new password is saved. Sign in with it.": "تم حفظ كلمة المرور الجديدة. سجّل الدخول بها.",
 };
 
 export const userPasswordReset = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

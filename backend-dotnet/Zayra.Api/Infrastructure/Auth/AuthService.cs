@@ -250,7 +250,7 @@ public class AuthService : IAuthService
         // the caller is handed a single-use reset token (redeemed by ResetPasswordAsync, which refuses the
         // temporary password itself) and signs in again with their own password, MFA included.
         if (user.MustChangePassword && !ssoOnly)
-            return await IssuePasswordChangeChallengeAsync(user, tenantSlug, context, cancellationToken);
+            return await IssuePasswordChangeChallengeAsync(user, tenantSlug, verifiedPasswordHash, context, cancellationToken);
 
         // Phase 4b — MFA challenge: if the user has TOTP enabled, issue a short-lived challenge
         // token instead of full session tokens. Full tokens are only issued after the TOTP code
@@ -362,31 +362,54 @@ public class AuthService : IAuthService
     /// <summary>How long the sign-in-issued "choose your own password" token lives.</summary>
     internal const int PasswordChangeTokenMinutes = 15;
 
-    private async Task<AuthLoginResult> IssuePasswordChangeChallengeAsync(User user, string tenantSlug, RequestContext context, CancellationToken ct)
+    private async Task<AuthLoginResult> IssuePasswordChangeChallengeAsync(User user, string tenantSlug, string verifiedPasswordHash,
+        RequestContext context, CancellationToken cancellationToken)
     {
-        var issuedAtUtc = DateTime.UtcNow;
         var resetToken = _tokenService.CreateSecureToken();
-        _db.PasswordResetTokens.Add(new PasswordResetToken
+        var tokenHash = _tokenService.HashToken(resetToken);
+        var auditId = Guid.NewGuid();
+        var tenantId = user.TenantId;
+        var userId = user.Id;
+
+        // Under the same user-row lock as ResetPasswordAsync / AdminSetTemporaryPasswordAsync, and only while the
+        // temporary password this sign-in proved is still the stored one. Otherwise a sign-in racing the owner's own
+        // reset could mint a token after that reset spent every outstanding one, and overwrite the owner's choice.
+        async Task IssueOnceAsync(CancellationToken ct)
         {
-            UserId = user.Id,
-            TokenHash = _tokenService.HashToken(resetToken),
-            ExpiresAtUtc = issuedAtUtc.AddMinutes(PasswordChangeTokenMinutes),
-            CreatedAtUtc = issuedAtUtc,
-            CreatedByIp = context.IpAddress,
-        });
-        _db.LoginActivities.Add(new LoginActivity
-        {
-            TenantId = user.TenantId,
-            UserId = user.Id,
-            EmailAttempted = user.Email,
-            EventType = LoginEventTypes.PasswordResetRequested,
-            FailureReason = "must_change_password",
-            IpAddress = context.IpAddress,
-            UserAgent = context.UserAgent,
-        });
-        await _db.SaveChangesAsync(ct);
-        await _auditService.WriteAsync("auth.password_change_required", "User", user.Id.ToString(),
-            context with { UserId = user.Id, TenantId = user.TenantId }, null, ct);
+            _db.ChangeTracker.Clear();
+            var issuedAtUtc = DateTime.UtcNow;
+            var current = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
+            if (current is null || current.IsDeleted || !current.IsActive || !current.MustChangePassword
+                || !string.Equals(current.PasswordHash, verifiedPasswordHash, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+
+            _db.PasswordResetTokens.Add(new PasswordResetToken
+            {
+                UserId = userId,
+                TokenHash = tokenHash,
+                ExpiresAtUtc = issuedAtUtc.AddMinutes(PasswordChangeTokenMinutes),
+                CreatedAtUtc = issuedAtUtc,
+                CreatedByIp = context.IpAddress,
+            });
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                TenantId = tenantId,
+                UserId = userId,
+                EmailAttempted = current.Email,
+                EventType = LoginEventTypes.PasswordResetRequested,
+                FailureReason = "must_change_password",
+                IpAddress = context.IpAddress,
+                UserAgent = context.UserAgent,
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId, issuedAtUtc, "auth.password_change_required", "User", userId.ToString(),
+                context with { UserId = userId, TenantId = tenantId }, null));
+            await _db.SaveChangesAsync(ct);
+        }
+
+        await RunCredentialTransactionAsync(IssueOnceAsync, tenantId, auditId, cancellationToken);
         return new AuthLoginResult(null, null)
         {
             PasswordChange = new PasswordChangeChallengeDto(resetToken, PasswordChangeTokenMinutes * 60, tenantSlug),

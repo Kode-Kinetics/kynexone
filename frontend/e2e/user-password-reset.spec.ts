@@ -222,4 +222,37 @@ test.describe('/login after a temporary password', () => {
     const loginBodies = calls.filter((c) => c.path === '/api/auth/login').map((c) => c.body.password);
     expect(loginBodies).toEqual(['Temporary-Pass1!', 'MyOwnPassword9!']);
   });
+
+  test('saved, but the sign-in after it failed: back to sign in, told the new password is saved', async ({ page }) => {
+    const calls: Call[] = [];
+    let logins = 0;
+    await page.route('**/api/**', async (route: Route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+      const body = request.method() === 'GET' ? null : request.postDataJSON();
+      calls.push({ method: request.method(), path: url.pathname, body });
+      if (url.pathname === '/api/auth/login') {
+        logins += 1;
+        return logins === 1
+          ? json({ passwordChangeRequired: true, resetToken: 'change-token', expiresInSeconds: 900, tenantSlug: 'kkdemo', message: 'x' })
+          : json({ message: 'Service unavailable' }, 503);
+      }
+      if (url.pathname === '/api/auth/reset-password') return route.fulfill({ status: 204, body: '' });
+      return json(request.method() === 'GET' ? [] : {});
+    });
+
+    await page.goto('/login');
+    await page.locator('#li-em').fill(EMAIL);
+    await page.locator('#li-pw').fill('Temporary-Pass1!');
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.getByTestId('login-new-password').fill('MyOwnPassword9!');
+    await page.getByTestId('login-confirm-password').fill('MyOwnPassword9!');
+    await page.getByRole('button', { name: 'Save and sign in' }).click();
+
+    await expect(page.getByTestId('login-password-change')).toHaveCount(0);
+    await expect(page.locator('#li-pw')).toBeVisible();
+    await expect(page.getByText('Your new password is saved. Sign in with it.')).toBeVisible();
+    expect(calls.filter((c) => c.path === '/api/auth/reset-password')).toHaveLength(1);
+  });
 });

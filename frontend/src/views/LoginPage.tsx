@@ -7,7 +7,7 @@ import {
   AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail,
   ShieldCheck, Smartphone,
 } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { PasswordSavedSignInError, useAuth } from '../contexts/AuthContext';
 import { LocaleProvider, useLocale } from '../contexts/LocaleContext';
 import { authApi, MFA_ERRORS, normalizeBackupCode } from '../api/auth';
 import { BackupCodesStep } from '../components/account/BackupCodesStep';
@@ -279,6 +279,13 @@ function LoginCard() {
       setSignedIn(true);
     }
     catch (err: any) {
+      if (err instanceof PasswordSavedSignInError) {
+        // Saved, but the sign-in after it failed: the change cannot be retried (its token is spent). Back to sign in.
+        setNewPassword(''); setConfirmPassword(''); setPassword(''); setError('');
+        setMode('login');
+        setInfo(t('Your new password is saved. Sign in with it.'));
+        return;
+      }
       const status = err?.response?.status;
       if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
       // The temporary password itself, or one the company's password rules reject: the server says which.

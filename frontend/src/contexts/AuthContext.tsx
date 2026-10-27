@@ -20,6 +20,14 @@ export interface MfaEnrollmentPendingState {
 }
 
 export type LoginOutcome = 'authenticated' | 'mfa' | 'mfa-enroll' | 'password-change';
+
+/** completePasswordChange: the new password WAS saved, but signing in with it then failed (network, 429, 5xx…). */
+export class PasswordSavedSignInError extends Error {
+  constructor(readonly cause: unknown) {
+    super('Your new password is saved, but signing in with it failed.');
+    this.name = 'PasswordSavedSignInError';
+  }
+}
 export type AuthorizationRefreshStatus = 'idle' | 'checking' | 'unavailable';
 
 interface AuthContextValue {
@@ -208,7 +216,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!pending) throw new Error('No password change in progress.');
     await authApi.resetPassword(pending.resetToken, newPassword, pending.tenantSlug);
     passwordChangePending.current = null;
-    return login(pending.email, newPassword, pending.tenantSlug);
+    // The new password is saved from here on. A failed sign-in with it is not a failed change: the token is spent,
+    // so retrying the change could only fail. Say which step failed and let the page send them back to sign in.
+    try {
+      return await login(pending.email, newPassword, pending.tenantSlug);
+    } catch (err) {
+      throw new PasswordSavedSignInError(err);
+    }
   }, [login]);
 
   const verifyMfaChallenge = useCallback(async (code: string | MfaChallengeCode, rememberDevice?: boolean) => {

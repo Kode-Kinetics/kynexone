@@ -214,6 +214,31 @@ public sealed class AdminSetTemporaryPasswordTests
         stillLocked.IsLocked.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task AResetThatLandsWhileTheTemporaryPasswordIsBeingChecked_GetsNoTokenIssuedAfterIt()
+    {
+        var name = Guid.NewGuid().ToString();
+        await using var db = CreateDb(name);
+        var w = await SeedAsync(db);
+        await Controller(db, w, w.AdminId).AdminResetPassword(w.TargetId, new AdminResetPasswordRequest(Temporary, Reason), default);
+
+        // The owner's own reset commits between the temporary password being proven and the token being issued.
+        var hasher = new RacingHasher(() =>
+        {
+            using var other = CreateDb(name);
+            var owner = other.Users.Single(x => x.Id == w.TargetId);
+            owner.PasswordHash = new Pbkdf2PasswordHasher().Hash("OwnersOwnChoice9!");
+            owner.MustChangePassword = false;
+            other.SaveChanges();
+        });
+        var auth = Auth(db, hasher);
+
+        var signIn = () => auth.LoginAsync(new LoginRequest(TargetEmail, Temporary, w.Slug), Ctx, default);
+
+        await signIn.Should().ThrowAsync<UnauthorizedAccessException>();
+        (await db.PasswordResetTokens.AsNoTracking().CountAsync(x => x.UsedAtUtc == null)).Should().Be(0);
+    }
+
     // ── Harness ───────────────────────────────────────────────────────────────
 
     private const string TargetEmail = "temp.target@example.test";
@@ -235,10 +260,25 @@ public sealed class AdminSetTemporaryPasswordTests
 
     private sealed record World(Guid TenantId, string Slug, Guid AdminId, Guid TargetId);
 
-    private static ZayraDbContext CreateDb() => new(
+    private static ZayraDbContext CreateDb(string? name = null) => new(
         new DbContextOptionsBuilder<ZayraDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseInMemoryDatabase(name ?? Guid.NewGuid().ToString())
             .Options);
+
+    /// <summary>A real hasher that runs <paramref name="race"/> once, the first time a password is verified.</summary>
+    private sealed class RacingHasher(Action race) : IPasswordHasher
+    {
+        private readonly Pbkdf2PasswordHasher _inner = new();
+        private Action? _race = race;
+        public string Hash(string password) => _inner.Hash(password);
+        public bool NeedsRehash(string hash) => _inner.NeedsRehash(hash);
+        public bool Verify(string password, string hash)
+        {
+            var ok = _inner.Verify(password, hash);
+            Interlocked.Exchange(ref _race, null)?.Invoke();
+            return ok;
+        }
+    }
 
     private static async Task<World> SeedAsync(ZayraDbContext db, string slug = "kynex-hq")
     {
@@ -287,12 +327,12 @@ public sealed class AdminSetTemporaryPasswordTests
             },
         };
 
-    private static AuthService Auth(ZayraDbContext db)
+    private static AuthService Auth(ZayraDbContext db, IPasswordHasher? hasher = null)
     {
         var tokenService = new JwtTokenService(Jwt);
         var audit = new AuditService(db);
         var totp = new TotpService(DataProtectionProvider.Create("ZayraAdminSetPasswordTests"));
-        return new AuthService(db, new Pbkdf2PasswordHasher(), tokenService, audit, new NoEmail(), Jwt,
+        return new AuthService(db, hasher ?? new Pbkdf2PasswordHasher(), tokenService, audit, new NoEmail(), Jwt,
             new MfaService(db, totp, tokenService, audit), totp, NullLogger<AuthService>.Instance, Configuration);
     }
 
