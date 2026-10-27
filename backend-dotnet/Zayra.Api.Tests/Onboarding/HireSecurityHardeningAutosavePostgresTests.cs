@@ -93,6 +93,8 @@ public sealed class HireSecurityHardeningAutosavePostgresTests
     {
         // A save with no basis cannot say which version it was made from, so same-base exclusion cannot hold for it.
         var (tenantId, companyId, employeeId) = await SeedDraftAsync();
+        async Task<DateTime?> Stamp() { await using var c = _fx.CreateDb(); return await c.Employees.AsNoTracking().Where(e => e.Id == employeeId).Select(e => e.UpdatedAtUtc).FirstAsync(); }
+        var before = await Stamp();
         await using var db = _fx.CreateDb();
         var result = await Controller(db, tenantId).SaveDraft(employeeId, new EmployeeHireController.HireDraftRequest(null, Request("No Basis", companyId)), default);
         var obj = result.Should().BeOfType<ObjectResult>().Subject;
@@ -101,7 +103,7 @@ public sealed class HireSecurityHardeningAutosavePostgresTests
         await using var check = _fx.CreateDb();
         var row = await check.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == employeeId)
             .Select(e => new { e.UpdatedAtUtc, e.EnglishName }).FirstAsync();
-        row.UpdatedAtUtc.Should().BeNull();
+        row.UpdatedAtUtc.Should().Be(before);
         row.EnglishName.Should().Be("Autosave Draft");
     }
 

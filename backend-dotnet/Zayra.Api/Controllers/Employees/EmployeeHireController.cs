@@ -61,8 +61,15 @@ public sealed class EmployeeHireController : ControllerBase
         if (employee is null) return NotFound();
         if (!string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase))
             return Problem(409, "not_a_draft", "Only a draft can be autosaved.");
+        // Same-base exclusion only holds for a save that says which version it was made from.
+        if (body.BaseUpdatedAtUtc is not { } basis)
+        {
+            var missing = Problem(400, "draft_basis_required", "Say which version of the draft this save was made from (baseUpdatedAtUtc).");
+            ((ProblemDetails)missing.Value!).Extensions["field"] = "baseUpdatedAtUtc";
+            return missing;
+        }
         var current = employee.UpdatedAtUtc ?? employee.CreatedAtUtc;
-        if (body.BaseUpdatedAtUtc is { } basis && Math.Abs((current - basis).TotalMilliseconds) > 1)
+        if (Math.Abs((current - basis).TotalMilliseconds) > 1)
             return Problem(409, "draft_changed_elsewhere", "This draft was changed in another window. Reload it before saving.");
 
         var request = body.Request;
