@@ -9,8 +9,8 @@ public sealed record StarterTask(
 /// <summary>
 /// The generic Saudi starter checklist (10-KSA-COMPLIANCE-RULES section 5). It is a template a company COPIES into its own
 /// setup and edits; it is never attached on its own. No government integration is implied (CD8): the Qiwa, GOSI, Muqeem and
-/// Mudad steps are tasks a person does and ticks. Deadlines the rules mark VERIFY are the defaults below and stay configurable
-/// in the copy. A Saudi national gets no Iqama, Muqeem or medical-fitness task (those apply to expatriates only), and no task
+/// Mudad steps are tasks a person does and ticks. Task TEXT states only what an official source states (HRSD, GOSI, CCHI;
+/// 72-CONSULTANT-AUDIT-P2P4 section 2); due-date offsets are planning defaults and stay configurable in the copy. A Saudi national gets no Iqama, Muqeem or medical-fitness task (those apply to expatriates only), and no task
 /// blocks activation unless the company turns that on (CD4).
 /// </summary>
 public static class KsaStarterTemplate
@@ -22,31 +22,31 @@ public static class KsaStarterTemplate
     public static readonly IReadOnlyList<StarterTask> Tasks = new StarterTask[]
     {
         new("Offer and contract signed (Arabic and English)", "توقيع العرض والعقد (عربي وإنجليزي)",
-            "The employment contract must be written and signed before the person starts.", "يجب أن يكون عقد العمل مكتوبًا وموقعًا قبل مباشرة العمل.",
+            "Prepare the written employment contract (Arabic and English) and have both parties sign it.", "أعدّ عقد العمل المكتوب (عربي وإنجليزي) ووقّعه الطرفان.",
             OnboardingOwnerRoles.Hr, -7, NationalityClasses.Any, true),
         new("Ask the employee to complete their profile (ID or Iqama, passport, photo, IBAN)", "طلب استكمال الموظف لملفه (الهوية أو الإقامة، الجواز، الصورة، الآيبان)",
             "Send the profile-completion request from the employee record; the employee confirms their details in Self-Service.", "أرسل طلب استكمال الملف من سجل الموظف؛ يؤكد الموظف بياناته عبر الخدمة الذاتية.",
             OnboardingOwnerRoles.Hr, -5, NationalityClasses.Any, false, "id"),
         new("Qiwa contract documentation and authentication", "توثيق العقد في منصة قوى",
-            "Document the contract on Qiwa. Done by a person; there is no integration. Deadline to be verified for your case (day 0 to day 30).", "وثّق العقد في منصة قوى. تتم بواسطة شخص ولا يوجد ربط آلي. يُتحقق من الموعد لحالتك (من اليوم 0 إلى اليوم 30).",
+            "Document the contract on Qiwa. Done by a person; there is no integration. Confirm the deadline that applies to your case.", "وثّق العقد في منصة قوى. تتم بواسطة شخص ولا يوجد ربط آلي. تأكد من الموعد المطبق على حالتك.",
             OnboardingOwnerRoles.Gov, 7, NationalityClasses.Any, true),
         new("GOSI registration (add the subscriber)", "التسجيل في التأمينات الاجتماعية (إضافة مشترك)",
-            "Register the employee with GOSI at joining and no later than the current GOSI deadline (verify, 15 to 30 days).", "سجّل الموظف في التأمينات عند المباشرة وفي موعد لا يتجاوز المهلة الحالية (يُتحقق منها، من 15 إلى 30 يومًا).",
+            "Register the employee with GOSI. The employer notifies GOSI within the first 15 days of the month after the month of joining.", "سجّل الموظف في التأمينات الاجتماعية. يبلّغ صاحب العمل المؤسسة خلال أول 15 يومًا من الشهر التالي لشهر المباشرة.",
             OnboardingOwnerRoles.Gov, 0, NationalityClasses.Any, true),
-        new("CCHI medical insurance enrolment (employee and up to 3 dependants)", "التسجيل في التأمين الطبي (مجلس الضمان الصحي) للموظف وحتى 3 من التابعين",
-            "Enrol before the Iqama is issued for expatriates, and at joining for Saudi nationals (verify).", "سجّل قبل إصدار الإقامة للوافدين، وعند المباشرة للسعوديين (يُتحقق).",
+        new("CCHI medical insurance enrolment (employee and eligible dependants)", "التسجيل في التأمين الطبي (مجلس الضمان الصحي) للموظف ولتابعيه المستحقين",
+            "The employer insures the employee and eligible dependants. For expatriates, cover is arranged within 10 working days of entry.", "يؤمّن صاحب العمل الموظف وتابعيه المستحقين. للوافدين يُرتَّب التأمين خلال 10 أيام عمل من الدخول.",
             OnboardingOwnerRoles.Hr, 0, NationalityClasses.Any, true),
         new("Medical fitness check (new expatriates)", "الفحص الطبي للياقة (الوافدون الجدد)",
-            "Complete the medical fitness check before the Iqama is issued.", "أكمل الفحص الطبي قبل إصدار الإقامة.",
+            "Complete the medical fitness check where it applies to your case. Confirm the timing that applies.", "أكمل الفحص الطبي إن كان مطلوبًا لحالتك. تأكد من التوقيت المطبق.",
             OnboardingOwnerRoles.Hr, -14, NationalityClasses.Expat, true),
-        new("Work visa and Iqama issuance through Muqeem", "إصدار تأشيرة العمل والإقامة عبر مقيم",
-            "Issue the Iqama within the allowed period after entry (verify, up to 90 days).", "أصدر الإقامة خلال المدة المسموحة بعد الدخول (يُتحقق، حتى 90 يومًا).",
+        new("Work permit and Iqama issuance through Muqeem", "إصدار رخصة العمل والإقامة عبر مقيم",
+            "Issue the work permit within 90 days of entry; the Iqama follows.", "أصدر رخصة العمل خلال 90 يومًا من الدخول؛ وتليها الإقامة.",
             OnboardingOwnerRoles.Gov, 30, NationalityClasses.Expat, true, "id"),
         new("Absher and Muqeem linkage; set the Iqama expiry reminder", "ربط أبشر ومقيم وضبط تنبيه انتهاء الإقامة",
             "Once the Iqama is issued, link it and record its expiry date on the employee record.", "بعد إصدار الإقامة، اربطها وسجّل تاريخ انتهائها في سجل الموظف.",
             OnboardingOwnerRoles.Gov, 35, NationalityClasses.Expat, true, "id"),
         new("WPS and Mudad inclusion: salary account and wage file", "الإدراج في حماية الأجور ومدد: حساب الراتب وملف الأجور",
-            "The salary account is on the wage file before the first pay cycle (wages are due within 7 days of the due date, verify).", "يكون حساب الراتب ضمن ملف الأجور قبل أول دورة رواتب (تُدفع الأجور خلال 7 أيام من الاستحقاق، يُتحقق).",
+            "The salary account is on the wage file before the first pay cycle. Upload the wage file to Mudad within the Mudad window (30 days).", "يكون حساب الراتب ضمن ملف الأجور قبل أول دورة رواتب. ارفع ملف الأجور على مُدد ضمن المهلة المحددة (30 يومًا حاليًا).",
             OnboardingOwnerRoles.Payroll, 25, NationalityClasses.Any, true, "bank"),
         new("Company email, laptop and access (IT creates the mailbox)", "البريد الإلكتروني للشركة والحاسوب والصلاحيات (تنشئ تقنية المعلومات صندوق البريد)",
             "IT creates the company mailbox and accounts. KynexOne never creates mailboxes.", "تنشئ تقنية المعلومات صندوق البريد والحسابات. لا تنشئ المنصة صناديق بريد.",

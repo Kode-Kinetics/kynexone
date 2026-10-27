@@ -7,7 +7,7 @@ using Zayra.Api.Application.Employees.Ess;
 namespace Zayra.Api.Tests.Ess;
 
 /// <summary>
-/// CD66 against a REAL clamd (image clamav/clamav, started with Testcontainers). Skipped quietly, with a console line, when Docker or the image is not
+/// CD66 against a REAL clamd (the official ClamAV image, started with Testcontainers). Skipped quietly, with a console line, when Docker or the image is not
 /// available, so the suite stays runnable offline. Opt out explicitly with KYNEX_SKIP_CLAMAV=1. The EICAR string is the standard antivirus test file:
 /// harmless, and every engine must flag it.
 /// </summary>
@@ -24,7 +24,7 @@ public sealed class ClamAvContainerTests : IAsyncLifetime
         try
         {
             _clamd = new ContainerBuilder()
-                .WithImage("clamav/clamav:stable")
+                .WithImage(Environment.GetEnvironmentVariable("KYNEX_CLAMAV_IMAGE") ?? "clamav/clamav-debian:stable")   // the Debian build is multi-arch (arm64 too); clamav/clamav:stable is amd64 only
                 .WithPortBinding(3310, true)
                 .WithEnvironment("CLAMAV_NO_FRESHCLAMD", "true")
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Self checking every", o => o.WithTimeout(TimeSpan.FromMinutes(8))))

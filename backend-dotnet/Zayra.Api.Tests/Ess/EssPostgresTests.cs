@@ -141,13 +141,13 @@ public sealed class EssPostgresTests(PostgresFixture fx)
         var tenant = await PostgresFixture.SeedMinimalTenant(seed);
         var now = DateTime.UtcNow;
         var storage = new Zayra.Api.Tests.Esign.InMemoryDocumentStorage();
-        EmployeeDocument Doc(string name, DateTime uploaded)
+        EmployeeDocument Doc(string name, DateTime uploaded, int employee = 7400)
         {
             var key = $"storage/documents/{tenant:N}/{name}.pdf"; storage.Objects[key] = [1, 2, 3];
-            return new EmployeeDocument { TenantId = tenant, EmployeeId = 7400, DocumentType = "National ID", DocumentCategory = "national_id_copy", FileName = name + ".pdf", StorageUrl = key, SourceSection = "documents", ScanStatus = "clean", UploadedAtUtc = uploaded };
+            return new EmployeeDocument { TenantId = tenant, EmployeeId = employee, DocumentType = "National ID", DocumentCategory = "national_id_copy", FileName = name + ".pdf", StorageUrl = key, SourceSection = "documents", ScanStatus = "clean", UploadedAtUtc = uploaded };
         }
         var rejectedFile = Doc("rejected", now.AddDays(-45)); var staleUpload = Doc("stale", now.AddDays(-45)); var freshUpload = Doc("fresh", now.AddDays(-2));
-        var acceptedFile = Doc("accepted", now.AddDays(-45)); var freshRejectedFile = Doc("freshrejected", now.AddDays(-12));
+        var acceptedFile = Doc("accepted", now.AddDays(-45), 7498); var freshRejectedFile = Doc("freshrejected", now.AddDays(-12), 7499);
         seed.EmployeeDocuments.AddRange(rejectedFile, staleUpload, freshUpload, acceptedFile, freshRejectedFile);
         EmployeeProfileChangeRequest WithFiles(string status, DateTime decided, params EmployeeDocument[] docs)
         {
