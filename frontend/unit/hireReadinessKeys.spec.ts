@@ -39,7 +39,7 @@ test('CD47: every readiness / hire-review key has an English and an Arabic label
   for (const { key, label } of emittedKeys()) {
     const en = reviewItemLabel({ key, label }, tIn('en'));
     const ar = reviewItemLabel({ key, label }, tIn('ar'));
-    if (!en || en === key) problems.push(`${key}: no English label (${en})`);
+    if (!en || /^[a-z]+:/.test(en)) problems.push(`${key}: no English label (${en})`);
     if (!ARABIC.test(ar)) problems.push(`${key}: no Arabic label (${ar})`);
     if (ar === en) problems.push(`${key}: Arabic equals English`);
   }

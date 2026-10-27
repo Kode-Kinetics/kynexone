@@ -179,4 +179,15 @@ public class HireFinalBatchActivationTests
         outScope.EmployeeId.Should().Be(0);
         System.Text.Json.JsonSerializer.Serialize(outScope).Should().NotContain("42").And.NotContain("Hidden Person");
     }
+
+    // ── CD47: every review item leaves the server with a key ──
+    [Theory]
+    [InlineData("IqamaNumber", "IqamaNumber")]
+    [InlineData("", "unknown")]
+    [InlineData("  ", "unknown")]
+    public void ReviewKey_IsNeverBlank(string key, string expected)
+    {
+        var item = new Zayra.Api.Infrastructure.Employees.ReadinessItem(key, "Identity number missing", "identity", "statutory", null, "activate", "field", null, null);
+        Zayra.Api.Controllers.Employees.EmployeeHireController.ReviewKey(item).Should().Be(expected);
+    }
 }

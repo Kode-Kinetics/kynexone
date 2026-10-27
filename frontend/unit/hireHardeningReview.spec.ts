@@ -34,8 +34,8 @@ test.describe('CD34 raw hire-review keys render through t() in EN and AR', () =>
     const ar2 = reviewItemLabel({ key: 'data:somethingNew', label: '' }, tIn('ar'));
     expect(hasArabic(ar2)).toBe(true);
   });
-  test('other keys still fall back to the server label', () => {
-    expect(reviewItemLabel({ key: 'IqamaNumber', label: 'Iqama number' }, tIn('ar'))).toBe('Iqama number');
+  test('a key the catalog does not know still falls back to the server label', () => {
+    expect(reviewItemLabel({ key: 'SomeFutureKey', label: 'Some future label' }, tIn('ar'))).toBe('Some future label');
   });
 });
 

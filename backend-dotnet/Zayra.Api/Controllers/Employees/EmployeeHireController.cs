@@ -199,17 +199,20 @@ public sealed class EmployeeHireController : ControllerBase
         var evaluated = await _activation.EvaluateEmployeeAsync(tenantId, id, ct);
         if (evaluated is null) return NotFound();
         var readiness = evaluated.Value.Readiness;
-        var blockers = readiness.Blocking.Select(i => new { key = i.Key, label = i.Label }).ToList();
+        var blockers = readiness.Blocking.Select(i => new { key = ReviewKey(i), label = i.Label }).ToList();
         if (await CompensationApprovalGate.IsOpenAsync(_db, tenantId, id, ct) || await CompensationApprovalGate.CarriesUnapprovedPayAsync(_db, tenantId, id, ct))
             blockers.Add(new { key = CompensationApprovalGate.GapType, label = "Pay package awaiting Finance approval" });
         return Ok(new
         {
             blockers,
-            warnings = readiness.Recommended.Select(i => new { key = i.Key, label = i.Label }),
-            notProvided = readiness.PayBlocking.Select(i => new { key = i.Key, label = i.Label }),
+            warnings = readiness.Recommended.Select(i => new { key = ReviewKey(i), label = i.Label }),
+            notProvided = readiness.PayBlocking.Select(i => new { key = ReviewKey(i), label = i.Label }),
             essSections = Array.Empty<string>(),
         });
     }
+
+    /// <summary>CD47: every review item carries a stable key (the client renders its sentence from it); a blank one is sent as "unknown".</summary>
+    internal static string ReviewKey(ReadinessItem item) => string.IsNullOrWhiteSpace(item.Key) ? "unknown" : item.Key;
 
     // ── Finance approves the pay package set at create ───────────────────────────────────────────
     [HttpPost("{id:int}/compensation/approve")]

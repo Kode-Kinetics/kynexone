@@ -3,6 +3,8 @@
  * rendered through t() (English and Arabic), anything unknown falls back to the server label, then to the key.
  * A bare string (an older mock or response) is treated as a label.
  */
+import { READINESS_FIELD_LABELS, READINESS_FLAG_LABELS, READINESS_PROVISIONAL_LABELS } from './readinessKeys';
+
 export interface ReviewItem { key: string; label: string }
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -31,8 +33,13 @@ const KEY_SENTENCE: Record<string, string> = {
 };
 
 export function reviewItemLabel(item: ReviewItem, t: Translate): string {
-  const known = KEY_SENTENCE[item.key];
+  const known = KEY_SENTENCE[item.key] ?? READINESS_FLAG_LABELS[item.key];
   if (known) return t(known);
+  // CD47: a field the policy requires. The key decides the sentence, never the server's English label.
+  if (READINESS_PROVISIONAL_LABELS.includes(item.label)) return t(item.label);
+  const field = READINESS_FIELD_LABELS[item.key];
+  if (field) return t(field);
+  if (item.key.startsWith('invalid:')) return t('A saved value needs correcting');
   if (item.key.startsWith('pay:')) return t('Some pay details need attention');
   if (item.key.startsWith('data:')) return t('Some details need review');
   return item.label || item.key;
