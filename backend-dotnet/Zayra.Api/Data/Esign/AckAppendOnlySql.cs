@@ -57,7 +57,7 @@ public static class AckAppendOnlySql
     public static string RevokeFromRole(string role)
     {
         if (!Regex.IsMatch(role, "^[A-Za-z_][A-Za-z0-9_]{0,62}$")) throw new ArgumentException("Not a plain role name.", nameof(role));
-        return $"REVOKE UPDATE, TRUNCATE ON employee_policy_acknowledgements FROM \"{role}\";";
+        return $"REVOKE UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements FROM \"{role}\";";
     }
 
     /// <summary>
