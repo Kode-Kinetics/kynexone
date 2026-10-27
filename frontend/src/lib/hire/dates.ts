@@ -56,3 +56,10 @@ export function hijriLine(iso: string, lang: string): string {
   const text = new Intl.DateTimeFormat(dateLocale(lang, 'islamic-umalqura'), { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
   return lang === 'ar' ? text.replace(/\s*هـ$/u, 'هـ') : text;
 }
+
+/** A calendar date for people, in the viewer's language (Gregorian, Latin digits): "14 October 2026". Empty when the value is not a real date. */
+export function formatIsoDate(iso: string, lang: string): string {
+  if (!isRealDate(iso)) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Intl.DateTimeFormat(dateLocale(lang), { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(y, m - 1, d, 12)));
+}

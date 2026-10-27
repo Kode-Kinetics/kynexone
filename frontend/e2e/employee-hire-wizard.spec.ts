@@ -215,7 +215,7 @@ test.describe('person, pickers and validation (desktop)', () => {
     await expect(page.getByTestId('hijri-dob')).toContainText(/\d{4}/);
     await page.getByLabel('Date of birth').fill('2999-01-01');
     await page.getByLabel('Date of birth').blur();
-    await expect(page.locator('#hire-dob-error')).toHaveText('Date of birth must make the employee between 15 and 80 years old.');
+    await expect(page.locator('#hire-dob-error')).toHaveText('Date of birth cannot be in the future.');
   });
 
   test('G06/AC22: a Saudi company preselects +966 and the example starts with 05; the number is stored as E.164 (AC23)', async ({ page }) => {

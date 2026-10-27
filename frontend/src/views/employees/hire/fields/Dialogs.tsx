@@ -26,13 +26,16 @@ function Shell({ role, title, onClose, children, labelId }: { role: 'dialog' | '
 }
 
 /** Statutory floors are warnings: the person confirms each one with a reason of 10 or more characters (CD6). */
-export function WarningAckDialog({ warnings, onConfirm, onCancel }: { warnings: ServerWarning[]; onConfirm: (acks: AcknowledgedWarning[]) => void; onCancel: () => void }) {
+export function WarningAckDialog({ warnings, canOverride = true, onConfirm, onCancel }: { warnings: ServerWarning[]; canOverride?: boolean; onConfirm: (acks: AcknowledgedWarning[]) => void; onCancel: () => void }) {
   const { t } = useLocale();
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [tried, setTried] = useState(false);
   const short = (c: string) => (reasons[c] ?? '').trim().length < MIN_REASON;
+  // CD32: a warning that needs the override permission cannot be confirmed by someone without it; say who can.
+  const needsManager = (w: ServerWarning) => !!w.requiresPermission && !canOverride;
   const submit = () => {
     setTried(true);
+    if (warnings.some(needsManager)) return;
     if (warnings.some(w => short(w.code))) return;
     onConfirm(warnings.map(w => ({ code: w.code, reason: reasons[w.code].trim() })));
   };
@@ -46,6 +49,7 @@ export function WarningAckDialog({ warnings, onConfirm, onCancel }: { warnings: 
           return (
             <li key={w.code} className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-400/30 dark:bg-amber-500/10">
               <p className="text-sm font-medium text-amber-900 dark:text-amber-100">{t(SERVER_CODE_KEYS[w.code] ?? 'Some details need your confirmation before saving.')}</p>
+              {needsManager(w) && <p className="mt-1 text-xs font-medium text-amber-900 dark:text-amber-100">{t('An HR Manager can approve this exception.')}</p>}
               <label htmlFor={id} className="mt-2 block text-sm font-medium text-slate-700 dark:text-slate-200">{t('Reason')}</label>
               <textarea id={id} rows={2} value={reasons[w.code] ?? ''} aria-invalid={bad ? true : undefined} aria-describedby={bad ? `${id}-err` : undefined}
                 onChange={e => setReasons(r => ({ ...r, [w.code]: e.target.value }))} className="input mt-1 h-auto w-full" />
@@ -56,7 +60,7 @@ export function WarningAckDialog({ warnings, onConfirm, onCancel }: { warnings: 
       </ul>
       <div className="mt-4 flex flex-wrap justify-end gap-2">
         <button type="button" className="btn-secondary" onClick={onCancel}>{t('Cancel')}</button>
-        <button type="button" className="btn-primary" onClick={submit}>{t('Confirm and save')}</button>
+        <button type="button" className="btn-primary" disabled={warnings.some(needsManager)} onClick={submit}>{t('Confirm and save')}</button>
       </div>
     </Shell>
   );

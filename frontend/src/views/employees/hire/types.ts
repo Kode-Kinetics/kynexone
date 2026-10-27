@@ -2,6 +2,7 @@ import type { BranchDto, CompanyDto, DepartmentDto, DesignationDto, GradeDto } f
 import type { EmployeeListItem } from '@/src/api/employees';
 import type { EmployeeReferenceLists } from '@/src/hooks/useReferenceLists';
 import type { HireForm } from '@/src/lib/hire/hireForm';
+import type { SaBank } from '@/src/lib/hire/iban';
 
 export interface Lookups {
   companies: CompanyDto[];
@@ -25,4 +26,6 @@ export interface StepProps {
   lookups: Lookups;
   today: string;
   singleCompany: boolean;
+  /** The SAMA bank list, or null when it could not be loaded. */
+  banks: SaBank[] | null;
 }

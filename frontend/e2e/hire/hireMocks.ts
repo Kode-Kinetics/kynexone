@@ -17,9 +17,19 @@ export interface HireMockOptions {
   /** Put hire_wizard_v2 in the disabled keys, as the server does for a tenant that has not been switched on. */
   flagOff?: boolean;
   /** Existing person the duplicate-check returns. */
-  duplicate?: { status: string; matchType?: 'strong' | 'probable'; canView?: boolean };
+  duplicate?: { status: string; matchType?: 'strong' | 'probable' | 'possible'; canView?: boolean; signals?: string[] };
   /** The first create answers 409 warnings_require_acknowledgement. */
   warnFirstCreate?: boolean;
+  /** The warnings that 409 carries (default: joining_backdated_over_30d). */
+  warnings?: Array<{ code: string; field: string; requiresPermission?: boolean }>;
+  /** The first create answers 400 validation_failed with these field codes. */
+  createErrors?: Record<string, string[]>;
+  /** Company country (default SA). */
+  companyCountry?: string;
+  /** What GET /api/employees/:id answers for a resumed draft: an object, or a status code. */
+  draftDetail?: Record<string, any> | 404 | 403;
+  /** What hire-review answers. */
+  review?: { blockers?: any[]; warnings?: any[]; notProvided?: any[] };
   /** Every hire-draft PUT answers 409 draft_changed_elsewhere. */
   conflictOnPut?: boolean;
   /** Hold the create response until released (double-click test). */
@@ -35,9 +45,12 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
   const catalogCalls: string[] = [];
   const rehires: Array<Record<string, any>> = [];
   const discards: string[] = [];
+  const gets: string[] = [];
   const errors: string[] = [];
   let seq = 0;
-  const companies = options.multipleCompanies ? [company, { ...company, id: 'company-other', legalNameEn: 'Other Test Company' }] : [company];
+  const co = options.companyCountry ? { ...company, countryCode: options.companyCountry, jurisdiction: options.companyCountry } : company;
+  const companies = options.multipleCompanies ? [co, { ...co, id: 'company-other', legalNameEn: 'Other Test Company' }] : [co];
+  const saBanks = [{ code: '80', nameEn: 'Al Rajhi Bank', nameAr: 'مصرف الراجحي' }, { code: '10', nameEn: 'The National Commercial Bank', nameAr: 'البنك الأهلي التجاري' }];
   page.on('pageerror', e => errors.push(e.message));
   await page.addInitScript(([locale]) => {
     localStorage.setItem('zayra_access_token', 'hire-browser-fixture');
@@ -74,22 +87,30 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/organization/cost-centers') return reply(paged([]));
     if (p === '/api/admin/master-data/values') return reply([]);
     if (p === '/api/reference/nationalities') return reply({}, 404);
+    if (p === '/api/reference/sa-banks') return reply(saBanks);
     if (p === '/api/employees/field-catalog') { catalogCalls.push(url.search); return reply({ countryCode: 'SA', fields: [] }); }
     if (p === '/api/employees/derive-work-email') return reply({ domain: 'example.test', pattern: 'first.last', localPart: 'alex.morgan', workEmail: 'alex.morgan@example.test', unique: true, suggestion: 'alex.morgan', status: 'derived' });
     if (p === '/api/employees/duplicate-check') {
       dupChecks.push(body);
       const d = options.duplicate;
-      return reply({ hasStrong: d?.matchType === 'strong', hasProbable: !!d, matches: d ? [d.canView === false ? { employeeId: 45, employeeCode: '', fullName: '', status: '', matchType: 'probable', signals: [], canView: false } : { employeeId: 44, employeeCode: 'TEST-044', fullName: 'Alex Morgan', status: d.status, matchType: d.matchType ?? 'probable', signals: ['Same name'], canView: true, joinedYear: 2021, companyId: company.id }] : [] });
+      return reply({ hasStrong: d?.matchType === 'strong', hasProbable: !!d, matches: d ? [d.canView === false ? { employeeId: 45, employeeCode: '', fullName: '', status: '', matchType: 'probable', signals: [], canView: false } : { employeeId: 44, employeeCode: 'TEST-044', fullName: 'Alex Morgan', status: d.status, matchType: d.matchType ?? 'probable', signals: d.signals ?? ['Same name'], canView: true, joinedYear: 2021, companyId: company.id, branch: 'Riyadh' }] : [] });
     }
     if (p === '/api/employees' && method === 'POST') {
       const key = req.headers()['idempotency-key'];
       creates.push({ body, key });
       await options.holdCreate;
+      if (options.createErrors && creates.length === 1) return reply({ title: 'Validation failed', status: 400, code: 'validation_failed', traceId: 't3', errors: options.createErrors }, 400);
       if (options.warnFirstCreate && !body.acknowledgedWarnings) {
-        return reply({ title: 'Warnings', status: 409, code: 'warnings_require_acknowledgement', traceId: 't1', warnings: [{ code: 'joining_backdated_over_30d', field: 'joiningDate', message: 'x', requiresPermission: false }] }, 409);
+        return reply({ title: 'Warnings', status: 409, code: 'warnings_require_acknowledgement', traceId: 't1', warnings: (options.warnings ?? [{ code: 'joining_backdated_over_30d', field: 'joiningDate' }]).map(w => ({ message: 'x', requiresPermission: false, ...w })) }, 409);
       }
       if (creates.filter(c => c.key === key).length > 1) return reply({ id: 901, fullName: body.englishName, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z' }, 200);
       return reply({ id: 901, employeeCode: 'TEST-901', fullName: body.englishName, englishName: body.englishName, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z' }, 201);
+    }
+    if (/^\/api\/employees\/\d+$/.test(p) && method === 'GET') {
+      gets.push(p);
+      if (typeof options.draftDetail === 'number') return reply({ title: 'No', status: options.draftDetail }, options.draftDetail);
+      if (options.draftDetail) return reply(options.draftDetail);
+      return reply({ title: 'Not found', status: 404 }, 404);
     }
     if (p === '/api/employees' && method === 'GET') return reply(paged(url.searchParams.get('status') === 'Active' ? [{ id: 17, employeeCode: 'TEST-017', fullName: 'Morgan Reviewer', status: 'Active', companyId: company.id }] : []));
     if (/^\/api\/employees\/\d+\/hire-draft$/.test(p) && method === 'PUT') {
@@ -98,7 +119,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       seq++;
       return reply({ updatedAtUtc: `2026-10-27T08:00:0${seq}Z`, readiness: { blockers: [], warnings: [] } });
     }
-    if (/^\/api\/employees\/\d+\/hire-review$/.test(p)) return reply({ blockers: [{ key: 'IqamaNumber', label: 'Identity number missing' }, { key: 'pay:compensationUnapproved', label: 'Pay package awaiting Finance approval' }], warnings: [], notProvided: [{ key: 'arabicName', label: 'Arabic name' }], essSections: [] });
+    if (/^\/api\/employees\/\d+\/hire-review$/.test(p)) return reply({ blockers: options.review?.blockers ?? [{ key: 'IqamaNumber', label: 'Identity number missing' }, { key: 'pay:compensationUnapproved', label: 'Pay package awaiting Finance approval' }], warnings: options.review?.warnings ?? [], notProvided: options.review?.notProvided ?? [{ key: 'arabicName', label: 'Arabic name' }], essSections: [] });
     if (/^\/api\/employees\/\d+\/rehire$/.test(p)) { rehires.push(body); return reply({ id: 44, status: 'Draft', fullName: 'Alex Morgan', updatedAtUtc: '2026-10-27T09:00:00Z' }); }
     if (/^\/api\/employees\/\d+\/draft$/.test(p) && method === 'DELETE') { discards.push(p); return route.fulfill({ status: 204 }); }
     if (p.endsWith('/pay-scale')) return reply([]);
@@ -107,7 +128,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     return reply(p.includes('/features/') || p === '/api/notifications' ? [] : paged([]));
   });
   await page.goto(path);
-  return { calls, creates, puts, dupChecks, catalogCalls, rehires, discards, errors, apiCount: () => calls.filter(c => !/auth|features|localization|notifications/.test(c)).length };
+  return { calls, gets, creates, puts, dupChecks, catalogCalls, rehires, discards, errors, apiCount: () => calls.filter(c => !/auth|features|localization|notifications/.test(c)).length };
 }
 
 export async function expectNoHorizontalScroll(page: Page) {

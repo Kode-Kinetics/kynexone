@@ -9,6 +9,7 @@ export function issueText(issue: Pick<FieldIssue, 'key' | 'params'>, t: T, local
   if (params?.countryCode) {
     try { params.country = new Intl.DisplayNames([locale], { type: 'region' }).of(params.countryCode) ?? params.country; } catch { /* keep the English name */ }
   }
+  if (params?.field) params.field = t(params.field);
   return t(issue.key, params);
 }
 

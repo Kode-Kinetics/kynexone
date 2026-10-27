@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { flushSync } from 'react-dom';
 import { useAuth } from '@/src/contexts/AuthContext';
@@ -17,10 +18,12 @@ import { createAutosave, type AutosaveState } from '@/src/lib/hire/autosave';
 import { dateLocale } from '@/src/lib/format';
 import { DEFAULT_ZONE, todayInZone } from '@/src/lib/hire/dates';
 import { emptyHireForm, hasContent, type HireForm } from '@/src/lib/hire/hireForm';
-import { validateHire, type FieldIssue } from '@/src/lib/hire/hireValidation';
+import { stepOf, validateHire, type FieldIssue } from '@/src/lib/hire/hireValidation';
+import { draftLoadProblem, formFromEmployee, isResumable } from '@/src/lib/hire/draftHydrate';
+import type { SaBank } from '@/src/lib/hire/iban';
 import { defaultIdType, type CountryOption } from '@/src/lib/hire/nationality';
 import { buildCreateRequest, newIdempotencyKey, type AcknowledgedWarning } from '@/src/lib/hire/payload';
-import { parseHireProblem, type ServerWarning } from '@/src/lib/hire/problem';
+import { parseHireProblem, serverFieldIssue, type ServerWarning } from '@/src/lib/hire/problem';
 import { serverFieldToForm } from '@/src/lib/hire/serverFields';
 import { ErrorSummary } from './fields/ErrorSummary';
 import { DiscardDialog, WarningAckDialog } from './fields/Dialogs';
@@ -31,7 +34,7 @@ import { JobPayDocsStep } from './steps/JobPayDocsStep';
 import { PersonContactStep } from './steps/PersonContactStep';
 import { ReviewStep } from './steps/ReviewStep';
 import { SuccessStep } from './steps/SuccessStep';
-import { issueText, serverCodeKey } from './issueText';
+import { issueText } from './issueText';
 import type { Lookups, StepProps } from './types';
 import { normalizeCountryCode } from '@/src/api/employeeFieldCatalog';
 
@@ -72,7 +75,10 @@ export function HireWizard() {
   const [resident, setResident] = useState(true);
   const [notice, setNotice] = useState<Notice>(null);
   const [draft, setDraft] = useState<{ id: number; name: string } | null>(null);
-  const [created, setCreated] = useState<{ id: number; name: string } | null>(null);
+  const [created, setCreated] = useState<{ id: number; name: string; rehired?: boolean } | null>(null);
+  const [banks, setBanks] = useState<SaBank[] | null>(null);
+  // CD26: /people/new?draft=<id> resumes a saved draft. 'idle' = a normal new hire.
+  const [resume, setResume] = useState<{ state: 'idle' | 'loading' | 'unavailable' | 'network' | 'notDraft'; id?: number }>({ state: 'idle' });
   const [savedForm, setSavedForm] = useState<HireForm | null>(null);
   const [saveState, setSaveState] = useState<AutosaveState>('idle');
   const [savedAt, setSavedAt] = useState('');
@@ -101,17 +107,39 @@ export function HireWizard() {
   // ── data ────────────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
+    const draftParam = new URLSearchParams(window.location.search).get('draft');
+    const resumeId = draftParam && /^\d+$/.test(draftParam) ? Number(draftParam) : null;
+    if (resumeId !== null) setResume({ state: 'loading', id: resumeId });
     Promise.all([
       companiesApi.listAll(), branchesApi.listAll(), departmentsApi.listAll(), designationsApi.listAll(), gradesApi.listAll(),
       employeesApi.listAll({ status: 'Active' }).catch(() => []), loadEmployeeReferenceLists(),
-    ]).then(([companies, branches, departments, designations, grades, managers, refs]) => {
+    ]).then(async ([companies, branches, departments, designations, grades, managers, refs]) => {
       if (cancelled) return;
       setLookups({ companies, branches, departments, designations, grades, managers, refs });
-      const open = companies.filter(c => c.isActive);
-      const pick = open.length === 1 ? open[0].id : open.find(c => c.id === selectedCompanyId)?.id ?? '';
-      if (pick) { initial.current = { ...initial.current, companyId: pick }; setForm(f => ({ ...f, companyId: f.companyId || pick })); }
+      if (resumeId !== null) {
+        try {
+          const d = await employeeHireApi.loadDraft(resumeId);
+          if (cancelled) return;
+          if (!isResumable(d, resumeId)) { setResume({ state: 'notDraft', id: resumeId }); }
+          else {
+            const co = companies.find(c => c.id === d.companyId);
+            const hydrated = formFromEmployee(d, { emailDomain: co?.emailDomain || undefined, companyCountry: normalizeCountryCode(co?.countryCode) || 'SA' });
+            initial.current = hydrated;
+            setForm(hydrated);
+            setSavedForm(hydrated);
+            setDraft({ id: d.id, name: d.englishName || d.fullName || hydrated.englishName });
+            autosave.current!.adopt(d.updatedAtUtc ?? '');
+            setResume({ state: 'idle' });
+          }
+        } catch (e) { if (!cancelled) setResume({ state: draftLoadProblem(e), id: resumeId }); }
+      } else {
+        const open = companies.filter(c => c.isActive);
+        const pick = open.length === 1 ? open[0].id : open.find(c => c.id === selectedCompanyId)?.id ?? '';
+        if (pick) { initial.current = { ...initial.current, companyId: pick }; setForm(f => ({ ...f, companyId: f.companyId || pick })); }
+      }
       setLoaded(true);
     }).catch(() => { if (!cancelled) { setLoadFailed(true); setLoaded(true); } });
+    employeeHireApi.saBanks().then(list => { if (!cancelled && list) setBanks(list); });
     employeeHireApi.nationalities().then(list => {
       if (!cancelled && list?.length) setCountryOptions(list.map((n: ApiNationality) => ({ code: n.code, nameEn: n.nameEn, nameAr: n.nameAr })));
     });
@@ -168,15 +196,15 @@ export function HireWizard() {
   }, [step]);
 
   // ── autosave ────────────────────────────────────────────────────────────
-  const latest = useRef({ ctx, companyCountry, currency, acks, draft });
-  latest.current = { ctx, companyCountry, currency, acks, draft };
+  const latest = useRef({ ctx, companyCountry, currency, emailDomain: undefined as string | undefined, acks, draft });
+  latest.current = { ctx, companyCountry, currency, emailDomain: company?.emailDomain || undefined, acks, draft };
   const autosave = useRef<ReturnType<typeof createAutosave<{ form: HireForm }>> | null>(null);
   if (!autosave.current) {
     autosave.current = createAutosave<{ form: HireForm }>({
       delayMs: 1200,
       save: async ({ form: f }, base) => {
         const l = latest.current;
-        const res = await employeeHireApi.saveDraft(l.draft!.id, base, buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency }, { acknowledgedWarnings: l.acks }));
+        const res = await employeeHireApi.saveDraft(l.draft!.id, base, buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency, emailDomain: l.emailDomain }, { acknowledgedWarnings: l.acks }));
         setSavedForm(f);
         return res;
       },
@@ -229,7 +257,7 @@ export function HireWizard() {
         const list: FieldIssue[] = [];
         for (const [field, codes] of Object.entries(p.fields)) {
           const f = serverFieldToForm(field);
-          if (f && codes[0]) list.push({ field: f, step: f === 'idNumber' || f === 'iban' || f === 'basic' || f === 'housing' || f === 'transport' || f === 'other' || f === 'idExpiry' || f === 'contractEndDate' ? 3 : f === 'dob' || f === 'nationalityCode' || f === 'mobileNational' || f === 'personalEmail' ? 2 : 1, key: serverCodeKey(codes[0]) });
+          if (f && codes[0]) { const i = serverFieldIssue(f, codes[0]); list.push({ field: f, step: stepOf(f), key: i.key, params: i.params }); }
         }
         setServerIssues(list);
         showIssues(list, 'summary');
@@ -255,17 +283,19 @@ export function HireWizard() {
     try {
       if (draft) return (await autosave.current!.flush()) ? draft.id : null;
       const all = extraAcks ?? acks;
-      const body = buildCreateRequest(form, { companyCountry, currency }, { acknowledgedWarnings: all, duplicateOverrideReason: differentReason ?? undefined });
+      const body = buildCreateRequest(form, { companyCountry, currency, emailDomain: company?.emailDomain || undefined }, { acknowledgedWarnings: all, duplicateOverrideReason: differentReason ?? undefined });
       const res = await employeeHireApi.create(body, keyRef.current);
       const version = res.updatedAtUtc ?? (res as { createdAtUtc?: string }).createdAtUtc ?? '';
       flushSync(() => { setDraft({ id: res.id, name: res.englishName || res.fullName || form.englishName.trim() }); setSavedForm(form); setAcks(all); });
       autosave.current!.adopt(version);
+      // A refresh now resumes this draft instead of starting a blank form (and creating a second record). No navigation, no reload.
+      window.history.replaceState(window.history.state, '', `/people/new?draft=${res.id}`);
       return res.id;
     } catch (e) {
       handleFailure(e);
       return null;
     } finally { busyRef.current = false; setBusy(false); }
-  }, [draft, form, companyCountry, currency, acks, differentReason, handleFailure]);
+  }, [draft, form, companyCountry, currency, company, acks, differentReason, handleFailure]);
 
   const onSaveDraft = useCallback(async () => {
     const list = validateHire(form, ctx, 'draft');
@@ -293,7 +323,7 @@ export function HireWizard() {
     if (!form.startDate) { showIssues([{ field: 'startDate', step: 1, key: 'Enter the start date.' }], 'field'); setStep(1); return; }
     try {
       await employeeHireApi.rehire(m.employeeId, { startDate: form.startDate, designationId: form.designationId || undefined, gradeId: form.gradeId || undefined, reason });
-      setCreated({ id: m.employeeId, name: m.fullName });
+      setCreated({ id: m.employeeId, name: m.fullName, rehired: true });
     } catch (e) { handleFailure(e); }
   }, [form, showIssues, handleFailure]);
 
@@ -314,12 +344,34 @@ export function HireWizard() {
   };
 
   // ── render ──────────────────────────────────────────────────────────────
-  const stepProps: StepProps = { form, set, errorFor, blur, company, companyCountry, currency, lookups, today, singleCompany };
+  const stepProps: StepProps = { form, set, errorFor, blur, company, companyCountry, currency, lookups, today, singleCompany, banks };
   const label = (s: number) => t(STEP_LABELS[s - 1]);
   const canOverride = hasPermission('employees.override_validation');
   const savedText = saveState === 'saving' || saveState === 'pending' ? t('Saving…') : saveState === 'saved' && savedAt ? t('Saved {time}', { time: clock(savedAt, zone, locale) }) : saveState === 'error' ? t('Not saved yet. It will retry on your next change.') : '';
 
-  if (created) return <div className="mx-auto w-full max-w-[720px] p-4"><SuccessStep id={created.id} name={created.name} /></div>;
+  if (resume.state !== 'idle') {
+    const msg = resume.state === 'unavailable' ? 'This draft could not be found, or you do not have access to it.'
+      : resume.state === 'notDraft' ? 'This employee is no longer a draft.'
+      : resume.state === 'network' ? 'The draft could not be loaded. Check your connection and try again.' : '';
+    return (
+      <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-4">
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-white">{t('Add employee')}</h1>
+        {resume.state === 'loading' ? <p className="mt-4 text-sm text-slate-500">{t('Loading the draft…')}</p> : (
+          <>
+            <p role="alert" className="mt-4 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-400/40 dark:bg-red-500/10 dark:text-red-100">{t(msg)}</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {resume.state === 'notDraft' && resume.id !== undefined && <Link className="btn-primary" href={`/people/${resume.id}`}>{t('Open the record')}</Link>}
+              {resume.state === 'network' && <button type="button" className="btn-secondary" onClick={() => window.location.reload()}>{t('Reload')}</button>}
+              <a className={resume.state === 'notDraft' ? 'btn-secondary' : 'btn-primary'} href="/people/new">{t('Start a new employee')}</a>
+              <Link className="btn-secondary" href="/people">{t('Back to people')}</Link>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (created) return <div className="mx-auto w-full max-w-[720px] p-4"><SuccessStep id={created.id} name={created.name} rehired={created.rehired} /></div>;
 
   return (
     <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-4">
@@ -345,7 +397,7 @@ export function HireWizard() {
           </p>
         )}
         <ErrorSummary ref={summaryRef} issues={shownSummary} onGo={focusIssue} />
-        <DuplicatePanel matches={matches} differentReason={differentReason} onDifferent={r => setDifferentReason(r)} onRehire={onRehire} />
+        <DuplicatePanel matches={matches} companies={lookups.companies} differentReason={differentReason} onDifferent={r => setDifferentReason(r)} onRehire={onRehire} />
 
         <h2 ref={headingRef} tabIndex={-1} className="mb-4 text-lg font-semibold text-slate-900 outline-none dark:text-white">{label(step)}</h2>
         {!loaded ? <p className="text-sm text-slate-500">{t('Loading…')}</p> : (
@@ -372,7 +424,7 @@ export function HireWizard() {
         </div>
       </div>
 
-      {warnings && <WarningAckDialog warnings={warnings} onCancel={() => setWarnings(null)} onConfirm={a => { setWarnings(null); setAcks(a); void persist(a); }} />}
+      {warnings && <WarningAckDialog warnings={warnings} canOverride={canOverride} onCancel={() => setWarnings(null)} onConfirm={a => { setWarnings(null); setAcks(a); void persist(a); }} />}
       {discardOpen && <DiscardDialog hasDraft={!!draft} canSave={validateHire(form, ctx, 'draft').length === 0} onKeep={() => setDiscardOpen(false)}
         onSaveLeave={async () => { setDiscardOpen(false); if ((await persist()) !== null) leave(); }} onLeaveKeep={() => { setDiscardOpen(false); leave(); }} onDiscard={onDiscard} />}
     </div>

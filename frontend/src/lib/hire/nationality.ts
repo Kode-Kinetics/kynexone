@@ -1,6 +1,6 @@
 import { getCountries } from 'libphonenumber-js/min';
 
-export type IdType = 'nationalId' | 'iqama' | 'gccId' | 'passport';
+export type IdType = 'nationalId' | 'iqama' | 'border' | 'gccId' | 'passport';
 export type NationalityClass = 'saudi' | 'gcc' | 'expat' | 'unknown';
 
 export interface CountryOption { code: string; nameEn: string; nameAr: string }
@@ -23,7 +23,7 @@ export function buildCountryOptions(codes?: readonly string[]): CountryOption[] 
 /** Case, diacritics, tatweel and alef/ya/ta-marbuta variants folded so any spelling of an Arabic name matches. */
 export function foldText(text: string): string {
   return (text ?? '').normalize('NFKD')
-    .replace(/[̀-ٰٟ­ـ]/g, '')
+    .replace(/[\u0300-\u036F\u064B-\u065F\u0670\u00AD\u0640]/g, '')
     .replace(/[إأآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي')
     .toLowerCase().trim();
 }

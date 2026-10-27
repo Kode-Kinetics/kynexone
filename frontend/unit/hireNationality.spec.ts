@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { buildCountryOptions, defaultIdType, nationalityClass, searchCountries } from '../src/lib/hire/nationality';
+import { buildCountryOptions, defaultIdType, foldText, nationalityClass, searchCountries } from '../src/lib/hire/nationality';
 
 const options = buildCountryOptions();
 
@@ -37,4 +37,12 @@ test.describe('nationality picker', () => {
     expect(defaultIdType('KW')).toBe('gccId');
     expect(defaultIdType('')).toBeNull();
   });
+});
+
+test('Arabic search filters by the Arabic letters typed (the fold strips marks, not letters)', () => {
+  const hits = searchCountries(options, 'باك', 'ar').map(o => o.code);
+  expect(hits).toContain('PK');
+  expect(hits.length).toBeLessThan(10);
+  expect(foldText('باكستان')).toBe('باكستان');
+  expect(foldText('مُحَمَّد')).toBe('محمد');
 });

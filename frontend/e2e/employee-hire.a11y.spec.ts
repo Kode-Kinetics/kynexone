@@ -49,3 +49,44 @@ for (const [locale, viewport] of [['en', { width: 1440, height: 1000 }], ['ar', 
     });
   });
 }
+
+/** Audit-fix states: name-only duplicate, resumed draft, the expat passport row, Review with Hijri lines and warnings, success with warnings, and a failed resume. */
+const draft = {
+  id: 44, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z', companyId: 'company-hire', englishName: 'Alex Morgan', arabicName: 'أليكس مورغان', preferredName: '', gender: '', maritalStatus: '',
+  nationality: 'Pakistan', nationalityCode: 'PK', dateOfBirth: '1990-06-01', personalEmail: '', workEmail: 'alex.morgan@example.test', phone: '', joiningDate: '2026-01-05',
+  designationId: 'desig-1', gradeId: 'grade-g5', employmentType: 'Full-time', contractType: 'Fixed term', contractEndDate: '2027-11-01', iqamaNumber: '2000000006', iqamaExpiryDate: '2027-01-01',
+  passportNumber: 'AB1234567', passportExpiryDate: '2030-05-05', payrollProfile: { iban: 'SA0380000000608010167519', wpsEligible: true, eosbEligible: true },
+  complianceRecords: [], documents: [], history: [], transfers: [],
+};
+for (const [locale, viewport] of [['en', { width: 1440, height: 1000 }], ['ar', { width: 360, height: 780 }]] as const) {
+  test.describe(`axe audit-fix states ${locale} ${viewport.width}`, () => {
+    test.use({ viewport });
+    const l = L[locale];
+    test('name-only duplicate panel', async ({ page }) => {
+      await bootHire(page, { locale, duplicate: { status: 'Active', matchType: 'possible', signals: ['Same name'] } });
+      await page.getByLabel(l.name).fill('Alex Morgan');
+      await page.getByLabel(l.name).blur();
+      await expect(page.locator('section[aria-label]').first()).toBeVisible();
+      await clean(page, 'name-only duplicate');
+    });
+    test('resumed draft, passport row, review and success', async ({ page }) => {
+      await bootHire(page, { locale, draftDetail: draft, review: { blockers: [{ key: 'pay:ibanMissing', label: '' }], warnings: [{ key: 'data:joining_backdated', label: '' }], notProvided: [] } }, '/people/new?draft=44');
+      await expect(page.getByLabel(l.name)).toHaveValue('Alex Morgan');
+      await clean(page, 'resumed draft step 1');
+      await page.getByRole('button', { name: l.next, exact: true }).click();
+      await page.getByRole('button', { name: l.next, exact: true }).click();
+      await clean(page, 'step 3 with passport row and contract end date');
+      await page.getByRole('button', { name: l.next, exact: true }).click();
+      await expect(page.getByTestId('review-hijri-idExpiry')).toBeVisible();
+      await clean(page, 'review with hijri lines and warnings');
+      await page.getByRole('button', { name: locale === 'en' ? 'Create employee draft' : 'إنشاء مسودة الموظف' }).click();
+      await expect(page.getByTestId('readiness')).toContainText(/\w/);
+      await clean(page, 'success with warnings');
+    });
+    test('draft not available', async ({ page }) => {
+      await bootHire(page, { locale, draftDetail: 404 }, '/people/new?draft=44');
+      await expect(page.getByRole('link', { name: locale === 'en' ? 'Start a new employee' : 'إضافة موظف جديد' })).toBeVisible();
+      await clean(page, 'draft not found');
+    });
+  });
+}
