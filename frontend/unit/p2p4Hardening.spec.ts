@@ -7,6 +7,7 @@ import { onboardingP4 } from '../src/i18n/onboardingP4';
 import { isolateLtr, isolateName } from '../src/lib/bidi';
 import { consentOrder } from '../src/lib/consentOrder';
 import { hostingRegion, noticeVersionNumber } from '../src/lib/essPrivacy';
+import { canDownloadScanned, scanLabelKey, scanRefusalKey, scanState } from '../src/lib/scanState';
 import { deviceStepUpBody } from '../src/api/esign';
 
 const ar = LOCALE_DICTS.ar;
@@ -46,8 +47,8 @@ test('privacy notice: the version and the hosting region are read as words, neve
   expect(hostingRegion('us-east')).toEqual({ labelKey: 'United States (east)', outsideKingdom: true });
   expect(hostingRegion('US-East ')).toEqual({ labelKey: 'United States (east)', outsideKingdom: true });
   expect(hostingRegion('me-sa')).toEqual({ labelKey: 'Saudi Arabia', outsideKingdom: false });
-  expect(hostingRegion('mars-1')).toEqual({ labelKey: 'a hosting region chosen by your company', outsideKingdom: false });
-  for (const k of ['United States (east)', 'United States (west)', 'Europe (west)', 'Europe (central)', 'Saudi Arabia', 'a hosting region chosen by your company']) {
+  expect(hostingRegion('mars-1')).toEqual({ labelKey: '', outsideKingdom: false });
+  for (const k of ['United States (east)', 'United States (west)', 'Europe (west)', 'Europe (central)', 'Saudi Arabia', 'Saudi Arabia']) {
     expect(ar[k], k).toBeTruthy();
   }
   expect(ar['United States (east)']).toBe('الولايات المتحدة (الشرق)');
@@ -69,4 +70,26 @@ test('CD60: the device step-up asks for a token bound to this employee, this doc
   const sha = 'a'.repeat(64);
   expect(deviceStepUpBody(901, 'doc-1', sha, 'pw', '')).toEqual({ employeeId: 901, documentId: 'doc-1', documentSha256: sha, password: 'pw', mfaCode: undefined });
   expect(deviceStepUpBody(901, 'doc-1', sha, 'pw', '123456').mfaCode).toBe('123456');
+});
+
+test('CD66: every scan status reads as a state; only clean and trusted-source files can be downloaded', () => {
+  expect(scanState('clean')).toBe('clean');
+  expect(scanState('Clean')).toBe('clean');
+  expect(scanState('not_scanned_trusted_source')).toBe('trusted');
+  expect(scanState('quarantined')).toBe('quarantined');
+  expect(scanState('Quarantined')).toBe('quarantined');
+  expect(scanState('quarantined_pending')).toBe('pending');
+  expect(scanState('PendingScan')).toBe('pending');
+  expect(scanState('something-new')).toBe('pending');   // unknown fails closed
+  expect(scanState(undefined)).toBe('none');
+  expect(['clean', 'trusted', 'quarantined', 'pending', 'none'].map(s => canDownloadScanned(s as never))).toEqual([true, true, false, false, false]);
+  expect(scanLabelKey('trusted')).toBe('ess.completion.doc.scan.trusted');
+  expect(scanLabelKey('clean')).not.toBe(scanLabelKey('trusted'));      // a trusted-source file is never shown as clean
+  expect(scanRefusalKey('quarantined')).toBe('ess.completion.doc.scan.quarantinedNote');
+  expect(scanRefusalKey('pending')).toBe('ess.completion.doc.scan.pendingNote');
+  expect(scanRefusalKey('clean')).toBeNull();
+  for (const k of ['ess.completion.doc.scan.trusted', 'ess.completion.doc.scan.quarantinedNote', 'ess.completion.doc.scan.pendingNote']) {
+    expect(onboardingP2.en[k], k).toBeTruthy(); expect(ar[k], k).toBeTruthy();
+  }
+  expect(ar['ess.completion.doc.scan.trusted']).toBe('لم يُفحص بحثًا عن الفيروسات (مصدر موثوق)');
 });

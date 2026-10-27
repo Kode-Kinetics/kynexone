@@ -25,7 +25,7 @@ export interface EssField {
   sensitive: boolean;
   options?: string[];
 }
-export interface EssDocument { id: string; kind: DocumentKind; scanStatus: 'Clean' | 'PendingScan' | 'Quarantined'; fileName?: string }
+export interface EssDocument { id: string; kind: DocumentKind; scanStatus: string; fileName?: string }
 export interface EssSection {
   key: SectionKey;
   state: SectionState;
@@ -84,7 +84,8 @@ export interface InboxItem {
   submittedAtUtc: string;
   goesToFinance: boolean;
   diff: InboxDiff[];
-  documents: Array<{ id: string; kind: DocumentKind; scanStatus: string; fileName: string }>;
+  /** `id` is absent for a caller without employees.sensitive (CD58): the file is listed, not downloadable. */
+  documents: Array<{ id?: string; kind: DocumentKind; scanStatus: string; fileName: string }>;
 }
 export interface InboxQuery { status?: string; section?: SectionKey | ''; companyId?: string; page?: number }
 

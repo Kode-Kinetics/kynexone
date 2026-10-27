@@ -7,6 +7,7 @@ import { hrCompletionApi, problemOf, SECTION_ORDER, type InboxItem, type Section
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
+import { canDownloadScanned, scanLabelKey, scanRefusalKey, scanState } from '../../lib/scanState';
 import { hijriLine } from '../../lib/hire/dates';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { EssEmpty, EssLoadError, EssNotice, essInput, essPrimaryButton } from '../../components/ess/EssParts';
@@ -46,7 +47,7 @@ export function CompletionReviewPage() {
     try {
       if (decision.kind === 'accept') {
         const result = await hrCompletionApi.accept(decision.item.requestId, note.trim(), override.trim() || undefined);
-        setMessage({ tone: 'ok', text: result.outcome === 'AwaitingFinance' ? t('Accepted. Finance now has to approve the new bank details; they apply from the next day.') : t('Accepted and applied to the employee record.') });
+        setMessage({ tone: 'ok', text: result.outcome === 'AwaitingFinance' ? t('Accepted. A Finance approver must now approve the new bank details. It cannot be you or the employee. They apply from the day after Finance approves.') : t('Accepted and applied to the employee record.') });
       } else {
         await hrCompletionApi.requestChanges(decision.item.requestId, note.trim());
         setMessage({ tone: 'ok', text: t('Sent back to the employee.') });
@@ -105,16 +106,16 @@ export function CompletionReviewPage() {
               {open === item.requestId && (
                 <div className="mt-3 space-y-3">
                   <div className="overflow-x-auto" role="region" tabIndex={0} aria-label={t(`ess.completion.section.${item.section}.title`)}>
-                    <table className="w-full min-w-[20rem] text-sm">
+                    <table className="block w-full text-sm sm:table sm:min-w-[20rem]" role="table">
                       <caption className="sr-only">{t(`ess.completion.section.${item.section}.title`)}</caption>
-                      <thead><tr className="text-xs text-slate-500"><th scope="col" className="py-1 pe-3 text-start">{t('Field')}</th><th scope="col" className="py-1 pe-3 text-start">{t('Current')}</th><th scope="col" className="py-1 pe-3 text-start">{t('Proposed')}</th><th scope="col" className="py-1 text-start">{t('Changed')}</th></tr></thead>
-                      <tbody>
+                      <thead className="sr-only sm:table-header-group sm:not-sr-only" role="rowgroup"><tr className="text-xs text-slate-500" role="row"><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Field')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Current')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Proposed')}</th><th scope="col" role="columnheader" className="py-1 text-start">{t('Changed')}</th></tr></thead>
+                      <tbody className="block space-y-2 sm:table-row-group sm:space-y-0" role="rowgroup">
                         {item.diff.map(d => (
-                          <tr key={d.field} className="border-t border-slate-100 dark:border-white/10">
-                            <th scope="row" className="py-1.5 pe-3 text-start font-medium">{t(d.labelKey)}</th>
-                            <td className="py-1.5 pe-3 text-start"><span dir="ltr"><bdi>{d.before || '—'}</bdi></span>{hijriLine(d.before, locale) && <span className="block text-xs text-slate-500" data-testid={`hijri-before-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.before, locale) })}</span>}</td>
-                            <td className={`py-1.5 pe-3 text-start ${d.changed ? 'font-bold' : ''}`}><span dir="ltr"><bdi>{d.after || '—'}</bdi></span>{hijriLine(d.after, locale) && <span className="block text-xs font-normal text-slate-500" data-testid={`hijri-after-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.after, locale) })}</span>}</td>
-                            <td className="py-1.5 text-start"><span className={d.changed ? 'rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'text-xs text-slate-500'}>{d.changed ? t('Changed') : t('Unchanged')}</span></td>
+                          <tr key={d.field} role="row" data-testid="diff-row" className="block space-y-1 rounded-xl border border-slate-200 p-3 sm:table-row sm:space-y-0 sm:rounded-none sm:border-0 sm:border-t sm:border-slate-100 sm:p-0 dark:border-white/10">
+                            <th scope="row" role="rowheader" className="block py-1.5 pe-3 text-start font-medium sm:table-cell">{t(d.labelKey)}</th>
+                            <td role="cell" className="flex items-start justify-between gap-3 py-1 pe-3 text-start sm:table-cell sm:py-1.5"><span className="shrink-0 text-xs text-slate-500 sm:hidden" aria-hidden="true">{t('Current')}</span><div className="min-w-0 text-end sm:text-start"><span dir="ltr"><bdi>{d.before || '—'}</bdi></span>{hijriLine(d.before, locale) && <span className="block text-xs text-slate-500" data-testid={`hijri-before-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.before, locale) })}</span>}</div></td>
+                            <td role="cell" className={`flex items-start justify-between gap-3 py-1 pe-3 text-start sm:table-cell sm:py-1.5 ${d.changed ? 'font-bold' : ''}`}><span className="shrink-0 text-xs font-normal text-slate-500 sm:hidden" aria-hidden="true">{t('Proposed')}</span><div className="min-w-0 text-end sm:text-start"><span dir="ltr"><bdi>{d.after || '—'}</bdi></span>{hijriLine(d.after, locale) && <span className="block text-xs font-normal text-slate-500" data-testid={`hijri-after-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.after, locale) })}</span>}</div></td>
+                            <td role="cell" className="py-1 text-start sm:table-cell sm:py-1.5"><span className={d.changed ? 'rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'text-xs text-slate-500'}>{d.changed ? t('Changed') : t('Unchanged')}</span></td>
                           </tr>
                         ))}
                       </tbody>
@@ -124,10 +125,12 @@ export function CompletionReviewPage() {
                     <div>
                       <h3 className="text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Attachments')}</h3>
                       <ul className="mt-1 text-sm">
-                        {item.documents.map(d => (
-                          <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-1">
-                            <span><bdi>{d.fileName}</bdi> · {t(`ess.completion.doc.${d.kind}`)} · {t(`ess.completion.doc.scan.${d.scanStatus}`)}</span>
-                            {d.scanStatus === 'Clean' && <a href={hrCompletionApi.documentUrl(d.id)} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire underline dark:text-cyanAccent"><Download className="h-3.5 w-3.5" aria-hidden="true" />{t('Download')}</a>}
+                        {item.documents.map((d, index) => (
+                          <li key={d.id ?? `${d.fileName}-${index}`} className="flex flex-wrap items-center justify-between gap-2 py-1">
+                            <span className="min-w-0"><bdi>{d.fileName}</bdi> · {t(`ess.completion.doc.${d.kind}`)}{scanLabelKey(scanState(d.scanStatus)) && <> · <span data-testid="scan-label">{t(scanLabelKey(scanState(d.scanStatus)) as string)}</span></>}</span>
+                            {scanRefusalKey(scanState(d.scanStatus)) && <span className="basis-full text-xs text-rose-700 dark:text-rose-300" data-testid="scan-refused">{t(scanRefusalKey(scanState(d.scanStatus)) as string)}</span>}
+                            {!d.id && canDownloadScanned(scanState(d.scanStatus)) && <span className="text-xs text-slate-500" data-testid="attachment-hidden">{t('You need the sensitive-data permission to download this file.')}</span>}
+                            {d.id && canDownloadScanned(scanState(d.scanStatus)) && <a href={hrCompletionApi.documentUrl(d.id)} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire underline dark:text-cyanAccent"><Download className="h-3.5 w-3.5" aria-hidden="true" />{t('Download')}</a>}
                           </li>
                         ))}
                       </ul>

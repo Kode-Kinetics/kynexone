@@ -20,7 +20,7 @@ test('Confirm or correct: current values are prefilled and confirming sends no v
   const log = await bootEss(page, { sections: ['person'] });
   await page.getByTestId('section-person').click();
   await expect(page.getByText('Why HR asks for this')).toBeVisible();
-  await expect(page.getByText('Privacy notice ess-1.')).toBeVisible();
+  await expect(page.getByText('Privacy notice.')).toBeVisible();
   await expect(page.getByLabel('Personal email (required)')).toHaveValue('sam@example.test');
   await page.getByRole('button', { name: 'Confirm these details' }).click();
   await expect(page.getByText('Sent to HR. You will see the result here.')).toBeVisible();
@@ -196,4 +196,26 @@ test('CD58: an inbox item without document ids offers no download and says why',
   await expect(item.getByText('letter.pdf')).toBeVisible();
   await expect(item.getByRole('link', { name: 'Download' })).toHaveCount(0);
   await expect(item.getByTestId('attachment-hidden')).toContainText('You need the sensitive-data permission to download this file.');
+});
+
+test('CD66: scan states in the review inbox: trusted source is labelled, quarantined files are refused with a reason', async ({ page }) => {
+  const item = { ...INBOX_ITEMS[1], documents: [
+    { id: 'd-clean', kind: 'bank_letter', scanStatus: 'clean', fileName: 'clean.pdf' },
+    { id: 'd-trusted', kind: 'bank_letter', scanStatus: 'not_scanned_trusted_source', fileName: 'trusted.pdf' },
+    { id: 'd-quar', kind: 'bank_letter', scanStatus: 'quarantined', fileName: 'quarantined.pdf' },
+    { id: 'd-pend', kind: 'bank_letter', scanStatus: 'quarantined_pending', fileName: 'pending.pdf' },
+  ] };
+  await bootEss(page, { persona: 'hr', hrItems: [item] });
+  const card = page.getByTestId('inbox-item');
+  await card.getByRole('button', { name: 'Review' }).click();
+  const row = (name: string) => card.locator('li', { hasText: name });
+  await expect(row('clean.pdf')).toContainText('Checked');
+  await expect(row('clean.pdf').getByRole('link', { name: 'Download' })).toBeVisible();
+  await expect(row('trusted.pdf')).toContainText('Not virus-scanned (trusted source)');
+  await expect(row('trusted.pdf')).not.toContainText('Checked');
+  await expect(row('trusted.pdf').getByRole('link', { name: 'Download' })).toBeVisible();
+  await expect(row('quarantined.pdf')).toContainText('Blocked by the security scan. It cannot be downloaded.');
+  await expect(row('quarantined.pdf').getByRole('link', { name: 'Download' })).toHaveCount(0);
+  await expect(row('pending.pdf')).toContainText('Waiting for the security scan.');
+  await expect(row('pending.pdf').getByRole('link', { name: 'Download' })).toHaveCount(0);
 });

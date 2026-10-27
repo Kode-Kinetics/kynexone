@@ -1,5 +1,6 @@
 'use client';
 
+import { hostingRegion, noticeVersionNumber } from '../../../lib/essPrivacy';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Loader2, Send } from 'lucide-react';
 import { essCompletionApi, isStepUpRequired, problemOf, type EssCompletion, type EssDocument, type EssField, type EssSection } from '../../../api/essCompletion';
@@ -96,6 +97,7 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
     );
   };
 
+  const hosting = hostingRegion(meta.hosting);
   const withDocs = section.key === 'documents' || section.key === 'bank' || section.key === 'id';
   const docsRequired = section.key === 'documents';
   const stateHint = useMemo(() => {
@@ -112,8 +114,12 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
         <h2 id={`${formId}-title`} className="text-base font-bold text-slate-800 dark:text-slate-100">{t(`ess.completion.section.${section.key}.title`)}</h2>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300"><span className="font-semibold">{t('Why HR asks for this')}: </span>{t(`ess.completion.section.${section.key}.purpose`)}</p>
         <p className="mt-2 rounded-lg bg-slate-50 p-2 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">
-          <span className="font-semibold">{t('Privacy notice {version}', { version: meta.noticeVersion })}. </span>
-          {t('Your details are stored in the {region} region and are visible only to you and authorised HR staff. HR reviews every change before it is applied to your record.', { region: meta.hosting })}
+          <span className="font-semibold" title={noticeVersionNumber(meta.noticeVersion) ? t('Notice version {version}', { version: noticeVersionNumber(meta.noticeVersion) as string }) : undefined}>{t('Privacy notice')}. </span>
+          {!hosting.labelKey
+            ? t('Your details are stored in the hosting region set by your company and are visible only to you and authorised HR staff. HR reviews every change before it is applied to your record.')
+            : hosting.outsideKingdom
+            ? t('Your details are stored on servers in {region}, outside the Kingdom, and are visible only to you and authorised HR staff. HR reviews every change before it is applied to your record.', { region: t(hosting.labelKey) })
+            : t('Your details are stored in {region} and are visible only to you and authorised HR staff. HR reviews every change before it is applied to your record.', { region: t(hosting.labelKey) })}
         </p>
         {section.key === 'bank' && <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{t('A bank change is checked by HR, approved by Finance, and takes effect from the next day.')}</p>}
       </div>

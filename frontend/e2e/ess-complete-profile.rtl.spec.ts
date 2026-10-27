@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootEss } from './ess/essMocks';
+import { bootEss, INBOX_ITEMS } from './ess/essMocks';
 
 /** P2: Arabic at 360 px. No horizontal scroll, the page is RTL, and numbers (IBAN, ID, phone) stay left-to-right. */
 test.use({ viewport: { width: 360, height: 780 } });
@@ -72,4 +72,18 @@ test('Arabic: the privacy notice shows the region by name and says the data is h
   await expect(form).toContainText('الولايات المتحدة (الشرق)');
   await expect(form).toContainText('خارج المملكة');
   expect(await noHorizontalScroll(page)).toBe(true);
+});
+
+test('Arabic: the trusted-source and refused scan states at 360 px', async ({ page }, info) => {
+  const item = { ...INBOX_ITEMS[1], documents: [
+    { id: 'd-trusted', kind: 'bank_letter', scanStatus: 'not_scanned_trusted_source', fileName: 'trusted.pdf' },
+    { id: 'd-quar', kind: 'bank_letter', scanStatus: 'quarantined', fileName: 'quarantined.pdf' },
+  ] };
+  await bootEss(page, { locale: 'ar', persona: 'hr', hrItems: [item] });
+  const card = page.getByTestId('inbox-item');
+  await card.getByRole('button', { name: 'مراجعة' }).click();
+  await expect(card).toContainText('لم يُفحص بحثًا عن الفيروسات (مصدر موثوق)');
+  await expect(card).toContainText('حُجب بسبب الفحص الأمني. لا يمكن تنزيله.');
+  expect(await noHorizontalScroll(page)).toBe(true);
+  await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2p4h-scan-states-ar-360.png` : info.outputPath('scan.png'), animations: 'disabled' });
 });
