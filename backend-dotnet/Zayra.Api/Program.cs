@@ -591,6 +591,8 @@ builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.IEssSectionReques
 builder.Services.AddScoped<Zayra.Api.Application.Employees.Ess.EssSectionDecisionService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.EssCompletionRejectedRetentionRule>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
+// P4 — click-to-sign acknowledgement: built-in (no vendor, no outbound call); PolicySigningService writes the hash-chained record and certificate.
+builder.Services.AddScoped<Zayra.Api.Application.Esign.PolicySigningService>();
 
 // Approved employee changes with a FUTURE effective date (bank details included) take effect when that date
 // arrives in the tenant's timezone: an hourly scheduler enqueues one `employee.effective-changes` job per
@@ -785,6 +787,18 @@ builder.Services.AddRateLimiter(o =>
             {
                 PermitLimit              = rl.GetValue("WelcomePermitLimit", 30),
                 Window                   = TimeSpan.FromSeconds(rl.GetValue("WelcomeWindowSeconds", 60)),
+                QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
+                QueueLimit               = 0,
+            }));
+
+    // P4 — an HR user entering an employee's password on HR's device: 10 attempts a minute per HR user.
+    o.AddPolicy("esign_device", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            ctx.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? RateLimitPartitionKey(ctx),
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit              = rl.GetValue("EsignDevicePermitLimit", 10),
+                Window                   = TimeSpan.FromSeconds(60),
                 QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
                 QueueLimit               = 0,
             }));

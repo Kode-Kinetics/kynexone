@@ -1327,6 +1327,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
         await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
+        await Zayra.Api.Application.Esign.SignedDocumentGuard.EnsureMutableAsync(_db, tenantId, documentId, cancellationToken);   // P4
         if (!string.IsNullOrWhiteSpace(request.DocumentType) && request.DocumentType != doc.DocumentType
             && (request.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType || doc.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType))
             throw new InvalidOperationException("Benefit receipt document type is assigned by the secure receipt upload and cannot be renamed.");
@@ -1398,6 +1399,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return false;
         await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
+        await Zayra.Api.Application.Esign.SignedDocumentGuard.EnsureMutableAsync(_db, tenantId, documentId, cancellationToken);   // P4
 
         doc.IsDeleted = true;
         doc.DeletedAtUtc = DateTime.UtcNow;

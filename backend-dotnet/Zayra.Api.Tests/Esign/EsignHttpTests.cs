@@ -76,8 +76,9 @@ public class EsignHttpTests(EsignFixture fx)
         var doc = await fx.NewDocumentAsync(e);
         using var res = await fx.SignAsync(e, doc, "Somebody Else");
         res.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
-        (await Code(res)).Should().Be("typed_name_mismatch");
-        (await Json(res)).GetProperty("titleKey").GetString().Should().Be("esign.error.typed_name_mismatch");
+        var problem = await Json(res);
+        problem.GetProperty("code").GetString().Should().Be("typed_name_mismatch");
+        problem.GetProperty("titleKey").GetString().Should().Be("esign.error.typed_name_mismatch");
         (await fx.WithDbAsync(db => db.EmployeePolicyAcknowledgements.IgnoreQueryFilters().CountAsync(a => a.PolicyId == doc.Id))).Should().Be(0);
         // the Arabic name on the record is accepted too, with diacritics
         using var ok = await fx.SignAsync(e, doc, "لَيْلَى حسن");
@@ -134,8 +135,9 @@ public class EsignHttpTests(EsignFixture fx)
         // the same document again (a double click, a retry): refused, pointing at the record that exists
         using var again = await fx.SignAsync(e, doc, "Layla Hassan");
         again.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await Code(again)).Should().Be("already_signed");
-        (await Json(again)).GetProperty("ackId").GetGuid().Should().Be(ackId);
+        var dup = await Json(again);
+        dup.GetProperty("code").GetString().Should().Be("already_signed");
+        dup.GetProperty("ackId").GetGuid().Should().Be(ackId);
         // the same step-up proof does not open a second signature
         using var reuse = await fx.SignAsync(e, doc2, "Layla Hassan", step);
         reuse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -202,8 +204,9 @@ public class EsignHttpTests(EsignFixture fx)
         var e = await fx.NewEmployeeAsync();
         using var res = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, password = fx.HrPassword });
         res.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        (await Code(res)).Should().Be("employee_device_auth_failed");
-        (await Json(res)).TryGetProperty("stepUpToken", out _).Should().BeFalse();
+        var problem = await Json(res);
+        problem.GetProperty("code").GetString().Should().Be("employee_device_auth_failed");
+        problem.TryGetProperty("stepUpToken", out _).Should().BeFalse();
     }
 
     [Fact]

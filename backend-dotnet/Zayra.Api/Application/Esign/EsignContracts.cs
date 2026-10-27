@@ -69,11 +69,13 @@ public static class ConsentCatalog
 
     public static string Text(string version, string language)
     {
-        throw new NotImplementedException();
+        if (!IsKnown(version)) throw new ArgumentOutOfRangeException(nameof(version));
+        return string.Equals(language, "ar", StringComparison.OrdinalIgnoreCase) ? ArV1 : EnV1;
     }
 
     /// <summary>SHA-256 over the exact text of BOTH languages (EN then AR, newline separated): what the signer agreed to is fixed by one hash.</summary>
-    public static string TextSha256(string version) => throw new NotImplementedException();
+    public static string TextSha256(string version) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Text(version, "en") + "\n" + Text(version, "ar")))).ToLowerInvariant();
 }
 
 /// <summary>Normalised comparison of the name the signer typed with the names on the employee record (EN or AR).</summary>
@@ -81,10 +83,25 @@ public static class TypedNameMatcher
 {
     public static string Normalise(string? value)
     {
-        throw new NotImplementedException();
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var decomposed = value.Normalize(NormalizationForm.FormKC);
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var ch in decomposed.Normalize(NormalizationForm.FormD))
+        {
+            var category = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch);
+            if (category is System.Globalization.UnicodeCategory.NonSpacingMark or System.Globalization.UnicodeCategory.Format) continue;   // diacritics, harakat
+            if (ch == 'ـ') continue;                                                                                                   // tatweel
+            sb.Append(ch switch { 'أ' or 'إ' or 'آ' or 'ٱ' => 'ا', 'ى' => 'ي', 'ة' => 'ه', _ => ch });
+        }
+        var folded = sb.ToString().Normalize(NormalizationForm.FormC).ToLowerInvariant();
+        return string.Join(' ', folded.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
     }
 
-    public static bool Matches(string? typed, params string?[] recordNames) => throw new NotImplementedException();
+    public static bool Matches(string? typed, params string?[] recordNames)
+    {
+        var t = Normalise(typed);
+        return t.Length > 0 && recordNames.Any(n => Normalise(n) is { Length: > 0 } r && r == t);
+    }
 }
 
 /// <summary>The short code printed on the certificate, derived from the record hash so it can be checked against the chain.</summary>
@@ -94,6 +111,13 @@ public static class VerificationCode
 
     public static string From(string recordHash)
     {
-        throw new NotImplementedException();
+        var bytes = Convert.FromHexString(recordHash);
+        var sb = new StringBuilder(14);
+        for (var i = 0; i < 12; i++)
+        {
+            if (i > 0 && i % 4 == 0) sb.Append('-');
+            sb.Append(Alphabet[bytes[i] % Alphabet.Length]);
+        }
+        return sb.ToString();
     }
 }

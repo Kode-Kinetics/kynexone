@@ -57,7 +57,8 @@ public sealed class EsignFixture : IAsyncLifetime
     public string HrToken { get; private set; } = null!;          // employees.read + employees.write + employees.documents + employees.sensitive
     public string HrNoDocsToken { get; private set; } = null!;    // employees.write only
     public Guid HrUserId { get; private set; }
-    public string HrPassword => Password;
+    public const string HrOwnPassword = "Hr-Own-Passw0rd!xyz";
+    public string HrPassword => HrOwnPassword;
 
     public async Task InitializeAsync()
     {
@@ -103,7 +104,7 @@ public sealed class EsignFixture : IAsyncLifetime
     private User Staff(string name, bool withPassword, IServiceScope scope) => new()
     {
         TenantId = TenantId, Email = $"{name}@esign-p4.local", NormalizedEmail = $"{name}@esign-p4.local".ToUpperInvariant(), FullName = name,
-        PasswordHash = withPassword ? scope.ServiceProvider.GetRequiredService<IPasswordHasher>().Hash(Password) : "no-login-path",
+        PasswordHash = withPassword ? scope.ServiceProvider.GetRequiredService<IPasswordHasher>().Hash(HrOwnPassword) : "no-login-path",
         Status = "Active", AccessMode = "FullPortal", IsActive = true, IsEmailConfirmed = true, IsGroupScope = true,
     };
 

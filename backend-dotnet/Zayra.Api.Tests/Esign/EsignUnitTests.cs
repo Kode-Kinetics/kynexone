@@ -98,7 +98,7 @@ public class EsignUnitTests
         en.Should().NotBe(ar);
         ConsentCatalog.TextSha256("ack-1").Should().Be(ConsentCatalog.TextSha256("ack-1")).And.MatchRegex("^[0-9a-f]{64}$");
         // Pinned: a wording change must bump the version, not silently change what an old signature agreed to.
-        ConsentCatalog.TextSha256("ack-1").Should().Be("PINNED_AT_GREEN");
+        ConsentCatalog.TextSha256("ack-1").Should().Be("65d574df245e40a56d9d8deab51e71992b865f13be6b79f35ab18952c26b6b41");
         Assert.Throws<ArgumentOutOfRangeException>(() => ConsentCatalog.Text("ack-2", "en"));
     }
 
@@ -149,7 +149,7 @@ public class EsignUnitTests
         pdf.Take(5).Should().Equal("%PDF-"u8.ToArray());
         using var doc = PdfDocument.Open(pdf);
         var text = string.Join("\n", doc.GetPages().Select(p => p.Text));
-        var flat = Regex.Replace(text, @"\s+", "");
+        var flat = Regex.Replace(text.Normalize(System.Text.NormalizationForm.FormKC), @"\s+", "");   // the PDF font ligates fi/fl
         flat.Should().Contain(new string('c', 64)).And.Contain(hash).And.Contain("LaylaHassan").And.Contain("2026-10-27").And.Contain(VerificationCode.From(hash));
         flat.Should().Contain("notaqualifiedelectronicsignature");
         text.Should().MatchRegex(@"[؀-ۿﭐ-﷿ﹰ-﻿]", "the Arabic half of the page is on it");
