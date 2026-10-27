@@ -298,10 +298,10 @@ public class EmployeeDuplicateDetectionTests
         await using var db = CreateDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: "1112223334");
+        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: TestIds.ValidIqama(1112223));
         var ctrl = BuildController(db, t);
 
-        var result = await ctrl.CreateEmployee(CreateReq("New Person", identity: ("iqama_number", "1112223334")), BuildService(db), CancellationToken.None);
+        var result = await ctrl.CreateEmployee(CreateReq("New Person", nationality: "Indian", identity: ("iqama_number", TestIds.ValidIqama(1112223))), BuildService(db), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
         Assert.Contains("possible_duplicate", JsonSerializer.Serialize(conflict.Value));
@@ -314,10 +314,13 @@ public class EmployeeDuplicateDetectionTests
         await using var db = CreateDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: "1112223334");
-        var ctrl = BuildController(db, t);
+        await SeedEmployee(db, t, "EXIST-1", "Old Record", iqama: TestIds.ValidIqama(1112223));
+        // An acknowledged duplicate is a deliberate override: it needs the permission and a written reason.
+        var ctrl = BuildController(db, t, extraClaims: [new Claim("permission", "employees.duplicate_override")]);
 
-        var result = await ctrl.CreateEmployee(CreateReq("New Person", ack: true, identity: ("iqama_number", "1112223334")), BuildService(db), CancellationToken.None);
+        var result = await ctrl.CreateEmployee(
+            CreateReq("New Person", ack: true, nationality: "Indian", identity: ("iqama_number", TestIds.ValidIqama(1112223))) with { DuplicateOverrideReason = "Same person, second legal entity" },
+            BuildService(db), CancellationToken.None);
 
         Assert.IsType<CreatedAtActionResult>(result.Result);
         Assert.Equal(2, await db.Employees.CountAsync(e => e.TenantId == t));
@@ -332,7 +335,7 @@ public class EmployeeDuplicateDetectionTests
         await SeedCompany(db, t, "Acme");
         var ctrl = BuildController(db, t);
 
-        var result = await ctrl.CreateEmployee(CreateReq("Fresh Hire", identity: ("iqama_number", "0001112223")), BuildService(db), CancellationToken.None);
+        var result = await ctrl.CreateEmployee(CreateReq("Fresh Hire", nationality: "Indian", identity: ("iqama_number", TestIds.ValidIqama(2223334))), BuildService(db), CancellationToken.None);
 
         Assert.IsType<CreatedAtActionResult>(result.Result);
         Assert.Equal(1, await db.Employees.CountAsync(e => e.TenantId == t));
@@ -352,14 +355,14 @@ public class EmployeeDuplicateDetectionTests
 
         // #1 created through the modal/create path with a national ID compliance record.
         var first = await BuildController(db, t)
-            .CreateEmployee(CreateReq("Faisal Al Saud", identity: ("id_number", "1098765432")), BuildService(db), CancellationToken.None);
+            .CreateEmployee(CreateReq("Faisal Al Saud", identity: ("id_number", TestIds.ValidNationalId(98765432))), BuildService(db), CancellationToken.None);
         Assert.IsType<CreatedAtActionResult>(first.Result);
         // The scalar the detector matches on must have been populated by the create mirror.
-        Assert.Equal("1098765432", await db.Employees.Where(e => e.TenantId == t).Select(e => e.IdNumber).SingleAsync());
+        Assert.Equal(TestIds.ValidNationalId(98765432), await db.Employees.Where(e => e.TenantId == t).Select(e => e.IdNumber).SingleAsync());
 
         // #2 with the SAME Hawiyya, no ack → strong duplicate → 409, no second record.
         var second = await BuildController(db, t)
-            .CreateEmployee(CreateReq("Different Name", identity: ("id_number", "1098765432")), BuildService(db), CancellationToken.None);
+            .CreateEmployee(CreateReq("Different Name", identity: ("id_number", TestIds.ValidNationalId(98765432))), BuildService(db), CancellationToken.None);
 
         var conflict = Assert.IsType<ConflictObjectResult>(second.Result);
         Assert.Contains("possible_duplicate", JsonSerializer.Serialize(conflict.Value));
@@ -516,7 +519,7 @@ public class EmployeeDuplicateDetectionTests
         await using var db = CreateDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Original Person", iqama: "9090909090");
+        await SeedEmployee(db, t, "EXIST-1", "Original Person", iqama: TestIds.ValidIqama(9090909));
         // A tenant-default readiness policy for the imported jurisdiction. Without one the row resolves
         // to ZERO requirements, which the evaluator now reports as NeedsAttention ("no readiness policy")
         // rather than the old fabricated "Ready"/100 — and that would mask the advisory-gap behaviour tested here.
@@ -532,7 +535,7 @@ public class EmployeeDuplicateDetectionTests
 
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate,CountryCode\n" +
-            "IMP-1,Imported Person,9090909090,2024-01-01,IN\n";
+            "IMP-1,Imported Person," + TestIds.ValidIqama(9090909) + ",2024-01-01,IN\n";
         var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         Assert.Equal(1, Prop<int>(payload, "created"));           // never dropped
@@ -557,8 +560,8 @@ public class EmployeeDuplicateDetectionTests
         // Two rows, same Iqama → both must be flagged (back-flag the earlier one).
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate\n" +
-            "A,Person A,1234509876,2024-01-01\n" +
-            "B,Person B,1234509876,2024-01-01\n";
+            "A,Person A," + TestIds.ValidIqama(1234509) + ",2024-01-01\n" +
+            "B,Person B," + TestIds.ValidIqama(1234509) + ",2024-01-01\n";
         var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         Assert.Equal(2, Prop<int>(payload, "created"));
@@ -580,8 +583,8 @@ public class EmployeeDuplicateDetectionTests
 
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate\n" +
-            "A,Person A,111,2024-01-01\n" +
-            "B,Person B,222,2024-01-01\n";
+            "A,Person A," + TestIds.ValidIqama(1110001) + ",2024-01-01\n" +
+            "B,Person B," + TestIds.ValidIqama(2220002) + ",2024-01-01\n";
         var payload = Payload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         Assert.Equal(2, Prop<int>(payload, "created"));
@@ -595,12 +598,12 @@ public class EmployeeDuplicateDetectionTests
         await using var db = PgDb();
         var t = await SeedTenant(db);
         await SeedCompany(db, t, "Acme");
-        await SeedEmployee(db, t, "EXIST-1", "Original", iqama: "5150");
+        await SeedEmployee(db, t, "EXIST-1", "Original", iqama: TestIds.ValidIqama(5150));
         var ctrl = ImportController(db, t);
 
         var csv =
             "EmployeeCode,FullName,IqamaNumber,JoiningDate\n" +
-            "IMP-1,Imported,5150,2024-01-01\n";
+            "IMP-1,Imported," + TestIds.ValidIqama(5150) + ",2024-01-01\n";
         var payload = Payload(await ctrl.ImportPreview(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
 
         var rows = Prop<List<object>>(payload, "rows");

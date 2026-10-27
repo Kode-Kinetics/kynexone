@@ -14,6 +14,8 @@
  *
  * Deterministic: fixed codes, names and e-mail; the same run twice yields the same world.
  */
+import { saudiNationalId } from './saudiIds';
+import { signInPayApprover } from './payApprover';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -140,6 +142,8 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
     }), 'create the Quality Analyst designation', [200, 201]).body;
   }
 
+  // The pay approver was provisioned with the world (provision.ts); a hire's pay needs a second person before activation.
+  const approver = await signInPayApprover(API, INTELLIFLOW_SLUG, INTELLIFLOW_ADMIN.password);
   const existing = await employees(admin, company.id, `${QUALITY.code}-E`);
   let lead: number | null = Number(existing.find((e: any) => e.employeeCode === `${QUALITY.code}-E1`)?.id) || null;
   for (const [index, name] of QUALITY_PEOPLE.entries()) {
@@ -159,9 +163,8 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
         salaryBreakdown: { basicSalary: 7000, housingAllowance: 1750, transportAllowance: 500, effectiveDate: '2025-01-01', currency: 'SAR' },
         complianceRecords: [
           idRecord('civil_id', 'Civil ID', `1${String(210000000 + seq).slice(0, 9)}`),
-          idRecord('id_number', 'Government ID number', `1${String(310000000 + seq).slice(0, 9)}`),
+          idRecord('id_number', 'Government ID number', saudiNationalId(310000000 + seq)),
           idRecord('gosi_reference', 'GOSI reference', `GOSI-${code}`),
-          idRecord('iqama_number', 'Iqama Number', `2${String(410000000 + seq).slice(0, 9)}`),
           idRecord('emirates_id', 'Emirates ID', `784-1991-${String(1100000 + seq).slice(0, 7)}-1`),
           idRecord('work_permit', 'Work permit number', `WP-${code}`),
           idRecord('passport_number', 'Passport number', `P${String(11000000 + seq).slice(0, 8)}`),
@@ -172,12 +175,20 @@ export async function seedLearningWorld(): Promise<LearningWorld> {
           idRecord('qiwa_contract_reference', 'Qiwa contract reference', `QC-${code}`),
         ],
         acknowledgeDuplicate: true,
+        duplicateOverrideReason: 'E2E fixture world: deterministic synthetic people re-created per run',
+        acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by the specs' }],
       },
     }), `create employee ${code}`, [200, 201]);
-    if (index === 0) lead = Number(created.body?.id ?? created.body?.Id);
+    if (index === 0) {
+      lead = Number(created.body?.id ?? created.body?.Id);
+      // A line manager must not be a Draft, so approve the lead's pay and activate it as soon as it exists.
+      await approver.approve(lead!);
+      ok(await call('POST', `/api/employees/${lead}/activate`, { token: admin, body: { status: 'Active', reason: 'learning e2e scenario' } }), `activate ${code}`);
+    }
   }
   for (const e of await employees(admin, company.id, `${QUALITY.code}-E`)) {
     if (e.status === 'Active') continue;
+    await approver.approve(Number(e.id));
     ok(await call('POST', `/api/employees/${e.id}/activate`, { token: admin, body: { status: 'Active', reason: 'learning e2e scenario' } }), `activate ${e.employeeCode}`);
   }
 

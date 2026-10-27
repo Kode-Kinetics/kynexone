@@ -634,6 +634,8 @@ Zayra.Api.Infrastructure.Engagement.EngagementServiceCollectionExtensions.AddEng
 builder.Services.AddHttpClient<ILlmClient, LlmClient>(c => c.Timeout = TimeSpan.FromSeconds(120));
 builder.Services.AddHttpContextAccessor();
 
+Zayra.Api.Infrastructure.Employees.Onboarding.OnboardingServiceRegistration.AddOnboardingServices(builder.Services);
+
 // Country pack framework — scoped per request (strategies depend on scoped IStatutoryRuleReader).
 // Default (no-op) pack registered as the non-keyed fallback for each interface.
 // Country packs registered as keyed scoped services; the resolver checks keyed registrations
@@ -1106,6 +1108,20 @@ using (var scope = app.Services.CreateScope())
     {
         try { await PayrollAuditChainBackfill.RunAsync(dbContext, logger); }
         catch (Exception ex) { logger.LogError(ex, "PayrollAuditChainBackfill failed — continuing startup."); }
+    }
+
+    // Onboarding P1 nationality mapping — maps each employee's free-text nationality onto the ISO catalog.
+    // Idempotent (only touches rows still 'Unset'), a no-op on an empty database, never changes what a reader
+    // classifies (a class change is only PROPOSED for HR to confirm), and non-fatal: if the column is not there
+    // yet (migrations deferred) the next boot catches up. Kill switch: Onboarding:NationalityBackfill=false.
+    if (!string.Equals(app.Configuration["Onboarding:NationalityBackfill"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        try
+        {
+            var mapped = await Zayra.Api.Infrastructure.Employees.Onboarding.NationalityBackfill.RunAllAsync(dbContext, CancellationToken.None);
+            if (mapped > 0) logger.LogInformation("NationalityBackfill classified {Count} employee(s).", mapped);
+        }
+        catch (Exception ex) { logger.LogError(ex, "NationalityBackfill failed — continuing startup."); }
     }
 
     // Seed data — each step is independently non-fatal so one failure never

@@ -444,9 +444,13 @@ public sealed class EmployeeImportPilotSafetyPostgresTests
         }
 
         const string head = "EmployeeCode,FullName,CompanyLegalName,Grade,BasicSalary,Currency,JoiningDate,BankName";
+        // Joining dates inside the 30-day window: an older one is flagged joining_backdated by the shared hire/import
+        // validation, which is not what this fixture is about. The only by-design change here is nationality (CD7).
+        var recent = DateTime.UtcNow.AddDays(-5).ToString("yyyy-MM-dd");
         var refused = head + "\nFX1,Fixture One,Pilot Demo,G1,5000,SAR,2024-01-01,Synthetic Bank\nFX2,,Pilot Demo,G1,5000,SAR,2024-01-01,Synthetic Bank\nFX1,Fixture Twin,Pilot Demo,G1,5000,SAR,2024-01-01,Synthetic Bank\n";
         var good = head + "\nFX1,Fixture One,Pilot Demo,G1,5000,SAR,2024-01-01,Synthetic Bank\nFX2,Fixture Two,Pilot Demo,G1,6000,SAR,2024-01-01,Synthetic Bank\n";
         var shifted = head + "\nFX1,Fixture One,Pilot Demo,G1,8,000,SAR,2024-01-01,Synthetic Bank\n";
+        refused = refused.Replace("2024-01-01", recent); good = good.Replace("2024-01-01", recent); shifted = shifted.Replace("2024-01-01", recent);
 
         await Capture("FieldCatalogSaSaudi", c => c.FieldCatalog(null, "SA", "Saudi", CancellationToken.None));
         await Capture("FieldCatalogSaIndian", c => c.FieldCatalog(null, "SA", "Indian", CancellationToken.None));
@@ -457,7 +461,7 @@ public sealed class EmployeeImportPilotSafetyPostgresTests
         await AssertNothingPersisted(tenant);
 
         // The re-import notice: a code-less file committed once, then previewed again.
-        var codeless = "FullName,CompanyLegalName,JoiningDate\nFixture Codeless,Pilot Demo,2024-01-01\n";
+        var codeless = $"FullName,CompanyLegalName,JoiningDate\nFixture Codeless,Pilot Demo,{recent}\n";
         await using (var db = _fixture.CreateDb())
             Assert.IsType<OkObjectResult>(await Controller(db, tenant).Import(new EmployeesController.ImportEmployeesRequest(codeless), CancellationToken.None));
         await Capture("PreviewAlreadyImported", c => c.ImportPreview(new EmployeesController.ImportEmployeesRequest(codeless), CancellationToken.None));

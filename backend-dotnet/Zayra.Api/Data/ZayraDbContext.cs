@@ -646,6 +646,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Added
             if (scoped.CompanyId is Guid explicitCompany)
             {
+                await Zayra.Api.Infrastructure.Employees.Onboarding.TenantCompanyMembershipGuard.AssertAsync(this, explicitCompany, ResolveEntryTenantId(entry) ?? tenantClaim.Value, ct);
                 if (!scope.CanAccessCompany(explicitCompany))
                     throw new UnauthorizedAccessException(
                         $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} in a company outside your access.");
@@ -1563,6 +1564,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.PublicId })
                   .HasDatabaseName("ux_employees_tenant_public_id")
                   .IsUnique();
+            entity.Property(x => x.CreateRequestFingerprint).HasMaxLength(64);
+            entity.HasIndex(x => new { x.TenantId, x.CreateIdempotencyKey })
+                  .HasDatabaseName("ux_employees_tenant_create_idempotency_key")
+                  .IsUnique()
+                  .HasFilter("create_idempotency_key IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.Status });
             // "Needs info" worklist filter — employees whose readiness is Blocked.
             entity.HasIndex(x => new { x.TenantId, x.ReadinessState });
@@ -5562,6 +5568,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
+        // Employee onboarding P1: nationality code/state, original joining date (migration OnboardingP1).
+        OnboardingModelConfiguration.Configure(modelBuilder);
         SelfieAttendanceModelConfiguration.Configure(modelBuilder);
         // LRN — learning management (same append-only convention).
         LearningModelConfiguration.Configure(modelBuilder);

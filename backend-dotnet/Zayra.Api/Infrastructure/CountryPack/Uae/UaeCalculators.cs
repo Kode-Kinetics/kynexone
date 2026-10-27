@@ -65,10 +65,10 @@ public sealed class UaeDeductionCalculator : IStatutoryDeductionCalculator
         return new(empContrib, erContrib, lines);
     }
 
-    private static bool IsUaeNational(string nat)
-        => string.Equals(nat, CountryCodes.UAE, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(nat, "AE", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(nat, "Emirati", StringComparison.OrdinalIgnoreCase);
+    // The shared GCC normaliser, so the country NAME the hire wizard now records ("United Arab Emirates") is read as
+    // national exactly as the demonym staff used to type ("Emirati"). A superset of the spellings accepted before.
+    internal static bool IsUaeNational(string nat)
+        => Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nat) == "AE";
 }
 
 // ── UAE mainland EOSB calculator ─────────────────────────────────────────────

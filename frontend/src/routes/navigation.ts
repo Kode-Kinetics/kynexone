@@ -98,6 +98,8 @@ export const navigationGroups: NavGroup[] = [
       // ess.read used to show this link too, and the page's gate sent them to "Access Denied".
       { label: 'Request Center', icon: Headphones, path: '/hr-requests', requiredPermissions: ['approvals.read', 'approvals.write', 'approvals.decide'] },
       { label: 'Approvals', icon: CheckSquare2, path: '/approvals', requiredPermissions: ['approvals.read', 'approvals.decide'] },
+      // New-hire pay packages: the scoped view a Finance approver decides from (no blanket employees.sensitive).
+      { label: 'Pay approvals', icon: WalletCards, path: '/pay-approvals', requiredPermissions: ['payroll.approve'] },
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
       { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       // The one home for configuration: every module's settings, users and access, and the workspace (lib/setupModuleSections.ts).
@@ -148,6 +150,7 @@ export const navigationHints: Record<string, string> = {
   '/reports': 'Standard and custom reports, with scheduled delivery.',
   '/hr-requests': 'Requests raised by employees to HR, and their status.',
   '/approvals': 'Everything waiting for your decision, oldest first.',
+  '/pay-approvals': 'Pay packages waiting for your approval.',
   '/saudi-compliance': 'Saudization (Nitaqat), Qiwa and Mudad status for the company.',
   '/gosi-filing': 'Prepare and check the monthly GOSI contribution filing.',
   '/setup': 'Every setting in one place: company structure, leave, pay, users and access, and the workspace.',

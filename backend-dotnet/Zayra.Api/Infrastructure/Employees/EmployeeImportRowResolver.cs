@@ -136,6 +136,12 @@ public sealed class ResolvedImportRow
     public string WorkEmailProvided { get; set; } = string.Empty;  // value the row supplied (kept as-is)
     public List<ImportGap> Gaps { get; } = new();
     public List<string> Warnings { get; } = new();
+    /// <summary>Data-integrity failures (same validators as the Add Employee form). A row with any is skipped and reported.</summary>
+    public List<string> Errors { get; } = new();
+    /// <summary>ISO-2 nationality resolved from the Nationality cell; null when blank or unresolved (then the text is kept and flagged).</summary>
+    public string? NationalityCode { get; set; }
+    /// <summary>Nationality mapping state for the row: Confirmed when the text maps, Unresolved otherwise.</summary>
+    public string NationalityMappingState { get; set; } = Models.NationalityMappingStates.Unset;
 }
 
 /// <summary>Shared resolver used by BOTH EmployeesController.Import (commit) and .ImportPreview (dry-run).
@@ -616,7 +622,7 @@ public static class EmployeeImportRowResolver
             r.Warnings.Add($"Salary {gross:N2} is outside grade {finalGrade.Code} band — imported and marked for review.");
         }
 
-        return r;
+        return Onboarding.ImportRowValidation.Apply(r, row, lk);
     }
 }
 

@@ -153,10 +153,20 @@ public sealed class EmployeeImportAtomicityPostgresTests
     [Fact]
     public async Task AFailureWritingTheImportAudit_RollsBackTheWholeFile()
     {
-        // The audit rows are written last, inside the same transaction — so they cannot fail on their own.
+        // The audit rows are written inside the same transaction, so they cannot fail on their own. A hire with pay now also
+        // stages its compensation-set audit row with the employees (CD37), so the failure can surface at that save and be
+        // answered as the 422 persist refusal rather than thrown after it; either way the whole file is rolled back.
         var tenant = await SeedAsync();
         await using (var failing = Db(new FailWhenSaving(typeof(AuditLog))))
-            await Assert.ThrowsAnyAsync<DbUpdateException>(() => Import(failing, tenant, File(3)));
+        {
+            try
+            {
+                var response = await Import(failing, tenant, File(3));
+                var refused = Assert.IsType<UnprocessableEntityObjectResult>(response);
+                Assert.Equal("import_persist_failed", Body(refused).GetProperty("error").GetString());
+            }
+            catch (DbUpdateException) { /* thrown after the save boundary: also a refusal */ }
+        }
         await AssertNothingPersisted(tenant);
     }
 

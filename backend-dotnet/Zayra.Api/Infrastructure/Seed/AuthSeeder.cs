@@ -396,6 +396,8 @@ public class AuthSeeder : IAuthSeeder
             ("employees.documents", "Employees", "Upload and download employee documents"),
             ("employees.templates", "Employees", "Generate localized employee document templates"),
             ("employees.bulk_import", "Employees", "Bulk import employee records"),
+            ("employees.duplicate_override", "Employees", "Create an employee despite a detected duplicate (with a reason)"),
+            ("employees.override_validation", "Employees", "Override an ID checksum refusal when hiring (with a reason)"),
             ("employees.access.issue", "Employees", "Give employees their KynexOne welcome code (sign-in slips)"),
             ("employees.access.reset", "Employees", "Reset the sign-in of an employee who already uses KynexOne"),
             // Profile
