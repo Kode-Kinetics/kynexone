@@ -77,6 +77,7 @@ export const SERVER_CODE_KEYS: Record<string, string> = {
   warnings_require_acknowledgement: 'Some details need your confirmation before saving.',
   rate_limited: 'Too many checks. Try again in a moment.',
   draft_changed_elsewhere: 'This draft was changed somewhere else. Reload to continue.',
+  draft_basis_required: 'This draft needs to be reloaded before it can be saved.',
   dob_under_15: 'The employee is under the minimum working age of 15.',
   under_minimum_age: 'The employee will be under the minimum working age of 15 on the start date.',
   juvenile_15_17: 'The employee is under 18. Juvenile employment rules apply.',

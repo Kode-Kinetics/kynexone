@@ -34,7 +34,7 @@ export function createAutosave<P>(options: AutosaveOptions<P>) {
     emit('saving');
     const sent = latest as P;
     const run = options.save(sent, version).then(res => {
-      version = res.updatedAtUtc;
+      if (res.updatedAtUtc?.trim()) version = res.updatedAtUtc;
       emit(dirty ? 'pending' : 'saved', res.updatedAtUtc);
       return true;
     }).catch(err => {
@@ -51,7 +51,7 @@ export function createAutosave<P>(options: AutosaveOptions<P>) {
 
   return {
     /** A draft row exists: this is the version the server holds. */
-    adopt(updatedAtUtc: string) { version = updatedAtUtc; conflict = false; dirty = false; emit('saved', updatedAtUtc); },
+    adopt(updatedAtUtc: string) { version = updatedAtUtc?.trim() ? updatedAtUtc : null; conflict = false; dirty = false; emit('saved', updatedAtUtc); },
     markDirty(payload: P) {
       latest = payload; dirty = true;
       if (conflict || version === null) return;

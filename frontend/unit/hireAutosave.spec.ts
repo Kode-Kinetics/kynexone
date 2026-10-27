@@ -40,6 +40,21 @@ test.describe('autosave_debounceVersion409', () => {
     expect(h.saves).toHaveLength(0);
     expect(h.auto.hasUnsaved()).toBe(true);
   });
+  test('a blank or missing version is never adopted, so a save never goes out without a basis', async () => {
+    const h = harness();
+    h.auto.adopt('');
+    h.auto.adopt('   ');
+    expect(h.auto.version()).toBeNull();
+    h.auto.markDirty('a'); await h.advance(2000);
+    expect(await h.auto.flush()).toBe(false);
+    expect(h.saves).toHaveLength(0);
+  });
+  test('a save response without a version keeps the previous basis', async () => {
+    const h = harness(async () => ({ updatedAtUtc: '' }));
+    h.auto.adopt('v0');
+    h.auto.markDirty('a'); await h.advance(1200);
+    expect(h.auto.version()).toBe('v0');
+  });
   test('409 stops autosave for good and reports conflict', async () => {
     const h = harness(async () => { throw { response: { status: 409, data: { code: 'draft_changed_elsewhere' } } }; });
     h.auto.adopt('v0');

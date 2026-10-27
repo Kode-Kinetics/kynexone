@@ -52,6 +52,7 @@ const ar: Record<string, string> = {
   'Some details need your confirmation before saving.': 'بعض البيانات تحتاج إلى تأكيدك قبل الحفظ.',
   'Too many checks. Try again in a moment.': 'عدد كبير من عمليات التحقق. حاول مرة أخرى بعد قليل.',
   'This draft was changed somewhere else. Reload to continue.': 'تم تعديل هذه المسودة في مكان آخر. أعد التحميل للمتابعة.',
+  'This draft needs to be reloaded before it can be saved.': 'يجب إعادة تحميل هذه المسودة قبل أن يمكن حفظها.',
   // Warnings (acknowledge with a reason)
   'The employee is under the minimum working age of 15.': 'عمر الموظف أقل من الحد الأدنى لسن العمل وهو 15 سنة.',
   'The employee will be under the minimum working age of 15 on the start date.': 'سيكون عمر الموظف أقل من الحد الأدنى لسن العمل (15 سنة) في تاريخ المباشرة.',
