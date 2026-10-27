@@ -27,7 +27,8 @@ public sealed class CostAccountingJournalExportSeparationOfDuties(ZayraDbContext
             if (run is not null)
             {
                 if (run.CompanyId is { } rc) companyIds.Add(rc);
-                if (string.IsNullOrWhiteSpace(period)) period = $"{run.Year:0000}-{run.Month:00}";
+                // The run decides the period the file is built for; a client value never narrows the review window.
+                period = $"{run.Year:0000}-{run.Month:00}";
             }
         }
         if (request.CompanyId is { } c) companyIds.Add(c);

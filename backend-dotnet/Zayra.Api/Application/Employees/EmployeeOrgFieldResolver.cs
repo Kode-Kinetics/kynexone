@@ -119,29 +119,34 @@ public static class EmployeeOrgFieldResolver
             else
             {
                 var (id, nameEn) = await ResolveDepartmentAsync(db, tenantId, employee.Department, ct, employee.CompanyId);
+                var unchanged = employee.DepartmentId == id;
                 employee.DepartmentId = id;
                 employee.Department = nameEn;
-
-                var departmentDefaults = await ScopedBypass.TenantWide(db.Departments, tenantId,
-                        "Department defaults follow the department just resolved by name, which is tenant master data independent of the caller's company scope.")
-                    .AsNoTracking()
-                    .Where(d => !d.IsDeleted && d.IsActive && d.Id == id)
-                    .Select(d => new { d.CostCenterId, d.ManagerEmployeeId })
-                    .SingleAsync(ct);
-                employee.CostCenterId = departmentDefaults.CostCenterId;
-                // A transfer drops the person's old override: they inherit the new department's cost centre (a patch that also names a
-                // cost centre sets a fresh override below). The change is audited with the resolved cost centre before and after.
-                employee.CostCenterIsOverride = false;
-                employee.CostCenter = departmentDefaults.CostCenterId is Guid costCenterId
-                    ? await ScopedBypass.TenantWide(db.CostCenters, tenantId,
-                            "The department's default cost centre is copied by id; its company is the department's choice, not the caller's selected company.")
+                // Re-sending the CURRENT department is not a transfer: the cost centre, its override flag and the manager stay as they are.
+                
+                if (!unchanged)
+                {
+                    var departmentDefaults = await ScopedBypass.TenantWide(db.Departments, tenantId,
+                            "Department defaults follow the department just resolved by name, which is tenant master data independent of the caller's company scope.")
                         .AsNoTracking()
-                        .Where(c => !c.IsDeleted && c.IsActive && c.Id == costCenterId)
-                        .Select(c => c.Code)
-                        .SingleOrDefaultAsync(ct) ?? string.Empty
-                    : string.Empty;
-                if (!fields.Contains("managerEmployeeId"))
-                    employee.ManagerEmployeeId = departmentDefaults.ManagerEmployeeId;
+                        .Where(d => !d.IsDeleted && d.IsActive && d.Id == id)
+                        .Select(d => new { d.CostCenterId, d.ManagerEmployeeId })
+                        .SingleAsync(ct);
+                    employee.CostCenterId = departmentDefaults.CostCenterId;
+                    // A transfer drops the person's old override: they inherit the new department's cost centre (a patch that also names a
+                    // cost centre sets a fresh override below). The change is audited with the resolved cost centre before and after.
+                    employee.CostCenterIsOverride = false;
+                    employee.CostCenter = departmentDefaults.CostCenterId is Guid costCenterId
+                        ? await ScopedBypass.TenantWide(db.CostCenters, tenantId,
+                                "The department's default cost centre is copied by id; its company is the department's choice, not the caller's selected company.")
+                            .AsNoTracking()
+                            .Where(c => !c.IsDeleted && c.IsActive && c.Id == costCenterId)
+                            .Select(c => c.Code)
+                            .SingleOrDefaultAsync(ct) ?? string.Empty
+                        : string.Empty;
+                    if (!fields.Contains("managerEmployeeId"))
+                        employee.ManagerEmployeeId = departmentDefaults.ManagerEmployeeId;
+                }
             }
         }
 

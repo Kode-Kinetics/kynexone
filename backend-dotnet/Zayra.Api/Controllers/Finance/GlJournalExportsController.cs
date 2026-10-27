@@ -124,6 +124,26 @@ public class GlJournalExportsController : ControllerBase
         if (ScopeError(companyId) is { } scopeErr) return scopeErr;
         if (UnattributedScopeError(includeUnattributed) is { } unattributedErr) return unattributedErr;
         if (FilterError(period, runId) is { } filterErr) return filterErr;
+        if (runId is { } requestedRun)
+        {
+            // The run decides the period (and company) the file is built and checked for; a client value that disagrees is refused.
+            var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tid.Value,
+                    "Export create reads the run's own period and company so the request cannot name a different one; the SoD and export steps apply the caller's scope.")
+                .AsNoTracking().Where(r => r.Id == requestedRun).Select(r => new { r.CompanyId, r.Year, r.Month }).FirstOrDefaultAsync(ct);
+            if (run is not null)
+            {
+                var runPeriod = $"{run.Year:0000}-{run.Month:00}";
+                if ((!string.IsNullOrWhiteSpace(period) && !string.Equals(period.Trim(), runPeriod, StringComparison.Ordinal))
+                    || (companyId is { } requestedCompany && run.CompanyId is { } runCompany && requestedCompany != runCompany))
+                    return UnprocessableEntity(new
+                    {
+                        error = "period_run_mismatch", code = "period_run_mismatch",
+                        message = "The period or company does not match the payroll run. Leave them out, or use the run's own period and company.",
+                        messageAr = "الفترة أو الشركة لا تطابق مسير الرواتب. اتركهما فارغتين أو استخدم فترة المسير وشركته.",
+                    });
+                period = runPeriod;
+            }
+        }
 
         var filter = new JournalExportFilter(period, runId, companyId, currency, includeUnattributed, suppressReversedPairs,
             includePreviouslyConfirmed, replacesExportId, acknowledgeUncostedRequired);
