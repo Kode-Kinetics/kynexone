@@ -1,4 +1,13 @@
 import { expect, type Page } from '@playwright/test';
+import realEmployeeDraft from '../../unit/fixtures/hire-real/employee-draft.json';
+
+/**
+ * GET /api/employees/{id} for a draft, exactly as the API sends it (captured by the backend test HireDraftResumeContractTests;
+ * `joiningDate` is `2026-11-01T00:00:00Z`, `nationalityCode` is present). Tests override only what they are about.
+ */
+export function realDraft(over: Record<string, any> = {}): Record<string, any> {
+  return { ...realEmployeeDraft, companyId: 'company-hire', ...over };
+}
 
 /**
  * Mocked API for the hire wizard (hire_wizard_v2). Every /api/ request is intercepted; nothing mutates a real tenant.
@@ -20,7 +29,7 @@ export interface HireMockOptions {
   duplicate?: { status: string; matchType?: 'strong' | 'probable' | 'possible'; canView?: boolean; signals?: string[] };
   /** The first create answers 409 warnings_require_acknowledgement. */
   warnFirstCreate?: boolean;
-  /** The warnings that 409 carries (default: joining_backdated_over_30d). */
+  /** The warnings that 409 carries (default: joining_backdated, the code the API sends). */
   warnings?: Array<{ code: string; field: string; requiresPermission?: boolean }>;
   /** The first create answers 400 validation_failed with these field codes. */
   createErrors?: Record<string, string[]>;
@@ -32,6 +41,8 @@ export interface HireMockOptions {
   review?: { blockers?: any[]; warnings?: any[]; notProvided?: any[] };
   /** Every hire-draft PUT answers 409 draft_changed_elsewhere. */
   conflictOnPut?: boolean;
+  /** The first hire-draft PUT answers 409 warnings_require_acknowledgement (a client that still receives one must not treat it as a conflict). */
+  warnOnFirstPut?: boolean;
   /** Hold the create response until released (double-click test). */
   holdCreate?: Promise<void>;
   permissions?: string[];
@@ -101,10 +112,11 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       await options.holdCreate;
       if (options.createErrors && creates.length === 1) return reply({ title: 'Validation failed', status: 400, code: 'validation_failed', traceId: 't3', errors: options.createErrors }, 400);
       if (options.warnFirstCreate && !body.acknowledgedWarnings) {
-        return reply({ title: 'Warnings', status: 409, code: 'warnings_require_acknowledgement', traceId: 't1', warnings: (options.warnings ?? [{ code: 'joining_backdated_over_30d', field: 'joiningDate' }]).map(w => ({ message: 'x', requiresPermission: false, ...w })) }, 409);
+        return reply({ title: 'Warnings', status: 409, code: 'warnings_require_acknowledgement', traceId: 't1', warnings: (options.warnings ?? [{ code: 'joining_backdated', field: 'joiningDate' }]).map(w => ({ message: 'x', requiresPermission: false, ...w })) }, 409);
       }
-      if (creates.filter(c => c.key === key).length > 1) return reply({ id: 901, fullName: body.englishName, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z' }, 200);
-      return reply({ id: 901, employeeCode: 'TEST-901', fullName: body.englishName, englishName: body.englishName, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z' }, 201);
+      const created = realDraft({ id: 901, employeeCode: 'TEST-901', fullName: body.englishName, englishName: body.englishName, updatedAtUtc: '2026-10-27T08:00:00Z' });
+      if (creates.filter(c => c.key === key).length > 1) return reply(created, 200);
+      return reply(created, 201);
     }
     if (/^\/api\/employees\/\d+$/.test(p) && method === 'GET') {
       gets.push(p);
@@ -116,8 +128,9 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (/^\/api\/employees\/\d+\/hire-draft$/.test(p) && method === 'PUT') {
       puts.push(body);
       if (options.conflictOnPut) return reply({ title: 'Draft changed elsewhere.', status: 409, code: 'draft_changed_elsewhere', traceId: 't2' }, 409);
+      if (options.warnOnFirstPut && puts.length === 1) return reply({ title: 'Acknowledgement required.', status: 409, code: 'warnings_require_acknowledgement', traceId: 't4', warnings: [{ code: 'joining_backdated', field: 'joiningDate', message: 'Joining date is more than 30 days in the past.', requiresPermission: false }] }, 409);
       seq++;
-      return reply({ updatedAtUtc: `2026-10-27T08:00:0${seq}Z`, readiness: { blockers: [], warnings: [] } });
+      return reply({ updatedAtUtc: `2026-10-27T08:00:0${seq}Z`, readiness: { state: 'Draft', blockers: 0 } });
     }
     if (/^\/api\/employees\/\d+\/hire-review$/.test(p)) return reply({ blockers: options.review?.blockers ?? [{ key: 'IqamaNumber', label: 'Identity number missing' }, { key: 'pay:compensationUnapproved', label: 'Pay package awaiting Finance approval' }], warnings: options.review?.warnings ?? [], notProvided: options.review?.notProvided ?? [{ key: 'arabicName', label: 'Arabic name' }], essSections: [] });
     if (/^\/api\/employees\/\d+\/rehire$/.test(p)) { rehires.push(body); return reply({ id: 44, status: 'Draft', fullName: 'Alex Morgan', updatedAtUtc: '2026-10-27T09:00:00Z' }); }

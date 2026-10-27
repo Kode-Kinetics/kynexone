@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { bootHire, expectNoHorizontalScroll } from './hire/hireMocks';
+import { bootHire, expectNoHorizontalScroll, realDraft } from './hire/hireMocks';
 
 /**
  * Browser Pilot for the consultant-audit and security fixes (CD26-CD35, CD42) on the hire wizard (hire_wizard_v2), mocked API.
@@ -176,7 +176,7 @@ test.describe('CD26 duplicate panel and rehire copy', () => {
 
 test.describe('lead review: refresh resumes the same draft', () => {
   test('after the first save the URL carries ?draft=<id>; a reload hydrates that draft and posts no second create', async ({ page }) => {
-    const detail = { id: 901, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z', companyId: 'company-hire', englishName: 'Alex Morgan', joiningDate: '2026-11-01', designationId: 'desig-1', gradeId: 'grade-g5', complianceRecords: [], documents: [], history: [], transfers: [] };
+    const detail = realDraft({ id: 901, designationId: 'desig-1', gradeId: 'grade-g5' });
     const api = await bootHire(page, { draftDetail: detail });
     await basics(page);
     await saveDraft(page);
@@ -206,12 +206,10 @@ test.describe('lead review: no Self-Service promise on Review', () => {
 });
 
 test.describe('CD26 draft resume (/people/new?draft=<id>)', () => {
-  const detail = {
-    id: 44, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z', companyId: 'company-hire', englishName: 'Alex Morgan', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
-    nationality: 'Pakistan', nationalityCode: 'PK', dateOfBirth: '1990-06-01', personalEmail: '', workEmail: 'alex.morgan@example.test', phone: '', joiningDate: '2026-11-01',
-    designationId: 'desig-1', gradeId: 'grade-g5', employmentType: 'Full-time', contractType: 'Permanent', iqamaNumber: '2000000006', iqamaExpiryDate: '2027-01-01',
-    complianceRecords: [], documents: [], history: [], transfers: [],
-  };
+  const detail = realDraft({
+    id: 44, nationality: 'Pakistan', nationalityCode: 'PK', dateOfBirth: '1990-06-01', workEmail: 'alex.morgan@example.test',
+    designationId: 'desig-1', gradeId: 'grade-g5', employmentType: 'Full-time', contractType: 'Permanent', iqamaNumber: '2000000006', iqamaExpiryDate: '2027-01-01T00:00:00Z',
+  });
 
   test('the draft is loaded through the employee GET, the form is filled, and autosave continues on the same id', async ({ page }) => {
     const api = await bootHire(page, { draftDetail: detail }, '/people/new?draft=44');
@@ -226,6 +224,30 @@ test.describe('CD26 draft resume (/people/new?draft=<id>)', () => {
     expect(api.creates).toHaveLength(0);
     await next(page); await next(page);
     await expect(page.getByLabel('ID number')).toHaveValue('2000000006');
+  });
+
+  test('the real API shape: nationality is restored, the start date is a plain date, and the next autosave keeps both (no conflict)', async ({ page }) => {
+    const api = await bootHire(page, { draftDetail: realDraft({ id: 44, workEmail: 'alex.morgan@example.test' }) }, '/people/new?draft=44');
+    await expect(page.getByLabel('English full name')).toHaveValue('Alex Morgan');
+    await expect(page.getByLabel('Start date')).toHaveValue('2026-11-01');
+    await page.getByLabel('English full name').fill('Alex J Morgan');
+    await expect.poll(() => api.puts.length, { timeout: 6000 }).toBe(1);
+    expect(api.puts[0].request).toMatchObject({ nationalityCode: 'EG', joiningDate: '2026-11-01' });
+    await expect(page.getByTestId('saved-indicator')).toContainText('Saved');
+    await next(page);
+    await expect(page.getByRole('combobox', { name: L.en.nat })).toHaveValue(/Egypt/);
+  });
+
+  test('a 409 that is a warning, not a conflict, is answered in a dialog and autosave carries on', async ({ page }) => {
+    const api = await bootHire(page, { draftDetail: realDraft({ id: 44, workEmail: 'alex.morgan@example.test' }), warnOnFirstPut: true }, '/people/new?draft=44');
+    await page.getByLabel('English full name').fill('Alex J Morgan');
+    await expect.poll(() => api.puts.length, { timeout: 6000 }).toBe(1);
+    await expect(page.getByRole('dialog', { name: 'Confirm before saving' })).toBeVisible();
+    await expect(page.getByText('This draft was changed somewhere else')).toHaveCount(0);
+    await page.getByRole('dialog', { name: 'Confirm before saving' }).getByRole('button', { name: 'Cancel' }).click();
+    await page.getByLabel('English full name').fill('Alex K Morgan');
+    await expect.poll(() => api.puts.length, { timeout: 6000 }).toBe(2);
+    await expect(page.getByTestId('saved-indicator')).toContainText('Saved');
   });
 
   for (const status of [404, 403] as const) {
@@ -391,12 +413,10 @@ test.describe('CD34 Arabic copy in the form', () => {
 test.describe('CD35 screenshots (EN 1440, AR 360)', () => {
   const dir = process.env.HIRE_SCREENS_DIR;
   test.skip(!dir, 'set HIRE_SCREENS_DIR to capture');
-  const detail = {
-    id: 44, status: 'Draft', updatedAtUtc: '2026-10-27T08:00:00Z', companyId: 'company-hire', englishName: 'Alex Morgan', arabicName: 'أليكس مورغان', preferredName: '', gender: '', maritalStatus: '',
-    nationality: 'Pakistan', nationalityCode: 'PK', dateOfBirth: '1990-06-01', personalEmail: '', workEmail: 'alex.morgan@example.test', phone: '', joiningDate: '2026-11-01',
-    designationId: 'desig-1', gradeId: 'grade-g5', employmentType: 'Full-time', contractType: 'Permanent', iqamaNumber: '2000000006', iqamaExpiryDate: '2027-01-01',
-    complianceRecords: [], documents: [], history: [], transfers: [],
-  };
+  const detail = realDraft({
+    id: 44, arabicName: 'أليكس مورغان', nationality: 'Pakistan', nationalityCode: 'PK', dateOfBirth: '1990-06-01', workEmail: 'alex.morgan@example.test',
+    designationId: 'desig-1', gradeId: 'grade-g5', employmentType: 'Full-time', contractType: 'Permanent', iqamaNumber: '2000000006', iqamaExpiryDate: '2027-01-01T00:00:00Z',
+  });
   for (const [w, h, locale] of [[1440, 1000, 'en'], [360, 780, 'ar']] as const) {
     const l = L[locale];
     const shot = (page: Page, n: string) => { fs.mkdirSync(dir!, { recursive: true }); return page.screenshot({ path: `${dir}/hire-h-${n}-${locale}-${w}.png`, animations: 'disabled', style: 'nextjs-portal { display: none !important; }' }); };
