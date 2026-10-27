@@ -836,7 +836,8 @@ public class AccessManagementService : IAccessManagementService
         var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
         if (user.Id == caller.UserId)
             return Status(null, matching, EmployeeLoginNextActions.Blocked, SelfLinkRefusal().MessageEn);
-        var above = PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user));
+        var above = PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user))
+            ?? (user.IsWorkspaceOwner ? PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.OwnerProtected, null) : null);
         if (above is not null)
             return Status(null, matching, EmployeeLoginNextActions.Blocked, above.MessageEn);
         // The same decision the write makes: a handled login is linked by resetting its credential. Say so first.
@@ -981,6 +982,7 @@ public class AccessManagementService : IAccessManagementService
             if (NeedsGroupAdmin(user, tenantId, entityScope))
                 throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.GroupAdminRequired());
             ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
+            ThrowIfOwnerProtected(caller.UserId, user);
 
             // Idempotent: this exact link already live → answer it and write nothing...
             var sameLink = employeeLinks.FirstOrDefault(x => x.UserId == user.Id);
@@ -1505,6 +1507,7 @@ public class AccessManagementService : IAccessManagementService
                 user.Id,
                 previousRoles.Any(x => x.IsActive && x.NormalizedName == PrivilegeCeiling.AdminRoleNormalizedName),
                 AuthService.GetPermissions(user)));
+            ThrowIfOwnerProtected(caller.UserId, user);
             var previousRoleIds = previousRoles.Select(x => x.Id).ToHashSet();
             var nextRoleIds = roles.Select(x => x.Id).ToHashSet();
             foreach (var changed in roles.Where(x => !previousRoleIds.Contains(x.Id))
@@ -1613,6 +1616,7 @@ public class AccessManagementService : IAccessManagementService
             {
                 var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
                 ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
+                ThrowIfOwnerProtected(caller.UserId, user);
                 ThrowIfRefused(PrivilegeCeiling.AccessModeRefusal(caller, AuthService.AccessModePermissions(accessMode)));
             }
             var accessModeBefore = user.AccessMode;
@@ -1728,6 +1732,7 @@ public class AccessManagementService : IAccessManagementService
                 user.Id,
                 user.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
                 AuthService.GetPermissions(user)));
+            ThrowIfOwnerProtected(caller.UserId, user);
             if (effect == "Allow")
                 ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { request.PermissionKey }));
 
@@ -3140,6 +3145,7 @@ public class AccessManagementService : IAccessManagementService
         var target = await LoadAccessUser(tenantId, targetUserId, entityScope, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, target.Id, HoldsAdmin(target), AuthService.GetPermissions(target)));
+        ThrowIfOwnerProtected(caller.UserId, target);
         ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, granted));
     }
 
@@ -3161,6 +3167,7 @@ public class AccessManagementService : IAccessManagementService
         if (context.UserId is null) return;
         var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
         if (target.Id == caller.UserId) return;
+        ThrowIfOwnerProtected(caller.UserId, target);
         ThrowIfRefused(PrivilegeCeiling.AboveCallerRefusal(caller, HoldsAdmin(target), AuthService.GetPermissions(target)));
     }
 
@@ -3217,6 +3224,7 @@ public class AccessManagementService : IAccessManagementService
             if (targetUserId == caller.UserId) ThrowIfRefused(PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.SelfChange, null));
             return;
         }
+        ThrowIfOwnerProtected(caller.UserId, target);
         ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, target.Id, HoldsAdmin(target), AuthService.GetPermissions(target)));
     }
 
@@ -3240,6 +3248,16 @@ public class AccessManagementService : IAccessManagementService
     private static void ThrowIfRefused(PrivilegeCeiling.Refusal? refusal)
     {
         if (refusal is not null) throw new PrivilegeCeilingException(refusal);
+    }
+
+    /// <summary>
+    /// THE WORKSPACE OWNER (<see cref="User.IsWorkspaceOwner"/>): nobody but the owner changes the owner's account, roles,
+    /// access or sign-in — not even another Admin. The owner hands ownership on first (<see cref="TransferOwnershipAsync"/>).
+    /// </summary>
+    private static void ThrowIfOwnerProtected(Guid callerId, User target)
+    {
+        if (target.IsWorkspaceOwner && target.Id != callerId)
+            throw new PrivilegeCeilingException(PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.OwnerProtected, null));
     }
 
     /// <summary>The Access screen's view of the ceiling: for each role, can the caller assign it, can they edit it, and why not.</summary>
@@ -3471,7 +3489,7 @@ public class AccessManagementService : IAccessManagementService
             ? found
             : null;
         return new UserListDto(user.Id, user.Email, user.FullName, user.PhoneNumber, user.Status, user.IsActive, user.IsLocked, user.MustChangePassword, roles, link?.AccessMode ?? user.AccessMode, link?.EmployeeId, user.LastLoginAtUtc, user.CreatedAtUtc,
-            employee?.Name, employee?.Code, PrivilegedMfaPolicy.IsTenantUserEnrolled(user));
+            employee?.Name, employee?.Code, PrivilegedMfaPolicy.IsTenantUserEnrolled(user), user.IsWorkspaceOwner);
     }
 
     private static SecuritySettingDto ToSecuritySettingDto(Models.SecuritySetting s) =>
@@ -3936,6 +3954,7 @@ public class AccessManagementService : IAccessManagementService
             target.Id,
             target.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
             AuthService.GetPermissions(target)));
+        ThrowIfOwnerProtected(caller.UserId, target);
         if (ov.IsActive && ov.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase))
             ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { ov.PermissionKey }));
         _db.UserPermissionOverrides.Remove(ov);
@@ -3951,6 +3970,61 @@ public class AccessManagementService : IAccessManagementService
             System.Text.Json.JsonSerializer.Serialize(new { userId, permission = ov.PermissionKey, previousEffect = ov.Effect })));
         await _db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    /// <inheritdoc />
+    public async Task TransferOwnershipAsync(Guid tenantId, Guid newOwnerUserId, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (context.UserId is not Guid callerId)
+            throw new InvalidOperationException("Sign in as the workspace owner.");
+        if (newOwnerUserId == callerId)
+            throw new InvalidOperationException("You are already the workspace owner.");
+        await SetWorkspaceOwnerCoreAsync(tenantId, newOwnerUserId, requiredCurrentOwner: callerId, "access.ownership_transferred",
+            context with { TenantId = tenantId }, reason: null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task SetOwnerByPlatformAsync(Guid tenantId, Guid newOwnerUserId, string reason, RequestContext context, CancellationToken cancellationToken) =>
+        // KynexOne support, after verifying the customer: no current owner is required (they may be gone).
+        SetWorkspaceOwnerCoreAsync(tenantId, newOwnerUserId, requiredCurrentOwner: null, "platform.workspace_owner_set",
+            context with { TenantId = tenantId, UserId = null }, reason, cancellationToken);
+
+    /// <summary>
+    /// Moves <see cref="User.IsWorkspaceOwner"/> under the Admin-cohort locks. The new owner must be an operational Admin
+    /// of the tenant (active, own password set, not locked, portal login). The old owner's row is cleared and saved
+    /// before the new one is set, because one-owner-per-tenant is a unique index the database checks per statement.
+    /// </summary>
+    private async Task SetWorkspaceOwnerCoreAsync(Guid tenantId, Guid newOwnerUserId, Guid? requiredCurrentOwner, string auditAction,
+        RequestContext auditContext, string? reason, CancellationToken cancellationToken)
+    {
+        var auditId = Guid.NewGuid();
+        await ExecuteAuthorizationTransactionAsync(auditId, auditAction, async ct =>
+        {
+            _db.ChangeTracker.Clear();
+            var atUtc = DateTime.UtcNow;
+            var cohort = await LockAdminCohortAsync(tenantId, ct);
+            var currentOwners = cohort.Where(x => x.IsWorkspaceOwner).ToList();
+            if (requiredCurrentOwner is Guid ownerId && !currentOwners.Any(x => x.Id == ownerId))
+                throw new InvalidOperationException("Only the workspace owner can hand ownership to someone else.");
+            var next = cohort.SingleOrDefault(x => x.Id == newOwnerUserId);
+            if (next is null || !IsOperationalAdmin(next, atUtc))
+                throw new InvalidOperationException(
+                    "The new owner must be an active Admin of this workspace who has set their own password and can sign in.");
+            if (next.IsWorkspaceOwner) return true;
+
+            foreach (var owner in currentOwners) owner.IsWorkspaceOwner = false;
+            if (currentOwners.Count > 0) await _db.SaveChangesAsync(ct);
+            next.IsWorkspaceOwner = true;
+            _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, atUtc, auditAction, "User", next.Id.ToString(), auditContext,
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    previousOwnerUserId = currentOwners.Select(x => (Guid?)x.Id).FirstOrDefault(),
+                    newOwnerUserId = next.Id,
+                    reason,
+                })));
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }, cancellationToken);
     }
 
     private async Task ExecuteAuthorizationTransactionAsync(

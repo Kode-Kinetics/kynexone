@@ -1818,7 +1818,9 @@ public class PlatformController : ControllerBase
             Status = "Active",
             IsActive = true,
             IsEmailConfirmed = true,
-            IsGroupScope = true
+            IsGroupScope = true,
+            // A new workspace's first Admin is its owner (User.IsWorkspaceOwner): nobody else can act against them.
+            IsWorkspaceOwner = true
         };
         admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
         _db.Users.Add(admin);
@@ -1909,6 +1911,40 @@ public class PlatformController : ControllerBase
             .ToListAsync(ct);
 
         return Ok(admins);
+    }
+
+    /// <summary>
+    /// KynexOne support sets a workspace's owner (User.IsWorkspaceOwner) when the current one is gone — after verifying
+    /// the customer out of band. The new owner must be an active Admin of that workspace who can sign in. Owner/Admin
+    /// platform roles only; the reason (who asked, how they were verified) is required and audited.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/owner")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> SetWorkspaceOwner(Guid tenantId, [FromBody] SetWorkspaceOwnerRequest req, CancellationToken ct)
+    {
+        var reason = req.Reason?.Trim() ?? string.Empty;
+        if (reason.Length is < 10 or > 500)
+            return BadRequest(new { message = "Say who asked and how they were verified (10 to 500 characters)." });
+        if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound();
+        try
+        {
+            await _accessManagement.SetOwnerByPlatformAsync(tenantId, req.UserId, reason,
+                new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString()), ct);
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = tenantId,
+            EntityType = "User",
+            EntityId = req.UserId.ToString(),
+            Action = "WorkspaceOwnerSetByPlatform",
+            OldValuesJson = "{}",
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { reason, platformUserId = GetPlatformUserId() }),
+            PerformedByName = User.FindFirstValue("name") ?? "platform_admin",
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+        });
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
     }
 
     [HttpPost("tenants/{tenantId:guid}/admins")]
@@ -4261,7 +4297,9 @@ public class PlatformController : ControllerBase
             Status = "Active",
             IsActive = true,
             IsEmailConfirmed = true,
-            IsGroupScope = true
+            IsGroupScope = true,
+            // A new workspace's first Admin is its owner (User.IsWorkspaceOwner): nobody else can act against them.
+            IsWorkspaceOwner = true
         };
         admin.UserRoles.Add(new UserRole { User = admin, Role = adminRole });
         _db.Users.Add(admin);
@@ -5642,6 +5680,8 @@ public record SetAccountTypeRequest(string AccountType);
 public record SetCompanyCreationModeRequest(string Mode);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
+
+public record SetWorkspaceOwnerRequest(Guid UserId, [property: System.ComponentModel.DataAnnotations.MaxLength(500)] string? Reason);
 /// <param name="EntityScope">
 /// Which legal entities the new account may see: "group" (every company, now and in future),
 /// "allCurrentCompanies", or "companies" with <paramref name="CompanyIds"/>. Omitted, it defaults to

@@ -152,7 +152,7 @@ public sealed class MfaBackupCodesAndAdminResetTests
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
         var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new JwtTokenService(AuthHardeningTestKit.Jwt));
-        return new AccessController(service, db, null!)
+        return new AccessController(service, db, null!, stepUp: StepUpTestKit.AlwaysConfirmed(db))
         {
             ControllerContext = new ControllerContext { HttpContext = Http(new ClaimsPrincipal(new ClaimsIdentity(claims, "test"))) },
         };
