@@ -355,10 +355,16 @@ public class CostCentreDoorTests
     }
 
     [Fact]
-    public async Task Sod_TheFormDoor_SettingAnExplicitCostCentre_WritesAnOverrideChangedRow()
+    public async Task Sod_TheFormDoor_SettingAnExplicitCostCentre_OnAnExistingEmployee_WritesAnOverrideChangedRow_ButAHireDoesNot()
     {
         var w = await Seed();
-        var created = await Employees(w.Db).CreateAsync(w.Tenant, EmployeeBody("E-SOD", w.A.Id, w.Own.Id), Ctx(w.Tenant), default);
+        // A hire's first attribution is the initial attribution: it does not count toward lock separation of duties.
+        await Employees(w.Db).CreateAsync(w.Tenant, EmployeeBody("E-HIRE", w.A.Id, w.Own.Id), Ctx(w.Tenant), default);
+        (await OverrideRows(w)).Should().BeEmpty();
+        (await w.Db.AuditLogs.CountAsync(a => a.Action == "employee.cost_attribution_initialised")).Should().Be(1);
+
+        var created = await Employees(w.Db).CreateAsync(w.Tenant, EmployeeBody("E-SOD", w.A.Id, null), Ctx(w.Tenant), default);
+        await Employees(w.Db).UpdateAsync(w.Tenant, created.Id, EmployeeBody("E-SOD", w.A.Id, w.Own.Id), Ctx(w.Tenant), default);
         var rows = await OverrideRows(w);
         rows.Should().ContainSingle();
         rows[0].CompanyId.Should().Be(w.A.Id);
