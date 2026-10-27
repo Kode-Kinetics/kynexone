@@ -199,7 +199,7 @@ test.describe('lead review: no Self-Service promise on Review', () => {
   test('AR', async ({ page }) => {
     await bootHire(page, { locale: 'ar' });
     await basics(page, L.ar); await next(page, L.ar); await next(page, L.ar); await next(page, L.ar);
-    await expect(page.getByText('يمكنك تركه الآن وإضافته لاحقاً من ملف الموظف.')).toBeVisible();
+    await expect(page.getByText('يمكنك تركه الآن وإضافته لاحقًا من ملف الموظف.')).toBeVisible();
     await expect(page.getByText('الخدمة الذاتية')).toHaveCount(0);
   });
 });
