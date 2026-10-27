@@ -65,10 +65,10 @@ public static class AckCertificateRenderer
                     });
                 }
                 col.Item().PaddingTop(8).Text("Document SHA-256").SemiBold();
-                col.Item().Text(d.DocumentSha256).FontSize(8.5f);
+                col.Item().Text(d.DocumentSha256).FontSize(8.5f).DisableFontFeature(FontFeatures.StandardLigatures);
                 col.Item().PaddingTop(4).Text("Record hash").SemiBold();
-                col.Item().Text(d.RecordHash).FontSize(8.5f);
-                col.Item().PaddingTop(4).Text($"Verification code: {d.VerificationCode}").FontSize(12).Bold();
+                col.Item().Text(d.RecordHash).FontSize(8.5f).DisableFontFeature(FontFeatures.StandardLigatures);
+                col.Item().PaddingTop(4).Text($"Verification code: {d.VerificationCode}").FontSize(12).Bold().DisableFontFeature(FontFeatures.StandardLigatures);
                 col.Item().PaddingTop(10).Text("What was acknowledged").SemiBold();
                 col.Item().Text(d.ConsentTextEn);
                 col.Item().PaddingTop(4).ContentFromRightToLeft().Text(d.ConsentTextAr).DirectionFromRightToLeft();

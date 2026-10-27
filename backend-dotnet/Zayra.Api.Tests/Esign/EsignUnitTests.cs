@@ -179,6 +179,42 @@ public class EsignUnitTests
     }
 
     [Fact]
+    public void Certificate_HashesAreExtractableWhateverLettersTheyContain()
+    {
+        // Hex such as "ff", "fb", "fl-like" pairs must not be drawn as ligature glyphs: the hashes on the page are evidence people copy.
+        var recordHash = "ffbfaff0fbfffefbfa0ffb1fffe2ffffb3fffa4ffffe5fffb6ffffa7fffe8ff9";
+        var sha = "fffbfaffefbffffafbfeffffbfaffefbfffafbfeffffbfaffefbfffafbfefff1";
+        var data = new AckCertificateData("Saudi Co", "Layla Hassan", "E1", "Employment contract", "contract.pdf", sha, "Layla Hassan",
+            new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc), EsignConstants.MethodEss, null, ConsentCatalog.Current,
+            ConsentCatalog.Text(ConsentCatalog.Current, "en"), ConsentCatalog.Text(ConsentCatalog.Current, "ar"), recordHash, "FFFB-FA01");
+        using var doc = PdfDocument.Open(AckCertificateRenderer.Render(data));
+        var flat = Regex.Replace(string.Join("\n", doc.GetPages().Select(p => p.Text)).Normalize(System.Text.NormalizationForm.FormKC), @"\s+", "");
+        flat.Should().Contain(recordHash).And.Contain(sha);
+    }
+
+    [Fact]
+    public void Certificate_ConcurrentRenders_AreAllCompleteAndIdentical()
+    {
+        var hash = SignatureChain.ComputeHash(EsignConstants.ZeroHash, Evidence());
+        var data = new AckCertificateData("Saudi Co", "Layla Hassan", "E1", "Employment contract", "contract.pdf", new string('c', 64), "Layla Hassan",
+            new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc), EsignConstants.MethodEss, null, ConsentCatalog.Current,
+            ConsentCatalog.Text(ConsentCatalog.Current, "en"), ConsentCatalog.Text(ConsentCatalog.Current, "ar"), hash, VerificationCode.From(hash));
+        var results = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var errors = new System.Collections.Concurrent.ConcurrentBag<string>();
+        Parallel.For(0, 48, new ParallelOptions { MaxDegreeOfParallelism = 12 }, _ =>
+        {
+            try
+            {
+                using var doc = PdfDocument.Open(AckCertificateRenderer.Render(data));
+                results.Add(Regex.Replace(string.Join("\n", doc.GetPages().Select(p => p.Text)).Normalize(System.Text.NormalizationForm.FormKC), @"\s+", ""));
+            }
+            catch (Exception e) { errors.Add(e.GetType().Name + ": " + e.Message); }
+        });
+        errors.Should().BeEmpty();
+        results.Distinct().Should().HaveCount(1, "the same record renders to the same page however many render at once");
+    }
+
+    [Fact]
     public void AllP4ProblemTitleKeys_HaveEnAndAr()
     {
         var file = FindUp("frontend/src/i18n/onboardingP4.ts");
