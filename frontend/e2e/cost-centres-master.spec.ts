@@ -473,7 +473,7 @@ test('Arabic: RTL, translated headings, classes and refusals; codes stay left to
 // ── Layout at CI's 1280x720: the menu of the LAST row must open inside the viewport, and no column may be cut ──
 
 for (const locale of ['en', 'ar'] as const) {
-  test(`${locale}: the LAST row's menu opens fully inside the viewport and every item is clickable`, async ({ page }) => {
+  test(`${locale}: the LAST row's menu opens fully inside the viewport and every item is clickable`, async ({ page }, info) => {
     await boot(page, { locale });
     await tid(page, 'cc-master-view-flat').click();
     const last = tid(page, 'cc-master-table').locator('tbody tr').last();
@@ -481,6 +481,7 @@ for (const locale of ['en', 'ar'] as const) {
     await trigger.click();
     const menu = page.getByRole('menu');
     await expect(menu).toBeVisible();
+    await shot(page, info, `cc-master-lastrow-menu-${locale}-${info.project.name}`);
     const vp = page.viewportSize()!;
     const box = (await menu.boundingBox())!;
     expect(box.y).toBeGreaterThanOrEqual(0);

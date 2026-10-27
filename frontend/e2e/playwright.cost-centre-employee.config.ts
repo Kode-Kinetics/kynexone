@@ -19,5 +19,8 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     viewport: { width: 1280, height: 900 },
   },
-  projects: [{ name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } }],
+  projects: [
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } },
+    { name: 'ci-chromium', use: { ...devices['Desktop Chrome'] } }, // CI's own 1280x720
+  ],
 });
