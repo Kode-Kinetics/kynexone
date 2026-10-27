@@ -129,6 +129,10 @@ test.describe('Pay approval detail', () => {
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
     await expect(page.getByTestId('shared-iban-warning')).toContainText('موظف آخر');
     await expect(page.getByRole('button', { name: 'موافقة' })).toBeVisible();
+    // CD65: the byline isolates the Latin name and the time so the Arabic sentence cannot reorder them
+    const byline = await page.locator('dd', { hasText: 'Huda HR Officer' }).first().textContent();
+    expect(byline).toContain('\u2068Huda HR Officer\u2069');
+    expect(byline).toMatch(/\u2066[^\u2069]+\u2069/);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
     if (info.project.name === 'mobile') await shot(page, 'detail-ar-360');

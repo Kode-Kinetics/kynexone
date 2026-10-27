@@ -42,6 +42,9 @@ test('HR requests a signature, then the employee signs in person with their own 
   await expect(panel.getByRole('status')).toContainText('Signed.');
   await expect(panel.getByTestId('signature-row').filter({ hasText: 'Employment contract' })).toContainText('on the HR device');
   expect(log.deviceAuths.map(a => a.employeeId)).toEqual([901, 901]);
+  // CD60: the step-up asks for a token bound to this document and the hash of the bytes on screen
+  for (const a of log.deviceAuths) expect(a).toMatchObject({ documentId: 'doc-1', documentSha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  expect(log.deviceAuths[1].documentSha256).toBe(log.deviceSigns[0].documentSha256);
   expect(log.deviceSigns).toHaveLength(1);
   expect(log.deviceSigns[0]).toMatchObject({ stepUp: 'device-token-1', typedName: EMPLOYEE_NAME, consentVersion: 'ack-1' });
 

@@ -17,6 +17,10 @@ test('Arabic list, sign page and password dialog at 360 px', async ({ page }) =>
   await page.getByTestId('sign-row').first().getByRole('link', { name: 'اقرأ ووقّع' }).click();
   await expect(page.getByTestId('pdf-preview')).toBeVisible();
   await expect(page.getByTestId('consent-text').locator('[lang="ar"]')).toContainText('أقرّ بأنني قرأت');
+  // CD65: the Arabic wording comes first in an Arabic session, aligned to the right
+  await expect(page.getByTestId('consent-text').locator('p').first()).toHaveAttribute('lang', 'ar');
+  await expect(page.getByTestId('consent-text').locator('p').first()).toHaveCSS('text-align', 'right');
+  await expect(page.getByTestId('sign-submit')).toHaveText('أُقرّ وأوقّع');
   await page.getByLabel('قرأت هذا المستند').check();
   const name = page.getByLabel(/اكتب اسمك الكامل/);
   await name.fill(EMPLOYEE_NAME_AR);
@@ -43,6 +47,11 @@ test('Arabic HR signatures panel and sign-in-person dialog at 360 px', async ({ 
   const log = await bootEsign(page, { locale: 'ar', persona: 'hr' });
   const panel = page.getByTestId('signatures-panel');
   await expect(panel.getByRole('heading', { name: 'التوقيعات' })).toBeVisible();
+  // 72 §4: the employee workspace around the panel is Arabic too
+  await expect(page.getByRole('heading', { name: 'الامتثال والمستندات', exact: true })).toBeVisible();
+  await expect(page.getByText('سجلات الهوية الخاصة بالدولة')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'رفع مستند', exact: true })).toBeVisible();
+  await panel.scrollIntoViewIfNeeded();
   expect(await noHorizontalScroll(page)).toBe(true);
   if (shots) await page.screenshot({ path: `${shots}/p4-hr-signatures-ar-360.png`, animations: 'disabled' });
   await panel.getByTestId('signature-row').first().getByRole('button', { name: 'التوقيع حضوريًا' }).click();

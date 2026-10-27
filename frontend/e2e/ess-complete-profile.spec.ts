@@ -130,7 +130,7 @@ test('HR reviews a submission: before and after in words, accept, and the bank r
   await bank.getByRole('button', { name: 'Review' }).click();
   await bank.getByRole('button', { name: 'Accept', exact: true }).first().click();
   await bank.getByRole('button', { name: 'Accept', exact: true }).last().click();
-  await expect(page.getByText('Accepted. Finance now has to approve the new bank details; they apply from the next day.')).toBeVisible();
+  await expect(page.getByText('Accepted. A Finance approver must now approve the new bank details. It cannot be you or the employee. They apply from the day after Finance approves.')).toBeVisible();
   await expect(page.getByText('Nothing is waiting for review.')).toBeVisible();
 });
 
@@ -175,4 +175,25 @@ test('HR sees the Hijri date under each expiry in the review diff, before and af
   await expect(item.getByTestId('hijri-before-iqamaExpiry')).toContainText('Hijri:');
   await expect(item.getByTestId('hijri-after-iqamaExpiry')).toContainText('Hijri:');
   await expect(item.getByTestId('hijri-after-iqamaNumber')).toHaveCount(0);
+});
+
+test('CD65: the privacy notice is read as words: no raw version id, no raw region key, and it says the data is hosted abroad', async ({ page }) => {
+  await bootEss(page, { sections: ['person'] });
+  await page.getByTestId('section-person').click();
+  const notice = page.getByText(/Privacy notice/).first();
+  await expect(notice).toBeVisible();
+  const body = await page.getByTestId('section-form').innerText();
+  expect(body).not.toContain('ess-1');
+  expect(body).not.toContain('us-east');
+  await expect(page.getByTestId('section-form')).toContainText('United States (east)');
+  await expect(page.getByTestId('section-form')).toContainText('outside the Kingdom');
+});
+
+test('CD58: an inbox item without document ids offers no download and says why', async ({ page }) => {
+  await bootEss(page, { persona: 'hr', hrItems: [INBOX_ITEMS[1]], hideDocIds: true });
+  const item = page.getByTestId('inbox-item');
+  await item.getByRole('button', { name: 'Review' }).click();
+  await expect(item.getByText('letter.pdf')).toBeVisible();
+  await expect(item.getByRole('link', { name: 'Download' })).toHaveCount(0);
+  await expect(item.getByTestId('attachment-hidden')).toContainText('You need the sensitive-data permission to download this file.');
 });
