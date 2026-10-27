@@ -3,6 +3,15 @@ import { bootEsign, EMPLOYEE_NAME, EMPLOYEE_PASSWORD, HR_PASSWORD } from './ess/
 
 const shots = process.env.P4_SHOTS;
 
+/** CD55: the preview is a real, sized frame on a blob: URL of the fetched PDF (the authenticated download link is the fallback). */
+export async function expectPreviewLoaded(frame: import('@playwright/test').Locator) {
+  await expect(frame).toHaveAttribute('src', /^blob:/);
+  const box = await frame.boundingBox();
+  const viewer = await frame.page().evaluate(() => navigator.pdfViewerEnabled !== false);
+  if (viewer) expect(box && box.width > 200 && box.height > 200, `preview box ${JSON.stringify(box)}`).toBe(true);
+  else await expect(frame.page().getByTestId('pdf-preview-fallback')).toBeVisible();   // headless Chromium has no PDF viewer: the page says so, the links work
+}
+
 test('HR requests a signature, then the employee signs in person with their own password', async ({ page }) => {
   const log = await bootEsign(page, { persona: 'hr' });
   const panel = page.getByTestId('signatures-panel');
@@ -25,6 +34,7 @@ test('HR requests a signature, then the employee signs in person with their own 
   const dialog = page.getByRole('dialog', { name: /Sign in person/ });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByTestId('pdf-preview')).toBeVisible();
+  await expectPreviewLoaded(dialog.getByTestId('pdf-preview'));
   const sign = dialog.getByRole('button', { name: 'Sign', exact: true });
   await expect(sign).toBeDisabled();
   await dialog.getByLabel('The employee has read this document').check();

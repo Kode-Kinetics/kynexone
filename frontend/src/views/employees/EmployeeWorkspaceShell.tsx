@@ -72,6 +72,7 @@ export function EmployeeWorkspaceShell({
 }: EmployeeWorkspaceShellProps) {
   const { hasPermission } = useAuth();
   const { t } = useLocale();
+  const statusLabel = (status: string) => { const key = `enum.Status.${status}`; const label = t(key); return label === key ? status : label; };
   const canWrite = hasPermission('employees.write');
   const completed = readiness.data?.progress.present ?? 0;
   const required = readiness.data?.progress.requiredTotal ?? 0;
@@ -88,12 +89,12 @@ export function EmployeeWorkspaceShell({
           <div className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-gradient-to-br from-amber-500 to-orange-700 text-lg font-bold text-white shadow-sm">
             {initials(employee.fullName)}
           </div>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-[12rem] flex-1">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" className="truncate text-2xl font-extrabold text-slate-950 outline-none dark:text-white">
+              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" title={employee.fullName} className="line-clamp-2 min-w-0 break-words text-2xl font-extrabold text-slate-950 outline-none dark:text-white">
                 {employee.fullName}
               </h1>
-              <span className="rounded-md bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200">{employee.status}</span>
+              <span className="rounded-md bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" data-testid="employee-status-badge">{statusLabel(employee.status)}</span>
             </div>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
               {employee.employeeCode} <span aria-hidden="true">·</span> {employee.department || 'Department not set'} <span aria-hidden="true">·</span> {employee.designation || employee.jobTitle || 'Designation not set'}

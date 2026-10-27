@@ -38,6 +38,9 @@ export function ConsentText({ consent }: { consent: ConsentView }) {
 export function PdfPreview({ blob, fileName, title }: { blob: Blob | null; fileName: string; title: string }) {
   const { t } = useLocale();
   const [url, setUrl] = useState<string | null>(null);
+  // A browser without a built-in PDF viewer (headless Chromium, some kiosks) paints an empty frame: say so and point to the links.
+  const [noViewer, setNoViewer] = useState(false);
+  useEffect(() => { setNoViewer(typeof navigator !== 'undefined' && navigator.pdfViewerEnabled === false); }, []);
   useEffect(() => {
     if (!blob) { setUrl(null); return; }
     const u = URL.createObjectURL(blob);
@@ -47,7 +50,8 @@ export function PdfPreview({ blob, fileName, title }: { blob: Blob | null; fileN
   if (!blob) return <div className="flex h-64 items-center justify-center rounded-xl border border-slate-200 text-sm text-slate-500 dark:border-white/10"><Loader2 className="me-2 h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />{t('Loading the document…')}</div>;
   return (
     <div className="space-y-2">
-      {url && <iframe data-testid="pdf-preview" src={url} title={title} className="h-[28rem] w-full rounded-xl border border-slate-200 bg-white dark:border-white/10" />}
+      {noViewer && <p role="status" data-testid="pdf-preview-fallback" className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{t('This browser cannot show the PDF inside the page. Open it in a new tab or download it to read it.')}</p>}
+      {url && <iframe data-testid="pdf-preview" src={url} title={title} className={`${noViewer ? 'h-24' : 'h-[28rem]'} w-full rounded-xl border border-slate-200 bg-white dark:border-white/10`} />}
       <div className="flex flex-wrap gap-3 text-xs">
         {url && <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-800 underline dark:text-cyanAccent"><ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />{t('Open the PDF in a new tab')}</a>}
         <button type="button" onClick={() => openBlob(blob, fileName)} className="inline-flex items-center gap-1 font-semibold text-blue-800 underline dark:text-cyanAccent"><Download className="h-3.5 w-3.5" aria-hidden="true" />{t('Download the PDF')}</button>

@@ -49,6 +49,11 @@ test('Arabic HR signatures panel and sign-in-person dialog at 360 px', async ({ 
   await expect(panel.getByRole('heading', { name: 'التوقيعات' })).toBeVisible();
   // 72 §4: the employee workspace around the panel is Arabic too
   await expect(page.getByRole('heading', { name: 'الامتثال والمستندات', exact: true })).toBeVisible();
+  // the header: status in Arabic, and the name wraps instead of being cut to its first letter
+  const h1 = page.locator('#employee-workspace-heading');
+  await expect(h1).toHaveAttribute('title', 'Sam Rider');
+  expect(await h1.evaluate(el => el.scrollWidth <= el.clientWidth + 1 && el.getBoundingClientRect().height < 90)).toBe(true);
+  await expect(page.getByTestId('employee-status-badge')).toHaveText('نشط');
   await expect(page.getByText('سجلات الهوية الخاصة بالدولة')).toBeVisible();
   await expect(page.getByRole('link', { name: 'رفع مستند', exact: true })).toBeVisible();
   await panel.scrollIntoViewIfNeeded();
@@ -59,6 +64,10 @@ test('Arabic HR signatures panel and sign-in-person dialog at 360 px', async ({ 
   await panel.getByTestId('signature-row').first().getByRole('button', { name: 'التوقيع حضوريًا' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByTestId('pdf-preview')).toBeVisible();
+  await expect(page.getByTestId('pdf-preview')).toHaveAttribute('src', /^blob:/);
+  const viewer = await page.evaluate(() => navigator.pdfViewerEnabled !== false);
+  if (viewer) { const box = await page.getByTestId('pdf-preview').boundingBox(); expect(box && box.width > 200 && box.height > 200, `preview box ${JSON.stringify(box)}`).toBe(true); }
+  else await expect(page.getByTestId('pdf-preview-fallback')).toContainText('لا يعرض هذا المتصفح ملف PDF');
   expect(await noHorizontalScroll(page)).toBe(true);
   if (shots) await page.screenshot({ path: `${shots}/p4-hr-device-ar-360.png`, animations: 'disabled' });
   expect(log.errors).toEqual([]);
