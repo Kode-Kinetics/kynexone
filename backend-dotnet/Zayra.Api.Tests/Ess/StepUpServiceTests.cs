@@ -13,7 +13,7 @@ public class StepUpServiceTests
     private static readonly DateTime T0 = new(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc);
     private const string Key = "unit-test-signing-key-unit-test-signing-key-unit-test-signing-key-0123456789";
 
-    private static StepUpService Service(Func<DateTime> clock, string key = Key) => new(null!, null!, null!,
+    private static EssStepUpService Service(Func<DateTime> clock, string key = Key) => new(null!, null!, null!,
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Jwt:SigningKey"] = key }).Build(), null, clock);
 
     [Fact]

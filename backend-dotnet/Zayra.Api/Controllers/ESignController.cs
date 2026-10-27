@@ -29,7 +29,7 @@ public sealed record EmployeeDeviceStepUpBody(int? EmployeeId, Guid? DocumentId,
 [ApiController]
 [Authorize]
 [NoStore]
-public sealed class ESignController(ZayraDbContext db, PolicySigningService signing, IStepUpService stepUp, IDocumentStorage storage, IConfiguration config) : ControllerBase
+public sealed class ESignController(ZayraDbContext db, PolicySigningService signing, IEssStepUpService stepUp, IDocumentStorage storage, IConfiguration config) : ControllerBase
 {
     private const int MaxDeviceFailures = 5;
     private const int DeviceFailureWindowMinutes = 15;
@@ -201,7 +201,7 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
         if (employeeUser == hr) return Err(403, EsignProblemCodes.SubjectCannotSignForEmployee);
         // "no login" and "wrong password" are one answer, and both are counted.
         var result = employeeUser is null
-            ? new StepUpResult(false, null, null, EssProblemCodes.InvalidCredentials)
+            ? new EssStepUpResult(false, null, null, EssProblemCodes.InvalidCredentials)
             : await stepUp.VerifyDeviceAsync(employeeUser.Value, hr.Value, PolicySigningService.DeviceBinding(employeeId, documentId, sha), new StepUpCredential(body.Password, body.MfaCode), ct);
         db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
         {

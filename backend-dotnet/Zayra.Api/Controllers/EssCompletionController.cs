@@ -34,7 +34,7 @@ public sealed class EssCompletionUploadForm
 [Authorize]
 [NoStore]
 [Route("api/ess/completion")]
-public sealed class EssCompletionController(ZayraDbContext db, IStepUpService stepUp, IMalwareScanner scanner, IDocumentStorage storage, IConfiguration config) : ControllerBase
+public sealed class EssCompletionController(ZayraDbContext db, IEssStepUpService stepUp, IMalwareScanner scanner, IDocumentStorage storage, IConfiguration config) : ControllerBase
 {
     private static readonly string[] IdDocumentTypes = ["National ID", "Iqama", "Passport"];
     private static readonly Dictionary<string, string> DocumentTypeByKind = new(StringComparer.Ordinal)

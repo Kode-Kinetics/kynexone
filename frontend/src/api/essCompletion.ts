@@ -70,7 +70,7 @@ export const essCompletionApi = {
     return client.post<EssDocument>('/api/ess/completion/documents', form, { ...noRefresh, headers: stepUpHeaders(stepUp) }).then(r => r.data);
   },
   stepUp: (password: string, mfaCode?: string) =>
-    client.post<{ stepUpToken: string; expiresAtUtc: string }>('/api/auth/step-up', { purpose: 'ess.sensitive', password, mfaCode: mfaCode || undefined }, noRefresh).then(r => r.data),
+    client.post<{ stepUpToken: string; expiresAtUtc: string }>('/api/auth/step-up/purpose', { purpose: 'ess.sensitive', password, mfaCode: mfaCode || undefined }, noRefresh).then(r => r.data),
 };
 
 // ── HR ───────────────────────────────────────────────────────────────────────

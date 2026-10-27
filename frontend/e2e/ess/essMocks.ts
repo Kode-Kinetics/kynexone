@@ -95,7 +95,7 @@ export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string)
     if (p === '/api/features/modules') return reply([]);
     if (p === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (p === '/api/ess/completion' && method === 'GET') return o.legacyApi ? reply(paged([])) : reply(view());
-    if (p === '/api/auth/step-up') {
+    if (p === '/api/auth/step-up/purpose') {
       log.stepUps.push(body);
       if (failures > 0) { failures--; return reply({ type: 'about:blank', status: 401, code: 'invalid_credentials', titleKey: 'ess.completion.error.invalid_credentials' }, 401); }
       return reply({ stepUpToken: 'step-up-token-1', expiresAtUtc: '2026-10-27T12:10:00Z' });

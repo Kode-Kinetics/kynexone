@@ -89,7 +89,7 @@ export const esignApi = {
   document: (documentId: string) => client.get<Blob>(`/api/ess/signatures/${documentId}/document`, { responseType: 'blob' }).then(r => asPdfBlob(r.data)),
   certificate: (ackId: string) => client.get<Blob>(`/api/ess/signatures/${ackId}/certificate`, { responseType: 'blob' }).then(r => asPdfBlob(r.data)),
   stepUp: (password: string, mfaCode?: string) =>
-    client.post<{ stepUpToken: string; expiresAtUtc: string }>('/api/auth/step-up', { purpose: 'esign', password, mfaCode: mfaCode || undefined }, noRefresh).then(r => r.data),
+    client.post<{ stepUpToken: string; expiresAtUtc: string }>('/api/auth/step-up/purpose', { purpose: 'esign', password, mfaCode: mfaCode || undefined }, noRefresh).then(r => r.data),
   sign: (documentId: string, body: SignBody, stepUp: string, idempotencyKey: string) =>
     client.post<SignReceipt>(`/api/ess/signatures/${documentId}/sign`, body, { ...noRefresh, headers: stepUpHeaders(stepUp, idempotencyKey) }).then(r => r.data),
   verify: (ackId: string) => client.get<VerifyResult>(`/api/ess/signatures/${ackId}/verify`).then(r => r.data),

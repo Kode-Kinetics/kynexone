@@ -151,21 +151,21 @@ public class EssCompletionHttpTests(EssFixture fx)
         var e = await fx.NewEmployeeAsync("SA");
         for (var i = 0; i < 4; i++)
         {
-            using var bad = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up", e.Token, new { purpose = "ess.sensitive", password = "wrong" });
+            using var bad = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", e.Token, new { purpose = "ess.sensitive", password = "wrong" });
             bad.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
             (await Json(bad)).GetProperty("code").GetString().Should().Be("invalid_credentials");
         }
-        using var unknownPurpose = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up", e.Token, new { purpose = "root", password = EssFixture.Password });
+        using var unknownPurpose = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", e.Token, new { purpose = "root", password = EssFixture.Password });
         unknownPurpose.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await fx.WithDbAsync(db => db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == e.UserId))).FailedLoginCount.Should().Be(4);
-        using var fifth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up", e.Token, new { purpose = "ess.sensitive", password = "wrong" });
+        using var fifth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", e.Token, new { purpose = "ess.sensitive", password = "wrong" });
         fifth.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         // locked now: even the right password is refused (and the locked account's session is cut at the door, with no body)
-        using var locked = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up", e.Token, new { purpose = "ess.sensitive", password = EssFixture.Password });
+        using var locked = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", e.Token, new { purpose = "ess.sensitive", password = EssFixture.Password });
         locked.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await fx.WithDbAsync(db => db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == e.UserId))).IsLocked.Should().BeTrue();
         // anonymous callers cannot reach it at all
-        using var anon = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up", null, new { purpose = "ess.sensitive", password = EssFixture.Password });
+        using var anon = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", null, new { purpose = "ess.sensitive", password = EssFixture.Password });
         anon.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 

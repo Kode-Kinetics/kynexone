@@ -16,7 +16,7 @@ namespace Zayra.Api.Infrastructure.Auth.StepUp;
 /// The key is derived (HKDF) from the JWT signing secret under its own label, so a step-up token is never a valid session token
 /// and a session token is never a valid step-up token.
 /// </summary>
-public sealed class StepUpService : IStepUpService
+public sealed class EssStepUpService : IEssStepUpService
 {
     private const string KeyLabel = "kynexone.step-up.v1";
     private static readonly TimeSpan Skew = TimeSpan.FromSeconds(5);
@@ -28,7 +28,7 @@ public sealed class StepUpService : IStepUpService
     private readonly Func<DateTime> _clock;
     private readonly byte[] _key;
 
-    public StepUpService(ZayraDbContext db, IPasswordHasher hasher, TotpService totp, IConfiguration config,
+    public EssStepUpService(ZayraDbContext db, IPasswordHasher hasher, TotpService totp, IConfiguration config,
         PasswordVerificationGate? gate = null, Func<DateTime>? clock = null)
     {
         _db = db; _hasher = hasher; _totp = totp; _gate = gate; _clock = clock ?? (() => DateTime.UtcNow);
@@ -37,13 +37,13 @@ public sealed class StepUpService : IStepUpService
         _key = HKDF.DeriveKey(HashAlgorithmName.SHA256, Encoding.UTF8.GetBytes(secret), 32, info: Encoding.UTF8.GetBytes(KeyLabel));
     }
 
-    public Task<StepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct) =>
+    public Task<EssStepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct) =>
         VerifyCoreAsync(userId, purpose, credential, null, null, countFailures: true, ct);
 
-    public Task<StepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct) =>
+    public Task<EssStepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct) =>
         VerifyCoreAsync(employeeUserId, StepUpPurposes.Esign, credential, bind, witnessUserId, countFailures: false, ct);
 
-    private async Task<StepUpResult> VerifyCoreAsync(Guid userId, string purpose, StepUpCredential credential, string? bind, Guid? witness, bool countFailures, CancellationToken ct)
+    private async Task<EssStepUpResult> VerifyCoreAsync(Guid userId, string purpose, StepUpCredential credential, string? bind, Guid? witness, bool countFailures, CancellationToken ct)
     {
         if (!StepUpPurposes.IsKnown(purpose)) return new(false, null, null, "unknown_purpose");
         var now = _clock();

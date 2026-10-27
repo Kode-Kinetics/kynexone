@@ -222,7 +222,7 @@ public class EssUploadAndSecurityHttpTests(EssFixture fx)
             ("submit", await fx.SendAsync(HttpMethod.Post, "/api/ess/completion/person/submit", e.Token, new { noticeVersion = "ess-1", values = new { personalEmail = "a@b.co", phone = "0500000001" } })),
             ("submit-conflict", await fx.SendAsync(HttpMethod.Post, "/api/ess/completion/person/submit", e.Token, new { noticeVersion = "ess-1", values = new { personalEmail = "a@b.co", phone = "0500000001" } })),
             ("upload", await fx.SendRawAsync(UploadRequest("documents", "national_id_copy", Pdf), e.Token)),
-            ("stepup", await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up", e.Token, new { purpose = "ess.sensitive", password = EssFixture.Password })),
+            ("stepup", await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", e.Token, new { purpose = "ess.sensitive", password = EssFixture.Password })),
             ("hr-inbox", await fx.SendAsync(HttpMethod.Get, "/api/hr/profile-completion/inbox", fx.HrToken)),
         };
         foreach (var (name, res) in responses)

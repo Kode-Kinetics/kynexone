@@ -11,11 +11,11 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Tests.Esign;
 
 /// <summary>A step-up stand-in: the token IS its own jti, so a test decides exactly which proof each request carries.</summary>
-public sealed class FakeStepUp : IStepUpService
+public sealed class FakeStepUp : IEssStepUpService
 {
-    public Task<StepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
+    public Task<EssStepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
     public bool IsFresh(string? token, ClaimsPrincipal principal, string purpose, TimeSpan max) => Guid.TryParseExact(token, "N", out _);
-    public Task<StepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
+    public Task<EssStepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
     public bool IsFresh(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max, string? bind = null, Guid? witness = null) => Guid.TryParseExact(token, "N", out _);
     public string? ReadJti(string? token, Guid userId, Guid tenantId, string purpose, string? bind = null, Guid? witness = null) => Guid.TryParseExact(token, "N", out _) ? token : null;
 }

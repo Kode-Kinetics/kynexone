@@ -79,7 +79,7 @@ public class EsignHardeningHttpTests(EsignFixture fx)
         statuses.Skip(5).Should().OnlyContain(s => s == HttpStatusCode.TooManyRequests, "the device flow throttles itself");
         var user = await fx.WithDbAsync(db => db.Users.IgnoreQueryFilters().AsNoTracking().SingleAsync(u => u.Id == e.UserId));
         user.FailedLoginCount.Should().Be(0); user.IsLocked.Should().BeFalse();
-        using var signIn = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up", e.Token, new { purpose = "esign", password = EsignFixture.Password });
+        using var signIn = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", e.Token, new { purpose = "esign", password = EsignFixture.Password });
         signIn.StatusCode.Should().Be(HttpStatusCode.OK, "the employee can still prove themselves in their own session");
     }
 }

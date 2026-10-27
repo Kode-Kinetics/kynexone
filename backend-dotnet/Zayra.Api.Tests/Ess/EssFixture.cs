@@ -214,7 +214,7 @@ public sealed class EssFixture : IAsyncLifetime
     /// <summary>The employee re-enters their password; returns the X-Step-Up token.</summary>
     public async Task<string> StepUpAsync(EssEmployeeHandle e, string purpose = StepUpPurposes.EssSensitive)
     {
-        using var response = await SendAsync(HttpMethod.Post, "/api/auth/step-up", e.Token, new { purpose, password = Password });
+        using var response = await SendAsync(HttpMethod.Post, "/api/auth/step-up/purpose", e.Token, new { purpose, password = Password });
         response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
         return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("stepUpToken").GetString()!;
     }

@@ -27,7 +27,7 @@ public sealed record VerifyOutcome(bool Found, bool Valid, bool DocumentIntact, 
 /// The record, its certificate document and an audit row are written in ONE transaction, serialised per tenant so the hash chain
 /// has no fork and no gap.
 /// </summary>
-public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage storage, IStepUpService stepUp, PdfRenderGate? gate = null, Func<DateTime>? clock = null)
+public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage storage, IEssStepUpService stepUp, PdfRenderGate? gate = null, Func<DateTime>? clock = null)
 {
     public static string DeviceBinding(int employeeId, Guid documentId, string sha256) => $"{employeeId}:{documentId:N}:{sha256.ToLowerInvariant()}";
 

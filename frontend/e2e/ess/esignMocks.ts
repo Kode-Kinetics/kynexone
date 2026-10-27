@@ -105,7 +105,7 @@ export async function bootEsign(page: Page, o: EsignMockOptions = {}, path?: str
         return reply({ ackId: 'ack-new', signedAtUtc: '2026-10-27T12:00:00Z', recordHash: 'c'.repeat(64), certificateDocumentId: 'cert-new', verificationCode: 'WXYZ-2345-HJKL' }, 201);
       }
     }
-    if (p === '/api/auth/step-up') {
+    if (p === '/api/auth/step-up/purpose') {
       log.stepUps.push(body);
       if (failures > 0) { failures--; return reply({ type: 'about:blank', status: 401, code: 'invalid_credentials', titleKey: 'ess.completion.error.invalid_credentials' }, 401); }
       return reply({ stepUpToken: 'step-up-token-1', expiresAtUtc: '2026-10-27T12:05:00Z' });

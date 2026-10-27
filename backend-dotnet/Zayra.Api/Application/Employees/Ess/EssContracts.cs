@@ -78,16 +78,16 @@ public static class StepUpPurposes
 public sealed record StepUpCredential(string? Password, string? MfaCode);
 
 /// <param name="Error">invalid_credentials | mfa_required | locked | unknown_purpose when <paramref name="Ok"/> is false.</param>
-public sealed record StepUpResult(bool Ok, string? Token, DateTime? ExpiresAtUtc, string? Error);
+public sealed record EssStepUpResult(bool Ok, string? Token, DateTime? ExpiresAtUtc, string? Error);
 
 /// <summary>
 /// Proof that the signed-in person re-entered their password (and second factor, when enrolled) moments ago.
 /// Stateless: the token is HMAC-signed and carries <c>{sub, tenant, purpose, iat, jti, bind}</c>; it is sent as
 /// <c>X-Step-Up</c>. A missing or stale token is answered 401 <c>step_up_required</c> by the caller.
 /// </summary>
-public interface IStepUpService
+public interface IEssStepUpService
 {
-    Task<StepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct);
+    Task<EssStepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct);
 
     /// <summary>True when <paramref name="token"/> was issued to this principal (user + tenant) for <paramref name="purpose"/> no longer than <paramref name="max"/> ago.</summary>
     bool IsFresh(string? token, ClaimsPrincipal principal, string purpose, TimeSpan max);
@@ -103,7 +103,7 @@ public interface IStepUpService
     /// The employee types their own password on HR's device. Counts nothing against the sign-in lockout (HR cannot lock an employee
     /// out by guessing); the caller throttles the device flow separately. The token is bound to <paramref name="bind"/> and to the HR user.
     /// </summary>
-    Task<StepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct);
+    Task<EssStepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct);
 }
 
 /// <summary>Pre-persistence checks shared by the controller and its tests.</summary>
