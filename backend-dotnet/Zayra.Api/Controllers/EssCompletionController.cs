@@ -61,7 +61,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         {
             progress = new { done = sections.Count(s => s.State == EssCompletion.Accepted), total = sections.Count },
             noticeVersion = EssCompletion.NoticeVersion,
-            hosting = config["Ess:HostingRegion"] ?? "us-east",
+            hosting = EssCompletion.HostingRegionOrDefault(config["Ess:HostingRegion"]),
             sections,
         });
     }
@@ -96,6 +96,15 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         if (spec.RequiresStepUp && !stepUp.IsFresh(Request.Headers[EssCompletion.StepUpHeader].FirstOrDefault(), User, StepUpPurposes.EssSensitive, StepUpPurposes.EssSensitiveMaxAge))
             return EssProblem.StepUpRequired(HttpContext);
 
+        // One token, one submission: a spent token is the same answer as a missing one.
+        Guid? stepUpJti = null;
+        if (spec.RequiresStepUp)
+        {
+            stepUpJti = Guid.TryParseExact(stepUp.ReadJti(Request.Headers[EssCompletion.StepUpHeader].FirstOrDefault(), ctx.UserId ?? Guid.Empty, ctx.TenantId, StepUpPurposes.EssSensitive), "N", out var j) ? j : null;
+            if (stepUpJti is null || await db.EmployeeProfileChangeRequests.AsNoTracking().AnyAsync(x => x.StepUpJti == stepUpJti, ct))
+                return EssProblem.StepUpRequired(HttpContext);
+        }
+
         var state = (await BuildAsync(ctx, section, ct)).Dto.State;
         if (state == EssCompletion.Pending) return EssProblem.Create(HttpContext, 409, EssProblemCodes.SectionPending);
         if (state == EssCompletion.AwaitingFinance) return EssProblem.Create(HttpContext, 409, EssProblemCodes.FinancePending);
@@ -119,7 +128,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         var documents = documentIds.Count == 0 ? [] : await db.EmployeeDocuments.AsNoTracking()
             .Where(d => d.TenantId == ctx.TenantId && d.EmployeeId == ctx.Employee.Id && d.SourceSection == section && !d.IsDeleted && documentIds.Contains(d.Id)).ToListAsync(ct);
         if (documents.Count != documentIds.Count) errors["documents"] = [EmployeeFieldErrors.InvalidFormat];
-        else if (documents.Any(d => d.ScanStatus == "Quarantined")) return EssProblem.Create(HttpContext, 400, EssProblemCodes.DocumentQuarantined);
+        else if (documents.Any(d => !ScanStatuses.IsServable(d.ScanStatus))) return EssProblem.Create(HttpContext, 400, EssProblemCodes.DocumentQuarantined);
         if (section == EssSectionKeys.Documents && documents.Count == 0) errors["documents"] = [EmployeeFieldErrors.Required];
         if (errors.Count > 0) return EssProblem.Validation(HttpContext, 422, EssProblemCodes.ValidationFailed, errors);
 
@@ -132,7 +141,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         {
             TenantId = ctx.TenantId, EmployeeId = ctx.Employee.Id, CreatedBy = ctx.UserId, Section = section,
             Reason = $"ESS section: {section}", RequestedChangesJson = JsonSerializer.Serialize(body),
-            ContainsSensitiveFields = spec.RequiresStepUp, NoticeVersion = request.NoticeVersion, StepUpAtUtc = spec.RequiresStepUp ? now : null,
+            ContainsSensitiveFields = spec.RequiresStepUp, NoticeVersion = request.NoticeVersion, StepUpAtUtc = spec.RequiresStepUp ? now : null, StepUpJti = stepUpJti,
         };
         db.EmployeeProfileChangeRequests.Add(row);
         db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
@@ -153,6 +162,8 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
             db.ChangeTracker.Clear();
             if (await db.EmployeeProfileChangeRequests.AsNoTracking().AnyAsync(x => x.TenantId == ctx.TenantId && x.EmployeeId == ctx.Employee.Id && x.Section == section && x.Status == "PendingHR", ct))
                 return EssProblem.Create(HttpContext, 409, EssProblemCodes.SectionPending);
+            if (stepUpJti is not null && await db.EmployeeProfileChangeRequests.AsNoTracking().AnyAsync(x => x.StepUpJti == stepUpJti, ct))
+                return EssProblem.StepUpRequired(HttpContext);
             throw;
         }
         return Ok((await BuildAsync(ctx, section, ct)).Dto);
@@ -177,7 +188,13 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
             return EssProblem.StepUpRequired(HttpContext);
         if (form.File is null || form.File.Length == 0) return EssProblem.Create(HttpContext, 400, EssProblemCodes.UploadRejected, Rejected("file", "required"));
         if (form.File.Length > EssCompletion.MaxFileBytes) return EssProblem.Create(HttpContext, 400, EssProblemCodes.UploadRejected, Rejected("file", "too_large"));
-        var existing = await db.EmployeeDocuments.AsNoTracking().CountAsync(d => d.TenantId == ctx.TenantId && d.EmployeeId == ctx.Employee.Id && d.SourceSection == section && !d.IsDeleted, ct);
+        // Files of a request HR sent back are on their way out (30-day rule) and must not keep the employee from sending corrected ones.
+        var sentBack = (await db.EmployeeProfileChangeRequests.AsNoTracking()
+                .Where(r => r.TenantId == ctx.TenantId && r.EmployeeId == ctx.Employee.Id && r.Section == section && (r.Status == "Rejected" || r.Status == "Expired"))
+                .Select(r => r.RequestedChangesJson).ToListAsync(ct))
+            .SelectMany(EssSectionDecisionService.ReadDocumentIds).ToHashSet();
+        var live = await db.EmployeeDocuments.AsNoTracking().Where(d => d.TenantId == ctx.TenantId && d.EmployeeId == ctx.Employee.Id && d.SourceSection == section && !d.IsDeleted).Select(d => d.Id).ToListAsync(ct);
+        var existing = live.Count(id => !sentBack.Contains(id));
         if (existing >= EssCompletion.MaxAttachmentsPerSection) return EssProblem.Create(HttpContext, 400, EssProblemCodes.UploadRejected, Rejected("file", "too_many"));
 
         byte[] bytes;
@@ -204,7 +221,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         {
             TenantId = ctx.TenantId, CompanyId = ctx.Employee.CompanyId, EmployeeId = ctx.Employee.Id, DocumentType = DocumentTypeByKind[kind], DocumentCategory = kind,
             FileName = stored.FileName, ContentType = verdict.ContentType, StorageUrl = stored.StorageUrl, ApprovalStatus = "Pending", IsRequired = false,
-            UploadedBy = ctx.UserId, SourceSection = section, ScanStatus = scan.ToString(),
+            UploadedBy = ctx.UserId, SourceSection = section, ScanStatus = ScanStatuses.Of(scan.Verdict),
         };
         db.EmployeeDocuments.Add(doc);
         db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
@@ -212,6 +229,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
             TenantId = ctx.TenantId, EmployeeId = ctx.Employee.Id, UserId = ctx.UserId, Action = "ess.completion.document_uploaded",
             EntityName = nameof(EmployeeDocument), EntityId = doc.Id.ToString(),
         });
+        EssScanAudit.Record(db, ctx.TenantId, doc, scan, ctx.UserId, "ess.completion.document_scanned", HttpContext);
         await db.SaveChangesAsync(ct);
         return Created($"/api/ess/documents/{doc.Id}", new { id = doc.Id, kind, scanStatus = doc.ScanStatus });
     }
@@ -226,7 +244,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         var employee = await db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted && (x.Status == "Active" || x.Status == "Invited"), ct);
         if (employee is null) return null;
         var country = employee.CompanyId is null ? null : await db.Companies.AsNoTracking().Where(c => c.Id == employee.CompanyId).Select(c => c.CountryCode).FirstOrDefaultAsync(ct);
-        var hasId = await db.EmployeeDocuments.AsNoTracking().AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && !d.IsDeleted && d.ScanStatus != "Quarantined" && IdDocumentTypes.Contains(d.DocumentType)
+        var hasId = await db.EmployeeDocuments.AsNoTracking().AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && !d.IsDeleted && (d.ScanStatus == ScanStatuses.Clean || d.ScanStatus == ScanStatuses.NotScannedTrustedSource) && IdDocumentTypes.Contains(d.DocumentType)
             // A copy the employee has only just sent is not "held" until HR accepts it; a copy HR (or the hire) already holds is.
             && (d.SourceSection == null || d.ApprovalStatus == "Approved"), ct);
         var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uid) ? uid : (Guid?)null;

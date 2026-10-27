@@ -39,7 +39,7 @@ public class EsignHttpTests(EsignFixture fx)
         ack.DocumentSha256.Should().Be(doc.Sha256);
         ack.AcknowledgedAtUtc.Should().BeOnOrAfter(before.AddSeconds(-1)).And.BeOnOrBefore(after.AddSeconds(1));
         ack.IpAddress.Should().NotBeNullOrEmpty(); ack.UserAgent.Should().Be("EsignTest/1.0");
-        ack.ConsentVersion.Should().Be("ack-1"); ack.ConsentTextSha256.Should().Be(ConsentCatalog.TextSha256("ack-1"));
+        ack.ConsentVersion.Should().Be(ConsentCatalog.Current); ack.ConsentTextSha256.Should().Be(ConsentCatalog.TextSha256(ConsentCatalog.Current));
         ack.Language.Should().Be("en"); ack.DeviceId.Should().Be("dev-1"); ack.AuthMethod.Should().StartWith("password");
         ack.StepUpJti.Should().NotBeNull(); ack.StepUpAtUtc.Should().NotBeNull();
         ack.ChainSeq.Should().BeGreaterThan(0); ack.PrevHash.Should().HaveLength(64); ack.RecordHash.Should().HaveLength(64);
@@ -63,7 +63,7 @@ public class EsignHttpTests(EsignFixture fx)
         var e = await fx.NewEmployeeAsync();
         var doc = await fx.NewDocumentAsync(e);
         var step = await fx.StepUpAsync(e);
-        var forged = new { documentSha256 = doc.Sha256, consentVersion = "ack-1", typedName = "Layla Hassan", language = "en", signedAtUtc = "2001-01-01T00:00:00Z", acknowledgedAtUtc = "2001-01-01T00:00:00Z" };
+        var forged = new { documentSha256 = doc.Sha256, consentVersion = ConsentCatalog.Current, typedName = "Layla Hassan", language = "en", signedAtUtc = "2001-01-01T00:00:00Z", acknowledgedAtUtc = "2001-01-01T00:00:00Z" };
         using var res = await fx.SendAsync(HttpMethod.Post, $"/api/ess/signatures/{doc.Id}/sign", e.Token, forged, step, Guid.NewGuid().ToString("N"));
         res.StatusCode.Should().Be(HttpStatusCode.Created, await res.Content.ReadAsStringAsync());
         (await AckAsync((await Json(res)).GetProperty("ackId").GetGuid())).AcknowledgedAtUtc.Year.Should().BeGreaterThan(2020);
@@ -187,7 +187,7 @@ public class EsignHttpTests(EsignFixture fx)
         bare.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await Code(bare)).Should().Be("step_up_required");
         // the employee types their own password on HR's device
-        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, password = EsignFixture.Password });
+        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, documentId = doc.Id, documentSha256 = doc.Sha256, password = EsignFixture.Password });
         auth.StatusCode.Should().Be(HttpStatusCode.OK, await auth.Content.ReadAsStringAsync());
         var token = (await Json(auth)).GetProperty("stepUpToken").GetString()!;
         using var res = await fx.SendAsync(HttpMethod.Post, $"/api/employees/{e.Id}/signatures/{doc.Id}/sign-on-device", fx.HrToken, EsignFixture.Body(doc, "Layla Hassan"), token, Guid.NewGuid().ToString("N"));
@@ -202,7 +202,8 @@ public class EsignHttpTests(EsignFixture fx)
     public async Task Sign_OnDevice_HrOwnPassword_Rejected()
     {
         var e = await fx.NewEmployeeAsync();
-        using var res = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, password = fx.HrPassword });
+        var doc = await fx.NewDocumentAsync(e);
+        using var res = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, documentId = doc.Id, documentSha256 = doc.Sha256, password = fx.HrPassword });
         res.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         var problem = await Json(res);
         problem.GetProperty("code").GetString().Should().Be("employee_device_auth_failed");
@@ -213,8 +214,8 @@ public class EsignHttpTests(EsignFixture fx)
     public async Task Sign_OnDevice_TokenForOtherEmployee_Rejected()
     {
         var a = await fx.NewEmployeeAsync(); var b = await fx.NewEmployeeAsync("Omar Saleh", "عمر صالح");
-        var docA = await fx.NewDocumentAsync(a);
-        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = b.Id, password = EsignFixture.Password });
+        var docA = await fx.NewDocumentAsync(a); var docB = await fx.NewDocumentAsync(b);
+        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = b.Id, documentId = docB.Id, documentSha256 = docB.Sha256, password = EsignFixture.Password });
         var tokenForB = (await Json(auth)).GetProperty("stepUpToken").GetString()!;
         using var res = await fx.SendAsync(HttpMethod.Post, $"/api/employees/{a.Id}/signatures/{docA.Id}/sign-on-device", fx.HrToken, EsignFixture.Body(docA, "Layla Hassan"), tokenForB, Guid.NewGuid().ToString("N"));
         res.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -276,9 +277,12 @@ public class EsignHttpTests(EsignFixture fx)
         rows[0].GetProperty("documentId").GetGuid().Should().Be(doc.Id);
         using var en = await fx.SendAsync(HttpMethod.Get, $"/api/ess/signatures/{doc.Id}/consent?lang=en", e.Token);
         var c = await Json(en);
-        c.GetProperty("consentVersion").GetString().Should().Be("ack-1"); c.GetProperty("textSha256").GetString().Should().Be(ConsentCatalog.TextSha256("ack-1"));
-        c.GetProperty("text").GetString().Should().Be(ConsentCatalog.Text("ack-1", "en"));
-        c.GetProperty("textAr").GetString().Should().Be(ConsentCatalog.Text("ack-1", "ar"));
+        c.GetProperty("consentVersion").GetString().Should().Be(ConsentCatalog.Current); c.GetProperty("textSha256").GetString().Should().Be(ConsentCatalog.TextSha256(ConsentCatalog.Current));
+        c.GetProperty("text").GetString().Should().Be(ConsentCatalog.Text(ConsentCatalog.Current, "en"));
+        c.GetProperty("textAr").GetString().Should().Be(ConsentCatalog.Text(ConsentCatalog.Current, "ar"));
+        c.GetProperty("order").EnumerateArray().Select(x => x.GetString()).Should().Equal("en", "ar");
+        using var ar = await fx.SendAsync(HttpMethod.Get, $"/api/ess/signatures/{doc.Id}/consent?lang=ar", e.Token);
+        (await Json(ar)).GetProperty("order").EnumerateArray().Select(x => x.GetString()).Should().Equal("ar", "en");
         c.GetProperty("documentSha256").GetString().Should().Be(doc.Sha256);
         (await fx.SignAsync(e, doc, "Layla Hassan")).StatusCode.Should().Be(HttpStatusCode.Created);
         using var after = await fx.SendAsync(HttpMethod.Get, "/api/ess/signatures", e.Token);

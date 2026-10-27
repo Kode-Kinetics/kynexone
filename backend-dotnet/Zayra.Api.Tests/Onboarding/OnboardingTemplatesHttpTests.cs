@@ -425,6 +425,29 @@ public class OnboardingTemplatesHttpTests : IClassFixture<OnboardingTemplatesFix
     }
 
     [Fact]
+    public async Task SkippingABlockingTask_NeedsAReason_AndIsAudited()  // CD62
+    {
+        var tag = Guid.NewGuid().ToString("N")[..6];
+        var e = await _fx.SeedEmployeeAsync($"SK-{tag}", _fx.CompanyId);
+        await _fx.SeedBlockingTaskAsync(e, "Blocking " + tag);
+        await _fx.SeedTasksAsync(e, ("Optional " + tag, "HR", "Pending", false));
+        var token = await _fx.NewUserAsync("skip", "HR Officer", "employees.read", "employees.write");
+        var blocking = await _fx.TaskIdAsync("Blocking " + tag);
+        var optional = await _fx.TaskIdAsync("Optional " + tag);
+
+        using var none = await _fx.SendAsync(HttpMethod.Patch, $"/api/onboarding/tasks/{blocking}", new { status = "Skipped" }, token);
+        none.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        (await Json(none)).GetProperty("code").GetString().Should().Be("skip_reason_required");
+        using var thin = await _fx.SendAsync(HttpMethod.Patch, $"/api/onboarding/tasks/{blocking}", new { status = "Skipped", note = "no" }, token);
+        thin.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        using var ok = await _fx.SendAsync(HttpMethod.Patch, $"/api/onboarding/tasks/{blocking}", new { status = "Skipped", note = "Employee holds a valid permit from a previous employer" }, token);
+        ok.StatusCode.Should().Be(HttpStatusCode.OK, await ok.Content.ReadAsStringAsync());
+        using var plain = await _fx.SendAsync(HttpMethod.Patch, $"/api/onboarding/tasks/{optional}", new { status = "Skipped" }, token);
+        plain.StatusCode.Should().Be(HttpStatusCode.OK, "a task that does not block activation needs no reason");
+        (await _fx.AuditCountAsync("onboarding_task_skipped", blocking.ToString(), "previous employer")).Should().Be(1);
+    }
+
+    [Fact]
     public async Task LegacyRecruitmentOnboardingRoutes_Unchanged()
     {
         var token = await _fx.NewUserAsync("legacy", "HR Manager", Manage, "recruitment.read", "recruitment.write");
@@ -548,6 +571,21 @@ public sealed class OnboardingTemplatesFixture : IAsyncLifetime
         foreach (var t in tasks)
             db.OnboardingTasks.Add(new OnboardingTask { TenantId = TenantId, EmployeeId = e.PublicId, TaskTitle = t.Title, OwnerRole = t.Owner, Status = t.Status, EvidenceRequired = t.Evidence, OrderIndex = i++, DueDate = new DateOnly(2026, 1, 1) });
         await db.SaveChangesAsync();
+    }
+
+    public async Task SeedBlockingTaskAsync(Employee e, string title)
+    {
+        using var scope = Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        db.OnboardingTasks.Add(new OnboardingTask { TenantId = TenantId, EmployeeId = e.PublicId, TaskTitle = title, OwnerRole = "HR", Status = "Pending", BlocksActivation = true, OrderIndex = 0, DueDate = new DateOnly(2026, 1, 1) });
+        await db.SaveChangesAsync();
+    }
+
+    public async Task<int> AuditCountAsync(string action, string entityId, string metadataContains)
+    {
+        using var scope = Host.Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<ZayraDbContext>().AuditLogs.IgnoreQueryFilters()
+            .CountAsync(a => a.Action == action && a.EntityId == entityId && a.Metadata != null && a.Metadata.Contains(metadataContains));
     }
 
     public async Task<Guid> TaskIdAsync(string title)

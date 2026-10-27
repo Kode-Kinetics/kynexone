@@ -91,16 +91,36 @@ public class EsignUnitTests
     }
 
     [Fact]
-    public void ConsentCatalog_EnAndAr_VersionedAndHashStable()
+    public void ConsentCatalog_Ack1_StaysReadableAndUnchanged_ButIsNoLongerCurrent()
     {
-        ConsentCatalog.Current.Should().Be("ack-1");
-        var en = ConsentCatalog.Text("ack-1", "en"); var ar = ConsentCatalog.Text("ack-1", "ar");
-        en.Should().Contain("not a qualified electronic signature"); ar.Should().MatchRegex(@"\p{IsArabic}");
-        en.Should().NotBe(ar);
-        ConsentCatalog.TextSha256("ack-1").Should().Be(ConsentCatalog.TextSha256("ack-1")).And.MatchRegex("^[0-9a-f]{64}$");
+        ConsentCatalog.Text("ack-1", "en").Should().Contain("not a qualified electronic signature");
         // Pinned: a wording change must bump the version, not silently change what an old signature agreed to.
         ConsentCatalog.TextSha256("ack-1").Should().Be("65d574df245e40a56d9d8deab51e71992b865f13be6b79f35ab18952c26b6b41");
-        Assert.Throws<ArgumentOutOfRangeException>(() => ConsentCatalog.Text("ack-2", "en"));
+        ConsentCatalog.IsKnown("ack-1").Should().BeFalse("only the current version can be signed");
+    }
+
+    [Fact]
+    public void ConsentCatalog_Ack2_DisclosesIpAndDevice_AndNeverCallsTheAcknowledgementAQualifiedSignatureInArabic()  // CD64
+    {
+        ConsentCatalog.Current.Should().Be("ack-2");
+        var en = ConsentCatalog.Text("ack-2", "en"); var ar = ConsentCatalog.Text("ack-2", "ar");
+        en.Should().Contain("IP address").And.Contain("device").And.Contain("browser").And.Contain("acknowledgement");
+        en.Should().Contain("not a qualified electronic signature", "the disclaimer is protective and stays");
+        ar.Should().Contain("عنوان IP").And.Contain("المتصفح").And.Contain("إقرار").And.Contain("توقيعًا إلكترونيًا معتمدًا");
+        ar.Should().NotContain("مؤهل");
+        ConsentCatalog.TextSha256("ack-2").Should().MatchRegex("^[0-9a-f]{64}$").And.NotBe(ConsentCatalog.TextSha256("ack-1"));
+        ConsentCatalog.TextSha256("ack-2").Should().Be(ConsentCatalog.TextSha256("ack-2"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ConsentCatalog.Text("ack-3", "en"));
+        ConsentCatalog.Order("ar").Should().Equal("ar", "en");
+        ConsentCatalog.Order("en").Should().Equal("en", "ar");
+        ConsentCatalog.Order(null).Should().Equal("en", "ar");
+    }
+
+    [Fact]
+    public void Certificate_StatesTheAcknowledgementInArabicWithoutTheEuTerm()  // CD64
+    {
+        AckCertificateRenderer.StatementAr.Should().Contain("معتمدًا").And.NotContain("مؤهل");
+        AckCertificateRenderer.StatementEn.Should().Contain("acknowledgement");
     }
 
     private static AckEvidence Evidence(string typed = "Layla Hassan", Guid? witness = null) => new(
@@ -144,8 +164,8 @@ public class EsignUnitTests
     {
         var hash = SignatureChain.ComputeHash(EsignConstants.ZeroHash, Evidence());
         var data = new AckCertificateData("Saudi Co", "Layla Hassan", "E1", "Employment contract", "contract.pdf", new string('c', 64), "Layla Hassan",
-            new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc), EsignConstants.MethodEss, null, "ack-1",
-            ConsentCatalog.Text("ack-1", "en"), ConsentCatalog.Text("ack-1", "ar"), hash, VerificationCode.From(hash));
+            new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc), EsignConstants.MethodEss, null, ConsentCatalog.Current,
+            ConsentCatalog.Text(ConsentCatalog.Current, "en"), ConsentCatalog.Text(ConsentCatalog.Current, "ar"), hash, VerificationCode.From(hash));
         var pdf = AckCertificateRenderer.Render(data);
         pdf.Take(5).Should().Equal("%PDF-"u8.ToArray());
         using var doc = PdfDocument.Open(pdf);
@@ -204,11 +224,14 @@ public class EsignUnitTests
     [InlineData("CreateFunction")]
     [InlineData("CreateTrigger")]
     [InlineData("Drop")]
+    [InlineData("RevokeFromAppRole")]
+    [InlineData("GrantToAppRole")]
     public void P4Migration_CarriesTheSameAppendOnlySqlAsTheSharedConstant(string name)
     {
         var migration = typeof(Zayra.Api.Data.ZayraDbContext).Assembly.GetTypes().Single(x => x.Name == "OnboardingP4Acknowledgements");
         var inMigration = (string)migration.GetField(name, BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
         var shared = (string)typeof(Zayra.Api.Data.Esign.AckAppendOnlySql).GetField(name)!.GetRawConstantValue()!;
+        shared.Should().NotBeNullOrWhiteSpace();
         inMigration.Should().Be(shared);
     }
 }

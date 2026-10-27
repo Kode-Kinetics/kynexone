@@ -44,7 +44,7 @@ public sealed class EsignRetentionPostgresTests(PostgresFixture fx) : PlatformTe
     private sealed record Seeded(Guid Tenant, int EmployeeId, Guid AckId, Guid CertId);
 
     /// <summary>An employee with a signed acknowledgement and its certificate document. <paramref name="deletedAt"/> soft-deletes the employee.</summary>
-    private async Task<Seeded> SeedAsync(Guid? tenant = null, DateTime? deletedAt = null, long seq = 1)
+    private async Task<Seeded> SeedAsync(Guid? tenant = null, DateTime? deletedAt = null, long seq = 1, bool recordOffboarding = true)
     {
         await using var db = fx.CreateDb();
         tenant ??= await PostgresFixture.SeedMinimalTenant(db);
@@ -52,6 +52,9 @@ public sealed class EsignRetentionPostgresTests(PostgresFixture fx) : PlatformTe
         if (deletedAt is not null) { e.IsDeleted = true; e.DeletedAtUtc = deletedAt; e.Status = "Terminated"; }
         db.Employees.Add(e);
         await db.SaveChangesAsync();
+        // End of employment is the completed offboarding's last working day (CD64), not the moment the record was removed.
+        if (deletedAt is not null && recordOffboarding)
+            db.EmployeeOffboardings.Add(new EmployeeOffboarding { TenantId = tenant.Value, EmployeeId = e.Id, EmployeeName = e.FullName, EmployeeCode = e.EmployeeCode, Status = "Completed", LastWorkingDay = DateOnly.FromDateTime(deletedAt.Value) });
         var cert = new EmployeeDocument { TenantId = tenant.Value, EmployeeId = e.Id, DocumentType = EsignConstants.DocumentType, DocumentCategory = "Acknowledgement", FileName = "c.pdf", ContentType = "application/pdf", StorageUrl = $"storage/documents/{tenant.Value:N}/esign/{Guid.NewGuid():N}.pdf" };
         db.EmployeeDocuments.Add(cert);
         await db.SaveChangesAsync();
@@ -183,5 +186,60 @@ public sealed class EsignRetentionPostgresTests(PostgresFixture fx) : PlatformTe
             await tx.CommitAsync();
         });
         (await CountsAsync(tenant)).Acks.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task RetentionClock_StartsAtLastWorkingDay_NotAtSoftDelete()  // CD64
+    {
+        await using var trigger = await WithTriggerAsync();
+        await using var seedDb = fx.CreateDb();
+        var tenant = await PostgresFixture.SeedMinimalTenant(seedDb);
+        var removedLongAgoNoExitRecord = await SeedAsync(tenant, DateTime.UtcNow.AddYears(-20), 1, recordOffboarding: false);   // record removed, end of employment unknown: kept
+        var leftRecently = await SeedAsync(tenant, DateTime.UtcNow.AddYears(-1), 2);
+        // soft-deleted only last year, but the person's last working day was 11 years ago
+        var leftLongAgo = await SeedAsync(tenant, DateTime.UtcNow.AddYears(-1), 3);
+        await using (var db0 = fx.CreateDb())
+        {
+            var off = await db0.EmployeeOffboardings.IgnoreQueryFilters().SingleAsync(o => o.EmployeeId == leftLongAgo.EmployeeId);
+            off.LastWorkingDay = DateOnly.FromDateTime(DateTime.UtcNow.AddYears(-11));
+            var cancelled = await SeedAsync(tenant, DateTime.UtcNow.AddYears(-15), 4);
+            (await db0.EmployeeOffboardings.IgnoreQueryFilters().SingleAsync(o => o.EmployeeId == cancelled.EmployeeId)).Status = "Cancelled";
+            await db0.SaveChangesAsync();
+        }
+        using var services = new ServiceCollection().BuildServiceProvider();
+        await using var db = fx.CreateDb();
+        var ctx = new JobExecutionContext(new(Guid.NewGuid(), tenant, "data-retention", "{}", 1, 1, Guid.NewGuid(), null), db, services, [], TimeSpan.FromMinutes(2), default, default);
+        var candidates = await new EsignEvidenceRetentionRule().EvaluateAsync(ctx, DateTime.UtcNow, 100, default);
+        candidates.Select(c => Guid.Parse(c.EntityId)).Should().BeEquivalentTo([leftLongAgo.AckId]);
+        removedLongAgoNoExitRecord.AckId.Should().NotBeEmpty(); leftRecently.AckId.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task TenantErasure_ByThePlatformPurge_RunningAsTheAppRole_StillSucceeds_AfterTheMigrationRevoke()  // CD68
+    {
+        await using var trigger = await WithTriggerAsync();
+        await ExecAsync("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN CREATE ROLE kynex_app NOLOGIN; END IF; END $$;");
+        await ExecAsync("GRANT ALL ON ALL TABLES IN SCHEMA public TO kynex_app");
+        await ExecAsync("GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO kynex_app");
+        try
+        {
+            await ExecAsync(AckAppendOnlySql.RevokeFromAppRole);
+            var s = await SeedAsync();
+            await SoftDeleteTenantAsync(s.Tenant);
+            using var services = new ServiceCollection().AddSingleton<IDocumentStorage>(new InMemoryDocumentStorage()).BuildServiceProvider();
+            var appRoleConnection = new NpgsqlConnectionStringBuilder(fx.ConnectionString) { Options = "-c role=kynex_app", Pooling = false }.ConnectionString;
+            await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(appRoleConnection).Options);
+            (await db.Database.SqlQueryRaw<string>("SELECT current_user AS \"Value\"").ToListAsync()).Single().Should().Be("kynex_app");
+            var controller = CreateController(db); controller.ControllerContext.HttpContext.RequestServices = services;
+            var result = await controller.PurgeTenant(s.Tenant, "PURGE", default);
+            result.Should().BeOfType<OkObjectResult>();
+            (await CountsAsync(s.Tenant)).Should().Be((0, 0));
+        }
+        finally
+        {
+            await ExecAsync(AckAppendOnlySql.GrantToAppRole);
+            await ExecAsync("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM kynex_app");
+            await ExecAsync("REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM kynex_app");
+        }
     }
 }

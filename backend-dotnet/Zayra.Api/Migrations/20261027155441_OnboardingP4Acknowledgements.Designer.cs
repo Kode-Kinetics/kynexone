@@ -10917,9 +10917,9 @@ namespace Zayra.Api.Migrations
                     b.Property<string>("ScanStatus")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(12)
-                        .HasColumnType("character varying(12)")
-                        .HasDefaultValue("Clean")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("clean")
                         .HasColumnName("scan_status");
 
                     b.Property<Guid?>("SignatureRequestedBy")
@@ -10980,7 +10980,7 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("employee_documents", null, t =>
                         {
-                            t.HasCheckConstraint("ck_employee_documents__scan_status", "scan_status IN ('Clean','PendingScan','Quarantined')");
+                            t.HasCheckConstraint("ck_employee_documents__scan_status", "scan_status IN ('clean','not_scanned_trusted_source','quarantined','quarantined_pending')");
                         });
                 });
 
@@ -13482,11 +13482,20 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("step_up_at_utc");
 
+                    b.Property<Guid?>("StepUpJti")
+                        .HasColumnType("uuid")
+                        .HasColumnName("step_up_jti");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("StepUpJti")
+                        .IsUnique()
+                        .HasDatabaseName("ux_epcr_step_up_jti")
+                        .HasFilter("step_up_jti IS NOT NULL");
 
                     b.HasIndex("TenantId", "EmployeeId", "Section")
                         .IsUnique()

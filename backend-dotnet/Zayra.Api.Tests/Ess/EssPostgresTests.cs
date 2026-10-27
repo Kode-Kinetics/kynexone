@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Zayra.Api.Data;
 using Zayra.Api.Data.Ess;
@@ -73,7 +74,7 @@ public sealed class EssPostgresTests(PostgresFixture fx)
         var doc = new EmployeeDocument { TenantId = tenant, EmployeeId = 1, DocumentType = "Passport", FileName = "p.pdf" };
         docs.EmployeeDocuments.Add(doc);
         await docs.SaveChangesAsync();
-        (await fx.CreateDb().EmployeeDocuments.IgnoreQueryFilters().SingleAsync(d => d.Id == doc.Id)).ScanStatus.Should().Be("Clean");
+        (await fx.CreateDb().EmployeeDocuments.IgnoreQueryFilters().SingleAsync(d => d.Id == doc.Id)).ScanStatus.Should().Be("clean");
         await using var badDoc = fx.CreateDb();
         badDoc.EmployeeDocuments.Add(new EmployeeDocument { TenantId = tenant, EmployeeId = 1, DocumentType = "x", FileName = "x.pdf", ScanStatus = "Maybe" });
         var ex2 = await Assert.ThrowsAsync<DbUpdateException>(() => badDoc.SaveChangesAsync());
@@ -114,5 +115,62 @@ public sealed class EssPostgresTests(PostgresFixture fx)
         rows[oldAccepted.Id].Status.Should().Be("Approved"); rows[oldAccepted.Id].RequestedChangesJson.Should().Contain("phone");
         rows[oldLegacyRejected.Id].Status.Should().Be("Rejected");
         rows[oldPending.Id].Status.Should().Be("PendingHR");
+    }
+
+    [Fact]
+    public async Task BankSection_ConcurrentAccepts_OnlyOneClaimsTheRequest()  // CD59
+    {
+        await using var seed = fx.CreateDb();
+        var tenant = await PostgresFixture.SeedMinimalTenant(seed);
+        var req = Request(tenant, 7300, "bank");
+        seed.EmployeeProfileChangeRequests.Add(req);
+        await seed.SaveChangesAsync();
+        await using var a = fx.CreateDb(); await using var b = fx.CreateDb();
+        var gate = new TaskCompletionSource();
+        async Task<bool> Claim(ZayraDbContext db) { await gate.Task; return await Zayra.Api.Application.Employees.Ess.EssSectionDecisionService.TryClaimForFinanceAsync(db, tenant, req.Id, default); }
+        var t1 = Claim(a); var t2 = Claim(b);
+        gate.SetResult();
+        (await Task.WhenAll(t1, t2)).Count(x => x).Should().Be(1);
+        (await fx.CreateDb().EmployeeProfileChangeRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == req.Id)).Status.Should().Be("AwaitingFinance");
+    }
+
+    [Fact]
+    public async Task Retention_RejectedSubmissionFilesAndStaleUploads_AreDeletedWithTheirStoredObjects()  // CD62
+    {
+        await using var seed = fx.CreateDb();
+        var tenant = await PostgresFixture.SeedMinimalTenant(seed);
+        var now = DateTime.UtcNow;
+        var storage = new Zayra.Api.Tests.Esign.InMemoryDocumentStorage();
+        EmployeeDocument Doc(string name, DateTime uploaded, int employee = 7400)
+        {
+            var key = $"storage/documents/{tenant:N}/{name}.pdf"; storage.Objects[key] = [1, 2, 3];
+            return new EmployeeDocument { TenantId = tenant, EmployeeId = employee, DocumentType = "National ID", DocumentCategory = "national_id_copy", FileName = name + ".pdf", StorageUrl = key, SourceSection = "documents", ScanStatus = "clean", UploadedAtUtc = uploaded };
+        }
+        var rejectedFile = Doc("rejected", now.AddDays(-45)); var staleUpload = Doc("stale", now.AddDays(-45)); var freshUpload = Doc("fresh", now.AddDays(-2));
+        var acceptedFile = Doc("accepted", now.AddDays(-45), 7498); var freshRejectedFile = Doc("freshrejected", now.AddDays(-12), 7499);
+        seed.EmployeeDocuments.AddRange(rejectedFile, staleUpload, freshUpload, acceptedFile, freshRejectedFile);
+        EmployeeProfileChangeRequest WithFiles(string status, DateTime decided, params EmployeeDocument[] docs)
+        {
+            var r = Request(tenant, 7400 + docs.Length + status.Length, "documents", status, decided.AddDays(-1)); r.DecidedAtUtc = decided;
+            r.RequestedChangesJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["_documents"] = docs.Select(d => d.Id.ToString()).ToArray() });
+            return r;
+        }
+        var oldRejected = WithFiles("Rejected", now.AddDays(-35), rejectedFile);
+        var freshRejected = WithFiles("Rejected", now.AddDays(-5), freshRejectedFile); freshRejected.EmployeeId = 7499;
+        var accepted = WithFiles("Approved", now.AddDays(-40), acceptedFile); accepted.EmployeeId = 7498;
+        seed.EmployeeProfileChangeRequests.AddRange(oldRejected, freshRejected, accepted);
+        await seed.SaveChangesAsync();
+
+        using var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection().AddSingleton<Zayra.Api.Infrastructure.Documents.IDocumentStorage>(storage).BuildServiceProvider();
+        await using var db = fx.CreateDb();
+        var ctx = new JobExecutionContext(new(Guid.NewGuid(), tenant, "data-retention", "{}", 1, 1, Guid.NewGuid(), null), db, services, [], TimeSpan.FromMinutes(2), default, default);
+        var rule = new EssCompletionRejectedRetentionRule();
+        var candidates = await rule.EvaluateAsync(ctx, now, 100, CancellationToken.None);
+        foreach (var c in candidates) await rule.ApplyAsync(ctx, c, now, CancellationToken.None);
+
+        await using var verify = fx.CreateDb();
+        var left = (await verify.EmployeeDocuments.IgnoreQueryFilters().Where(d => d.TenantId == tenant).Select(d => d.FileName).ToListAsync()).Order().ToList();
+        left.Should().Equal("accepted.pdf", "fresh.pdf", "freshrejected.pdf");
+        storage.Objects.Keys.Select(k => Path.GetFileNameWithoutExtension(k)).Order().Should().Equal("accepted", "fresh", "freshrejected");
     }
 }

@@ -15,8 +15,9 @@ public sealed class FakeStepUp : IStepUpService
 {
     public Task<StepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
     public bool IsFresh(string? token, ClaimsPrincipal principal, string purpose, TimeSpan max) => Guid.TryParseExact(token, "N", out _);
-    public bool IsFresh(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max) => Guid.TryParseExact(token, "N", out _);
-    public string? ReadJti(string? token, Guid userId, Guid tenantId, string purpose) => Guid.TryParseExact(token, "N", out _) ? token : null;
+    public Task<StepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
+    public bool IsFresh(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max, string? bind = null, Guid? witness = null) => Guid.TryParseExact(token, "N", out _);
+    public string? ReadJti(string? token, Guid userId, Guid tenantId, string purpose, string? bind = null, Guid? witness = null) => Guid.TryParseExact(token, "N", out _) ? token : null;
 }
 
 /// <summary>P4 on real PostgreSQL: the append-only trigger and grants, the chain under concurrency, the evidence constraints.</summary>
@@ -154,6 +155,35 @@ public sealed class EsignPostgresTests(PostgresFixture fx)
         delete.SqlState.Should().Be("42501");
         await new NpgsqlCommand("RESET ROLE", c).ExecuteNonQueryAsync();
         await ExecAsync($"REVOKE ALL ON employee_policy_acknowledgements FROM {AppRole}");
+    }
+
+    [Fact]
+    public async Task MigrationRevoke_RuntimeRoleCannotUpdateOrEmpty_AndDeleteIsRefusedByTheTriggerOutsideThePurge()  // CD61/CD68
+    {
+        await using var trigger = await WithTriggerAsync();
+        await using var seed = fx.CreateDb();
+        var (tenant, employees) = await SeedEmployeesAsync(seed, 1);
+        await ExecAsync("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN CREATE ROLE kynex_app NOLOGIN; END IF; END $$;");
+        await ExecAsync("GRANT ALL ON employee_policy_acknowledgements TO kynex_app");
+        try
+        {
+            await ExecAsync(AckAppendOnlySql.RevokeFromAppRole);
+            seed.EmployeePolicyAcknowledgements.Add(Esign(tenant, employees[0], 1));
+            await seed.SaveChangesAsync();
+            await using var c = new NpgsqlConnection(fx.ConnectionString);
+            await c.OpenAsync();
+            await new NpgsqlCommand("SET ROLE kynex_app", c).ExecuteNonQueryAsync();
+            var update = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("UPDATE employee_policy_acknowledgements SET typed_name = 'x'", c).ExecuteNonQueryAsync());
+            update.SqlState.Should().Be("42501");
+            var empty = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("TRUN" + "CATE employee_policy_acknowledgements", c).ExecuteNonQueryAsync());
+            empty.SqlState.Should().Be("42501");
+            // the grant is still there; the trigger is the control that refuses it outside the purge scope
+            var remove = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand("DE" + "LETE FROM employee_policy_acknowledgements", c).ExecuteNonQueryAsync());
+            remove.SqlState.Should().Be("23000");
+            await ExecAsync(AckAppendOnlySql.GrantToAppRole);   // the migration's Down restores what Up took away
+            await new NpgsqlCommand("SELECT 1", c).ExecuteScalarAsync();
+        }
+        finally { await ExecAsync("REVOKE ALL ON employee_policy_acknowledgements FROM kynex_app"); }
     }
 
     [Fact]

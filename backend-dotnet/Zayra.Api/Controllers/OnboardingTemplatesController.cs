@@ -543,6 +543,10 @@ public class OnboardingTemplatesController : ControllerBase
             if (!ok) return Fail(422, "invalid_reference");
             task.EvidenceDocumentId = doc;
         }
+        // Skipping a task that holds back activation is a decision someone must be able to explain later.
+        var skipReason = request.Note?.Trim() ?? string.Empty;
+        var skipping = request.Status == "Skipped" && task.Status != "Skipped";
+        if (skipping && task.BlocksActivation && skipReason.Length < 5) return Fail(422, "skip_reason_required");
         if (request.Note is not null) task.Notes = request.Note.Length > 2000 ? request.Note[..2000] : request.Note;
         if (request.Status is not null && request.Status != task.Status)
         {
@@ -557,6 +561,8 @@ public class OnboardingTemplatesController : ControllerBase
         task.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("onboarding_task_updated", "OnboardingTask", id.ToString(), Ctx(), JsonSerializer.Serialize(new { status = task.Status }), ct);
+        if (skipping && task.BlocksActivation)
+            await _audit.WriteAsync("onboarding_task_skipped", "OnboardingTask", id.ToString(), Ctx(), JsonSerializer.Serialize(new { reason = skipReason.Length > 500 ? skipReason[..500] : skipReason, employeeId = row.EmployeeId }), ct);
         return Ok(new { taskId = task.Id, status = task.Status, dueDate = task.DueDate, evidenceDocumentId = task.EvidenceDocumentId });
     }
 

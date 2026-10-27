@@ -73,7 +73,7 @@ public sealed class EsignFixture : IAsyncLifetime
             services.AddDbContext<ZayraDbContext>(o => o.UseSqlite(connection)
                 .ConfigureWarnings(w => w.Ignore(CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
             services.ConfigureAll<HttpClientFactoryOptions>(o => o.HttpMessageHandlerBuilderActions.Add(b => b.AdditionalHandlers.Add(new RecordingHandler())));
-        });
+        }, hostSettings: new Dictionary<string, string?> { ["RateLimit:EsignDevicePermitLimit"] = "1000" });   // the per-HR-user limiter is not what these tests probe; the device flow has its own counter
         _client = Host.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
         using var scope = Host.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();

@@ -56,8 +56,9 @@ public sealed record EsignSignBody(string? DocumentSha256, string? ConsentVersio
 /// <summary>The consent statement the signer sees, in both languages, versioned. Changing the wording means a new version.</summary>
 public static class ConsentCatalog
 {
-    public const string Current = "ack-1";
+    public const string Current = "ack-2";
 
+    // ack-1 is kept word for word so that a record that carries it can still be shown with what it agreed to. It can no longer be signed.
     private const string EnV1 =
         "I confirm that I have read and understood the document above in full. By typing my full name and confirming with my password, " +
         "I electronically acknowledge it. This is an electronic acknowledgement, not a qualified electronic signature.";
@@ -65,13 +66,35 @@ public static class ConsentCatalog
         "أقرّ بأنني قرأت المستند أعلاه وفهمته بالكامل. بكتابة اسمي الكامل وتأكيد كلمة المرور، أُقرّ به إلكترونياً. " +
         "هذا إقرار إلكتروني وليس توقيعاً إلكترونياً مؤهلاً.";
 
+    // ack-2 (CD64): says what is recorded (the evidence stores the IP address and the browser/device string, which are personal data) and
+    // uses «معتمدًا», the Saudi term, instead of the EU borrowing «مؤهلًا».
+    private const string EnV2 =
+        "I confirm that I have read and understood the document above in full. By typing my full name and confirming with my password, " +
+        "I electronically acknowledge it. This is an electronic acknowledgement, not a qualified electronic signature. " +
+        "We record your typed name, the time, your IP address and your device details (browser and device type) as evidence of this acknowledgement " +
+        "and keep them for the period set by your company.";
+    private const string ArV2 =
+        "أقرّ بأنني قرأت المستند أعلاه وفهمته بالكامل. بكتابة اسمي الكامل وتأكيد كلمة المرور، أُقرّ به إلكترونيًا. " +
+        "هذا إقرار إلكتروني وليس توقيعًا إلكترونيًا معتمدًا. " +
+        "نسجّل اسمك المكتوب والوقت وعنوان IP وبيانات جهازك (المتصفح ونوع الجهاز) كدليل على هذا الإقرار، ونحتفظ بها للمدة التي تحددها شركتك.";
+
+    /// <summary>Only the current version can be signed.</summary>
     public static bool IsKnown(string? version) => string.Equals(version, Current, StringComparison.Ordinal);
 
     public static string Text(string version, string language)
     {
-        if (!IsKnown(version)) throw new ArgumentOutOfRangeException(nameof(version));
-        return string.Equals(language, "ar", StringComparison.OrdinalIgnoreCase) ? ArV1 : EnV1;
+        var arabic = string.Equals(language, "ar", StringComparison.OrdinalIgnoreCase);
+        return version switch
+        {
+            "ack-1" => arabic ? ArV1 : EnV1,
+            "ack-2" => arabic ? ArV2 : EnV2,
+            _ => throw new ArgumentOutOfRangeException(nameof(version)),
+        };
     }
+
+    /// <summary>The order the two texts are shown in: the reader's language first, so an Arabic session reads Arabic first.</summary>
+    public static IReadOnlyList<string> Order(string? language) =>
+        string.Equals(language, "ar", StringComparison.OrdinalIgnoreCase) ? ["ar", "en"] : ["en", "ar"];
 
     /// <summary>SHA-256 over the exact text of BOTH languages (EN then AR, newline separated): what the signer agreed to is fixed by one hash.</summary>
     public static string TextSha256(string version) =>

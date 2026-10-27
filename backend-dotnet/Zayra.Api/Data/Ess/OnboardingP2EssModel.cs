@@ -11,6 +11,7 @@ namespace Zayra.Api.Data.Ess;
 public static class OnboardingP2EssModel
 {
     public const string SectionPendingIndex = "ix_epcr_section_pending";
+    public const string StepUpJtiIndex = "ux_epcr_step_up_jti";
     public const string InboxIndex = "ix_epcr_inbox";
     public const string SectionCheck = "ck_epcr__section";
     public const string ScanStatusCheck = "ck_employee_documents__scan_status";
@@ -30,6 +31,8 @@ public static class OnboardingP2EssModel
                   .HasDatabaseName(SectionPendingIndex)
                   .IsUnique()
                   .HasFilter("status = 'PendingHR' AND section IS NOT NULL");
+            // A step-up token opens one submission: the ledger is the column itself.
+            entity.HasIndex(x => x.StepUpJti).HasDatabaseName(StepUpJtiIndex).IsUnique().HasFilter("step_up_jti IS NOT NULL");
             // Serves the HR inbox query.
             entity.HasIndex(x => new { x.TenantId, x.Status, x.CreatedAtUtc })
                   .HasDatabaseName(InboxIndex)
@@ -43,8 +46,8 @@ public static class OnboardingP2EssModel
         modelBuilder.Entity<EmployeeDocument>(entity =>
         {
             entity.ToTable("employee_documents", t =>
-                t.HasCheckConstraint(ScanStatusCheck, "scan_status IN ('Clean','PendingScan','Quarantined')"));
-            entity.Property(x => x.ScanStatus).HasMaxLength(12).HasDefaultValue("Clean").IsRequired();
+                t.HasCheckConstraint(ScanStatusCheck, "scan_status IN ('clean','not_scanned_trusted_source','quarantined','quarantined_pending')"));
+            entity.Property(x => x.ScanStatus).HasMaxLength(32).HasDefaultValue("clean").IsRequired();
             entity.Property(x => x.SourceSection).HasMaxLength(24);
         });
     }

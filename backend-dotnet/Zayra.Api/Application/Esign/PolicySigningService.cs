@@ -29,6 +29,8 @@ public sealed record VerifyOutcome(bool Found, bool Valid, bool DocumentIntact, 
 /// </summary>
 public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage storage, IStepUpService stepUp, PdfRenderGate? gate = null, Func<DateTime>? clock = null)
 {
+    public static string DeviceBinding(int employeeId, Guid documentId, string sha256) => $"{employeeId}:{documentId:N}:{sha256.ToLowerInvariant()}";
+
     private DateTime Now() => SignatureChain.ToMicroseconds((clock ?? (() => DateTime.UtcNow))());
 
     private static SignOutcome Fail(int status, string code, Guid? ackId = null) => new(status, code, ackId, null, null, null, null);
@@ -37,7 +39,7 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
     {
         var tenant = c.TenantId;
         var doc = await db.EmployeeDocuments.AsNoTracking().FirstOrDefaultAsync(d => d.TenantId == tenant && d.Id == c.DocumentId && d.EmployeeId == c.EmployeeId
-            && !d.IsDeleted && d.SignatureRequiredAtUtc != null && d.ScanStatus == "Clean", ct);
+            && !d.IsDeleted && d.SignatureRequiredAtUtc != null && (d.ScanStatus == ScanStatuses.Clean || d.ScanStatus == ScanStatuses.NotScannedTrustedSource), ct);
         var employee = doc is null ? null : await db.Employees.AsNoTracking().FirstOrDefaultAsync(e => e.TenantId == tenant && e.Id == c.EmployeeId && !e.IsDeleted, ct);
         if (doc is null || employee is null) return Fail(404, EsignProblemCodes.NotFound);
 
@@ -55,8 +57,10 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException) { return Fail(404, EsignProblemCodes.NotFound); }
         var sha = SignatureChain.Sha256Hex(bytes);
 
-        var jtiText = stepUp.ReadJti(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign);
-        var fresh = stepUp.IsFresh(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge) && Guid.TryParseExact(jtiText, "N", out _);
+        // An HR-device token was issued for exactly this employee, this document and these bytes, to this HR user.
+        var bind = c.WitnessUserId is null ? null : DeviceBinding(c.EmployeeId, c.DocumentId, sha);
+        var jtiText = stepUp.ReadJti(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign, bind, c.WitnessUserId);
+        var fresh = stepUp.IsFresh(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge, bind, c.WitnessUserId) && Guid.TryParseExact(jtiText, "N", out _);
         var refusal = ClickSignGuard.Evaluate(new ClickSignFacts(sha, c.Body.DocumentSha256, c.SignerUserId, c.EmployeeUserId, fresh, c.Body.ConsentVersion, c.Body.TypedName,
             [employee.EnglishName, employee.ArabicName, employee.FullName], doc.IntegrityFlaggedAtUtc is not null, false));
         if (refusal is not null) return Fail(refusal.Status, refusal.Code);
@@ -157,8 +161,12 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
         else
         {
             var before = await db.EmployeePolicyAcknowledgements.AsNoTracking().FirstOrDefaultAsync(a => a.TenantId == tenantId && a.ChainSeq == ack.ChainSeq - 1 && a.Method != EsignConstants.MethodLegacy, ct);
-            chainIntact = recordValid && before is not null && ack.PrevHash == before.RecordHash
-                && SignatureChain.IsRecordValid(before.PrevHash!, before.RecordHash!, EvidenceOf(before));
+            if (before is not null)
+                chainIntact = recordValid && ack.PrevHash == before.RecordHash && SignatureChain.IsRecordValid(before.PrevHash!, before.RecordHash!, EvidenceOf(before));
+            else
+                // The predecessor is gone. That is expected only when the retention purge removed it and left its marker; any other absence is a break.
+                chainIntact = recordValid && await db.EmployeeSelfServiceAuditLogs.AsNoTracking().AnyAsync(l => l.TenantId == tenantId
+                    && l.Action == Zayra.Api.Infrastructure.Retention.Rules.EsignEvidenceRetentionRule.PurgeMarkerAction && l.EntityId == ack.PrevHash, ct);
         }
 
         var doc = await db.EmployeeDocuments.FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == ack.PolicyId, ct);
@@ -171,11 +179,15 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
         if (!documentIntact || !chainIntact)
         {
             if (doc is not null && doc.IntegrityFlaggedAtUtc is null && !documentIntact) doc.IntegrityFlaggedAtUtc = checkedAt;
-            db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
-            {
-                TenantId = tenantId, EmployeeId = ack.EmployeeId, Action = documentIntact ? "esign.chain_failed" : "esign.integrity_failed", EntityName = "EmployeePolicyAcknowledgement", EntityId = ack.Id.ToString(),
-            });
-            await db.SaveChangesAsync(ct);
+            // Asking again must not write again: one alarm per record and kind, however often the page is opened.
+            var action = documentIntact ? "esign.chain_failed" : "esign.integrity_failed";
+            var already = await db.EmployeeSelfServiceAuditLogs.AsNoTracking().AnyAsync(l => l.TenantId == tenantId && l.Action == action && l.EntityId == ack.Id.ToString(), ct);
+            if (!already)
+                db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
+                {
+                    TenantId = tenantId, EmployeeId = ack.EmployeeId, Action = action, EntityName = "EmployeePolicyAcknowledgement", EntityId = ack.Id.ToString(),
+                });
+            if (!already || db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(ct);
         }
         return new VerifyOutcome(true, recordValid && documentIntact && chainIntact, documentIntact, chainIntact, ack.RecordHash, checkedAt, ack.PolicyId);
     }

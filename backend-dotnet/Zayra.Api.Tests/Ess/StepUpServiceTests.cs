@@ -87,4 +87,21 @@ public class StepUpServiceTests
         StepUpPurposes.EsignMaxAge.Should().Be(TimeSpan.FromMinutes(5));
         StepUpPurposes.IsKnown("anything").Should().BeFalse();
     }
+
+    [Fact]
+    public void DeviceToken_IsBoundToItsBindingAndWitness_AndNothingElse()  // CD60
+    {
+        var hr = Guid.NewGuid();
+        var svc = Service(() => T0);
+        var bound = svc.Issue(User, Tenant, StepUpPurposes.Esign, T0, bind: "7:doc-a:abc", witness: hr);
+        svc.IsFresh(bound, User, Tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge, "7:doc-a:abc", hr).Should().BeTrue();
+        svc.IsFresh(bound, User, Tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge, "7:doc-b:abc", hr).Should().BeFalse("another document");
+        svc.IsFresh(bound, User, Tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge, "7:doc-a:abd", hr).Should().BeFalse("another hash");
+        svc.IsFresh(bound, User, Tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge, "7:doc-a:abc", Guid.NewGuid()).Should().BeFalse("another HR user");
+        svc.IsFresh(bound, User, Tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge).Should().BeFalse("a device token is not a self-service token");
+        var plain = svc.Issue(User, Tenant, StepUpPurposes.Esign, T0);
+        svc.IsFresh(plain, User, Tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge, "7:doc-a:abc", hr).Should().BeFalse("a self-service token cannot open a device signature");
+        svc.ReadJti(bound, User, Tenant, StepUpPurposes.Esign, "7:doc-b:abc", hr).Should().BeNull();
+        svc.ReadJti(bound, User, Tenant, StepUpPurposes.Esign, "7:doc-a:abc", hr).Should().NotBeNullOrEmpty();
+    }
 }

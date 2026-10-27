@@ -37,7 +37,13 @@ public sealed class StepUpService : IStepUpService
         _key = HKDF.DeriveKey(HashAlgorithmName.SHA256, Encoding.UTF8.GetBytes(secret), 32, info: Encoding.UTF8.GetBytes(KeyLabel));
     }
 
-    public async Task<StepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct)
+    public Task<StepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct) =>
+        VerifyCoreAsync(userId, purpose, credential, null, null, countFailures: true, ct);
+
+    public Task<StepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct) =>
+        VerifyCoreAsync(employeeUserId, StepUpPurposes.Esign, credential, bind, witnessUserId, countFailures: false, ct);
+
+    private async Task<StepUpResult> VerifyCoreAsync(Guid userId, string purpose, StepUpCredential credential, string? bind, Guid? witness, bool countFailures, CancellationToken ct)
     {
         if (!StepUpPurposes.IsKnown(purpose)) return new(false, null, null, "unknown_purpose");
         var now = _clock();
@@ -61,17 +67,20 @@ public sealed class StepUpService : IStepUpService
         }
         if (!passwordOk)
         {
-            // The same counter and the same lockout as sign-in: this endpoint is not a cheaper way to guess a password.
-            user.FailedLoginCount++;
-            if (user.FailedLoginCount >= maxAttempts) { user.IsLocked = true; user.LockoutEnd = now.AddMinutes(lockoutMinutes); }
-            await _db.SaveChangesAsync(ct);
+            if (countFailures)
+            {
+                // The same counter and the same lockout as sign-in: this endpoint is not a cheaper way to guess a password.
+                user.FailedLoginCount++;
+                if (user.FailedLoginCount >= maxAttempts) { user.IsLocked = true; user.LockoutEnd = now.AddMinutes(lockoutMinutes); }
+                await _db.SaveChangesAsync(ct);
+            }
             return new(false, null, null, EssProblemCodes.InvalidCredentials);
         }
-        user.FailedLoginCount = 0;
+        if (countFailures) user.FailedLoginCount = 0;
         if (step is not null) user.MfaLastTotpStep = step;
         await _db.SaveChangesAsync(ct);
         var max = purpose == StepUpPurposes.Esign ? StepUpPurposes.EsignMaxAge : StepUpPurposes.EssSensitiveMaxAge;
-        return new(true, Issue(user.Id, user.TenantId, purpose, now), now.Add(max), null);
+        return new(true, Issue(user.Id, user.TenantId, purpose, now, bind, witness), now.Add(max), null);
     }
 
     public bool IsFresh(string? token, ClaimsPrincipal principal, string purpose, TimeSpan max)
@@ -81,19 +90,20 @@ public sealed class StepUpService : IStepUpService
             && IsFresh(token, userId, tenantId, purpose, max);
     }
 
-    public bool IsFresh(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max) => Read(token, userId, tenantId, purpose, max) is not null;
+    public bool IsFresh(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max, string? bind = null, Guid? witness = null) =>
+        Read(token, userId, tenantId, purpose, max, bind, witness) is not null;
 
-    public string? ReadJti(string? token, Guid userId, Guid tenantId, string purpose) =>
-        Read(token, userId, tenantId, purpose, TimeSpan.FromHours(1))?.Jti;
+    public string? ReadJti(string? token, Guid userId, Guid tenantId, string purpose, string? bind = null, Guid? witness = null) =>
+        Read(token, userId, tenantId, purpose, TimeSpan.FromHours(1), bind, witness)?.Jti;
 
-    internal string Issue(Guid userId, Guid tenantId, string purpose, DateTime nowUtc, string? bind = null)
+    internal string Issue(Guid userId, Guid tenantId, string purpose, DateTime nowUtc, string? bind = null, Guid? witness = null)
     {
-        var payload = JsonSerializer.SerializeToUtf8Bytes(new Payload(userId, tenantId, purpose, new DateTimeOffset(DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc)).ToUnixTimeSeconds(), Guid.NewGuid().ToString("N"), bind), Json);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new Payload(userId, tenantId, purpose, new DateTimeOffset(DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc)).ToUnixTimeSeconds(), Guid.NewGuid().ToString("N"), bind, witness), Json);
         var body = Base64Url(payload);
         return body + "." + Base64Url(HMACSHA256.HashData(_key, Encoding.ASCII.GetBytes(body)));
     }
 
-    private Payload? Read(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max)
+    private Payload? Read(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max, string? bind = null, Guid? witness = null)
     {
         if (string.IsNullOrWhiteSpace(token) || token.Length > 1024) return null;
         var parts = token.Split('.');
@@ -104,13 +114,15 @@ public sealed class StepUpService : IStepUpService
             if (!CryptographicOperations.FixedTimeEquals(expected, FromBase64Url(parts[1]))) return null;
             var p = JsonSerializer.Deserialize<Payload>(FromBase64Url(parts[0]), Json);
             if (p is null || p.Sub != userId || p.Tenant != tenantId || !string.Equals(p.Purpose, purpose, StringComparison.Ordinal)) return null;
+            // A bound token opens only the thing it was bound to, for the HR user it was issued to; an unbound one can never open a bound thing.
+            if (!string.Equals(p.Bind, bind, StringComparison.Ordinal) || p.Wit != witness) return null;
             var age = _clock() - DateTimeOffset.FromUnixTimeSeconds(p.Iat).UtcDateTime;
             return age >= -Skew && age <= max ? p : null;
         }
         catch (Exception ex) when (ex is FormatException or JsonException or ArgumentException) { return null; }
     }
 
-    private sealed record Payload(Guid Sub, Guid Tenant, string Purpose, long Iat, string Jti, string? Bind);
+    private sealed record Payload(Guid Sub, Guid Tenant, string Purpose, long Iat, string Jti, string? Bind, Guid? Wit = null);
 
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     private static byte[] FromBase64Url(string s)

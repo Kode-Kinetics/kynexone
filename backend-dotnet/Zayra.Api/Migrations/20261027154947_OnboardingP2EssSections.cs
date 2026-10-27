@@ -38,13 +38,19 @@ namespace Zayra.Api.Migrations
                 type: "timestamp with time zone",
                 nullable: true);
 
+            migrationBuilder.AddColumn<Guid>(
+                name: "step_up_jti",
+                table: "employee_profile_change_requests",
+                type: "uuid",
+                nullable: true);
+
             migrationBuilder.AddColumn<string>(
                 name: "scan_status",
                 table: "employee_documents",
-                type: "character varying(12)",
-                maxLength: 12,
+                type: "character varying(32)",
+                maxLength: 32,
                 nullable: false,
-                defaultValue: "Clean");
+                defaultValue: "clean");
 
             migrationBuilder.AddColumn<string>(
                 name: "source_section",
@@ -68,6 +74,13 @@ namespace Zayra.Api.Migrations
                 filter: "status = 'PendingHR'");
 
             migrationBuilder.CreateIndex(
+                name: "ux_epcr_step_up_jti",
+                table: "employee_profile_change_requests",
+                column: "step_up_jti",
+                unique: true,
+                filter: "step_up_jti IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
                 name: "ix_epcr_section_pending",
                 table: "employee_profile_change_requests",
                 columns: new[] { "tenant_id", "employee_id", "section" },
@@ -82,7 +95,7 @@ namespace Zayra.Api.Migrations
             migrationBuilder.AddCheckConstraint(
                 name: "ck_employee_documents__scan_status",
                 table: "employee_documents",
-                sql: "scan_status IN ('Clean','PendingScan','Quarantined')");
+                sql: "scan_status IN ('clean','not_scanned_trusted_source','quarantined','quarantined_pending')");
         }
 
         /// <inheritdoc />
@@ -94,6 +107,10 @@ namespace Zayra.Api.Migrations
 
             migrationBuilder.DropIndex(
                 name: "ix_epcr_section_pending",
+                table: "employee_profile_change_requests");
+
+            migrationBuilder.DropIndex(
+                name: "ux_epcr_step_up_jti",
                 table: "employee_profile_change_requests");
 
             migrationBuilder.DropCheckConstraint(
@@ -118,6 +135,10 @@ namespace Zayra.Api.Migrations
 
             migrationBuilder.DropColumn(
                 name: "step_up_at_utc",
+                table: "employee_profile_change_requests");
+
+            migrationBuilder.DropColumn(
+                name: "step_up_jti",
                 table: "employee_profile_change_requests");
 
             migrationBuilder.DropColumn(
