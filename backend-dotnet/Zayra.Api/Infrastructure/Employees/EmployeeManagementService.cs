@@ -1535,7 +1535,24 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.PreferredName = Clean(request.PreferredName);
         employee.Gender = Clean(request.Gender);
         employee.DateOfBirth = request.DateOfBirth;
-        employee.Nationality = Clean(request.Nationality);
+        // CD67: a draft autosave that does not mention nationality (neither the code nor the text) is silent, not an instruction
+        // to clear it. Anywhere else a blank request still clears, as before.
+        var natGiven = !string.IsNullOrWhiteSpace(request.NationalityCode) || !string.IsNullOrWhiteSpace(request.Nationality);
+        if (natGiven || !string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase))
+        {
+            employee.Nationality = Clean(request.Nationality);
+            if (!string.IsNullOrWhiteSpace(request.NationalityCode))
+            {
+                var picked = Zayra.Api.Application.Employees.Onboarding.NationalityCatalog.FindByIso2(request.NationalityCode);
+                if (picked is not null) { employee.NationalityCode = picked.Iso2; employee.NationalityMappingState = NationalityMappingStates.Confirmed; }
+            }
+            else if (employee.NationalityCode is not null
+                && !string.Equals(Zayra.Api.Application.Employees.Onboarding.NationalityCatalog.FindByIso2(employee.NationalityCode)?.NameEn, employee.Nationality, StringComparison.OrdinalIgnoreCase))
+            {
+                // The text was changed on its own: the stored code no longer describes it.
+                employee.NationalityCode = null; employee.NationalityMappingState = NationalityMappingStates.Unset;
+            }
+        }
         employee.MaritalStatus = Clean(request.MaritalStatus);
         employee.PersonalEmail = Clean(request.PersonalEmail);
         employee.WorkEmail = Clean(request.WorkEmail);

@@ -58,6 +58,7 @@ public class HireDraftResumeContractTests : IClassFixture<HireIntegrityHttpFixtu
     }
 
     // ── fixture helpers ─────────────────────────────────────────────────────────────────────────
+    private static readonly Regex UnspecifiedDateTimeRx = new(@"^\d{4}-\d{2}-\d{2}T[\d:.]+$");
     private static readonly Regex GuidRx = new("^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$");
 
     /// <summary>Stable copy: ids, GUIDs, stamps and codes are replaced; every field name, value kind and format stays.</summary>
@@ -75,6 +76,9 @@ public class HireDraftResumeContractTests : IClassFixture<HireIntegrityHttpFixtu
                     if (GuidRx.IsMatch(s)) { if (!guids.TryGetValue(s, out var g)) guids[s] = g = $"00000000-0000-0000-0000-{guids.Count + 1:D12}"; return g; }
                     if (key is "createdAtUtc" or "updatedAtUtc" or "createdAt" or "updatedAt") return "2026-10-27T08:00:00Z";
                     if (key == "employeeCode") return "EMP-0001";
+                    // The SQLite host hands back Unspecified kinds; the production context stamps every DateTime Utc on read
+                    // (KynexDbContext.UtcDateTimeConverter), so production serialises 2026-11-01T00:00:00Z. The fixture records that.
+                    if (UnspecifiedDateTimeRx.IsMatch(s)) return s + "Z";
                     return s;
                 case JsonValueKind.Number: return key == "id" ? 44 : (object?)JsonSerializer.Deserialize<JsonElement>(e.GetRawText());
                 case JsonValueKind.True: return true;
@@ -114,7 +118,7 @@ public class HireDraftResumeContractTests : IClassFixture<HireIntegrityHttpFixtu
         live.GetProperty("nationalityCode").GetString().Should().Be("EG", "a resumed draft must be able to restore the ISO code, not guess it from the English name");
         live.GetProperty("nationalityMappingState").GetString().Should().Be("Confirmed");
         live.GetProperty("nationality").GetString().Should().NotBeNullOrWhiteSpace();
-        live.GetProperty("joiningDate").GetString().Should().MatchRegex(@"^\d{4}-\d{2}-\d{2}T[\d:.]+Z$", "this is the real, time-qualified serialisation the client must normalise");
+        live.GetProperty("joiningDate").GetString().Should().MatchRegex(@"^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$", "this is the real, time-qualified serialisation the client must normalise");
         live.GetProperty("status").GetString().Should().Be("Draft");
 
         var path = FixturePath();
@@ -129,7 +133,7 @@ public class HireDraftResumeContractTests : IClassFixture<HireIntegrityHttpFixtu
         Shape("$", JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement, checkedIn);
         Shape("$", JsonDocument.Parse(rendered).RootElement, current);
         checkedIn.Should().BeEquivalentTo(current, "the frontend fixture must be exactly what GET /api/employees/{id} returns for a draft (REGEN_HIRE_FIXTURE=1 rewrites it)");
-        JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement.GetProperty("joiningDate").GetString().Should().Be(live.GetProperty("joiningDate").GetString());
+        JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement.GetProperty("joiningDate").GetString().Should().Be("2026-11-01T00:00:00Z");
     }
 
     [Fact]

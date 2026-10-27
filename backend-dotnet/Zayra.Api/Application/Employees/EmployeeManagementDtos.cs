@@ -178,6 +178,10 @@ public record EmployeeDetailDto
     public DateOnly? DateOfBirth { get; init; }
     public string MaritalStatus { get; init; } = string.Empty;
     public string Nationality { get; init; } = string.Empty;
+    /// <summary>ISO 3166 alpha-2 nationality (null until one is chosen). A resumed draft restores the picker from this, not from the English name.</summary>
+    public string? NationalityCode { get; init; }
+    /// <summary>Unset | Confirmed | ProposedAuto | Unresolved.</summary>
+    public string NationalityMappingState { get; init; } = string.Empty;
     public string CountryCode { get; init; } = string.Empty;
     public string EmergencyContactName { get; init; } = string.Empty;
     public string EmergencyContactPhone { get; init; } = string.Empty;
@@ -319,6 +323,8 @@ public record EmployeeDetailDto
             DateOfBirth                   = e.DateOfBirth,
             MaritalStatus                 = e.MaritalStatus,
             Nationality                   = e.Nationality,
+            NationalityCode               = e.NationalityCode,
+            NationalityMappingState       = e.NationalityMappingState,
             CountryCode                   = e.CountryCode,
             EmergencyContactName          = e.EmergencyContactName,
             EmergencyContactPhone         = e.EmergencyContactPhone,
