@@ -172,7 +172,8 @@ public static class CompensationApprovalGate
         ResolvedReadinessPolicy policy, CancellationToken ct)
     {
         var readiness = evaluator.Evaluate(snapshot, policy);
-        if (await IsOpenAsync(db, tenantId, snapshot.EmployeeId, ct) || await HasDriftedFromApprovalAsync(db, tenantId, snapshot.EmployeeId, ct))
+        if (await IsOpenAsync(db, tenantId, snapshot.EmployeeId, ct) || await HasDriftedFromApprovalAsync(db, tenantId, snapshot.EmployeeId, ct)
+            || await CarriesUnapprovedPayAsync(db, tenantId, snapshot.EmployeeId, ct))
         {
             var blocker = new ReadinessItem(
                 Key: GapType, Label: "Pay package awaiting Finance approval", Category: "pay", Reason: "statutory",
@@ -181,6 +182,19 @@ public static class CompensationApprovalGate
         }
         if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
         return readiness;
+    }
+
+    /// <summary>
+    /// True when the live package carries pay (basic salary, an allowance, a salary or a bank account) and nobody has ever approved
+    /// one. Whatever wrote the figures (a payroll salary-structure assignment, a bank-profile sync, a path with no hook), the second
+    /// person is still required before the hire can be paid. A legacy approval has nothing to compare against and is not re-asked.
+    /// </summary>
+    public static async Task<bool> CarriesUnapprovedPayAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        if (await ApprovedFingerprintAsync(db, tenantId, employeeId, ct) != NoApproval) return false;
+        var p = await LivePackageAsync(db, tenantId, employeeId, ct);
+        return CarriesCompensation(p.Salary, p.Iban, p.AccountNumber)
+            || p.Basic > 0m || p.Housing > 0m || p.Transport > 0m || p.Food > 0m || p.Mobile > 0m || p.Other > 0m;
     }
 
     /// <summary>True when Finance approved a specific package and the stored one is no longer it (a write that bypassed every hook).</summary>

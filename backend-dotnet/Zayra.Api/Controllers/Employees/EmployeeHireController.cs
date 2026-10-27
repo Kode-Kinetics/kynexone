@@ -196,7 +196,7 @@ public sealed class EmployeeHireController : ControllerBase
         if (evaluated is null) return NotFound();
         var readiness = evaluated.Value.Readiness;
         var blockers = readiness.Blocking.Select(i => new { key = i.Key, label = i.Label }).ToList();
-        if (await CompensationApprovalGate.IsOpenAsync(_db, tenantId, id, ct))
+        if (await CompensationApprovalGate.IsOpenAsync(_db, tenantId, id, ct) || await CompensationApprovalGate.CarriesUnapprovedPayAsync(_db, tenantId, id, ct))
             blockers.Add(new { key = CompensationApprovalGate.GapType, label = "Pay package awaiting Finance approval" });
         return Ok(new
         {
