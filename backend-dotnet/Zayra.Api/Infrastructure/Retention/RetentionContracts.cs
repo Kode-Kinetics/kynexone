@@ -29,9 +29,12 @@ public static class RetentionRuleKeys
     /// <summary>P2: an ESS profile-section submission HR sent back and the employee never corrected for 30 days: its values are cleared.</summary>
     public const string EssCompletionRejectedExpired = "ess.completion-rejected-expired";
 
+    /// <summary>P4: click-to-sign evidence (the acknowledgement and its certificate) of a person who left more than 10 years ago (CD52).</summary>
+    public const string EsignEvidenceExpired = "esign.evidence-expired";
+
     public static readonly IReadOnlyList<string> All =
         [EmployeeRetentionExpired, RefreshTokenExpired, SoftDeletedTenantExpired, EngagementFreeTextExpired, SuccessionPostEmployment,
-         CompanySetupDraftIdle, MfaTrustedDeviceExpired, EssCompletionRejectedExpired];
+         CompanySetupDraftIdle, MfaTrustedDeviceExpired, EssCompletionRejectedExpired, EsignEvidenceExpired];
 }
 
 /// <summary>

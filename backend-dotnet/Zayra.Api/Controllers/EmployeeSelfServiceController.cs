@@ -1487,6 +1487,7 @@ public class EmployeeSelfServiceController : ControllerBase
         if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
         // Only a document GET policies would show this caller; anything else is 404, never 403.
         if (!await OwnPolicyDocuments(tenantId, employeeId).AnyAsync(x => x.Id == id, cancellationToken)) return NotFound();
+        if (await Zayra.Api.Application.Esign.PolicySigningGate.RefusalAsync(_db, tenantId, id, cancellationToken) is { } signatureRequired) return Conflict(signatureRequired);   // P4
         var existing = await _db.EmployeePolicyAcknowledgements.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.PolicyId == id, cancellationToken);
         if (existing is not null) return Ok(existing);
         var ack = new EmployeePolicyAcknowledgement { TenantId = tenantId, EmployeeId = employeeId, PolicyId = id, UserId = GetUserId() };

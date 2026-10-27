@@ -180,6 +180,26 @@ public class EmployeePolicyAcknowledgement : ITenantOwned
     public Guid PolicyId { get; set; }
     public DateTime AcknowledgedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UserId { get; set; }
+    // P4 (click-to-sign): all NULL / legacy_click for rows written before the migration. Server-derived only; the row is append-only (trigger).
+    public string Method { get; set; } = "legacy_click";
+    public string? DocumentSha256 { get; set; }
+    public int? DocumentVersion { get; set; }
+    public string? ConsentVersion { get; set; }
+    public string? ConsentTextSha256 { get; set; }
+    public string? TypedName { get; set; }
+    public string? IpAddress { get; set; }
+    public string? UserAgent { get; set; }
+    public string? DeviceId { get; set; }
+    public string? Language { get; set; }
+    public string? AuthMethod { get; set; }
+    public DateTime? StepUpAtUtc { get; set; }
+    public Guid? StepUpJti { get; set; }
+    /// <summary>The HR user who held the device when the employee signed on it; null for a self-service signature.</summary>
+    public Guid? WitnessUserId { get; set; }
+    public Guid? CertificateDocumentId { get; set; }
+    public long? ChainSeq { get; set; }
+    public string? PrevHash { get; set; }
+    public string? RecordHash { get; set; }
 }
 
 public class EmployeeAnnouncement : ITenantOwned

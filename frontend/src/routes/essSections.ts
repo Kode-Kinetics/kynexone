@@ -85,6 +85,8 @@ export const ESS_SECTIONS: EssSection[] = [
     icon: Inbox,
     pages: [
       { label: 'My HR Requests', tab: 'HR requests', path: '/ess/requests', hint: 'Ask HR for something, follow your requests, and reply to HR on each one.' },
+      // P4: contracts and policies HR asked the employee to acknowledge with a typed name and their password.
+      { label: 'Documents to sign', tab: 'To sign', path: '/ess/sign', hint: 'Contracts and policies HR asked you to read and acknowledge.' },
       { label: 'My letters', tab: 'Letters', path: ESS_DOCUMENTS_PATH, hint: 'Ask HR for a salary certificate or another letter, and download it once issued.' },
       // A Saudi exit and re-entry visa (Jawazat): meaningless to a company outside the Kingdom.
       { label: 'Jawazat Requests', tab: 'Exit and re-entry visa', path: ESS_JAWAZAT_PATH, hint: 'Exit and re-entry requests, internal review and travel notifications.', countries: ['SA'] },

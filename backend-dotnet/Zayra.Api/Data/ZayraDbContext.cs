@@ -5640,6 +5640,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         CostAccountingModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
         // P2 — ESS profile completion sections (migration OnboardingP2EssSections).
         Zayra.Api.Data.Ess.OnboardingP2EssModel.Configure(modelBuilder);
+        // P4 — click-to-sign acknowledgement (migration OnboardingP4Acknowledgements; trigger SQL in Data/Esign/AckAppendOnlySql.cs).
+        Zayra.Api.Data.Esign.OnboardingP4EsignModel.Configure(modelBuilder);
 
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);

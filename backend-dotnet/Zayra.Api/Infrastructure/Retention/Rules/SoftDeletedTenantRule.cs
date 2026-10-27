@@ -224,6 +224,9 @@ public sealed class SoftDeletedTenantRule : IRetentionRule
             ?? throw new InvalidOperationException(
                 "The tenant erasure must run inside the job runner's per-item transaction; none is open.");
 
+        // Acknowledgement evidence is append-only; this erasure is one of the two things allowed to delete it (transaction-local).
+        await RetentionPurgeScope.EnableInCurrentTransactionAsync(ctx.Db, ct);
+
         var failures = new List<string>();
         // Two passes: a dependent that blocks its parent on pass 1 is usually gone by pass 2. The manual
         // purge uses the same shape; the difference is what happens when pass 2 still fails.
