@@ -431,6 +431,10 @@ public class GlJournalExportsController : ControllerBase
                 message = "An ERP document number is required: it is the evidence that the journal was imported. "
                         + "A status with no artifact behind it is what this endpoint exists to replace.",
             });
+        if (reference.Length > ErpDocumentNumberMax)
+            return TextTooLong("erp_document_number_too_long", "The ERP document number", ErpDocumentNumberMax, "رقم مستند الـ ERP");
+        if (req.Notes is { Length: > ErpNotesMax })
+            return TextTooLong("notes_too_long", "The notes", ErpNotesMax, "الملاحظات");
 
         if (export.Status == GlJournalExportStatuses.Confirmed)
             return string.Equals(export.ErpDocumentNumber, reference, StringComparison.OrdinalIgnoreCase)
@@ -544,6 +548,8 @@ public class GlJournalExportsController : ControllerBase
         var reason = (req.Reason ?? string.Empty).Trim();
         if (reason.Length == 0)
             return BadRequest(new { error = "rejection_reason_required", message = "A rejection reason is required." });
+        if (reason.Length > ErpNotesMax)
+            return TextTooLong("rejection_reason_too_long", "The rejection reason", ErpNotesMax, "سبب الرفض");
         if (PerJournalDecisionsError(export) is { } perJournal) return perJournal;
         if (export.Status == GlJournalExportStatuses.Confirmed)
             return Conflict(new
@@ -1012,6 +1018,17 @@ public class GlJournalExportsController : ControllerBase
         new(string.IsNullOrWhiteSpace(e.Period) ? null : e.Period, e.PayrollRunId, e.CompanyId,
             string.IsNullOrWhiteSpace(e.Currency) ? null : e.Currency, e.IncludeUnattributed, false);
 
+    /// <summary>Column limits of gl_journal_exports.erp_document_number and notes / rejection_reason.</summary>
+    private const int ErpDocumentNumberMax = 120, ErpNotesMax = 1000;
+
+    private IActionResult TextTooLong(string code, string what, int max, string whatAr) => UnprocessableEntity(new
+    {
+        error = code, code,
+        message = $"{what} can be at most {max} characters. Nothing was recorded.",
+        messageAr = $"يجب ألا يتجاوز {whatAr} {max} حرفًا. لم يُسجَّل أي شيء.",
+        maxLength = max,
+    });
+
     private IActionResult? FilterError(string? period, Guid? runId)
     {
         if (runId is not null) return null;
@@ -1249,20 +1266,19 @@ public class GlJournalExportsController : ControllerBase
     }
 
     /// <summary>
-    /// AM-14: asks the registered rule whether the caller (or the creator of the API key they use) changed the cost-accounting
+    /// AM-14: asks the registered rule whether the caller changed the cost-accounting
     /// set-up for this company and period. A refusal is audited and writes nothing else. No registration = no check.
     /// </summary>
     private async Task<IActionResult?> SeparationOfDutiesRefusalAsync(Guid tenantId, JournalExportFilter filter, CancellationToken ct)
     {
         if (_sod is null) return null;
         if (this.GetUserId() is not Guid actor) return Forbid();   // identity cannot be checked: refuse, as the ERP decision does
-        var creator = ErpApiKeyPrincipal.CreatorOf(User);
-        if (!await _sod.IsBarredAsync(new JournalExportSodRequest(tenantId, filter.CompanyId, filter.Period, filter.PayrollRunId, actor, creator), ct))
+        if (!await _sod.IsBarredAsync(new JournalExportSodRequest(tenantId, filter.CompanyId, filter.Period, filter.PayrollRunId, actor), ct))
             return null;
 
         WriteAudit("finance.gl.journal_export.create_refused", "GlJournalExport", string.Empty, filter.CompanyId, new
         {
-            error = "separation_of_duties", filter.Period, filter.PayrollRunId, apiKeyCreatedBy = creator,
+            error = "separation_of_duties", filter.Period, filter.PayrollRunId,
         });
         await _db.SaveChangesAsync(ct);
         return StatusCode(StatusCodes.Status403Forbidden, new

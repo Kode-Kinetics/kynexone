@@ -193,41 +193,6 @@ public class CostAccountingSodTests
         (await Conflict(db, tid, co.Id, u)).Should().BeFalse();
     }
 
-    // ── ERP API keys (AM-14) ────────────────────────────────────────────────
-
-    private static async Task<ErpApiKey> Key(ZayraDbContext db, Guid tid, Guid? co, Guid createdBy)
-    {
-        var k = new ErpApiKey { TenantId = tid, CompanyId = co, Name = "k", Prefix = "kx_live_ab", KeyHash = Guid.NewGuid().ToString("N"), Scopes = "journal.read", ExpiresAtUtc = DateTime.UtcNow.AddDays(30), CreatedByUserId = createdBy, CreatedByName = "u" };
-        db.ErpApiKeys.Add(k);
-        await db.SaveChangesAsync();
-        return k;
-    }
-
-    [Fact]
-    public async Task AnApiKeyCreatedBy_ATheChanger_IsBlocked_AKeyOfAnotherUserIsNot()
-    {
-        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
-        var (tid, co, a1, _) = await Seed(db);
-        var changer = Guid.NewGuid(); var other = Guid.NewGuid();
-        await SaveMapping(db, tid, co.Id, changer, a1.Id);
-        var mine = await Key(db, tid, co.Id, changer);
-        var group = await Key(db, tid, null, changer);
-        var theirs = await Key(db, tid, co.Id, other);
-
-        (await CostAccountingSod.ApiKeyHasConflictAsync(db, tid, co.Id, Period, mine.Id, default)).Should().BeTrue();
-        (await CostAccountingSod.ApiKeyHasConflictAsync(db, tid, co.Id, Period, group.Id, default)).Should().BeTrue();
-        (await CostAccountingSod.ApiKeyHasConflictAsync(db, tid, co.Id, Period, theirs.Id, default)).Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task AnUnknownApiKey_FailsClosed()
-    {
-        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
-        var (tid, co, _, _) = await Seed(db);
-
-        (await CostAccountingSod.ApiKeyHasConflictAsync(db, tid, co.Id, Period, Guid.NewGuid(), default)).Should().BeTrue();
-    }
-
     [Fact]
     public void TheRefusalBody_IsBilingual_AndLeaksNothing()
     {

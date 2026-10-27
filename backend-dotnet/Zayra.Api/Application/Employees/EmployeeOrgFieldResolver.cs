@@ -297,11 +297,12 @@ public static class EmployeeOrgFieldResolver
                 && before.PositionId == after.PositionId) return; // only the cached copy moved: no cost moved
         }
 
-        var json = JsonSerializer.Serialize(new
-        {
-            before = new { departmentId = before.DepartmentId, positionId = before.PositionId, costCenterId = before.CostCenterId, @override = before.IsOverride, resolvedCostCenterId = resolvedBefore, source = sourceBefore },
-            after = new { departmentId = after.DepartmentId, positionId = after.PositionId, costCenterId = after.CostCenterId, @override = after.IsOverride, resolvedCostCenterId = resolvedAfter, source = sourceAfter },
-        });
+        var beforeJson = new { departmentId = before.DepartmentId, positionId = before.PositionId, costCenterId = before.CostCenterId, @override = before.IsOverride, resolvedCostCenterId = resolvedBefore, source = sourceBefore };
+        var afterJson = new { departmentId = after.DepartmentId, positionId = after.PositionId, costCenterId = after.CostCenterId, @override = after.IsOverride, resolvedCostCenterId = resolvedAfter, source = sourceAfter };
+        // A hire's reason for an explicit cost centre stays on its initial-attribution row.
+        var json = initial && !string.IsNullOrWhiteSpace(reason)
+            ? JsonSerializer.Serialize(new { before = beforeJson, after = afterJson, reason = reason.Trim() })
+            : JsonSerializer.Serialize(new { before = beforeJson, after = afterJson });
         new AuditService(db).Stage(initial ? InitialAttributionAction : AttributionChangedAction, nameof(Employee), employee.Id.ToString(),
             new RequestContext(null, null, actorUserId, tenantId), json, employee.CompanyId);
     }

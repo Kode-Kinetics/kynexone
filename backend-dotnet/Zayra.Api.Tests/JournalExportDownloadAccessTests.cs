@@ -175,7 +175,7 @@ public class JournalExportDownloadAccessTests
         public Task<bool> IsBarredAsync(JournalExportSodRequest request, CancellationToken ct)
         {
             Seen.Add(request);
-            return Task.FromResult(request.ActorUserId == _barred || request.ApiKeyCreatorUserId == _barred);
+            return Task.FromResult(request.ActorUserId == _barred);
         }
     }
 
@@ -206,22 +206,13 @@ public class JournalExportDownloadAccessTests
     }
 
     [Fact]
-    public async Task AKeyCreatedByTheChanger_IsBarredToo_AndWithNoSodRegistered_NothingChanges()
+    public async Task WithNoSodRegistered_NothingChanges()
     {
         var (db, tenantId) = await TenantAsync();
         db.Add(Row(tenantId, "Accrual", "5000 - Salaries", "", 10m));
         db.Add(Row(tenantId, "Accrual", "", "2100 - Salaries Payable", 10m));
         db.SaveChanges();
-        var changer = Guid.NewGuid();
         var maker = await CallerAsync(db, tenantId, "Payroll Manager");
-        var keyed = new ClaimsPrincipal(new ClaimsIdentity(maker.Claims
-            .Append(new Claim(ErpApiKeyDefaults.AuthKindClaim, ErpApiKeyDefaults.AuthKindValue))
-            .Append(new Claim(ErpApiKeyDefaults.KeyCreatorClaim, changer.ToString())), "Test"));
-
-        var refused = await CtrlWithIp(db, keyed, new FakeSod(changer)).Create(Period, null, null, "SAR", false, false, "generic-csv", default);
-
-        StatusOf(refused).Should().Be(403);
-        Body(refused).GetProperty("error").GetString().Should().Be("separation_of_duties");
 
         StatusOf(await CtrlWithIp(db, maker, sod: null).Create(Period, null, null, "SAR", false, false, "generic-csv", default))
             .Should().Be(201, "the seam is optional until the cost-accounting rule is registered");

@@ -20,6 +20,10 @@ public sealed class CostCentreRuleException(string code, int status, string mess
         "A cost centre code starts with a letter or digit and then uses only letters, digits, dot, dash or underscore, up to 30 characters.",
         "يبدأ رمز مركز التكلفة بحرف أو رقم ثم يستخدم الحروف والأرقام والنقطة والشرطة والشرطة السفلية فقط، بحد أقصى 30 حرفًا.");
 
+    public static CostCentreRuleException NameInvalid() => new("cost_centre_name_invalid", 422,
+        "A cost centre name is plain text on one line. Remove the control characters.",
+        "اسم مركز التكلفة نص عادي في سطر واحد. أزل محارف التحكم.");
+
     public static CostCentreRuleException GlSegmentInvalid() => new("cost_centre_gl_segment_invalid", 422,
         "The ERP cost centre value starts with a letter or digit and then uses only letters, digits, dot, dash or underscore, up to 30 characters.",
         "يبدأ رمز ERP بحرف أو رقم، ولا يستخدم بعده إلا الأحرف والأرقام والنقطة والشرطة والشرطة السفلية، بحد أقصى 30 حرفًا.");

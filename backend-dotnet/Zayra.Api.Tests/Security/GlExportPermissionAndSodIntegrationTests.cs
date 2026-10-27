@@ -115,8 +115,8 @@ public class GlExportPermissionAndSodIntegrationTests
         await db.SaveChangesAsync();
     }
 
-    private static JournalExportSodRequest Req(Guid tid, Guid? co, string? period, Guid actor, Guid? keyCreator = null, Guid? run = null)
-        => new(tid, co, period, run, actor, keyCreator);
+    private static JournalExportSodRequest Req(Guid tid, Guid? co, string? period, Guid actor, Guid? run = null)
+        => new(tid, co, period, run, actor);
 
     [Fact]
     public async Task AUserWhoChangedAMapping_IsBarredForThatCompanyAndPeriod_WhenCostingIsOn()
@@ -140,19 +140,6 @@ public class GlExportPermissionAndSodIntegrationTests
         await ChangedMapping(db, tid, co.Id, u);
 
         (await new CostAccountingJournalExportSeparationOfDuties(db).IsBarredAsync(Req(tid, co.Id, "2026-09", u), default)).Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task AnApiKeyCreatedByThatUser_IsBarred_EvenThoughTheActorIsTheKey()
-    {
-        var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
-        var (tid, co) = await SeedCompany(db, costing: true);
-        var creator = Guid.NewGuid();
-        await ChangedMapping(db, tid, co.Id, creator);
-        var sod = new CostAccountingJournalExportSeparationOfDuties(db);
-
-        (await sod.IsBarredAsync(Req(tid, co.Id, "2026-09", Guid.NewGuid(), keyCreator: creator), default)).Should().BeTrue();
-        (await sod.IsBarredAsync(Req(tid, co.Id, "2026-09", Guid.NewGuid(), keyCreator: Guid.NewGuid()), default)).Should().BeFalse();
     }
 
     [Fact]

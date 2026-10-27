@@ -880,8 +880,8 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         costCenter.CompanyId = request.CompanyId;
         costCenter.Code = OrgCodes.Normalize(request.Code);
-        costCenter.Name = Clean(request.Name);
-        costCenter.NameAr = string.IsNullOrWhiteSpace(request.NameAr) ? null : request.NameAr.Trim();
+        costCenter.Name = Zayra.Api.Application.Organization.CostCentreText.Normalise(request.Name);
+        costCenter.NameAr = Zayra.Api.Application.Organization.CostCentreText.Normalise(request.NameAr) is { Length: > 0 } nameAr ? nameAr : null;
         costCenter.IsActive = request.IsActive;
     }
 

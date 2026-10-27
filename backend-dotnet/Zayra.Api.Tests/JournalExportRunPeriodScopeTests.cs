@@ -83,7 +83,7 @@ public class JournalExportRunPeriodScopeTests
         var (db, conn, tid, co, run, user) = await WorldAsync(); await using var _c = conn; await using var __ = db;
         var sod = new CostAccountingJournalExportSeparationOfDuties(db);
 
-        (await sod.IsBarredAsync(new JournalExportSodRequest(tid, co.Id, "2099-12", run.Id, user, null), default)).Should().BeTrue();
-        (await sod.IsBarredAsync(new JournalExportSodRequest(tid, null, "2099-12", run.Id, user, null), default)).Should().BeTrue();
+        (await sod.IsBarredAsync(new JournalExportSodRequest(tid, co.Id, "2099-12", run.Id, user), default)).Should().BeTrue();
+        (await sod.IsBarredAsync(new JournalExportSodRequest(tid, null, "2099-12", run.Id, user), default)).Should().BeTrue();
     }
 }
