@@ -61,7 +61,7 @@ function SuccessionBody() {
   return (
     <div className="space-y-5" data-testid="suc-workspace">
       <header>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('suc.title')}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('suc.title')}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('suc.subtitle')}</p>
       </header>
 

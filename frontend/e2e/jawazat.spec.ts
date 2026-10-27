@@ -140,6 +140,8 @@ test('policy review retains existing compliance fields and stamps the actual rev
   let saved: any;
   // Compliance profiles moved into Setup (the old /compliance-profiles address redirects there).
   const errors = await boot(page, '/setup?tab=complianceProfiles', 'Compliance Officer', (path, method, body) => {
+    // The section also lists the company's profiles (for Remove / Restore); the API answers with an array.
+    if (path.endsWith('/company-compliance-profiles') && method === 'GET') return [profile];
     if (path.endsWith('/company-compliance-profiles/readiness')) return { profile, totalEmployees: 1, requiredFields: [], disclaimer: '' };
     if (path.endsWith('/company-compliance-profiles/profile-1/jawazat-policy') && method === 'PATCH') { saved = body; return { ...profile, notes: 'Concurrent administrator edit', jawazatPolicyJson: body.jawazatPolicyJson }; }
   });

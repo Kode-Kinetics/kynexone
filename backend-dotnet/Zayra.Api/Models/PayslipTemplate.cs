@@ -11,6 +11,8 @@ public class PayslipTemplate : ITenantOwned
     public bool IsDefault { get; set; }
     public int Version { get; set; } = 1;
     public string Status { get; set; } = "draft";         // draft | active | archived
+    /// <summary>The status before Setup turned the template off, so Restore puts it back (a draft stays a draft).</summary>
+    public string? PreRemovalStatus { get; set; }
     public string BrandingJson { get; set; } = "{}";     // PayslipBrandingConfig
     public string LayoutJson { get; set; } = "{}";       // PayslipLayoutConfig
     public Guid? ParentTemplateId { get; set; }           // previous version's Id

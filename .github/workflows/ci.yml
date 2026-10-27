@@ -22,11 +22,89 @@ concurrency:
     }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Least privilege by default: every job gets a read-only token. A job that needs more (build-image
+# pushes to GHCR) declares it itself.
+permissions:
+  contents: read
+
 jobs:
-  # ── Backend: build + security regression gate ──────────────────────────────────
-  backend-tests:
-    name: Backend Tests (security gate)
+  # ── Change detection: docs-only PRs skip the heavy lanes ───────────────────────
+  # A workflow-level `paths-ignore` would leave the REQUIRED checks pending forever on a docs-only PR
+  # (the main ruleset requires them by name), so the workflow always starts and the heavy jobs are
+  # skipped instead: a skipped job counts as passing for a required check. Pushes to main always run
+  # everything. `docs_only` is true only when EVERY changed file is documentation.
+  changes:
+    name: Detect docs-only change
     runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then echo "docs_only=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          echo "$files"
+          # Anything that is not markdown / docs/ / the audit-report folders counts as code.
+          code=$(echo "$files" | grep -v -E '(\.md$|^docs/|^audit-|^artifacts/|^scratchpad/|^LICENSE)' || true)
+          if [ -z "$files" ] || [ -n "$code" ]; then echo "docs_only=false" >> "$GITHUB_OUTPUT"; else echo "docs_only=true" >> "$GITHUB_OUTPUT"; fi
+
+  # ── Backend: fast unit lane (no Docker image pulls) ────────────────────────────
+  backend-unit:
+    name: Backend Unit + ratchets
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: backend-dotnet/**/*.csproj
+
+      - name: Restore dependencies
+        run: dotnet restore backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj
+
+      - name: Build
+        run: dotnet build backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore -c Release
+
+      # Everything that does NOT start a container (incl. the architecture ratchets), with line coverage.
+      - name: Run unit + ratchet tests (coverage)
+        run: |
+          dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj \
+            --no-build -c Release --filter "Category!=Integration" \
+            --collect:"XPlat Code Coverage" --results-directory backend-dotnet/Zayra.Api.Tests/TestResults/unit \
+            --logger "trx;LogFileName=unit.trx"
+
+      - name: Upload unit results + coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-unit-results
+          path: backend-dotnet/Zayra.Api.Tests/TestResults/unit
+          retention-days: 14
+
+  # ── Backend: integration lane (Testcontainers), sharded 4 ways ─────────────────
+  # Shards are balanced by test count over test CLASSES (scripts/ci/shard-tests.sh), so a class never
+  # straddles two shards (the Postgres collection fixtures are per class).
+  backend-integration:
+    name: Backend Integration (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +125,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: backend-dotnet/**/*.csproj
 
       - name: Restore dependencies
         run: dotnet restore backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj
@@ -54,19 +134,45 @@ jobs:
       - name: Build
         run: dotnet build backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore -c Release
 
-      - name: Run security + regression tests
+      - name: Run integration shard
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
+          set -euo pipefail
+          filter=$(./scripts/ci/shard-tests.sh backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj "$SHARD" 4)
           dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj \
-            --no-build -c Release \
-            --logger "console;verbosity=normal" \
-            --logger "trx;LogFileName=test-results.trx"
+            --no-build -c Release --filter "Category=Integration&($filter)" \
+            --collect:"XPlat Code Coverage" --results-directory backend-dotnet/Zayra.Api.Tests/TestResults/shard-$SHARD \
+            --logger "trx;LogFileName=shard-$SHARD.trx"
 
-      - name: Upload test results
+      - name: Upload integration results + coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-test-results
-          path: backend-dotnet/Zayra.Api.Tests/TestResults/test-results.trx
+          name: backend-integration-results-${{ matrix.shard }}
+          path: backend-dotnet/Zayra.Api.Tests/TestResults/shard-${{ matrix.shard }}
+          retention-days: 14
+
+  # ── Aggregator: keeps the required check name "Backend Tests (security gate)" ──
+  # The branch ruleset and every downstream `needs: backend-tests` still point at this name. It passes
+  # only when the unit lane and all four integration shards passed (or were skipped on a docs-only PR).
+  backend-tests:
+    name: Backend Tests (security gate)
+    runs-on: ubuntu-latest
+    needs: [changes, backend-unit, backend-integration]
+    if: always()
+    steps:
+      - name: Require every backend lane
+        env:
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          UNIT: ${{ needs.backend-unit.result }}
+          INTEGRATION: ${{ needs.backend-integration.result }}
+        run: |
+          echo "docs_only=$DOCS_ONLY unit=$UNIT integration=$INTEGRATION"
+          if [ "$DOCS_ONLY" = "true" ] && [ "$UNIT" = "skipped" ] && [ "$INTEGRATION" = "skipped" ]; then exit 0; fi
+          if [ "$UNIT" != "success" ] || [ "$INTEGRATION" != "success" ]; then
+            echo "::error::backend lanes did not all pass (unit=$UNIT integration=$INTEGRATION)"; exit 1
+          fi
 
   # ── Deploy preflight: the env-var gate's own tests ────────────────────────────
   # Runs on every push and PR, needs no secret and no network. It proves the gate still CATCHES
@@ -95,6 +201,8 @@ jobs:
   frontend-typecheck:
     name: Frontend Typecheck
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -110,6 +218,17 @@ jobs:
 
       - name: TypeScript typecheck
         run: npx tsc --noEmit
+        working-directory: frontend
+
+      # ESLint flat config (frontend/eslint.config.mjs): the legacy backlog is frozen in
+      # eslint-baseline.json (per-file counts that can only go down); NEW violations fail here.
+      - name: ESLint (baseline ratchet)
+        run: npm run lint
+        working-directory: frontend
+
+      # Every playwright*.config.ts must be run by a workflow or declared in e2e/config-manifest.json.
+      - name: Playwright config guard (no orphan suites)
+        run: node scripts/check-playwright-configs.mjs
         working-directory: frontend
 
       # No browser, no stack. Includes the e2e preflight's refusal logic and the identity contract:
@@ -264,6 +383,8 @@ jobs:
   chrome-security-gate:
     name: Chrome Security Gate (roles + isolation)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     # 30 → 40: the gate now signs in the whole system-role catalog (18 roles, paced under the login
     # limiter) and the bootstrap verifies every persona after provisioning.
     timeout-minutes: 40
@@ -805,6 +926,8 @@ jobs:
   frontend-build:
     name: Frontend Production Build
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -979,7 +1102,14 @@ jobs:
         working-directory: frontend
         run: npx playwright test --project=tenant-pilot
 
-      - name: Run complete enterprise browser and authorization gate
+      # The ~1,040-test lane is a REQUIRED check on the pull request (this job on event=pull_request
+      # fails the merge, and the ruleset makes the branch up to date first). It is SKIPPED on the push
+      # to main: the same tree already passed it, and re-running ~30 minutes post-merge only adds flake
+      # risk and delay while Vercel has already published the frontend (split-brain). The deterministic
+      # gates plus this job's smoke steps above (preflight, world bootstrap, employee workspace, setup
+      # layout contracts, tenant-pilot) and chrome-security-gate still gate migrate and the image.
+      - name: Run complete enterprise browser and authorization gate (pull requests)
+        if: github.event_name == 'pull_request'
         working-directory: frontend
         run: npx playwright test --project=chromium
 

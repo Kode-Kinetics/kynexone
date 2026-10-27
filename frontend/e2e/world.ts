@@ -195,6 +195,13 @@ export const RASALMANAR_HR: FixtureUser = {
   fullName: 'Ras Al-Manar HR Manager',
 };
 
+// Every hire's first salary package is approved by a different payroll.approve holder (HR proposes,
+// Finance approves) before the employee can be activated, so each tenant needs a Finance Approver.
+export const RASALMANAR_FINANCE: FixtureUser = {
+  email: 'finance@rasalmanar.com', password: RASALMANAR_PASSWORD, role: 'Finance Approver',
+  fullName: 'Ras Al-Manar Finance Approver',
+};
+
 export const EVOSTEL_ADMIN: FixtureUser = {
   email: 'admin@evostel.com', password: EVOSTEL_PASSWORD, role: 'Admin',
   fullName: 'E2E Tenant Administrator',
@@ -267,6 +274,8 @@ export const TATA_OWNER = groupUser('owner', 'Admin', 'Tata Group Owner', TATA_S
 export const TATA_COMPLIANCE = groupUser('compliance', 'Compliance Officer', 'Tata Group Compliance Officer', TATA_SLUG);
 // Same reason as RASALMANAR_HR: someone other than the filing admin who can decide leave.
 export const TATA_HR = groupUser('hr', 'HR Manager', 'Tata Group HR Manager', TATA_SLUG);
+// Same reason as RASALMANAR_FINANCE: someone other than the admin who approves the hires' salary packages.
+export const TATA_FINANCE = groupUser('finance', 'Finance Approver', 'Tata Group Finance Approver', TATA_SLUG);
 
 export const TENANTS: FixtureTenant[] = [
   {
@@ -303,7 +312,7 @@ export const TENANTS: FixtureTenant[] = [
     maxCompanies: 1,
     admin: RASALMANAR_ADMIN,
     companies: [saCompany('RASALMANAR-KSA')],
-    users: [RASALMANAR_HR],
+    users: [RASALMANAR_HR, RASALMANAR_FINANCE],
     // Cross-tenant isolation specs compare real employee rows against IntelliFlow's.
     employeesPerCompany: 4,
     minActiveEmployees: 4,
@@ -340,7 +349,7 @@ export const TENANTS: FixtureTenant[] = [
     maxCompanies: 0,
     admin: TATA_OWNER,
     companies: TATA_COMPANY_CODES.map((code) => ({ code, countryCode: 'IN', currency: 'INR' })),
-    users: [TATA_COMPLIANCE, TATA_HR],
+    users: [TATA_COMPLIANCE, TATA_HR, TATA_FINANCE],
     employeesPerCompany: 2,
     // India pack. The group-company compliance spec reads this tenant's PROFILE for the country
     // contrast rather than its headcount, so the floor is modest — but it is not zero, because

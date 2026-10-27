@@ -1,10 +1,14 @@
 using System.Text;
+using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Organization;
+using Zayra.Api.Infrastructure.Organization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -23,7 +27,11 @@ public class LocationsController : ControllerBase
     private static readonly string[] CsvExampleRow =
         { "LOC-001", "Main Office", "", "SA", "Main City", "true" };
 
-    public LocationsController(ZayraDbContext db) => _db = db;
+    private readonly IAuditService _audit;
+
+    public LocationsController(ZayraDbContext db, IAuditService audit) { _db = db; _audit = audit; }
+
+    private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 
     [HttpGet]
     public async Task<IActionResult> Search([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
@@ -53,6 +61,8 @@ public class LocationsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // A location made here belongs to no company, so it is the whole group's: group scope only (same rule as remove / restore).
+        if (!OrgWriteRules.MayWriteCompany(this, null)) return Forbid();
         if (string.IsNullOrWhiteSpace(req.Code)) return BadRequest(new { message = "Code is required" });
         if (string.IsNullOrWhiteSpace(req.NameEn)) return BadRequest(new { message = "NameEn is required" });
 
@@ -80,31 +90,37 @@ public class LocationsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        var denied = await OrgWriteRules.GuardEditAsync(this, new OrgRowRemoval(_db, _audit), OrgRowKind.Location, id, null, ct);
+        if (denied is not null) return denied;
         var loc = await _db.Locations.FirstOrDefaultAsync(l => l.Id == id && l.TenantId == tenantId.Value && !l.IsDeleted, ct);
         if (loc is null) return NotFound();
+        if (req.Code is not null && !string.Equals(req.Code.Trim(), loc.Code, StringComparison.OrdinalIgnoreCase))
+        {
+            var usage = await new OrgRowRemoval(_db, _audit).UsageAsync(OrgRowKind.Location, tenantId.Value, id, ct);
+            if (usage.InUse)
+                return BadRequest(new OrganizationRuleException(OrganizationRuleException.CodeLocked,
+                    $"The code can't be changed because this is in use. {usage.Summary}. Change the name instead.").ToPayload());
+        }
         loc.Code = req.Code?.Trim() ?? loc.Code;
         loc.NameEn = req.NameEn?.Trim() ?? loc.NameEn;
         loc.NameAr = req.NameAr?.Trim() ?? loc.NameAr;
         loc.CountryCode = req.CountryCode?.Trim() ?? loc.CountryCode;
         loc.City = req.City?.Trim() ?? loc.City;
-        loc.IsActive = req.IsActive;
+        // On or off changes only through Remove / Restore.
         loc.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return Ok(loc);
     }
 
     [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        var loc = await _db.Locations.FirstOrDefaultAsync(l => l.Id == id && l.TenantId == tenantId.Value && !l.IsDeleted, ct);
-        if (loc is null) return NotFound();
-        loc.IsDeleted = true;
-        loc.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        return NoContent();
-    }
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> Delete(Guid id, CancellationToken ct)
+        => OrgWriteRules.RemoveAsync(this, new OrgRowRemoval(_db, _audit), OrgRowKind.Location, id, Context(), ct);
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> Restore(Guid id, CancellationToken ct)
+        => OrgWriteRules.RestoreAsync(this, new OrgRowRemoval(_db, _audit), OrgRowKind.Location, id, Context(), ct);
 
     [HttpGet("export")]
     public async Task<IActionResult> Export(CancellationToken ct)
@@ -113,12 +129,12 @@ public class LocationsController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var items = await _db.Locations.AsNoTracking().Where(l => l.TenantId == tenantId.Value && !l.IsDeleted).OrderBy(l => l.Code).ToListAsync(ct);
         var rows = items.Select(l => (IReadOnlyList<object?>)new object?[] { l.Code, l.NameEn, l.NameAr, l.CountryCode, l.City, l.IsActive ? "true" : "false" });
-        return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"locations_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"locations_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     [HttpGet("import-template")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "locations_import_template.csv");
+        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "locations_import_template.csv");
 
     [HttpPost("import-preview")]
     public async Task<IActionResult> ImportPreview([FromBody] LocationImportRequest req, CancellationToken ct)
@@ -188,7 +204,7 @@ public class LocationsController : ControllerBase
                 existing.NameAr = row.GetValueOrDefault("NameAr", string.Empty).Trim();
                 existing.CountryCode = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
                 existing.City = row.GetValueOrDefault("City", string.Empty).Trim();
-                existing.IsActive = isActive; existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
+                existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
             }
             else
             {

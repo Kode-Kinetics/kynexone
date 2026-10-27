@@ -69,7 +69,7 @@ function NewQuoteModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <h2 className="text-sm font-semibold text-white">New Quote</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="text-slate-500 hover:text-white transition-colors">
@@ -228,7 +228,7 @@ export default function PlatformPricingPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Pricing Configuration</h1>
+          <h1 className="text-lg font-semibold text-white">Pricing Configuration</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Configure plan prices, module add-ons, and manage quote requests
           </p>
@@ -276,7 +276,7 @@ export default function PlatformPricingPage() {
           {/* ── Module Pricing Tab ─────────────────────────────────────────── */}
           {tab === 'modules' && (
             <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
-              <div className="grid grid-cols-[1fr_80px_80px_80px_80px_100px_100px] text-[10px] uppercase tracking-wider text-slate-500 px-4 py-2.5 border-b border-white/[0.07]">
+              <div className="grid grid-cols-[1fr_80px_80px_80px_80px_100px_100px] text-caption uppercase tracking-wider text-slate-500 px-4 py-2.5 border-b border-white/[0.07]">
                 <span>Module</span>
                 <span className="text-center">Trial</span>
                 <span className="text-center">Starter</span>
@@ -289,7 +289,7 @@ export default function PlatformPricingPage() {
                 <div key={m.moduleKey} className="grid grid-cols-[1fr_80px_80px_80px_80px_100px_100px] px-4 py-3 border-b border-white/[0.05] last:border-0 items-center hover:bg-white/[0.02] transition-colors">
                   <div>
                     <p className="text-sm text-white">{m.moduleName}</p>
-                    <p className="text-[10px] text-slate-500 font-mono">{m.moduleKey}</p>
+                    <p className="text-caption text-slate-500 font-mono">{m.moduleKey}</p>
                   </div>
                   {(
                     [
@@ -367,7 +367,7 @@ export default function PlatformPricingPage() {
                     <div key={c.key} className="flex items-center px-4 py-3 border-b border-white/[0.05] last:border-0 hover:bg-white/[0.02]">
                       <div className="flex-1">
                         <p className="text-sm text-white">{c.label}</p>
-                        <p className="text-[10px] text-slate-500 font-mono">{c.key} · {c.plan}</p>
+                        <p className="text-caption text-slate-500 font-mono">{c.key} · {c.plan}</p>
                       </div>
                       {editing === c.key ? (
                         <div className="flex items-center gap-2">
@@ -427,7 +427,7 @@ export default function PlatformPricingPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-sm font-medium text-white">{q.companyName}</span>
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${QUOTE_STATUS_BADGE[q.status] ?? 'bg-slate-700 text-slate-400'}`}>
+                            <span className={`text-caption px-1.5 py-0.5 rounded font-medium ${QUOTE_STATUS_BADGE[q.status] ?? 'bg-slate-700 text-slate-400'}`}>
                               {q.status}
                             </span>
                             <span className="text-xs text-slate-500">{q.orgType}</span>
@@ -459,7 +459,7 @@ export default function PlatformPricingPage() {
                               ['Arabic/RTL', q.needsArabic ? 'Yes' : 'No'],
                             ].map(([k, v]) => (
                               <div key={String(k)}>
-                                <p className="text-slate-500 uppercase tracking-wider text-[10px]">{k}</p>
+                                <p className="text-slate-500 uppercase tracking-wider text-caption">{k}</p>
                                 <p className="text-slate-200 mt-0.5">{String(v)}</p>
                               </div>
                             ))}
@@ -467,10 +467,10 @@ export default function PlatformPricingPage() {
 
                           {modules.length > 0 && (
                             <div>
-                              <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Selected Modules</p>
+                              <p className="text-caption text-slate-500 uppercase tracking-wider mb-1">Selected Modules</p>
                               <div className="flex flex-wrap gap-1.5">
                                 {modules.map(m => (
-                                  <span key={m} className="text-[10px] px-2 py-0.5 rounded bg-white/[0.05] text-slate-300 border border-white/[0.07]">{m}</span>
+                                  <span key={m} className="text-caption px-2 py-0.5 rounded bg-white/[0.05] text-slate-300 border border-white/[0.07]">{m}</span>
                                 ))}
                               </div>
                             </div>
@@ -478,7 +478,7 @@ export default function PlatformPricingPage() {
 
                           {q.notes && (
                             <div>
-                              <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Notes</p>
+                              <p className="text-caption text-slate-500 uppercase tracking-wider mb-1">Notes</p>
                               <p className="text-xs text-slate-300">{q.notes}</p>
                             </div>
                           )}
@@ -486,7 +486,7 @@ export default function PlatformPricingPage() {
                           <div className="bg-white/[0.03] border border-white/[0.07] rounded-lg p-3 flex items-center justify-between">
                             <div>
                               <p className="text-xs text-slate-500">Estimated</p>
-                              <p className="text-lg font-bold text-white">${q.estimatedMonthlyAmount.toLocaleString()}<span className="text-slate-500 text-xs font-normal">/mo</span></p>
+                              <p className="text-lg font-semibold text-white">${q.estimatedMonthlyAmount.toLocaleString()}<span className="text-slate-500 text-xs font-normal">/mo</span></p>
                               <p className="text-xs text-slate-500">${q.estimatedAnnualAmount.toLocaleString()} / year</p>
                             </div>
                             <div className="flex flex-col gap-2 items-end">

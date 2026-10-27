@@ -272,6 +272,12 @@ public record RoleDto(
     int AuthorityLevel,
     IReadOnlyCollection<string> Permissions);
 
+/// <summary>What a role change would touch. <see cref="AssignedUsers"/> are the people who hold it (they are signed out when it is turned off).</summary>
+public record RoleImpactDto(Guid RoleId, string Name, bool IsSystem, bool IsActive, int AssignedUsers);
+
+/// <summary><see cref="Deleted"/> false means refused: <see cref="Reason"/> is SYSTEM or ASSIGNED, and <see cref="AssignedUsers"/> says how many hold it.</summary>
+public record RoleRemovalResult(bool Deleted, string? Reason, int AssignedUsers);
+
 public record CreateRoleRequest(
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(80)] string Name,
     [System.ComponentModel.DataAnnotations.MaxLength(240)] string? Description,

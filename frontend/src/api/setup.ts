@@ -1,4 +1,5 @@
 import client from './client';
+import { setupRowApi } from './orgRows';
 import { type RawImportCommit, toImportResult } from './organization';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -71,6 +72,8 @@ export interface GCCComplianceSetting {
   emiratesIdRequired: boolean;
   ramadanHoursEnabled: boolean;
   ramadanReducedHoursPerDay: number;
+  /** False once Setup's Remove turned the rule off; payroll and compliance ignore it until it is restored. */
+  isActive?: boolean;
 }
 
 export interface Location {
@@ -97,6 +100,11 @@ export interface FiscalYear {
   endDate: string;
   status: string;
   isCurrent: boolean;
+  /** What this caller may do, and why not (computed by the server from permission, scope and history). */
+  canClose?: boolean;
+  canDelete?: boolean;
+  closeBlockedReason?: string | null;
+  deleteBlockedReason?: string | null;
 }
 
 export interface NotificationTemplate {
@@ -110,6 +118,8 @@ export interface NotificationTemplate {
   bodyAr: string;
   variables: string;
   isActive: boolean;
+  /** Removed while unused; listed only under "Show turned-off", and restorable. */
+  isDeleted?: boolean;
 }
 
 export interface AdminAuditLog {
@@ -164,6 +174,9 @@ export const numberingRulesApi = {
     client.post<NumberingRule>('/api/admin/numbering-rules', body).then(r => r.data),
 
   delete: (id: string) => client.delete(`/api/admin/numbering-rules/${id}`),
+
+  setActive: (id: string, active: boolean) =>
+    client.patch<NumberingRule>(`/api/admin/numbering-rules/${id}/active`, null, { params: { active } }).then(r => r.data),
 };
 
 export const systemSettingsApi = {
@@ -183,6 +196,9 @@ export const gccSettingsApi = {
 
   upsert: (body: Partial<GCCComplianceSetting> & { countryCode: string }) =>
     client.post<GCCComplianceSetting>('/api/admin/gcc-settings', body).then(r => r.data),
+
+  /** Setup's Remove / Restore: a country rule is turned off, never erased (payroll history refers to it). */
+  removal: setupRowApi('/api/admin/gcc-settings'),
 };
 
 export const fiscalYearsApi = {
@@ -216,8 +232,8 @@ export const locationsApi = {
 };
 
 export const notificationTemplatesApi = {
-  list: (channel?: string) =>
-    client.get<NotificationTemplate[]>('/api/admin/notification-templates', { params: { channel } }).then(r => r.data),
+  list: (channel?: string, includeRemoved = false) =>
+    client.get<NotificationTemplate[]>('/api/admin/notification-templates', { params: { channel, ...(includeRemoved ? { includeRemoved: true } : {}) } }).then(r => r.data),
 
   create: (body: { code: string; eventType: string; channel: string; subjectEn?: string; subjectAr?: string; bodyEn: string; bodyAr?: string; variables?: string }) =>
     client.post<NotificationTemplate>('/api/admin/notification-templates', body).then(r => r.data),
@@ -225,7 +241,8 @@ export const notificationTemplatesApi = {
   update: (id: string, body: Partial<NotificationTemplate>) =>
     client.put<NotificationTemplate>(`/api/admin/notification-templates/${id}`, body).then(r => r.data),
 
-  delete: (id: string) => client.delete(`/api/admin/notification-templates/${id}`),
+  /** Setup's Remove / Restore. */
+  removal: setupRowApi('/api/admin/notification-templates'),
 };
 
 export const adminAuditApi = {

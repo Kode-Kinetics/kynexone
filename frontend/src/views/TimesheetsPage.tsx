@@ -1,6 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
+import type { Formatter } from '../lib/format';
+import { EnumLabel } from '../components/EnumLabel';
+import { enumLabel } from '../i18n/enumLabel';
+import { msg } from '../i18n/translations';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarClock,
@@ -56,29 +62,27 @@ function weekStart(d: Date): Date {
   r.setHours(0, 0, 0, 0);
   return r;
 }
-function fmtDay(iso: string) {
-  return parseDate(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+type Translate = (key: string, params?: Record<string, string | number | null | undefined>) => string;
+
+function fmtDay(fx: Formatter, iso: string) {
+  return fx.date(parseDate(iso), 'dayMonth');
 }
-function fmtRange(startIso: string, endIso: string) {
-  return `${fmtDay(startIso)} – ${parseDate(endIso).toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  })}`;
+function fmtRange(fx: Formatter, startIso: string, endIso: string) {
+  return `${fmtDay(fx, startIso)} – ${fx.date(parseDate(endIso), 'medium')}`;
 }
-function fmtDateTime(iso: string | null) {
-  return iso ? new Date(iso).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+function fmtDateTime(fx: Formatter, iso: string | null) {
+  return iso ? fx.dateTime(iso, 'medium') : '—';
 }
 
 // ── Hours ────────────────────────────────────────────────────────────────────────────────────
 // Entry is in hours because that is how people think about a day; storage is in minutes because
 // that is what attendance records. The conversion lives here, once.
 
-function fmtHours(minutes: number | null | undefined): string {
+function fmtHours(t: Translate, minutes: number | null | undefined): string {
   if (minutes === null || minutes === undefined) return '—';
   const sign = minutes < 0 ? '-' : '';
   const abs = Math.abs(minutes);
-  return `${sign}${Math.floor(abs / 60)}h ${String(abs % 60).padStart(2, '0')}m`;
+  return `${sign}${t('{hours}h {minutes}m', { hours: Math.floor(abs / 60), minutes: String(abs % 60).padStart(2, '0') })}`;
 }
 /** '7.5', '7:30' and '7h30' all mean the same thing to a person filling in a week. */
 function parseHoursToMinutes(raw: string): number | null {
@@ -121,7 +125,7 @@ const STATUS_COLOR: Record<string, string> = {
 
 function StatusBadge({ status }: { status: string }) {
   const cls = STATUS_COLOR[status] ?? 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>{status}</span>;
+  return <span className={`inline-flex rounded-lg px-2 py-0.5 text-xs font-medium ${cls}`}><EnumLabel enum="Status" value={status} /></span>;
 }
 
 function Spinner({ label }: { label: string }) {
@@ -148,7 +152,7 @@ function KpiCard({ label, value, tone = 'default' }: { label: string; value: str
     <div className="surface p-4">
       <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
       <p
-        className={`mt-1 text-xl font-bold ${
+        className={`mt-1 text-xl font-semibold ${
           tone === 'warn' ? 'text-amber-600 dark:text-amber-400' : 'text-slate-900 dark:text-white'
         }`}
       >
@@ -168,7 +172,7 @@ function ViolationList({ violations }: { violations: { date: string | null; mess
     <ul className="mt-2 space-y-1 text-xs">
       {violations.map((v, i) => (
         <li key={`${v.date ?? 'general'}-${i}`} className="flex gap-2">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span>{v.message}</span>
         </li>
       ))}
@@ -179,6 +183,10 @@ function ViolationList({ violations }: { violations: { date: string | null; mess
 // ══ My week ════════════════════════════════════════════════════════════════════════════════════
 
 function MyWeekTab() {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
+  const fx = useFormat();
   const toast = useAppToast();
   const [anchor, setAnchor] = useState<Date>(() => weekStart(new Date()));
   const [sheet, setSheet] = useState<Timesheet | null>(null);
@@ -212,7 +220,7 @@ function MyWeekTab() {
       try {
         hydrate(await essTimesheetsApi.current(toIso(date)));
       } catch (err) {
-        setError(parseApiErrorForTimesheets(err, 'Your timesheet could not be opened.').message);
+        setError(parseApiErrorForTimesheets(err, tRef.current('Your timesheet could not be opened.')).message);
       } finally {
         setLoading(false);
       }
@@ -278,7 +286,7 @@ function MyWeekTab() {
       hydrate(updated);
       return updated;
     } catch (err) {
-      const parsed = parseApiErrorForTimesheets(err, 'Your hours could not be saved.');
+      const parsed = parseApiErrorForTimesheets(err, t('Your hours could not be saved.'));
       setError(parsed.message);
       setViolations(parsed.violations);
       return null;
@@ -293,9 +301,9 @@ function MyWeekTab() {
     setSaving(true);
     try {
       hydrate(await essTimesheetsApi.submit(saved.id));
-      toast.success('Your timesheet has gone to your approver.', 'Submitted');
+      toast.success(t('Your timesheet has gone to your approver.'), t('Submitted'));
     } catch (err) {
-      const parsed = parseApiErrorForTimesheets(err, 'This timesheet could not be submitted.');
+      const parsed = parseApiErrorForTimesheets(err, t('This timesheet could not be submitted.'));
       setError(parsed.message);
       setViolations(parsed.violations);
     } finally {
@@ -310,31 +318,33 @@ function MyWeekTab() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            aria-label="Previous week"
+            aria-label={t('Previous week')}
             onClick={() => setAnchor((w) => addDays(w, -7))}
             className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/10"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
           <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-            {fmtRange(toIso(anchor), toIso(addDays(anchor, 6)))}
+            {fmtRange(fx, toIso(anchor), toIso(addDays(anchor, 6)))}
           </span>
           <button
             type="button"
-            aria-label="Next week"
+            aria-label={t('Next week')}
             onClick={() => setAnchor((w) => addDays(w, 7))}
             className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/10"
           >
             <ChevronRight className="h-4 w-4" />
           </button>
           <button type="button" className={btn.sm} onClick={() => setAnchor(weekStart(new Date()))}>
-            This week
+            
+            {t('This week')}
           </button>
         </div>
         <div className="flex items-center gap-3">
           {sheet && <StatusBadge status={sheet.status} />}
           <span className="text-sm text-slate-500 dark:text-slate-400">
-            Week total <strong className="text-slate-900 dark:text-white">{fmtHours(weekTotal)}</strong>
+            
+            {t('Week total')} <strong className="text-slate-900 dark:text-white">{fmtHours(t, weekTotal)}</strong>
           </span>
         </div>
       </div>
@@ -348,12 +358,12 @@ function MyWeekTab() {
 
       {sheet?.status === 'Rejected' && sheet.decisionComments && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
-          <p className="font-medium">Sent back by your approver</p>
+          <p className="font-medium">{t('Sent back by your approver')}</p>
           <p className="mt-0.5">{sheet.decisionComments}</p>
         </div>
       )}
 
-      {loading && <div className="surface"><Spinner label="Opening your week…" /></div>}
+      {loading && <div className="surface"><Spinner label={t('Opening your week…')} /></div>}
 
       {!loading && sheet && (
         <>
@@ -370,14 +380,14 @@ function MyWeekTab() {
                   className={`surface p-3 ${over ? 'border-amber-300 dark:border-amber-500/40' : ''}`}
                 >
                   <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                    {d.toLocaleDateString('en-GB', { weekday: 'short' })}
+                    {fx.date(d, 'weekdayShort')}
                   </p>
-                  <p className="text-[10px] text-slate-400">{fmtDay(iso)}</p>
-                  <p className="mt-1 text-sm font-bold text-slate-900 dark:text-white">{fmtHours(logged)}</p>
-                  <p className="mt-0.5 text-[10px] text-slate-400">
+                  <p className="text-caption text-slate-400">{fmtDay(fx, iso)}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{fmtHours(t, logged)}</p>
+                  <p className="mt-0.5 text-caption text-slate-400">
                     {day?.attendanceMinutes === null || day?.attendanceMinutes === undefined
-                      ? 'no attendance'
-                      : `attendance ${fmtHours(day.attendanceMinutes)}`}
+                      ? t('No attendance')
+                      : t('Attendance {hours}', { hours: fmtHours(t, day.attendanceMinutes) })}
                   </p>
                   {editable && (
                     <button
@@ -385,7 +395,8 @@ function MyWeekTab() {
                       className="mt-2 text-xs font-medium text-sapphire hover:underline dark:text-cyanAccent"
                       onClick={() => addRow(iso)}
                     >
-                      + Add
+                      
+                      {t('+ Add')}
                     </button>
                   )}
                 </div>
@@ -397,12 +408,12 @@ function MyWeekTab() {
           <div className="surface overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px] text-sm">
-                <caption className="sr-only">Hours entered for the week beginning {fmtDay(toIso(anchor))}</caption>
+                <caption className="sr-only">{t('Hours entered for the week beginning {date}', { date: fmtDay(fx, toIso(anchor)) })}</caption>
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    {['Day', 'Cost centre', 'Hours', 'Notes', ''].map((h) => (
-                      <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">
-                        {h}
+                    {[msg('Day'), msg('Cost centre'), msg('Hours'), msg('Notes'), ''].map((h, i) => (
+                      <th key={`${h}-${i}`} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">
+                        {h ? t(h) : <span className="sr-only">{t('Actions')}</span>}
                       </th>
                     ))}
                   </tr>
@@ -411,7 +422,7 @@ function MyWeekTab() {
                   {rows.length === 0 && (
                     <tr>
                       <td colSpan={5} className="px-3 py-10 text-center text-sm text-slate-400">
-                        {editable ? 'Pick a day above and add your first entry.' : 'No hours were recorded for this week.'}
+                        {editable ? t('Pick a day above and add your first entry.') : t('No hours were recorded for this week.')}
                       </td>
                     </tr>
                   )}
@@ -422,14 +433,14 @@ function MyWeekTab() {
                         <td className="px-3 py-2">
                           <select
                             className={`${sel} w-36`}
-                            aria-label="Day"
+                            aria-label={t('Day')}
                             disabled={!editable}
                             value={row.workDate}
                             onChange={(e) => patchRow(row.key, { workDate: e.target.value })}
                           >
                             {days.map((d) => (
                               <option key={toIso(d)} value={toIso(d)}>
-                                {d.toLocaleDateString('en-GB', { weekday: 'short' })} {fmtDay(toIso(d))}
+                                {fx.date(d, 'weekdayShort')} {fmtDay(fx, toIso(d))}
                               </option>
                             ))}
                           </select>
@@ -437,12 +448,12 @@ function MyWeekTab() {
                         <td className="px-3 py-2">
                           <select
                             className={`${sel} w-48`}
-                            aria-label="Cost centre"
+                            aria-label={t('Cost centre')}
                             disabled={!editable}
                             value={row.costCenterId}
                             onChange={(e) => patchRow(row.key, { costCenterId: e.target.value })}
                           >
-                            <option value="">Unattributed</option>
+                            <option value="">{t('Unattributed')}</option>
                             {costCentres.map((c) => (
                               <option key={c.id} value={c.id}>
                                 {c.code} — {c.name}
@@ -453,7 +464,7 @@ function MyWeekTab() {
                         <td className="px-3 py-2">
                           <input
                             className={`${inp} w-24 ${bad ? 'border-rose-400 dark:border-rose-500' : ''}`}
-                            aria-label="Hours"
+                            aria-label={t('Hours')}
                             aria-invalid={bad}
                             inputMode="decimal"
                             placeholder="7.5"
@@ -465,7 +476,7 @@ function MyWeekTab() {
                         <td className="px-3 py-2">
                           <input
                             className={inp}
-                            aria-label="Notes"
+                            aria-label={t('Notes')}
                             maxLength={500}
                             disabled={!editable}
                             value={row.notes}
@@ -477,10 +488,11 @@ function MyWeekTab() {
                             <button
                               type="button"
                               className={btn.sm}
-                              aria-label={`Remove entry for ${row.workDate}`}
+                              aria-label={t('Remove entry for {date}', { date: fx.date(row.workDate, 'medium') })}
                               onClick={() => removeRow(row.key)}
                             >
-                              Remove
+                              
+                              {t('Remove')}
                             </button>
                           )}
                         </td>
@@ -495,18 +507,21 @@ function MyWeekTab() {
           {editable ? (
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
               <button type="button" className={btn.ghost} disabled={saving || invalidRow} onClick={() => void save()}>
-                {saving ? 'Saving…' : 'Save draft'}
+                {saving ? t('Saving…') : t('Save draft')}
               </button>
               <button type="button" className={btn.primary} disabled={saving || invalidRow || weekTotal === 0} onClick={() => void submit()}>
-                <Send className="h-4 w-4" />
-                Submit for approval
+                <Send className="h-4 w-4" aria-hidden="true" />
+                
+                {t('Submit for approval')}
               </button>
             </div>
           ) : (
             <p className="text-end text-xs text-slate-400">
               {sheet.status === 'Submitted'
-                ? `Awaiting ${sheet.approval?.currentApproverRole || 'approval'} — submitted ${fmtDateTime(sheet.submittedAtUtc)}`
-                : `Decided ${fmtDateTime(sheet.decidedAtUtc)}`}
+                ? (sheet.approval?.currentApproverRole
+                    ? t('Awaiting {approver} — submitted {date}', { approver: sheet.approval.currentApproverRole, date: fmtDateTime(fx, sheet.submittedAtUtc) })
+                    : t('Awaiting approval — submitted {date}', { date: fmtDateTime(fx, sheet.submittedAtUtc) }))
+                : t('Decided {date}', { date: fmtDateTime(fx, sheet.decidedAtUtc) })}
             </p>
           )}
         </>
@@ -518,6 +533,10 @@ function MyWeekTab() {
 // ══ My history ═════════════════════════════════════════════════════════════════════════════════
 
 function MyHistoryTab() {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
+  const fx = useFormat();
   const [rows, setRows] = useState<TimesheetSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -526,13 +545,13 @@ function MyHistoryTab() {
     essTimesheetsApi
       .mine(26)
       .then((r) => setRows(r))
-      .catch((err) => setError(parseApiErrorForTimesheets(err, 'Your timesheets could not be loaded.').message))
+      .catch((err) => setError(parseApiErrorForTimesheets(err, tRef.current('Your timesheets could not be loaded.')).message))
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="surface"><Spinner label="Loading your timesheets…" /></div>;
+  if (loading) return <div className="surface"><Spinner label={t('Loading your timesheets…')} /></div>;
   if (error) return <ErrorBanner message={error} onDismiss={() => setError(null)} />;
-  if (rows.length === 0) return <Empty icon={FileClock} title="No timesheets yet" hint="Open “My week” and record some hours." />;
+  if (rows.length === 0) return <Empty icon={FileClock} title={t('No timesheets yet')} hint={t('Open “My week” and record some hours.')} />;
 
   return (
     <div className="surface overflow-hidden">
@@ -540,19 +559,19 @@ function MyHistoryTab() {
         <table className="w-full min-w-[560px] text-sm">
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-              {['Period', 'Hours', 'Status', 'Submitted', 'Decided'].map((h) => (
-                <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+              {[msg('Period'), msg('Hours'), msg('Status'), msg('Submitted'), msg('Decided')].map((h) => (
+                <th key={h} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(h)}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {rows.map((r) => (
               <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{fmtRange(r.periodStart, r.periodEnd)}</td>
-                <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(r.totalMinutes)}</td>
+                <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{fmtRange(fx, r.periodStart, r.periodEnd)}</td>
+                <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(t, r.totalMinutes)}</td>
                 <td className="px-3 py-2"><StatusBadge status={r.status} /></td>
-                <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(r.submittedAtUtc)}</td>
-                <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(r.decidedAtUtc)}</td>
+                <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(fx, r.submittedAtUtc)}</td>
+                <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(fx, r.decidedAtUtc)}</td>
               </tr>
             ))}
           </tbody>
@@ -565,6 +584,10 @@ function MyHistoryTab() {
 // ══ Approvals ══════════════════════════════════════════════════════════════════════════════════
 
 function ApprovalsTab() {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
+  const fx = useFormat();
   const toast = useAppToast();
   const [items, setItems] = useState<TimesheetInboxItem[]>([]);
   const [queue, setQueue] = useState<'mine' | 'team' | 'all'>('mine');
@@ -580,7 +603,7 @@ function ApprovalsTab() {
     timesheetsApi
       .inbox(queue)
       .then((r) => setItems(r.items))
-      .catch((err) => setError(parseApiErrorForTimesheets(err, 'The approval queue could not be loaded.').message))
+      .catch((err) => setError(parseApiErrorForTimesheets(err, tRef.current('The approval queue could not be loaded.')).message))
       .finally(() => setLoading(false));
   }, [queue]);
 
@@ -592,15 +615,15 @@ function ApprovalsTab() {
       await timesheetsApi.decide(item.timesheet.id, decision, comments);
       toast.success(
         decision === 'Approve'
-          ? 'Approved. The hours are now reconciled against attendance.'
-          : 'Sent back to the employee.',
-        `Timesheet ${decision === 'Approve' ? 'approved' : 'rejected'}`,
+          ? t('Approved. The hours are now reconciled against attendance.')
+          : t('Sent back to the employee.'),
+        decision === 'Approve' ? t('Timesheet approved') : t('Timesheet rejected'),
       );
       setRejecting(null);
       setReason('');
       load();
     } catch (err) {
-      notifyApiError(err, 'The decision could not be recorded.');
+      notifyApiError(err, t('The decision could not be recorded.'));
     } finally {
       setBusyId(null);
     }
@@ -610,7 +633,8 @@ function ApprovalsTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <label className="text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="ts-queue">
-          Queue
+          
+          {t('Queue')}
         </label>
         <select
           id="ts-queue"
@@ -618,17 +642,17 @@ function ApprovalsTab() {
           value={queue}
           onChange={(e) => setQueue(e.target.value as 'mine' | 'team' | 'all')}
         >
-          <option value="mine">Waiting on me</option>
-          <option value="team">My team</option>
-          <option value="all">Everything</option>
+          <option value="mine">{t('Waiting on me')}</option>
+          <option value="team">{t('My team')}</option>
+          <option value="all">{t('Everything')}</option>
         </select>
       </div>
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
-      {loading && <div className="surface"><Spinner label="Loading the approval queue…" /></div>}
+      {loading && <div className="surface"><Spinner label={t('Loading the approval queue…')} /></div>}
 
       {!loading && items.length === 0 && (
-        <Empty icon={Inbox} title="Nothing waiting for you" hint="Submitted timesheets routed to you will appear here." />
+        <Empty icon={Inbox} title={t('Nothing waiting for you')} hint={t('Submitted timesheets routed to you will appear here.')} />
       )}
 
       {!loading &&
@@ -641,13 +665,13 @@ function ApprovalsTab() {
                 <div className="min-w-0">
                   <p className="font-semibold text-slate-900 dark:text-white">{ts.employeeName}</p>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    {fmtRange(ts.periodStart, ts.periodEnd)} · <strong>{fmtHours(ts.totalMinutes)}</strong>
+                    {fmtRange(fx, ts.periodStart, ts.periodEnd)} · <strong>{fmtHours(t, ts.totalMinutes)}</strong>
                   </p>
-                  <p className="mt-0.5 text-xs text-slate-400">Submitted {fmtDateTime(ts.submittedAtUtc)}</p>
+                  <p className="mt-0.5 text-xs text-slate-400">{t('Submitted {date}', { date: fmtDateTime(fx, ts.submittedAtUtc) })}</p>
                   {flagged.length > 0 && (
-                    <p className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      {flagged.length} day{flagged.length === 1 ? '' : 's'} above recorded attendance
+                    <p className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                      {t('{count, plural, one {# day above recorded attendance} other {# days above recorded attendance}}', { count: flagged.length })}
                     </p>
                   )}
                 </div>
@@ -661,7 +685,8 @@ function ApprovalsTab() {
                       setReason('');
                     }}
                   >
-                    Reject
+                    
+                    {t('Reject')}
                   </button>
                   <button
                     type="button"
@@ -669,8 +694,8 @@ function ApprovalsTab() {
                     disabled={busyId === ts.id}
                     onClick={() => void decide(item, 'Approve')}
                   >
-                    <CheckCircle2 className="h-4 w-4" />
-                    {busyId === ts.id ? 'Working…' : 'Approve'}
+                    <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                    {busyId === ts.id ? t('Working…') : t('Approve')}
                   </button>
                 </div>
               </div>
@@ -680,20 +705,20 @@ function ApprovalsTab() {
                 <table className="w-full min-w-[560px] text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                      {['Day', 'Logged', 'Attendance', 'Variance'].map((h) => (
-                        <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                      {[msg('Day'), msg('Logged'), msg('Attendance'), msg('Variance')].map((h) => (
+                        <th key={h} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(h)}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {ts.days.map((d) => (
                       <tr key={d.date} className={d.isOverAllocated ? 'bg-amber-50/60 dark:bg-amber-500/[0.06]' : ''}>
-                        <td className="px-3 py-1.5 text-slate-900 dark:text-white">{fmtDay(d.date)}</td>
-                        <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{fmtHours(d.loggedMinutes)}</td>
+                        <td className="px-3 py-1.5 text-slate-900 dark:text-white">{fmtDay(fx, d.date)}</td>
+                        <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{fmtHours(t, d.loggedMinutes)}</td>
                         <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">
-                          {d.attendanceMinutes === null ? <span className="text-slate-400">no record</span> : fmtHours(d.attendanceMinutes)}
+                          {d.attendanceMinutes === null ? <span className="text-slate-400">{t('No record')}</span> : fmtHours(t, d.attendanceMinutes)}
                         </td>
-                        <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{fmtHours(d.varianceMinutes)}</td>
+                        <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{fmtHours(t, d.varianceMinutes)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -705,12 +730,13 @@ function ApprovalsTab() {
 
       <Modal
         isOpen={rejecting !== null}
-        title="Send this timesheet back"
+        title={t('Send this timesheet back')}
         onClose={() => setRejecting(null)}
         footer={
           <div className="flex justify-end gap-2">
             <button type="button" className={btn.ghost} onClick={() => setRejecting(null)}>
-              Cancel
+              
+              {t('Cancel')}
             </button>
             <button
               type="button"
@@ -718,13 +744,15 @@ function ApprovalsTab() {
               disabled={reason.trim().length === 0}
               onClick={() => rejecting && void decide(rejecting, 'Reject', reason.trim())}
             >
-              Send back
+              
+              {t('Send back')}
             </button>
           </div>
         }
       >
         <label className="block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="ts-reject-reason">
-          Why? The employee sees this.
+          
+          {t('Why? The employee sees this.')}
         </label>
         <textarea
           id="ts-reject-reason"
@@ -732,7 +760,7 @@ function ApprovalsTab() {
           maxLength={1000}
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          placeholder="e.g. Thursday looks like it belongs to the other cost centre."
+          placeholder={t('For example, Thursday looks like it belongs to the other cost centre.')}
         />
       </Modal>
     </div>
@@ -742,6 +770,8 @@ function ApprovalsTab() {
 // ══ Register ═══════════════════════════════════════════════════════════════════════════════════
 
 function RegisterTab() {
+  const t = useT();
+  const fx = useFormat();
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
   const [errorDismissed, setErrorDismissed] = useState(false);
@@ -752,36 +782,36 @@ function RegisterTab() {
     timesheetsApi.list({ status: status || undefined, search: search.trim() || undefined, page, pageSize }));
   const { items: rows, loading, reload } = list;
   const error = list.error != null && !errorDismissed
-    ? parseApiErrorForTimesheets(list.error, 'Timesheets could not be loaded.').message
+    ? parseApiErrorForTimesheets(list.error, t('Timesheets could not be loaded.')).message
     : null;
 
   useEffect(() => {
-    const t = setTimeout(() => { setErrorDismissed(false); void reload(); }, 250);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => { setErrorDismissed(false); void reload(); }, 250);
+    return () => clearTimeout(timer);
   }, [status, search, reload]);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <select className={`${sel} w-44`} aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">All statuses</option>
+        <select className={`${sel} w-44`} aria-label={t('Status')} value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="">{t('All statuses')}</option>
           {['Draft', 'Submitted', 'Approved', 'Rejected'].map((s) => (
-            <option key={s} value={s}>{s}</option>
+            <option key={s} value={s}>{enumLabel(t, 'Status', s)}</option>
           ))}
         </select>
         <input
           className={`${inp} w-60`}
-          aria-label="Search by employee"
-          placeholder="Search employee…"
+          aria-label={t('Search by employee')}
+          placeholder={t('Search employee…')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
 
       {error && <ErrorBanner message={error} onDismiss={() => setErrorDismissed(true)} />}
-      {loading && <div className="surface"><Spinner label="Loading timesheets…" /></div>}
+      {loading && <div className="surface"><Spinner label={t('Loading timesheets…')} /></div>}
       {!loading && !error && rows.length === 0 && (
-        <Empty icon={FileClock} title="No timesheets match" hint="Try clearing the filters." />
+        <Empty icon={FileClock} title={t('No timesheets match')} hint={t('Try clearing the filters.')} />
       )}
 
       {!loading && rows.length > 0 && (
@@ -790,8 +820,8 @@ function RegisterTab() {
             <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                  {['Employee', 'Period', 'Hours', 'Status', 'Submitted', 'Decided'].map((h) => (
-                    <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                  {[msg('Employee'), msg('Period'), msg('Hours'), msg('Status'), msg('Submitted'), msg('Decided')].map((h) => (
+                    <th key={h} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(h)}</th>
                   ))}
                 </tr>
               </thead>
@@ -799,17 +829,17 @@ function RegisterTab() {
                 {rows.map((r) => (
                   <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                     <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{r.employeeName}</td>
-                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtRange(r.periodStart, r.periodEnd)}</td>
-                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(r.totalMinutes)}</td>
+                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtRange(fx, r.periodStart, r.periodEnd)}</td>
+                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(t, r.totalMinutes)}</td>
                     <td className="px-3 py-2"><StatusBadge status={r.status} /></td>
-                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(r.submittedAtUtc)}</td>
-                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(r.decidedAtUtc)}</td>
+                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(fx, r.submittedAtUtc)}</td>
+                    <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDateTime(fx, r.decidedAtUtc)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <ListWindowFooter shown={rows.length} total={list.total} noun="timesheets" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+          <ListWindowFooter shown={rows.length} total={list.total} noun="timesheets" labels={{ window: t('Showing {shown} of {total} timesheets', { shown: fx.integer(rows.length), total: fx.integer(list.total ?? rows.length) }), loadMore: t('Load more'), loading: t('Loading…') }} loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
         </div>
       )}
     </div>
@@ -819,6 +849,10 @@ function RegisterTab() {
 // ══ Variance (the consumer, as HR sees it) ═════════════════════════════════════════════════════
 
 function VarianceTab() {
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
+  const fx = useFormat();
   const today = toIso(new Date());
   const [from, setFrom] = useState(() => toIso(addDays(weekStart(new Date()), -28)));
   const [to, setTo] = useState(today);
@@ -833,7 +867,7 @@ function VarianceTab() {
     timesheetsApi
       .attendanceVariance({ from, to, overAllocatedOnly: flaggedOnly })
       .then(setReport)
-      .catch((err) => setError(parseApiErrorForTimesheets(err, 'The variance report could not be run.').message))
+      .catch((err) => setError(parseApiErrorForTimesheets(err, tRef.current('The variance report could not be run.')).message))
       .finally(() => setLoading(false));
   }, [from, to, flaggedOnly]);
 
@@ -842,42 +876,43 @@ function VarianceTab() {
   return (
     <div className="space-y-4">
       <p className="max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-        What approved timesheets say, against what attendance recorded. Rows are written when a week is approved, so
-        this is the picture as it stood at the decision — not a figure recomputed today.
+        
+        {t('What approved timesheets say, against what attendance recorded. Rows are written when a week is approved, so this is the picture as it stood at the decision — not a figure recomputed today.')}
       </p>
 
       <div className="flex flex-wrap items-end gap-3">
         <div>
-          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="ts-var-from">From</label>
+          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="ts-var-from">{t('From')}</label>
           <input id="ts-var-from" type="date" className={`${inp} w-44`} value={from} onChange={(e) => setFrom(e.target.value)} />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="ts-var-to">To</label>
+          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="ts-var-to">{t('To')}</label>
           <input id="ts-var-to" type="date" className={`${inp} w-44`} value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
         <label className="flex items-center gap-2 pb-2 text-sm text-slate-600 dark:text-slate-300">
           <input type="checkbox" checked={flaggedOnly} onChange={(e) => setFlaggedOnly(e.target.checked)} />
-          Only days above attendance
+          
+          {t('Only days above attendance')}
         </label>
       </div>
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
-      {loading && <div className="surface"><Spinner label="Running the report…" /></div>}
+      {loading && <div className="surface"><Spinner label={t('Running the report…')} /></div>}
 
       {!loading && report && (
         <>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <KpiCard label="Logged" value={fmtHours(report.loggedMinutes)} />
-            <KpiCard label="Attendance" value={fmtHours(report.attendanceMinutes)} />
-            <KpiCard label="Days without attendance" value={String(report.daysWithoutAttendance)} />
-            <KpiCard label="Days above attendance" value={String(report.overAllocatedDays)} tone={report.overAllocatedDays > 0 ? 'warn' : 'default'} />
+            <KpiCard label={t('Logged')} value={fmtHours(t, report.loggedMinutes)} />
+            <KpiCard label={t('Attendance')} value={fmtHours(t, report.attendanceMinutes)} />
+            <KpiCard label={t('Days without attendance')} value={String(report.daysWithoutAttendance)} />
+            <KpiCard label={t('Days above attendance')} value={String(report.overAllocatedDays)} tone={report.overAllocatedDays > 0 ? 'warn' : 'default'} />
           </div>
 
           {report.items.length === 0 ? (
             <Empty
               icon={Scale}
-              title="Nothing to reconcile in this window"
-              hint="Rows appear once a timesheet covering these dates is approved."
+              title={t('Nothing to reconcile in this window')}
+              hint={t('Rows appear once a timesheet covering these dates is approved.')}
             />
           ) : (
             <div className="surface overflow-hidden">
@@ -885,8 +920,8 @@ function VarianceTab() {
                 <table className="w-full min-w-[720px] text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                      {['Employee', 'Day', 'Logged', 'Attendance', 'Variance', 'Attendance status'].map((h) => (
-                        <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                      {[msg('Employee'), msg('Day'), msg('Logged'), msg('Attendance'), msg('Variance'), msg('Attendance status')].map((h) => (
+                        <th key={h} className="px-3 py-2 text-start text-xs font-semibold uppercase text-slate-400">{t(h)}</th>
                       ))}
                     </tr>
                   </thead>
@@ -897,13 +932,13 @@ function VarianceTab() {
                         className={r.isOverAllocated ? 'bg-amber-50/60 dark:bg-amber-500/[0.06]' : 'hover:bg-slate-50 dark:hover:bg-white/[0.03]'}
                       >
                         <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{r.employeeName}</td>
-                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDay(r.workDate)}</td>
-                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(r.loggedMinutes)}</td>
+                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtDay(fx, r.workDate)}</td>
+                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(t, r.loggedMinutes)}</td>
                         <td className="px-3 py-2 text-slate-500 dark:text-slate-400">
-                          {r.attendanceMinutes === null ? <span className="text-slate-400">no record</span> : fmtHours(r.attendanceMinutes)}
+                          {r.attendanceMinutes === null ? <span className="text-slate-400">{t('No record')}</span> : fmtHours(t, r.attendanceMinutes)}
                         </td>
-                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(r.varianceMinutes)}</td>
-                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{r.attendanceStatus}</td>
+                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{fmtHours(t, r.varianceMinutes)}</td>
+                        <td className="px-3 py-2 text-slate-500 dark:text-slate-400"><EnumLabel enum="AttendanceStatus" value={r.attendanceStatus} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -922,14 +957,15 @@ function VarianceTab() {
 type Tab = 'my-week' | 'my-history' | 'approvals' | 'register' | 'variance';
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'my-week', label: 'My week', icon: CalendarClock },
-  { id: 'my-history', label: 'My timesheets', icon: FileClock },
-  { id: 'approvals', label: 'Approvals', icon: ClipboardCheck },
-  { id: 'register', label: 'All timesheets', icon: Inbox },
-  { id: 'variance', label: 'Attendance variance', icon: Scale },
+  { id: 'my-week', label: msg('My week'), icon: CalendarClock },
+  { id: 'my-history', label: msg('My timesheets'), icon: FileClock },
+  { id: 'approvals', label: msg('Approvals'), icon: ClipboardCheck },
+  { id: 'register', label: msg('All timesheets'), icon: Inbox },
+  { id: 'variance', label: msg('Attendance variance'), icon: Scale },
 ];
 
 export function TimesheetsPage() {
+  const t = useT();
   const { user, hasPermission } = useAuth();
 
   const canSelfServe = hasPermission('ess.read');
@@ -938,9 +974,9 @@ export function TimesheetsPage() {
 
   const visibleTabs = useMemo(
     () =>
-      TABS.filter((t) => {
-        if (t.id === 'my-week' || t.id === 'my-history') return canSelfServe;
-        if (t.id === 'approvals') return canDecide;
+      TABS.filter((tab) => {
+        if (tab.id === 'my-week' || tab.id === 'my-history') return canSelfServe;
+        if (tab.id === 'approvals') return canDecide;
         return canOversee;
       }),
     [canSelfServe, canDecide, canOversee],
@@ -949,18 +985,19 @@ export function TimesheetsPage() {
   const [tab, setTab] = useState<Tab>(() => visibleTabs[0]?.id ?? 'my-week');
 
   useEffect(() => {
-    if (!visibleTabs.some((t) => t.id === tab) && visibleTabs.length > 0) setTab(visibleTabs[0].id);
+    if (!visibleTabs.some((v) => v.id === tab) && visibleTabs.length > 0) setTab(visibleTabs[0].id);
   }, [visibleTabs, tab]);
 
-  const role = canDecide || canOversee ? (canSelfServe ? 'Manager' : 'Admin / HR') : 'Employee';
+  const role = canDecide || canOversee ? (canSelfServe ? t('Manager') : t('Admin / HR')) : t('Employee');
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Timesheets</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Timesheets')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            Record the week, send it for approval, and see it against the attendance on record.
+            
+            {t('Record the week, send it for approval, and see it against the attendance on record.')}
           </p>
         </div>
         <span className="shrink-0 rounded-full bg-sapphire/10 px-3 py-1 text-xs font-semibold text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent">
@@ -969,15 +1006,15 @@ export function TimesheetsPage() {
       </div>
 
       {visibleTabs.length === 0 ? (
-        <Empty icon={FileClock} title="You do not have access to timesheets" />
+        <Empty icon={FileClock} title={t('You do not have access to timesheets')} />
       ) : (
         <>
           <RovingTabList
-            items={visibleTabs.map(({ id, label, icon }) => ({ id, label, icon }))}
+            items={visibleTabs.map(({ id, label, icon }) => ({ id, label: t(label), icon }))}
             activeId={tab}
             onChange={setTab}
             idPrefix="timesheets"
-            label="Timesheet sections"
+            label={t('Timesheet sections')}
           />
           <TabPanel idPrefix="timesheets" tabId={tab}>
             {tab === 'my-week' && <MyWeekTab />}
@@ -989,7 +1026,7 @@ export function TimesheetsPage() {
         </>
       )}
 
-      {user === null && <p className="sr-only">Loading your session…</p>}
+      {user === null && <p className="sr-only">{t('Loading your session…')}</p>}
     </div>
   );
 }

@@ -18,6 +18,8 @@ import {
 } from '../api/identity';
 import { companiesApi } from '../api/organization';
 import client, { notifyApiError } from '../api/client';
+import { useCapabilities } from '../hooks/useCapabilities';
+import { CapabilityNote } from '../components/setup/CapabilityNote';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
@@ -28,6 +30,7 @@ import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwo
 import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
 import { localReturnPathOrNull } from '../lib/publicAuth';
 import { useLocale } from '../contexts/LocaleContext';
+import { useConfirm } from '../components/ui/useConfirm';
 import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
 import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
@@ -85,10 +88,10 @@ function RoleChips({ roles }: { roles: string[] }) {
   return (
     <span className="flex flex-wrap gap-1" title={roles.join(', ')}>
       {shown.map(r => (
-        <span key={r} className="whitespace-nowrap rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-700 dark:bg-slate-700/60 dark:text-slate-300">{r}</span>
+        <span key={r} className="whitespace-nowrap rounded-lg bg-slate-100 px-1.5 py-0.5 text-caption font-medium text-slate-700 dark:bg-slate-700/60 dark:text-slate-300">{r}</span>
       ))}
       {rest > 0 && (
-        <span className="whitespace-nowrap rounded-md bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"
+        <span className="whitespace-nowrap rounded-lg bg-violet-50 px-1.5 py-0.5 text-caption font-medium text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"
           aria-label={t('{count} more roles: {names}', { count: rest, names: roles.slice(2).join(', ') })}>
           +{rest}
         </span>
@@ -225,6 +228,24 @@ export function UsersTab() {
     if (returnTo) router.push(returnTo);
   };
 
+  const deletedView = statusFilter === 'Deleted';
+  // Delete is shown disabled, with the reason, where the server would refuse: your own account, or the last active administrator
+  // (decided from the list when the whole list is loaded; otherwise the server's refusal is shown).
+  const activeAdmins = users.filter(x => x.isActive && x.roles.includes('Admin'));
+  const wholeListLoaded = total <= users.length;
+  const deleteBlockedReason = (u: UserListItem): string | undefined => {
+    if (me?.id && u.id === me.id) return t('You cannot delete your own account.');
+    if (u.isActive && u.roles.includes('Admin') && wholeListLoaded && activeAdmins.length <= 1) return t('This is the last active administrator. Make someone else an administrator first.');
+    return undefined;
+  };
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const restoreUser = async (u: UserListItem) => {
+    setRestoringId(u.id);
+    try { const r = await usersApi.restore(u.id); toast.success?.(r.message); load(); }
+    catch (e) { notifyApiError(e, t('The account could not be restored.')); }
+    finally { setRestoringId(null); }
+  };
+
   const doAction = async () => {
     if (!showAction) return;
     setActionLoading(true); setActionErr('');
@@ -285,6 +306,7 @@ export function UsersTab() {
         <select className={inp('w-40')} value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }}>
           <option value="">All Statuses</option>
           {USER_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          <option value="Deleted">{t('Deleted (restorable)')}</option>
         </select>
         <button onClick={load} className="rounded-lg border border-slate-200 p-2 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
           <RefreshCw className="h-4 w-4 text-slate-500" />
@@ -336,7 +358,7 @@ export function UsersTab() {
                   <p className="font-medium text-slate-800 dark:text-slate-200">{u.fullName}</p>
                   <p className="text-xs text-slate-500">{u.email}</p>
                   {u.mfaEnabled && (
-                    <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-700 rtl:text-[13px] dark:text-emerald-400" data-testid="user-two-step-on">
+                    <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-700 rtl:text-body-sm dark:text-emerald-400" data-testid="user-two-step-on">
                       <Shield className="h-3 w-3" aria-hidden="true" /> {t('Two-step sign-in is on')}
                     </p>
                   )}
@@ -357,6 +379,12 @@ export function UsersTab() {
                 <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{t(ACCESS_MODE_LABELS[u.accessMode] ?? u.accessMode)}</td>
                 <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{u.lastLoginAtUtc ? fmtDateTime(u.lastLoginAtUtc) : t('Never')}</td>
                 <td className="px-4 py-3">
+                  {deletedView ? (
+                    <button type="button" onClick={() => restoreUser(u)} disabled={restoringId === u.id} data-testid="user-restore"
+                      className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
+                      <RotateCcw className="h-3 w-3" aria-hidden="true" /> {t('Restore')}<span className="sr-only"> {u.fullName}</span>
+                    </button>
+                  ) : (
                   <div className="flex items-center gap-1">
                     <button title="View Access" onClick={() => setSelected(u)} className="rounded p-1 hover:bg-slate-100 dark:hover:bg-slate-700">
                       <Eye className="h-3.5 w-3.5 text-slate-500" />
@@ -389,14 +417,16 @@ export function UsersTab() {
                         <RotateCcw className="h-3.5 w-3.5 text-violet-600" />
                       </button>
                     )}
-                    <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
+                    <button type="button" title={deleteBlockedReason(u) ?? t('Delete user')} aria-label={`${t('Delete user')} ${u.fullName}`} disabled={!!deleteBlockedReason(u)}
+                      onClick={() => setShowAction({ type: 'delete', userId: u.id })} data-testid="user-delete"
+                      className="rounded p-1 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
                     {canResetTwoStep(u) && (
                       <button
                         type="button"
                         onClick={() => setResetTwoStep(u)}
-                        className="ms-1 whitespace-nowrap rounded-lg border border-rose-200 px-2 py-1 text-xs font-medium text-rose-700 rtl:text-[13px] hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-900/30"
+                        className="ms-1 whitespace-nowrap rounded-lg border border-rose-200 px-2 py-1 text-xs font-medium text-rose-700 rtl:text-body-sm hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-900/30"
                         data-testid="user-reset-two-step"
                       >
                         {t('Reset two-step sign-in')}
@@ -412,6 +442,8 @@ export function UsersTab() {
                       </button>
                     )}
                   </div>
+                  )}
+                  {!deletedView && deleteBlockedReason(u) && <p className="mt-1 max-w-[16rem] text-caption leading-4 text-slate-500 dark:text-slate-400" data-testid="user-delete-reason">{deleteBlockedReason(u)}</p>}
                 </td>
               </tr>
             ))}
@@ -475,7 +507,7 @@ export function UsersTab() {
             </h3>
             {showAction.type === 'delete' && (
               <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">
-                This will permanently remove the user's access. This action cannot be undone.
+                This will permanently remove the user&apos;s access. This action cannot be undone.
               </p>
             )}
             {['suspend', 'lock'].includes(showAction.type) && (
@@ -1320,6 +1352,7 @@ export function RolesTab() {
   const [editPerms, setEditPerms] = useState<string[]>([]);
   const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
   const { t, locale } = useLocale();
+  const toast = useAppToast();
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -1362,12 +1395,48 @@ export function RolesTab() {
     finally { setSaving(false); }
   };
 
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [roleNotice, setRoleNotice] = useState<{ text: string; reassign?: boolean } | null>(null);
+
+  // Turning a role off signs out everyone who holds it, so the dialog names how many (the server counts them).
   const toggleRoleActive = async (r: RoleItem) => {
     try {
-      if (r.isActive) await rolesApi.deactivate(r.id);
-      else await rolesApi.activate(r.id);
+      if (r.isActive) {
+        const impact = await rolesApi.impact(r.id).catch(() => null);
+        const people = impact?.assignedUsers ?? 0;
+        const ok = await confirm({
+          title: t('Turn off role'),
+          message: people > 0
+            ? t('Role holders will be signed out: {count} hold {name}', { count: people, name: r.name })
+            : t('Nobody holds {name} right now. Turn it off?', { name: r.name }),
+          confirmLabel: t('Turn off'),
+          tone: 'danger',
+        });
+        if (!ok) return;
+        await rolesApi.deactivate(r.id);
+      } else await rolesApi.activate(r.id);
       reload();
-    } catch (e: unknown) { alert(localizedRefusal(e, locale) ?? 'Failed'); }
+    } catch (e: unknown) { setRoleNotice({ text: localizedRefusal(e, locale) ?? t('The role could not be changed.') }); }
+  };
+
+  // Remove a custom role: only when nobody holds it. Otherwise say who, and send the admin to reassign them.
+  const removeRole = async (r: RoleItem) => {
+    const ok = await confirm({
+      title: t('Remove role'),
+      message: t('Remove {name}? Only a role nobody holds can be removed. If people hold it, you are told how many and can reassign them first.', { name: r.name }),
+      confirmLabel: t('Remove'),
+      tone: 'danger',
+    });
+    if (!ok) return;
+    try {
+      await rolesApi.remove(r.id);
+      setRoleNotice({ text: t('Removed {name}.', { name: r.name }) });
+      reload();
+    } catch (e: unknown) {
+      const body = (e as { response?: { data?: { code?: string; message?: string; assignedUsers?: number } } })?.response?.data;
+      if (body?.code === 'ROLE_ASSIGNED') setRoleNotice({ text: t('Role still held: {count} hold {name}', { count: body.assignedUsers ?? 0, name: r.name }), reassign: true });
+      else setRoleNotice({ text: localizedRefusal(e, locale) ?? body?.message ?? t('The role could not be removed.') });
+    }
   };
 
   const togglePermInEdit = (key: string) => {
@@ -1388,9 +1457,9 @@ export function RolesTab() {
       .join('\n');
     try {
       await navigator.clipboard.writeText(text);
-      alert('Role summary copied to clipboard.');
+      toast.success(t('Role summary copied to clipboard.'));
     } catch {
-      alert('Copy failed. Please copy from the visible summary.');
+      toast.error(t('Copy failed. Please copy from the visible summary.'));
     }
   };
 
@@ -1419,20 +1488,20 @@ export function RolesTab() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-[10px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-caption font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
                       {r.authorityLevel}
                     </span>
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.name}</p>
                   </div>
                   <p className="mt-0.5 truncate text-xs text-slate-500">{r.description}</p>
                 </div>
-                <span className="shrink-0 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
+                <span className="shrink-0 rounded-full bg-violet-50 px-2 py-0.5 text-caption font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
                   {r.permissions.length} perms
                 </span>
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
-                {!r.isActive && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 dark:bg-slate-700">Inactive</span>}
-                {r.isSystem && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">System</span>}
+                {!r.isActive && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-caption text-slate-500 dark:bg-slate-700">Inactive</span>}
+                {r.isSystem && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-caption text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">System</span>}
               </div>
             </div>
           ))}
@@ -1519,6 +1588,13 @@ export function RolesTab() {
         </div>
       )}
 
+      {confirmDialog}
+      {roleNotice && (
+        <p role="status" data-testid="role-notice" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+          <span><bdi>{roleNotice.text}</bdi> {roleNotice.reassign && <a className="font-semibold text-blue-700 underline dark:text-sky-300" href="/setup?tab=users">{t('Open Users')}</a>}</span>
+          <button type="button" className="font-semibold underline" onClick={() => setRoleNotice(null)}>{t('Dismiss')}</button>
+        </p>
+      )}
       {loading ? <p className="text-sm text-slate-500">Loading…</p> : (
         <div className="space-y-2">
           {roles.map(r => (
@@ -1526,12 +1602,12 @@ export function RolesTab() {
               <div className="flex items-center gap-3 px-4 py-3">
                 <button type="button" onClick={() => setExpanded(prev => prev === r.id ? null : r.id)} className="flex-1 text-start min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-[10px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 shrink-0">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-violet-100 text-caption font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 shrink-0">
                       {r.authorityLevel}
                     </span>
                     <p className="font-medium text-slate-800 dark:text-slate-200 truncate">{r.name}</p>
-                    {!r.isActive && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 dark:bg-slate-700">Inactive</span>}
-                    {r.isSystem && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">System</span>}
+                    {!r.isActive && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-caption text-slate-500 dark:bg-slate-700">Inactive</span>}
+                    {r.isSystem && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-caption text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">System</span>}
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5 truncate">{r.description}</p>
                 </button>
@@ -1539,7 +1615,7 @@ export function RolesTab() {
                 <div className="flex items-center gap-1 shrink-0">
                   {editBlock(ceiling, r.id, locale) && (
                     <span data-testid={`role-locked-${r.name}`} title={editBlock(ceiling, r.id, locale) ?? undefined}
-                      className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                      className="rounded-full bg-amber-50 px-2 py-0.5 text-caption text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
                       {t('Not editable by you')}
                     </span>
                   )}
@@ -1547,6 +1623,15 @@ export function RolesTab() {
                     className="h-7 w-7 flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-slate-700">
                     <Edit2 className="h-3.5 w-3.5" />
                   </button>
+                  {r.isSystem && (
+                    <span data-testid={`role-system-locked-${r.name}`} className="text-caption text-slate-500 dark:text-slate-400">{t('Built-in role: it cannot be turned off or removed.')}</span>
+                  )}
+                  {!r.isSystem && (
+                    <button type="button" aria-label={t('Remove role')} title={editBlock(ceiling, r.id, locale) ?? t('Remove role')} onClick={() => removeRole(r)} disabled={!!editBlock(ceiling, r.id, locale)}
+                      className="h-7 w-7 flex items-center justify-center rounded-lg text-rose-500 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-rose-900/20">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   {!r.isSystem && (
                     <button type="button" title={editBlock(ceiling, r.id, locale) ?? (r.isActive ? 'Deactivate' : 'Activate')} onClick={() => toggleRoleActive(r)} disabled={!!editBlock(ceiling, r.id, locale)}
                       className={`h-7 w-7 flex items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-40 ${r.isActive ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-green-500 hover:bg-green-50 dark:hover:bg-green-900/20'}`}>
@@ -1630,6 +1715,7 @@ export function PermissionMatrixTab() {
   const [overrides, setOverrides] = useState<Record<string, Record<string, boolean>>>({});
   const [ceiling, setCeiling] = useState<AccessCeiling | null>(null);
   const { t, locale } = useLocale();
+  const toast = useAppToast();
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1669,7 +1755,7 @@ export function PermissionMatrixTab() {
       await rolesApi.saveMatrix(rolePermissions);
       setDirty(false);
       load();
-    } catch (e: unknown) { alert(localizedRefusal(e, locale) ?? 'Failed to save'); }
+    } catch (e: unknown) { toast.error(localizedRefusal(e, locale) ?? t('Failed to save')); }
     finally { setSaving(false); }
   };
 
@@ -1708,8 +1794,8 @@ export function PermissionMatrixTab() {
                     <th key={role.id} data-testid={`matrix-role-${role.name}`} data-locked={locked ? 'true' : 'false'} title={locked ?? role.description}
                       className="px-2 py-2.5 text-center font-medium text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 min-w-[80px]">
                       <span className="block truncate max-w-[76px]">{role.name}</span>
-                      <span className="text-[10px] text-slate-400 font-normal block">L{role.authorityLevel}</span>
-                      {locked && <span className="block text-[10px] font-normal text-amber-700 dark:text-amber-400">{t('Not editable by you')}</span>}
+                      <span className="text-caption text-slate-400 font-normal block">L{role.authorityLevel}</span>
+                      {locked && <span className="block text-caption font-normal text-amber-700 dark:text-amber-400">{t('Not editable by you')}</span>}
                     </th>
                   );
                 })}
@@ -1720,7 +1806,7 @@ export function PermissionMatrixTab() {
                 <tr key={row.permissionKey} className={i % 2 === 0 ? 'bg-white dark:bg-slate-900' : 'bg-slate-50/50 dark:bg-slate-800/20'}>
                   <td className="sticky start-0 z-10 bg-inherit px-3 py-1.5 border-e border-slate-200 dark:border-slate-700">
                     <p className="font-mono text-violet-700 dark:text-violet-400 truncate">{row.permissionKey}</p>
-                    <p className="text-slate-400 truncate text-[10px]">{row.description}</p>
+                    <p className="text-slate-400 truncate text-caption">{row.description}</p>
                   </td>
                   {matrix.roles.map(role => {
                     const checked = overrides[row.permissionKey]?.[role.id] ?? row.roles[role.id] ?? false;
@@ -1932,6 +2018,8 @@ export function PermissionGrantorsTab() {
 // ── Delegations Tab ────────────────────────────────────────────────────────────
 
 export function DelegationsTab() {
+  const { off } = useCapabilities();
+  const canWrite = !off('approvalDelegations.write');
   const [items, setItems] = useState<ApprovalDelegation[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -1964,11 +2052,15 @@ export function DelegationsTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <button type="button" onClick={() => setShowCreate(true)} className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700">
-          <Plus className="h-4 w-4" /> New Delegation
-        </button>
-      </div>
+      {canWrite ? (
+        <div className="flex justify-end">
+          <button type="button" onClick={() => setShowCreate(true)} className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700">
+            <Plus className="h-4 w-4" /> New Delegation
+          </button>
+        </div>
+      ) : (
+        <CapabilityNote title="Delegations are not available yet.">Nothing in the approval flow reads a delegation today, so a new one could not take effect. Existing delegations are listed below and can be cancelled. To cover an absence, change the approver on the approval workflow&apos;s step.</CapabilityNote>
+      )}
       <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
         <table className="w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
@@ -2033,6 +2125,8 @@ export function DelegationsTab() {
 // ── Authorities Tab ────────────────────────────────────────────────────────────
 
 export function AuthoritiesTab() {
+  const { off } = useCapabilities();
+  const canWrite = !off('approvalAuthorities.write');
   const [items, setItems] = useState<ApprovalAuthority[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -2061,11 +2155,15 @@ export function AuthoritiesTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <button type="button" onClick={() => setShowCreate(true)} className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700">
-          <Plus className="h-4 w-4" /> New Authority
-        </button>
-      </div>
+      {canWrite ? (
+        <div className="flex justify-end">
+          <button type="button" onClick={() => setShowCreate(true)} className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700">
+            <Plus className="h-4 w-4" /> New Authority
+          </button>
+        </div>
+      ) : (
+        <CapabilityNote title="Approval limits are not available yet.">An amount limit has nothing to be compared against today, so a new one could not be enforced. Existing entries are listed below. For approval seniority, use ordered steps on the approval workflow.</CapabilityNote>
+      )}
       <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
         <table className="w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/60">
@@ -2144,8 +2242,8 @@ type SecurityPatch = (patch: Partial<SecuritySetting>) => void;
 
 const GROUP_CLASS = 'space-y-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900';
 const GROUP_HEADING_CLASS = 'border-b border-slate-100 pb-2 text-sm font-semibold text-slate-700 dark:border-slate-800 dark:text-slate-200';
-const LABEL_CLASS = 'block text-xs font-medium text-slate-600 dark:text-slate-400 rtl:text-[13px]';
-const HINT_CLASS = 'mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-[13px]';
+const LABEL_CLASS = 'block text-xs font-medium text-slate-600 dark:text-slate-400 rtl:text-body-sm';
+const HINT_CLASS = 'mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-body-sm';
 
 function SecurityNumberField({ id, label, unit, range, hint, infoKey, value, min, max, onChange }: {
   id: string; label: string; unit?: string; range?: string; hint?: string; infoKey?: string;
@@ -2292,7 +2390,7 @@ function TwoStepPolicyGroup({ security, savedPolicy, onChange }: { security: Sec
       <h3 id="sec-two-step-heading" className={GROUP_HEADING_CLASS}>{t('Two-step sign-in')}</h3>
 
       <fieldset className="space-y-3">
-        <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400 rtl:text-[13px]">{t('Who must use two-step sign-in')}</legend>
+        <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-400 rtl:text-body-sm">{t('Who must use two-step sign-in')}</legend>
         {policyOptions.map(opt => (
           <label key={opt.value} htmlFor={`sec-mfa-policy-${opt.value}`}
             className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${policy === opt.value
@@ -2304,7 +2402,7 @@ function TwoStepPolicyGroup({ security, savedPolicy, onChange }: { security: Sec
               className="mt-1 h-4 w-4 shrink-0 accent-violet-600" />
             <span className="min-w-0">
               <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">{opt.title}</span>
-              <span className="mt-0.5 block text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-[13px]">{opt.hint}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-slate-500 dark:text-slate-400 rtl:text-body-sm">{opt.hint}</span>
             </span>
           </label>
         ))}
@@ -2315,7 +2413,7 @@ function TwoStepPolicyGroup({ security, savedPolicy, onChange }: { security: Sec
             </p>
             {savedPolicy !== 'Optional' && (
               <div>
-                <label htmlFor="sec-mfa-policy-reason" className="mb-1 block text-xs font-medium text-amber-900 dark:text-amber-200 rtl:text-[13px]">{t('Reason (required)')}</label>
+                <label htmlFor="sec-mfa-policy-reason" className="mb-1 block text-xs font-medium text-amber-900 dark:text-amber-200 rtl:text-body-sm">{t('Reason (required)')}</label>
                 <textarea id="sec-mfa-policy-reason" rows={2} maxLength={500} required
                   value={security.mfaPolicyReason ?? ''}
                   onChange={event => onChange({ mfaPolicyReason: event.target.value })}

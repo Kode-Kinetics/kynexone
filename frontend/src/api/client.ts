@@ -200,7 +200,7 @@ export function notifyApiError(err: unknown, fallback = 'Something went wrong. P
  * domain refusal, a validation message), "could not be reached" when nothing answered, otherwise
  * the caller's fallback. Never a bare error code ("maker_checker_violation") or an HTML page.
  */
-export function apiErrorReason(err: unknown, fallback: string): string {
+export function apiErrorReason(err: unknown, fallback: string, locale?: string): string {
   const e = err as { isAxiosError?: boolean; response?: { status?: number; data?: unknown } } | null;
   if (e?.isAxiosError && !e.response) return 'The server could not be reached. Check your connection, then retry.';
   // A 5xx body is server exception text, not a reason for the user: keep the caller's sentence.
@@ -210,12 +210,15 @@ export function apiErrorReason(err: unknown, fallback: string): string {
   const sentence = (v: unknown): string | null => (typeof v === 'string' && v.trim() && !/^\s*</.test(v) && v.length < 500 ? v.trim() : null);
   if (typeof data === 'string') return sentence(data) ?? fallback;
   if (data && typeof data === 'object') {
-    const body = data as { message?: unknown; detail?: unknown; error?: unknown; errors?: unknown; title?: unknown };
+    const body = data as { message?: unknown; messageAr?: unknown; detail?: unknown; error?: unknown; errors?: unknown; title?: unknown };
     const fromErrors = body.errors && typeof body.errors === 'object'
       ? Object.values(body.errors as Record<string, unknown>).flat().map(sentence).filter((m): m is string => !!m).slice(0, 3).join(' ') || null
       : null;
     // `error` is often a machine code; only a value with a space in it is a sentence.
     const errorText = sentence(body.error);
+    // Refusals that ship both languages (no_eligible_approver, ...) are shown in the reader's own: `locale`, else the page's.
+    const lang = locale ?? (typeof document !== 'undefined' ? document.documentElement.lang : '');
+    if (lang === 'ar' && sentence(body.messageAr)) return sentence(body.messageAr)!;
     return sentence(body.message) ?? sentence(body.detail) ?? fromErrors ?? (errorText && /\s/.test(errorText) ? errorText : null) ?? fallback;
   }
   return fallback;

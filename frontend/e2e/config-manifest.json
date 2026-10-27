@@ -1,0 +1,141 @@
+{
+  "_comment": "Playwright configs that no PR workflow runs directly. Each is nightly (listed in nightly.yml), manual, or manual-stack, with a reason. frontend/scripts/check-playwright-configs.mjs fails CI on any config that is neither referenced by a workflow nor listed here.",
+  "configs": {
+    "playwright.app-chrome.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.benefit-defaults.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.company-setup-rules.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.company-setup-wizard.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.compensation-real.config.ts": {
+      "disposition": "manual-stack",
+      "reason": "Real-backend compensation journey with a seed project on :5213/:5313; needs its own disposable stack. OWNER DECISION: nightly compose job or retire."
+    },
+    "playwright.compensation.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.demo-seed.config.ts": {
+      "disposition": "manual",
+      "reason": "Seeds the Masar demo tenant on demand (npm run seed:demo-masar); a tool, not a test suite."
+    },
+    "playwright.email-manual.config.ts": {
+      "disposition": "manual",
+      "reason": "Greps for the 'email regression' pattern across four specs for a human-driven check against a hand-started frontend; not a regression gate."
+    },
+    "playwright.employee-import.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.employee-wizard.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.engagement-journey.config.ts": {
+      "disposition": "manual-stack",
+      "reason": "Needs its own disposable backend stack and a headed run option (root testIgnore). OWNER DECISION: add a compose-backed nightly job or retire."
+    },
+    "playwright.engagement.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.ess-workspace.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.fixture.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.g1.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.gl-api-keys.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.gl-eosb.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.gl-journal-exports.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.gl-setup.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.grade-package.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.jawazat.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.learning-journey.config.ts": {
+      "disposition": "manual-stack",
+      "reason": "Needs its own disposable backend stack plus the cmi5 sample unit on :5411 (see root playwright.config.ts testIgnore). OWNER DECISION: add a compose-backed nightly job or retire."
+    },
+    "playwright.learning.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.leave-per-company.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.loans.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.matrix.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.policy-form-prefill.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.policy-intake-kill-switch.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.renewals.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.setup-consolidation.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.setup-progress-search.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.statutory-rules.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.succession-journey.config.ts": {
+      "disposition": "manual-stack",
+      "reason": "Needs its own disposable backend stack (root testIgnore). OWNER DECISION: add a compose-backed nightly job or retire."
+    },
+    "playwright.succession.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    }
+  }
+}

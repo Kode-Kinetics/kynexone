@@ -599,13 +599,13 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                     >
                       <td className="px-3 py-2">
                         <p className="text-slate-800 dark:text-slate-100">{r.label || r.driverKey}</p>
-                        <p className="text-[11px] text-slate-500"><span className="font-mono">{r.driverKey}</span></p>
+                        <p className="text-caption text-slate-500"><span className="font-mono">{r.driverKey}</span></p>
                       </td>
                       <td className="px-3 py-2">
                         {r.componentCodes && r.componentCodes.length > 0 ? (
                           <div className="flex max-w-[220px] flex-wrap gap-1">
                             {r.componentCodes.map((c) => (
-                              <span key={c} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600 dark:bg-white/10 dark:text-slate-300">
+                              <span key={c} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-caption text-slate-600 dark:bg-white/10 dark:text-slate-300">
                                 {c}
                               </span>
                             ))}
@@ -848,13 +848,13 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                                   onClick={() => deleteAccount(a)}
                                   disabled={!writable || deletingId === a.id}
                                   aria-label={t('Delete account {code}', { code: a.code })}
-                                  className="h-7 rounded-md border border-slate-200 px-2 text-xs font-medium text-rose-600 hover:border-rose-300 hover:bg-rose-50 disabled:opacity-40 dark:border-white/10 dark:text-rose-400 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10"
+                                  className="h-7 rounded-lg border border-slate-200 px-2 text-xs font-medium text-rose-600 hover:border-rose-300 hover:bg-rose-50 disabled:opacity-40 dark:border-white/10 dark:text-rose-400 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10"
                                 >
                                   {t('Delete')}
                                 </button>
                               </>
                             ) : (
-                              <span className="text-[11px] text-slate-400" aria-hidden>—</span>
+                              <span className="text-caption text-slate-400" aria-hidden>—</span>
                             )}
                           </div>
                         </td>
@@ -917,10 +917,10 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                 <Plus className="h-3 w-3" aria-hidden /> {t('Add account')}
               </button>
             </div>
-            <p id="gl-new-type-hint" data-testid="cc-acct-type-hint" className="mt-1.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+            <p id="gl-new-type-hint" data-testid="cc-acct-type-hint" className="mt-1.5 text-caption leading-snug text-slate-500 dark:text-slate-400">
               {t('What kind of account this is. Cost centres are set separately, in Cost centre rule.')}
             </p>
-            <p id="gl-new-erp-code-hint" className="mt-1.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+            <p id="gl-new-erp-code-hint" className="mt-1.5 text-caption leading-snug text-slate-500 dark:text-slate-400">
               {t('ERP account code')}: {t('The account code in your ERP if it differs from this one. Journal exports use it.')}
             </p>
           </div>
@@ -958,7 +958,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
           )}
         </div>
 
-        <div className="mb-3 space-y-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+        <div className="mb-3 space-y-1 text-caption leading-snug text-slate-500 dark:text-slate-400">
           <p>{t('Functional class: use a different account for cost centres of this class, for example Selling or Operations.')}</p>
           <p>{t('Fixed cost centre: always post this line to one cost centre, whatever the employee\'s own cost centre.')}</p>
           <p id="cc-map-account-first-hint">{t('Choose an account for a line before setting its functional class or fixed cost centre.')}</p>
@@ -1023,7 +1023,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                   const inheritedAccount = inCompanyView && r.inherited ? accountLabel(r.mappedAccountId) : null;
                   const hintId = `cc-map-excl-${r.driverKey.replace(/[^A-Za-z0-9_-]/g, '_')}`;
                   const hint = (
-                    <p id={hintId} data-testid={`cc-map-exclusive-hint-${r.driverKey}`} className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                    <p id={hintId} data-testid={`cc-map-exclusive-hint-${r.driverKey}`} className="mt-1 text-caption leading-snug text-slate-500 dark:text-slate-400">
                       {t('A posting rule uses either a functional class or a fixed cost centre, not both.')}
                     </p>
                   );
@@ -1037,8 +1037,8 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             {isOverridden && <Badge tone="violet" wrap>{t('Company override')}</Badge>}
                             {inCompanyView && !isOverridden && r.mappedAccountId && <InheritedBadge short />}
                           </div>
-                          <p className="text-[11px] text-slate-500">{driverCategoryLabel(t, r.category)}</p>
-                          <p className="break-words text-[11px] text-slate-500">
+                          <p className="text-caption text-slate-500">{driverCategoryLabel(t, r.category)}</p>
+                          <p className="break-words text-caption text-slate-500">
                             {inheritedAccount && !isOverridden
                               ? <BdiMessage testId={`cc-map-fallback-${r.driverKey}`} message={msg('Fallback {account} · inherits {inherited}')} values={{ account: r.defaultAccount, inherited: inheritedAccount }} />
                               : <BdiMessage testId={`cc-map-fallback-${r.driverKey}`} message={msg('Fallback {account}')} values={{ account: r.defaultAccount }} />}
@@ -1082,7 +1082,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                           </select>
                           {ex.why === 'fixed' && hint}
                           {dup && (
-                            <p role="alert" data-testid={`cc-map-dup-error-${r.driverKey}`} className="mt-1 text-[11px] font-medium text-rose-700 dark:text-rose-300">
+                            <p role="alert" data-testid={`cc-map-dup-error-${r.driverKey}`} className="mt-1 text-caption font-medium text-rose-700 dark:text-rose-300">
                               {t('This line already has a rule for this class.')}
                             </p>
                           )}
@@ -1170,7 +1170,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                             </select>
                           </td>
                           <td className="px-2 py-2 text-xs text-slate-600 dark:text-slate-300">{classLabel(rule.cls)}</td>
-                          <td className="px-2 py-2 text-[11px] text-slate-400" aria-hidden>—</td>
+                          <td className="px-2 py-2 text-caption text-slate-400" aria-hidden>—</td>
                           <td className="px-2 py-2 text-end">
                             {mapEditable && !rule.inherited ? (
                               <button
@@ -1187,7 +1187,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                                 {t('Remove rule')}
                               </button>
                             ) : (
-                              <span className="text-[11px] text-slate-400" aria-hidden>—</span>
+                              <span className="text-caption text-slate-400" aria-hidden>—</span>
                             )}
                           </td>
                         </tr>

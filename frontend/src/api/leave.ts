@@ -1,4 +1,5 @@
 import client from './client';
+import { setupRowApi } from './orgRows';
 import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
@@ -324,14 +325,14 @@ export interface LeaveDashboard {
 
 export const leaveTypesApi = {
   /** `companyId` narrows to one company (with `includeUnassigned`, plus legacy rows no company owns); `employeeId` gives the types that employee may request. */
-  list: (params?: { companyId?: string; includeUnassigned?: boolean; employeeId?: number }) =>
+  list: (params?: { companyId?: string; includeUnassigned?: boolean; employeeId?: number; includeInactive?: boolean }) =>
     client.get<LeaveType[]>('/api/leave/types', params ? { params } : undefined).then(r => requireList<LeaveType>(r.data, 'leave types')),
   create: (body: { code: string; nameEn: string; nameAr?: string; category: string; isPaid: boolean; isHalfDayAllowed: boolean; isHourlyAllowed: boolean; requiresAttachment: boolean; requiresReason: boolean; maxConsecutiveDays: number; colorCode?: string; sortOrder?: number; companyId?: string }) =>
     client.post<LeaveType>('/api/leave/types', body).then(r => r.data),
   update: (id: string, body: object) =>
     client.put<LeaveType>(`/api/leave/types/${id}`, body).then(r => r.data),
-  delete: (id: string) =>
-    client.delete(`/api/leave/types/${id}`).then(r => r.data),
+  /** Setup's Remove / Restore: unused = deleted, used = turned off. Statutory types need `acknowledge`. */
+  removal: setupRowApi('/api/leave/types', 'acknowledgeStatutory', 'LEAVE_TYPE_STATUTORY'),
 };
 
 export const leavePoliciesApi = {

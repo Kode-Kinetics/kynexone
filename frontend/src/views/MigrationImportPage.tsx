@@ -12,6 +12,41 @@ import {
   MIGRATION_SECTIONS, migrationsApi,
   type LockedPeriodRefusal, type MigrationPackageRequest, type MigrationReconciliation, type SectionMeta,
 } from '@/src/api/migrations';
+import { useT } from '@/src/hooks/useT';
+import { useFormat } from '@/src/hooks/useFormat';
+import { EnumLabel } from '@/src/components/EnumLabel';
+import { enumLabel } from '@/src/i18n/enumLabel';
+
+type Translate = (key: string, params?: Record<string, string | number | null | undefined>) => string;
+
+/** Splices React nodes into a translated sentence: translate with `mark('name')` as the value, then pass the nodes. */
+const mark = (name: string) => `\u0001${name}\u0001`;
+function rich(text: string, nodes: Record<string, React.ReactNode>): React.ReactNode[] {
+  return text.split(/\u0001(\w+)\u0001/).map((part, i) => (i % 2 === 1 ? <span key={i}>{nodes[part]}</span> : part));
+}
+
+/** The section names and descriptions live in api/migrations.ts as English; this is their translation by key. */
+function sectionText(t: Translate): Record<string, { label: string; description: string }> {
+  return {
+    companyCutover: { label: t('Cutover dates'), description: t('One row per legal entity, naming the date this product takes over its payroll. Import this first — nothing else is accepted without it.') },
+    roles: { label: t('Roles'), description: t('Security roles carried across from the previous system.') },
+    users: { label: t('Users'), description: t('Login accounts, invited rather than activated.') },
+    leaveBalances: { label: t('Leave balances'), description: t('Entitled, accrued, used, carried forward and encashed, per leave type.') },
+    attendanceDaily: { label: t('Attendance history'), description: t('Daily records including late, early-exit and overtime minutes.') },
+    employeeHistory: { label: t('Employment history'), description: t('Job and status changes, as an audit trail.') },
+    payrollOpeningBalances: { label: t('Year-to-date payroll'), description: t('YTD gross, deductions and net, plus the statutory and tax split for the annual reconciliation.') },
+    loans: { label: t('Loans'), description: t('Outstanding balances with their remaining instalment schedules, imported mid-life so payroll keeps deducting correctly.') },
+    advances: { label: t('Salary advances'), description: t('Outstanding advance balances and their remaining repayments.') },
+    eosbOpeningProvision: { label: t('End-of-service provision'), description: t('The accrued liability already on the customer’s balance sheet, per employee.') },
+    benefitsEnrollments: { label: t('Benefits enrolments'), description: t('Plan enrolments and contributions.') },
+    documentManifests: { label: t('Document manifest'), description: t('Pointers to documents in the legacy store. No files are moved.') },
+    contracts: { label: t('Contracts'), description: t('Employment contracts and their basic salary.') },
+    reconciliationSignoffs: { label: t('Reconciliation sign-off'), description: t('Who prepared and who approved the reconciliation, with the variance count and evidence.') },
+  };
+}
+function sectionOf(t: Translate, s: SectionMeta) {
+  return sectionText(t)[s.key] ?? { label: s.label, description: s.description };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Opening-balance import wizard
@@ -61,13 +96,13 @@ function writeHistory(runs: StoredRun[]) {
   }
 }
 
-function errorMessage(err: unknown): string {
+function errorMessage(err: unknown, fallback: string): string {
   const anyErr = err as { response?: { data?: { message?: string; errors?: string[] } }; message?: string };
   const data = anyErr?.response?.data;
   if (data?.message) return data.message;
   if (Array.isArray(data?.errors) && data.errors.length > 0) return data.errors.join(' · ');
   if (Array.isArray(data)) return (data as string[]).join(' · ');
-  return anyErr?.message ?? 'Something went wrong. Please try again.';
+  return anyErr?.message ?? fallback;
 }
 
 function lockedRefusals(err: unknown): LockedPeriodRefusal[] {
@@ -75,17 +110,15 @@ function lockedRefusals(err: unknown): LockedPeriodRefusal[] {
   return data?.code === 'cutover_period_locked' ? data.refusals ?? [] : [];
 }
 
-const money = (n: number) =>
-  n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-const OPENING_BALANCES_DESCRIPTION =
-  'Carry a customer in from their previous system, at any point in the year. Import the cutover date for each legal entity first, then the balances that sit under it — year-to-date payroll, leave, loans, advances and the end-of-service provision. Nothing is written until you have seen the reconciliation.';
 
 /**
  * Opening balances. `embedded` is its Setup section (Setup → Get started): the section header already names it, so only
  * its description and the "Start over" action are shown, without a page title.
  */
 export function MigrationImportPage({ embedded = false, onDirtyChange }: { embedded?: boolean; onDirtyChange?: (dirty: boolean) => void } = {}) {
+  const t = useT();
+  const OPENING_BALANCES_DESCRIPTION = t('Carry a customer in from their previous system, at any point in the year. Import the cutover date for each legal entity first, then the balances that sit under it — year-to-date payroll, leave, loans, advances and the end-of-service provision. Nothing is written until you have seen the reconciliation.');
+  const failMessage = (e: unknown) => errorMessage(e, t('Something went wrong. Please try again.'));
   const [step, setStep] = useState<Step>('choose');
   const [selected, setSelected] = useState<string[]>([]);
   const [files, setFiles] = useState<Record<string, string>>({});
@@ -116,15 +149,16 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
     let cancelled = false;
     migrationsApi
       .templates()
-      .then((t) => {
-        if (!cancelled) setTemplates(t);
+      .then((tpl) => {
+        if (!cancelled) setTemplates(tpl);
       })
       .catch((e) => {
-        if (!cancelled) setTemplatesError(errorMessage(e));
+        if (!cancelled) setTemplatesError(failMessage(e));
       });
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const chosen: SectionMeta[] = useMemo(
@@ -210,7 +244,7 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
       setRefusals(dto.lockedPeriodRefusals ?? []);
       setStep('preview');
     } catch (e) {
-      setError(errorMessage(e));
+      setError(failMessage(e));
     } finally {
       setBusy(null);
     }
@@ -229,7 +263,7 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
     } catch (e) {
       const locked = lockedRefusals(e);
       if (locked.length > 0) setRefusals(locked);
-      setError(errorMessage(e));
+      setError(failMessage(e));
     } finally {
       setBusy(null);
     }
@@ -244,7 +278,7 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
       remember(dto, run.package);
       setStep('done');
     } catch (e) {
-      setError(errorMessage(e));
+      setError(failMessage(e));
     } finally {
       setBusy(null);
     }
@@ -258,7 +292,7 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
       setResult(dto);
       setStep('done');
     } catch (e) {
-      setError(errorMessage(e));
+      setError(failMessage(e));
     } finally {
       setBusy(null);
     }
@@ -283,7 +317,7 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
       className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
     >
       <RotateCcw className="h-4 w-4" aria-hidden="true" />
-      Start over
+      {t('Start over')}
     </button>
   ) : null;
 
@@ -296,8 +330,8 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
         </div>
       ) : (
         <SectionHeader
-          eyebrow="Implementation"
-          title="Opening balances"
+          eyebrow={t('Implementation')}
+          title={t('Opening balances')}
           description={OPENING_BALANCES_DESCRIPTION}
           action={startOverButton}
         />
@@ -364,17 +398,15 @@ export function MigrationImportPage({ embedded = false, onDirtyChange }: { embed
 
 // ── Stepper ──────────────────────────────────────────────────────────────────
 
-const STEPS: { key: Step; label: string }[] = [
-  { key: 'choose', label: 'Choose sections' },
-  { key: 'upload', label: 'Attach files' },
-  { key: 'preview', label: 'Reconcile' },
-  { key: 'done', label: 'Result' },
-];
+const STEP_KEYS: Step[] = ['choose', 'upload', 'preview', 'done'];
 
 function Stepper({ step }: { step: Step }) {
+  const t = useT();
+  const labels: Record<Step, string> = { choose: t('Choose sections'), upload: t('Attach files'), preview: t('Reconcile'), done: t('Result') };
+  const STEPS = STEP_KEYS.map((key) => ({ key, label: labels[key] }));
   const activeIndex = STEPS.findIndex((s) => s.key === step);
   return (
-    <ol className="flex flex-wrap items-center gap-x-2 gap-y-2 text-xs font-semibold" aria-label="Import progress">
+    <ol className="flex flex-wrap items-center gap-x-2 gap-y-2 text-xs font-semibold" aria-label={t('Import progress')}>
       {STEPS.map((s, i) => {
         const state = i < activeIndex ? 'done' : i === activeIndex ? 'current' : 'todo';
         return (
@@ -415,17 +447,18 @@ function ChooseStep({
   onDownload: (key: string) => void;
   onNext: () => void;
 }) {
+  const t = useT();
   const cutoverChosen = selected.includes('companyCutover');
   const balanceChosen = selected.some((k) => MIGRATION_SECTIONS.find((s) => s.key === k)?.openingBalance);
 
   return (
     <DataPanel
-      title="What are you loading?"
-      description="Pick one or more sections. They are applied in the order shown."
+      title={t('What are you loading?')}
+      description={t('Pick one or more sections. They are applied in the order shown.')}
     >
       {templatesError ? (
         <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
-          Templates could not be loaded ({templatesError}). You can still attach files, but check your column headings against the documentation.
+          {t('Templates could not be loaded ({error}). You can still attach files, but check your column headings against the documentation.', { error: templatesError })}
         </p>
       ) : null}
 
@@ -433,9 +466,8 @@ function ChooseStep({
         <p className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span>
-            You have chosen an opening-balance section without <strong>Cutover dates</strong>. Loans, advances and
-            end-of-service provisions are refused unless the employee’s legal entity has an active cutover — either add
-            that section here, or import it on its own first.
+            {rich(t('You have chosen an opening-balance section without {section}. Loans, advances and end-of-service provisions are refused unless the employee’s legal entity has an active cutover — either add that section here, or import it on its own first.', { section: mark('section') }),
+              { section: <strong>{t('Cutover dates')}</strong> })}
           </span>
         </p>
       ) : null}
@@ -463,14 +495,14 @@ function ChooseStep({
                 />
                 <div className="min-w-0 flex-1">
                   <label htmlFor={`section-${s.key}`} className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
-                    {s.label}
+                    {sectionOf(t, s).label}
                     {s.openingBalance ? (
-                      <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
-                        Opening balance
+                      <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-caption font-semibold uppercase tracking-wide text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                        {t('Opening balance')}
                       </span>
                     ) : null}
                   </label>
-                  <p className="mt-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400">{s.description}</p>
+                  <p className="mt-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400">{sectionOf(t, s).description}</p>
                 </div>
                 <button
                   type="button"
@@ -479,7 +511,7 @@ function ChooseStep({
                   className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                 >
                   <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                  Template
+                  {t('Template')}
                 </button>
               </div>
             </li>
@@ -494,7 +526,7 @@ function ChooseStep({
           disabled={selected.length === 0}
           className="inline-flex items-center gap-2 rounded-lg bg-sapphire px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sapphire/90 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-cyanAccent dark:text-slate-950 dark:hover:bg-cyanAccent/90"
         >
-          Attach files
+          {t('Attach files')}
           <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
@@ -522,26 +554,26 @@ function UploadStep({
   onBack: () => void;
   onPreview: () => void;
 }) {
+  const t = useT();
   return (
     <DataPanel
-      title="Attach a CSV for each section"
-      description="Files are read in the browser and sent as one package. Nothing is written yet."
+      title={t('Attach a CSV for each section')}
+      description={t('Files are read in the browser and sent as one package. Nothing is written yet.')}
     >
       <div className="mb-5">
         <label htmlFor="batch-ref" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-          Batch reference <span className="font-normal text-slate-500 dark:text-slate-400">(optional)</span>
+          {t('Batch reference')} <span className="font-normal text-slate-500 dark:text-slate-400">{t('(optional)')}</span>
         </label>
         <input
           id="batch-ref"
           type="text"
           value={batchRef}
           onChange={(e) => onBatchRef(e.target.value)}
-          placeholder="e.g. acme-wave1-september"
+          placeholder={t('Example: acme-wave1-september')}
           className="mt-1 w-full max-w-md rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sapphire focus:outline-none focus:ring-1 focus:ring-sapphire dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:placeholder:text-slate-500"
         />
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Give the batch a name and a re-run under the same name resumes it rather than starting a second import. The
-          package is checksummed, so the same name with a different file is refused.
+          {t('Give the batch a name and a re-run under the same name resumes it rather than starting a second import. The package is checksummed, so the same name with a different file is refused.')}
         </p>
       </div>
 
@@ -552,14 +584,14 @@ function UploadStep({
             <li key={s.key} className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-slate-900 dark:text-white">{s.label}</p>
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">{sectionOf(t, s).label}</p>
                   {name ? (
                     <p className="mt-0.5 flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400">
                       <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
                       {name}
                     </p>
                   ) : (
-                    <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">No file attached — this section will be skipped.</p>
+                    <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t('No file attached — this section will be skipped.')}</p>
                   )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -570,12 +602,12 @@ function UploadStep({
                       className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                     >
                       <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                      Template
+                      {t('Template')}
                     </button>
                   ) : null}
                   <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
                     <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                    {name ? 'Replace' : 'Attach CSV'}
+                    {name ? t('Replace') : t('Attach CSV')}
                     <input
                       ref={(el) => {
                         fileInputs.current[s.key] = el;
@@ -593,7 +625,7 @@ function UploadStep({
                     <button
                       type="button"
                       onClick={() => onDetach(s.key)}
-                      aria-label={`Remove the file attached to ${s.label}`}
+                      aria-label={t('Remove the file attached to {section}', { section: sectionOf(t, s).label })}
                       className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
                     >
                       <X className="h-4 w-4" aria-hidden="true" />
@@ -612,7 +644,7 @@ function UploadStep({
           onClick={onBack}
           className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
         >
-          Back
+          {t('Back')}
         </button>
         <button
           type="button"
@@ -621,7 +653,7 @@ function UploadStep({
           className="inline-flex items-center gap-2 rounded-lg bg-sapphire px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sapphire/90 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-cyanAccent dark:text-slate-950 dark:hover:bg-cyanAccent/90"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <PlayCircle className="h-4 w-4" aria-hidden="true" />}
-          {busy ? 'Reconciling…' : 'Preview and reconcile'}
+          {busy ? t('Reconciling…') : t('Preview and reconcile')}
         </button>
       </div>
     </DataPanel>
@@ -639,6 +671,9 @@ function PreviewStep({
   onBack: () => void;
   onCommit: () => void;
 }) {
+  const t = useT();
+  const fx = useFormat();
+  const sectionNames = sectionText(t);
   const sections = Object.keys(preview.sectionCounts ?? {});
   const totals = preview.sectionTotals ?? {};
   const willReject = preview.errors?.length ?? 0;
@@ -646,21 +681,21 @@ function PreviewStep({
   return (
     <div className="space-y-4">
       <DataPanel
-        title="Reconciliation"
-        description="Tie the control total for each section to the bottom line of the report from the outgoing system before you commit. The total is what the FILE claims, over every row — including the rows listed below as rejections."
+        title={t('Reconciliation')}
+        description={t('Tie the control total for each section to the bottom line of the report from the outgoing system before you commit. The total is what the FILE claims, over every row — including the rows listed below as rejections.')}
       >
         {sections.length === 0 ? (
           <p className="py-6 text-center text-sm text-slate-500 dark:text-slate-400">
-            The package contained no rows to reconcile.
+            {t('The package contained no rows to reconcile.')}
           </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[32rem] text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-start text-xs uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                  <th scope="col" className="py-2 pe-4 font-semibold">Section</th>
-                  <th scope="col" className="py-2 pe-4 text-end font-semibold">Rows</th>
-                  <th scope="col" className="py-2 text-end font-semibold">Control total</th>
+                  <th scope="col" className="py-2 pe-4 font-semibold">{t('Section')}</th>
+                  <th scope="col" className="py-2 pe-4 text-end font-semibold">{t('Rows')}</th>
+                  <th scope="col" className="py-2 text-end font-semibold">{t('Control total')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -669,10 +704,10 @@ function PreviewStep({
                   const total = totals[key] ?? 0;
                   return (
                     <tr key={key}>
-                      <td className="py-2 pe-4 text-slate-800 dark:text-slate-200">{meta?.label ?? key}</td>
-                      <td className="py-2 pe-4 text-end tabular-nums text-slate-800 dark:text-slate-200">{preview.sectionCounts[key]}</td>
+                      <td className="py-2 pe-4 text-slate-800 dark:text-slate-200">{sectionNames[key]?.label ?? meta?.label ?? key}</td>
+                      <td className="py-2 pe-4 text-end tabular-nums text-slate-800 dark:text-slate-200">{fx.integer(preview.sectionCounts[key])}</td>
                       <td className="py-2 text-end tabular-nums text-slate-800 dark:text-slate-200">
-                        {total === 0 ? <span className="text-slate-400 dark:text-slate-500">—</span> : money(total)}
+                        {total === 0 ? <span className="text-slate-400 dark:text-slate-500">—</span> : fx.number(total, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                     </tr>
                   );
@@ -680,8 +715,8 @@ function PreviewStep({
               </tbody>
               <tfoot>
                 <tr className="border-t border-slate-200 font-semibold dark:border-slate-700">
-                  <td className="py-2 pe-4 text-slate-900 dark:text-white">Total received</td>
-                  <td className="py-2 pe-4 text-end tabular-nums text-slate-900 dark:text-white">{preview.receivedRows}</td>
+                  <td className="py-2 pe-4 text-slate-900 dark:text-white">{t('Total received')}</td>
+                  <td className="py-2 pe-4 text-end tabular-nums text-slate-900 dark:text-white">{fx.integer(preview.receivedRows)}</td>
                   <td className="py-2" />
                 </tr>
               </tfoot>
@@ -691,20 +726,20 @@ function PreviewStep({
       </DataPanel>
 
       <DataPanel
-        title={willReject === 0 ? 'Nothing will be rejected' : `${willReject} row${willReject === 1 ? '' : 's'} will be rejected`}
-        description={willReject === 0 ? undefined : 'Each is named with its file, line number and the reason. A rejected row leaves nothing behind — fix the file and re-import.'}
+        title={willReject === 0 ? t('Nothing will be rejected') : t('{count, plural, one {# row will be rejected} other {# rows will be rejected}}', { count: willReject })}
+        description={willReject === 0 ? undefined : t('Each is named with its file, line number and the reason. A rejected row leaves nothing behind — fix the file and re-import.')}
       >
         {willReject === 0 ? (
           <p className="flex items-center gap-2 py-2 text-sm text-emerald-700 dark:text-emerald-400">
             <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-            Every row validated cleanly.
+            {t('Every row validated cleanly.')}
           </p>
         ) : (
           <ul className="max-h-72 space-y-1.5 overflow-y-auto">
             {preview.errors.map((e, i) => (
               <li
                 key={`${i}-${e.slice(0, 24)}`}
-                className="flex items-start gap-2 rounded-md bg-red-50 px-3 py-2 text-xs leading-5 text-red-800 dark:bg-red-900/20 dark:text-red-300"
+                className="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs leading-5 text-red-800 dark:bg-red-900/20 dark:text-red-300"
               >
                 <FileWarning className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 <span>{e}</span>
@@ -720,17 +755,17 @@ function PreviewStep({
           onClick={onBack}
           className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
         >
-          Back
+          {t('Back')}
         </button>
         <button
           type="button"
           onClick={onCommit}
           disabled={busy || blocked}
-          title={blocked ? 'A locked payroll period is blocking this import.' : undefined}
+          title={blocked ? t('A locked payroll period is blocking this import.') : undefined}
           className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <CheckCircle2 className="h-4 w-4" aria-hidden="true" />}
-          {busy ? 'Importing…' : 'Commit import'}
+          {busy ? t('Importing…') : t('Commit import')}
         </button>
       </div>
     </div>
@@ -747,13 +782,15 @@ function DoneStep({
   onRefresh: () => void;
   busy: boolean;
 }) {
+  const t = useT();
+  const fx = useFormat();
   const failed = result.status === 'Failed';
   return (
     <DataPanel
-      title={failed ? 'The import did not finish' : 'Import complete'}
+      title={failed ? t('The import did not finish') : t('Import complete')}
       description={
         failed
-          ? 'Sections that had already been applied are committed and safe. Resume it from the history below — every row is an idempotent upsert, so a resume re-runs the package without applying anything twice.'
+          ? t('Sections that had already been applied are committed and safe. Resume it from the history below — every row is an idempotent upsert, so a resume re-runs the package without applying anything twice.')
           : undefined
       }
       action={
@@ -764,22 +801,24 @@ function DoneStep({
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
         >
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />}
-          Refresh
+          {t('Refresh')}
         </button>
       }
     >
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <Stat label="Status" value={result.status} tone={failed ? 'bad' : 'good'} />
-        <Stat label="Received" value={String(result.receivedRows)} />
-        <Stat label="Created" value={String(result.createdRows)} tone="good" />
-        <Stat label="Updated" value={String(result.updatedRows)} />
-        <Stat label="Rejected" value={String(result.errorRows)} tone={result.errorRows > 0 ? 'bad' : undefined} />
+        <Stat label={t('Status')} value={enumLabel(t, 'Status', result.status)} tone={failed ? 'bad' : 'good'} />
+        <Stat label={t('Received')} value={fx.integer(result.receivedRows)} />
+        <Stat label={t('Created')} value={fx.integer(result.createdRows)} tone="good" />
+        <Stat label={t('Updated')} value={fx.integer(result.updatedRows)} />
+        <Stat label={t('Rejected')} value={fx.integer(result.errorRows)} tone={result.errorRows > 0 ? 'bad' : undefined} />
       </dl>
 
       <p className="mt-4 break-all text-xs text-slate-500 dark:text-slate-400">
-        Batch <span className="font-mono">{result.batchId}</span> · checksum{' '}
-        <span className="font-mono">{result.packageChecksum.slice(0, 16)}…</span>
-        {result.currentSection ? <> · stopped in <strong>{result.currentSection}</strong></> : null}
+        {rich(t('Batch {batch} · checksum {checksum}', { batch: mark('batch'), checksum: mark('checksum') }), {
+          batch: <span className="font-mono">{result.batchId}</span>,
+          checksum: <span className="font-mono">{result.packageChecksum.slice(0, 16)}…</span>,
+        })}
+        {result.currentSection ? <> · {rich(t('Stopped in {section}', { section: mark('section') }), { section: <strong>{sectionText(t)[result.currentSection]?.label ?? result.currentSection}</strong> })}</> : null}
       </p>
 
       {result.errors?.length > 0 ? (
@@ -787,7 +826,7 @@ function DoneStep({
           {result.errors.map((e, i) => (
             <li
               key={`${i}-${e.slice(0, 24)}`}
-              className="rounded-md bg-red-50 px-3 py-2 text-xs leading-5 text-red-800 dark:bg-red-900/20 dark:text-red-300"
+              className="rounded-lg bg-red-50 px-3 py-2 text-xs leading-5 text-red-800 dark:bg-red-900/20 dark:text-red-300"
             >
               {e}
             </li>
@@ -801,7 +840,7 @@ function DoneStep({
           onClick={onStartOver}
           className="rounded-lg bg-sapphire px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sapphire/90 dark:bg-cyanAccent dark:text-slate-950 dark:hover:bg-cyanAccent/90"
         >
-          Import another section
+          {t('Import another section')}
         </button>
       </div>
     </DataPanel>
@@ -817,8 +856,8 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'go
         : 'text-slate-900 dark:text-white';
   return (
     <div className="rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/60">
-      <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</dt>
-      <dd className={`mt-0.5 text-lg font-bold tabular-nums ${toneClass}`}>{value}</dd>
+      <dt className="text-caption font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</dt>
+      <dd className={`mt-0.5 text-lg font-semibold tabular-nums ${toneClass}`}>{value}</dd>
     </div>
   );
 }
@@ -826,23 +865,25 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'go
 // ── Locked-period refusal ────────────────────────────────────────────────────
 
 function LockedPeriodPanel({ refusals }: { refusals: LockedPeriodRefusal[] }) {
+  const t = useT();
+  const fx = useFormat();
   return (
     <div
       role="alert"
       className="rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-800/60 dark:bg-amber-900/20"
     >
-      <p className="flex items-center gap-2 text-sm font-bold text-amber-900 dark:text-amber-300">
+      <p className="flex items-center gap-2 text-sm font-semibold text-amber-900 dark:text-amber-300">
         <Lock className="h-4 w-4 shrink-0" aria-hidden="true" />
-        A locked payroll period is blocking this import
+        {t('A locked payroll period is blocking this import')}
       </p>
       <p className="mt-1 text-xs leading-5 text-amber-800 dark:text-amber-300/90">
-        Opening balances may not restate a period that has already been paid and journalled.
+        {t('Opening balances may not restate a period that has already been paid and journalled.')}
       </p>
       <ul className="mt-3 space-y-2">
         {refusals.map((r) => (
-          <li key={r.payrollRunId} className="rounded-md bg-white/70 px-3 py-2 text-xs leading-5 text-amber-900 dark:bg-slate-900/40 dark:text-amber-200">
+          <li key={r.payrollRunId} className="rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-amber-900 dark:bg-slate-900/40 dark:text-amber-200">
             <p className="font-semibold">
-              {r.companyName} · {r.period} · cutover {r.cutoverDate}
+              {t('{company} · {period} · cutover {date}', { company: r.companyName, period: r.period, date: fx.date(r.cutoverDate) })}
             </p>
             <p className="mt-0.5">{r.reason}</p>
           </li>
@@ -862,15 +903,17 @@ function HistoryPanel({
   onResume: (run: StoredRun) => void;
   onStatus: (batchId: string) => void;
 }) {
+  const t = useT();
+  const fx = useFormat();
   return (
     <DataPanel
-      title="Recent imports"
-      description="Kept in this browser so a failed import can be resumed after a reload. The package travels with it, because the engine checksums it and refuses a different file."
+      title={t('Recent imports')}
+      description={t('Kept in this browser so a failed import can be resumed after a reload. The package travels with it, because the engine checksums it and refuses a different file.')}
     >
       {history.length === 0 ? (
         <p className="flex items-center gap-2 py-6 text-center text-sm text-slate-500 dark:text-slate-400">
           <History className="h-4 w-4 shrink-0" aria-hidden="true" />
-          No imports have been run from this browser yet.
+          {t('No imports have been run from this browser yet.')}
         </p>
       ) : (
         <ul className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -882,18 +925,18 @@ function HistoryPanel({
                   <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
                     <span
                       className={[
-                        'rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide',
+                        'rounded-full px-2 py-0.5 text-caption font-semibold uppercase tracking-wide',
                         failed
                           ? 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
                           : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
                       ].join(' ')}
                     >
-                      {run.status}
+                      <EnumLabel enum="Status" value={run.status} />
                     </span>
-                    {run.sections.length} section{run.sections.length === 1 ? '' : 's'} · {run.receivedRows} rows
+                    {t('{sections, plural, one {# section} other {# sections}} · {rows, plural, one {# row} other {# rows}}', { sections: run.sections.length, rows: run.receivedRows })}
                   </p>
                   <p className="mt-0.5 break-all font-mono text-xs text-slate-500 dark:text-slate-400">
-                    {run.batchId} · {new Date(run.at).toLocaleString()}
+                    {run.batchId} · {fx.dateTime(run.at)}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -903,7 +946,7 @@ function HistoryPanel({
                     disabled={busy !== null}
                     className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                   >
-                    Status
+                    {t('Status')}
                   </button>
                   {failed ? (
                     <button
@@ -913,7 +956,7 @@ function HistoryPanel({
                       className="inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-2.5 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sapphire/90 disabled:opacity-40 dark:bg-cyanAccent dark:text-slate-950 dark:hover:bg-cyanAccent/90"
                     >
                       {busy === 'resume' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />}
-                      Resume
+                      {t('Resume')}
                     </button>
                   ) : null}
                 </div>

@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSetupEditorState } from './setup/SetupEditorState';
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Plus, ShieldCheck, Trash2, Building2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Plus, ShieldCheck, Building2 } from 'lucide-react';
 import { planningApi } from '../api/planning';
 import { establishmentApi, type MatrixLevelCell, type MatrixRow, type StaffingLevelDto } from '../api/establishment';
 import { tenantHrConfigApi, type EstablishmentEnforcementMode, type TenantHrConfigDto } from '../api/tenantHrConfig';
 import { costCentersApi, type CostCenterDto } from '../api/organization';
+import { OrgRowActions, useOrgRowRemoval, useOrgWriteAccess } from './setup/OrgRowActions';
 import { notifyApiError } from '../api/client';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -269,12 +270,10 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
     setNewCc({ code: '', name: '' }); setAdding(false); load();
   };
 
-  const deleteCostCenter = async (cc: CostCenterDto, deptCount: number) => {
-    if (deptCount > 0) { setError(`Reassign the ${deptCount} department(s) under "${cc.name}" before deleting it.`); return; }
-    setError('');
-    await costCentersApi.remove(cc.id).catch(() => setError('Could not delete cost centre.'));
-    load();
-  };
+  // Remove is the same rule as Setup → Cost centres: the server deletes an unused cost centre and turns a used one off
+  // (departments or employees point at it), naming what uses it. Confirmed first, in the reader's language.
+  const removal = useOrgRowRemoval({ kind: 'costCenter', onDone: () => load() });
+  const costCentreAccess = useOrgWriteAccess();
 
   const money = (n: number) => `${currencyCode} ${Math.round(n).toLocaleString()}`;
   // Spend is null when the server withheld it (#131): shown as Restricted, never as 0 or 0%.
@@ -353,7 +352,6 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
         {groups.map(g => {
           const tot = rollup(g.rows);
           const u = spendUtilisation(tot.spend, tot.budget);
-          const deptCount = g.rows.length;
           return (
             <div key={g.id ?? NONE} className="surface p-4">
               <div className="mb-2 flex items-center justify-between">
@@ -361,10 +359,13 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                   <Building2 className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
                   <span className="truncate font-semibold text-slate-800 dark:text-white">{g.name}</span>
                 </div>
-                {!readOnly && g.id && (
-                  <button type="button" aria-label={`Delete cost centre ${g.name}`} onClick={() => deleteCostCenter(costCenters.find(c => c.id === g.id)!, deptCount)}
-                    className="grid h-6 w-6 place-items-center rounded text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10"><Trash2 className="h-3.5 w-3.5" /></button>
-                )}
+                {!readOnly && g.id && (() => {
+                  const cc = costCenters.find(c => c.id === g.id);
+                  if (!cc) return null;
+                  return <OrgRowActions name={cc.name} isActive={cc.isActive} busy={removal.busyId === cc.id} blockedReason={costCentreAccess(cc.companyId).reason}
+                    onEdit={() => { /* edited in Setup → Cost centres */ }} onRemove={() => void removal.remove({ id: cc.id, name: cc.name })}
+                    onRestore={() => void removal.restore({ id: cc.id, name: cc.name })} editable={false} />;
+                })()}
               </div>
               <div className="grid grid-cols-2 gap-y-1.5 text-xs">
                 <span className="text-slate-400">Headcount</span>
@@ -396,6 +397,8 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
       )}
 
       {error && <p className="text-xs text-rose-500">{error}</p>}
+      {removal.notice}
+      {removal.confirmDialog}
 
       {/* ── Department establishment table, grouped by cost centre ────────── */}
       <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10">
@@ -483,7 +486,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                               ? <span className="inline-flex items-center gap-1 text-xs text-emerald-500"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>
                               : canEdit
                                 ? <button type="button" className="btn-secondary text-xs disabled:opacity-40" disabled={!dirty} onClick={() => beginSave(r)}>Save</button>
-                                : <span className="text-[11px] text-slate-400">{t('Read-only')}</span>}
+                                : <span className="text-caption text-slate-400">{t('Read-only')}</span>}
                           </td>
                         )}
                       </tr>
@@ -502,22 +505,22 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                   })}
                                 </span>
                                 {allocated > e.approved && e.approved > 0 && (
-                                  <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                  <span className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
                                     <AlertTriangle className="h-3 w-3" />{t('Level budgets exceed the approved headcount.')}
                                   </span>
                                 )}
                                 {r.unclassifiedCount > 0 && (
-                                  <span className="rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300" title={t('Employees with no or unmapped designation — never counted, never blocked.')}>
+                                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300" title={t('Employees with no or unmapped designation — never counted, never blocked.')}>
                                     {fmt(t('Unclassified: {n}'), { n: r.unclassifiedCount })}
                                   </span>
                                 )}
                                 {r.unresolvedDepartmentCount > 0 && (
-                                  <span className="rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300" title={t('Employees whose department is stored as free text and could not be resolved.')}>
+                                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300" title={t('Employees whose department is stored as free text and could not be resolved.')}>
                                     {fmt(t('Unresolved department: {n}'), { n: r.unresolvedDepartmentCount })}
                                   </span>
                                 )}
                                 {r.managerEmployeeId != null && (
-                                  <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-400 dark:bg-white/10" title={t('The department manager assignment is independent of level budgets and is never used in enforcement.')}>
+                                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-slate-400 dark:bg-white/10" title={t('The department manager assignment is independent of level budgets and is never used in enforcement.')}>
                                     {t('Manager assigned')}
                                   </span>
                                 )}
@@ -545,7 +548,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                         <tr key={lvl.id}>
                                           <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">
                                             {levelName(lvl)}
-                                            {inEdit === 0 && <span className="ms-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{t('frozen')}</span>}
+                                            {inEdit === 0 && <span className="ms-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-caption font-semibold uppercase text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{t('frozen')}</span>}
                                           </td>
                                           <td className="px-3 py-2 text-center">
                                             {canEdit ? (
@@ -574,12 +577,12 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                           <td className="px-3 py-2">
                                             <div className="flex flex-wrap gap-1.5">
                                               {cell.exitingIncumbents > 0 && (
-                                                <span className="rounded-md bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                                <span className="rounded-lg bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
                                                   {fmt(t('{n} serving notice'), { n: cell.exitingIncumbents })}
                                                 </span>
                                               )}
                                               {cell.positionsExceedBudget && (
-                                                <span className="rounded-md bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400" title={t('Level-mapped positions exceed this level budget (warning only).')}>
+                                                <span className="rounded-lg bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400" title={t('Level-mapped positions exceed this level budget (warning only).')}>
                                                   {t('Positions exceed budget')}
                                                 </span>
                                               )}
@@ -737,7 +740,7 @@ function GroupRows({ groupName, colSpan, children }: { groupName: string; colSpa
   return (
     <>
       <tr className="bg-slate-50/60 dark:bg-white/[0.02]">
-        <td colSpan={colSpan} className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{groupName}</td>
+        <td colSpan={colSpan} className="px-4 py-1.5 text-caption font-semibold uppercase tracking-wide text-slate-400">{groupName}</td>
       </tr>
       {children}
     </>

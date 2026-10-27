@@ -11,8 +11,9 @@ import { useFormat } from '../../hooks/useFormat';
 import { rolesApi, type AccessCeiling } from '../../api/identity';
 import {
   companySetupApi, httpStatus, type CompanySetupContext, type CompanySetupDraft, type CompanySetupDraftBody, type CompanySetupDraftSummary,
-  type CompanySetupErrorBody, type CompanySetupPlan, type CompanySetupResult, type OrgSection, type Problem,
+  type CompanySetupErrorBody, type CompanySetupPlan, type CompanySetupResult, type CompanySetupRowState, type OrgSection, type Problem,
 } from '../../api/companySetup';
+import { orgRowsApi, type OrgRowKind } from '../../api/orgRows';
 import {
   GUIDED_SETUP_HREF, PART_COPY, STEP_IDS, buildTree, canCommit, completeCompanyHref, emptyBody, firstBlockingPosition, isOrgPart, normalizeFieldPath,
   partState, partsOf, planIsNoChange, positionKey, positionOfField, problemsByField, resumePart, sectionChanges, setupCodeCopy, stepCopy,
@@ -42,6 +43,9 @@ import {
   type SectionId, type SectionSaveValue, type SectionStatus as ExplicitStatus,
 } from './sectionSave';
 import { useNavigationBlocker } from '../../hooks/useNavigationBlocker';
+
+/** Which Setup kind each Organisation section's rows are (Restore calls the same endpoint Setup does). */
+const ORG_KIND: Record<OrgSection, OrgRowKind> = { costCentres: 'costCenter', departments: 'department', grades: 'grade', designations: 'designation' };
 
 const STEP_HEADINGS: Record<StepId, { heading: string; help: string }> = {
   1: { heading: msg('Create a company'), help: msg('Each screen leads to the next. Save each section as you finish it. Nothing is created until you choose Create company at the end.') },
@@ -139,6 +143,8 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   const [draftMeta, setDraftMeta] = useState<{ createdByName: string; createdAtUtc: string } | null>(null);
   const [body, setBody] = useState<CompanySetupDraftBody>(() => emptyBody());
   const [defaults, setDefaults] = useState<CompanySetupDraftBody | null>(null);
+  // Existing mode: per existing Organisation row, whether it is on and whether anything uses it (the server computes it on every read).
+  const [rowStates, setRowStates] = useState<Record<string, CompanySetupRowState>>({});
   const [step, setStep] = useState<StepId>(1);
   const [part, setPart] = useState<PartId | undefined>(undefined);
   const [visited, setVisited] = useState<Set<StepId>>(() => new Set([1]));
@@ -244,7 +250,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
         setError(t('This draft belongs to a different setup. Open it from Guided setup.'));
         return false;
       }
-      autosave.adopt(draft);
+      autosave.adopt(draft); setRowStates(draft.rowStates ?? {});
       setDraftId(draft.id);
       setDraftMeta({ createdByName: draft.createdByName, createdAtUtc: draft.createdAtUtc });
       setBody(draft.body);
@@ -438,7 +444,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   }, [step, draftId]);
 
   const adoptNew = (draft: CompanySetupDraft) => {
-    autosave.adopt(draft);
+    autosave.adopt(draft); setRowStates(draft.rowStates ?? {});
     setDraftId(draft.id);
     setDraftMeta({ createdByName: draft.createdByName, createdAtUtc: draft.createdAtUtc });
     setBody(draft.body);
@@ -492,9 +498,9 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
   const nextPosition = positions[positionIndex + 1];
   const prevPosition = positionIndex > 0 ? positions[positionIndex - 1] : undefined;
   const orgPart = isOrgPart(part) ? part : null;
-  const changes = orgPart ? sectionChanges(body, defaults, orgPart) : { added: 0, changed: 0 };
+  const changes = orgPart ? sectionChanges(body, defaults, orgPart) : { added: 0, changed: 0, removed: 0 };
   /** Existing mode: this Organisation part has rows to add or change, so Save & next writes them (B2). */
-  const writesNow = existing && !!orgPart && !!draftId && (changes.added + changes.changed > 0);
+  const writesNow = existing && !!orgPart && !!draftId && (changes.added + changes.changed + changes.removed > 0);
 
   /**
    * B2: write the current Organisation part to the company. Flushes the draft first (the server saves what it holds),
@@ -512,7 +518,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     }
     try {
       const res = await companySetupApi.applySection(draftId, section, autosave.version());
-      autosave.adopt(res.draft);
+      autosave.adopt(res.draft); setRowStates(res.draft.rowStates ?? {});
       setBody(res.draft.body);
       // The saved rows are now what the company has: "Changed" resets, and the next save compares against them.
       setDefaults(d => (d ? { ...d, [section]: res.draft.body[section] } : d));
@@ -579,7 +585,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     setBusy('reloading');
     try {
       const draft = await companySetupApi.draft(draftId);
-      autosave.adopt(draft);
+      autosave.adopt(draft); setRowStates(draft.rowStates ?? {});
       setBody(draft.body);
       markSections(draft.body, draft.updatedAtUtc);
       const s = (Math.min(Math.max(draft.step, 1), 7)) as StepId;
@@ -768,7 +774,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     setCommitError(null);
     try {
       const draft = await companySetupApi.draft(draftId);
-      autosave.adopt(draft);
+      autosave.adopt(draft); setRowStates(draft.rowStates ?? {});
       setBody(draft.body);
       await refreshPlan(draft.body);
     } catch { setError(t('The draft could not be reloaded. Check your connection and try again.')); }
@@ -958,7 +964,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
               ? <p className="flex min-w-[9rem] items-center gap-1.5 tabular-nums" data-testid="autosave-status" data-state={autosave.state} title={autosave.savedAt ? fmt.dateTime(autosave.savedAt) : undefined}>
                   {autosave.state === 'saved' && <Check key={autosave.savedAt ?? ''} className="h-3 w-3 text-emerald-600 motion-safe:animate-scale-in" aria-hidden="true" />}
                   <span>{saveLabel || t('Draft backed up')}</span>
-                  {autosave.state === 'error' && <button type="button" className="ms-1 rounded px-1 font-semibold text-blue-700 hover:underline dark:text-[#7AABFF]" onClick={() => void autosave.flush()}>{t('Retry now')}</button>}
+                  {autosave.state === 'error' && <button type="button" className="ms-1 rounded px-1 font-semibold text-blue-700 hover:underline dark:text-primary-fg" onClick={() => void autosave.flush()}>{t('Retry now')}</button>}
                   {draftMeta && <span className="hidden sm:inline">{' · '}{t('Started by {name}', { name: draftMeta.createdByName })}</span>}
                 </p>
               : <p>{existing ? t('A draft is saved as soon as you start, and kept until you save the changes or discard it.') : t('A draft is saved as soon as you start, and kept until you create the company or discard it.')}</p>}
@@ -986,7 +992,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
           <div className={`min-w-0 p-4 sm:p-6 ${step === 7 ? 'xl:col-span-2' : ''}`}>
             <div key={positionKey(position)} className={enterMotion && step !== 5 ? STEP_ENTER : ''} data-testid="wizard-position" data-position={positionKey(position)}>
               <div className="mb-6">
-                <p className="hidden text-xs font-semibold uppercase tracking-wide text-slate-600 rtl:normal-case rtl:tracking-normal rtl:text-[13px] dark:text-slate-400 lg:block">
+                <p className="hidden text-xs font-semibold uppercase tracking-wide text-slate-600 rtl:normal-case rtl:tracking-normal rtl:text-body-sm dark:text-slate-400 lg:block">
                   {part
                     ? t('Step {position} of {total} · Part {part} of {parts}', { position: stepPosition, total: steps.length, part: partNumber, parts: stepParts.length })
                     : t('Step {position} of {total}', { position: stepPosition, total: steps.length })}
@@ -1018,7 +1024,11 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                   </ul>
                 </Notice></div>
               )}
-              <WizardFormProvider value={{ body, update: change => setBody(b => change(b)), errorFor, context, readOnly: locked || autosave.state === 'conflict' || busy === 'saving', baseline: existing ? defaults : null }}>
+              <WizardFormProvider value={{ body, update: change => setBody(b => change(b)), errorFor, context, readOnly: locked || autosave.state === 'conflict' || busy === 'saving', baseline: existing ? defaults : null, rowStates,
+                restoreRow: async (section, id) => {
+                  await orgRowsApi.restore(ORG_KIND[section], id);
+                  setRowStates(r => ({ ...r, [id]: { ...(r[id] ?? { inUse: false }), isActive: true } }));
+                } }}>
                 <ArabicSuggestionsProvider>
                 <SectionSaveProvider value={sectionSave}>
                 <div onBlurCapture={event => {
@@ -1057,7 +1067,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                 </div>
               </Notice></div>
             )}
-            <div className="sticky bottom-0 z-10 -mx-4 mt-6 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/80 max-lg:static max-lg:pe-20 dark:border-white/10 dark:bg-[#0d1225]/95 sm:-mx-6 sm:px-6 lg:pe-24" data-testid="wizard-footer">
+            <div className="sticky bottom-0 z-10 -mx-4 mt-6 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/80 max-lg:static max-lg:pe-20 dark:border-white/10 dark:bg-surface/95 sm:-mx-6 sm:px-6 lg:pe-24" data-testid="wizard-footer">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 {prevPosition
                   ? <button type="button" className="btn-secondary text-slate-700 dark:text-slate-200" onMouseDown={keepFocus} onClick={back} disabled={!!busy} data-testid="wizard-back">
@@ -1080,14 +1090,14 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                         {busy === 'saving' ? <><Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />{t('Saving…')}</>
                           : busy === 'starting' ? <><Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />{t('Preparing the draft…')}</>
                           : <>{primaryLabel}<ArrowRight className="h-4 w-4" aria-hidden="true" /></>}
-                        <kbd className="ms-1 hidden rounded border border-white/30 px-1 font-sans text-[11px] font-medium leading-4 text-white/90 lg:inline" aria-hidden="true">{shortcut}</kbd>
+                        <kbd className="ms-1 hidden rounded border border-white/30 px-1 font-sans text-caption font-medium leading-4 text-white/90 lg:inline" aria-hidden="true">{shortcut}</kbd>
                       </button>
                     : <button type="button" className="btn-primary min-w-[10rem] justify-center hover:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void create()} disabled={!!busy || !canCommit(plan) || planState === 'loading' || autosave.state === 'conflict'}
                         aria-busy={busy === 'creating' || undefined} aria-keyshortcuts="Meta+Enter Control+Enter" data-testid="wizard-create">
                         {busy === 'creating'
                           ? <><Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />{existing ? t('Saving all changes…') : t('Creating the company…')}</>
                           : existing ? (noChange ? t('Finish without changes') : t('Save all changes')) : t('Create company')}
-                        <kbd className="ms-1 hidden rounded border border-white/30 px-1 font-sans text-[11px] font-medium leading-4 text-white/90 lg:inline" aria-hidden="true">{shortcut}</kbd>
+                        <kbd className="ms-1 hidden rounded border border-white/30 px-1 font-sans text-caption font-medium leading-4 text-white/90 lg:inline" aria-hidden="true">{shortcut}</kbd>
                       </button>}
                 </div>
               </div>

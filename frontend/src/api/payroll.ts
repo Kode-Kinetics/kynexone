@@ -116,6 +116,42 @@ export interface PayrollRun {
   lockedAtUtc: string | null;
 }
 
+/**
+ * `POST /api/payroll/runs/{id}/process` queues the run and answers 202 with this. The computation runs on the
+ * background job queue: poll {@link PayrollProcessingStatus} until it is Succeeded or Failed. A second POST
+ * while the run's job is still Queued or Running returns that same job (so `status` may be `Running`).
+ */
+export interface PayrollProcessingAccepted {
+  runId: string;
+  jobId: string;
+  status: 'Queued' | 'Running';
+}
+
+export type PayrollProcessingState = 'Idle' | 'Queued' | 'Running' | 'Succeeded' | 'Failed';
+
+/** One employee whose pay calculation stopped a failed pass. Codes only; optional on the status response. */
+export interface PayrollProcessingFailedEmployee {
+  employeeId: number;
+  employeeCode: string | null;
+  errorCode: string;
+}
+
+/** `GET /api/payroll/runs/{id}/processing`. `Idle` means no job has ever been queued for the run. */
+export interface PayrollProcessingStatus {
+  runId: string;
+  jobId: string | null;
+  status: PayrollProcessingState;
+  processedEmployees: number;
+  totalEmployees: number;
+  startedAtUtc: string | null;
+  finishedAtUtc: string | null;
+  /** Stable machine code on Failed, e.g. `company_not_resolved`, `attendance_impact_stale`, `processing_failed`. */
+  errorCode: string | null;
+  /** Written for the user: never a stack trace or SQL. */
+  errorMessage: string | null;
+  failedEmployees?: PayrollProcessingFailedEmployee[] | null;
+}
+
 export interface PayrollSlip {
   id: string;
   runId: string;
@@ -682,8 +718,12 @@ export const payrollApi = {
   createRun: (year: number, month: number, companyId?: string) =>
     client.post<PayrollRun>('/api/payroll/runs', { year, month, companyId }).then((r) => r.data),
 
+  /** Queues the run for processing (202). The outcome comes from {@link payrollApi.getProcessingStatus}. */
   processRun: (id: string) =>
-    client.post<PayrollRun>(`/api/payroll/runs/${id}/process`).then((r) => r.data),
+    client.post<PayrollProcessingAccepted>(`/api/payroll/runs/${id}/process`).then((r) => r.data),
+
+  getProcessingStatus: (id: string) =>
+    client.get<PayrollProcessingStatus>(`/api/payroll/runs/${id}/processing`).then((r) => r.data),
 
   attendanceReconciliation: (id: string) =>
     client.get<AttendanceReconciliation>(`/api/payroll/runs/${id}/attendance-reconciliation`).then((r) => r.data),
@@ -913,8 +953,24 @@ export const payrollApi = {
   listEmployeeSalaryStructures: (employeeId?: number) =>
     client.get<EmployeeSalaryStructure[]>('/api/payroll/employee-salary-structures', { params: employeeId ? { employeeId } : undefined }).then((r) => r.data),
 
+  /** Stages a salary change: it is applied only when a different Finance approver approves it (HTTP 202). */
   assignEmployeeSalary: (payload: unknown) =>
-    client.post<EmployeeSalaryStructure>('/api/payroll/employee-salary-structures', payload).then((r) => r.data),
+    client.post<SalaryChange>('/api/payroll/employee-salary-structures', payload).then((r) => r.data),
+
+  /** Whether anyone besides the caller could approve a salary change (payroll.approve); the server's sentence in both languages when not. */
+  salaryApproverStatus: () =>
+    client.get<{ hasEligibleApprover: boolean; message?: string; messageAr?: string }>('/api/payroll/salary-changes/approver-status').then((r) => r.data),
+
+  listSalaryChanges: (status?: string) =>
+    client.get<SalaryChange[]>('/api/payroll/salary-changes', { params: status ? { status } : undefined }).then((r) => r.data),
+  approveSalaryChange: (id: string, note?: string) =>
+    client.post<SalaryChange>(`/api/payroll/salary-changes/${id}/approve`, { note }).then((r) => r.data),
+  approveSalaryChangeBatch: (batchId: string, note?: string) =>
+    client.post<{ approved: number; held: unknown[] }>(`/api/payroll/salary-changes/batches/${batchId}/approve`, { note }).then((r) => r.data),
+  rejectSalaryChange: (id: string, note?: string) =>
+    client.post<SalaryChange>(`/api/payroll/salary-changes/${id}/reject`, { note }).then((r) => r.data),
+  cancelSalaryChange: (id: string) =>
+    client.post<SalaryChange>(`/api/payroll/salary-changes/${id}/cancel`).then((r) => r.data),
 
   listGroups: () =>
     client.get<PayrollGroup[]>('/api/payroll/groups').then((r) => r.data),
@@ -971,7 +1027,15 @@ export const payrollApi = {
   },
 
   importEmployeeSalaries: (csvContent: string) =>
-    client.post<{ received: number; created: number; updated: number; skipped: number; errors: string[] }>(
+    client.post<{ received: number; created: number; updated: number; pendingApproval?: number; batchId?: string | null; skipped: number; errors: string[] }>(
       '/api/payroll/employee-salaries/import', { csvContent }
     ).then((r) => r.data),
 };
+
+export interface SalaryChange {
+  id: string; batchId?: string | null; source: string; employeeId: number; employeeCode: string; employeeName: string;
+  basicSalary: number; housingAllowance: number; transportAllowance: number; foodAllowance: number; mobileAllowance: number;
+  otherAllowance: number; fixedDeduction: number; effectiveDate: string; currency: string; previousBasicSalary?: number | null;
+  status: 'Pending' | 'Approved' | 'Rejected' | 'Cancelled'; requestedByName: string; requestedAtUtc: string;
+  decidedByName: string; decidedAtUtc?: string | null; decisionNote: string;
+}

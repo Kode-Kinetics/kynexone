@@ -173,7 +173,8 @@ public class OvertimeCalculation : ITenantOwned
     public decimal HourlyRate { get; set; }
     public decimal Multiplier { get; set; }
     public decimal Amount { get; set; }
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     public string CalculationJson { get; set; } = "{}";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
@@ -240,7 +241,8 @@ public class OvertimeBudget : ITenantOwned
     public int Month { get; set; }
     public decimal BudgetAmount { get; set; }
     public decimal ConsumedAmount { get; set; }
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
 }
 
 public class OvertimeCompOffConversion : ITenantOwned
@@ -274,7 +276,8 @@ public class SalaryStructure : ITenantOwned, ICompanyScoped
     public Guid? CompanyId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     public DateOnly EffectiveDate { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
     public decimal MinGrossSalary { get; set; }
     public decimal MaxGrossSalary { get; set; }
@@ -319,7 +322,8 @@ public class EmployeeSalaryStructure : ITenantOwned
     public decimal OtherAllowance { get; set; }
     public decimal FixedDeduction { get; set; }
     public DateOnly EffectiveDate { get; set; }
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
@@ -350,7 +354,8 @@ public class PayrollGroup : ITenantOwned
     public Guid TenantId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
 }
 
@@ -446,7 +451,8 @@ public class BenefitPlan : ITenantOwned, ICompanyScoped
     public string PlanType { get; set; } = "Medical";
     /// <summary>Mandatory, Contractual, or Discretionary. Only the latter two may be grade-gated.</summary>
     public string Classification { get; set; } = BenefitPlanClassifications.Discretionary;
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     /// <summary>Versioned company policy. Legacy empty policies never authorize payroll or claims.</summary>
     public string PaymentPolicyJson { get; set; } = "{}";
     public int PolicyVersion { get; set; }
@@ -793,7 +799,8 @@ public class PayrollPaymentBatch : ITenantOwned
     public string BatchNumber { get; set; } = string.Empty;
     public string PaymentMethod { get; set; } = "WPS";
     public decimal TotalAmount { get; set; }
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     public string Status { get; set; } = "Draft";
 
     /// <summary>WPS submission lifecycle. See <see cref="WpsStatuses"/>.</summary>
@@ -892,7 +899,8 @@ public class PayrollOpeningBalance : ITenantOwned, ICompanyScopedOperational
     public string BalanceType { get; set; } = string.Empty;
     public string ComponentCode { get; set; } = string.Empty;
     public decimal Amount { get; set; }
-    public string Currency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     public string SourceSystem { get; set; } = string.Empty;
     public string SourceRecordId { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;

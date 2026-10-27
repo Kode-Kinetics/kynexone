@@ -185,7 +185,7 @@ export default function CompliancePage() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-bold text-white">Compliance Center</h1>
+        <h1 className="text-lg font-semibold text-white">Compliance Center</h1>
         {tab === 'incidents' && (
           <button
             type="button"
@@ -214,7 +214,7 @@ export default function CompliancePage() {
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-xs text-slate-400">{card.label}</p>
-                  <p className="mt-1 text-2xl font-bold text-white">{card.value}</p>
+                  <p className="mt-1 text-2xl font-semibold text-white">{card.value}</p>
                   <p className="text-xs text-slate-500">{card.sub}</p>
                 </div>
                 {card.icon}
@@ -340,7 +340,7 @@ export default function CompliancePage() {
       {editControl && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-xl border border-white/[0.1] bg-[#0d1117] p-6 space-y-4">
-            <h2 className="font-bold text-white">{editControl.controlId} — {editControl.title}</h2>
+            <h2 className="font-semibold text-white">{editControl.controlId} — {editControl.title}</h2>
             <label className="block">
               <span className="text-xs text-slate-400">Status</span>
               <select
@@ -389,7 +389,7 @@ export default function CompliancePage() {
       {showIncidentModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-xl border border-white/[0.1] bg-[#0d1117] p-6 space-y-4">
-            <h2 className="font-bold text-white">Log Security Incident</h2>
+            <h2 className="font-semibold text-white">Log Security Incident</h2>
             <label className="block">
               <span className="text-xs text-slate-400">Title *</span>
               <input value={incTitle} onChange={e => setIncTitle(e.target.value)} className="mt-1 w-full rounded-lg border border-white/[0.1] bg-[#161b22] px-3 py-2 text-sm text-white" placeholder="Brief description of the incident" />
@@ -426,7 +426,7 @@ export default function CompliancePage() {
       {editIncident && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-xl border border-white/[0.1] bg-[#0d1117] p-6 space-y-4">
-            <h2 className="font-bold text-white">{editIncident.title}</h2>
+            <h2 className="font-semibold text-white">{editIncident.title}</h2>
             <label className="block">
               <span className="text-xs text-slate-400">Status</span>
               <select value={editIncStatus} onChange={e => setEditIncStatus(e.target.value)} className="mt-1 w-full rounded-lg border border-white/[0.1] bg-[#161b22] px-3 py-2 text-sm text-white">

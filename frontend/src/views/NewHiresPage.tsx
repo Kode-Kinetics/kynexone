@@ -14,12 +14,13 @@ import {
   type EmployeeDraftListResponse,
   type EmployeeDraftReview,
 } from '../api/employeeDrafts';
-import { notActivatableFromError } from '../api/employees';
+import { notActivatableFromError, probationOverLimitFromError } from '../api/employees';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { establishmentBlockFromError, type EstablishmentBlockedPayload } from '../api/establishment';
 import { DraftPlacementFix } from '../components/DraftPlacementFix';
 import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
 import { Modal } from '../components/Modal';
+import { useConfirm } from '../components/ui/useConfirm';
 import { OfferCompensationHandoff } from '../components/recruitment/OfferCompensationHandoff';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
 import { StatusChip } from '../components/StatusChip';
@@ -55,6 +56,7 @@ type Notice = { text: string; employeeId?: number | null; name?: string };
  * review shows, before anyone presses Approve, every reason activation would be refused.
  */
 export function NewHiresPage() {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const navigationGuard = useNavigationGuard();
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [filter, setFilter] = useState<DraftFilterKey>('awaiting');
@@ -132,14 +134,24 @@ export function NewHiresPage() {
     setDecisionError('');
   };
 
-  const submitDraft = async (row: EmployeeDraftListItem) => {
+  const submitDraft = async (row: EmployeeDraftListItem, acknowledgeProbationOverLimit = false) => {
     setRowBusy(row.id);
     setNotice(null);
     try {
-      await employeeDraftsApi.submit(row.id);
+      await employeeDraftsApi.submit(row.id, acknowledgeProbationOverLimit);
       setNotice({ text: `${row.name} was sent for HR approval.` });
     } catch (err) {
-      setNotice({ text: `${row.name} could not be sent: ${draftRequestFailureReason(err)}` });
+      const probation = probationOverLimitFromError(err);
+      if (probation && !acknowledgeProbationOverLimit) {
+        // Advisory, never a hard stop: the operator may keep the probation, which is recorded.
+        if (await confirm({ title: 'Send for approval anyway?', message: `${probation.message}\n\nSend ${row.name} for approval anyway?`, confirmLabel: 'Send anyway', tone: 'primary' })) {
+          setRowBusy(null);
+          return submitDraft(row, true);
+        }
+        setNotice({ text: `${row.name} was not sent: ${probation.message}` });
+      } else {
+        setNotice({ text: `${row.name} could not be sent: ${draftRequestFailureReason(err)}` });
+      }
     } finally {
       setRowBusy(null);
       void load();
@@ -235,9 +247,10 @@ export function NewHiresPage() {
 
   return (
     <div className="space-y-5">
+      {confirmDialog}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">New hires</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">New hires</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             Accepted offers and prepared hires on their way to becoming employees. A different HR approver activates each one.
           </p>
@@ -287,7 +300,7 @@ export function NewHiresPage() {
               type="button"
               onClick={() => setFilter(f.key)}
               aria-pressed={filter === f.key}
-              className={`inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-semibold transition ${filter === f.key ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10'}`}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold transition ${filter === f.key ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/10'}`}
             >
               {f.label}
               {count !== null && <span className="rounded bg-black/10 px-1.5 text-xs dark:bg-white/15">{count}</span>}
@@ -319,7 +332,7 @@ export function NewHiresPage() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['New hire', 'Placement', 'Joining', 'Status', 'Next action'].map((h) => (
-                  <th key={h} scope="col" className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
+                  <th key={h} scope="col" className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -487,7 +500,7 @@ export function NewHiresPage() {
                   ['Documents attached', String(review.documentCount)],
                 ].map(([label, value]) => (
                   <div key={label}>
-                    <dt className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</dt>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</dt>
                     <dd className="mt-0.5 font-medium text-slate-800 dark:text-slate-100">{value}</dd>
                   </div>
                 ))}

@@ -172,8 +172,7 @@ public class AuthService : IAuthService
                     IpAddress = context.IpAddress, UserAgent = context.UserAgent,
                 });
                 await _db.SaveChangesAsync(cancellationToken);
-                await _auditService.WriteAsync("auth.login_failed", "User", user.Id.ToString(),
-                    context with { UserId = user.Id, TenantId = user.TenantId },
+                await WriteFailureAuditBestEffortAsync("auth.login_failed", user, context,
                     System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, reason = "password_mismatch_known_device" }), cancellationToken);
                 if (distrusted)
                 {
@@ -210,11 +209,11 @@ public class AuthService : IAuthService
                 IpAddress     = context.IpAddress,
                 UserAgent     = context.UserAgent,
             });
+            // The lockout counter is saved on its own FIRST: a failing audit write must never be able to
+            // roll the counter back and turn the caller's 401 into a 500 (it would weaken brute-force protection).
             await _db.SaveChangesAsync(cancellationToken);
-            await _auditService.WriteAsync(
-                nowLocked ? "auth.account_locked" : "auth.login_failed",
-                "User", user.Id.ToString(),
-                context with { UserId = user.Id, TenantId = user.TenantId },
+            await WriteFailureAuditBestEffortAsync(
+                nowLocked ? "auth.account_locked" : "auth.login_failed", user, context,
                 System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, failedCount = user.FailedLoginCount, reason = "password_mismatch" }),
                 cancellationToken);
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
@@ -876,8 +875,27 @@ public class AuthService : IAuthService
         storedToken.RevokedAtUtc ??= DateTime.UtcNow;
         storedToken.RevokedByIp = context.IpAddress;
         if (storedToken.User is not null) TenantSessionSecurity.RotateStamp(storedToken.User);
+        _auditService.Stage("auth.logout", "RefreshToken", storedToken.Id.ToString(), context with { UserId = storedToken.UserId, TenantId = storedToken.User?.TenantId }, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.logout", "RefreshToken", storedToken.Id.ToString(), context with { UserId = storedToken.UserId, TenantId = storedToken.User?.TenantId }, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Failure events are audited, but the audit is best effort: the security-relevant state (counter, lock,
+    /// login activity) is already committed, and an audit failure is logged loudly instead of replacing the
+    /// caller's 401 with a 500.
+    /// </summary>
+    private async Task WriteFailureAuditBestEffortAsync(string action, User user, RequestContext context, string metadata, CancellationToken ct)
+    {
+        try
+        {
+            await _auditService.WriteAsync(action, "User", user.Id.ToString(),
+                context with { UserId = user.Id, TenantId = user.TenantId }, metadata, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _auditService.DiscardStaged();
+            _log.LogError(ex, "Audit write for {Action} failed after the failed-login state was committed (user {UserId})", action, user.Id);
+        }
     }
 
     public async Task<ForgotPasswordResponse> ForgotPasswordAsync(ForgotPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -917,8 +935,8 @@ public class AuthService : IAuthService
             IpAddress     = context.IpAddress,
             UserAgent     = context.UserAgent,
         });
+        _auditService.Stage("auth.password_reset_requested", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.password_reset_requested", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
 
         // Build reset URL — falls back to a relative path fragment if APP_URL is not set.
         var resetUrl = AuthLinkBuilder.ResetPassword(_appUrl, user.Tenant.Slug, resetToken);
@@ -932,6 +950,8 @@ public class AuthService : IAuthService
             <p style="font-size:12px;color:#666">KynexOne Workforce · {_appUrl}</p>
             """;
 
+        // ONE attempt, no inline retry: this path is anonymous, so a retry/back-off here would make the response time depend on
+        // whether the account exists and the relay is flaky (an account-existence oracle) and would hold the request thread.
         // TENANT-EXPLICIT. Forgot-password is anonymous, so there is no principal and
         // ZayraDbContext._isSystemScope is TRUE — the SystemSettings tenant filter is bypassed.
         // The ambient overload then matched `Category == "Email"` across EVERY tenant; its
@@ -941,7 +961,7 @@ public class AuthService : IAuthService
         // already on the audit record above — so it is passed explicitly.
         if (await _emailService.IsConfiguredAsync(user.TenantId, cancellationToken))
         {
-            try { await _emailService.SendAsync(user.TenantId, user.Email, user.FullName, "Reset your KynexOne password", html, cancellationToken: cancellationToken); }
+            try { await _emailService.DeliverResilientAsync(user.TenantId, user.Email, user.FullName, "Reset your KynexOne password", html, cancellationToken: cancellationToken, kind: "password-reset", maxAttempts: 1); }
             catch (Exception ex) { _log.LogWarning("Password reset email failed for user {UserId} ({ErrorType}). Token saved.", user.Id, ex.GetType().Name); }
         }
         else

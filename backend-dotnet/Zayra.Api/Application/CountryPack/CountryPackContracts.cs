@@ -193,6 +193,10 @@ public sealed record EndOfServiceResult(
     /// gratuity computed on?" has one answer and it is the one the money came from.
     /// </summary>
     public decimal AppliedWageBase { get; init; }
+
+    /// <summary>The service the award was measured on (years, after any exclusion), when the pack reports it. The settlement
+    /// screen shows this figure so the years displayed are the years paid. Null: the caller derives a display figure.</summary>
+    public decimal? ServiceYearsAwarded { get; init; }
 }
 
 // ── Wage protection employee row ──────────────────────────────────────────────

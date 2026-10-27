@@ -667,7 +667,7 @@ test.describe('browserless outbound-integration truthfulness contracts', () => {
     expect(config).not.toContain('Developer Portal');
     expect(config).not.toContain('never <strong>Synced</strong>');
     expect(config).toContain('{credentialFormEnabled && (');
-    expect(config).toContain('{qiwaConnectionLabel(status, live)}');
+    expect(config).toContain('{t(qiwaConnectionLabel(status, live))}');
     for (const source of [config, dashboard]) {
       expect(source).not.toMatch(/>\s*(Synced|Connected|Live)\s*</);
       expect(source).not.toContain('Ready for Sync');

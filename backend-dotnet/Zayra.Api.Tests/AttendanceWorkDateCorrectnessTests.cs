@@ -162,7 +162,7 @@ public class AttendanceWorkDateCorrectnessTests
             await using var db = anonymousWebhook ? AnonymousWebhookDb(store) : StoreDb(store);
             if (anonymousWebhook)
                 (await db.ShiftAssignments.CountAsync()).Should().Be(0, "premise: the anonymous scope hides the shift assignment");
-            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+            var result = await IngestService(db).IngestByDeviceKeyAsync(DeviceKey,
                 new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true),
                 "127.0.0.1", default);
             result!.Accepted.Should().Be(1);
@@ -200,7 +200,7 @@ public class AttendanceWorkDateCorrectnessTests
 
         await using (var db = StoreDb(store))
         {
-            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+            var result = await IngestService(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
             [
                 new DeviceIngestPunch(first, new DateTime(2026, 8, 17, 9, 0, 0, DateTimeKind.Utc), "In", null, null, null, null, null, null),
                 new DeviceIngestPunch(second, new DateTime(2026, 8, 18, 9, 0, 0, DateTimeKind.Utc), "In", null, null, null, null, null, null),
@@ -276,7 +276,7 @@ public class AttendanceWorkDateCorrectnessTests
         foreach (var (at, direction) in new[] { (clockIn, "In"), (clockOut, "Out") })
         {
             await using var db = StoreDb(store);
-            await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+            await IngestService(db).IngestByDeviceKeyAsync(DeviceKey,
                 new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
         }
 
@@ -380,7 +380,7 @@ public class AttendanceWorkDateCorrectnessTests
         foreach (var (at, direction) in new[] { (new DateTime(2026, 9, 15, 19, 0, 0, DateTimeKind.Utc), "In"), (new DateTime(2026, 9, 15, 23, 0, 0, DateTimeKind.Utc), "Out") })
         {
             await using var db = StoreDb(store);
-            await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+            await IngestService(db).IngestByDeviceKeyAsync(DeviceKey,
                 new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
         }
         await using (var db = StoreDb(store))
@@ -452,7 +452,7 @@ public class AttendanceWorkDateCorrectnessTests
         {
             if (anonymousWebhook)
                 (await db.LeaveRequests.CountAsync()).Should().Be(0, "premise: the anonymous scope hides the leave request");
-            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+            var result = await IngestService(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                 [new DeviceIngestPunch(code, RiyadhToUtc(Weekday, 10, 0), "BreakOut", null, null, null, null, null, null)], AutoProcess: true),
                 "127.0.0.1", default);
             result!.Processed.Should().Be(1);
@@ -487,7 +487,7 @@ public class AttendanceWorkDateCorrectnessTests
         foreach (var (at, direction) in new[] { (RiyadhToUtc(Weekday, 9, 0), "In"), (RiyadhToUtc(Weekday, 17, 0), "Out") })
         {
             await using var db = AnonymousWebhookDb(store);
-            await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+            await IngestService(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                 [new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
         }
 
@@ -533,7 +533,7 @@ public class AttendanceWorkDateCorrectnessTests
                 await Service(db, new FixedClock(at)).PunchAsync(tenantId, new WebPunchRequest(viaPunch.Id, direction, null, null, null),
                     "Web", new RequestContext(null, null, Guid.NewGuid(), tenantId), default);
             await using (var db = AnonymousWebhookDb(store))
-                await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+                await IngestService(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                     [new DeviceIngestPunch(viaDevice.EmployeeCode, at, direction, null, null, null, null, null, null)], AutoProcess: true),
                     "127.0.0.1", default);
         }
@@ -613,7 +613,7 @@ public class AttendanceWorkDateCorrectnessTests
                         new WebPunchRequest(employee.Id, "In", null, null, null), "Web", ctx, default);
                     break;
                 case "Device":
-                    (await Service(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
+                    (await IngestService(db).IngestByDeviceKeyAsync(DeviceKey, new DeviceIngestRequest(
                         [new DeviceIngestPunch(employee.EmployeeCode, OneAmRiyadhOnThe16th, "In", null, null, null, null, null, null)],
                         AutoProcess: true), "127.0.0.1", default))!.Processed.Should().Be(1);
                     break;
@@ -702,7 +702,7 @@ public class AttendanceWorkDateCorrectnessTests
         foreach (var (at, direction) in punches)
         {
             await using var db = StoreDb(store);
-            var result = await Service(db).IngestByDeviceKeyAsync(DeviceKey,
+            var result = await IngestService(db).IngestByDeviceKeyAsync(DeviceKey,
                 new DeviceIngestRequest([new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
             result!.Accepted.Should().Be(1);
         }
@@ -787,6 +787,10 @@ public class AttendanceWorkDateCorrectnessTests
         db.SaveChanges();
         return employee;
     }
+
+    // The ingest window is relative to the server clock (default 45 days back); these tests use fixed calendar dates, so the
+    // service is given a fixed clock just after them instead of widening the window.
+    private static AttendanceService IngestService(ZayraDbContext db) => Service(db, new FixedClock(new DateTime(2026, 9, 20, 0, 0, 0, DateTimeKind.Utc)));
 
     private static AttendanceService Service(ZayraDbContext db, TimeProvider? clock = null) => new(db, new NullNotifications(), new NullHttpClients(), clock);
 

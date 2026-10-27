@@ -46,7 +46,7 @@ function MyDeductionsBody() {
   return (
     <div className="space-y-4" data-testid="my-deductions">
       <div>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('My deductions')}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('My deductions')}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('Every deduction from your pay, why it is made, and what is left to repay.')}</p>
       </div>
       {loading ? (

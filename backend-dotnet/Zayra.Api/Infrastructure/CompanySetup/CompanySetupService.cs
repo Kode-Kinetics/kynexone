@@ -321,7 +321,7 @@ public sealed class CompanySetupService
         // existingId and A9 baseline. A section the company has nothing in yet is filled from the country pack as new rows.
         var org = await CompanySetupRows.CompanyRowsAsync(_db, tenantId, companyId, ct);
         var maps = await CompanySetupRows.CodeMapsAsync(_db, tenantId, ct);
-        var costCentres = org.CostCentres.Where(x => !x.IsDeleted && x.IsActive).Select(CompanySetupRows.CostCentre).ToList();
+        var costCentres = org.CostCentres.Where(x => !x.IsDeleted).Select(CompanySetupRows.CostCentre).ToList();
         var ccByTemplateDept = new Dictionary<string, string>(StringComparer.Ordinal);
         if (costCentres.Count == 0)
         {
@@ -335,9 +335,9 @@ public sealed class CompanySetupService
             }
         }
 
-        var departments = org.Departments.Where(d => !d.IsDeleted && d.IsActive).Select(d => CompanySetupRows.Department(d, maps)).ToList();
-        var grades = org.Grades.Where(g => !g.IsDeleted && g.IsActive).Select(CompanySetupRows.Grade).ToList();
-        var designations = org.Designations.Where(d => !d.IsDeleted && d.IsActive).Select(d => CompanySetupRows.Designation(d, maps)).ToList();
+        var departments = org.Departments.Where(d => !d.IsDeleted).Select(d => CompanySetupRows.Department(d, maps)).ToList();
+        var grades = org.Grades.Where(g => !g.IsDeleted).Select(CompanySetupRows.Grade).ToList();
+        var designations = org.Designations.Where(d => !d.IsDeleted).Select(d => CompanySetupRows.Designation(d, maps)).ToList();
 
         // Pack rows: codes are unique within the company only, so a pack code steps past the company's own codes (removed
         // rows included — they still hold theirs), and the pack's links follow the rename.
@@ -598,7 +598,27 @@ public sealed class CompanySetupService
             body = body with { Company = body.Company with { CutoverStatus = status } };
         }
         return new CompanySetupDraft(row.Id, row.Version, row.Step, row.Status, body, row.CreatedByUserId,
-            names.GetValueOrDefault(row.CreatedByUserId, string.Empty), row.CreatedAtUtc, row.UpdatedAtUtc, row.ResultCompanyId);
+            names.GetValueOrDefault(row.CreatedByUserId, string.Empty), row.CreatedAtUtc, row.UpdatedAtUtc, row.ResultCompanyId,
+            body.ExistingCompanyId is Guid existing && row.Status == CompanySetupDraftStatuses.Open ? await RowStatesAsync(row.TenantId, existing, ct) : null);
+    }
+
+    /// <summary>Per existing organisation row of the company: on or off, and in use or not. Read on every draft read, so the
+    /// wizard never shows a lock or a Remove that the server would not honour.</summary>
+    private async Task<Dictionary<Guid, CompanySetupRowState>> RowStatesAsync(Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        var org = await CompanySetupRows.CompanyRowsAsync(_db, tenantId, companyId, ct);
+        var usage = await CompanySetupRows.UsageAsync(_db, tenantId, org, ct);
+        var states = new Dictionary<Guid, CompanySetupRowState>();
+        void Add(Guid id, bool active)
+        {
+            usage.TryGetValue(id, out var u);
+            states[id] = new CompanySetupRowState(active, u?.InUse ?? false, u is { InUse: true } ? u.Summary : null, u is { InUse: true } ? u.Items : null);
+        }
+        foreach (var x in org.CostCentres.Where(x => !x.IsDeleted)) Add(x.Id, x.IsActive);
+        foreach (var x in org.Departments.Where(x => !x.IsDeleted)) Add(x.Id, x.IsActive);
+        foreach (var x in org.Designations.Where(x => !x.IsDeleted)) Add(x.Id, x.IsActive);
+        foreach (var x in org.Grades.Where(x => !x.IsDeleted)) Add(x.Id, x.IsActive);
+        return states;
     }
 
     private async Task<Dictionary<Guid, string>> NamesAsync(Guid tenantId, IEnumerable<Guid> userIds, CancellationToken ct)
@@ -713,9 +733,12 @@ public sealed class CompanySetupService
                     break;
             }
             var counts = SectionCountsOf(model, section!);
+            // Rows the user removed in this section go last, so a link the same save just cleared no longer counts as use.
+            var removal = await ApplyRemovalsAsync(tenantId, target, section!, model.Removals.For(section!), ctx, ct);
 
             // Rebase in place, from what is in the database now.
             var rebased = await RebaseSectionAsync(tenantId, target, body, section!, ct);
+            rebased = DropRemovedRows(rebased, section!, removal.Deleted);
             var json = JsonSerializer.Serialize(rebased, BodyJson);
             if (Encoding.UTF8.GetByteCount(json) > CompanySetupPlanner.MaxBodyBytes)
             {
@@ -735,7 +758,7 @@ public sealed class CompanySetupService
             marker.CompanyId = target;
             _db.AuditLogs.Add(marker);
             await _db.SaveChangesAsync(ct);
-            result = new SectionApplyResult((await ToDtoAsync(draft, ct))!, section!, counts.Created, counts.Updated, counts.Unchanged, Replayed: false);
+            result = new SectionApplyResult((await ToDtoAsync(draft, ct))!, section!, counts.Created, counts.Updated, counts.Unchanged, Replayed: false, removal.Deleted.Count, removal.TurnedOff);
         }
 
         if (_db.Database.IsRelational())
@@ -784,6 +807,48 @@ public sealed class CompanySetupService
         };
         var list = rows.ToList();
         return new(list.Count(x => x.New), list.Count(x => !x.New && x.Changed), list.Count(x => !x.New && !x.Changed));
+    }
+
+    private static OrgRowKind KindOf(string section) => section switch
+    {
+        V.Sections.CostCentres => OrgRowKind.CostCenter,
+        V.Sections.Departments => OrgRowKind.Department,
+        V.Sections.Grades => OrgRowKind.Grade,
+        _ => OrgRowKind.Designation,
+    };
+
+    /// <summary>Removes the rows the draft marked, through the one Remove rule (<see cref="IOrgRowRemoval"/>), in the caller's
+    /// transaction. Returns the ids that were deleted (they leave the draft) and how many were turned off instead.</summary>
+    private async Task<(HashSet<Guid> Deleted, int TurnedOff)> ApplyRemovalsAsync(
+        Guid tenantId, Guid companyId, string section, IReadOnlyCollection<Guid> ids, RequestContext ctx, CancellationToken ct)
+    {
+        var deleted = new HashSet<Guid>();
+        var turnedOff = 0;
+        foreach (var id in ids)
+        {
+            var (found, owner) = await _organization.Removal.CompanyOfAsync(KindOf(section), tenantId, id, ct);
+            // The planner already proved the row is this company's; a row that is gone since is simply done.
+            if (!found || owner != companyId) continue;
+            var result = await _organization.Removal.RemoveAsync(KindOf(section), tenantId, id, ctx, ct);
+            if (result is null) continue;
+            if (result.Outcome == OrgRowOutcomes.Deleted) deleted.Add(id); else turnedOff++;
+        }
+        return (deleted, turnedOff);
+    }
+
+    /// <summary>After a section save the removed-and-deleted rows leave the draft, and the section's removal list is spent.</summary>
+    private static CompanySetupDraftBody DropRemovedRows(CompanySetupDraftBody body, string section, HashSet<Guid> deleted)
+    {
+        bool Keep(Guid? id) => id is not Guid g || !deleted.Contains(g);
+        var next = section switch
+        {
+            V.Sections.CostCentres => body with { CostCentres = body.CostCentres?.Where(x => Keep(x.ExistingId)).ToList() },
+            V.Sections.Departments => body with { Departments = body.Departments?.Where(x => Keep(x.ExistingId)).ToList() },
+            V.Sections.Grades => body with { Grades = body.Grades?.Where(x => Keep(x.ExistingId)).ToList() },
+            _ => body with { Designations = body.Designations?.Where(x => Keep(x.ExistingId)).ToList() },
+        };
+        var removals = next.Removals?.Without(section);
+        return next with { Removals = removals is { IsEmpty: true } ? null : removals };
     }
 
     /// <summary>B2's rebase: the section's rows, in body order, become the saved rows — values, existingId and a fresh
@@ -1187,6 +1252,9 @@ public sealed class CompanySetupService
         var gradeIds = await WriteGradesAsync(tenantId, companyId, m, ctx, ct);
         var departmentIds = await WriteDepartmentsAsync(tenantId, companyId, m, branchIds, costCentreIds, ctx, ct);
         await WriteDesignationsAsync(tenantId, companyId, m, departmentIds, gradeIds, ctx, ct);
+        // Removals last, through the same rule as Setup: never used = deleted, in use = turned off.
+        foreach (var section in V.Sections.All)
+            await ApplyRemovalsAsync(tenantId, companyId, section, m.Removals.For(section), ctx, ct);
 
         if (m.EmployeeIdRuleAction is V.ActionCreate or V.ActionUpdate)
         {
@@ -1279,7 +1347,7 @@ public sealed class CompanySetupService
             {
                 ids[cc.Code] = row.Id;
                 if (pc.Changed)
-                    await _organization.UpdateCostCenterAsync(tenantId, row.Id, new CostCenterRequest(companyId, row.Code, cc.NameEn.Trim(), row.IsActive, nameAr), ctx, ct);
+                    await _organization.UpdateCostCenterAsync(tenantId, row.Id, new CostCenterRequest(companyId, cc.Code, cc.NameEn.Trim(), row.IsActive, nameAr), ctx, ct);
                 continue;
             }
             ids[cc.Code] = (await _organization.CreateCostCenterAsync(tenantId, new CostCenterRequest(companyId, cc.Code, cc.NameEn.Trim(), true, nameAr), ctx, ct)).Id;
@@ -1299,7 +1367,7 @@ public sealed class CompanySetupService
                 ids[g.Code] = row.Id;
                 // An existing band keeps its own currency and band label; the wizard edits names, level and amounts.
                 if (pg.Changed)
-                    await _organization.UpdateGradeAsync(tenantId, row.Id, new GradeRequest(row.Code, g.NameEn.Trim(), row.Band, g.Level,
+                    await _organization.UpdateGradeAsync(tenantId, row.Id, new GradeRequest(g.Code, g.NameEn.Trim(), row.Band, g.Level,
                         g.MinSalary, g.MidSalary, g.MaxSalary, row.Currency, row.IsActive, nameAr, companyId), ctx, ct);
                 continue;
             }
@@ -1326,7 +1394,7 @@ public sealed class CompanySetupService
             if (pd.Existing is { } existing)
             {
                 ids[d.Code] = existing.Id;
-                await _organization.UpdateDepartmentAsync(tenantId, existing.Id, new DepartmentRequest(branch, parent, cost, existing.Code,
+                await _organization.UpdateDepartmentAsync(tenantId, existing.Id, new DepartmentRequest(branch, parent, cost, d.Code,
                     d.NameEn.Trim(), nameAr, existing.ManagerEmployeeId, existing.IsActive, companyId), ctx, ct);
                 continue;
             }
@@ -1350,7 +1418,7 @@ public sealed class CompanySetupService
             {
                 // The free-text job grade follows the grade link when it moves; level, description and manager flag are kept.
                 var jobGrade = grade == existing.GradeId ? existing.JobGrade : ds.GradeCode;
-                await _organization.UpdateDesignationAsync(tenantId, existing.Id, new DesignationRequest(dept, existing.Code, ds.TitleEn.Trim(), titleAr,
+                await _organization.UpdateDesignationAsync(tenantId, existing.Id, new DesignationRequest(dept, ds.Code, ds.TitleEn.Trim(), titleAr,
                     jobGrade, grade, existing.JobLevel, existing.JobDescription, existing.IsManagerRole, existing.IsActive, companyId), ctx, ct);
                 continue;
             }

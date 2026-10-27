@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
@@ -6,7 +6,10 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Governance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -70,7 +73,8 @@ public class BonusesController : ControllerBase
     public async Task<IActionResult> ListBonusTypes([FromQuery] bool includeInactive = false, CancellationToken ct = default)
     {
         var tid = GetTenantId();
-        var q = _db.BonusTypes.Where(x => x.TenantId == tid && !x.IsDeleted);
+        // "Show turned-off" also lists types removed while nothing used them, so they can be restored.
+        var q = includeInactive ? ScopedBypass.TenantWide(_db.BonusTypes, tid, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.") : _db.BonusTypes.Where(x => x.TenantId == tid);
         if (!includeInactive) q = q.Where(x => x.IsActive);
         return Ok(await q.OrderBy(x => x.NameEn).ToListAsync(ct));
     }
@@ -136,6 +140,7 @@ public class BonusesController : ControllerBase
         return Ok(t);
     }
 
+    /// <summary>Setup's Remove: a type no batch or paid bonus ever used is deleted; any use turns it off so history still resolves.</summary>
     [HttpDelete("types/{id:guid}")]
     [HasPermission("payroll.write")]
     public async Task<IActionResult> DeleteBonusType(Guid id, CancellationToken ct)
@@ -143,12 +148,42 @@ public class BonusesController : ControllerBase
         var tid = GetTenantId();
         var t = await _db.BonusTypes.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (t == null) return NotFound();
-        if (await _db.BonusBatches.AnyAsync(x => x.BonusTypeId == id && !x.IsDeleted && x.Status != "Cancelled", ct))
-            return BadRequest("Cannot delete a bonus type that has active or approved batches. Deactivate it instead.");
-        t.IsDeleted = true; t.IsActive = false;
+        var used = await SetupRemoval.MeasureAsync(this, new[]
+        {
+            SetupRemoval.Of<BonusBatch>(_db, tid, "bonusBatch", "bonus batches", x => x.BonusTypeId == id && !x.IsDeleted),
+            SetupRemoval.Of<EmployeeBonus>(_db, tid, "employeeBonus", "employee bonuses", x => x.BonusTypeId == id),
+        }, ct);
+        t.IsActive = false;
         t.UpdatedAtUtc = DateTime.UtcNow; t.UpdatedBy = GetUserId();
+        if (used.InUse)
+        {
+            this.RecordChange(_db, tid, null, "BonusType", id.ToString(), "TurnedOff", new { t.Code }, new { references = used.WideTotal });
+            await _db.SaveChangesAsync(ct);
+            return SetupRemoval.TurnedOff(this, used);
+        }
+        t.IsDeleted = true;
+        this.RecordChange(_db, tid, null, "BonusType", id.ToString(), "Deleted", new { t.Code, t.NameEn }, null);
         await _db.SaveChangesAsync(ct);
-        return Ok(new { deleted = true });
+        return SetupRemoval.Deleted(this);
+    }
+
+    [HttpPost("types/{id:guid}/restore")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> RestoreBonusType(Guid id, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var t = await ScopedBypass.TenantWide(_db.BonusTypes, tid, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.").FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (t == null) return NotFound();
+        if (t.IsDeleted && await _db.BonusTypes.AnyAsync(x => x.TenantId == tid && x.Id != id && x.Code == t.Code && !x.IsDeleted, ct))
+            return SetupRemoval.Blocked(this, "BONUS_TYPE_CODE_TAKEN", $"Another bonus type now uses the code {t.Code}, so this one cannot be restored as it is.");
+        if (t.IsDeleted || !t.IsActive)
+        {
+            t.IsDeleted = false; t.IsActive = true;
+            t.UpdatedAtUtc = DateTime.UtcNow; t.UpdatedBy = GetUserId();
+            this.RecordChange(_db, tid, null, "BonusType", id.ToString(), "Restored", null, new { t.Code });
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
     }
 
     // ── Bonus Batches ─────────────────────────────────────────────────────────
@@ -491,6 +526,8 @@ public class BonusesController : ControllerBase
         if (batch == null) return NotFound();
         if (batch.Status != "Draft") return BadRequest("Only Draft batches can be submitted.");
         if (batch.EmployeeCount == 0) return BadRequest("Batch has no employees.");
+        var submittedLines = await _db.EmployeeBonuses.AsNoTracking().Where(b => b.TenantId == tid && b.BonusBatchId == id && !b.IsDeleted).ToListAsync(ct);
+        if (await RefuseWhenNoSecondApproverAsync(tid, uid, batch, submittedLines, needsDistinctPayer: false, "submitting a bonus batch", "تقديم دفعة المكافآت", ct) is { } noApprover) return noApprover;
         batch.Status = "PendingApproval"; batch.UpdatedAtUtc = DateTime.UtcNow; batch.UpdatedBy = uid;
         await _db.SaveChangesAsync(ct);
         await WriteBonusAudit(tid, uid, id, null, "BatchSubmitted", "Draft", "PendingApproval", ct);
@@ -513,6 +550,15 @@ public class BonusesController : ControllerBase
         // other entities' bonuses in a batch nothing would ever accrue for. Checked BEFORE any mutation.
         var (bonuses, scopeRefusal) = await LoadWholeBatchBonusesAsync(tid, id, ct);
         if (scopeRefusal is not null) return scopeRefusal;
+
+        // HR prepares, a different person in Finance approves, and nobody approves a payment to themselves.
+        if (uid is null || uid == batch.CreatedBy || uid == batch.UpdatedBy || bonuses.Any(b => b.CreatedBy == uid || b.UpdatedBy == uid))
+            return BadRequest(new { error = "maker_cannot_approve", message = "The person who prepared or submitted a bonus batch cannot approve it. Ask a Finance approver." });
+        if (await CallerIsRecipientAsync(tid, uid, bonuses, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You are a recipient in this bonus batch, so you cannot approve it. Ask another Finance approver."));
+
+        // The approver cannot also release the payment: a payer other than this approver must exist before the batch is approved.
+        if (await RefuseWhenNoSecondApproverAsync(tid, uid, batch, bonuses, needsDistinctPayer: true, "approving a bonus batch (a different person must then release the payment)", "اعتماد دفعة المكافآت (يجب أن يصرفها شخص آخر)", ct) is { } noPayer) return noPayer;
 
         batch.Status = "Approved"; batch.UpdatedAtUtc = DateTime.UtcNow; batch.UpdatedBy = uid;
 
@@ -791,6 +837,16 @@ public class BonusesController : ControllerBase
         var (allBonuses, scopeRefusal) = await LoadWholeBatchBonusesAsync(tid, id, ct);
         if (scopeRefusal is not null) return scopeRefusal;
 
+        // The approver does not also release the payment, and a recipient never releases their own.
+        var approvedByCaller = uid is Guid callerId && await _db.BonusApprovals.AsNoTracking()
+            .AnyAsync(a => a.TenantId == tid && a.BonusBatchId == id && a.Status == "Approved" && a.ApprovedBy == callerId, ct);
+        // ...nor does anyone who prepared it (created the batch or edited any of its lines).
+        var preparedByCaller = uid is Guid prep && (batch.CreatedBy == prep || allBonuses.Any(b => b.CreatedBy == prep || b.UpdatedBy == prep));
+        if (uid is null || approvedByCaller || preparedByCaller)
+            return BadRequest(new { error = "maker_cannot_approve", message = "The person who prepared or approved a bonus batch cannot also mark it paid. Ask another Finance user." });
+        if (await CallerIsRecipientAsync(tid, uid, allBonuses, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You are a recipient in this bonus batch, so you cannot mark it paid."));
+
         batch.Status = "Paid"; batch.IsLockedByPayroll = true;
         batch.UpdatedAtUtc = DateTime.UtcNow; batch.UpdatedBy = uid;
 
@@ -1039,6 +1095,35 @@ public class BonusesController : ControllerBase
                 b.TotalAmount, b.Status, b.IsLockedByPayroll,
             }).ToList(),
         });
+    }
+
+    /// <summary>True when the caller's login belongs to any employee receiving a bonus in this batch.</summary>
+    private async Task<bool> CallerIsRecipientAsync(Guid tid, Guid? uid, IEnumerable<EmployeeBonus> bonuses, CancellationToken ct)
+        => await SubjectDecisionBar.CallerIsSubjectOfAnyAsync(_db, tid, uid, await RecipientEmployeeIdsAsync(tid, bonuses, ct), ct);
+
+    /// <summary>Every employee receiving a bonus in the set: the stored internal ids plus the public ids resolved in ONE query.</summary>
+    private async Task<IReadOnlyCollection<int>> RecipientEmployeeIdsAsync(Guid tid, IEnumerable<EmployeeBonus> bonuses, CancellationToken ct)
+    {
+        var publicIds = bonuses.Where(b => b.EmployeeIntId is null).Select(b => b.EmployeeId).Distinct().ToList();
+        // IgnoreQueryFilters is intentional: the recipient check must see recipients in every company of the batch, whatever the caller's scope; TenantId is re-applied explicitly in this predicate (register §6).
+        var resolved = publicIds.Count == 0 ? new List<int>() : await _db.Employees.IgnoreQueryFilters().AsNoTracking()
+            .Where(e => e.TenantId == tid && publicIds.Contains(e.PublicId)).Select(e => e.Id).ToListAsync(ct);
+        return bonuses.Where(b => b.EmployeeIntId is not null).Select(b => b.EmployeeIntId!.Value).Concat(resolved).Distinct().ToList();
+    }
+
+    /// <summary>
+    /// Up front, before the batch moves to a step only another Finance person can take: is there anyone who is not one of its
+    /// preparers and not a recipient who could take it? <paramref name="needsDistinctPayer"/>: at approval, the person who
+    /// approves cannot also release the payment, so a payer other than the caller must exist as well.
+    /// </summary>
+    private async Task<IActionResult?> RefuseWhenNoSecondApproverAsync(Guid tid, Guid? uid, BonusBatch batch, IReadOnlyCollection<EmployeeBonus> lines, bool needsDistinctPayer,
+        string actionEn, string actionAr, CancellationToken ct)
+    {
+        var preparers = lines.Select(b => b.CreatedBy).Concat(lines.Select(b => b.UpdatedBy)).Append(batch.CreatedBy).Append(batch.UpdatedBy)
+            .Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        var recipients = await RecipientEmployeeIdsAsync(tid, lines, ct);
+        var excluded = needsDistinctPayer && uid is Guid caller ? preparers.Append(caller).ToList() : preparers;
+        return await SecondApproverCheck.RefuseIfNoneAsync(_db, tid, "payroll.approve", uid, recipients, null, actionEn, actionAr, ct, excluded);
     }
 
     /// <summary>

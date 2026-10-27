@@ -30,7 +30,7 @@ public class AuthServiceTests
         return new ZayraDbContext(options);
     }
 
-    private static AuthService BuildService(ZayraDbContext db, IEmailService? email = null)
+    private static AuthService BuildService(ZayraDbContext db, IEmailService? email = null, IAuditService? audit = null)
     {
         var jwt = Options.Create(new JwtOptions
         {
@@ -45,7 +45,7 @@ public class AuthServiceTests
             db,
             new Pbkdf2PasswordHasher(),
             new JwtTokenService(jwt),
-            new AuditService(db),
+            audit ?? new AuditService(db),
             email ?? new FakeEmailService(),
             jwt,
             new NullMfaService(),
@@ -603,6 +603,19 @@ public class AuthServiceTests
         Assert.Equal(1, updated!.FailedLoginCount);
         Assert.Null(updated.LockoutEnd);
         Assert.False(updated.IsLocked);
+    }
+
+    [Fact]
+    public async Task Login_AuditFailure_DoesNotUndoTheLockoutCounter_AndStillReturns401()
+    {
+        var (db, user, _) = await SeedUserAsync();
+        var auth = BuildService(db, audit: new ExplodingAuditService());
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(
+            () => auth.LoginAsync(new LoginRequest("admin@zayra.local", "WrongPassword!", "zayra"), TestCtx, CancellationToken.None));
+
+        var updated = await db.Users.FindAsync(user.Id);
+        Assert.Equal(1, updated!.FailedLoginCount);
     }
 
     [Fact]
@@ -1414,4 +1427,12 @@ file sealed class FakeEmailService : IEmailService
         TenantScopedCalls.Add(tenantId);
         return Task.FromResult(true);
     }
+}
+
+file sealed class ExplodingAuditService : IAuditService
+{
+    public Task WriteAsync(string action, string entityName, string? entityId, RequestContext context, string? metadata, CancellationToken cancellationToken) =>
+        throw new InvalidOperationException("Injected audit failure.");
+    public void Stage(string action, string entityName, string? entityId, RequestContext context, string? metadata) =>
+        throw new InvalidOperationException("Injected audit failure.");
 }

@@ -1,10 +1,12 @@
 'use client';
 
 import { Modal } from '@/src/components/Modal';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 export interface ConfirmState {
-  message: string;
+  message: ReactNode;
+  /** 'danger' (default) for destructive confirmations, 'primary' for ordinary ones. */
+  tone?: 'danger' | 'primary';
   onConfirm: () => void | Promise<void>;
   confirmLabel?: string;
   title?: string;
@@ -18,9 +20,6 @@ export interface ConfirmState {
   closeOnConfirm?: boolean;
   resetKey?: string | number;
 }
-
-const btnGhost = 'inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5';
-const btnDanger = 'inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50';
 
 export function ConfirmDialog({
   state,
@@ -41,6 +40,8 @@ export function ConfirmDialog({
     setLocalBusy(false);
     setLocalError('');
   }, [state?.message, state?.resetKey]);
+
+  const confirmClass = state?.tone === 'primary' ? 'btn-primary' : 'btn-danger';
 
   useEffect(() => {
     if (busy) busyRef.current?.focus();
@@ -72,13 +73,13 @@ export function ConfirmDialog({
       size="sm"
       footer={
         <>
-          <button type="button" className={btnGhost} onClick={onCancel} disabled={busy}>
+          <button type="button" className="btn-secondary" onClick={onCancel} disabled={busy}>
             {state?.cancelLabel ?? 'Cancel'}
           </button>
           <button
             type="button"
             ref={confirmRef}
-            className={btnDanger}
+            className={confirmClass}
             onClick={() => void confirm()}
             disabled={busy}
           >
@@ -87,9 +88,9 @@ export function ConfirmDialog({
         </>
       }
     >
-      <p className="text-sm text-slate-700 dark:text-slate-300">{state?.message}</p>
+      <div className="text-body text-fg-muted">{state?.message}</div>
       {busy && <span ref={busyRef} tabIndex={-1} role="status" aria-live="polite" className="sr-only">{state?.busyLabel ?? 'Working…'}</span>}
-      {error && <p role="alert" aria-live="assertive" className="mt-3 text-sm text-rose-700 dark:text-rose-300">{error}</p>}
+      {error && <p role="alert" aria-live="assertive" className="mt-3 text-body text-danger-fg">{error}</p>}
     </Modal>
   );
 }

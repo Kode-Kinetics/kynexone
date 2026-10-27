@@ -151,9 +151,6 @@ public static class ReportTabulator
         return bytes;
     }
 
-    private static string Cell(string value)
-    {
-        var safe = value.Length > 0 && "=+-@".Contains(value[0]) ? "'" + value : value;
-        return $"\"{safe.Replace("\"", "\"\"")}\"";
-    }
+    // The shared guard (Csv.Guard: leading spaces, tab and CR included), always quoted as before.
+    private static string Cell(string value) => Application.Common.Csv.Quote(value);
 }

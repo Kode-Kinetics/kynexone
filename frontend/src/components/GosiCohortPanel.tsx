@@ -62,8 +62,8 @@ export function GosiBasisNote({ cohort, basis }: { cohort?: string | null; basis
           : { label: 'GOSI basis', tone: 'text-slate-500' };
   return (
     <details className="mt-0.5 text-start" data-testid="gosi-basis-note">
-      <summary className={`cursor-pointer text-[10px] leading-tight ${tone}`}>{label}</summary>
-      <p className="mt-1 max-w-xs whitespace-normal text-[11px] leading-snug text-slate-600 dark:text-slate-400">{basis}</p>
+      <summary className={`cursor-pointer text-caption leading-tight ${tone}`}>{label}</summary>
+      <p className="mt-1 max-w-xs whitespace-normal text-caption leading-snug text-slate-600 dark:text-slate-400">{basis}</p>
     </details>
   );
 }
@@ -126,7 +126,7 @@ export function GosiCohortPanel({ employee }: { employee: EmployeeDetail }) {
           {saving ? 'Sending…' : 'Send for approval'}
         </button>
       </div>
-      <p className="mt-1 text-[11px] text-slate-500">Copy it from the person&apos;s GOSI record. The change is applied only after approval.</p>
+      <p className="mt-1 text-caption text-slate-500">Copy it from the person&apos;s GOSI record. The change is applied only after approval.</p>
       {notice && (
         <p role="status" className={`mt-2 text-xs ${notice.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'}`}>
           {notice.text}

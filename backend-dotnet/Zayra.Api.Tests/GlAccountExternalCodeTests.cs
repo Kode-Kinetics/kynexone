@@ -140,7 +140,7 @@ public class GlAccountExternalCodeTests
         await db.SaveChangesAsync();
         var gl = Gl(db, tid);
 
-        var csv = Encoding.UTF8.GetString((await gl.ExportAccounts(null, default)).Should().BeOfType<FileContentResult>().Subject.FileContents);
+        var csv = Encoding.UTF8.GetString((await gl.ExportAccounts(null, default)).Should().BeOfType<FileContentResult>().Subject.FileContents).TrimStart('\uFEFF');
         csv.Should().StartWith("Code,Name,Type,IsActive,ExternalCode");
         csv.Should().Contain("2100,Salaries Payable,Liability,true,");
 

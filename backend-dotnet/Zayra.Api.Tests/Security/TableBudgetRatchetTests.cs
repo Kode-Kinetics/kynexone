@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 
 namespace Zayra.Api.Tests.Security;
 
@@ -72,6 +72,11 @@ public class TableBudgetRatchetTests
         // loan limits by grade, and the home for later grade entitlements. No existing table carries an
         // effective-dated, per-grade, per-component value with a no-overlap guarantee. HR/Finance own it;
         // retained with the loan ledger (84 months), since loans keep a witness id into it.
+        // CompanyPayrollRules (Setup -> Payroll rules): one row per company per payroll rule HR chose (rest-day work mode and
+        // premium, annual-leave payout on exit, probation maximum, part-month basis, absence base), each carrying who
+        // acknowledged a below-statutory value and when. company_rate_policies is effective-dated rates keyed by rate key
+        // with no acknowledgement witness and no acknowledged-by pair; the below-minimum acknowledgement is audit evidence
+        // that must live with the value. Payroll Engineering owns it; kept for the life of the company.
         // Release A (R0, rev 8.3.2 — the only two new tables of the release):
         // EmployeeEntitlements: the Contractual package frozen per contract term (Art. 59 acquired rights); the salary
         // row may hold only QiwaWage cash and a grade cell is today's standard, not a signed term, so no existing table
@@ -137,12 +142,33 @@ public class TableBudgetRatchetTests
         // table can hold it: every organisation table is a business row and a draft must never write one. Retention:
         // Open drafts idle 90 days are deleted (CompanySetupDraftRetentionRule); Submitted/Discarded kept for audit.
         // Trusted browsers for two-step sign-in (AddMfaTrustedDevices; owner Platform/Identity). One table, 374 -> 375.
+        // Company payroll rules (Setup -> Payroll rules; owner Payroll Engineering). One table, 375 -> 376.
         // MfaTrustedDevices: a server-side, revocable record per browser a user chose to trust after a code, holding only
         // the cookie token's SHA-256, its expiry and its revocation reason. No existing table can carry it: refresh tokens
         // are sessions that rotate and die on sign-out (a trusted browser must outlive them), mfa_challenge_tokens are
         // single-use five-minute credentials, and the known-device cookie is a stateless lockout hint nobody can revoke.
         // Retention: expired or revoked rows deleted after 30 days (MfaTrustedDeviceRetentionRule).
-        DeclaredDbSets().Should().HaveCount(375,
+        // Field-level encryption (AddFieldEncryptionFoundation; owner Platform/Security). One table, 375 -> 376.
+        // FieldEncryptionKeys: per-tenant, versioned data-encryption keys and blind-index roots, wrapped by the platform
+        // KEK, with the Revoked state that is the client's kill switch. No existing table can carry it: it is key custody
+        // (secret material wrapped per tenant, one Active row per tenant, material destroyed on revoke), not business data,
+        // and DataProtection's key ring is deployment-wide with no tenant dimension. Retention: kept for the life of the
+        // tenant (ciphertext is unreadable without it); removed with whole-tenant erasure. Docs: docs/runbooks/field-encryption.md.
+        // PayrollRuleChangeRequests (maker-checker for Setup -> Payroll rules; owner Payroll Engineering). One table, 377 -> 378 after field encryption.
+        // A change that lowers pay waits for a different payroll.approve holder. approval_requests is a generic per-employee
+        // workflow keyed to an employee-owned subject with routed steps; this is one company-level change carrying a diff of
+        // rule values, the maker's reason and acknowledged warnings, and the decider (the database refuses decider = maker).
+        // Decided rows are kept with the audit log for the life of the company.
+        // Salary change requests (AddSalaryChangeRequestsAndOffboardingCompany; owner Payroll). One table, 378 -> 379 in the release train.
+        // SalaryChangeRequests: a proposed salary package waiting for a different Finance approver. No existing table can
+        // hold it: employee_salary_structures rows are applied figures that payroll reads, so a pending proposal there
+        // would be paid. Retention: kept with the employee's payroll history; removed by whole-tenant erasure.
+        // Leave balance adjustment requests (AddLeaveBalanceAdjustmentRequests; owner Leave). One table, 379 -> 380 in the release train.
+        // LeaveBalanceAdjustmentRequests: a manual leave grant above the approval threshold (default 5 days) waiting for a
+        // second HR approver, because leave converts to cash through encashment. No existing table can hold it:
+        // leave_balance_transactions is the ledger of APPLIED changes and has no maker, status or decision columns, and a pending
+        // row there would read as a balance movement. Retention: kept with the employee's leave history; removed by erasure.
+        DeclaredDbSets().Should().HaveCount(380,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

@@ -28,6 +28,7 @@ import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { educationClaims } from './educationClaims';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
+import { payrollPipeline } from './payrollPipeline';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
@@ -36,9 +37,19 @@ import { setupDataEntry } from './setupDataEntry';
 import { setupGuidedEntry } from './setupGuidedEntry';
 import { setupReview } from './setupReview';
 import { setupSections } from './setupSections';
+import { orgRowRemoval } from './orgRowRemoval';
+import { designMigration } from './designMigration';
+import { setupRollout } from './setupRollout';
 import { attendanceRules } from './attendanceRules';
+import { payrollRules } from './payrollRules';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
+import { removalSafety } from './removalSafety';
+import { dailyA } from './dailyA';
+import { dailyB } from './dailyB';
+import { dailyC } from './dailyC';
+import { dailyD } from './dailyD';
+import { dailyE } from './dailyE';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -55,14 +66,24 @@ type Dict = Record<string, string>;
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
+  ...removalSafety.en,
   ...appChrome.en,
+  ...dailyA.en,
+  ...dailyB.en,
+  ...dailyC.en,
+  ...dailyD.en,
+  ...dailyE.en,
   ...companyWizard.en,
   ...companyWizardRules.en,
   ...setupDataEntry.en,
   ...setupGuidedEntry.en,
   ...setupReview.en,
   ...setupSections.en,
+  ...orgRowRemoval.en,
+  ...designMigration.en,
+  ...setupRollout.en,
   ...attendanceRules.en,
+  ...payrollRules.en,
   ...gradePackage.en,
   ...employeeWorkspace.en,
   "Navigation could not be resumed. Try the action again.": "Navigation could not be resumed. Try the action again.",
@@ -1491,6 +1512,8 @@ const en: Dict = {
   ...attendanceEvidence.en,
   // Payroll's attendance check before Process — see ./payrollAttendance.
   ...payrollAttendance.en,
+  // Payroll's run pipeline — see ./payrollPipeline.
+  ...payrollPipeline.en,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
@@ -1524,14 +1547,24 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...removalSafety.ar,
   ...appChrome.ar,
+  ...dailyA.ar,
+  ...dailyB.ar,
+  ...dailyC.ar,
+  ...dailyD.ar,
+  ...dailyE.ar,
   ...companyWizard.ar,
   ...companyWizardRules.ar,
   ...setupDataEntry.ar,
   ...setupGuidedEntry.ar,
   ...setupReview.ar,
   ...setupSections.ar,
+  ...orgRowRemoval.ar,
+  ...designMigration.ar,
+  ...setupRollout.ar,
   ...attendanceRules.ar,
+  ...payrollRules.ar,
   ...gradePackage.ar,
   ...employeeWorkspace.ar,
   "Navigation could not be resumed. Try the action again.": "تعذر استئناف التنقل. أعد المحاولة.",
@@ -2961,6 +2994,8 @@ const ar: Dict = {
   ...attendanceEvidence.ar,
   // Payroll's attendance check before Process — see ./payrollAttendance.
   ...payrollAttendance.ar,
+  // Payroll's run pipeline — see ./payrollPipeline.
+  ...payrollPipeline.ar,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,

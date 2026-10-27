@@ -39,7 +39,7 @@ const STATUS_TONE = {
 export function CapStatusChip({ status }: { status: DeductionStatement['capStatus'] }) {
   const { t } = useLocale();
   return (
-    <span data-testid="cap-status" className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${STATUS_TONE[status]}`}>
+    <span data-testid="cap-status" className={`inline-flex items-center rounded-full px-2 py-0.5 text-caption font-semibold ring-1 ${STATUS_TONE[status]}`}>
       {t(CAP_STATUS_LABEL[status])}
     </span>
   );
@@ -69,10 +69,10 @@ export function DeductionStatementView({ statement, audience, showHeader = true 
     <div className="space-y-4" data-testid="deduction-statement">
       {showHeader && (
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{period(statement.year, statement.month)}</h3>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{period(statement.year, statement.month)}</h3>
           <div className="flex items-center gap-2">
             {notFinal && audience === 'hr' && (
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
                 {t('Not final yet')}
               </span>
             )}
@@ -105,14 +105,14 @@ export function DeductionStatementView({ statement, audience, showHeader = true 
             testId="cap-room"
           />
         </dl>
-        <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400" data-testid="cap-wage-note">
+        <p className="mt-2 text-caption text-slate-500 dark:text-slate-400" data-testid="cap-wage-note">
           {t('Gross pay {gross} minus pay not earned for absence {absence}.', { gross: fmt.money(statement.grossPay), absence: fmt.money(statement.payNotEarned) })}
           {statement.otherRuns > 0 && <> {t('Includes {count, plural, one {# other payroll run} other {# other payroll runs}} this month: the limit covers the whole month.', { count: statement.otherRuns })}</>}
           {audience === 'hr' && statement.otherRunsNotFinal > 0 && <> {t('{count, plural, one {# of them is} other {# of them are}} not final yet.', { count: statement.otherRunsNotFinal })}</>}
           {' '}{t('Counting the limit on the wage after absence is pending legal confirmation.')}
         </p>
         {!voided && !cannotBreakDown && <p className="mt-2 text-xs text-slate-700 dark:text-slate-200">{t(summary.key, summary.params)}</p>}
-        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">
           {t('Article 93: loan, advance, penalty and court-ordered deductions together may not exceed half of the wage due. Social insurance (GOSI) and pay not earned for absence are not counted.')}
         </p>
       </section>
@@ -144,7 +144,7 @@ export function DeductionStatementView({ statement, audience, showHeader = true 
         fmt={fmt} empty={t('No other deductions on this payslip.')} testId="lines-not-counted" />
       </>}
 
-      {!cannotBreakDown && <p className={`flex items-start gap-1.5 text-[11px] ${statement.reconciles ? 'text-slate-500 dark:text-slate-400' : 'font-semibold text-amber-700 dark:text-amber-300'}`}
+      {!cannotBreakDown && <p className={`flex items-start gap-1.5 text-caption ${statement.reconciles ? 'text-slate-500 dark:text-slate-400' : 'font-semibold text-amber-700 dark:text-amber-300'}`}
         data-testid="statement-reconciles">
         {statement.reconciles
           ? <><CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />{t("These lines add up to the payslip's deductions total of {amount}.", { amount: fmt.money(statement.slipDeductionTotal) })}</>
@@ -157,8 +157,8 @@ export function DeductionStatementView({ statement, audience, showHeader = true 
 function Figure({ label, value, tone, testId }: { label: string; value: string; tone?: 'bad'; testId?: string }) {
   return (
     <div>
-      <dt className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{label}</dt>
-      <dd data-testid={testId} className={`font-mono text-sm font-bold tabular-nums ${tone === 'bad' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}>{value}</dd>
+      <dt className="text-caption font-medium text-slate-500 dark:text-slate-400">{label}</dt>
+      <dd data-testid={testId} className={`font-mono text-sm font-semibold tabular-nums ${tone === 'bad' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}>{value}</dd>
     </div>
   );
 }
@@ -170,7 +170,7 @@ function LineGroup({ title, total, lines, audience, fmt, empty, testId }: {
   return (
     <section data-testid={testId}>
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <h4 className="text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</h4>
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</h4>
         <span className="font-mono text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{total}</span>
       </div>
       {lines.length === 0 ? (
@@ -198,14 +198,14 @@ function LineRow({ line, audience, fmt }: { line: DeductionLine; audience: Audie
         <span className="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{fmt.money(line.amount)}</span>
       </div>
       {isDebtLine && <p className="text-xs text-slate-700 dark:text-slate-200" data-testid="deduction-sentence">{t(sentence.key, sentence.params)}</p>}
-      {!isDebtLine && line.label && !COMPONENT_LABEL[line.componentCode] && <p className="text-[11px] text-slate-500 dark:text-slate-400">{line.label}</p>}
+      {!isDebtLine && line.label && !COMPONENT_LABEL[line.componentCode] && <p className="text-caption text-slate-500 dark:text-slate-400">{line.label}</p>}
       {consent.map((c) => (
         <p key={c.key} className={`text-xs ${consentProblem && c === consent[consent.length - 1] ? 'font-semibold text-amber-700 dark:text-amber-300' : 'text-slate-600 dark:text-slate-300'}`}>
           {t(c.key, c.params)}
         </p>
       ))}
-      <p className="text-[11px] text-slate-500 dark:text-slate-400">{t(line.legalBasisKey)}</p>
-      <span className={`inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${line.countsTowardCap
+      <p className="text-caption text-slate-500 dark:text-slate-400">{t(line.legalBasisKey)}</p>
+      <span className={`inline-block rounded-full px-1.5 py-0.5 text-caption font-semibold ${line.countsTowardCap
         ? 'bg-sapphire/10 text-sapphire dark:bg-cyanAccent/10 dark:text-cyanAccent'
         : 'bg-slate-100 text-slate-600 dark:bg-white/[0.06] dark:text-slate-300'}`}>
         {t(capCountSentence(line))}

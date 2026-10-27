@@ -137,7 +137,7 @@ export function ResetTwoStepDialog({ user, onClose, onReset, onStale }: {
             <label htmlFor={reasonId} className="block text-sm font-semibold text-slate-800 dark:text-slate-200">
               {t('Reason')} <span aria-hidden className="text-rose-600 dark:text-rose-400">*</span>
             </label>
-            <p id={hintId} className="text-xs leading-5 text-slate-500 rtl:text-[13px] dark:text-slate-400">
+            <p id={hintId} className="text-xs leading-5 text-slate-500 rtl:text-body-sm dark:text-slate-400">
               {t('For example, a lost or replaced phone. It is kept in the audit log.')}
             </p>
             <textarea

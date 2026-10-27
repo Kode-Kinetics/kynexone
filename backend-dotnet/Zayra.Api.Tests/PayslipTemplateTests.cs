@@ -68,7 +68,7 @@ public class PayslipTemplateTests : IClassFixture<PostgresFixture>
         Assert.IsType<NotFoundResult>(getResult);
 
         // B list returns nothing
-        var listResult = await ctrlB.List(CancellationToken.None);
+        var listResult = await ctrlB.List(false, CancellationToken.None);
         var listOk = Assert.IsType<OkObjectResult>(listResult);
         var items = Assert.IsAssignableFrom<IEnumerable<TemplateListItem>>(listOk.Value!);
         Assert.Empty(items);

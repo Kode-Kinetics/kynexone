@@ -42,7 +42,7 @@ The **raw event store is the immutable source of truth** (audit/SOC). `attendanc
 | Kiosk / tablet | reception iPad | D (PIN/QR/selfie) |
 | File-only / legacy | `.dat`/`.csv` exports | C |
 
-## ✅ What's built (verified live)
+## ✅ What's built (verified live: the cloud ingest and the mock/CSV bridge; the ZKTeco bridge connector is NOT verified on hardware)
 - **Device registry** — `GET/POST/PUT/DELETE /api/attendance/devices`.
 - **Per-device API key** — `POST /api/attendance/devices/{id}/generate-key` (returns plaintext **once**; only a SHA-256 hash is stored).
 - **Generic webhook ingest** — `POST /api/attendance/ingest` authenticated by `X-Device-Key` (no user login). Accepts a **batch** of punches, dedups, stores raw events, and **auto-processes** affected days into `attendance_records`. Unmatched employee codes are accepted into the raw log and counted for mapping.
@@ -76,11 +76,39 @@ curl -X POST https://<api>/api/attendance/ingest \
 ## Security
 - Per-device API key (SHA-256 hashed at rest); invalid/inactive key → `401`.
 - Ingest is scoped to the device's tenant; the key identifies device + tenant (no cross-tenant write).
-- HMAC/IP-allowlist and clock-sync checks recommended for production webhooks.
 - Raw payloads retained for audit.
 
+### Ingest hardening (F2)
+- **Idempotent.** Each device punch carries a dedup key (`attendance_raw_events.dedup_key`, unique per tenant+device): a resend,
+  or two concurrent resends of one batch, stores each punch once and answers `200` with the counts - never `500`. Punches whose
+  employee code is not mapped yet (no employee id) de-duplicate too.
+- **Bounded.** A request may carry at most `Attendance:DeviceIngest:MaxBatchSize` punches (default 500; larger is refused whole
+  with `400 batch_too_large`) and 2 MB of body.
+- **Timestamp sanity.** A punch more than `MaxFutureMinutes` (default 10) ahead or `MaxPastDays` (default 45; raise it
+  deliberately for a catch-up run) behind server time is rejected on its own: the response lists
+  `rejections: [{index, reason}]` (`timestamp_in_future`, `timestamp_too_old`, `timestamp_missing`, `employee_code_required`)
+  and the rest of the batch is stored. The bridge writes every rejection to `rejected.jsonl` (mode 0600).
+- **Company binding.** A device on a branch belongs to that branch's company (`attendance_devices.company_id`, stamped when the
+  device is saved). Its punches resolve employees only inside that company; a code from another company is stored unmatched.
+- **Request signing (HMAC v2).** `Attendance:DeviceIngest:SigningMasterKey` (env `Attendance__DeviceIngest__SigningMasterKey`,
+  at least 32 bytes - the host refuses to start with a shorter one) enables it. `POST /api/attendance/devices/{id}/signing-secret`
+  returns the device's secret ONCE and **turns enforcement on for that device**: from then on the static key alone is refused.
+  The bridge sends `X-Device-Timestamp` (unix seconds, +/- `SignatureWindowSeconds`, default 300), `X-Device-Nonce` (unique per
+  request) and `X-Device-Signature: v2=<hex HMAC-SHA256(secret, canonical)>` with canonical =
+  `"v2\n<METHOD>\n<path>\n<timestamp>\n<nonce>\n<hex SHA-256(raw body)>"`. Method and path are bound, so an ingest body cannot be
+  replayed as a heartbeat; a nonce is accepted once per device inside the window (per API instance - with several instances a replay
+  to a different instance is bounded by the timestamp window only). Rollout: deploy the API, upgrade the bridge, THEN issue the
+  secret. A device without a secret keeps working on the static key until you issue one. A leaked key before that point is
+  remedied by `generate-key` rotation. Rotating the secret invalidates the old one at once. v1 signatures are not accepted.
+- **Abuse limits.** Per device key `RequestsPerMinute` (120) and per client address `RequestsPerMinutePerIp` (600) across all
+  keys; an address with more than `FailedAuthPerMinutePerIp` (30) failed authentications in a minute gets `429` without a key lookup.
+- **Heartbeat.** `POST /api/attendance/heartbeat` (same device-key/signature auth) records `last_heartbeat_at_utc`, bridge version
+  and bridge-host clock skew on the device. An offline bridge is the device with a stale heartbeat; alerting on `> 15 min` is a
+  read of that column (no automatic alert is wired yet).
+- IP allow-listing is not implemented (cloud devices roam); the signature and the per-key rate limit are the controls.
+
 ## 🔜 Roadmap (not yet built)
-1. **KynexBridge local agent** (Windows service / Docker) with ZKTeco (PUSH/PULL SDK), Hikvision ISAPI, and Suprema BioStar 2 adapters → unlocks all on-prem biometric devices via Pattern B. The agent simply forwards to `/api/attendance/ingest`, so the cloud side is already done.
+1. **KynexBridge local agent.** The agent exists (`kynexbridge/`): mock and CSV connectors work; the **ZKTeco connector is SDK wiring that has not been verified against a physical device** (it fails loudly rather than returning nothing); Hikvision ISAPI and Suprema BioStar 2 adapters are not built. It forwards to `/api/attendance/ingest` with timeouts, retry, chunked resume, device-zone time conversion and a heartbeat - see `kynexbridge/README.md`.
 2. **Real `test-connection` / scheduled `sync`** for pull devices (today these write a sync-log placeholder).
 3. **Vendor cloud connectors** (Jibble/Truein/ZKBio webhooks → normalized to ingest).
 4. **Device-config & employee-enrollment-mapping UI** + unmatched-punch exception queue.

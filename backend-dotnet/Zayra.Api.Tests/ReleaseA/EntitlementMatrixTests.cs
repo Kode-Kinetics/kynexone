@@ -557,6 +557,7 @@ public class EntitlementMatrixTests
         var csv = $"EmployeeCode,FullName,Grade,JoiningDate,BasicSalary,HousingAllowance\nM1,Imported Supervisor,G3,{Today:yyyy-MM-dd},8000,2000\n";
         var result = Assert.IsType<OkObjectResult>(await import.Import(new EmployeesController.ImportEmployeesRequest(csv), default));
 
+        await SalaryApprovalKit.ApprovePendingAsync(h.Db, h.Tid); // the first package is staged; a different Finance login applies it
         var structure = await h.Db.SalaryStructures.SingleAsync(s => s.Code == "GRADE-G3");
         var lines = await h.Db.SalaryComponents.Where(c => c.SalaryStructureId == structure.Id).ToListAsync();
         var assignment = await h.Db.EmployeeSalaryStructures.SingleAsync();

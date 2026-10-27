@@ -106,6 +106,40 @@ public class EmployeeApplierParityTests
             "1099887766", "Acme Sponsor LLC"));
     }
 
+    /// <summary>
+    /// M3: a change that sets pay is applied only on the word of a payroll.approve holder, whatever the workflow routed the step to.
+    /// An HR manager with approvals.override but no payroll.approve cannot approve a salaryBreakdown change; nothing is stamped or written.
+    /// </summary>
+    [Fact]
+    public async Task ASalaryBreakdownChange_CannotBeApproved_ByADeciderWithoutPayrollApprove()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedPendingChangeAsync(db, new[] { ("salaryBreakdown", "package") });
+        var approval = await SeedApprovalRequestAsync(db, fx);
+        var service = new ApprovalWorkflowService(db, new AuditService(db));
+
+        var act = () => service.DecideAsync(fx.TenantId, approval.Id, new ApprovalDecisionRequest("Approve", "ok"),
+            new RequestContext("127.0.0.1", "xunit", Guid.NewGuid(), fx.TenantId, new[] { "HR Manager" }, new[] { "approvals.override" }),
+            CancellationToken.None);
+
+        (await act.Should().ThrowAsync<SalaryApprovalAuthorityException>()).Which.Code.Should().Be("salary_approval_needs_finance");
+        db.ChangeTracker.Clear();
+        (await db.EmployeeChangeRequests.AsNoTracking().SingleAsync(x => x.Id == fx.Change.Id)).Status.Should().Be("PendingApproval");
+        (await db.ApprovalRequests.AsNoTracking().SingleAsync(x => x.Id == approval.Id)).Status.Should().Be("Pending");
+    }
+
+    /// <summary>A change with no pay in it is not held to the Finance bar: the HR manager's approval still works.</summary>
+    [Fact]
+    public async Task AChangeWithoutPay_IsStillApprovedByTheHrManager()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedPendingChangeAsync(db, new[] { ("sponsorName", "Acme Sponsor LLC") });
+        var approval = await SeedApprovalRequestAsync(db, fx);
+        var decided = await new ApprovalWorkflowService(db, new AuditService(db)).DecideAsync(fx.TenantId, approval.Id, new ApprovalDecisionRequest("Approve", "ok"),
+            new RequestContext("127.0.0.1", "xunit", Guid.NewGuid(), fx.TenantId, new[] { "HR Manager" }, new[] { "approvals.override" }), CancellationToken.None);
+        decided!.Status.Should().Be("Approved");
+    }
+
     // ── (b) socialInsuranceReference: a fail-closed pay gate that now has a write path ───────
 
     /// <summary>

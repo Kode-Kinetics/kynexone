@@ -49,7 +49,7 @@ const JARGON = /\buser\b|\blinks?\b|\blinked\b|invitation|access mode/i;
 
 interface Captured { method: string; path: string; body: unknown; query: string }
 
-async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean; theme?: 'light' | 'dark'; noDomain?: boolean; previewConflict?: boolean } = {}) {
+async function openPeople(page: Page, opts: { createReturns422?: boolean; emailDelivery?: boolean; noReset?: boolean; noIssue?: boolean; selfEmployeeId?: number; path?: string; backfillWithoutState?: boolean; theme?: 'light' | 'dark'; noDomain?: boolean; previewConflict?: boolean; activateFails?: boolean } = {}) {
   const people = PEOPLE.map((p) => ({ ...p }));
   const writes: Captured[] = [];
   const listQueries: string[] = [];
@@ -158,6 +158,7 @@ async function openPeople(page: Page, opts: { createReturns422?: boolean; emailD
       }
       if (pathname === '/api/employees/duplicate-check') return json({ matches: [] });
       if (pathname === '/api/employees/49/activate') {
+        if (opts.activateFails) return json({ error: 'employee_not_activatable', message: 'Iqama number is missing, so this employee cannot be activated yet.' }, 422);
         const rana = people.find((p) => p.id === 49)!;
         delete rana.reasonCode;
         return json(detail(rana));
@@ -792,12 +793,40 @@ test('Activate employee offers the sign-in slip: Add, Activate, Print', async ({
   const { writes } = await openPeople(page);
   await openProfile(page, 'Rana Saeed');
   await page.getByRole('button', { name: 'Activate employee' }).click();
+  // Activation now confirms first: an editable effective date (today by default) and a reason.
+  const confirm = page.getByRole('dialog', { name: 'Activate Rana Saeed?' });
+  await expect(confirm.getByLabel('Effective date')).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
+  await expect(confirm.getByLabel('Reason')).not.toHaveValue('');
+  await confirm.getByRole('button', { name: 'Activate', exact: true }).click();
   const prompt = page.getByRole('dialog').filter({ has: page.getByTestId('employee-activated') });
   await expect(prompt.getByTestId('employee-activated')).toHaveText('Rana Saeed is now active.');
   await expect(prompt.getByRole('button', { name: 'Later' })).toBeVisible();
   await prompt.getByRole('button', { name: 'Print sign-in slip' }).click();
   await expect(page.getByTestId('sign-in-slip').getByTestId('slip-code')).toHaveText('2718 2818');
   expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [49] }]);
+});
+
+test('Activate employee sends the chosen back-dated effective date and reason', async ({ page }) => {
+  const { writes } = await openPeople(page);
+  await openProfile(page, 'Rana Saeed');
+  await page.getByRole('button', { name: 'Activate employee' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Activate Rana Saeed?' });
+  await confirm.getByLabel('Effective date').fill('2026-10-01');
+  await confirm.getByLabel('Reason').fill('Started on site last week');
+  await confirm.getByRole('button', { name: 'Activate', exact: true }).click();
+  await expect(page.getByTestId('employee-activated')).toBeVisible();
+  const sent = writes.find((w) => w.path === '/api/employees/49/activate');
+  expect(sent?.body).toMatchObject({ effectiveDate: '2026-10-01', reason: 'Started on site last week' });
+});
+
+test('Activate employee shows the server error text instead of a generic one', async ({ page }) => {
+  await openPeople(page, { activateFails: true });
+  await openProfile(page, 'Rana Saeed');
+  await page.getByRole('button', { name: 'Activate employee' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Activate Rana Saeed?' });
+  await confirm.getByRole('button', { name: 'Activate', exact: true }).click();
+  await expect(confirm.getByTestId('activation-error')).toHaveText('Iqama number is missing, so this employee cannot be activated yet.');
+  await expect(confirm).toBeVisible();
 });
 
 for (const theme of ['light', 'dark'] as const) {

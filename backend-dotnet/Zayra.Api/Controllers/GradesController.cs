@@ -8,6 +8,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.Organization;
@@ -53,7 +54,7 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<GradeDto>> Create(GradeRequest request, CancellationToken cancellationToken)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
+        if (!OrgWriteRules.MayCreateInCompany(this, request.CompanyId)) return Forbid();
         try
         {
             var tenantId = this.GetTenantId();
@@ -68,7 +69,8 @@ public class GradesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<GradeDto>> Update(Guid id, GradeRequest request, CancellationToken cancellationToken)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
+        var denied = await OrgWriteRules.GuardEditAsync(this, _organization, OrgRowKind.Grade, id, request.CompanyId, cancellationToken);
+        if (denied is not null) return denied;
         try
         {
             var tenantId = this.GetTenantId();
@@ -80,14 +82,15 @@ public class GradesController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [HasPermission("organization.delete")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-    {
-        if (!this.HasGroupEntityScope()) return Forbid();
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        return await _organization.DeleteGradeAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
-    }
+    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RemoveAsync(this, _organization, OrgRowKind.Grade, id, Context(), cancellationToken);
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> Restore(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RestoreAsync(this, _organization, OrgRowKind.Grade, id, Context(), cancellationToken);
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
@@ -97,13 +100,13 @@ public class GradesController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var grades = await _db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId.Value && !g.IsDeleted).OrderBy(g => g.Code).ToListAsync(ct);
         var rows = grades.Select(g => (IReadOnlyList<object?>)new object?[] { g.Code, g.Name, g.Level.ToString(), g.MinSalary, g.MaxSalary, g.IsActive ? "true" : "false" });
-        return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"grades_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"grades_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "grades_import_template.csv");
+        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "grades_import_template.csv");
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager")]

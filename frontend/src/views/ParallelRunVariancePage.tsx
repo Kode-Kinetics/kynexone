@@ -285,9 +285,9 @@ export function ParallelRunVariancePage() {
               Legacy payroll register (CSV)
             </span>
             <p className="mb-2 text-xs leading-5 text-slate-600 dark:text-slate-400">
-              Columns <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] dark:bg-slate-800">EmployeeCode</code>,{' '}
-              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] dark:bg-slate-800">ComponentCode</code>,{' '}
-              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] dark:bg-slate-800">Amount</code>. Use the
+              Columns <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-caption dark:bg-slate-800">EmployeeCode</code>,{' '}
+              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-caption dark:bg-slate-800">ComponentCode</code>,{' '}
+              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-caption dark:bg-slate-800">Amount</code>. Use the
               reserved codes <strong>GROSS</strong>, <strong>DEDUCTIONS</strong> and <strong>NET</strong> for the totals —
               every source system has those three even when its component names match nothing here.
             </p>
@@ -423,7 +423,7 @@ function VarianceResult({
             ? <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
             : <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />}
           <div className="min-w-0">
-            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
               {clean
                 ? `Period ${report.period} reconciles within tolerance.`
                 : `Period ${report.period} — ${report.linesOutsideTolerance} line(s) outside tolerance.`}
@@ -462,7 +462,7 @@ function VarianceResult({
           <div className="flex items-start gap-3">
             <FileWarning className="mt-0.5 h-5 w-5 shrink-0 text-rose-600 dark:text-rose-400" aria-hidden="true" />
             <div className="min-w-0">
-              <h2 className="text-sm font-bold text-rose-900 dark:text-rose-200">
+              <h2 className="text-sm font-semibold text-rose-900 dark:text-rose-200">
                 {report.registerErrors.length} row(s) of the register could not be read
               </h2>
               <p className="mt-1 text-xs leading-5 text-rose-800 dark:text-rose-300">
@@ -593,10 +593,10 @@ function VarianceResult({
 function Figure({ label, value, tone }: { label: string; value: string; tone?: 'good' | 'bad' }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-900/60">
-      <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</dt>
+      <dt className="text-caption font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</dt>
       <dd
         className={[
-          'mt-0.5 text-sm font-bold tabular-nums',
+          'mt-0.5 text-sm font-semibold tabular-nums',
           tone === 'good' ? 'text-emerald-700 dark:text-emerald-400'
             : tone === 'bad' ? 'text-rose-700 dark:text-rose-400'
               : 'text-slate-900 dark:text-white',
@@ -618,7 +618,7 @@ const PRESENCE_LABEL: Record<string, { label: string; className: string }> = {
 function PresenceBadge({ presence }: { presence: string }) {
   const meta = PRESENCE_LABEL[presence] ?? PRESENCE_LABEL.Neither;
   return (
-    <span className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${meta.className}`}>
+    <span className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-caption font-semibold uppercase tracking-wide ${meta.className}`}>
       {meta.label}
     </span>
   );

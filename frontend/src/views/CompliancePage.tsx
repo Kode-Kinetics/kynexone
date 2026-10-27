@@ -95,7 +95,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
             <div className={`h-8 w-8 shrink-0 rounded-lg grid place-items-center ${k.color}`}>
               <k.icon className="h-4 w-4" />
             </div>
-            <p className="text-2xl font-bold text-slate-900 dark:text-white">{k.value ?? '—'}</p>
+            <p className="text-2xl font-semibold text-slate-900 dark:text-white">{k.value ?? '—'}</p>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-tight">{k.label}</p>
           </button>
         ))}
@@ -667,7 +667,7 @@ function EmployeeDocumentsTab() {
               type="button"
               onClick={() => setView(k)}
               aria-pressed={view === k}
-              className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
                 view === k
                   ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent'
                   : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
@@ -866,7 +866,7 @@ export default function CompliancePage() {
   return (
     <div className="space-y-5 p-4 sm:p-6">
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Document & Compliance Management</h1>
+        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Document & Compliance Management</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
           Manage contracts, visas, passports, work permits, and GCC compliance documentation.
         </p>

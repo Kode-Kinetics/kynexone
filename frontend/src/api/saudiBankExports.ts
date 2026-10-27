@@ -10,6 +10,8 @@ import client from './client';
 const BASE = '/api/payroll/bank-exports';
 
 export const ANB_CONNECT_FORMAT_ID = 'anb-connect-csv-v1';
+export const CUSTOM_FORMAT_PREFIX = 'custom:';
+export const isCustomFormatId = (id: string | null | undefined): boolean => !!id && id.startsWith(CUSTOM_FORMAT_PREFIX);
 export const SAUDI_BANK_BATCH_TYPES = ['PAYROLL', 'BENEFIT', 'BONUS', 'WELFARE'] as const;
 export type SaudiBankBatchType = (typeof SAUDI_BANK_BATCH_TYPES)[number];
 
@@ -38,6 +40,8 @@ export interface SaudiBankExportSettings {
   autoWpsUpload: boolean;
   /** Establishment national unified number (10 digits). Required when autoWpsUpload is on. */
   nationalUnifiedNo: string;
+  /** Custom-template files only: the company's salary (debit) account as a Saudi IBAN. */
+  debitAccountIban: string;
 }
 
 export interface SaudiBankExportFile {
@@ -119,6 +123,102 @@ function filenameFromDisposition(header: unknown): string | null {
   const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(header);
   return plain ? plain[1].trim() : null;
 }
+
+// ── Custom bank templates (customer-configured layout; maker-checker) ───────────────────────────
+// A template decides LAYOUT only. The Saudi wage-file rules (IBAN, ID, amounts, totals, count) run on every
+// row regardless. A template is never bank-certified: acceptance is unverified until the bank accepts a test file.
+
+export type CustomBankLayout = 'delimited' | 'fixed-width';
+export type CustomBankFieldKind = 'text' | 'amount' | 'date' | 'integer';
+
+export interface CustomBankColumn {
+  field: string;
+  literal?: string | null;
+  title: string;
+  width?: number | null;
+  align: 'left' | 'right';
+  pad: string;
+  amountDecimals: number;
+  decimalSeparator: string;
+  thousandsSeparator: string;
+  dateFormat: string;
+  upperCase: boolean;
+  maxLength?: number | null;
+  allowBlank: boolean;
+}
+
+export interface CustomBankTemplateDefinition {
+  name: string;
+  sampleReference: string;
+  layout: CustomBankLayout;
+  encoding: 'utf-8' | 'utf-8-bom' | 'windows-1256';
+  lineEnding: 'crlf' | 'lf';
+  endWithLineBreak: boolean;
+  fileExtension: string;
+  delimiter: string;
+  quoteRule: 'none' | 'minimal' | 'always';
+  headerRow: boolean;
+  headerRecord: CustomBankColumn[];
+  columns: CustomBankColumn[];
+  trailerRecord: CustomBankColumn[];
+}
+
+export interface CustomBankFieldEntry { key: string; kind: CustomBankFieldKind; detail: boolean; envelope: boolean }
+
+export interface CustomBankStarter {
+  id: string; name: string; verifyWithBank: boolean; acceptanceStatus: string; definition: CustomBankTemplateDefinition;
+}
+
+export interface CustomBankCatalog {
+  fields: CustomBankFieldEntry[];
+  layouts: string[]; encodings: string[]; lineEndings: string[]; extensions: string[]; delimiters: string[];
+  quoteRules: string[]; dateFormats: string[]; decimalSeparators: string[]; thousandsSeparators: string[];
+  starters: CustomBankStarter[]; acceptanceStatus: string;
+}
+
+export interface CustomBankTemplateVersion {
+  version: number;
+  status: 'Pending' | 'Approved' | 'Rejected' | 'Superseded' | 'Retired';
+  definitionHash: string;
+  proposedBy: string; proposedAtUtc: string; proposeNote: string;
+  decidedBy?: string | null; decidedAtUtc?: string | null; decisionNote: string;
+  proposedByCurrentUser: boolean;
+  definition: CustomBankTemplateDefinition;
+}
+
+export interface CustomBankTemplate {
+  id: string; companyId: string; name: string; formatId: string;
+  state: 'Active' | 'ActivePendingChange' | 'PendingApproval' | 'Rejected';
+  activeVersion: number | null; pendingVersion: number | null; starterId?: string | null;
+  acceptanceStatus: string; updatedAtUtc: string; versions: CustomBankTemplateVersion[];
+}
+
+export interface CustomBankPreviewRequest {
+  batchReference: string; paymentDate: string; templateId?: string; version?: number; definition?: CustomBankTemplateDefinition;
+}
+
+export interface CustomBankPreview {
+  canExport: boolean; errors: SaudiBankExportIssue[]; warnings: { code: string; message: string }[];
+  recordCount: number; totalAmount: number; currency: string; templateName: string; version: number | null;
+  approvedVersion: boolean; encoding: string; lineEnding: string; lines: string[]; redacted: boolean; purpose: string; acceptanceStatus: string;
+}
+
+const TPL = (companyId: string) => `${BASE}/companies/${encodeURIComponent(companyId)}/templates`;
+
+export const customBankTemplatesApi = {
+  catalog: (opts: Opts = {}) => client.get<CustomBankCatalog>(`${BASE}/templates/catalog`, { signal: opts.signal }).then((r) => r.data),
+  list: (companyId: string, opts: Opts = {}) => client.get<CustomBankTemplate[]>(TPL(companyId), { signal: opts.signal }).then((r) => r.data),
+  create: (companyId: string, body: { definition?: CustomBankTemplateDefinition; starterId?: string; note?: string }, opts: Opts = {}) =>
+    client.post<{ template: CustomBankTemplate }>(TPL(companyId), body, { signal: opts.signal }).then((r) => r.data.template),
+  update: (companyId: string, id: string, body: { definition: CustomBankTemplateDefinition; note?: string }, opts: Opts = {}) =>
+    client.put<{ template: CustomBankTemplate }>(`${TPL(companyId)}/${encodeURIComponent(id)}`, body, { signal: opts.signal }).then((r) => r.data.template),
+  approve: (companyId: string, id: string, body: { version: number; definitionHash: string; note?: string }, opts: Opts = {}) =>
+    client.post<{ template: CustomBankTemplate }>(`${TPL(companyId)}/${encodeURIComponent(id)}/approve`, body, { signal: opts.signal }).then((r) => r.data.template),
+  reject: (companyId: string, id: string, body: { version: number; definitionHash: string; note: string }, opts: Opts = {}) =>
+    client.post<{ template: CustomBankTemplate }>(`${TPL(companyId)}/${encodeURIComponent(id)}/reject`, body, { signal: opts.signal }).then((r) => r.data.template),
+  preview: (batchId: string, body: CustomBankPreviewRequest, opts: Opts = {}) =>
+    client.post<CustomBankPreview>(`${BASE}/batches/${encodeURIComponent(batchId)}/preview`, body, { signal: opts.signal }).then((r) => r.data),
+};
 
 export const saudiBankExportsApi = {
   availability: (batchId: string, opts: Opts = {}) =>

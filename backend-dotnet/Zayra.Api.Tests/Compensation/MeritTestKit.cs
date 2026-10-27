@@ -303,6 +303,7 @@ internal static class MeritTestKit
 
     public static PayrollController Payroll(ZayraDbContext db, Guid tenantId)
     {
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // the salary import refuses up front when nobody besides the importer could approve
         var rules = new StubRuleReader()
             .Set("gosi.saudi_employee_rate", 0.09m).Set("gosi.saudi_employer_rate", 0.09m).Set("gosi.saned_rate", 0.0075m)
             .Set("gosi.expat_occupational_hazard_rate", 0.02m).Set("gosi.covered_wage_ceiling_sar", 45_000m)

@@ -91,9 +91,9 @@ public sealed class LearningCatalogService(ZayraDbContext db, IAuditService audi
         ExpectVersion(course.Version, input.Version);
         Apply(course, input);
         course.Version++;
+        audit.Stage("learning.course.updated", nameof(LearningCourse), course.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { course.Code, course.VersionNumber }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.course.updated", nameof(LearningCourse), course.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { course.Code, course.VersionNumber }), ct);
         return await GetCourseAsync(actor.TenantId, course.Id, true, ct);
     }
 
@@ -179,9 +179,9 @@ public sealed class LearningCatalogService(ZayraDbContext db, IAuditService audi
         course.Status = LearningCourseStatuses.Retired;
         course.RetiredAtUtc = clock.GetUtcNow().UtcDateTime;
         course.Version++;
+        audit.Stage("learning.course.retired", nameof(LearningCourse), course.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { course.Code, course.VersionNumber }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.course.retired", nameof(LearningCourse), course.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { course.Code, course.VersionNumber }), ct);
         return await GetCourseAsync(actor.TenantId, course.Id, true, ct);
     }
 
@@ -320,9 +320,9 @@ public sealed class LearningCatalogService(ZayraDbContext db, IAuditService audi
             await ReplaceItemsAsync(path, input.Items, ct);
         }
         path.Version++;
+        audit.Stage("learning.path.updated", nameof(LearningPath), path.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { path.Code }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.path.updated", nameof(LearningPath), path.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { path.Code }), ct);
         return await GetPathAsync(actor.TenantId, path.Id, ct);
     }
 
@@ -344,9 +344,9 @@ public sealed class LearningCatalogService(ZayraDbContext db, IAuditService audi
         path.Status = LearningPathStatuses.Active;
         path.ActivatedAtUtc = clock.GetUtcNow().UtcDateTime;
         path.Version++;
+        audit.Stage("learning.path.activated", nameof(LearningPath), path.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { path.Code }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.path.activated", nameof(LearningPath), path.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { path.Code }), ct);
         return await GetPathAsync(actor.TenantId, path.Id, ct);
     }
 
@@ -363,9 +363,9 @@ public sealed class LearningCatalogService(ZayraDbContext db, IAuditService audi
             rule.IsActive = false;
             rule.Version++;
         }
+        audit.Stage("learning.path.archived", nameof(LearningPath), path.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { path.Code }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.path.archived", nameof(LearningPath), path.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { path.Code }), ct);
         return await GetPathAsync(actor.TenantId, path.Id, ct);
     }
 
@@ -487,8 +487,8 @@ public sealed class LearningCatalogService(ZayraDbContext db, IAuditService audi
         {
             rule.IsActive = false;
             rule.Version++;
+            audit.Stage("learning.rule.deactivated", nameof(LearningAssignmentRule), rule.Id.ToString(), actor.Request, null);
             await db.SaveChangesAsync(ct);
-            await audit.WriteAsync("learning.rule.deactivated", nameof(LearningAssignmentRule), rule.Id.ToString(), actor.Request, null, ct);
         }
         return (await ListRulesAsync(actor.TenantId, ct)).First(r => r.Id == rule.Id);
     }

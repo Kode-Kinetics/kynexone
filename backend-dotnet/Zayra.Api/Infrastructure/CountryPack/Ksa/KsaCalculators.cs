@@ -359,7 +359,7 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
             bd.Add(new(adjustmentLabel, total - totalBeforeDiscount));
         }
 
-        return new EndOfServiceResult(total, "KSA-LaborLaw-Art84", bd) { Notices = notices, AppliedWageBase = wage };
+        return new EndOfServiceResult(total, "KSA-LaborLaw-Art84", bd) { Notices = notices, AppliedWageBase = wage, ServiceYearsAwarded = serviceYears };
 
         async Task<bool> Flag(string key, bool fallback, DateOnly on, CancellationToken token)
             => await StatutoryFlag.ReadAsync(_rules, CountryCodes.Saudi, Jurisdictions.KsaMainland, key, on, fallback, token);
@@ -402,16 +402,23 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         }
     }
 
-    // Returns (fullMonths, remainingDays) excluding the termination month's excess days
-    private static (int fullMonths, int remDays) ServicePeriod(DateOnly start, DateOnly end)
+    // Returns (fullMonths, remainingDays) for service from `start` to `end`, BOTH days counted.
+    // Convention for a 29 February start: the month-add clamps the anniversary to 28 February in a non-leap year, so a last
+    // day of 27 February counts as exactly N whole years (2020-02-29 .. 2025-02-27 = 60 months). The true anniversary is a
+    // day or two later; the clamp is the product's documented rule, applied the same way to every employee.
+    // Every caller passes the last day actually served (last working day, or the period end for a
+    // provision), so the day after `end` is the exclusive bound: joined 2024-01-01 and last day
+    // 2025-12-31 is exactly 2 years, not 1 year 11 months 30 days.
+    internal static (int fullMonths, int remDays) ServicePeriod(DateOnly start, DateOnly end)
     {
+        end = end.AddDays(1);
+        // Whole months by calendar addition (a 31st clamps to the month's last day, so a month-end start never
+        // yields a negative remainder), then the days left over.
         int months = (end.Year - start.Year) * 12 + (end.Month - start.Month);
-        int days   = end.Day - start.Day;
-        if (days < 0)
-        {
-            months--;
-            days += DateTime.DaysInMonth(end.Year, end.Month == 1 ? 12 : end.Month - 1);
-        }
+        if (months < 0) return (0, 0);
+        if (start.AddMonths(months) > end) months--;
+        if (months < 0) return (0, 0);
+        int days = end.DayNumber - start.AddMonths(months).DayNumber;
         return (months, days);
     }
 
@@ -475,8 +482,8 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         // Art.85: resignation reduction scale. Non-resignation reasons keep the full award.
         if (!string.Equals(reason, "Resignation", StringComparison.OrdinalIgnoreCase)) return total;
         if (years < 2m)  return 0m;                          // < 2 yrs → nil
-        if (years <= 5m) return Math.Round(total / 3m, 2);   // 2–5 yrs inclusive → ⅓ (Art.85)
-        if (years < 10m) return Math.Round(total * 2m / 3m, 2); // > 5 and < 10 yrs → ⅔
+        if (years < 5m)  return Math.Round(total / 3m, 2);   // 2 yrs but under 5 → ⅓ (Art.85)
+        if (years < 10m) return Math.Round(total * 2m / 3m, 2); // 5 yrs but under 10 → ⅔
         return total;                                        // ≥ 10 yrs → full
     }
 

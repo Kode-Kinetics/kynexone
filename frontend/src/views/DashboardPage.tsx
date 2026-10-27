@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { RefreshCw } from 'lucide-react';
 import { dashboardApi } from '../api/dashboard';
+import { payrollApi } from '../api/payroll';
 import type { DashboardFull } from '../api/dashboard';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useCompany } from '../contexts/CompanyContext';
@@ -32,6 +33,8 @@ import { useFormat } from '../hooks/useFormat';
 import { msg } from '../i18n/translations';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
 import { AttentionStrip } from '../components/dashboard/AttentionStrip';
+import { NeedsYourAttention } from '../components/dashboard/NeedsYourAttention';
+import { buildTasks } from '../components/dashboard/taskList';
 import { PayrollHero } from '../components/dashboard/PayrollHero';
 import { KpiRow } from '../components/dashboard/KpiRow';
 import { AttendanceHeatmap } from '../components/dashboard/AttendanceHeatmap';
@@ -140,6 +143,19 @@ export function DashboardPage() {
     () => buildAttention(data, findings.insights, Date.now(), { payroll: showPayrollAttention, t, relative: (iso) => f.relative(iso) }),
     [data, findings.insights, showPayrollAttention, t, f],
   );
+  // Payroll validation errors for this month: asked only of someone who can open payroll. A failed
+  // read is reported as unavailable, never as zero errors.
+  const [payrollErrors, setPayrollErrors] = useState<number | null>(null);
+  const [payrollCheckFailed, setPayrollCheckFailed] = useState(false);
+  useEffect(() => {
+    if (!showPayrollAttention) { setPayrollErrors(null); setPayrollCheckFailed(false); return; }
+    let cancelled = false;
+    payrollApi.getOverview()
+      .then((o) => { if (!cancelled) { setPayrollErrors(o.totalValidationErrors ?? 0); setPayrollCheckFailed(false); } })
+      .catch(() => { if (!cancelled) { setPayrollErrors(null); setPayrollCheckFailed(true); } });
+    return () => { cancelled = true; };
+  }, [showPayrollAttention, companyVersion]);
+  const tasks = useMemo(() => buildTasks({ data, payrollValidationErrors: payrollErrors }), [data, payrollErrors]);
   // Tiles show the last six months; the hero uses the full year.
   const tileData = useMemo(() => (data ? { ...data, trends: data.trends.slice(-6) } : null), [data]);
 
@@ -163,8 +179,8 @@ export function DashboardPage() {
   const header = (
     <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
       <div className="min-w-0">
-        <h1 className="text-[32px] font-bold leading-[1.1] tracking-[-0.025em] text-slate-950 dark:text-white">{t('HR Command Center')}</h1>
-        <p className="mt-1 text-[13px] text-slate-600 dark:text-slate-400">
+        <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.025em] text-slate-950 dark:text-white">{t('HR Command Center')}</h1>
+        <p className="mt-1 text-body-sm text-slate-600 dark:text-slate-400">
           {companyName && <span className="font-medium text-slate-900 dark:text-white">{companyName}. </span>}
           {clock.primary}{clock.secondary ? ` (${clock.secondary})` : ''}, <span className="tabular-nums">{clock.time}</span>
         </p>
@@ -176,13 +192,13 @@ export function DashboardPage() {
           </span>
         )}
         <button type="button" onClick={onRefresh} disabled={loading}
-          className="wg-press inline-flex h-10 items-center gap-2 rounded-xl border border-[color:var(--wg-line-strong)] bg-[color:var(--wg-surface)] px-3 text-[13px] font-medium text-slate-700 hover:text-slate-900 disabled:opacity-60 dark:text-slate-200 dark:hover:text-white">
+          className="wg-press inline-flex h-10 items-center gap-2 rounded-xl border border-[color:var(--wg-line-strong)] bg-[color:var(--wg-surface)] px-3 text-body-sm font-medium text-slate-700 hover:text-slate-900 disabled:opacity-60 dark:text-slate-200 dark:hover:text-white">
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
           <span className="tabular-nums">{asOf ? t('Updated {time}', { time: asOf }) : t('Refresh')}</span>
           <span className="sr-only">{t('Refresh dashboard')}</span>
         </button>
         {canReadReports && (
-          <Link href="/reports" className="wg-press inline-flex h-10 items-center rounded-xl bg-sapphire px-4 text-[13px] font-semibold text-white hover:bg-blue-700 dark:bg-blue-600">
+          <Link href="/reports" className="wg-press inline-flex h-10 items-center rounded-xl bg-sapphire px-4 text-body-sm font-semibold text-white hover:bg-blue-700 dark:bg-blue-600">
             {t('Open reports')}
           </Link>
         )}
@@ -192,12 +208,13 @@ export function DashboardPage() {
 
   const skeleton = (
     <div className="flex flex-col gap-5" aria-hidden>
-      <div className="wg-hero h-[300px] rounded-[22px] opacity-60" />
+      <div className="wg-hero h-[300px] rounded-2xl opacity-60" />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((k) => <div key={k} className="wg-card h-[210px]" />)}</div>
     </div>
   );
 
   const attentionEl = data ? <AttentionStrip items={attention} findingsUnavailable={findings.enabled && findings.failed} /> : null;
+  const tasksEl = data ? <NeedsYourAttention tasks={tasks} payrollUnavailable={payrollCheckFailed} /> : null;
   const wide = useMediaQuery('(min-width: 1280px)');
   const heroEl = data && canReadPayroll
     ? <PayrollHero data={data} payrollEnabled={payrollEnabled} dense={wide} currency={payrollCurrency}
@@ -218,7 +235,7 @@ export function DashboardPage() {
         {header}
         {!data ? skeleton : (
           <DashboardViews
-            today={<div className="flex flex-col gap-4">{attentionEl}{heroEl}{kpiEl}</div>}
+            today={<div className="flex flex-col gap-4">{attentionEl}{tasksEl}{heroEl}{kpiEl}</div>}
             actions={<div className="flex flex-col gap-4">{approvalsEl}{expiryEl}{activityEl}</div>}
             insights={<div className="flex flex-col gap-4">{payDeptEl}{heatEl}{compEl}</div>}
             badges={{ actions: pending }}
@@ -235,6 +252,7 @@ export function DashboardPage() {
       {!data ? skeleton : (
         <>
           {attentionEl}
+          {tasksEl}
           {/* At a glance: two independent columns that each stack upward, so no box waits
               for its neighbour's height and nothing leaves a gap. Below 1280 px the same pieces
               stack in one column. */}

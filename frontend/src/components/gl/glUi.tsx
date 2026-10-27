@@ -5,7 +5,6 @@ import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import { describeApiError } from '../../lib/apiError';
 import { pickServerMessage } from '../../lib/glCostAccounting';
-import { Modal } from '../Modal';
 
 // Small presentational helpers shared across the GL / rates configuration panels.
 // Styling reuses the app's global utility classes (input, select, btn-*, surface).
@@ -41,7 +40,7 @@ export function Field({
       </label>
       {control}
       {hint && (
-        <p id={hintId} className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+        <p id={hintId} className="mt-1 text-caption leading-snug text-slate-500 dark:text-slate-400">
           {hint}
         </p>
       )}
@@ -99,7 +98,7 @@ export function Badge({
       title={title}
       data-testid={testId}
       {...(label ? { role: 'img' as const, 'aria-label': label } : {})}
-      className={`inline-flex items-center gap-1 ${wrap ? 'text-start' : 'whitespace-nowrap'} rounded-full px-2 py-0.5 text-[11px] font-semibold ${toneClass[tone]}`}
+      className={`inline-flex items-center gap-1 ${wrap ? 'text-start' : 'whitespace-nowrap'} rounded-full px-2 py-0.5 text-caption font-semibold ${toneClass[tone]}`}
     >
       {children}
     </span>
@@ -383,72 +382,9 @@ export function errorStatus(err: unknown): number | undefined {
 }
 
 // ── Confirmation ────────────────────────────────────────────────────────────
-
-export interface ConfirmOptions {
-  title: string;
-  message: ReactNode;
-  confirmLabel: string;
-  tone?: 'danger' | 'primary';
-}
-
-export function ConfirmDialog({
-  open,
-  options,
-  onConfirm,
-  onCancel,
-}: {
-  open: boolean;
-  options: ConfirmOptions | null;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const t = useT();
-  return (
-    <Modal
-      isOpen={open && !!options}
-      title={options?.title ?? ''}
-      onClose={onCancel}
-      size="sm"
-      footer={
-        <>
-          <button type="button" onClick={onCancel} className="btn-secondary">
-            {t('Cancel')}
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            className={
-              options?.tone === 'danger'
-                ? 'inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-4 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-rose-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50'
-                : 'btn-primary'
-            }
-          >
-            {options?.confirmLabel}
-          </button>
-        </>
-      }
-    >
-      <div className="text-sm text-slate-600 dark:text-slate-300">{options?.message}</div>
-    </Modal>
-  );
-}
-
-/** `const ok = await confirm({...})` — the translated, accessible replacement for window.confirm. */
-export function useConfirm() {
-  const [state, setState] = useState<{ options: ConfirmOptions; resolve: (ok: boolean) => void } | null>(null);
-  const confirm = useCallback(
-    (options: ConfirmOptions) => new Promise<boolean>((resolve) => setState({ options, resolve })),
-    [],
-  );
-  const close = (ok: boolean) => {
-    state?.resolve(ok);
-    setState(null);
-  };
-  const dialog = (
-    <ConfirmDialog open={!!state} options={state?.options ?? null} onConfirm={() => close(true)} onCancel={() => close(false)} />
-  );
-  return { confirm, dialog };
-}
+// One shared confirmation lives in components/ui (ConfirmDialog + useConfirm); re-exported here for the GL panels.
+export { ConfirmDialog, type ConfirmState } from '../ui/ConfirmDialog';
+export { useConfirm, type ConfirmOptions } from '../ui/useConfirm';
 
 /** Today as yyyy-MM-dd (local calendar day), for date-input defaults and effective-date checks. */
 export function todayIso(): string {

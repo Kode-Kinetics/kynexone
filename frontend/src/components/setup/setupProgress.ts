@@ -17,18 +17,18 @@ import type { SetupAreaId, SetupSettingId } from '../../lib/setupAreas';
 /** Readiness items that belong to an All setup areas destination. The rest (company super admin, email delivery,
  *  workspace settings, record numbering) count in Guided setup's total but sit in no area. */
 export const READINESS_DESTINATION: Readonly<Record<string, { areaId: SetupAreaId; destinationId: string }>> = {
-  establishment: { areaId: 'organization', destinationId: 'establishment' },
-  masterData: { areaId: 'organization', destinationId: 'masterData' },
-  locations: { areaId: 'time', destinationId: 'locations' },
-  glMapping: { areaId: 'payroll', destinationId: 'glMapping' },
-  fiscalYears: { areaId: 'payroll', destinationId: 'fiscalYears' },
-  bankWps: { areaId: 'payroll', destinationId: 'payroll' },
-  notificationTemplates: { areaId: 'services', destinationId: 'notificationTemplates' },
-  gccSettings: { areaId: 'compliance', destinationId: 'gccSettings' },
-  statutoryRules: { areaId: 'compliance', destinationId: 'statutoryRules' },
+  establishment: { areaId: 'jobsHeadcount', destinationId: 'establishment' },
+  masterData: { areaId: 'workspace', destinationId: 'masterData' },
+  locations: { areaId: 'companyStructure', destinationId: 'locations' },
+  glMapping: { areaId: 'payrollCompliance', destinationId: 'glMapping' },
+  fiscalYears: { areaId: 'payrollCompliance', destinationId: 'fiscalYears' },
+  bankWps: { areaId: 'payBenefits', destinationId: 'payroll' },
+  notificationTemplates: { areaId: 'talentServices', destinationId: 'notificationTemplates' },
+  gccSettings: { areaId: 'payrollCompliance', destinationId: 'gccSettings' },
+  statutoryRules: { areaId: 'payrollCompliance', destinationId: 'statutoryRules' },
   // The Nitaqat establishment profile is set on the Saudization tab of the Saudi compliance dashboard, not in Setup's
   // Saudi compliance section (Qiwa, GOSI, WPS), so this item leads to the dashboard.
-  nitaqat: { areaId: 'compliance', destinationId: 'saudiComplianceDashboard' },
+  nitaqat: { areaId: 'payrollCompliance', destinationId: 'saudiComplianceDashboard' },
 };
 
 /** The settings whose list endpoint answers "is there at least one active record". */

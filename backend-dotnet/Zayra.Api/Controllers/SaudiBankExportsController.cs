@@ -11,8 +11,9 @@ namespace Zayra.Api.Controllers;
 /// <summary>
 /// Saudi bank-instruction export (IMPLEMENTATION-CONTRACT.md). Produces a bank INSTRUCTION file for an
 /// authorised person to upload in the bank channel — it moves no money, calls no bank, and never changes
-/// payroll, payment, WpsStatus or GL. Only <c>anb-connect-csv-v1</c> is supported; any other format
-/// id fails closed.
+/// payroll, payment, WpsStatus or GL. Supported formats are <c>anb-connect-csv-v1</c> and
+/// <c>custom:&lt;templateId&gt;</c> (a customer-configured layout whose approved version a second person
+/// signed off); any other format id fails closed.
 ///
 /// <para>Security: every action needs a tenant, an actor and <c>payroll.export</c>; settings mutation
 /// also needs <c>payroll.structure_manage</c>. Batch actions authorise through the shared
@@ -29,6 +30,7 @@ public sealed class SaudiBankExportsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly SaudiBankExportService _service;
+    private readonly CustomBankTemplateService _templates;
     private readonly IConfiguration? _activationConfiguration;
 
     public SaudiBankExportsController(ZayraDbContext db, ISaudiBankEmployeeAddressSource? addresses = null, IConfiguration? configuration = null)
@@ -36,6 +38,7 @@ public sealed class SaudiBankExportsController : ControllerBase
         _db = db;
         _activationConfiguration = configuration;
         _service = new SaudiBankExportService(db, addresses);
+        _templates = new CustomBankTemplateService(db);
     }
 
     [HttpGet("formats")]
@@ -113,9 +116,111 @@ public sealed class SaudiBankExportsController : ControllerBase
             Response.Headers.CacheControl = "private, no-store";
             Response.Headers.Pragma = "no-cache";
             Response.Headers["X-Content-Type-Options"] = "nosniff";
-            return File(v.ZipBytes, "application/zip", v.FileName);
+            return File(v.ZipBytes, v.ContentType, v.FileName);
         });
     }
+
+    // ── Custom bank templates (layout only; maker-checker) ────────────────────────────────────────
+    // A template is a customer-configured LAYOUT. It never relaxes a Saudi wage-file rule. Creating or
+    // changing one needs payroll.structure_manage and stages a PENDING version; a different person with
+    // payroll.approve (Finance) approves exactly what they reviewed. Template routes answer 404
+    // for another tenant's or an inaccessible company's template (no existence oracle).
+
+    [HttpGet("templates/catalog")]
+    public IActionResult TemplateCatalog()
+    {
+        if (Actor() is not { } a) return Forbid();
+        if (!SaudiBankExportActivation.EnabledCompanies(_activationConfiguration, a.TenantId)
+                .Any(c => this.GetEntityScope().CanAccessCompany(c))) return Disabled();
+        return Ok(CustomBankTemplateStarters.Catalog());
+    }
+
+    [HttpGet("companies/{companyId:guid}/templates")]
+    public async Task<IActionResult> ListTemplates(Guid companyId, CancellationToken ct)
+    {
+        if (Actor() is not { } a) return Forbid();
+        if (await TemplateCompanyErrorAsync(a.TenantId, companyId, ct) is { } err) return err;
+        return Ok(await _templates.ListAsync(a.TenantId, companyId, a.UserId, ct));
+    }
+
+    [HttpGet("companies/{companyId:guid}/templates/{templateId:guid}")]
+    public async Task<IActionResult> GetTemplate(Guid companyId, Guid templateId, CancellationToken ct)
+    {
+        if (Actor() is not { } a) return Forbid();
+        if (await TemplateCompanyErrorAsync(a.TenantId, companyId, ct) is { } err) return err;
+        return await _templates.GetAsync(a.TenantId, companyId, templateId, a.UserId, ct) is { } t ? Ok(t) : NotFound();
+    }
+
+    [HttpPost("companies/{companyId:guid}/templates")]
+    [RequestSizeLimit(65536)]
+    public async Task<IActionResult> CreateTemplate(Guid companyId, [FromBody] CustomBankTemplateProposal body, CancellationToken ct)
+    {
+        if (Actor() is not { } a || !HasPermission("payroll.structure_manage")) return Forbid();
+        if (await TemplateCompanyErrorAsync(a.TenantId, companyId, ct) is { } err) return err;
+        if (body is null) return BadRequest(new { error = "template_required" });
+        return MapTemplate(await _templates.ProposeAsync(a.TenantId, companyId, a.UserId, null, body, ct));
+    }
+
+    [HttpPut("companies/{companyId:guid}/templates/{templateId:guid}")]
+    [RequestSizeLimit(65536)]
+    public async Task<IActionResult> UpdateTemplate(Guid companyId, Guid templateId, [FromBody] CustomBankTemplateProposal body, CancellationToken ct)
+    {
+        if (Actor() is not { } a || !HasPermission("payroll.structure_manage")) return Forbid();
+        if (await TemplateCompanyErrorAsync(a.TenantId, companyId, ct) is { } err) return err;
+        if (body is null) return BadRequest(new { error = "template_required" });
+        return MapTemplate(await _templates.ProposeAsync(a.TenantId, companyId, a.UserId, templateId, body, ct));
+    }
+
+    [HttpPost("companies/{companyId:guid}/templates/{templateId:guid}/approve")]
+    [RequestSizeLimit(65536)]
+    public Task<IActionResult> ApproveTemplate(Guid companyId, Guid templateId, [FromBody] CustomBankTemplateDecision body, CancellationToken ct) =>
+        DecideTemplateAsync(companyId, templateId, approve: true, body, ct);
+
+    [HttpPost("companies/{companyId:guid}/templates/{templateId:guid}/reject")]
+    [RequestSizeLimit(65536)]
+    public Task<IActionResult> RejectTemplate(Guid companyId, Guid templateId, [FromBody] CustomBankTemplateDecision body, CancellationToken ct) =>
+        DecideTemplateAsync(companyId, templateId, approve: false, body, ct);
+
+    private async Task<IActionResult> DecideTemplateAsync(Guid companyId, Guid templateId, bool approve, CustomBankTemplateDecision? body, CancellationToken ct)
+    {
+        // The checker is Finance: payroll.approve (not payroll.export alone). They need not hold the structure permission.
+        if (!HasPermission("payroll.approve")) return Forbid();
+        if (this.GetTenantId() is not Guid tenantId || tenantId == Guid.Empty || this.GetUserId() is not Guid userId || userId == Guid.Empty) return Forbid();
+        if (await TemplateCompanyErrorAsync(tenantId, companyId, ct) is { } err) return err;
+        if (body is null) return BadRequest(new { error = "decision_required" });
+        return MapTemplate(await _templates.DecideAsync(tenantId, companyId, userId, templateId, approve, body, ct));
+    }
+
+    /// <summary>Layout preview from a batch: the first rows in the real layout with IBANs and IDs masked, plus the
+    /// full validation. Writes nothing and never yields a file.</summary>
+    [HttpPost("batches/{batchId:guid}/preview")]
+    [RequestSizeLimit(65536)]
+    public async Task<IActionResult> Preview(Guid batchId, [FromBody] CustomBankPreviewRequest body, CancellationToken ct)
+    {
+        if (Actor() is not { } a) return Forbid();
+        if (await BatchScopeAndActivationErrorAsync(a.TenantId, batchId, ct) is { } err) return err;
+        if (body is null) return BadRequest(new { error = "preview_request_required" });
+        return Map(await _service.PreviewAsync(a.TenantId, batchId, body, ct), v => Ok(v));
+    }
+
+    /// <summary>404 (never 403) for an inaccessible, missing or other-tenant company, and the feature switch applies.</summary>
+    private async Task<IActionResult?> TemplateCompanyErrorAsync(Guid tenantId, Guid companyId, CancellationToken ct)
+    {
+        if (!this.GetEntityScope().CanAccessCompany(companyId)) return NotFound();
+        var exists = await _db.Companies.AsNoTracking().AnyAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
+        if (!exists) return NotFound();
+        return SaudiBankExportActivation.IsEnabled(_activationConfiguration, tenantId, companyId) ? null : Disabled();
+    }
+
+    private IActionResult MapTemplate(CustomBankResult<CustomBankTemplateDto> r) => r.Outcome switch
+    {
+        CustomBankOutcome.Ok when r.Value is not null => Ok(new { template = r.Value, warnings = r.Warnings }),
+        CustomBankOutcome.NotFound => NotFound(),
+        CustomBankOutcome.Forbidden => StatusCode(StatusCodes.Status403Forbidden, new { error = r.Error, message = r.Message }),
+        CustomBankOutcome.Conflict => Conflict(new { error = r.Error, message = r.Message }),
+        CustomBankOutcome.Invalid => UnprocessableEntity(new { error = r.Error, message = r.Message, errors = r.Errors, warnings = r.Warnings }),
+        _ => StatusCode(StatusCodes.Status500InternalServerError, new { error = "unexpected_state" }),
+    };
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────
 

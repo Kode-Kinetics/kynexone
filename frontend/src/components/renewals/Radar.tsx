@@ -21,8 +21,8 @@ function Tile({ label, definition, count, active, tone, onClick }: {
     <button type="button" onClick={onClick} aria-pressed={active}
       className={`surface rounded-xl p-3 text-start transition-shadow hover:shadow-soft ${ring}`}>
       <span className="block text-xs font-semibold text-slate-600 dark:text-slate-300">{label}</span>
-      <span className={`mt-1 block text-2xl font-bold tracking-tight ${number}`}>{count}</span>
-      <span className="mt-1 block text-[11px] leading-snug text-slate-500 dark:text-slate-400">{definition}</span>
+      <span className={`mt-1 block text-2xl font-semibold tracking-tight ${number}`}>{count}</span>
+      <span className="mt-1 block text-caption leading-snug text-slate-500 dark:text-slate-400">{definition}</span>
     </button>
   );
 }

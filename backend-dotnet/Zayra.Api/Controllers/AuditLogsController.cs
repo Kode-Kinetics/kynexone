@@ -55,19 +55,103 @@ public class AuditLogsController : ControllerBase
     private bool HoldsPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
 
+    private const int VerifyPageSize = 1000;
+    private const int VerifyMaxRows = 2_000_000;
+
+    /// <summary>
+    /// Read-only walk of the tenant's central audit chain, streamed in bounded keyset pages (memory is one
+    /// page, not the chain). Optional window: <c>fromUtc</c>/<c>toUtc</c> verify a slice (the first link of
+    /// a slice that starts mid-chain is not checked; every later one is); <c>maxRows</c> caps the walk.
+    /// One verification at a time per tenant (409) with a short cool-down (429).
+    /// </summary>
     [HttpGet("integrity")]
-    public async Task<IActionResult> Integrity(CancellationToken cancellationToken = default)
+    public async Task<IActionResult> Integrity([FromQuery] DateTime? fromUtc = null, [FromQuery] DateTime? toUtc = null,
+        [FromQuery] int? maxRows = null, CancellationToken cancellationToken = default)
     {
         var tenantId = GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var logs = await _db.AuditLogs
-            .AsNoTracking()
-            .Where(x => x.TenantId == tenantId)
-            .OrderBy(x => x.CreatedAtUtc)
-            .ThenBy(x => x.Id)
-            .ToListAsync(cancellationToken);
+        if (Gate(tenantId.Value, "central") is { } refused) return refused;
+        try
+        {
+            var cap = Math.Clamp(maxRows ?? VerifyMaxRows, 1, VerifyMaxRows);
+            var walker = new CentralChainWalker(fromUtc is null ? string.Empty : null);
+            var q = _db.AuditLogs.AsNoTracking().Where(x => x.TenantId == tenantId);
+            if (fromUtc is { } f) q = q.Where(x => x.CreatedAtUtc >= f.ToUniversalTime());
+            if (toUtc is { } t) q = q.Where(x => x.CreatedAtUtc <= t.ToUniversalTime());
+            DateTime? lastCreated = null;
+            Guid lastId = Guid.Empty;
+            var seen = 0;
+            while (seen < cap)
+            {
+                var page = q;
+                if (lastCreated is { } lc)
+                    page = page.Where(x => x.CreatedAtUtc > lc || (x.CreatedAtUtc == lc && x.Id.CompareTo(lastId) > 0));
+                var rows = await page.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
+                    .Take(Math.Min(VerifyPageSize, cap - seen)).ToListAsync(cancellationToken);
+                if (rows.Count == 0) break;
+                foreach (var row in rows) walker.Add(row);
+                seen += rows.Count;
+                lastCreated = rows[^1].CreatedAtUtc;
+                lastId = rows[^1].Id;
+            }
+            return Ok(walker.Report());
+        }
+        finally { AuditIntegrityGate.End(tenantId.Value, "central", DateTime.UtcNow); }
+    }
 
-        return Ok(AuditService.VerifyChain(logs));
+    /// <summary>
+    /// Read-only walk of the tenant's payroll audit chain (keyset by Seq, bounded pages). Reports the first
+    /// break (<c>firstBreak</c>) and every failure; changes nothing. Needs a payroll permission on top of the
+    /// audit role: the failure rows name payroll actions and entities.
+    /// </summary>
+    [HttpGet("integrity/payroll")]
+    [Zayra.Api.Infrastructure.Authorization.HasPermission("payroll.read")]
+    public async Task<IActionResult> PayrollIntegrity([FromQuery] long? fromSeq = null, [FromQuery] long? toSeq = null,
+        [FromQuery] int? maxRows = null, CancellationToken cancellationToken = default)
+    {
+        var tenantId = GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (Gate(tenantId.Value, "payroll") is { } refused) return refused;
+        try
+        {
+            var cap = Math.Clamp(maxRows ?? VerifyMaxRows, 1, VerifyMaxRows);
+            var walker = new PayrollChainWalker(fromSeq is null ? string.Empty : null);
+            var q = _db.PayrollAuditLogs.AsNoTracking().Where(x => x.TenantId == tenantId);
+            if (fromSeq is { } fs) q = q.Where(x => x.Seq >= fs);
+            if (toSeq is { } ts) q = q.Where(x => x.Seq <= ts);
+            long? lastSeq = null;
+            Guid lastId = Guid.Empty;
+            var seen = 0;
+            while (seen < cap)
+            {
+                var page = q;
+                if (lastSeq is { } ls)
+                    page = page.Where(x => x.Seq > ls || (x.Seq == ls && x.Id.CompareTo(lastId) > 0));
+                var rows = await page.OrderBy(x => x.Seq).ThenBy(x => x.Id)
+                    .Take(Math.Min(VerifyPageSize, cap - seen)).ToListAsync(cancellationToken);
+                if (rows.Count == 0) break;
+                foreach (var row in rows) walker.Add(row);
+                seen += rows.Count;
+                lastSeq = rows[^1].Seq;
+                lastId = rows[^1].Id;
+            }
+            return Ok(walker.Report());
+        }
+        finally { AuditIntegrityGate.End(tenantId.Value, "payroll", DateTime.UtcNow); }
+    }
+
+    private IActionResult? Gate(Guid tenantId, string kind)
+    {
+        switch (AuditIntegrityGate.TryBegin(tenantId, kind, DateTime.UtcNow))
+        {
+            case AuditIntegrityGate.Outcome.AlreadyRunning:
+                return Conflict(new { message = "A verification of this chain is already running. Try again when it finishes." });
+            case AuditIntegrityGate.Outcome.TooSoon:
+                Response.Headers["Retry-After"] = ((int)AuditIntegrityGate.CoolDown.TotalSeconds).ToString();
+                return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "Chain verification was just run. Wait a few seconds and retry." });
+            default:
+                return null;
+        }
     }
 
     private Guid? GetTenantId()

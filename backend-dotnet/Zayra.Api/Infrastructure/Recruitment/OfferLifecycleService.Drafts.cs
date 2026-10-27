@@ -33,6 +33,10 @@ public sealed partial class OfferLifecycleService
             if (input.StartDate == DateOnly.MinValue || input.ProbationMonths is < 0 or > 12
                 || input.ResponseDeadline is not { Kind: DateTimeKind.Utc } deadline || deadline <= DateTime.UtcNow)
                 throw new OfferLifecycleException("offer_terms_invalid", "Choose a start date, a future UTC response deadline, and probation of zero to twelve months.", 422);
+            if (Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationOverLimit(
+                    await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(db, actor.TenantId, company, ct),
+                    input.StartDate, input.ProbationMonths) is { } probationMessage)
+                throw new OfferLifecycleException("offer_probation_over_company_limit", probationMessage, 422);
             var email = input.RecipientEmail?.Trim() ?? string.Empty;
             if (!MailAddress.TryCreate(email, out var address) || address.Address != email || email.Length > 254)
                 throw new OfferLifecycleException("offer_recipient_invalid", "Enter the candidate's complete email address.", 422);

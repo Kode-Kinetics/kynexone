@@ -1,4 +1,5 @@
 import client from './client';
+import { setupRowApi } from './orgRows';
 import { fetchAllPages } from '../lib/paging';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -469,8 +470,11 @@ export const offersApi = {
 };
 
 export const onboardingApi = {
-  listChecklists: () =>
-    client.get<OnboardingChecklist[]>('/api/recruitment/onboarding/checklists').then(r => r.data),
+  /** `includeOff` (Setup's "Show turned-off") also returns retired checklists and ones removed unused. */
+  listChecklists: (opts?: { includeOff?: boolean }) =>
+    client.get<OnboardingChecklist[]>('/api/recruitment/onboarding/checklists', opts?.includeOff ? { params: { activeOnly: false, includeRemoved: true } } : undefined).then(r => r.data),
+  /** Setup's Remove / Restore: unused = deleted, used by onboarding tasks = retired. */
+  checklistRemoval: setupRowApi('/api/recruitment/onboarding/checklists'),
 
   createChecklist: (body: { code: string; name: string; description?: string; applicableTo?: string; departmentName?: string }) =>
     client.post<OnboardingChecklist>('/api/recruitment/onboarding/checklists', body).then(r => r.data),

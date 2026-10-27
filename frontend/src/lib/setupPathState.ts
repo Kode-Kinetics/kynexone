@@ -1,4 +1,4 @@
-import { SETUP_AREAS, type SetupAreaId } from './setupAreas';
+import { LEGACY_SETUP_AREA_IDS, SETUP_AREAS, type SetupAreaId } from './setupAreas';
 
 /**
  * guided = the company setup chooser (create, or complete an existing company); configuration = All setup areas;
@@ -64,11 +64,13 @@ export function resolveSetupPath(params: URLSearchParams, context: SetupPathCont
   if (requestedPath === null && hasLegacyConfigurationTarget && !legacyStarter) needsReplace = true;
   if (legacyStarter) needsReplace = true;
 
+  // An area id from the former 12-area taxonomy (`area=leave`) lands on the navigation group that now holds it.
+  const legacyArea = requestedArea ? LEGACY_SETUP_AREA_IDS[requestedArea] : undefined;
   let area: SetupAreaId | 'overview' = requestedArea && areaIds.has(requestedArea as SetupAreaId)
     ? requestedArea as SetupAreaId
-    : 'overview';
+    : legacyArea ?? 'overview';
   const areaRejected = !!requestedArea && area === 'overview' && requestedArea !== 'overview';
-  if (areaRejected) needsReplace = true;
+  if (areaRejected || legacyArea) needsReplace = true;
 
   let setting: string | null = null;
   if (requestedSetting) {

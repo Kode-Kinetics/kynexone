@@ -99,6 +99,20 @@ function expectOk<T>(res: Res<T>, what: string, accept: number[] = [200, 201, 20
 
 const items = pageItems;
 
+/** Polls the run's processing job until it succeeds; a failure carries the server's code and message. */
+async function awaitRunProcessed(runId: string, token: string, what: string, timeoutMs = 180_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = expectOk(await call('GET', `/api/payroll/runs/${runId}/processing`, { token }), `${what}: read processing status`);
+    const state = String(res.body?.status);
+    if (state === 'Succeeded') return;
+    if (state === 'Failed') throw new Error(`[bootstrap] ${what} failed: ${res.body?.errorCode} - ${res.body?.errorMessage}`);
+    if (Date.now() > deadline) throw new Error(`[bootstrap] ${what}: still ${state} after ${timeoutMs / 1000}s`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+
 /**
  * Every employee the caller can see, across all pages. The API caps `pageSize` at 100, so the
  * `pageSize=200` requests this replaced silently stopped at employee 100. A failed page throws:
@@ -862,6 +876,8 @@ async function ensureLeaveAndAttendance(
   if (!annual) return 'no leave types provisioned';
 
   const company = companies[0];
+  const reachesFirstCompany = (u: FixtureUser) =>
+    (!u.companyCode && !u.companyCodes) || (u.companyCodes ?? [u.companyCode!]).includes(company.code);
   const active = (await allEmployees(adminToken, { companyId: company.id }))
     .filter((e: any) => String(e.status ?? e.Status) === 'Active');
   if (active.length === 0) return 'no active employees to give leave or attendance to';
@@ -879,10 +895,22 @@ async function ensureLeaveAndAttendance(
       const id = employee.id ?? employee.Id;
       // Entitlement first: LeaveRequestsController refuses a request with "Insufficient leave
       // balance", and rightly so — the balance is the product's control, not a formality.
-      expectOk(await call('POST', '/api/leave/balances/adjust', {
+      const grant = await call('POST', '/api/leave/balances/adjust', {
         token: adminToken, companyId: company.id,
         body: { employeeId: id, leaveTypeId: annual.id, amount: 21, reason: 'e2e fixture world opening balance' },
-      }), `grant leave balance to employee ${id}`, [200, 201, 204]);
+      });
+      // Nobody adjusts their own leave balance, so the admin's own employee record (when the admin is one) is skipped.
+      if (grant.status === 400 && grant.body?.error === 'subject_cannot_decide') continue;
+      expectOk(grant, `grant leave balance to employee ${id}`, [200, 201, 202, 204]);
+      // 202: more than the threshold needs a second HR approver, never the admin who proposed it.
+      if (grant.status === 202) {
+        const requestId = grant.body?.request?.id ?? grant.body?.request?.Id;
+        const decider = fixture.users.find((u) => (u.role === 'HR Manager' || u.role === 'HR Director') && reachesFirstCompany(u));
+        if (!decider) throw new Error(`[bootstrap] ${slug}: the opening leave balance needs a second HR approver, and no HR Manager or HR Director persona reaches ${company.code}.`);
+        expectOk(await call('POST', `/api/leave/balances/adjustments/${requestId}/approve`, {
+          token: await requireTenantLogin(decider, slug), body: { note: 'e2e fixture world opening balance' },
+        }), `approve the opening leave balance for employee ${id}`);
+      }
 
       // The FIRST one spans today, on purpose. The /leave module opens on its Dashboard tab, whose
       // only record list is "On Leave Today" — so a tenant whose every leave request is in the future
@@ -1147,7 +1175,7 @@ async function ensureEmployeeDocuments(
  * puts it on the employee's grade package structure — or DIRECT for an employee without a grade.
  */
 async function ensureSalaries(
-  adminToken: string, companies: Array<{ code: string; id: string; countryCode: string }>,
+  fixture: FixtureTenant, adminToken: string, companies: Array<{ code: string; id: string; countryCode: string }>,
 ): Promise<number> {
   const assigned = new Set(items((await call(
     'GET', '/api/payroll/employee-salary-structures?page=1&pageSize=500', { token: adminToken },
@@ -1171,11 +1199,33 @@ async function ensureSalaries(
           effectiveDate: '2024-01-01', currency,
         },
       });
-      expectOk(res, `assign salary to '${employee.employeeCode}'`, [200, 201]);
+      // 202: a salary change is PENDING until a different Finance approver decides it (HR proposes, Finance approves).
+      expectOk(res, `assign salary to '${employee.employeeCode}'`, [200, 201, 202]);
       count++;
     }
   }
+  await approvePendingSalaryChanges(fixture);
   return count;
+}
+
+/**
+ * The second person. The tenant admin proposed every pending salary change (a hire's first package included), so a
+ * Finance Approver persona (neither the proposer nor any employee being paid) approves them. Runs before activation
+ * too: an employee cannot be activated until their first package is approved.
+ */
+async function approvePendingSalaryChanges(fixture: FixtureTenant): Promise<number> {
+  const finance = fixture.users.find((u) => u.role === 'Finance Approver');
+  if (!finance) {
+    console.log(`[bootstrap] ${fixture.slug}: no Finance Approver persona, so pending salary changes stay PENDING (payroll will not see them).`);
+    return 0;
+  }
+  const financeToken = await requireTenantLogin(finance, fixture.slug);
+  const pending = items(expectOk(await call('GET', '/api/payroll/salary-changes?status=Pending', { token: financeToken }), 'list pending salary changes').body);
+  for (const change of pending) {
+    expectOk(await call('POST', `/api/payroll/salary-changes/${change.id ?? change.Id}/approve`, { token: financeToken, body: { note: 'e2e fixture world bootstrap' } }),
+      `approve the salary change for '${change.employeeCode ?? change.EmployeeCode}'`);
+  }
+  return pending.length;
 }
 
 // ── Payroll ───────────────────────────────────────────────────────────────────────────────────
@@ -1248,8 +1298,11 @@ async function ensurePayrollRuns(
   const checker = fixture.users.find((u) => u.role === 'Finance Approver');
   if (!maker || !checker) return `${created.length} run(s) created; no maker/checker personas to approve them`;
 
+  // Processing is queued (202) and runs on the API's background job queue: wait for the job to finish
+  // before the approval chain starts, or the first approve would meet a run that is still Draft.
   expectOk(await call('POST', `/api/payroll/runs/${leadId}/process`, { token: adminToken }),
-    `process the ${year}-${month} run`, [200, 201]);
+    `process the ${year}-${month} run`, [202]);
+  await awaitRunProcessed(leadId, adminToken, `process the ${year}-${month} run`);
 
   const makerToken = await requireTenantLogin(maker, fixture.slug);
   const checkerToken = await requireTenantLogin(checker, fixture.slug);
@@ -1303,9 +1356,10 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     await ensureEntityGrants(adminToken, fixture, userIds, companies);
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
     manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
+    await approvePendingSalaryChanges(fixture);
     const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
     const portalLogins = await ensureEmployeePortalLogins(adminToken, fixture, companies);
-    const salaries = await ensureSalaries(adminToken, companies);
+    const salaries = await ensureSalaries(fixture, adminToken, companies);
     const documents = await ensureEmployeeDocuments(adminToken, companies);
     const hrData = await ensureLeaveAndAttendance(adminToken, fixture, companies);
     const defaults = await ensureTenantDefaults(adminToken, fixture.slug);

@@ -161,6 +161,8 @@ public sealed class EmployeeDraftCreateHttpFixture : IAsyncLifetime
             await db.SaveChangesAsync();
             // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
             await TestApprovalConfig.EnsureDeciderAsync(db, TenantId);
+            // HR makes, Finance approves: a hire with a salary is refused up front unless some other login holds payroll.approve.
+            await SalaryApprovalKit.SeedApproverAsync(db, TenantId);
         }
         using (var scope = Host.Services.CreateScope())
         {

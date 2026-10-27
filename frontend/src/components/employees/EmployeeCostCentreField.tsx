@@ -210,7 +210,7 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
 
   return (
     <div role="group" aria-labelledby={labelId} data-testid="cc-emp-field" className="space-y-2">
-      <p id={labelId} className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Cost centre')}</p>
+      <p id={labelId} className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Cost centre')}</p>
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]">
         <span data-testid="cc-emp-value" className="font-medium text-slate-900 dark:text-white">{valueNode}</span>
         {resolution.kind === 'invalid' ? (
@@ -242,7 +242,7 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
               {t('Remove override')}
             </button>
           )}
-          <button type="button" data-testid="cc-emp-why" aria-expanded={whyOpen} aria-controls={whyId} onClick={() => setWhyOpen((o) => !o)} className="ms-auto inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-sm font-semibold text-sapphire hover:underline focus-visible:ring-2 focus-visible:ring-sapphire">
+          <button type="button" data-testid="cc-emp-why" aria-expanded={whyOpen} aria-controls={whyId} onClick={() => setWhyOpen((o) => !o)} className="ms-auto inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-sm font-semibold text-sapphire hover:underline focus-visible:ring-2 focus-visible:ring-sapphire">
             {t('Why this cost centre?')}<ChevronDown className={`h-4 w-4 transition-transform ${whyOpen ? 'rotate-180' : ''}`} aria-hidden />
           </button>
         </div>
@@ -251,7 +251,7 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
           <p role="note" data-testid="cc-emp-readonly-note" className="flex items-start gap-1.5 text-xs text-slate-600 dark:text-slate-300">
             <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />{t('Only HR managers and admins can change this.')}
           </p>
-          <button type="button" data-testid="cc-emp-why" aria-expanded={whyOpen} aria-controls={whyId} onClick={() => setWhyOpen((o) => !o)} className="ms-auto inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-sm font-semibold text-sapphire hover:underline focus-visible:ring-2 focus-visible:ring-sapphire">
+          <button type="button" data-testid="cc-emp-why" aria-expanded={whyOpen} aria-controls={whyId} onClick={() => setWhyOpen((o) => !o)} className="ms-auto inline-flex min-h-8 items-center gap-1 rounded-lg px-2 text-sm font-semibold text-sapphire hover:underline focus-visible:ring-2 focus-visible:ring-sapphire">
             {t('Why this cost centre?')}<ChevronDown className={`h-4 w-4 transition-transform ${whyOpen ? 'rotate-180' : ''}`} aria-hidden />
           </button>
         </div>

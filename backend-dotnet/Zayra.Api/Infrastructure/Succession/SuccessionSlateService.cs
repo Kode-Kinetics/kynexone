@@ -142,9 +142,9 @@ public sealed class SuccessionSlateService(ZayraDbContext db, IAuditService audi
         slate.SnapshotSha256 = snapshot.Sha256();
         slate.UpdatedAtUtc = clock.GetUtcNow().UtcDateTime;
         slate.Version++;
+        audit.Stage("succession.slate.edited", nameof(SuccessionSlateVersion), slate.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { slateId = slate.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.slate.edited", nameof(SuccessionSlateVersion), slate.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { slateId = slate.Id }), ct);
         return await GetAsync(actor, slate.Id, ct);
     }
 
@@ -253,9 +253,9 @@ public sealed class SuccessionSlateService(ZayraDbContext db, IAuditService audi
         slate.CancelReason = why;
         slate.UpdatedAtUtc = now;
         slate.Version++;
+        audit.Stage("succession.slate.cancelled", nameof(SuccessionSlateVersion), slate.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { slateId = slate.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.slate.cancelled", nameof(SuccessionSlateVersion), slate.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { slateId = slate.Id }), ct);
         return await GetAsync(actor, slate.Id, ct);
     }
 

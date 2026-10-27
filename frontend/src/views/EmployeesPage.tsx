@@ -1,9 +1,10 @@
 'use client';
 
+import { pickable } from '../lib/pickable';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
 import { benefitsApi, benefitsErrorMessage, type GradeBenefitDefault } from '../api/benefits';
-import { employeesApi, notActivatableFromError, possibleDuplicateFromError } from '../api/employees';
+import { employeesApi, notActivatableFromError, possibleDuplicateFromError, probationOverLimitFromError } from '../api/employees';
 import type { EmployeeCreateRequest, EmployeeDetail, EmployeeListItem, EmployeeReadiness, EmployeeNotActivatable, DuplicateMatch, DuplicateCheckRequest, BulkActionRequest, BulkActionResult, BulkSelectAllFilter } from '../api/employees';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
@@ -482,6 +483,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   // 409 backstop) matched. Non-empty ⇒ the create is paused until the operator picks View / Merge /
   // Create anyway (never-silent-dup). Cross-scope matches arrive masked (canView=false).
   const [duplicateWarning, setDuplicateWarning] = useState<DuplicateMatch[]>([]);
+  const [probationWarning, setProbationWarning] = useState<string | null>(null);
   // Detail resolver: live merge targets for the open flagged record, plus the confirm/merge state.
   const [dupMatches, setDupMatches] = useState<DuplicateMatch[]>([]);
   const [dupResolving, setDupResolving] = useState(false);
@@ -1431,9 +1433,10 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
   // `acknowledgeDuplicate` = the operator clicked "Create anyway" on the duplicate warning; it skips
   // the advisory pre-check and sends the audited override so the server proceeds past its 409 backstop.
-  const saveEmployee = async (acknowledgeDuplicate = false, exitAfterSave = false) => {
-    if (createBusy || createSaveLock.current || (!exitAfterSave && !acknowledgeDuplicate && formStep !== 5)) return;
-    const shouldExit = acknowledgeDuplicate ? pendingCreateExit : exitAfterSave;
+  const saveEmployee = async (acknowledgeDuplicate = false, exitAfterSave = false, acknowledgeProbationOverLimit = false) => {
+    if (createBusy || createSaveLock.current || (!exitAfterSave && !acknowledgeDuplicate && !acknowledgeProbationOverLimit && formStep !== 5)) return;
+    const shouldExit = acknowledgeDuplicate || acknowledgeProbationOverLimit ? pendingCreateExit : exitAfterSave;
+    setProbationWarning(null);
     for (let step = 0; step < 5; step++) {
       if (!validateCreateStep(step)) return;
     }
@@ -1490,6 +1493,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       }
       const payload = cleanPayload(form, { canManage: canManageCostCentres, departmentCostCentreId });
       if (acknowledgeDuplicate) payload.acknowledgeDuplicate = true;
+      if (acknowledgeProbationOverLimit) payload.acknowledgeProbationOverLimit = true;
       const created = await employeesApi.create(payload);
       surfaceAdvisoryWarning(created);
       setDuplicateWarning([]);
@@ -1523,6 +1527,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       const dup = possibleDuplicateFromError(e);
       if (dup) {
         setDuplicateWarning(dup.matches);
+        setSaving(false);
+        return;
+      }
+      const probation = probationOverLimitFromError(e);
+      if (probation) {
+        setProbationWarning(probation.message);
         setSaving(false);
         return;
       }
@@ -2117,7 +2127,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Employee Management</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Employee Management</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             {view === 'current'
               ? loading ? 'Loading employee records…' : error ? 'Employee records unavailable' : `${total} employee records`
@@ -2131,7 +2141,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               role="tab"
               aria-selected={view === 'current'}
               onClick={() => setView('current')}
-              className={`rounded-md px-3 py-1.5 text-sm font-semibold transition ${view === 'current' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
+              className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${view === 'current' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
             >
               Current
             </button>
@@ -2140,7 +2150,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               role="tab"
               aria-selected={view === 'ex'}
               onClick={() => setView('ex')}
-              className={`rounded-md px-3 py-1.5 text-sm font-semibold transition ${view === 'ex' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
+              className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${view === 'ex' ? 'bg-sapphire text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.07]'}`}
             >
               Ex-Employees
             </button>
@@ -2233,7 +2243,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={t('Self-service')} data-testid="access-filter">
-            <span className="me-1 text-xs font-bold uppercase text-slate-400">{t('Self-service')}</span>
+            <span className="me-1 text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</span>
             {(['', ...EMPLOYEE_ACCESS_STATES] as Array<'' | EmployeeAccessState>).map((state) => (
               <button
                 key={state || 'all'}
@@ -2245,7 +2255,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                 {state ? t(ACCESS_STATE_COPY[state].label) : t('Everyone')}
                 {/* Opaque badge colours keep the count at 4.5:1 or better on the active (blue) and inactive chip, light and dark. */}
                 {accessSummary && (state || everyoneCount !== null) && (
-                  <span className={`ms-1.5 rounded-full px-1.5 text-[11px] font-semibold tabular-nums ${accessFilter === state ? 'bg-white text-blue-800' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-100'}`} data-testid="access-chip-count">
+                  <span className={`ms-1.5 rounded-full px-1.5 text-caption font-semibold tabular-nums ${accessFilter === state ? 'bg-white text-blue-800' : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-100'}`} data-testid="access-chip-count">
                     {state ? accessSummary[state] ?? 0 : everyoneCount}
                   </span>
                 )}
@@ -2332,7 +2342,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               {bulkResult.items.some((i) => i.outcome !== 'succeeded') && (
                 <ul className="mt-1 space-y-1.5">
                   {bulkResult.items.filter((i) => i.outcome !== 'succeeded').map((item) => (
-                    <li key={item.employeeId} className="rounded-md border border-slate-100 bg-slate-50 px-2.5 py-1.5 text-xs dark:border-white/[0.06] dark:bg-white/[0.03]">
+                    <li key={item.employeeId} className="rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-1.5 text-xs dark:border-white/[0.06] dark:bg-white/[0.03]">
                       <div className="flex flex-wrap items-center gap-x-2">
                         <span className={`font-semibold uppercase ${item.outcome === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>{item.outcome}</span>
                         <span className="text-slate-700 dark:text-slate-200">{item.fullName || `#${item.employeeId}`}</span>
@@ -2366,11 +2376,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                       />
                     </th>
                     {['Employee'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
+                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{head}</th>
                     ))}
-                    <th className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{t('Self-service')}</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{t('Self-service')}</th>
                     {['Department', 'Designation', 'Branch', 'Status', 'Profile'].map((head) => (
-                      <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
+                      <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{head}</th>
                     ))}
                   </tr>
                 </thead>
@@ -2422,7 +2432,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                               href={employeeWorkspaceHref(employee.id, {
                                 returnTo: buildPeopleReturnTo({ ...directoryQuery.state, anchor: `employee-${employee.id}` }),
                               })}
-                              className="rounded-sm text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
+                              className="rounded text-start font-semibold text-slate-900 hover:text-sapphire focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-white"
                             >
                               {employee.fullName}
                             </a>
@@ -2530,7 +2540,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                   return <label key={field.key} htmlFor={`edit-field-${field.key}`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                     <span className="flex items-center gap-1.5">
                       {t(field.label)}
-                      {field.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}
+                      {field.sensitive && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-caption font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}
                       {editChangedKeys.includes(field.key) && <span className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}
                     </span>
                     {field.choices && isEmployeeReferenceKey(field.key) ? (
@@ -2614,7 +2624,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       >
         {createdEmployee ? (
           <div className="space-y-2 py-2 text-sm text-slate-700 dark:text-slate-200" data-testid="employee-added">
-            <p className="flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white">
+            <p className="flex items-center gap-2 text-base font-semibold text-slate-900 dark:text-white">
               <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
               {t('{name} has been added.', { name: createdEmployee.name })}
             </p>
@@ -2647,7 +2657,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               Employee button reads the SAME predicate and points here for its reason. */}
           {formCompanyMissingCountry && (
             <div id={MISSING_COUNTRY_NOTICE_ID} role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
-              <p className="flex items-start gap-1.5 text-sm font-bold">
+              <p className="flex items-start gap-1.5 text-sm font-semibold">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                 <span>
                   {formCompanyName} has no country set — set it in{' '}
@@ -2655,7 +2665,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                     href={COMPANY_COUNTRY_FIX_HREF}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="font-bold underline underline-offset-2 hover:no-underline"
+                    className="font-semibold underline underline-offset-2 hover:no-underline"
                   >
                     {COMPANY_COUNTRY_FIX_LOCATION}
                   </a>{' '}
@@ -2671,11 +2681,22 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             </div>
           )}
 
+          {probationWarning && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50/70 p-3 dark:border-amber-500/40 dark:bg-amber-500/[0.08]" role="alert" data-testid="probation-over-limit">
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">{t('Probation longer than this company allows')}</p>
+              <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-200/90">{probationWarning}</p>
+              <div className="mt-2.5 flex items-center justify-end gap-3">
+                <button type="button" disabled={saving} onClick={() => setProbationWarning(null)} className="text-xs font-semibold text-slate-500 underline">{t('Keep editing')}</button>
+                <button type="button" disabled={saving} onClick={() => void saveEmployee(false, false, true)} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">{t('Keep this probation and save')}</button>
+              </div>
+            </div>
+          )}
+
           {/* Duplicate-person warning (advisory pre-check + authoritative 409 backstop share it).
               Never silently creates a dup and never hard-blocks — the operator resolves it here. */}
           {duplicateWarning.length > 0 && (
             <div className="rounded-xl border border-fuchsia-300 bg-fuchsia-50/70 p-3 dark:border-fuchsia-500/40 dark:bg-fuchsia-500/[0.08]" role="alert">
-              <p className="flex items-center gap-1.5 text-sm font-bold text-fuchsia-700 dark:text-fuchsia-300">
+              <p className="flex items-center gap-1.5 text-sm font-semibold text-fuchsia-700 dark:text-fuchsia-300">
                 <Users className="h-4 w-4 shrink-0" aria-hidden="true" />
                 Possible existing {duplicateWarning.length === 1 ? 'employee' : 'employees'}
               </p>
@@ -2691,8 +2712,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           <p className="font-semibold text-slate-800 dark:text-slate-100">
                             {m.fullName} <span className="text-slate-400">{m.employeeCode}</span>
                             {m.matchType === 'strong'
-                              ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
-                              : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
+                              ? <span className="ms-1.5 rounded bg-fuchsia-600/15 px-1.5 py-0.5 text-caption font-semibold uppercase text-fuchsia-700 dark:text-fuchsia-300">ID match</span>
+                              : <span className="ms-1.5 rounded bg-amber-400/20 px-1.5 py-0.5 text-caption font-semibold uppercase text-amber-700 dark:text-amber-300">name + DOB</span>}
                           </p>
                           <p className="mt-0.5 text-slate-500 dark:text-slate-400">{[m.branch, m.status, m.signals.join(', ')].filter(Boolean).join(' · ')}</p>
                         </div>
@@ -2793,7 +2814,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                 ))}
               </select>
               {selectedDepartment?.managerEmployeeId && form.reportingManagerEmployeeId === selectedDepartment.managerEmployeeId && (
-                <span className="mt-1 block text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                <span className="mt-1 block text-caption font-medium text-emerald-600 dark:text-emerald-400">
                   Auto-selected from {selectedDepartment.nameEn}{selectedLineManager ? `: ${selectedLineManager.fullName}` : ''}
                 </span>
               )}
@@ -3076,7 +3097,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         )}
       >
         {activatedPrompt && (
-          <p className="flex items-center gap-2 py-2 text-base font-bold text-slate-900 dark:text-white" data-testid="employee-activated">
+          <p className="flex items-center gap-2 py-2 text-base font-semibold text-slate-900 dark:text-white" data-testid="employee-activated">
             <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" aria-hidden="true" />
             {t('{name} is now active.', { name: activatedPrompt.name })}
           </p>
@@ -3183,7 +3204,7 @@ function EmptyRow({ label }: { label: string }) {
 function Section({ title, children, wide = false }: { title: string; children: React.ReactNode; wide?: boolean }) {
   return (
     <fieldset className={`min-w-0 rounded-2xl border border-white/80 bg-white/72 p-3 shadow-[8px_8px_22px_rgba(148,163,184,0.18),-8px_-8px_22px_rgba(255,255,255,0.85),inset_0_1px_0_rgba(255,255,255,0.95)] ring-1 ring-slate-900/[0.03] dark:border-white/10 dark:bg-white/[0.045] dark:shadow-[8px_8px_24px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.06)] ${wide ? 'lg:col-span-2' : ''}`}>
-      <legend className="mb-2 px-1 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</legend>
+      <legend className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</legend>
       <div className={`grid gap-2.5 sm:grid-cols-2 ${wide ? 'lg:grid-cols-3' : ''}`}>{children}</div>
     </fieldset>
   );
@@ -3234,7 +3255,7 @@ function Lookup<T extends { id: string }>({ label, value, onChange, items, textK
       <span>{label}</span>
       <select id={selectId} value={value} onChange={(e) => onChange(e.target.value)} className="select mt-1.5 w-full">
         <option value="">Select</option>
-        {items.map((item) => <option key={item.id} value={item.id}>{String(item[textKey])}</option>)}
+        {pickable(items as (T & { isActive?: boolean })[], value).map((item) => <option key={item.id} value={item.id}>{String(item[textKey])}</option>)}
       </select>
     </label>
   );
@@ -3246,7 +3267,7 @@ function DetailGrid({ rows }: { rows: Array<[string, string | number | boolean |
 
 function Timeline({ items }: { items: Array<{ id: string; title: string; body: string; date: string }> }) {
   if (items.length === 0) return <SmallEmpty label="No history records yet" />;
-  return <div className="space-y-3">{items.map((item) => <div key={item.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10"><p className="text-sm font-semibold text-slate-900 dark:text-white">{item.title}</p><p className="mt-1 text-xs text-slate-500">{item.body}</p><p className="mt-2 text-[11px] text-slate-400">{dateLabel(item.date)}</p></div>)}</div>;
+  return <div className="space-y-3">{items.map((item) => <div key={item.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10"><p className="text-sm font-semibold text-slate-900 dark:text-white">{item.title}</p><p className="mt-1 text-xs text-slate-500">{item.body}</p><p className="mt-2 text-caption text-slate-400">{dateLabel(item.date)}</p></div>)}</div>;
 }
 
 function SmallEmpty({ label }: { label: string }) {

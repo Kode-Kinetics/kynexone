@@ -23,6 +23,10 @@ public sealed partial class OfferLifecycleService
             var deadline = input.ResponseDeadline ?? DateTime.UtcNow.AddDays(7);
             if (input.StartDate == DateOnly.MinValue || input.ProbationMonths is < 0 or > 12 || deadline.Kind != DateTimeKind.Utc || deadline <= DateTime.UtcNow)
                 throw new OfferLifecycleException("offer_terms_invalid", "Choose a start date, future UTC deadline and probation from zero to twelve months.", 422);
+            if (Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationOverLimit(
+                    await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(db, actor.TenantId, actor.CompanyId, ct),
+                    input.StartDate, input.ProbationMonths) is { } probationMessage)
+                throw new OfferLifecycleException("offer_probation_over_company_limit", probationMessage, 422);
             var opening = await db.JobOpenings.AsNoTracking().SingleOrDefaultAsync(o => o.TenantId == actor.TenantId && o.Id == app.JobOpeningId, ct)
                 ?? throw new OfferLifecycleException("offer_opening_not_found", "The application's job opening was not found.", 422);
             var placement = await OfferPlacement.ResolveAsync(db, actor.TenantId,

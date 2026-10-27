@@ -100,15 +100,15 @@ function ItemRow({
             <Circle className={`h-3 w-3 shrink-0 ${dotColor}`} aria-hidden="true" />
             <span className="truncate">{item.label}</span>
           </p>
-          {why && <p className="mt-0.5 ps-5 text-[11px] text-slate-500 dark:text-slate-400">{why}</p>}
-          {notice && <p className="mt-1 ps-5 text-[11px] font-medium text-amber-700 dark:text-amber-400">{notice}</p>}
+          {why && <p className="mt-0.5 ps-5 text-caption text-slate-500 dark:text-slate-400">{why}</p>}
+          {notice && <p className="mt-1 ps-5 text-caption font-medium text-amber-700 dark:text-amber-400">{notice}</p>}
         </div>
         <div className="shrink-0">
           {docType && onFixDocument ? (
             <button
               type="button"
               onClick={() => onFixDocument(docType)}
-              className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5"
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-caption font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5"
             >
               <FileUp className="h-3 w-3" aria-hidden="true" />
               Upload
@@ -117,20 +117,20 @@ function ItemRow({
             <button
               type="button"
               onClick={() => setOpen(true)}
-              className="rounded-md border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5"
+              className="rounded-lg border border-slate-200 px-2 py-1 text-caption font-semibold text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5"
             >
               Add
             </button>
           ) : fixMode === 'unavailable' ? (
             // No form carries this after the employee is added, so naming one would be a dead end.
             <span
-              className="text-[11px] text-slate-400"
+              className="text-caption text-slate-400"
               title="This is only captured when an employee is first added, so there is nowhere to change it yet."
             >
               Can&apos;t be changed yet
             </span>
           ) : fixMode === 'profile' ? (
-            <span className="text-[11px] text-slate-400" title="Open Edit at the top of this profile and add it there.">
+            <span className="text-caption text-slate-400" title="Open Edit at the top of this profile and add it there.">
               Add under Edit
             </span>
           ) : null}
@@ -189,7 +189,7 @@ function Section({
   if (items.length === 0 && emptyHidden) return null;
   return (
     <div>
-      <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+      <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
         {icon}
         {title} <span className="font-semibold text-slate-400">· {items.length}</span>
       </p>
@@ -237,7 +237,7 @@ export function ReadinessChecklist({
 
       {showPresent && (readiness.present?.length ?? 0) > 0 && (
         <details className="rounded-lg border border-slate-200 p-2.5 dark:border-white/10">
-          <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+          <summary className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
             Complete · {readiness.present!.length}
           </summary>
@@ -253,7 +253,7 @@ export function ReadinessChecklist({
       )}
 
       {showDisclaimer && readiness.disclaimer && (
-        <p className="border-t border-slate-100 pt-2 text-[11px] leading-relaxed text-slate-400 dark:border-white/10">
+        <p className="border-t border-slate-100 pt-2 text-caption leading-relaxed text-slate-400 dark:border-white/10">
           {readiness.disclaimer}
         </p>
       )}

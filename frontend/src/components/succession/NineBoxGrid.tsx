@@ -34,7 +34,7 @@ export function NineBoxGrid({ data }: { data: NineBox }) {
             aria-label={t('suc.ninebox.label')}>
             {rows.map((row) => (
               <div key={row[0].potential} className="contents" role="row">
-                <div role="rowheader" className="flex items-center justify-center rounded-md bg-slate-50 p-1 text-[10px] font-semibold text-slate-600 [writing-mode:vertical-rl] dark:bg-white/[0.03] dark:text-slate-300 sm:text-[11px]">
+                <div role="rowheader" className="flex items-center justify-center rounded-lg bg-slate-50 p-1 text-caption font-semibold text-slate-600 [writing-mode:vertical-rl] dark:bg-white/[0.03] dark:text-slate-300 sm:text-caption">
                   {t(potentialLabel[row[0].potential])}
                 </div>
                 {row.map((cell) => {
@@ -42,7 +42,7 @@ export function NineBoxGrid({ data }: { data: NineBox }) {
                   return (
                     <div key={cell.code} role="cell" data-testid={`suc-ninebox-cell-${cell.code}`} data-count={people.length}
                       className="min-h-[5.5rem] space-y-1 rounded-lg border border-slate-200 bg-white p-1.5 dark:border-white/10 dark:bg-white/[0.03] sm:p-2">
-                      <p className="flex items-start justify-between gap-1 text-[10px] font-semibold leading-tight text-slate-700 dark:text-slate-200 sm:text-[11px]">
+                      <p className="flex items-start justify-between gap-1 text-caption font-semibold leading-tight text-slate-700 dark:text-slate-200 sm:text-caption">
                         <span>{t(nineBoxCellLabel[cell.code])}</span>
                         <span className="tabular-nums text-slate-400">{fx.integer(people.length)}</span>
                       </p>
@@ -51,7 +51,7 @@ export function NineBoxGrid({ data }: { data: NineBox }) {
                           <li key={p.assessmentId}>
                             <button type="button" data-testid="suc-ninebox-person" data-employee-id={p.employee.employeeId}
                               aria-pressed={picked?.assessmentId === p.assessmentId}
-                              className={`w-full truncate rounded px-1 py-0.5 text-start text-[11px] hover:bg-sapphire/10 ${picked?.assessmentId === p.assessmentId ? 'bg-sapphire/15 font-semibold' : ''}`}
+                              className={`w-full truncate rounded px-1 py-0.5 text-start text-caption hover:bg-sapphire/10 ${picked?.assessmentId === p.assessmentId ? 'bg-sapphire/15 font-semibold' : ''}`}
                               onClick={() => setPicked(p)}>
                               {personName(p.employee, locale)}{p.provisional ? ` ${t('suc.ninebox.provisionalMark')}` : ''}
                             </button>
@@ -66,13 +66,13 @@ export function NineBoxGrid({ data }: { data: NineBox }) {
             <div role="row" className="contents">
               <div aria-hidden="true" />
               {BANDS.map((b) => (
-                <div key={b} role="columnheader" className="rounded-md bg-slate-50 p-1 text-center text-[10px] font-semibold text-slate-600 dark:bg-white/[0.03] dark:text-slate-300 sm:text-[11px]">
+                <div key={b} role="columnheader" className="rounded-lg bg-slate-50 p-1 text-center text-caption font-semibold text-slate-600 dark:bg-white/[0.03] dark:text-slate-300 sm:text-caption">
                   {t(bandLabel[b])}
                 </div>
               ))}
             </div>
           </div>
-          <div className="mt-1 flex justify-between text-[10px] text-slate-500" dir={dir}>
+          <div className="mt-1 flex justify-between text-caption text-slate-500" dir={dir}>
             <span>{t('suc.ninebox.axisPotential')}</span>
             <span>{t('suc.ninebox.axisPerformance')}</span>
           </div>
@@ -83,7 +83,7 @@ export function NineBoxGrid({ data }: { data: NineBox }) {
 
       <div className="rounded-xl border border-dashed border-slate-300 p-3 dark:border-white/15" data-testid="suc-ninebox-unrated">
         <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('suc.ninebox.insufficient')}</p>
-        <p className="text-[11px] text-slate-500">{t('suc.ninebox.insufficientHint')}</p>
+        <p className="text-caption text-slate-500">{t('suc.ninebox.insufficientHint')}</p>
         {data.unrated.length === 0
           ? <p className="mt-1 text-xs text-slate-500">{t('suc.ninebox.noUnrated')}</p>
           : (
@@ -123,7 +123,7 @@ function PlacementInputs({ placement: p, onClose }: { placement: NineBoxPlacemen
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-sm font-semibold text-slate-900 dark:text-white">{personName(p.employee, locale)}</p>
-          <p className="text-[11px] text-slate-500">{p.provisional ? t('suc.inputs.provisional') : t('suc.inputs.final')}</p>
+          <p className="text-caption text-slate-500">{p.provisional ? t('suc.inputs.provisional') : t('suc.inputs.final')}</p>
         </div>
         <button type="button" className="btn-secondary h-7 px-2 text-xs" onClick={onClose}>{t('suc.close')}</button>
       </div>

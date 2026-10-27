@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using DocumentFormat.OpenXml;
@@ -364,37 +364,52 @@ public sealed class CompensationFixRoundTests(PostgresFixture fx)
         string Code(string k) { using var db = fx.CreateDb(); return db.Employees.AsNoTracking().Single(e => e.Id == w.E[k]).EmployeeCode; }
         var b5 = Code("B5"); var b6 = Code("B6");
         const string header = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance,FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate";
-        // Same employee and date twice in one file: the second row is refused, the first applied.
+        // Same employee and date twice in one file: the second row is refused, the first is STAGED for a different Finance approver.
         await using (var db = fx.CreateDb())
         {
             var result = await Payroll(db, w.Tenant).ImportEmployeeSalaries(new ImportSalaryStructuresRequest($"{header}\n{b5},GRADE-G1,6900,1700,500,0,0,0,0,SAR,2027-02-01\n{b5},GRADE-G1,7000,1700,500,0,0,0,0,SAR,2027-02-01\n"), default);
             var body = JsonSerializer.Serialize((result as OkObjectResult)!.Value);
             body.Should().Contain("duplicates row 2");
         }
+        Guid staged;
+        await using (var db = fx.CreateDb())
+        {
+            staged = (await db.SalaryChangeRequests.AsNoTracking().SingleAsync(c => c.EmployeeId == w.E["B5"] && c.EffectiveDate == new DateOnly(2027, 2, 1) && c.Status == SalaryChangeRequest.Pending)).Id;
+            (await db.EmployeeSalaryStructures.AnyAsync(s => s.EmployeeId == w.E["B5"] && s.EffectiveDate == new DateOnly(2027, 2, 1))).Should().BeFalse("nothing is applied before Finance decides");
+        }
+        await using (var db = fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Payroll(db, w.Tenant).ApproveSalaryChange(staged, null, default));
         await using (var db = fx.CreateDb())
             (await db.EmployeeSalaryStructures.SingleAsync(s => s.EmployeeId == w.E["B5"] && s.EffectiveDate == new DateOnly(2027, 2, 1) && s.IsActive)).BasicSalary.Should().Be(6900m);
 
-        // A concurrent writer holds an uncommitted active row for (B6, 2027-03-01); it commits while the import waits on it.
+        // Stage a two-row file, then a concurrent writer holds an uncommitted active row for (B6, 2027-03-01); it commits while the approval waits on it.
+        Guid batchId;
+        await using (var db = fx.CreateDb())
+        {
+            var staging = await Payroll(db, w.Tenant).ImportEmployeeSalaries(new ImportSalaryStructuresRequest(
+                $"{header}\n{b5},GRADE-G1,7100,1700,500,0,0,0,0,SAR,2027-03-01\n{b6},GRADE-G1,7300,1800,500,0,0,0,0,SAR,2027-03-01\n"), default);
+            batchId = JsonSerializer.SerializeToElement((staging as OkObjectResult)!.Value).GetProperty("batchId").GetGuid();
+        }
         await using var rival = fx.CreateDb();
         await using var conn = (NpgsqlConnection)rival.Database.GetDbConnection();
         await conn.OpenAsync();
         await using var tx = await conn.BeginTransactionAsync();
         await using (var cmd = new NpgsqlCommand("INSERT INTO employee_salary_structures (id, tenant_id, employee_id, salary_structure_id, basic_salary, housing_allowance, transport_allowance, food_allowance, mobile_allowance, other_allowance, fixed_deduction, effective_date, currency, is_active, created_at_utc, housing_basis, transport_basis) VALUES (gen_random_uuid(), @t, @e, gen_random_uuid(), 7400, 0, 0, 0, 0, 0, 0, '2027-03-01', 'SAR', true, now(), 'Amount', 'Amount')", conn, tx))
         { cmd.Parameters.AddWithValue("t", w.Tenant); cmd.Parameters.AddWithValue("e", w.E["B6"]); await cmd.ExecuteNonQueryAsync(); }
-        var import = Task.Run(async () =>
+        var approval = Task.Run(async () =>
         {
             await using var db = fx.CreateDb();
-            return await Payroll(db, w.Tenant).ImportEmployeeSalaries(new ImportSalaryStructuresRequest(
-                $"{header}\n{b5},GRADE-G1,7100,1700,500,0,0,0,0,SAR,2027-03-01\n{b6},GRADE-G1,7300,1800,500,0,0,0,0,SAR,2027-03-01\n"), default);
+            return await Payroll(db, w.Tenant).ApproveSalaryChangeBatch(batchId, null, default);
         });
         await Task.Delay(1500);
         await tx.CommitAsync();
-        var refused = await import;
-        refused.Should().BeOfType<UnprocessableEntityObjectResult>();
-        JsonSerializer.Serialize(((ObjectResult)refused).Value).Should().Contain("salary_row_conflict").And.Contain("Row 3");
+        var refused = await approval;
+        refused.Should().BeOfType<ConflictObjectResult>();
+        JsonSerializer.Serialize(((ObjectResult)refused).Value).Should().Contain("salary_row_conflict");
         await using var verify = fx.CreateDb();
-        (await verify.EmployeeSalaryStructures.CountAsync(s => s.EmployeeId == w.E["B5"] && s.EffectiveDate == new DateOnly(2027, 3, 1))).Should().Be(0, "the import is atomic: B5's row was not kept");
+        (await verify.EmployeeSalaryStructures.CountAsync(s => s.EmployeeId == w.E["B5"] && s.EffectiveDate == new DateOnly(2027, 3, 1))).Should().Be(0, "the approval is atomic: B5's row was not kept");
         (await verify.EmployeeSalaryStructures.CountAsync(s => s.EmployeeId == w.E["B6"] && s.EffectiveDate == new DateOnly(2027, 3, 1) && s.IsActive)).Should().Be(1);
+        (await verify.SalaryChangeRequests.CountAsync(c => c.BatchId == batchId && c.Status == SalaryChangeRequest.Pending)).Should().Be(2, "the batch stays pending so it can be decided again");
     }
 
     [Fact]

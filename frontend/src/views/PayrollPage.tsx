@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   AlertTriangle, BarChart2, ShieldCheck, BookOpen, Building2, Calculator,
   CheckCircle2, ChevronDown, ChevronRight, Download, FileText, Landmark, Layers3,
@@ -12,7 +13,7 @@ import {
 import {
   payrollApi,
   type PayrollRun, type PayrollSlip, type PayrollValidationResult,
-  type SalaryStructure, type EmployeeSalaryStructure, type Payslip, type GradePackage, type GradePackagesView,
+  type SalaryChange, type SalaryStructure, type EmployeeSalaryStructure, type Payslip, type GradePackage, type GradePackagesView,
   type PayrollPaymentBatch, type PayrollPaymentRecord, type WpsEvidenceKind,
   type PayrollApproval, type PayrollSummary,
   type PayrollGLJournal, type PayrollReconciliation, type FinalSettlementResult, type FinalSettlementListRow,
@@ -26,7 +27,8 @@ import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
-import client, { notifyApiError } from '../api/client';
+import client, { apiErrorReason, notifyApiError } from '../api/client';
+import { SecondApproverNotice } from '../components/SecondApproverNotice';
 import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
@@ -41,6 +43,10 @@ import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceR
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
+import { RunPipeline } from '../components/payroll/RunPipeline';
+import { useLockWithSummary } from '../hooks/useLockWithSummary';
+import { startRunProcessing } from '../api/payrollProcessing';
+import { parseDeepLink, withDeepLink } from '../lib/payrollPipeline';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
 import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
@@ -307,7 +313,7 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
           </summary>
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-slate-50 text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+              <thead className="sticky top-0 bg-surface-sunken text-fg-muted">
                 <tr>
                   <th scope="col" className="px-5 py-2 text-start font-medium">Employee</th>
                   <th scope="col" className="px-3 py-2 text-start font-medium">Blocks payment</th>
@@ -361,15 +367,15 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-slate-100 bg-slate-50 dark:border-white/5 dark:bg-white/3">
+            <tr className="border-b border-line bg-surface-sunken">
               {['Company', 'Employees', 'Salary Coverage', 'Gross Payroll', 'Net Payroll', 'Errors', 'Pending Approvals', 'Status', ''].map(h => (
-                <th key={h} className="px-4 py-2.5 text-start font-medium text-slate-500 dark:text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-2.5 text-start font-medium text-fg-muted">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/5">
             {overview.companies.map(c => (
-              <tr key={c.companyId} className="group hover:bg-slate-50 dark:hover:bg-white/3">
+              <tr key={c.companyId} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                 <td className="px-4 py-3">
                   <p className="font-medium text-slate-800 dark:text-white">{c.companyName}</p>
                   {c.tradeName && c.tradeName !== c.companyName && <p className="text-slate-400">{c.tradeName}</p>}
@@ -426,7 +432,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
       {/* Same shape as the dashboard's "No payroll run yet" hero: say what is true, say what appears here
           once it is not, and give the one next action. Never a row of zeroes dressed as a result. */}
       {overview.totalActiveEmployees === 0 ? (
-        <div role="status" className="border-t border-slate-100 bg-slate-50 px-5 py-5 dark:border-white/5 dark:bg-white/3">
+        <div role="status" className="border-t border-line bg-surface-sunken px-5 py-5">
           <p className="text-sm font-semibold text-slate-900 dark:text-white">No employees yet</p>
           <p className="mt-1 max-w-prose text-xs text-slate-600 dark:text-slate-400">
             Salary coverage and payroll totals fill in per company once the first employees are on record.
@@ -440,7 +446,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
           </Link>
         </div>
       ) : (
-        <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 dark:border-white/5 dark:bg-white/3">
+        <div className="border-t border-line bg-surface-sunken px-5 py-3">
           <div className="flex items-center gap-8 text-xs">
             <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
             {groupCurrency ? (
@@ -867,6 +873,40 @@ function GradePackagesTab() {
 
 // ── Employee Salary Setup Tab ───────────────────────────────────────────────────
 
+/** Salary changes wait here for a Finance approver who is neither the person who proposed them nor the employee. */
+function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
+  const t = useT();
+  const [rows, setRows] = useState<SalaryChange[]>([]);
+  const [notice, setNotice] = useState('');
+  const load = () => { payrollApi.listSalaryChanges('Pending').then(setRows).catch(() => setRows([])); };
+  useEffect(load, []);
+  const decide = async (fn: () => Promise<unknown>) => {
+    setNotice('');
+    try { await fn(); load(); onApplied(); }
+    catch (e: unknown) { setNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Could not record the decision.')); }
+  };
+  if (rows.length === 0 && !notice) return null;
+  return (
+    <section className="surface space-y-2 p-4" aria-label={t('Pending Finance approval')}>
+      <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Pending Finance approval')}</h3>
+      {notice && <p role="alert" className="text-sm text-rose-600">{notice}</p>}
+      <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
+        {rows.map(r => (
+          <li key={r.id} className="flex flex-wrap items-center gap-3 py-2 text-sm">
+            <span className="font-medium">{r.employeeName || `#${r.employeeId}`}</span>
+            <span className="text-slate-500">{r.previousBasicSalary != null ? `${r.previousBasicSalary.toLocaleString()} → ` : ''}{r.basicSalary.toLocaleString()} {r.currency}</span>
+            <span className="text-xs text-slate-400">{t('Proposed by')} {r.requestedByName}</span>
+            <span className="ms-auto flex gap-2">
+              <button type="button" className={btn.primary} onClick={() => decide(() => payrollApi.approveSalaryChange(r.id))}>{t('Approve')}</button>
+              <button type="button" className={btn.ghost} onClick={() => decide(() => payrollApi.rejectSalaryChange(r.id))}>{t('Reject')}</button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function AssignSalaryModal({ structures, onClose, onSaved }: { structures: SalaryStructure[]; onClose: () => void; onSaved: () => void }) {
   const t = useT();
   const today = new Date().toISOString().slice(0, 10);
@@ -895,8 +935,7 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
       });
       onSaved();
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Save failed.'); setSaving(false);
+      setError(apiErrorReason(e, 'Save failed.')); setSaving(false);
     }
   };
 
@@ -958,6 +997,8 @@ function EmployeeSalaryTab() {
   const [loading, setLoading] = useState(true);
   const [empIdFilter, setEmpIdFilter] = useState('');
   const [showAssign, setShowAssign] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const t = useT();
 
   const load = () => {
     setLoading(true);
@@ -977,6 +1018,13 @@ function EmployeeSalaryTab() {
         <button type="button" className={btn.ghost} onClick={load}>Search</button>
         <button type="button" className={`ms-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> Assign Salary</button>
       </div>
+      {submitted && (
+        <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+          {t('Submitted for Finance approval. The new salary applies once a Finance approver, other than you, confirms it.')}
+        </p>
+      )}
+      <SecondApproverNotice />
+      <SalaryChangesPanel onApplied={load} />
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : assignments.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Users className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -988,7 +1036,7 @@ function EmployeeSalaryTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'Structure', 'Basic', 'Housing', 'Transport', 'Gross', 'Deduction', 'Effective', 'Status'].map(h => (
-                  <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -1013,14 +1061,22 @@ function EmployeeSalaryTab() {
           </table>
         </div>
       )}
-      {showAssign && <AssignSalaryModal structures={structures} onClose={() => setShowAssign(false)} onSaved={() => { setShowAssign(false); load(); }} />}
+      {showAssign && <AssignSalaryModal structures={structures} onClose={() => setShowAssign(false)} onSaved={() => { setShowAssign(false); setSubmitted(true); load(); }} />}
     </div>
   );
 }
 
 // ── Payroll Runs Tab ────────────────────────────────────────────────────────────
 
-function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => void }) {
+function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }: {
+  onSelectRun: (run: PayrollRun, tab: Tab) => void;
+  /** The run the pipeline above has in focus; opening it here keeps both in step. */
+  focusRunId?: string;
+  onFocusRun: (runId: string) => void;
+  /** Bumped by the page when a run changed elsewhere (the pipeline processed or locked one). */
+  version: number;
+  onRunsChanged: () => void;
+}) {
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1082,7 +1138,27 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
   // latest server state (e.g. after Process updates totals in setRuns).
   const selectedRun = runs.find(r => r.id === selectedRunId) ?? null;
 
+  // A run changed elsewhere (the pipeline processed or locked it): read the list and the open register again.
+  const seenVersion = useRef(version);
+  useEffect(() => {
+    if (seenVersion.current === version) return;
+    seenVersion.current = version;
+    load();
+    const open = runs.find(r => r.id === selectedRunId);
+    if (open) openSlips(open);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
+
+  // The pipeline's run opens here too.
+  useEffect(() => {
+    if (!focusRunId || focusRunId === selectedRunId) return;
+    const run = runs.find(r => r.id === focusRunId);
+    if (run) openSlips(run);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRunId, runs]);
+
   const openSlips = (run: PayrollRun) => {
+    onFocusRun(run.id);
     setSelectedRunId(run.id);
     setSlips([]);
     setSlipsError('');
@@ -1110,10 +1186,11 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
     setError('');
     setStaleAttendanceRun(null);
     try {
-      const updated = await payrollApi.processRun(id);
-      setRuns(rs => rs.map(r => r.id === id ? updated : r));
-      // Re-fetch slips for the processed run so the table matches the new totals.
-      if (selectedRunId === id) openSlips(updated);
+      // Processing runs as a background job: queueing it returns at once, and the pipeline above shows its
+      // progress and reloads this list when it finishes. See api/payrollProcessing.ts.
+      await startRunProcessing(id);
+      onFocusRun(id);
+      onRunsChanged();
     } catch (e) {
       const data = (e as { response?: { data?: { message?: string; code?: string } } })?.response?.data;
       if (data?.code === 'ERR_ATTENDANCE_IMPACT_STALE') setStaleAttendanceRun(runs.find(r => r.id === id) ?? null);
@@ -1123,23 +1200,15 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   // Locking posts the run's GL journal. A double-click sent two requests: the server posts once and
   // refuses the second, but that refusal then showed as an error under a run that had just locked.
-  const lockingRef = useRef<string | null>(null);
-  const [lockingId, setLockingId] = useState<string | null>(null);
+  // The summary is read and confirmed in the app's confirm dialog first (hooks/useLockWithSummary).
+  const { requestLock, lockDialog, lockingRunId: lockingId } = useLockWithSummary();
   const lockRun = async (id: string) => {
-    if (lockingRef.current) return;
-    lockingRef.current = id;
-    setLockingId(id);
     setError('');
-    try {
-      const updated = await payrollApi.lockRun(id);
-      setRuns(rs => rs.map(r => r.id === id ? updated : r));
-    } catch (e) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Failed to lock the payroll run. Resolve any blocking validation errors first.');
-    } finally {
-      lockingRef.current = null;
-      setLockingId(null);
-    }
+    const outcome = await requestLock(id);
+    if (outcome.status === 'locked') {
+      setRuns(rs => rs.map(r => r.id === id ? outcome.run : r));
+      onRunsChanged();
+    } else if (outcome.status === 'failed') setError(outcome.message);
   };
 
   const deleteRun = async (id: string) => {
@@ -1159,6 +1228,7 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
 
   return (
     <div className="space-y-4">
+      {lockDialog}
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">{total} payroll run{total !== 1 ? 's' : ''}</p>
         <button type="button" className={btn.primary} onClick={() => { setShowCreate(true); setError(''); }}><Plus className="h-4 w-4" /> New Payroll Run</button>
@@ -1281,14 +1351,14 @@ function RunsTab({ onSelectRun }: { onSelectRun: (run: PayrollRun, tab: Tab) => 
               </div>
               {slipsLoading ? <div className="flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div> : (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[560px] text-sm">
+                  <table data-testid="run-slip-register" className="w-full min-w-[560px] text-sm">
                     <thead>
                       <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                         {/* Loans sits AFTER Deductions and says "of which", because the EMI is already
                             inside the Deductions total (PayrollController.cs:2635). Side by side, both
                             bracketed, the two columns read as two separate subtractions. */}
                         {['Employee', 'Dept', 'Basic', 'Gross', 'Deductions', 'of which: Loans', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
-                          <th key={h} className="px-3 py-3 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                          <th key={h} className="px-3 py-3 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -2355,7 +2425,7 @@ function PayslipsTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Employee', 'Payslip #', 'Language', 'ESS Published', 'Published At', 'Generated', ''].map(h => (
-                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -2553,7 +2623,7 @@ function BankWpsTab() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Employee', 'Amount', 'IBAN', 'WPS Reference', 'Status'].map(h => (
-                      <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                      <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -2730,7 +2800,7 @@ function PaymentTrackingTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Batch', 'Method', 'Total Amount', 'Currency', 'Status', 'WPS Lifecycle', 'Created', 'Action'].map(h => (
-                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -2993,7 +3063,7 @@ function ReportsTab() {
                           printed unbracketed so nobody subtracts them a second time.
                         · Net = Gross − Deductions. */}
                     {['Code', 'Employee', 'Department', 'Basic', 'Housing', 'Transport', 'Other earnings', 'Gross', 'Deductions', 'of which: Loans', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
-                      <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                      <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -3195,7 +3265,7 @@ function EOSBTab() {
           </div>
           <table className="min-w-full text-sm">
             <thead><tr className="border-b border-slate-100 dark:border-white/10">
-              {['Date', 'Eligible Salary', 'EOSB Amount', 'Status'].map(h => <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>)}
+              {['Date', 'Eligible Salary', 'EOSB Amount', 'Status'].map(h => <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-fg-muted">{h}</th>)}
             </tr></thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {(history as Array<Record<string, unknown>>).map((h, i) => (
@@ -3331,7 +3401,7 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/5">
-                      {['GL Account', 'Description', 'Amount'].map(h => <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>)}
+                      {['GL Account', 'Description', 'Amount'].map(h => <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>)}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
@@ -3455,7 +3525,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                       {['Employee', 'Prior Gross', 'Current Gross', 'Δ Gross', 'Var %', 'Prior Net', 'Current Net', 'Flag'].map(h => (
-                        <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>
+                        <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -3638,7 +3708,7 @@ function FinalSettlementTab() {
         </div>
         <table className="w-full min-w-[1100px] text-sm">
           <thead><tr className="border-b border-slate-100 dark:border-white/10">
-            {['Employee', 'Last day', 'Due', 'Net payable', 'Status', 'Workflow controls'].map(h => <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-slate-400">{h}</th>)}
+            {['Employee', 'Last day', 'Due', 'Net payable', 'Status', 'Workflow controls'].map(h => <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>)}
           </tr></thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/5">
             {settlements.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-slate-400">No final settlements.</td></tr>}
@@ -3689,26 +3759,57 @@ export function PayrollPage() {
   const isFinance  = user?.roles.some(r => ['Finance Controller', 'Finance Approver'].includes(r)) ?? false;
   const isHROrPayroll = !isAdmin && !isFinance && (user?.roles.some(r => ['HR Manager', 'Payroll Manager', 'Payroll Officer'].includes(r)) ?? false);
 
-  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [contextRunId, setContextRunId] = useState<string | undefined>(undefined);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const visibleTabs = TABS.filter(tab => {
+    // Finance-only tabs
+    if (['gl-journal', 'reconciliation'].includes(tab.key)) return isAdmin || isFinance || isHROrPayroll;
+    return true;
+  });
+  const visibleTabKeys = visibleTabs.map(tab => tab.key);
+
+  // ── Deep link: ?tab=<tab>&run=<runId> ───────────────────────────────────────────
+  // The URL selects the tab and the run; selecting either updates the URL with replace (never push, so Back
+  // leaves the page rather than stepping through selections). An unknown tab falls back to the default
+  // (or to Payroll Runs when a run is named); a malformed run id is ignored.
+  const link = parseDeepLink(searchParams, visibleTabKeys);
+  const [activeTab, setActiveTab] = useState<Tab>(() => (link.tab as Tab | null) ?? (link.runId ? 'runs' : 'dashboard'));
+  const [contextRunId, setContextRunId] = useState<string | undefined>(link.runId ?? undefined);
+  // Bumped when a run changes outside the tab that shows it (the pipeline processed or locked it).
+  const [runsVersion, setRunsVersion] = useState(0);
+  const bumpRuns = React.useCallback(() => setRunsVersion(v => v + 1), []);
+
+  // URL -> state: a link followed while the page is open (or Back/Forward) selects what it names.
+  const queryString = searchParams?.toString() ?? '';
+  useEffect(() => {
+    const next = parseDeepLink(new URLSearchParams(queryString), visibleTabKeys);
+    if (next.tab) setActiveTab(prev => (prev === next.tab ? prev : next.tab as Tab));
+    setContextRunId(prev => (next.runId && prev !== next.runId ? next.runId : prev));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryString]);
+
+  // state -> URL (replace). Written only when it differs, so the two effects cannot chase each other.
+  useEffect(() => {
+    const wanted = withDeepLink(queryString, { tab: activeTab, runId: contextRunId ?? null }, 'dashboard');
+    if (wanted !== queryString) router.replace(wanted ? `${pathname}?${wanted}` : pathname, { scroll: false });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, contextRunId]);
 
   const handleSelectRun = (run: PayrollRun, tab: Tab) => {
     setContextRunId(run.id);
     setActiveTab(tab);
   };
-
-  const visibleTabs = TABS.filter(t => {
-    // Finance-only tabs
-    if (['gl-journal', 'reconciliation'].includes(t.key)) return isAdmin || isFinance || isHROrPayroll;
-    return true;
-  });
+  const selectRunId = React.useCallback((id: string | null) => setContextRunId(id ?? undefined), []);
+  const navigateTab = React.useCallback((key: string) => { if (TABS.some(x => x.key === key)) setActiveTab(key as Tab); }, []);
 
   const renderTab = () => {
     switch (activeTab) {
       case 'dashboard':       return <DashboardTab onNavigate={setActiveTab} />;
       case 'salary-structures': return <GradePackagesTab />;
       case 'employee-salary': return <EmployeeSalaryTab />;
-      case 'runs':            return <RunsTab onSelectRun={handleSelectRun} />;
+      case 'runs':            return <RunsTab onSelectRun={handleSelectRun} focusRunId={contextRunId} onFocusRun={selectRunId} version={runsVersion} onRunsChanged={bumpRuns} />;
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} />;
       case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} />;
       case 'payslips':        return <PayslipsTab />;
@@ -3738,6 +3839,14 @@ export function PayrollPage() {
         </div>
         {roleBadge && <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold ${roleBadge.cls}`}>{roleBadge.label}</span>}
       </div>
+
+      <RunPipeline
+        runId={contextRunId ?? null}
+        onSelectRun={selectRunId}
+        onNavigate={navigateTab}
+        version={runsVersion}
+        onRunsChanged={bumpRuns}
+      />
 
       <RovingTabList
         items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label, icon }))}

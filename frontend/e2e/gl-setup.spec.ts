@@ -609,6 +609,9 @@ test('chart of accounts: the ERP account code is shown, set on add, and changed 
   await chart.getByRole('button', { name: 'Add account', exact: true }).click();
   await expect.poll(() => state.writes.filter((w) => w.method === 'POST' && w.path === '/api/finance/gl/accounts').map((w) => w.body))
     .toEqual([{ code: '5006', name: 'Transport Allowance Expense', accountType: 'Expense', isActive: true, externalCode: '6300-TRN' }]);
+  // Adding reloads the chart. An Edit click that lands while the rows are being replaced opens nothing,
+  // so wait for the reload: Add account stays disabled until it has finished.
+  await expect(chart.getByRole('button', { name: 'Add account', exact: true })).toBeEnabled();
 
   // Edit: the field starts from the server value; emptying it sends '' (clear), a value replaces it.
   const puts = () => state.writes.filter((w) => w.method === 'PUT').map((w) => ({ path: w.path, externalCode: (w.body as { externalCode?: unknown }).externalCode }));

@@ -1,5 +1,6 @@
 'use client';
 
+import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import { learningApi, type CourseSummary, type LearningPath, type PathInput } from '../../api/learning';
@@ -63,7 +64,7 @@ export function PathsPanel({ canManage }: { canManage: boolean }) {
             <article key={p.id} className="wg-card space-y-2 rounded-2xl p-4" data-testid={`path-${p.code}`}>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{locale === 'ar' && p.nameAr ? p.nameAr : p.name}</h3>
+                  <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{locale === 'ar' && p.nameAr ? p.nameAr : p.name}</h3>
                   <p className="text-xs text-slate-500" dir="ltr">{p.code}</p>
                 </div>
                 <StatusChip label={t(pathStatusLabel[p.status])} tone={tone[p.status]} dot />
@@ -214,7 +215,7 @@ function PathEditor({ path, onClose, onSaved }: { path: LearningPath | null; onC
         </div>
 
         <fieldset className="space-y-2">
-          <legend className="text-sm font-bold">{t('Courses, in order')}</legend>
+          <legend className="text-sm font-semibold">{t('Courses, in order')}</legend>
           {locked && <p className="text-xs text-amber-700 dark:text-amber-300">{t('The courses of an active path are fixed. Create a new path to change them.')}</p>}
           {errors.items && <p role="alert" className="text-xs text-rose-600">{errors.items}</p>}
           <ol className="space-y-2">
@@ -254,10 +255,10 @@ function PathEditor({ path, onClose, onSaved }: { path: LearningPath | null; onC
         </fieldset>
 
         <fieldset className="space-y-2">
-          <legend className="text-sm font-bold">{t('Who it is for')}</legend>
+          <legend className="text-sm font-semibold">{t('Who it is for')}</legend>
           <p className="text-xs text-slate-500">{t('Leave every department unticked to make the path open to everyone.')}</p>
           <div className="grid max-h-40 gap-1 overflow-y-auto sm:grid-cols-2">
-            {departments.map((d) => (
+            {pickable(departments, ...departmentIds).map((d) => (
               <label key={d.id} className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={departmentIds.includes(d.id)}
                   onChange={(e) => setDepartmentIds((ids) => (e.target.checked ? [...ids, d.id] : ids.filter((x) => x !== d.id)))} />

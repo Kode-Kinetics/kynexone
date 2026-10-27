@@ -91,7 +91,7 @@ function MySurveys() {
   return (
     <div className="space-y-5" data-testid="my-surveys">
       <header>
-        <h1 className="text-xl font-bold text-slate-950 dark:text-white">{t('My surveys')}</h1>
+        <h1 className="text-xl font-semibold text-slate-950 dark:text-white">{t('My surveys')}</h1>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{t('Tell your organisation how work is going. Each survey says exactly who can see what before you answer.')}</p>
       </header>
       {done && (
@@ -107,7 +107,7 @@ function MySurveys() {
       ) : (
         <>
           <section className="space-y-2">
-            <h2 className="text-sm font-bold text-slate-900 dark:text-white">{t('Waiting for you')}</h2>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Waiting for you')}</h2>
             {openSurveys.length === 0 ? (
               <p className="surface rounded-xl p-4 text-sm text-slate-600 dark:text-slate-300">{t('No surveys are waiting for you.')}</p>
             ) : (
@@ -135,7 +135,7 @@ function MySurveys() {
 
           {past.length > 0 && (
             <section className="space-y-2">
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white">{t('Earlier surveys')}</h2>
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Earlier surveys')}</h2>
               <ul className="space-y-2">
                 {past.map((s) => (
                   <li key={s.surveyId} className="surface flex flex-wrap items-center justify-between gap-2 rounded-xl p-4">
@@ -153,7 +153,7 @@ function MySurveys() {
 
           {actions.length > 0 && (
             <section className="space-y-2" data-testid="my-actions">
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white">{t('Actions you own')}</h2>
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Actions you own')}</h2>
               <ul className="space-y-2">
                 {actions.map((a) => (
                   <li key={a.id} className="surface rounded-xl p-4" data-testid={`my-action-${a.id}`}>
@@ -232,7 +232,7 @@ function Respond({ session, onExit, onSubmitted }: { session: SurveySession; onE
     <form className="mx-auto max-w-2xl space-y-4" onSubmit={(e) => { e.preventDefault(); void submit(); }} data-testid="survey-respond">
       <header className="space-y-1">
         <button type="button" className="text-xs font-semibold text-sapphire hover:underline" onClick={onExit}>{t('Back to my surveys')}</button>
-        <h1 className="text-xl font-bold text-slate-950 dark:text-white">{title}</h1>
+        <h1 className="text-xl font-semibold text-slate-950 dark:text-white">{title}</h1>
         <p className="text-xs text-slate-500">{t('Closes {date}', { date: f.dateTime(session.closesAtUtc) })}</p>
       </header>
 

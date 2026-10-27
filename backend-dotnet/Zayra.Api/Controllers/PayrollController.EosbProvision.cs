@@ -66,7 +66,7 @@ public partial class PayrollController
             return EosbProvisionBuild.Refused("eosb_provision_not_measurable",
                 "End-of-service provisioning is switched on, but this run's company could not be read.");
         var gcc = await _db.GCCComplianceSettings.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CountryCode == company.CountryCode, ct);
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && x.CountryCode == company.CountryCode, ct);
         if (gcc is null || !gcc.EosbEnabled)
             return EosbProvisionBuild.Refused("eosb_provision_not_measurable",
                 $"End-of-service provisioning is switched on for {company.LegalNameEn}, but end of service is not " +

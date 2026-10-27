@@ -62,7 +62,7 @@ export function RowsEditor<T extends { code: string } & ExistingRow>({
   const { readOnly, errorFor } = useWizardForm();
   const fields = columns.map(c => c.key);
   const manageLink = (label: string) => manage
-    ? <a href={manage.href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent" data-testid="manage-in-setup">
+    ? <a href={manage.href} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent" data-testid="manage-in-setup">
         {t('Manage in Setup → {tab}', { tab: t(manage.label) })}<ExternalLink className="h-3 w-3 rtl:-scale-x-100" aria-hidden="true" />
         <span className="sr-only"> {label} {t('(opens in a new tab)')}</span>
       </a>
@@ -87,11 +87,18 @@ export function RowsEditor<T extends { code: string } & ExistingRow>({
                 <TagPill tag={existing ? 'existing' : 'new'} />
                 {changed && <TagPill tag="changed" />}
               </div>
-              {existing ? manageLink(rowLabel(index)) : !readOnly && <button type="button" className="rounded-md px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10" onClick={() => onChange(rows.filter((_, i) => i !== index))}>
-                {t('Remove')}<span className="sr-only"> {rowLabel(index)}</span>
-              </button>}
+              <div className="flex flex-wrap items-center gap-1">
+                {existing && manageLink(rowLabel(index))}
+                {/* Remove is on every row. A saved branch or location carries attendance and head-office rules, so it is
+                    removed in its Setup tab: shown disabled, with the reason beside it, never hidden. */}
+                {!readOnly && <button type="button" disabled={existing} aria-describedby={existing ? `${path}-${index}-remove-why` : undefined} data-testid="remove-row"
+                  className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:text-rose-300 dark:hover:bg-rose-500/10"
+                  onClick={() => onChange(rows.filter((_, i) => i !== index))}>
+                  {t('Remove')}<span className="sr-only"> {rowLabel(index)}</span>
+                </button>}
+              </div>
             </div>
-            {existing && <p className="mb-2 text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Already set up for this company. Edit it here; its code stays the same.')}</p>}
+            {existing && <p id={`${path}-${index}-remove-why`} className="mb-2 text-xs leading-5 text-slate-600 dark:text-slate-400">{t('Already set up for this company. Edit it here. To change its code or remove it, use Setup: it checks what uses it first.')}</p>}
             <div className="flex flex-wrap gap-x-3 gap-y-2">
               {columns.map(col => {
                 const field = `${path}.${index}.${col.key}`;

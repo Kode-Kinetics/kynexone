@@ -5,6 +5,10 @@ namespace Zayra.Api.Application.Organization;
 
 public interface IOrganizationSetupService
 {
+    /// <summary>The one remove / restore / usage rule for branches, departments, designations, grades, cost centres
+    /// and locations (see <see cref="IOrgRowRemoval"/>).</summary>
+    IOrgRowRemoval Removal { get; }
+
     /// <param name="accessibleCompanyIds">null = every company of the tenant (group scope); otherwise only these.</param>
     Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null);
     Task<CompanyDto?> GetCompanyAsync(Guid tenantId, Guid id, CancellationToken cancellationToken);

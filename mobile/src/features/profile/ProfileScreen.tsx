@@ -40,6 +40,7 @@ import {
   normalizeCountry,
   type IdentityKey,
 } from './identityFields';
+import { useSensitiveScreen } from '@/safety/useSensitiveScreen';
 
 interface UpdateFields {
   personalEmail: string;
@@ -63,6 +64,7 @@ const EMPLOYMENT_TYPES = ['FullTime', 'PartTime', 'Contract', 'Temporary', 'Inte
 type Notice = { tone: 'success' | 'danger'; text: string } | null;
 
 export default function ProfileScreen() {
+  useSensitiveScreen('profile');
   const { user } = useAuthStore();
   const { t, i18n } = useTranslation();
   const { theme } = useTheme();

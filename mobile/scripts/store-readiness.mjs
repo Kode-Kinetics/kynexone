@@ -27,7 +27,23 @@ for (const asset of [
   if (!asset || !fs.existsSync(path.resolve(root, asset))) failures.push(`Missing release asset: ${asset ?? '<undefined>'}`);
 }
 
+// Store hygiene: App Review questions unused purpose strings, and iOS requires a privacy manifest.
+const locationPlugin = (app.plugins ?? []).find((p) => Array.isArray(p) && p[0] === 'expo-location');
+const motionEnabled = locationPlugin?.[1]?.isAndroidMotionActivityEnabled === true;
+if (!motionEnabled && (app.ios?.infoPlist?.NSMotionUsageDescription || locationPlugin?.[1]?.motionUsagePermission)) {
+  failures.push('NSMotionUsageDescription is declared while motion activity is disabled; remove it (set expo-location motionUsagePermission to false).');
+}
+const manifest = app.ios?.privacyManifests;
+if (!manifest?.NSPrivacyAccessedAPITypes?.length || !Array.isArray(manifest?.NSPrivacyCollectedDataTypes)) {
+  failures.push('ios.privacyManifests must declare NSPrivacyAccessedAPITypes and NSPrivacyCollectedDataTypes.');
+}
+
 const productionEnv = eas.build?.production?.env ?? {};
+if (!productionEnv.EXPO_UPDATES_CODE_SIGNING_CERT) {
+  const message = 'OTA code signing is not configured for the production profile (see README "Code signing" and docs/OTA_SAFETY.md).';
+  if (process.env.REQUIRE_CODE_SIGNING === '1') failures.push(message);
+  else warnings.push(message);
+}
 if (productionEnv.EXPO_PUBLIC_APP_ENV !== 'production') {
   failures.push('EAS production profile must set EXPO_PUBLIC_APP_ENV=production.');
 }

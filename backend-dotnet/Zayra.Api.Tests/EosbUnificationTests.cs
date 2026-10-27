@@ -158,7 +158,7 @@ public class EosbUnificationTests
         await db.SaveChangesAsync();
 
         var result = await MakeCtrl(db, tenantId).CalculateEosb(
-            new EosbCalculationRequest(employeeId, new DateTime(2023, 1, 1), "Termination"), CancellationToken.None);
+            new EosbCalculationRequest(employeeId, new DateTime(2022, 12, 31), "Termination"), CancellationToken.None);
 
         Prop<decimal>(result, "eligibleSalary").Should().Be(12_000m);
         EosbFrom(result).Should().Be(18_000m, "three KSA years use half of the configured 12,000 last-wage base per year");
@@ -184,7 +184,7 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var joining = new DateTime(jy, jm, 1, 0, 0, 0, DateTimeKind.Utc);
-        var asOf    = new DateTime(ay, am, 1, 0, 0, 0, DateTimeKind.Utc);
+        var asOf    = new DateTime(ay, am, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(-1); // last day served
         var empId = SeedKsaEmployee(db, tenantId, joining);
         SeedLeaver(db, tenantId, empId, DateOnly.FromDateTime(asOf), reason);
         var ctrl = MakeCtrl(db, tenantId);
@@ -206,11 +206,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Termination"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(15_000m, "3 × 0.5 × 10,000 (Art.84 tier-1); kills the old ~10,000 inline underpay");
@@ -222,11 +222,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(5_000m, "⅓ of 15,000 (Art.85) — previously impossible on final-settlement");
@@ -238,11 +238,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Article80");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Article80");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Article80"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Article80"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(0m, "Art.80 grave-fault dismissal forfeits EOSB entirely");
@@ -256,11 +256,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 6, 30), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 7, 1), 0, "Termination"),
+            new FinalSettlementRequest(empId, new DateOnly(2023, 6, 30), 0, "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(2_500m,
@@ -273,11 +273,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 6, 30), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 7, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2023, 6, 30), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(0m, "Art.85 <2yr resignation forfeiture is owned by the pack, not the deleted gate");
@@ -293,7 +293,7 @@ public class EosbUnificationTests
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.CalculateEosb(
-            new EosbCalculationRequest(empId, new DateTime(2023, 7, 1, 0, 0, 0, DateTimeKind.Utc), "Termination"),
+            new EosbCalculationRequest(empId, new DateTime(2023, 6, 30, 0, 0, 0, DateTimeKind.Utc), "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(2_500m, "pre-gate removed; short-service termination is pro-rated");
@@ -310,14 +310,14 @@ public class EosbUnificationTests
         db.EmployeeOffboardings.Add(new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = empId, SeparationType = "Resignation",
-            Status = "InProgress", LastWorkingDay = new DateOnly(2023, 1, 1), CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2022, 12, 31), CreatedAtUtc = DateTime.UtcNow,
         });
         await db.SaveChangesAsync();
         var ctrl = MakeCtrl(db, tenantId);
 
         // No TerminationReason on the request → must pick up "Resignation" from the record.
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31)),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(5_000m, "recorded resignation is discounted per Art.85 without an explicit override");
@@ -333,13 +333,13 @@ public class EosbUnificationTests
         db.EmployeeOffboardings.Add(new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = empId, SeparationType = "Resignation",
-            Status = "InProgress", LastWorkingDay = new DateOnly(2023, 1, 1), CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2022, 12, 31), CreatedAtUtc = DateTime.UtcNow,
         });
         await db.SaveChangesAsync();
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Termination"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(15_000m, "explicit request reason takes precedence over the offboarding record");
@@ -365,7 +365,7 @@ public class EosbUnificationTests
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31)),
             CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
@@ -380,11 +380,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31)),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(15_000m, "recorded termination takes the full Art.84 award");
@@ -407,22 +407,23 @@ public class EosbUnificationTests
                 "the gratuity must appear as its own itemised line");
     }
 
-    // ── 6. Art.85 exactly-5.0-year boundary (SF-4): 5.0yr resignation → ⅓, not ⅔ ──
+    // ── 6. Art.85 exactly-5.0-year boundary: 5.0yr resignation → ⅔ (bands are 2 to <5 and 5 to <10) ──
 
     [Fact]
-    public async Task KsaPack_FivePointZeroYearResignation_TakesOneThirdBand()
+    public async Task KsaPack_FivePointZeroYearResignation_TakesTwoThirdsBand()
     {
         var calc = new KsaEndOfServiceCalculator(new StubRuleReader());
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2018, 1, 1), new DateOnly(2023, 1, 1), // exactly 60 months = 5.0 yrs
+            new DateOnly(2018, 1, 1), new DateOnly(2022, 12, 31), // last day served: exactly 60 months = 5.0 yrs
             "Resignation", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);
 
-        // Full award = 5 × 0.5 × 10,000 = 25,000; Art.85 "2–5 yrs inclusive" → ⅓ = 8,333.33
-        result.TotalGratuity.Should().Be(8_333.33m, "Art.85 grants ⅓ up to and including 5.0 years");
+        // Full award = 5 × 0.5 × 10,000 = 25,000; five years but under ten → ⅔ = 16,666.67
+        // (this test used to pin ⅓ at exactly 5.0 years).
+        result.TotalGratuity.Should().Be(16_666.67m, "Art.85 grants ⅔ from exactly 5.0 years");
     }
 }
 

@@ -21,10 +21,9 @@
  * a field that moves.
  *
  * NO Tailwind colour utility appears on this page, deliberately.
- * src/styles/index.css force-overrides `.tenant-login-shell .text-slate-400`
- * (and friends) to light-theme values with !important, which would silently
- * destroy any dark surface inside the login shell. Custom properties give those
- * overrides nothing to bite on.
+ * tokens.css re-declares the text remaps (--kx-t-*) as dark-surface values
+ * under `.tenant-login-shell`, so palette text utilities would still be legible
+ * here, but the login keeps its own measured ink variables below.
  * ────────────────────────────────────────────────────────────────────────── */
 
 .tenant-login-shell.lx-shell {

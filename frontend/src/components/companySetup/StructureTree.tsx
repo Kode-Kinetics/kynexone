@@ -64,7 +64,7 @@ export function StructureTree({ tree, collapsible = false, activePart, activeGro
       active ? 'bg-sapphire/[0.08] text-sapphire dark:bg-sapphire/20 dark:text-blue-200' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white'}`;
     const label = <>
       <span className="min-w-0 truncate">{nameOf(node)}</span>
-      <span className="text-[11px] font-medium normal-case tracking-normal tabular-nums opacity-80">({countText})</span>
+      <span className="text-[11px] font-medium normal-case tracking-normal tabular-nums">({countText})</span>
     </>;
     return (
       <li key={node.id} className="min-w-0" data-group={node.id} data-active={active ? 'true' : undefined}>

@@ -80,6 +80,7 @@ public class PayrollRecoveryB3SmeTests
 
     private static BonusesController Bonuses(ZayraDbContext db, Guid tenantId)
     {
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // submitting/approving a batch needs someone else who could approve/release it
         var http = Ctx(tenantId, Checker);
         return new BonusesController(db, new _SmeScope())
         { ControllerContext = new ControllerContext { HttpContext = http } };

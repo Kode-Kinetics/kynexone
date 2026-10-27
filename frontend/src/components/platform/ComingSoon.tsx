@@ -22,11 +22,11 @@ export function ComingSoon({ title, description, apis, plannedFeatures, badge = 
         {/* Header */}
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-2 mb-2">
-            <span className={`px-2.5 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wider ${b.cls}`}>
+            <span className={`px-2.5 py-0.5 rounded text-caption font-semibold uppercase tracking-wider ${b.cls}`}>
               {b.label}
             </span>
           </div>
-          <h1 className="text-2xl font-bold text-white">{title}</h1>
+          <h1 className="text-2xl font-semibold text-white">{title}</h1>
           <p className="text-sm text-slate-400 leading-relaxed">{description}</p>
         </div>
 
@@ -34,14 +34,14 @@ export function ComingSoon({ title, description, apis, plannedFeatures, badge = 
         {apis && apis.length > 0 && (
           <div className="bg-slate-900/60 border border-white/8 rounded-xl overflow-hidden">
             <div className="px-4 py-2.5 border-b border-white/8">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              <p className="text-caption font-semibold text-slate-500 uppercase tracking-wider">
                 Backend API Endpoints Required
               </p>
             </div>
             <div className="divide-y divide-white/5">
               {apis.map((api, i) => (
                 <div key={i} className="flex items-start gap-3 px-4 py-2.5">
-                  <span className={`text-[10px] font-bold font-mono shrink-0 mt-0.5 px-1.5 py-0.5 rounded ${
+                  <span className={`text-caption font-semibold font-mono shrink-0 mt-0.5 px-1.5 py-0.5 rounded ${
                     api.method === 'GET' ? 'bg-emerald-900/60 text-emerald-400' :
                     api.method === 'POST' ? 'bg-blue-900/60 text-blue-400' :
                     api.method === 'PUT' ? 'bg-amber-900/60 text-amber-400' :
@@ -49,7 +49,7 @@ export function ComingSoon({ title, description, apis, plannedFeatures, badge = 
                   }`}>{api.method}</span>
                   <div className="min-w-0">
                     <p className="text-xs text-slate-300 font-mono truncate">{api.path}</p>
-                    {api.note && <p className="text-[11px] text-slate-600 mt-0.5">{api.note}</p>}
+                    {api.note && <p className="text-caption text-slate-600 mt-0.5">{api.note}</p>}
                   </div>
                 </div>
               ))}
@@ -60,7 +60,7 @@ export function ComingSoon({ title, description, apis, plannedFeatures, badge = 
         {/* Planned features */}
         {plannedFeatures && plannedFeatures.length > 0 && (
           <div className="space-y-2">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Planned Capabilities</p>
+            <p className="text-caption font-semibold text-slate-500 uppercase tracking-wider">Planned Capabilities</p>
             <ul className="space-y-1.5">
               {plannedFeatures.map((f, i) => (
                 <li key={i} className="flex items-start gap-2 text-sm text-slate-400">

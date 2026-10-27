@@ -561,6 +561,7 @@ public class HrmHierarchyTests
 
     private static EmployeesController BuildImportController(ZayraDbContext db, Guid tenantId, params string[] permissions)
     {
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // imports that carry salaries need someone else who could approve them
         var controller = new EmployeesController(
             db,
             new Pbkdf2PasswordHasher(),

@@ -4,6 +4,10 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Setup;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -33,9 +37,12 @@ public class CompanyTaxPoliciesController : ControllerBase
         var query = _db.CompanyTaxPolicies.AsNoTracking()
             .Where(p => p.TenantId == tenantId && !p.IsDeleted);
         if (companyId.HasValue) query = query.Where(p => p.CompanyId == companyId);
-        var items = await query
-            .OrderBy(p => p.CompanyId).ThenByDescending(p => p.EffectiveFrom)
-            .Select(p => ToDto(p)).ToListAsync(ct);
+        var policies = await query
+            .OrderBy(p => p.CompanyId).ThenByDescending(p => p.EffectiveFrom).ToListAsync(ct);
+        var items = new List<object>();
+        var runs = policies.Count == 0 ? new List<FinalizedRun>() : await LoadFinalizedRunsAsync(tenantId.Value, ct);
+        foreach (var p in policies)
+            items.Add(ToDto(p, LastFinalizedMonthEnd(p, runs) is not null));
         return Ok(items);
     }
 
@@ -48,7 +55,9 @@ public class CompanyTaxPoliciesController : ControllerBase
         // Within-tenant company-scope enforcement: a company-scoped Payroll Manager cannot
         // create a policy targeting a sibling company they cannot access (B3 — the resolver
         // wiring in FIX 3 makes this load-bearing for other companies' net pay).
-        if (req.CompanyId is Guid cidCreate && !this.GetEntityScope().CanAccessCompany(cidCreate))
+        // The tenant-wide default (CompanyId null) is group-level: CanAccessCompany(null) is true only
+        // for group scope.
+        if (!this.GetEntityScope().CanAccessCompany(req.CompanyId))
             return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
@@ -67,13 +76,17 @@ public class CompanyTaxPoliciesController : ControllerBase
             CreatedBy = this.GetUserId(),
         };
         _db.CompanyTaxPolicies.Add(policy);
+        this.RecordChange(_db, tenantId.Value, policy.CompanyId, "CompanyTaxPolicy", policy.Id.ToString(), "Created", null, Snapshot(policy));
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(policy));
     }
 
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,Payroll Manager")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] CompanyTaxPolicyRequest req, CancellationToken ct)
+    public Task<IActionResult> Update(Guid id, [FromBody] CompanyTaxPolicyRequest req, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, this.GetTenantId() ?? Guid.Empty, () => UpdateCore(id, req, ct), ct);
+
+    private async Task<IActionResult> UpdateCore(Guid id, [FromBody] CompanyTaxPolicyRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
@@ -83,11 +96,26 @@ public class CompanyTaxPoliciesController : ControllerBase
         // a scoped user can neither edit a policy outside their scope nor re-point one at a
         // company they cannot access.
         var scope = this.GetEntityScope();
-        if ((policy.CompanyId is Guid existingCid && !scope.CanAccessCompany(existingCid)) ||
-            (req.CompanyId is Guid newCid && !scope.CanAccessCompany(newCid)))
+        if (!scope.CanAccessCompany(policy.CompanyId) || !scope.CanAccessCompany(req.CompanyId))
             return Forbid();
         var error = await ValidateAsync(tenantId.Value, req, ct);
         if (error is not null) return BadRequest(new { message = error });
+
+        // Once finalized payroll sits in the policy's window the rate, start date, country and
+        // company are history: only notes and a later end date may change (retire + new policy).
+        var usedThrough = await LastFinalizedMonthEndAsync(policy, ct);
+        if (usedThrough is { } lastUsed)
+        {
+            var changesHistory = req.CompanyId != policy.CompanyId
+                || !string.Equals(CountryCodeStandard.NormalizeToIso2(req.CountryCode), policy.CountryCode, StringComparison.OrdinalIgnoreCase)
+                || req.EffectiveFrom != policy.EffectiveFrom
+                || req.IncomeTaxRatePercent != policy.IncomeTaxRatePercent
+                || (req.AppliesToBonus ?? policy.AppliesToBonus) != policy.AppliesToBonus
+                || (req.Status ?? policy.Status) != policy.Status
+                || (req.EffectiveTo != policy.EffectiveTo && (req.EffectiveTo is null ? policy.EffectiveTo is not null : req.EffectiveTo < lastUsed));
+            if (changesHistory) return UsedByPayroll(lastUsed);
+        }
+        var before = Snapshot(policy);
 
         policy.CompanyId = req.CompanyId;
         policy.CountryCode = CountryCodeStandard.NormalizeToIso2(req.CountryCode)!;
@@ -98,20 +126,103 @@ public class CompanyTaxPoliciesController : ControllerBase
         policy.AppliesToBonus = req.AppliesToBonus ?? policy.AppliesToBonus;
         policy.Notes = req.Notes ?? policy.Notes;
         policy.UpdatedBy = this.GetUserId();
+        policy.UpdatedAtUtc = DateTime.UtcNow;
+        this.RecordChange(_db, tenantId.Value, policy.CompanyId, "CompanyTaxPolicy", policy.Id.ToString(), "Updated", before, Snapshot(policy));
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(policy));
     }
 
-    [HttpDelete("{id:guid}")]
-    [Authorize(Roles = "Admin")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    /// <summary>
+    /// Retire = end-date from a date, keeping the policy and every payroll run that used it intact.
+    /// The new end date cannot fall inside a month that already has finalized payroll.
+    /// </summary>
+    [HttpPost("{id:guid}/retire")]
+    [Authorize(Roles = "Admin,Payroll Manager")]
+    public Task<IActionResult> Retire(Guid id, [FromBody] RetireTaxPolicyRequest req, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, this.GetTenantId() ?? Guid.Empty, () => RetireCore(id, req, ct), ct);
+
+    private async Task<IActionResult> RetireCore(Guid id, [FromBody] RetireTaxPolicyRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var policy = await _db.CompanyTaxPolicies.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Id == id && !p.IsDeleted, ct);
         if (policy is null) return NotFound();
+        if (!this.GetEntityScope().CanAccessCompany(policy.CompanyId)) return Forbid();
+        if (req.EffectiveTo < policy.EffectiveFrom)
+            return BadRequest(new { message = "The end date cannot be before the policy start date." });
+        if (policy.EffectiveTo is { } currentEnd && req.EffectiveTo > currentEnd)
+            return BadRequest(new { message = "Ending a policy cannot extend it; edit the policy to change a later end date." });
+        if (await LastFinalizedMonthEndAsync(policy, ct) is { } lastUsed && req.EffectiveTo < lastUsed)
+            return UsedByPayroll(lastUsed);
+        var before = Snapshot(policy);
+        policy.EffectiveTo = req.EffectiveTo;
+        policy.UpdatedBy = this.GetUserId();
+        policy.UpdatedAtUtc = DateTime.UtcNow;
+        this.RecordChange(_db, tenantId.Value, policy.CompanyId, "CompanyTaxPolicy", policy.Id.ToString(), "Retired", before, Snapshot(policy));
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToDto(policy));
+    }
+
+    private static readonly string[] FinalizedRunStatuses = { "Approved", "Locked", "Paid" };
+
+    /// <summary>
+    /// Payroll does not record which tax policy a run used, so "used" is inferred conservatively:
+    /// any finalized run of the policy's company (every company for the tenant-wide default) whose
+    /// month falls inside the policy window. Returns the last day of the latest such month, or null.
+    /// </summary>
+    private sealed record FinalizedRun(Guid? CompanyId, int MonthIndex);
+
+    private async Task<List<FinalizedRun>> LoadFinalizedRunsAsync(Guid tenantId, CancellationToken ct) =>
+        (await ScopedBypass.TenantWide(_db.PayrollRuns, tenantId, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.")
+            .Where(r => FinalizedRunStatuses.Contains(r.Status))
+            .Select(r => new { r.CompanyId, Idx = r.Year * 12 + r.Month }).ToListAsync(ct))
+        .Select(r => new FinalizedRun(r.CompanyId, r.Idx)).ToList();
+
+    private async Task<DateOnly?> LastFinalizedMonthEndAsync(CompanyTaxPolicy p, CancellationToken ct) =>
+        LastFinalizedMonthEnd(p, await LoadFinalizedRunsAsync(p.TenantId, ct));
+
+    // A run with no company (legacy rows) cannot be ruled out for any company's policy, so it counts for all.
+    private static DateOnly? LastFinalizedMonthEnd(CompanyTaxPolicy p, List<FinalizedRun> runs)
+    {
+        var from = p.EffectiveFrom.Year * 12 + p.EffectiveFrom.Month;
+        var to = p.EffectiveTo is { } e ? e.Year * 12 + e.Month : int.MaxValue;
+        var latest = runs
+            .Where(r => (p.CompanyId == null || r.CompanyId == null || r.CompanyId == p.CompanyId)
+                     && r.MonthIndex >= from && r.MonthIndex <= to)
+            .Select(r => (int?)r.MonthIndex).Max();
+        if (latest is null) return null;
+        var idx = latest.Value - 1;
+        return new DateOnly(idx / 12, idx % 12 + 1, 1).AddMonths(1).AddDays(-1);
+    }
+
+    private IActionResult UsedByPayroll(DateOnly lastUsed) => Conflict(new
+    {
+        code = "TAX_POLICY_USED_BY_PAYROLL",
+        message = $"Payroll has already been finalized under this policy (through {lastUsed:yyyy-MM-dd}), so its rate and start date cannot change and it cannot be deleted. End-date it from a later date and add a new policy instead.",
+    });
+
+    private static object Snapshot(CompanyTaxPolicy p) => new
+    {
+        p.CompanyId, p.CountryCode, p.EffectiveFrom, p.EffectiveTo, p.Status, p.IncomeTaxRatePercent, p.AppliesToBonus, p.Notes,
+    };
+
+    [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
+    public Task<IActionResult> Delete(Guid id, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, this.GetTenantId() ?? Guid.Empty, () => DeleteCore(id, ct), ct);
+
+    private async Task<IActionResult> DeleteCore(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var policy = await _db.CompanyTaxPolicies.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Id == id && !p.IsDeleted, ct);
+        if (policy is null) return NotFound();
+        if (!this.GetEntityScope().CanAccessCompany(policy.CompanyId)) return Forbid();
+        if (await LastFinalizedMonthEndAsync(policy, ct) is { } lastUsed) return UsedByPayroll(lastUsed);
         policy.IsDeleted = true;
         policy.UpdatedBy = this.GetUserId();
+        policy.UpdatedAtUtc = DateTime.UtcNow;
+        this.RecordChange(_db, tenantId.Value, policy.CompanyId, "CompanyTaxPolicy", policy.Id.ToString(), "Deleted", Snapshot(policy), null);
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -135,8 +246,9 @@ public class CompanyTaxPoliciesController : ControllerBase
         return null;
     }
 
-    private static object ToDto(CompanyTaxPolicy p) => new
+    private static object ToDto(CompanyTaxPolicy p, bool usedByPayroll = false) => new
     {
+        usedByPayroll,
         id = p.Id,
         companyId = p.CompanyId,
         countryCode = p.CountryCode,
@@ -279,6 +391,81 @@ public class CompanyComplianceProfilesController : ControllerBase
         return Ok(ToDto(profile));
     }
 
+    /// <summary>Setup's Remove for a compliance profile. A profile that was ever in force is RETIRED (Archived, end-dated today
+    /// if it is open-ended), never erased, so the checks that ran under it stay explainable; a draft nothing ran under is
+    /// deleted. Same scope rule as editing.</summary>
+    [HttpDelete("{id:guid}")]
+    [HasPermission("compliance.write")]
+    public async Task<IActionResult> Remove(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var profile = await _db.CompanyComplianceProfiles.FirstOrDefaultAsync(p => p.TenantId == tenantId && p.Id == id && !p.IsDeleted, ct);
+        if (profile is null || !MayChange(profile)) return NotFound();
+        if (string.Equals(profile.Status, CompanyPolicyStatuses.Draft, StringComparison.OrdinalIgnoreCase))
+        {
+            profile.IsDeleted = true; profile.UpdatedBy = this.GetUserId(); profile.UpdatedAtUtc = DateTime.UtcNow;
+            this.RecordChange(_db, tenantId.Value, profile.CompanyId, "CompanyComplianceProfile", id.ToString(), "Deleted", new { profile.CountryCode, profile.Jurisdiction }, null);
+            await _db.SaveChangesAsync(ct);
+            return SetupRemoval.Deleted(this);
+        }
+        if (string.Equals(profile.Status, CompanyPolicyStatuses.Archived, StringComparison.OrdinalIgnoreCase))
+            return SetupRemoval.TurnedOff(this, []);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var before = new { profile.Status, profile.EffectiveTo };
+        // Remember exactly what Remove changed so Restore puts it back (it never silently activates or widens a profile).
+        profile.PreRemovalStatus = profile.Status;
+        profile.RemovalSetEffectiveTo = false;
+        profile.Status = CompanyPolicyStatuses.Archived;
+        if (profile.EffectiveTo is null && profile.EffectiveFrom <= today) { profile.EffectiveTo = today; profile.RemovalSetEffectiveTo = true; }
+        profile.UpdatedBy = this.GetUserId(); profile.UpdatedAtUtc = DateTime.UtcNow;
+        this.RecordChange(_db, tenantId.Value, profile.CompanyId, "CompanyComplianceProfile", id.ToString(), "Retired", before, new { profile.Status, profile.EffectiveTo });
+        await _db.SaveChangesAsync(ct);
+        return SetupRemoval.TurnedOff(this, []);
+    }
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("compliance.write")]
+    public async Task<IActionResult> Restore(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var profile = await ScopedBypass.TenantWide(_db.CompanyComplianceProfiles, tenantId.Value, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.").FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (profile is null || !MayChange(profile)) return NotFound();
+        if (profile.IsDeleted || string.Equals(profile.Status, CompanyPolicyStatuses.Archived, StringComparison.OrdinalIgnoreCase))
+        {
+            var before = new { profile.Status, profile.EffectiveTo, profile.IsDeleted };
+            // Back to the status it had before Remove (a deleted Draft stays a Draft). A profile that was Archived by the
+            // normal edit flow, not by Remove, has no remembered status and stays Archived: reactivating it is an edit.
+            var target = profile.PreRemovalStatus ?? profile.Status;
+            if (!profile.IsDeleted && profile.PreRemovalStatus is null)
+                return SetupRemoval.Blocked(this, "NOT_REMOVED", "This profile was archived by an edit, not removed. Edit it to bring it back.");
+            if (string.Equals(target, CompanyPolicyStatuses.Active, StringComparison.OrdinalIgnoreCase))
+            {
+                var today = DateOnly.FromDateTime(DateTime.UtcNow);
+                var overlap = await _db.CompanyComplianceProfiles.AnyAsync(p => p.TenantId == tenantId && p.Id != id && !p.IsDeleted
+                    && p.Status == CompanyPolicyStatuses.Active && p.CompanyId == profile.CompanyId
+                    && p.CountryCode == profile.CountryCode && p.Jurisdiction == profile.Jurisdiction
+                    && (p.EffectiveTo == null || p.EffectiveTo >= profile.EffectiveFrom)
+                    && (profile.EffectiveTo == null || profile.RemovalSetEffectiveTo || p.EffectiveFrom <= profile.EffectiveTo), ct);
+                if (overlap)
+                    return SetupRemoval.Blocked(this, "OVERLAP", "Another active compliance profile already covers this company, country and jurisdiction for these dates. Retire it first, then restore this one.");
+            }
+            profile.IsDeleted = false;
+            profile.Status = target;
+            if (profile.RemovalSetEffectiveTo) profile.EffectiveTo = null;
+            profile.PreRemovalStatus = null; profile.RemovalSetEffectiveTo = false;
+            profile.UpdatedBy = this.GetUserId(); profile.UpdatedAtUtc = DateTime.UtcNow;
+            this.RecordChange(_db, tenantId.Value, profile.CompanyId, "CompanyComplianceProfile", id.ToString(), "Restored", before, new { profile.Status, profile.EffectiveTo });
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
+    }
+
+    /// <summary>The scope rule Update applies: a company row needs that company in the caller's grant; a tenant-wide row is Admin-only.</summary>
+    private bool MayChange(CompanyComplianceProfile profile) =>
+        profile.CompanyId is Guid cid ? this.GetEntityScope().CanAccessCompany(cid) : User.IsInRole("Admin");
+
     /// <summary>Updates only Jawazat policy so a stale editor cannot overwrite readiness or lifecycle fields.</summary>
     [HttpPatch("{id:guid}/jawazat-policy")]
     [Authorize(Roles = "Admin,Compliance Officer")]
@@ -397,6 +584,8 @@ public class CompanyComplianceProfilesController : ControllerBase
         notes = p.Notes,
     };
 }
+
+public record RetireTaxPolicyRequest(DateOnly EffectiveTo);
 
 public record CompanyTaxPolicyRequest(
     Guid? CompanyId, string CountryCode, DateOnly EffectiveFrom, DateOnly? EffectiveTo,

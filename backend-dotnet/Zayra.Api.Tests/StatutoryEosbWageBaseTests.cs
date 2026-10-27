@@ -17,7 +17,7 @@ namespace Zayra.Api.Tests;
 public class StatutoryEosbWageBaseTests
 {
     private static readonly DateOnly Start2014 = new(2014, 1, 1);
-    private static readonly DateOnly End2026   = new(2026, 1, 1);
+    private static readonly DateOnly End2026   = new(2025, 12, 31); // last day served: exactly 12 years
 
     private static EndOfServiceInput Eosb(
         SalaryBreakdown salary, DateOnly start, DateOnly end,
@@ -124,7 +124,7 @@ public class StatutoryEosbWageBaseTests
         // UAE Decree-Law 33/2021 Art. 51 is explicit that gratuity is on BASIC. A client who insists
         // otherwise is wrong, and the KSA fix must not quietly make them right.
         var calc = new UaeMainlandEndOfServiceCalculator(new StubRuleReader());
-        var input = Eosb(new SalaryBreakdown(10_000m, 5_000m, 2_000m, 1_000m), new(2020, 1, 1), new(2023, 1, 1));
+        var input = Eosb(new SalaryBreakdown(10_000m, 5_000m, 2_000m, 1_000m), new(2020, 1, 1), new(2022, 12, 31));
 
         var result = await calc.CalculateAsync(input);
 
@@ -135,7 +135,7 @@ public class StatutoryEosbWageBaseTests
     public async Task Qatar_Eosb_StaysBasicOnly_EvenWithHousingInThePackage()
     {
         var calc = new QatarEndOfServiceCalculator(new StubRuleReader());
-        var input = Eosb(new SalaryBreakdown(10_000m, 5_000m, 0m, 0m), new(2020, 1, 1), new(2023, 1, 1));
+        var input = Eosb(new SalaryBreakdown(10_000m, 5_000m, 0m, 0m), new(2020, 1, 1), new(2022, 12, 31));
 
         var result = await calc.CalculateAsync(input);
 
@@ -254,9 +254,9 @@ public class StatutoryEosbWageBaseTests
         var calc = new KsaEndOfServiceCalculator(new StubRuleReader());
         var salary = new SalaryBreakdown(12_000m, 0m, 0m, 0m);
         var enhanced = await calc.CalculateAsync(
-            Eosb(salary, new(2020, 1, 1), new(2023, 1, 1)) with
+            Eosb(salary, new(2020, 1, 1), new(2022, 12, 31)) with
             { Policy = new EosbPolicyOverride(21m, 30m, 1) });
-        var statutory = await calc.CalculateAsync(Eosb(salary, new(2020, 1, 1), new(2023, 1, 1)));
+        var statutory = await calc.CalculateAsync(Eosb(salary, new(2020, 1, 1), new(2022, 12, 31)));
 
         // 3 yrs, all tier 1: statutory 15 days/yr vs configured 21 days/yr.
         Assert.Equal(Math.Round(statutory.TotalGratuity * 21m / 15m, 2), enhanced.TotalGratuity);
@@ -269,9 +269,9 @@ public class StatutoryEosbWageBaseTests
         var calc = new KsaEndOfServiceCalculator(new StubRuleReader());
         var salary = new SalaryBreakdown(12_000m, 0m, 0m, 0m);
         var underCut = await calc.CalculateAsync(
-            Eosb(salary, new(2020, 1, 1), new(2023, 1, 1)) with
+            Eosb(salary, new(2020, 1, 1), new(2022, 12, 31)) with
             { Policy = new EosbPolicyOverride(7m, 10m, 1) });
-        var statutory = await calc.CalculateAsync(Eosb(salary, new(2020, 1, 1), new(2023, 1, 1)));
+        var statutory = await calc.CalculateAsync(Eosb(salary, new(2020, 1, 1), new(2022, 12, 31)));
 
         Assert.Equal(statutory.TotalGratuity, underCut.TotalGratuity);
         Assert.Contains(underCut.Notices, n => n.Contains("[CERT-KSA]") && n.Contains("BELOW the"));
@@ -339,14 +339,14 @@ public class StatutoryEosbWageBaseTests
 
     [Theory]
     [InlineData(2.0, 1.0 / 3.0)]      // exactly 2 years → ⅓
-    [InlineData(5.0, 1.0 / 3.0)]      // exactly 5 years → still ⅓ (inclusive upper bound)
+    [InlineData(5.0, 2.0 / 3.0)]      // exactly 5 years → ⅔ (the bands are 2 to <5 and 5 to <10)
     [InlineData(5.5, 2.0 / 3.0)]      // above 5, below 10 → ⅔
     [InlineData(10.0, 1.0)]           // 10 or more → full
     public async Task Ksa_Art85_ResignationScale_BoundariesAreExact(double years, double expectedFraction)
     {
         var calc = new KsaEndOfServiceCalculator(new StubRuleReader());
         var start = new DateOnly(2010, 1, 1);
-        var end   = start.AddDays((int)Math.Round(years * 365.2425));
+        var end   = start.AddDays((int)Math.Round(years * 365.2425) - 1); // last day served
         var salary = new SalaryBreakdown(10_000m, 0m, 0m, 0m);
 
         var resigned = await calc.CalculateAsync(Eosb(salary, start, end, reason: "Resignation"));

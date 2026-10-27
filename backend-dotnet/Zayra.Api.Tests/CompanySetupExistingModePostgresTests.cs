@@ -1304,27 +1304,31 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     }
 
     [Fact]
-    public async Task A_cost_centre_code_clashes_only_with_the_company_s_own_codes_removed_ones_included()
+    public async Task A_deleted_cost_centre_frees_its_code_a_turned_off_one_keeps_it_and_another_company_never_clashes()
     {
         var w = await SeedAsync();
         await using (var db = fixture.CreateDb())
         {
             db.CostCenters.Add(new CostCenter { TenantId = w.TenantId, CompanyId = w.CompanyId, Code = "CC_OLD", Name = "Removed", IsActive = false, IsDeleted = true });
+            db.CostCenters.Add(new CostCenter { TenantId = w.TenantId, CompanyId = w.CompanyId, Code = "CC_OFF", Name = "Turned off", IsActive = false, IsDeleted = false });
             await db.SaveChangesAsync();
         }
         var prefill = await PrefillAsync(w, w.CompanyId);
-        prefill.CostCentres!.Should().NotContain(c => c.Code == "CC_OLD", "a removed row is not offered");
+        prefill.CostCentres!.Should().NotContain(c => c.Code == "CC_OLD", "a deleted row is not offered");
         var n = prefill.CostCentres!.Count;
         var body = prefill with
         {
             CostCentres = [.. prefill.CostCentres!, new CompanySetupCostCentre("CC_HR", "Sister's code", null),
-                new CompanySetupCostCentre("CC_OLD", "Removed code", null), new CompanySetupCostCentre("CC_OPS_EX", "Own live code", null)],
+                new CompanySetupCostCentre("CC_OLD", "Deleted code reused", null), new CompanySetupCostCentre("CC_OFF", "Turned-off code reused", null),
+                new CompanySetupCostCentre("CC_OPS_EX", "Own live code", null)],
         };
         var plan = await DryRunAsync(w, body);
-        plan.Items.Should().Contain(i => i.Area == "costCentre" && i.Code == "CC_HR" && i.Action == V.ActionCreate, "the sister's code is free in this company");
-        plan.Problems.Should().Contain(p => p.Code == "cost_centre_code_taken" && p.Field == $"costCentres.{n + 1}.code");
-        plan.Problems.Should().Contain(p => p.Field == $"costCentres.{n + 2}.code", "a new row may not reuse a live code of the company");
-        plan.Problems.Where(p => p.Code == "cost_centre_code_taken").Should().OnlyContain(p => p.MessageAr != null);
+        plan.Items.Should().Contain(i => i.Area == "costCentre" && i.Code == "CC_HR" && i.Action == V.ActionCreate, "another company's code never clashes");
+        plan.Items.Should().Contain(i => i.Area == "costCentre" && i.Code == "CC_OLD" && i.Action == V.ActionCreate, "a deleted (never used) row frees its code");
+        plan.Problems.Should().NotContain(p => p.Field == $"costCentres.{n + 1}.code");
+        plan.Problems.Should().Contain(p => p.Field == $"costCentres.{n + 2}.code", "a turned-off row keeps its code reserved");
+        plan.Problems.Should().Contain(p => p.Field == $"costCentres.{n + 3}.code", "a new row may not reuse a live code of the company");
+        plan.Problems.Where(p => p.Field == $"costCentres.{n + 2}.code").Should().OnlyContain(p => p.Message != null && p.MessageAr != null, "the problem at the turned-off code is bilingual");
     }
 
     // ── Addendum B3: copy from a sister company ─────────────────────────────────────────────────────────

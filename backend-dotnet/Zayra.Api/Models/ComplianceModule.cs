@@ -59,7 +59,8 @@ public class EmployeeContract : ITenantOwned, ICompanyScopedOperational
     public DateOnly StartDate { get; set; }
     public DateOnly? EndDate { get; set; }                          // null = indefinite
     public decimal BasicSalary { get; set; }
-    public string CurrencyCode { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string CurrencyCode { get; set; } = string.Empty;
     public string ContentHtmlEn { get; set; } = string.Empty;
     public string ContentHtmlAr { get; set; } = string.Empty;
     public string Language { get; set; } = "en";

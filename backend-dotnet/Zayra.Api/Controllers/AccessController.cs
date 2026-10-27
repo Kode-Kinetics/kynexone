@@ -125,6 +125,47 @@ public class AccessController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    /// <summary>How many people hold a role and whether it is a locked system role: the numbers the confirm dialogs name.</summary>
+    [HttpGet("roles/{roleId:guid}/impact")]
+    public async Task<ActionResult<RoleImpactDto>> RoleImpact(Guid roleId, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        // Same scope gate as Remove: a company-scoped admin does not learn how many people hold a tenant-wide role.
+        var gate = RequireGroupEntityScope();
+        if (gate is not null) return gate;
+        var impact = await _accessManagement.GetRoleImpactAsync(tenantId.Value, roleId, cancellationToken);
+        return impact is null ? NotFound() : Ok(impact);
+    }
+
+    /// <summary>Setup's Remove for a role. A custom role nobody holds is deleted. A system role stays locked, and a role people
+    /// still hold is refused with the count, so the screen can send the admin to reassign them first.</summary>
+    [HttpDelete("roles/{roleId:guid}")]
+    public async Task<IActionResult> DeleteRole(Guid roleId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            var gate = RequireGroupEntityScope();
+            if (gate is not null) return gate;
+            var result = await _accessManagement.DeleteRoleAsync(tenantId.Value, roleId, GetContext(), cancellationToken);
+            if (result is null) return NotFound();
+            if (result.Deleted) return SetupRemoval.Deleted(this);
+            await RefusalAuditedAsync("access.role_deleted", "Role", roleId.ToString(), result.Reason ?? "REFUSED", result.AssignedUsers);
+            return result.Reason == "SYSTEM"
+                ? SetupRemoval.Blocked(this, "ROLE_SYSTEM", "This is a built-in role. It stays as it is; turn off the custom roles you do not need instead.")
+                : Conflict(new
+                {
+                    code = "ROLE_ASSIGNED",
+                    message = $"{result.AssignedUsers} {(result.AssignedUsers == 1 ? "person holds" : "people hold")} this role. Reassign them to another role first, then remove it.",
+                    assignedUsers = result.AssignedUsers,
+                });
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.role_deleted", "Role", roleId.ToString()); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
     [HttpPut("roles/{roleId:guid}/permissions")]
     public async Task<ActionResult<RoleDto>> SetRolePermissions(Guid roleId, BulkRolePermissionsRequest request, CancellationToken cancellationToken)
     {
@@ -404,13 +445,14 @@ public class AccessController : ControllerBase
                 {
                     // F09: the delivery result, not the absence of an exception, decides what the
                     // administrator is told. Test capture mode is "handled" but reaches nobody.
-                    var delivery = await _emailService.DeliverAsync(
+                    var delivery = await _emailService.DeliverResilientAsync(
                         tenantId.Value,
                         link.Email,
                         link.FullName,
                         "Set a new password for your KynexOne account",
                         BuildResetLinkEmailHtml(link),
-                        cancellationToken: cancellationToken);
+                        cancellationToken: cancellationToken,
+                        kind: "password-reset-link");
                     emailSent = delivery.ReachedARelay;
                     captured = delivery.Status == EmailDeliveryStatus.Captured;
                     emailDeliveryConfigured = delivery.Status != EmailDeliveryStatus.NotConfigured;
@@ -571,6 +613,23 @@ public class AccessController : ControllerBase
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_deleted", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>Setup's Restore for a deleted user. The account returns deactivated; reactivating it is a separate, deliberate step.</summary>
+    [HttpPost("users/{userId:guid}/restore")]
+    public async Task<IActionResult> RestoreUser(Guid userId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null) return Unauthorized();
+            if (GetUserId() is null) return Unauthorized();
+            return await _accessManagement.RestoreUserAsync(tenantId.Value, userId, ManagementScope(), GetContext(), cancellationToken)
+                ? Ok(new { outcome = "restored", message = "Restored, but still switched off and without a password or two-step sign-in. Send the person a new invitation so they set a new password and set up two-step sign-in again; the old ones no longer work." })
+                : NotFound();
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_restored", "User", userId.ToString()); }
+        catch (InvalidOperationException ex) { return Conflict(new { code = "USER_EMAIL_TAKEN", message = ex.Message }); }
     }
 
     [HttpPut("users/{userId:guid}/roles")]
@@ -750,7 +809,7 @@ public class AccessController : ControllerBase
             try
             {
                 // F09: see IssuePasswordResetLink — the delivery result decides the message.
-                var delivery = await _emailService.DeliverAsync(
+                var delivery = await _emailService.DeliverResilientAsync(
                     tenantId,
                     invite.Email,
                     invite.Email,
@@ -762,7 +821,8 @@ public class AccessController : ControllerBase
                     <hr/>
                     <p style="font-size:12px;color:#666">KynexOne Workforce</p>
                     """,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken,
+                    kind: "access-invitation");
                 emailSent = delivery.ReachedARelay;
                 captured = delivery.Status == EmailDeliveryStatus.Captured;
                 emailDeliveryConfigured = delivery.Status != EmailDeliveryStatus.NotConfigured;
@@ -1072,6 +1132,19 @@ public class AccessController : ControllerBase
             await _db.SaveChangesAsync(HttpContext?.RequestAborted ?? CancellationToken.None);
         }
         return Refused(ex);
+    }
+
+    /// <summary>A refused role removal (built-in role, or people still hold it) is a recorded event, like a ceiling refusal.</summary>
+    private async Task RefusalAuditedAsync(string attemptedAction, string entityName, string entityId, string reason, int assignedUsers)
+    {
+        var tenantId = GetTenantId();
+        if (tenantId is null) return;
+        _db.ChangeTracker.Clear();
+        _db.AuditLogs.Add(Zayra.Api.Infrastructure.Auth.AuthAuditEntry.Create(
+            Guid.NewGuid(), DateTime.UtcNow, "access.change_refused", entityName, entityId,
+            GetContext() with { TenantId = tenantId },
+            System.Text.Json.JsonSerializer.Serialize(new { attempted = attemptedAction, code = reason, assignedUsers })));
+        await _db.SaveChangesAsync(HttpContext?.RequestAborted ?? CancellationToken.None);
     }
 
     private RequestContext GetContext()

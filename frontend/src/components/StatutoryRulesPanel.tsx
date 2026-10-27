@@ -63,7 +63,7 @@ function UnitValue({ display, className = '' }: { display: StatutoryValueDisplay
   return (
     <span className={`inline-flex flex-wrap items-center gap-1.5 ${className}`}>
       <bdi className="tabular-nums">{display.text}</bdi>
-      {display.flag && <span className="whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-[11px] rtl:text-[13px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{display.flag}</span>}
+      {display.flag && <span className="whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-caption rtl:text-body-sm font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{display.flag}</span>}
     </span>
   );
 }
@@ -339,7 +339,7 @@ export function StatutoryRulesPanel() {
     return [...new Set([old?.flag, next?.flag].filter((flag): flag is string => !!flag))];
   };
   const flagBadges = (flags: string[]) => flags.map((flag) => (
-    <span key={flag} className="ms-2 inline-block whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-[11px] rtl:text-[13px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{flag}</span>
+    <span key={flag} className="ms-2 inline-block whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-caption rtl:text-body-sm font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{flag}</span>
   ));
 
   const selectedFormRule = formCatalogue.find((row) => row.ruleKey === form.ruleKey);
@@ -379,7 +379,7 @@ export function StatutoryRulesPanel() {
         ].map(({ label, value, icon: Icon }) => (
           <div key={label} className="surface flex min-w-0 items-center gap-2 p-3">
             <Icon className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
-            <div className="min-w-0"><p className="truncate text-xs text-slate-500 dark:text-slate-400">{t(label)}</p><p className="text-lg font-bold text-slate-950 dark:text-white">{value}</p></div>
+            <div className="min-w-0"><p className="truncate text-xs text-slate-500 dark:text-slate-400">{t(label)}</p><p className="text-lg font-semibold text-slate-950 dark:text-white">{value}</p></div>
           </div>
         ))}
       </div>
@@ -427,7 +427,7 @@ export function StatutoryRulesPanel() {
               return (
                 <li key={request.id} className="flex flex-col gap-2 py-2 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0 text-xs leading-5 text-slate-700 dark:text-slate-200">
-                    <p className="font-semibold text-slate-900 dark:text-white"><span className="me-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{t('Pending approval')}</span>{describeRequest(request)}{flagBadges(requestFlags(request))}</p>
+                    <p className="font-semibold text-slate-900 dark:text-white"><span className="me-2 rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300">{t('Pending approval')}</span>{describeRequest(request)}{flagBadges(requestFlags(request))}</p>
                     <p className="text-slate-500 dark:text-slate-400">{request.countryCode} · {request.jurisdiction || t('All jurisdictions')}{request.kind === 'change' && request.effectiveTo ? ` · ${t('Until {date}', { date: dateLabel(request.effectiveTo) })}` : ''}</p>
                     {request.reason && <p>{t('Reason: {reason}', { reason: request.reason })}</p>}
                     <p className="text-slate-500 dark:text-slate-400">{t('Requested by {name} on {date}', { name: request.requestedByName || t('Unknown user'), date: format.date(request.requestedAt) })}</p>
@@ -476,7 +476,7 @@ export function StatutoryRulesPanel() {
                       <td className="max-w-[280px] px-3 py-3">
                         <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{nameOf(rule.ruleKey)}</p>
                         <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{isPlatformManaged(rule.ruleKey) && !rule.isTenantOverride ? t('{unit} · Set by the platform', { unit: statutoryUnitName(t, unit) }) : statutoryUnitName(t, unit)}</p>
-                        <details className="group mt-1 text-xs text-slate-500 rtl:text-[13px] dark:text-slate-400">
+                        <details className="group mt-1 text-xs text-slate-500 rtl:text-body-sm dark:text-slate-400">
                           <summary className="w-fit cursor-pointer select-none font-semibold text-sapphire hover:underline dark:text-cyanAccent">{t('Details')}</summary>
                           <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
                             <dt>{t('Rule key')}</dt><dd><code dir="ltr" className="break-all font-mono text-slate-700 dark:text-slate-200">{rule.ruleKey}</code></dd>
@@ -488,7 +488,7 @@ export function StatutoryRulesPanel() {
                       <td className="px-3 py-3 text-sm font-semibold text-slate-900 dark:text-white"><UnitValue display={show(rule, rule.ruleValue)} /></td>
                       <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300"><span className="block">{dateLabel(rule.effectiveFrom)}</span><span className="text-slate-400">{t('Until {date}', { date: dateLabel(rule.effectiveTo) })}</span></td>
                       <td className="max-w-[260px] px-3 py-3 text-xs leading-5 text-slate-600 dark:text-slate-300">{rule.description || t('No source recorded')}</td>
-                      <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${status === 'Active' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-400/15 dark:text-emerald-300' : status === 'Scheduled' ? 'bg-violet-100 text-violet-800 dark:bg-violet-400/15 dark:text-violet-300' : 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>{t(status)}</span>{waiting && status !== 'Retired' && <span className="mt-1.5 block w-fit rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300" title={describeRequest(waiting)}>{t('Pending approval')}</span>}</td>
+                      <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${status === 'Active' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-400/15 dark:text-emerald-300' : status === 'Scheduled' ? 'bg-violet-100 text-violet-800 dark:bg-violet-400/15 dark:text-violet-300' : 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>{t(status)}</span>{waiting && status !== 'Retired' && <span className="mt-1.5 block w-fit rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-400/15 dark:text-amber-300" title={describeRequest(waiting)}>{t('Pending approval')}</span>}</td>
                       <td className="px-3 py-3">
                         {rule.isTenantOverride && canManage && status === 'Active' && !waiting ? <div className="flex flex-wrap gap-x-3 gap-y-1"><button type="button" onClick={() => openSupersede(rule)} className="whitespace-nowrap text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent"><PencilLine className="me-1 inline h-3.5 w-3.5" aria-hidden />{t('Replace from a date')}</button><button type="button" onClick={() => setRetiring(rule)} className="text-xs font-semibold text-red-600 hover:underline"><Archive className="me-1 inline h-3.5 w-3.5" aria-hidden />{t('Retire')}</button></div> : <span className="text-xs text-slate-400">{waiting && rule.isTenantOverride && status === 'Active' ? t('Pending approval') : t(status === 'Scheduled' ? 'Scheduled' : 'Read only')}</span>}
                       </td>

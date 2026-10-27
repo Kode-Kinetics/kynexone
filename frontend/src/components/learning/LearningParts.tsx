@@ -79,9 +79,9 @@ export function Field({ id, label, hint, error, children, optional }: { id: stri
       <label htmlFor={id} className="block text-xs font-semibold text-slate-700 dark:text-slate-200">
         {label}{optional && <span className="ms-1 font-normal text-slate-400">{t('(optional)')}</span>}
       </label>
-      {hint && <p id={`${id}-hint`} className="text-[11px] text-slate-500 dark:text-slate-400">{hint}</p>}
+      {hint && <p id={`${id}-hint`} className="text-caption text-slate-500 dark:text-slate-400">{hint}</p>}
       {children}
-      {error && <p id={`${id}-error`} role="alert" className="text-[11px] font-medium text-rose-600 dark:text-rose-400">{error}</p>}
+      {error && <p id={`${id}-error`} role="alert" className="text-caption font-medium text-rose-600 dark:text-rose-400">{error}</p>}
     </div>
   );
 }

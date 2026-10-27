@@ -16,9 +16,9 @@ function LoadFailedBody({ error, onRetry }: { error?: unknown; onRetry?: () => v
   return (
     <>
       <p>{t('This list could not be loaded, so nothing is shown rather than an incomplete list.')}</p>
-      {reason && <p className="mt-1 text-slate-500 dark:text-slate-400">{reason}</p>}
+      {reason && <p className="mt-1 text-fg-muted">{reason}</p>}
       {onRetry && (
-        <button type="button" className="btn-secondary mt-3 h-8 px-3 text-sm" onClick={onRetry}>
+        <button type="button" className="btn-secondary btn-sm mt-3" onClick={onRetry}>
           {t('Retry')}
         </button>
       )}
@@ -30,7 +30,7 @@ function LoadFailedBody({ error, onRetry }: { error?: unknown; onRetry?: () => v
 export function LoadFailedRow({ colSpan, error, onRetry }: { colSpan: number; error?: unknown; onRetry?: () => void }) {
   return (
     <tr>
-      <td colSpan={colSpan} role="alert" className="py-10 text-center text-sm text-rose-600 dark:text-rose-400" data-testid="list-load-failed">
+      <td colSpan={colSpan} role="alert" className="py-10 text-center text-body text-danger-fg" data-testid="list-load-failed">
         <LoadFailedBody error={error} onRetry={onRetry} />
       </td>
     </tr>
@@ -40,7 +40,7 @@ export function LoadFailedRow({ colSpan, error, onRetry }: { colSpan: number; er
 /** For a list rendered as cards or a div list. */
 export function LoadFailedNotice({ error, onRetry }: { error?: unknown; onRetry?: () => void }) {
   return (
-    <div role="alert" className="px-4 py-10 text-center text-sm text-rose-600 dark:text-rose-400" data-testid="list-load-failed">
+    <div role="alert" className="px-4 py-10 text-center text-body text-danger-fg" data-testid="list-load-failed">
       <LoadFailedBody error={error} onRetry={onRetry} />
     </div>
   );

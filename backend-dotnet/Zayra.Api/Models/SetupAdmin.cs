@@ -114,6 +114,11 @@ public class GCCComplianceSetting : ITenantOwned, ICompanyScoped
     public int RamadanReducedHoursPerDay { get; set; } = 2;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UpdatedBy { get; set; }
+    // Setup's Remove turns the rule off (it is never erased: payroll and end-of-service history refer to it).
+    // Readers ignore a turned-off row; Restore turns it back on.
+    public bool IsActive { get; set; } = true;
+    public DateTime? TurnedOffAtUtc { get; set; }
+    public Guid? TurnedOffBy { get; set; }
 }
 
 // ── Location / Site ───────────────────────────────────────────────────────────

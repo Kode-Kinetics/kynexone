@@ -129,12 +129,12 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         <div className="h-[52px] flex items-center gap-2.5 px-4 border-b border-white/[0.06] shrink-0">
           <Logo size="sm" collapsed />
           <div className="min-w-0 flex-1 leading-tight">
-            <p className="text-[13px] font-bold text-white tracking-tight truncate">
+            <p className="text-body-sm font-semibold text-white tracking-tight truncate">
               Kynex<span className="text-cyan-300">One</span>
             </p>
-            <p className="text-[10px] text-slate-500 truncate leading-none mt-0.5">Control Plane</p>
+            <p className="text-caption text-slate-500 truncate leading-none mt-0.5">Control Plane</p>
           </div>
-          <span className="shrink-0 text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 px-1.5 py-0.5 rounded uppercase tracking-wider">
+          <span className="shrink-0 text-caption font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 px-1.5 py-0.5 rounded uppercase tracking-wider">
             PROD
           </span>
         </div>
@@ -143,7 +143,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
         <nav className="flex-1 overflow-y-auto py-3 space-y-4 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10">
           {NAV_GROUPS.map(g => (
             <div key={g.group}>
-              <p className="px-4 mb-1 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">
+              <p className="px-4 mb-1 text-caption font-semibold text-slate-600 uppercase tracking-widest">
                 {g.group}
               </p>
               {g.items.map(item => {
@@ -178,16 +178,16 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
             </span>
-            <span className="text-[11px] text-emerald-400 font-medium">All Systems Operational</span>
+            <span className="text-caption text-emerald-400 font-medium">All Systems Operational</span>
           </div>
           {/* User row */}
           <div className="flex items-center gap-2.5 px-2">
             <div className="h-6 w-6 rounded-full bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-              <span className="text-[10px] font-bold text-blue-400">{initials}</span>
+              <span className="text-caption font-semibold text-blue-400">{initials}</span>
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-medium text-slate-300 truncate">{email}</p>
-              <p className="text-[10px] text-slate-600 leading-none">Platform Admin</p>
+              <p className="text-caption font-medium text-slate-300 truncate">{email}</p>
+              <p className="text-caption text-slate-600 leading-none">Platform Admin</p>
             </div>
             <button
               type="button"
@@ -265,7 +265,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
           )}
         </div>
         {searchOpen && (search.trim() || searchResults.length > 0) && (
-          <div className="absolute top-full start-0 end-0 mt-1.5 bg-[#161b22] border border-white/10 rounded-xl overflow-hidden shadow-2xl shadow-black/60 z-50">
+          <div className="absolute top-full start-0 end-0 mt-1.5 bg-[#161b22] border border-white/10 rounded-xl overflow-hidden shadow-e3 shadow-black/60 z-50">
             {searchResults.length === 0 && search.trim() && !searching && (
               <p className="px-4 py-3 text-xs text-slate-500">No tenants match &ldquo;{search}&rdquo;</p>
             )}
@@ -280,15 +280,15 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
                   router.push(`/platform/tenants/${t.id}`);
                 }}
               >
-                <div className="h-6 w-6 rounded-md bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
-                  <span className="text-[10px] font-bold text-slate-400">{t.name.slice(0, 2).toUpperCase()}</span>
+                <div className="h-6 w-6 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
+                  <span className="text-caption font-semibold text-slate-400">{t.name.slice(0, 2).toUpperCase()}</span>
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm text-white font-medium truncate">{t.name}</p>
-                  <p className="text-[11px] text-slate-600 font-mono">/{t.slug}</p>
+                  <p className="text-caption text-slate-600 font-mono">/{t.slug}</p>
                 </div>
                 {t.plan && (
-                  <span className="ms-auto text-[10px] text-slate-500 bg-white/5 px-1.5 py-0.5 rounded">
+                  <span className="ms-auto text-caption text-slate-500 bg-white/5 px-1.5 py-0.5 rounded">
                     {t.plan}
                   </span>
                 )}
@@ -305,7 +305,7 @@ function CommandBar({ onMenuOpen }: { onMenuOpen: () => void }) {
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-50" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
           </span>
-          <span className="text-[11px] font-medium text-emerald-400">Operational</span>
+          <span className="text-caption font-medium text-emerald-400">Operational</span>
         </div>
 
         {/* Notifications — endpoint not yet implemented; button hidden until /api/platform/notifications exists */}

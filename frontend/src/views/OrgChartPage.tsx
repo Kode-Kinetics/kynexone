@@ -101,7 +101,7 @@ export function OrgChartPage() {
           <div className="flex items-center rounded-lg border border-slate-200 dark:border-white/[0.1] p-0.5 bg-slate-50 dark:bg-white/[0.03]">
             {([['list', 'List', List], ['tree', 'Tree', GitBranch], ['cards', 'Cards', LayoutGrid]] as [ViewMode, string, React.ElementType][]).map(([id, label, Icon]) => (
               <button key={id} type="button" onClick={() => setView(id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${view === id ? 'bg-white dark:bg-white/[0.08] text-sapphire shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${view === id ? 'bg-white dark:bg-white/[0.08] text-sapphire shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
                 <Icon className="w-3.5 h-3.5" />{label}
               </button>
             ))}
@@ -286,14 +286,14 @@ function TreeView({ tree, search }: { tree: OrgChartNodeDto[]; search: string })
       {/* Controls */}
       <div className="absolute top-3 end-3 z-10 flex items-center gap-1.5">
         <span className="text-xs text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/[0.1] rounded px-2 py-1">{Math.round(zoom * 100)}%</span>
-        <button type="button" onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="w-7 h-7 flex items-center justify-center rounded border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.05] text-sm font-bold">+</button>
-        <button type="button" onClick={() => setZoom(z => Math.max(0.25, z - 0.1))} className="w-7 h-7 flex items-center justify-center rounded border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.05] text-sm font-bold">−</button>
+        <button type="button" onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="w-7 h-7 flex items-center justify-center rounded border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.05] text-sm font-semibold">+</button>
+        <button type="button" onClick={() => setZoom(z => Math.max(0.25, z - 0.1))} className="w-7 h-7 flex items-center justify-center rounded border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.05] text-sm font-semibold">−</button>
         <button type="button" onClick={fitToScreen} title="Fit to screen"
           className="w-7 h-7 flex items-center justify-center rounded border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.05]">
           <Maximize2 className="w-3.5 h-3.5" />
         </button>
       </div>
-      <p className="absolute bottom-3 start-3 text-[11px] text-slate-400 z-10 pointer-events-none">Drag to pan · Scroll to zoom</p>
+      <p className="absolute bottom-3 start-3 text-caption text-slate-400 z-10 pointer-events-none">Drag to pan · Scroll to zoom</p>
 
       <div
         ref={canvasRef}
@@ -329,10 +329,10 @@ function TreeView({ tree, search }: { tree: OrgChartNodeDto[]; search: string })
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-slate-900 dark:text-white truncate leading-tight">{p.node.fullName}</p>
                   <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{p.node.designation}</p>
-                  {p.node.department && <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate mt-0.5">{p.node.department}</p>}
+                  {p.node.department && <p className="text-caption text-slate-400 dark:text-slate-500 truncate mt-0.5">{p.node.department}</p>}
                 </div>
                 {p.children.length > 0 && (
-                  <span className="text-[10px] font-semibold text-sapphire bg-sapphire/10 rounded-full px-1.5 py-0.5 shrink-0">{p.children.length}</span>
+                  <span className="text-caption font-semibold text-sapphire bg-sapphire/10 rounded-full px-1.5 py-0.5 shrink-0">{p.children.length}</span>
                 )}
               </div>
             );
@@ -376,7 +376,7 @@ function CardsView({ tree, search }: { tree: OrgChartNodeDto[]; search: string }
       {grouped.map(([dept, members]) => (
         <div key={dept}>
           <div className="flex items-center gap-3 mb-4">
-            <h2 className="text-sm font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">{dept}</h2>
+            <h2 className="text-sm font-semibold uppercase tracking-widest text-slate-500 dark:text-slate-400">{dept}</h2>
             <span className="text-xs text-slate-400 bg-slate-100 dark:bg-white/[0.07] rounded-full px-2 py-0.5">{members.length}</span>
             <div className="flex-1 h-px bg-slate-100 dark:bg-white/[0.06]" />
           </div>
@@ -387,10 +387,10 @@ function CardsView({ tree, search }: { tree: OrgChartNodeDto[]; search: string }
                 <div className="text-center min-w-0 w-full">
                   <p className="text-sm font-semibold text-slate-900 dark:text-white truncate group-hover:text-sapphire transition-colors">{emp.fullName}</p>
                   <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">{emp.designation}</p>
-                  <p className="text-[10px] text-slate-400 font-mono mt-1">{emp.employeeCode}</p>
+                  <p className="text-caption text-slate-400 font-mono mt-1">{emp.employeeCode}</p>
                 </div>
                 {emp.directReports.length > 0 && (
-                  <span className="text-[10px] font-medium text-sapphire bg-sapphire/10 rounded-full px-2 py-0.5">
+                  <span className="text-caption font-medium text-sapphire bg-sapphire/10 rounded-full px-2 py-0.5">
                     {emp.directReports.length} direct {emp.directReports.length === 1 ? 'report' : 'reports'}
                   </span>
                 )}

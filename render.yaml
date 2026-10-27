@@ -110,6 +110,12 @@ services:
       - key: RateLimit__RefreshPermitLimit
         value: "300"
 
+      # ── OPTIONAL, OFF BY DEFAULT: error tracking (Sentry) ──
+      # SENTRY_DSN, SENTRY_ENVIRONMENT and SENTRY_TRACES_SAMPLE_RATE are deliberately NOT declared here. A
+      # `sync: false` key is a hard requirement of scripts/check_render_env.py and would block deploys until
+      # set; with SENTRY_DSN unset the API registers no Sentry code and sends nothing. To enable, add the
+      # variables in the Render dashboard (docs/runbooks/observability.md, "Error tracking").
+
       # ── REQUIRED SECRETS: set these in the Render dashboard (Environment → Secret Files / Env Vars) ──
       #
       # ConnectionStrings__Default

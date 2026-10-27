@@ -134,9 +134,9 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
         {
             enrollment.Version++;
             assignment.Version++;
+            audit.Stage("learning.content.opened", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
+                JsonSerializer.Serialize(new { enrollment.EmployeeId, course.Code, course.VersionNumber, course.ContentKind }));
             await db.SaveChangesAsync(ct);
-            await audit.WriteAsync("learning.content.opened", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
-                JsonSerializer.Serialize(new { enrollment.EmployeeId, course.Code, course.VersionNumber, course.ContentKind }), ct);
         }
         return new LaunchDto(course.ContentKind, course.ContentKind == LearningContentKinds.Lesson ? course.LessonHtml : null,
             course.ContentKind == LearningContentKinds.Link ? course.LinkUrl : null, launchUrl, sessionId, await DetailAsync(enrollment, ct));
@@ -458,9 +458,9 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
         enrollment.VerifiedByUserId = actor.UserId;
         enrollment.Version++;
         var credential = await FinalizeAsync(enrollment, assignment, course, now, ct);
+        audit.Stage("learning.enrollment.verified", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { enrollment.EmployeeId, enrollment.CompletionEvidenceRef, reportedAtUtc = enrollment.CompletedAtUtc }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.enrollment.verified", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { enrollment.EmployeeId, enrollment.CompletionEvidenceRef, reportedAtUtc = enrollment.CompletedAtUtc }), ct);
         await AuditCompletionAsync(actor.Request, enrollment, assignment, credential, ct);
         return await AssignmentViewAsync(actor, assignment.Id, ct);
     }
@@ -481,9 +481,9 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
         // The rejected report must not count again: a relaunch starts a new cmi5 registration.
         await LearningCmi5Service.StartNewRegistrationAsync(db, enrollment, clock.GetUtcNow().UtcDateTime, ct);
         enrollment.Version++;
+        audit.Stage("learning.enrollment.verification_rejected", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { enrollment.EmployeeId, evidence, reason = why }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.enrollment.verification_rejected", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { enrollment.EmployeeId, evidence, reason = why }), ct);
         return await AssignmentViewAsync(actor, enrollment.AssignmentId, ct);
     }
 
@@ -570,9 +570,9 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
         enrollment.LockedAtUtc = null;
         enrollment.ResetCount++;
         enrollment.Version++;
+        audit.Stage("learning.attempts.reset", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { enrollment.EmployeeId, reason = why, allowanceBefore = before, allowanceAfter = enrollment.AttemptAllowance, enrollment.ResetCount }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.attempts.reset", nameof(LearningEnrollment), enrollment.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { enrollment.EmployeeId, reason = why, allowanceBefore = before, allowanceAfter = enrollment.AttemptAllowance, enrollment.ResetCount }), ct);
         return await AssignmentViewAsync(actor, enrollment.AssignmentId, ct);
     }
 
@@ -626,9 +626,9 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
             assignment.Version++;
             reopened = true;
         }
+        audit.Stage("learning.credential.revoked", nameof(LearningCredential), credential.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { credential.EmployeeId, credential.CertificateNumber, reason = why, reopened, dueDate = due }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.credential.revoked", nameof(LearningCredential), credential.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { credential.EmployeeId, credential.CertificateNumber, reason = why, reopened, dueDate = due }), ct);
         if (reopened)
             await audit.WriteAsync("learning.assignment.reopened", nameof(LearningAssignment), assignment.Id.ToString(), actor.Request,
                 JsonSerializer.Serialize(new { assignment.EmployeeId, assignment.PathId, enrollmentId = enrollment.Id, dueDate = due, revokedCredential = credential.Id }), ct);
@@ -668,13 +668,13 @@ public sealed class LearningProgressService(ZayraDbContext db, IAuditService aud
         old.SupersededAtUtc = now;
         old.Version++;
         db.LearningCredentials.Add(replacement);
-        await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.credential.corrected", nameof(LearningCredential), replacement.Id.ToString(), actor.Request,
+        audit.Stage("learning.credential.corrected", nameof(LearningCredential), replacement.Id.ToString(), actor.Request,
             JsonSerializer.Serialize(new
             {
                 replacement.EmployeeId, supersedes = old.Id, oldNumber = old.CertificateNumber, newNumber = replacement.CertificateNumber, reason = why,
                 completedOn = new { from = old.CompletedOn, to = replacement.CompletedOn }, score = new { from = old.ScorePercent, to = replacement.ScorePercent },
-            }), ct);
+            }));
+        await db.SaveChangesAsync(ct);
         return await HrCredentialAsync(actor, replacement.Id, ct);
     }
 

@@ -12,33 +12,33 @@ const borderTone: Record<KpiMetric['tone'], string> = {
 };
 
 const textTone: Record<KpiMetric['tone'], string> = {
-  blue: 'text-sapphire',
-  cyan: 'text-cyan-600 dark:text-cyanAccent',
-  emerald: 'text-emerald-600 dark:text-emerald-400',
-  amber: 'text-amber-600 dark:text-amber-400',
-  rose: 'text-rose-600 dark:text-rose-400',
+  blue: 'text-primary-fg',
+  cyan: 'text-info-fg',
+  emerald: 'text-success-fg',
+  amber: 'text-warning-fg',
+  rose: 'text-danger-fg',
 };
 
 export function KpiCard({ metric }: { metric: KpiMetric }) {
   return (
     <article
-      className={`surface rounded-xl border-s-[3px] p-4 transition-shadow hover:shadow-soft ${borderTone[metric.tone]}`}
+      className={`surface border-s-[3px] p-4 ${borderTone[metric.tone]}`}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">
+        <p className="text-meta font-medium text-fg-muted">
           {metric.label}
         </p>
         {metric.trend === 'up' && (
           <TrendingUp className={`h-3.5 w-3.5 shrink-0 ${textTone[metric.tone]}`} />
         )}
         {metric.trend === 'down' && (
-          <TrendingDown className="h-3.5 w-3.5 shrink-0 text-rose-500" />
+          <TrendingDown className="h-3.5 w-3.5 shrink-0 text-danger-fg" />
         )}
       </div>
-      <p className="mt-2.5 text-2xl font-bold tracking-tight text-slate-950 dark:text-white">
+      <p className="mt-2.5 text-kpi font-semibold tabular-nums text-fg">
         {metric.value}
       </p>
-      <p className={`mt-1 text-xs font-medium ${textTone[metric.tone]}`}>{metric.delta}</p>
+      <p className={`mt-1 text-meta font-medium ${textTone[metric.tone]}`}>{metric.delta}</p>
     </article>
   );
 }

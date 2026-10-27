@@ -25,6 +25,9 @@ const ADD_LABEL: Record<OrgSection, string> = {
 const ROW_LABEL: Record<OrgSection, string> = {
   costCentres: msg('Cost centre {number}'), departments: msg('Department {number}'), grades: msg('Grade {number}'), designations: msg('Designation {number}'),
 };
+/** The Setup tab each part is managed in, and its (dictionary key) name. */
+const SETUP_TAB: Record<OrgSection, string> = { costCentres: 'costCenters', departments: 'departments', grades: 'grades', designations: 'designations' };
+const SETUP_TAB_LABEL: Record<OrgSection, string> = { costCentres: msg('Cost centres'), departments: msg('Departments'), grades: msg('Grades'), designations: msg('Designations') };
 const EMPTY_TEXT: Record<OrgSection, string> = {
   costCentres: msg('No cost centres yet. They are optional: add them if finance reports by cost centre.'),
   departments: msg('No departments yet. Add the teams people belong to.'),
@@ -40,7 +43,7 @@ const EMPTY_TEXT: Record<OrgSection, string> = {
 export function OrganisationStep({ defaults, part }: { defaults: CompanySetupDraftBody | null; part: OrgSection }) {
   const { t, locale } = useLocale();
   const fmt = useFormat();
-  const { body, update, context, readOnly, baseline } = useWizardForm();
+  const { body, update, context, readOnly, baseline, rowStates, restoreRow } = useWizardForm();
   const existing = !!body.existingCompanyId;
   const set = useCallback(<K extends OrgSection>(key: K, rows: CompanySetupDraftBody[K]) => update(b => ({ ...b, [key]: rows })), [update]);
 
@@ -111,7 +114,7 @@ export function OrganisationStep({ defaults, part }: { defaults: CompanySetupDra
             {t('Arabic names: {filled} of {total}', { filled: arabic.filled, total: arabic.total })}
           </span>
           {arabic.filled < arabic.total && !readOnly && (
-            <button type="button" className="rounded-md px-1.5 py-0.5 font-semibold text-blue-700 transition-colors duration-150 hover:bg-sapphire/[0.06] dark:text-[#7AABFF]"
+            <button type="button" className="rounded-lg px-1.5 py-0.5 font-semibold text-blue-700 transition-colors duration-150 hover:bg-sapphire/[0.06] dark:text-primary-fg"
               onClick={() => walker.current?.()}>{t('Fill Arabic names')}</button>
           )}
         </>}
@@ -151,8 +154,17 @@ export function OrganisationStep({ defaults, part }: { defaults: CompanySetupDra
   );
 
   const rowLabel = (i: number) => t(ROW_LABEL[part], { number: i + 1 });
+  // Existing mode: Remove works on every saved row. The row is marked here; the server deletes it (nothing uses it) or
+  // turns it off (in use) when the part is saved, the same rule as Setup.
+  const removedIds = body.removals?.[part] ?? [];
+  const setRemoved = (ids: string[]) => update(b => ({ ...b, removals: { ...(b.removals ?? {}), [part]: ids.length > 0 ? ids : undefined } }));
   const shared = {
     addLabel: t(ADD_LABEL[part]), emptyText: t(EMPTY_TEXT[part]), rowLabel, onWalkArabic: registerWalker,
+    ...(existing ? {
+      rowStates, removedIds, onRemovedIdsChange: setRemoved,
+      onRestore: restoreRow ? (id: string) => restoreRow(part, id) : undefined,
+      manage: { href: `/setup?tab=${SETUP_TAB[part]}&companyId=${encodeURIComponent(body.existingCompanyId!)}`, label: SETUP_TAB_LABEL[part] },
+    } : {}),
   };
 
   let editor: React.ReactNode = null;
@@ -177,7 +189,7 @@ export function OrganisationStep({ defaults, part }: { defaults: CompanySetupDra
         return (
           <p className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-400" data-testid="cost-centre-suggestion">
             <span><bdi>{t('Suggested: {code} · {name}', { code, name: centre?.nameEn ?? '' })}</bdi> <span className="text-slate-500">{t('(names match)')}</span></span>
-            <button type="button" onMouseDown={keepFocus} className="font-semibold text-blue-700 hover:underline dark:text-[#7AABFF]"
+            <button type="button" onMouseDown={keepFocus} className="font-semibold text-blue-700 hover:underline dark:text-primary-fg"
               onClick={() => set('departments', body.departments.map((d, i) => (i === index ? { ...d, costCentreCode: code } : d)))}>
               {t('Use this cost centre')}<span className="sr-only"> {rowLabel(index)}</span>
             </button>
@@ -200,7 +212,7 @@ export function OrganisationStep({ defaults, part }: { defaults: CompanySetupDra
         const middle = suggestedMidpoint(row);
         if (middle === null || readOnly) return null;
         return (
-          <button type="button" onMouseDown={keepFocus} className="text-xs font-semibold text-blue-700 hover:underline dark:text-[#7AABFF]" data-testid="use-middle"
+          <button type="button" onMouseDown={keepFocus} className="text-xs font-semibold text-blue-700 hover:underline dark:text-primary-fg" data-testid="use-middle"
             onClick={() => set('grades', body.grades.map((g, i) => (i === index ? { ...g, midSalary: middle } : g)))}>
             <bdi className="tabular-nums">{t('Use the middle: {amount}', { amount: fmt.plain.integer(middle) })}</bdi><span className="sr-only"> {rowLabel(index)}</span>
           </button>

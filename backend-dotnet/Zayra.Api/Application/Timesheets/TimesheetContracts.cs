@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 
@@ -60,7 +60,9 @@ public sealed record SaveTimesheetEntriesRequest(
 
 public sealed record TimesheetQuery(
     string? Status = null, int? EmployeeId = null, DateOnly? From = null, DateOnly? To = null,
-    string? Search = null, int Page = 1, int PageSize = 25);
+    string? Search = null, int Page = 1, int PageSize = 25,
+    // null = the caller sees the whole organisation; otherwise only these employees' timesheets (a line manager's team).
+    IReadOnlyCollection<int>? AllowedEmployeeIds = null);
 
 // DataAnnotations Range needs a compile-time constant; Models is a different assembly-internal
 // namespace and referencing it from an attribute argument here would be a cycle in readability,

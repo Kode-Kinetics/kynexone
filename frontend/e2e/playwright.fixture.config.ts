@@ -16,7 +16,7 @@ const EXTERNAL_BASE_URL = process.env.FIXTURE_BASE_URL;
 
 export default defineConfig({
   testDir: '.',
-  testMatch: /(?:dashboard-glass|user-password-requirements|user-employee-link|employee-access-hr|approvals-self-requested|release-a-package|release-a-deductions|employee-sign-in|reports-kpi-drilldown|sign-in-security|two-step-admin|user-password-reset)\.spec\.ts/,
+  testMatch: /(?:dashboard-glass|user-password-requirements|user-employee-link|employee-access-hr|approvals-self-requested|release-a-package|release-a-deductions|employee-sign-in|reports-kpi-drilldown|sign-in-security|two-step-admin|payroll-second-approver-notice|payroll-pipeline|user-password-reset)\.spec\.ts/,
   fullyParallel: false,
   retries: 0,
   workers: 1,

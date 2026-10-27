@@ -1,5 +1,6 @@
 'use client';
 
+import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, CircleSlash, HeartPulse, Pencil, Plus, RefreshCw, UserPlus } from 'lucide-react';
@@ -156,13 +157,13 @@ function FirstPlanSetup({ canManage, onCreate }: { canManage: boolean; onCreate:
     <div data-testid="benefits-empty" className={`${CARD} p-8`}>
       <div className="mx-auto max-w-2xl text-center">
         <HeartPulse className="mx-auto h-10 w-10 text-sapphire" />
-        <h2 className="mt-3 text-base font-bold text-slate-800 dark:text-slate-100">Set up your first benefit plan</h2>
+        <h2 className="mt-3 text-base font-semibold text-slate-800 dark:text-slate-100">Set up your first benefit plan</h2>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">No benefit plans exist yet. Three steps get employees covered.</p>
       </div>
       <ol className="mx-auto mt-6 grid max-w-3xl gap-3 sm:grid-cols-3">
         {steps.map((s) => (
           <li key={s.n} className="rounded-xl border border-slate-200 p-4 dark:border-white/[0.06]">
-            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-sapphire text-xs font-bold text-white">{s.n}</span>
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-sapphire text-xs font-semibold text-white">{s.n}</span>
             <p className="mt-2 text-sm font-semibold text-slate-800 dark:text-slate-100">{s.title}</p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{s.body}</p>
           </li>
@@ -196,14 +197,14 @@ function PlanList({ plans, selectedId, onSelect, companyName, enrolledCount }: {
             : 'hover:bg-slate-50 dark:hover:bg-white/[0.02]'}`}>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{p.name}</p>
-            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+            <p className="mt-0.5 text-caption text-slate-500 dark:text-slate-400">
               <span className="font-mono">{p.code}</span> · {p.planType} · {p.classification} · {p.currency} · {companyName(p.companyId)}
             </p>
-            <p className="text-[11px] text-slate-400">{range(p.effectiveFrom, p.effectiveTo)}</p>
+            <p className="text-caption text-slate-400">{range(p.effectiveFrom, p.effectiveTo)}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <StatusPill active={p.isActive} />
-            <span className="text-[11px] text-slate-500 dark:text-slate-400">{enrolledCount.get(p.id) ?? 0} enrolled</span>
+            <span className="text-caption text-slate-500 dark:text-slate-400">{enrolledCount.get(p.id) ?? 0} enrolled</span>
           </div>
         </button>
       ))}
@@ -247,7 +248,7 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
     <div className={`${CARD} space-y-4 p-4`} data-testid="benefit-plan-detail">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{plan.name}</h2>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{plan.name}</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400"><span className="font-mono">{plan.code}</span> · {plan.planType} · {plan.classification} · {plan.currency}</p>
           <BenefitPolicySummary policy={plan.paymentPolicy} currency={plan.currency} />
         </div>
@@ -271,13 +272,13 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
             <button type="button" className={SECONDARY} onClick={() => setAdding(true)}><Plus className="h-3.5 w-3.5" /> Add rule</button>
           )}
         </div>
-        <p className="mb-2 text-[11px] text-slate-500 dark:text-slate-400">
+        <p className="mb-2 text-caption text-slate-500 dark:text-slate-400">
           {plan.classification === 'Mandatory'
             ? 'Mandatory minimum coverage cannot be denied by grade. Grade rules may still define enhanced tiers above that floor.'
             : rulesFrozen ? 'Configure grade defaults in Benefits by grade. Existing rules remain available for reference.' : 'New employees automatically receive the benefits configured for their grade, subject to the effective dates and eligibility conditions below.'}
         </p>
         {rulesFrozen && (
-          <p data-testid="rules-moved" className="mb-2 rounded-xl border border-sapphire/30 bg-sapphire/[0.04] px-3 py-2 text-[11px] text-slate-600 dark:text-slate-300">
+          <p data-testid="rules-moved" className="mb-2 rounded-xl border border-sapphire/30 bg-sapphire/[0.04] px-3 py-2 text-caption text-slate-600 dark:text-slate-300">
             {t('Which grades get a benefit is now set in Benefits by grade. These rules are kept for reference.')}{' '}
             <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>
           </p>
@@ -321,7 +322,7 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
           </ul>
         )}
         {activeRules.length > 0 && (
-          <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{activeRules.length} active grade assignment(s). {!rulesFrozen && 'Authorized HR can apply individual exceptions after enrolment.'}</p>
+          <p className="mt-2 text-caption text-slate-500 dark:text-slate-400">{activeRules.length} active grade assignment(s). {!rulesFrozen && 'Authorized HR can apply individual exceptions after enrolment.'}</p>
         )}
       </section>
     </div>
@@ -387,7 +388,7 @@ function AddRuleForm({ planId, planFrom, companies, grades, onCancel, onAdded }:
         <label className={LABEL}>Grade
           <select required className={INPUT} value={gradeId} onChange={(e) => setGradeId(e.target.value)} aria-label="Rule grade">
             <option value="">Select grade…</option>
-            {[...grades].sort((a, b) => a.level - b.level).map((g) => <option key={g.id} value={g.id}>{g.name} ({g.code}) · level {g.level}</option>)}
+            {[...pickable(grades)].sort((a, b) => a.level - b.level).map((g) => <option key={g.id} value={g.id}>{g.name} ({g.code}) · level {g.level}</option>)}
           </select>
         </label>
         <label className={LABEL}>Grade coverage
@@ -532,7 +533,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
           </label>
         </div>
         <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} planName={form.name} planCode={form.code} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />
-        {editing && <p className="text-[11px] text-slate-500 dark:text-slate-400">Code and company scope identify the plan to existing enrolments and cannot be changed.</p>}
+        {editing && <p className="text-caption text-slate-500 dark:text-slate-400">Code and company scope identify the plan to existing enrolments and cannot be changed.</p>}
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
           <input type="checkbox" checked={form.isActive} onChange={(e) => set('isActive', e.target.checked)} /> Active (open for enrolment)
         </label>

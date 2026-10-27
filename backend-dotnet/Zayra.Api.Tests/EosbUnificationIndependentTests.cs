@@ -145,7 +145,7 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var joining = new DateTime(2020, 3, 10, 0, 0, 0, DateTimeKind.Utc);
-        var asOf    = new DateTime(2023, 8, 25, 0, 0, 0, DateTimeKind.Utc);
+        var asOf    = new DateTime(2023, 8, 24, 0, 0, 0, DateTimeKind.Utc);
         var empId = SeedKsaEmployee(db, tenantId, joining);
         SeedLeaver(db, tenantId, empId, DateOnly.FromDateTime(asOf), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
@@ -170,12 +170,12 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 6, 30), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         // 1.5yr resignation (join 2022-01 → 2023-07).
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 7, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2023, 6, 30), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(0m, "Art.85: resignation with < 2 years service earns nil");
@@ -188,11 +188,11 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(5_000m, "⅓ of the 15,000 two-tier award (Art.85, 2–5yr band)");
@@ -207,12 +207,12 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2018, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2025, 7, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2025, 6, 30), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         // join 2018-01 → 2025-07 = exactly 7.5 years.
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2025, 7, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2025, 6, 30), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(33_333.33m, "⅔ of the 50,000 two-tier award (Art.85, >5–<10yr band)");
@@ -226,11 +226,11 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2011, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(95_000m, "Art.85: a resignation at ≥ 10 years takes the full award");
@@ -244,11 +244,11 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2018, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2025, 7, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2025, 6, 30), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2025, 7, 1), 0, "Termination"),
+            new FinalSettlementRequest(empId, new DateOnly(2025, 6, 30), 0, "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(50_000m, "employer termination pays the full ½-then-1 month award (Art.84)");
@@ -264,10 +264,10 @@ public class EosbUnificationIndependentTests
         var tenantId = Guid.NewGuid();
         // join 2022-07 → 2024-01 = 1.5 years.
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2022, 7, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2024, 1, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 12, 31), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
-        var asOf = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var asOf = new DateTime(2023, 12, 31, 0, 0, 0, DateTimeKind.Utc);
 
         var termEosb = await ctrl.CalculateEosb(
             new EosbCalculationRequest(empId, asOf, "Termination"), CancellationToken.None);
@@ -295,7 +295,7 @@ public class EosbUnificationIndependentTests
     public async Task LeapCorrectness_ExactFourYearsSpanningLeapDay_IsNotDriftedBy365Divisor()
     {
         var start = new DateOnly(2019, 3, 1);
-        var end   = new DateOnly(2023, 3, 1); // spans 2020-02-29
+        var end   = new DateOnly(2023, 2, 28); // spans 2020-02-29
         var calc = new KsaEndOfServiceCalculator(new StubRuleReader());
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
@@ -305,7 +305,7 @@ public class EosbUnificationIndependentTests
         var result = await calc.CalculateAsync(input);
 
         // The naive divisor the deleted inline formula used.
-        double naiveYears = (end.ToDateTime(TimeOnly.MinValue) - start.ToDateTime(TimeOnly.MinValue)).TotalDays / 365.0;
+        double naiveYears = (end.AddDays(1).ToDateTime(TimeOnly.MinValue) - start.ToDateTime(TimeOnly.MinValue)).TotalDays / 365.0;
         decimal naiveTier1 = Math.Round((decimal)naiveYears * 0.5m * 10_000m, 2);
 
         result.TotalGratuity.Should().Be(20_000m, "exactly 4 calendar years → 4 × ½ month × 10,000");
@@ -327,7 +327,7 @@ public class EosbUnificationIndependentTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2021, 6, 15), new DateOnly(2024, 9, 30),
+            new DateOnly(2021, 6, 15), new DateOnly(2024, 9, 29),
             "Termination", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);

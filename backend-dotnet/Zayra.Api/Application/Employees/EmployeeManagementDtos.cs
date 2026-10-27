@@ -47,6 +47,8 @@ public record EmployeeCreateRequest(
     // unacknowledged STRONG national-identity match is refused with 409 possible_duplicate (never-silent-
     // dup). Set only when the operator dismisses the warning; the create then records an audited override.
     bool AcknowledgeDuplicate = false,
+    // Explicit "keep this probation" for a probation longer than the company's own maximum (Setup > Payroll rules).
+    bool AcknowledgeProbationOverLimit = false,
     // Cost-centre accounting (contract 2.9, M-10): why the employee's cost-centre override is being set or removed. Required (422
     // cost_centre_reason_required) whenever the request changes the override; recorded in the employee.cost_centre_override.changed audit row.
     string? CostCenterReason = null);

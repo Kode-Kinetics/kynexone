@@ -48,7 +48,7 @@ export function EssWorkspaceNav() {
                   // 'page' only when this link IS the page; on another tab of its section it marks the section.
                   aria-current={active ? (pages[0].path === pathname ? 'page' : 'true') : undefined}
                   title={t(pages[0].hint)}
-                  className={`relative flex flex-col items-center gap-1 rounded-t-lg px-1 pb-2 pt-3 text-center text-[11px] font-semibold leading-tight outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sapphire sm:inline-flex sm:flex-row sm:gap-2 sm:px-3 sm:pb-2.5 sm:pt-3.5 sm:text-sm ${
+                  className={`relative flex flex-col items-center gap-1 rounded-t-lg px-1 pb-2 pt-3 text-center text-caption font-semibold leading-tight outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sapphire sm:inline-flex sm:flex-row sm:gap-2 sm:px-3 sm:pb-2.5 sm:pt-3.5 sm:text-sm ${
                     active
                       ? 'text-sapphire dark:text-cyanAccent'
                       : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-white/[0.04] dark:hover:text-slate-100'

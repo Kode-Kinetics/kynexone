@@ -35,7 +35,7 @@ function FilterBar({
         className={`${inputCls} min-w-[160px] flex-1`}
       />
       <div className="flex items-center gap-1.5 flex-shrink-0">
-        <span className="text-[10px] text-slate-600 uppercase tracking-wider">From</span>
+        <span className="text-caption text-slate-600 uppercase tracking-wider">From</span>
         <input
           type="date"
           value={filters.from}
@@ -46,7 +46,7 @@ function FilterBar({
         />
       </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">
-        <span className="text-[10px] text-slate-600 uppercase tracking-wider">To</span>
+        <span className="text-caption text-slate-600 uppercase tracking-wider">To</span>
         <input
           type="date"
           value={filters.to}
@@ -131,7 +131,7 @@ export default function AuditLogsPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Platform Audit Log</h1>
+          <h1 className="text-lg font-semibold text-white">Platform Audit Log</h1>
           <p className="text-xs text-slate-500 mt-0.5">All platform-level events across all tenants</p>
         </div>
         <button type="button" onClick={() => load(page, filters)} disabled={loading} title="Refresh" aria-label="Refresh"
@@ -156,27 +156,27 @@ export default function AuditLogsPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Time', 'Action', 'Entity', 'Tenant', 'Performed By', 'IP'].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {logs.map(log => (
                   <tr key={log.id} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors">
-                    <td className="px-4 py-2.5 text-[11px] text-slate-600 tabular-nums whitespace-nowrap">
+                    <td className="px-4 py-2.5 text-caption text-slate-600 tabular-nums whitespace-nowrap">
                       {new Date(log.createdAtUtc).toLocaleString('en-GB')}
                     </td>
                     <td className="px-3 py-2.5">
                       <span className="text-xs font-medium text-slate-300">{log.action}</span>
                     </td>
-                    <td className="px-3 py-2.5 text-[11px] text-slate-500">
+                    <td className="px-3 py-2.5 text-caption text-slate-500">
                       {log.entityType}{log.entityId ? ` #${log.entityId.slice(0, 8)}` : ''}
                     </td>
-                    <td className="px-3 py-2.5 text-[11px] text-slate-600 font-mono">
+                    <td className="px-3 py-2.5 text-caption text-slate-600 font-mono">
                       {log.tenantName ?? (log.tenantId ? log.tenantId.slice(0, 8) : 'Platform')}
                     </td>
                     <td className="px-3 py-2.5 text-xs text-slate-400">{log.performedByName}</td>
-                    <td className="px-3 py-2.5 text-[11px] text-slate-600 font-mono">{log.ipAddress || '—'}</td>
+                    <td className="px-3 py-2.5 text-caption text-slate-600 font-mono">{log.ipAddress || '—'}</td>
                   </tr>
                 ))}
               </tbody>

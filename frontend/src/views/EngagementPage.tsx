@@ -177,7 +177,7 @@ function Engagement() {
       <LikertStyles />
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-950 dark:text-white">{t('Engagement surveys')}</h1>
+          <h1 className="text-xl font-semibold text-slate-950 dark:text-white">{t('Engagement surveys')}</h1>
           <p className="mt-1 max-w-3xl text-sm text-slate-600 dark:text-slate-300">
             {t('Ask your people how work is going, see the results without exposing anyone, and follow up with actions.')}
           </p>

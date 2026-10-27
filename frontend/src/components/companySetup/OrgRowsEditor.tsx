@@ -1,12 +1,13 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { ChevronDown, Lock, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ExternalLink, Lock, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
-import type { ExistingRow, OrgSection } from '../../api/companySetup';
+import type { CompanySetupRowState, ExistingRow, OrgSection } from '../../api/companySetup';
 import { editRow, lookAlikeIndex, rowChanged, suggestCode, type FieldError } from '../../lib/companySetupWizard';
 import { fieldId, useWizardForm } from './wizardForm';
+import { usageSentence } from '../../lib/orgUsage';
 import { ArabicSuggest, FillMissingArabic } from './ArabicSuggest';
 
 type Row = { code: string } & ExistingRow;
@@ -45,12 +46,14 @@ const isBlank = (v: unknown) => !String(v ?? '').trim();
  * - A compact table when the content column is at least 640px wide, a stacked list below that.
  * - Code | Name (English) | Name (Arabic) (Arabic first in Arabic) | Status (exceptions only) | Remove (new rows only).
  * - A row's references and band sit on a second line with "Edit details"; an empty reference worth filling is amber.
- * - Rows the company already has keep their code (locked) and are never removed here (A3).
+ * - Every row can be removed. A new row leaves at once (Undo); a saved row is marked "Will be removed when you save" (Undo), and the
+ *   server decides on save: nothing uses it = deleted, in use = turned off (it shows as Off with Restore afterwards).
+ * - A saved row's code is editable until something uses it, then locked with the reason shown on the row.
  * Deterministic helpers only: a suggested code from the name (never filled in silently) and a look-alike check.
  */
 export function OrgRowsEditor<T extends Row>({
   section, rows, onChange, nameKey, arKey, newRow, addLabel, emptyText, rowLabel, details = [], detailNote, rowWarnings,
-  baselineRows, order, visible, codePrefix = '', onWalkArabic,
+  baselineRows, order, visible, codePrefix = '', onWalkArabic, rowStates, removedIds = [], onRemovedIdsChange, onRestore, manage,
 }: {
   section: OrgSection;
   rows: T[];
@@ -76,12 +79,36 @@ export function OrgRowsEditor<T extends Row>({
   codePrefix?: string;
   /** Registers the "Fill Arabic names" walker: focuses the next empty Arabic cell after the last one it visited. */
   onWalkArabic?: (walk: () => boolean) => void;
+  /** Existing mode: per saved row (by existingId) on/off and in-use, as the server read it. */
+  rowStates?: Record<string, CompanySetupRowState>;
+  /** Existing mode: ids of saved rows marked for removal in this draft. */
+  removedIds?: readonly string[];
+  onRemovedIdsChange?: (ids: string[]) => void;
+  /** Existing mode: turn a turned-off row back on now. */
+  onRestore?: (id: string) => Promise<void>;
+  /** Where the row can also be managed: its Setup tab. */
+  manage?: { href: string; label: string };
 }) {
   const { t, locale } = useLocale();
   const fmt = useFormat();
   const { errorFor, readOnly } = useWizardForm();
   const existingMode = !!baselineRows;
   const path = section;
+  const stateOf = (row: T): CompanySetupRowState | undefined => (row.existingId ? rowStates?.[row.existingId] : undefined);
+  const isMarked = (row: T) => !!row.existingId && removedIds.includes(row.existingId);
+  const isOff = (row: T) => stateOf(row)?.isActive === false;
+  const mark = (row: T) => { if (row.existingId && onRemovedIdsChange) onRemovedIdsChange([...removedIds, row.existingId]); };
+  const unmark = (row: T) => { if (onRemovedIdsChange) onRemovedIdsChange(removedIds.filter(id => id !== row.existingId)); };
+  /** A saved row's code is locked only while something uses it. */
+  const codeLocked = (row: T) => !!row.existingId && !!stateOf(row)?.inUse;
+  const codeLockReason = (row: T) => { const st = stateOf(row); return codeLocked(row) ? `${t('Code locked: it is in use.')} ${usageSentence(st?.usage, t, st?.usageSummary)}`.trim() : undefined; };
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [restoreFailed, setRestoreFailed] = useState<string | null>(null);
+  const restore = async (row: T) => {
+    if (!row.existingId || !onRestore) return;
+    setRestoring(row.existingId); setRestoreFailed(null);
+    try { await onRestore(row.existingId); } catch { setRestoreFailed(row.existingId); } finally { setRestoring(null); }
+  };
 
   // ── Layout: table or stacked, by the width the content column actually has ──
   const box = useRef<HTMLDivElement>(null);
@@ -242,7 +269,7 @@ export function OrgRowsEditor<T extends Row>({
   const optionLabel = (field: OrgDetailField<T>, value: unknown) => field.options?.find(o => o.value === value)?.label ?? String(value ?? '');
 
   /** One editable input; `stacked` puts a visible label above it, the table names it by column header + row. */
-  const cell = (row: T, index: number, key: keyof T & string, opts: { label: string; arabic?: boolean; required?: boolean; stacked: boolean; rowLabelId: string; locked?: boolean; placeholder?: string; kind?: 'text' | 'number' | 'select'; options?: { value: string; label: string }[]; amount?: boolean; inputMode?: 'numeric' | 'decimal' }) => {
+  const cell = (row: T, index: number, key: keyof T & string, opts: { label: string; arabic?: boolean; required?: boolean; stacked: boolean; rowLabelId: string; locked?: boolean; lockReason?: string; placeholder?: string; kind?: 'text' | 'number' | 'select'; options?: { value: string; label: string }[]; amount?: boolean; inputMode?: 'numeric' | 'decimal' }) => {
     const field = `${path}.${index}.${key}`;
     const id = fieldId(field);
     const error = errorFor(field);
@@ -267,10 +294,10 @@ export function OrgRowsEditor<T extends Row>({
           className={`input w-full min-w-0 ${key === 'code' ? 'field-ltr' : ''} ${opts.kind === 'number' ? 'tabular-nums' : ''} ${lockedCode ? 'cursor-default border-transparent bg-slate-50 pe-7 text-slate-600 dark:bg-white/[0.03] dark:text-slate-300' : ''} ${error ? 'border-rose-400 dark:border-rose-400/60' : ''}`}
           dir={opts.arabic ? 'rtl' : key === 'code' ? 'ltr' : undefined} lang={opts.arabic ? 'ar' : undefined}
           type={opts.kind === 'number' ? 'number' : 'text'} inputMode={opts.inputMode}
-          readOnly={readOnly || lockedCode}
+          readOnly={readOnly || lockedCode || isMarked(row)}
           aria-readonly={lockedCode || undefined}
           placeholder={opts.placeholder}
-          title={lockedCode ? t('Saved rows keep their code, because other records refer to it.') : undefined}
+          aria-describedby={lockedCode ? `${id}-lock` : errorId}
           value={opts.amount && !(Number(value) > 0) ? '' : String(value ?? '')}
           onChange={e => set(index, key, opts.kind === 'number' ? (e.target.value === '' ? 0 : Number(e.target.value)) : key === 'code' ? e.target.value.toUpperCase() : e.target.value)}
           onBlur={key === nameKey ? () => checkLookAlike(index) : undefined} />;
@@ -287,6 +314,7 @@ export function OrgRowsEditor<T extends Row>({
         </div>
         {opts.arabic && !lockedCode && <ArabicSuggest source={String(row[nameKey] ?? '')} value={String(value ?? '')} inputId={id} readOnly={readOnly}
           context={rowLabel(index)} onAccept={arabic => set(index, key, arabic)} />}
+        {lockedCode && opts.lockReason && <p id={`${id}-lock`} className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-400" data-testid="code-lock-reason">{opts.lockReason}</p>}
         {error && <p id={errorId} className="mt-1 text-xs font-medium leading-5 text-rose-700 dark:text-rose-300">{error}</p>}
         {warning && <p id={errorId} className="mt-1 text-xs leading-5 text-amber-800 dark:text-amber-200">{t(warning.message, warning.params)}</p>}
       </div>
@@ -295,25 +323,70 @@ export function OrgRowsEditor<T extends Row>({
 
   const statusOf = (row: T) => {
     if (!existingMode) return null;
-    if (!row.existingId) return <span className="inline-flex h-5 items-center rounded-full bg-emerald-50 px-2 text-[11px] font-semibold leading-none rtl:text-xs text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200">{t('New')}</span>;
+    if (isMarked(row)) return <span className="inline-flex h-5 items-center rounded-full bg-amber-50 px-2 text-caption font-semibold leading-none rtl:text-xs text-amber-900 dark:bg-amber-500/15 dark:text-amber-100" data-testid="will-be-removed">{t('Will be removed')}</span>;
+    if (isOff(row)) return <span className="inline-flex h-5 items-center rounded-full bg-slate-200 px-2 text-caption font-semibold leading-none rtl:text-xs text-slate-700 dark:bg-white/15 dark:text-slate-200" data-testid="row-off">{t('Off')}</span>;
+    if (!row.existingId) return <span className="inline-flex h-5 items-center rounded-full bg-emerald-50 px-2 text-caption font-semibold leading-none rtl:text-xs text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200">{t('New')}</span>;
     const fields = ['code', nameKey, arKey, ...details.map(d => d.key)] as (keyof T)[];
     if (!rowChanged(row, baselineRows, fields)) return null;
     const before = baselineRows?.find(b => b.existingId === row.existingId);
     const wasName = before && String(before[nameKey] ?? '') !== String(row[nameKey] ?? '') ? String(before[nameKey] ?? '') : '';
     return (
       <span className="flex min-w-0 flex-col items-start gap-0.5">
-        <span className="inline-flex h-5 items-center rounded-full bg-sky-50 px-2 text-[11px] font-semibold leading-none rtl:text-xs text-sky-800 dark:bg-sky-500/15 dark:text-sky-200">{t('Changed')}</span>
-        {wasName && <span className="max-w-[10rem] truncate text-[11px] text-slate-600 rtl:text-xs dark:text-slate-400" title={wasName}><bdi>{t('Was: {value}', { value: wasName })}</bdi></span>}
+        <span className="inline-flex h-5 items-center rounded-full bg-sky-50 px-2 text-caption font-semibold leading-none rtl:text-xs text-sky-800 dark:bg-sky-500/15 dark:text-sky-200">{t('Changed')}</span>
+        {wasName && <span className="max-w-[10rem] truncate text-caption text-slate-600 rtl:text-xs dark:text-slate-400" title={wasName}><bdi>{t('Was: {value}', { value: wasName })}</bdi></span>}
       </span>
     );
   };
 
-  const removeButton = (row: T, index: number) => !row.existingId && !readOnly
-    ? <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => remove(index)}
-        className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-slate-600 transition-colors duration-150 hover:bg-rose-50 hover:text-rose-700 focus-visible:text-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 motion-safe:active:scale-[0.98] dark:text-slate-400 dark:hover:bg-rose-500/10 dark:hover:text-rose-300">
-        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />{t('Remove')}<span className="sr-only"> {rowLabel(index)}</span>
+  const RM_BTN = 'inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-slate-600 transition-colors duration-150 hover:bg-rose-50 hover:text-rose-700 focus-visible:text-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 motion-safe:active:scale-[0.98] dark:text-slate-400 dark:hover:bg-rose-500/10 dark:hover:text-rose-300';
+  /** Remove on EVERY row. A new row leaves at once (Undo); a saved row is marked and the server decides on save. */
+  const removeButton = (row: T, index: number) => {
+    if (readOnly) return null;
+    const saved = !!row.existingId;
+    if (saved && !onRemovedIdsChange) return null;
+    if (isMarked(row)) return (
+      <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => unmark(row)} data-testid="undo-remove"
+        className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-blue-700 hover:bg-sapphire/[0.06] dark:text-primary-fg">
+        {t('Undo')}<span className="sr-only"> {t('removing')} {rowLabel(index)}</span>
       </button>
-    : null;
+    );
+    return (
+      <span className="inline-flex items-center gap-0.5">
+        {saved && isOff(row) && onRestore && (
+          <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => void restore(row)} disabled={restoring === row.existingId} data-testid="restore-row"
+            className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-blue-700 hover:bg-sapphire/[0.06] disabled:opacity-50 dark:text-primary-fg">
+            <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />{t('Restore')}<span className="sr-only"> {rowLabel(index)}</span>
+          </button>
+        )}
+        <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => (saved ? mark(row) : remove(index))} data-testid="remove-row" className={RM_BTN}>
+          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />{t('Remove')}<span className="sr-only"> {rowLabel(index)}</span>
+        </button>
+      </span>
+    );
+  };
+
+  /** The line under a saved row that says what will happen to it, or that it is off. Null when there is nothing to say. */
+  const rowNote = (row: T) => {
+    if (!row.existingId) return null;
+    const state = stateOf(row);
+    return (
+      <>
+        {isMarked(row) && (
+          <p className="text-xs leading-5 text-amber-900 dark:text-amber-100" data-testid="removal-note">
+            {t('Will be removed when you save. If anything uses it, it is turned off instead, stays in history, and can be restored.')}
+            {state?.inUse && state.usageSummary ? <> <bdi>{usageSentence(state.usage, t, state.usageSummary)}.</bdi></> : null}
+          </p>
+        )}
+        {!isMarked(row) && isOff(row) && (
+          <p className="text-xs leading-5 text-slate-600 dark:text-slate-400" data-testid="off-note">
+            {t('Turned off: it stays in history but is not offered for new records.')}
+            {state?.inUse && state.usageSummary ? <> <bdi>{usageSentence(state.usage, t, state.usageSummary)}.</bdi></> : null}
+          </p>
+        )}
+        {restoreFailed === row.existingId && <p role="alert" className="text-xs font-medium text-rose-700 dark:text-rose-300">{t('It could not be turned back on. Try again.')}</p>}
+      </>
+    );
+  };
 
   /** The second line: references and band, summarised; "Edit details" opens the inputs. */
   const detailsLine = (row: T, index: number, key: string, stacked: boolean, rowLabelId: string) => {
@@ -323,14 +396,16 @@ export function OrgRowsEditor<T extends Row>({
     const toggle = () => setOpen(prev => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; });
     const note = detailNote?.(row, index);
     const suggestion = codeSuggestion(row);
-    if (details.length === 0 && lookAlikeOther === undefined && !note && !suggestion) return null;
+    const status = rowNote(row);
+    if (details.length === 0 && lookAlikeOther === undefined && !note && !suggestion && !status) return null;
     const detailsId = `${fieldId(`${path}.${index}`)}-details`;
     return (
       <div className="space-y-2">
+        {status}
         {suggestion && !readOnly && (
           <p className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
             <span>{t('Suggested code: {code}', { code: suggestion })}</span>
-            <button type="button" onMouseDown={e => e.preventDefault()} className="font-semibold text-blue-700 hover:underline dark:text-[#7AABFF]" onClick={() => { set(index, 'code' as keyof T, suggestion); focusNext.current = fieldId(`${path}.${index}.code`); }}>
+            <button type="button" onMouseDown={e => e.preventDefault()} className="font-semibold text-blue-700 hover:underline dark:text-primary-fg" onClick={() => { set(index, 'code' as keyof T, suggestion); focusNext.current = fieldId(`${path}.${index}.code`); }}>
               {t('Use {code}', { code: suggestion })}<span className="sr-only"> {rowLabel(index)}</span>
             </button>
           </p>
@@ -365,7 +440,7 @@ export function OrgRowsEditor<T extends Row>({
             })}
             {!readOnly && !hasError && (
               <button type="button" onMouseDown={e => e.preventDefault()} onClick={toggle} aria-expanded={isOpen} aria-controls={detailsId}
-                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-semibold text-blue-700 transition-colors duration-150 hover:bg-sapphire/[0.06] dark:text-[#7AABFF]">
+                className="inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 font-semibold text-blue-700 transition-colors duration-150 hover:bg-sapphire/[0.06] dark:text-primary-fg">
                 {isOpen ? t('Hide details') : t('Edit details')}<span className="sr-only"> {rowLabel(index)}</span>
                 <ChevronDown className={`h-3 w-3 transition-transform duration-150 motion-reduce:transition-none ${isOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
               </button>
@@ -397,7 +472,7 @@ export function OrgRowsEditor<T extends Row>({
     <div className="flex h-11 min-w-0 items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 px-3 text-sm text-slate-600 motion-safe:animate-fade-in-fast dark:border-white/15 dark:text-slate-400" role="status" data-testid="row-removed">
       <span className="min-w-0 truncate"><bdi>{t('{row} removed.', { row: removed.label })}</bdi></span>
       <button ref={undoRef} id={`ccw-undo-${section}`} type="button" onClick={undo}
-        className="shrink-0 rounded px-1.5 font-semibold text-blue-700 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:text-[#7AABFF]">
+        className="shrink-0 rounded px-1.5 font-semibold text-blue-700 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:text-primary-fg">
         {t('Undo')}<span className="sr-only"> {removed.label}</span>
       </button>
     </div>
@@ -409,6 +484,12 @@ export function OrgRowsEditor<T extends Row>({
   const addBar = !readOnly && (
     <div className="flex flex-wrap items-center gap-2 pt-1">
       <button ref={addRef} type="button" className="btn-secondary" onClick={add}><Plus className="h-4 w-4" aria-hidden="true" />{addLabel}</button>
+      {manage && (
+        <a href={manage.href} target="_blank" rel="noopener noreferrer" data-testid="manage-in-setup"
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent">
+          {t('Manage in Setup → {tab}', { tab: t(manage.label) })}<ExternalLink className="h-3 w-3 rtl:-scale-x-100" aria-hidden="true" /><span className="sr-only"> {t('(opens in a new tab)')}</span>
+        </a>
+      )}
       <FillMissingArabic<T> rows={rows} arabicKey={arKey} english={row => String(row[nameKey] ?? '')} onFill={onChange}
         eligible={row => !row.existingId} label={(_, i) => rowLabel(i)} />
     </div>
@@ -428,7 +509,7 @@ export function OrgRowsEditor<T extends Row>({
                   </th>
                 ))}
                 {existingMode && <th scope="col" className="w-28 px-3 py-2 text-start">{t('Status')}</th>}
-                <th scope="col" className="w-24 px-3 py-2 text-end"><span className="sr-only">{t('Actions')}</span></th>
+                <th scope="col" className="w-44 px-3 py-2 text-end"><span className="sr-only">{t('Actions')}</span></th>
               </tr>
             </thead>
             {shown.map((index, at) => {
@@ -440,13 +521,13 @@ export function OrgRowsEditor<T extends Row>({
                 <Fragment key={key}>
                 {at === placeholderAt && <tbody><tr><td colSpan={colCount} className="px-2 py-0">{placeholder}</td></tr></tbody>}
                 <tbody className={`border-t border-slate-100 align-top first:border-t-0 dark:border-white/[0.06] ${rowInvalid(index) ? 'bg-rose-50/40 dark:bg-rose-500/[0.04]' : ''} ${motionClass(key)}`}
-                  data-testid={`${section}-row`} data-existing={row.existingId ? 'true' : undefined}>
-                  <tr>
+                  data-testid={`${section}-row`} data-existing={row.existingId ? 'true' : undefined} data-removed={isMarked(row) ? 'true' : undefined}>
+                  <tr className={isMarked(row) || isOff(row) ? 'opacity-70' : undefined}>
                     {columns.map((c, ci) => (
                       <td key={c.key} className="px-3 py-1">
                         {ci === 0 && <span id={rowLabelId} className="sr-only">{rowLabel(index)}</span>}
                         {cell(row, index, c.key, { label: c.label, arabic: c.arabic, required: c.required, stacked: false, rowLabelId,
-                          locked: c.key === 'code' && !!row.existingId, placeholder: c.key === 'code' ? (codeSuggestion(row) ? t('Suggested: {code}', { code: codeSuggestion(row) }) : undefined) : undefined })}
+                          locked: c.key === 'code' && codeLocked(row), lockReason: codeLockReason(row), placeholder: c.key === 'code' ? (codeSuggestion(row) ? t('Suggested: {code}', { code: codeSuggestion(row) }) : undefined) : undefined })}
                       </td>
                     ))}
                     {existingMode && <td className="px-3 py-1"><div className="flex min-h-9 items-center">{statusOf(row)}</div></td>}
@@ -472,13 +553,13 @@ export function OrgRowsEditor<T extends Row>({
               <Fragment key={key}>
               {at === placeholderAt && <li className="p-2">{placeholder}</li>}
               <li className={`space-y-2 p-3 ${rowInvalid(index) ? 'bg-rose-50/40 dark:bg-rose-500/[0.04]' : ''} ${motionClass(key)}`}
-                data-testid={`${section}-row`} data-existing={row.existingId ? 'true' : undefined}>
+                data-testid={`${section}-row`} data-existing={row.existingId ? 'true' : undefined} data-removed={isMarked(row) ? 'true' : undefined}>
                 <div className="flex min-w-0 items-center justify-between gap-2">
                   <span id={rowLabelId} className="flex min-w-0 items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400">{rowLabel(index)}{status}</span>
                   {removeButton(row, index)}
                 </div>
                 <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-[7rem_minmax(0,1fr)]">
-                  {cell(row, index, 'code' as keyof T & string, { label: t('Code'), required: true, stacked: true, rowLabelId, locked: !!row.existingId,
+                  {cell(row, index, 'code' as keyof T & string, { label: t('Code'), required: true, stacked: true, rowLabelId, locked: codeLocked(row), lockReason: codeLockReason(row),
                     placeholder: codeSuggestion(row) ? t('Suggested: {code}', { code: codeSuggestion(row) }) : undefined })}
                   {cell(row, index, columns[1].key, { label: columns[1].label, arabic: columns[1].arabic, required: columns[1].required, stacked: true, rowLabelId })}
                 </div>

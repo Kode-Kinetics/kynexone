@@ -5,6 +5,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Finance;
+using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Controllers;
 
@@ -77,6 +78,8 @@ internal static class CostCenterEndpoints
         catch (InvalidOperationException ex) { return c.BadRequest(new { message = ex.Message }); }
     }
 
+    // Never used -> deleted; in use (employees, departments, positions) -> turned off. The server decides. Cost-centre doors keep
+    // the cost-accounting rules: the manage permission, a reason on the audit row, and no change while a locked run resolves here.
     public static async Task<IActionResult> DeleteAsync(
         ControllerBase c, IOrganizationSetupService organization, ZayraDbContext db, Guid id, RequestContext context, string? reason, CancellationToken ct)
     {
@@ -84,9 +87,17 @@ internal static class CostCenterEndpoints
         if (tenantId is null) return c.Unauthorized();
         if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
         var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
-        if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return c.NotFound();
+        if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return await OrgWriteRules.RemoveAsync(c, organization, OrgRowKind.CostCenter, id, context, ct);
         if (!CostAccountingGuards.HasReason(reason)) return ReasonRequired(c);
-        try { return await organization.DeleteCostCenterAsync(tenantId.Value, id, context, ct, reason) ? c.NoContent() : c.NotFound(); }
+        try { await new CostAttributionGuard(db).EnsureCostCentreUnchangedAsync(tenantId.Value, current, id, ct); }
         catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
+        return await OrgWriteRules.RemoveAsync(c, organization, OrgRowKind.CostCenter, id, context, ct, reason);
+    }
+
+    public static async Task<IActionResult> RestoreAsync(
+        ControllerBase c, IOrganizationSetupService organization, Guid id, RequestContext context, CancellationToken ct)
+    {
+        if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
+        return await OrgWriteRules.RestoreAsync(c, organization, OrgRowKind.CostCenter, id, context, ct);
     }
 }

@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { attemptChunkReload, isChunkLoadError } from '@/src/lib/chunkReload';
+import { captureRenderError } from '@/src/lib/errorTracking';
 
 export default function Error({
   error,
@@ -11,6 +12,7 @@ export default function Error({
   reset: () => void;
 }) {
   useEffect(() => {
+    if (!isChunkLoadError(error)) captureRenderError(error); // no-op unless a DSN is configured
     // Deployment skew: a chunk referenced by the stale page is gone. A single
     // hard reload pulls the new build. Loop-guarded so it can't thrash.
     if (isChunkLoadError(error)) {
@@ -24,7 +26,7 @@ export default function Error({
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-lightBg px-6 text-center dark:bg-midnight">
-      <p className="text-2xl font-extrabold text-slate-800 dark:text-slate-100">
+      <p className="text-2xl font-semibold text-slate-800 dark:text-slate-100">
         Something went wrong
       </p>
       <p className="max-w-md text-sm text-slate-500 dark:text-slate-400">

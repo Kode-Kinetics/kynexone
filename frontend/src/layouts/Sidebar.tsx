@@ -182,7 +182,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
               type="button"
               aria-label="Close navigation"
               onClick={onClose}
-              className="grid h-7 w-7 place-items-center rounded-md text-slate-400 hover:bg-slate-100 lg:hidden dark:hover:bg-white/10"
+              className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 lg:hidden dark:hover:bg-white/10"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -191,7 +191,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 type="button"
                 aria-label="Collapse sidebar"
                 onClick={onToggleCollapse}
-                className="hidden h-8 w-8 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 lg:grid dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-100"
+                className="hidden h-8 w-8 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 lg:grid dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-100"
               >
                 <ChevronLeft className="h-5 w-5" />
               </button>
@@ -238,9 +238,9 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     }`}
                   >
                     <span
-                      className={`text-[10px] font-bold uppercase tracking-[0.14em] transition-colors duration-150 rtl:text-[13px] rtl:normal-case rtl:tracking-normal ${
+                      className={`text-caption font-semibold uppercase tracking-[0.14em] transition-colors duration-150 rtl:text-body-sm rtl:normal-case rtl:tracking-normal ${
                         hasActiveItem
-                          ? 'text-sapphire dark:text-[#7AABFF]'
+                          ? 'text-sapphire dark:text-primary-fg'
                           : 'text-slate-400 group-hover/hdr:text-slate-600 dark:text-slate-600 dark:group-hover/hdr:text-slate-400'
                       }`}
                     >
@@ -249,7 +249,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     <ChevronDown
                       className={`h-3 w-3 shrink-0 transition-all duration-200 ${
                         hasActiveItem
-                          ? 'text-sapphire/60 dark:text-[#7AABFF]/60'
+                          ? 'text-sapphire/60 dark:text-primary-fg/60'
                           : 'text-slate-300 group-hover/hdr:text-slate-400 dark:text-slate-700 dark:group-hover/hdr:text-slate-500'
                       } ${isExpanded ? 'rotate-0' : '-rotate-90'}`}
                     />
@@ -262,7 +262,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     aria-expanded={isExpanded}
                     aria-controls={groupId}
                     onClick={() => toggleGroup(group.label)}
-                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-[9px] font-bold uppercase tracking-wider transition rtl:normal-case rtl:tracking-normal ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-[#7AABFF]' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
+                    className={`mx-auto mb-1 grid h-7 w-9 place-items-center rounded-lg text-caption font-semibold uppercase tracking-wider transition rtl:normal-case rtl:tracking-normal ${hasActiveItem ? 'bg-sapphire/10 text-sapphire dark:text-primary-fg' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]'}`}
                   >
                     {group.label.split(/\s+/).map((word) => word[0]).join('').slice(0, 2)}
                   </button>
@@ -292,24 +292,24 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                             } min-h-11 lg:min-h-8`}
                           >
                             <span
-                              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors ${
+                              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg transition-colors ${
                                 active
-                                  ? 'bg-sapphire/[0.12] text-sapphire dark:bg-sapphire/[0.18] dark:text-[#7AABFF]'
-                                  : 'text-slate-400 group-hover:text-sapphire/70 dark:text-slate-500 dark:group-hover:text-[#7AABFF]/70'
+                                  ? 'bg-sapphire/[0.12] text-sapphire dark:bg-sapphire/[0.18] dark:text-primary-fg'
+                                  : 'text-slate-400 group-hover:text-sapphire/70 dark:text-slate-500 dark:group-hover:text-primary-fg/70'
                               }`}
                             >
                               <Icon className="h-4 w-4" />
                             </span>
 
                             {!isCollapsed && (
-                              <span className="min-w-0 flex-1 truncate text-[13px]">{t(item.label)}</span>
+                              <span className="min-w-0 flex-1 truncate text-body-sm">{t(item.label)}</span>
                             )}
 
                             {item.badge != null && !isCollapsed && (
                               <span
-                                className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
+                                className={`rounded-full px-1.5 py-0.5 text-caption font-semibold leading-none ${
                                   active
-                                    ? 'bg-sapphire/15 text-sapphire dark:bg-sapphire/20 dark:text-[#7AABFF]'
+                                    ? 'bg-sapphire/15 text-sapphire dark:bg-sapphire/20 dark:text-primary-fg'
                                     : 'bg-sapphire/10 text-sapphire dark:bg-white/10 dark:text-slate-300'
                                 }`}
                               >
@@ -340,7 +340,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 type="button"
                 aria-label="Expand sidebar"
                 onClick={onToggleCollapse}
-                className="hidden h-8 w-8 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 lg:flex dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-100"
+                className="hidden h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 lg:flex dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-100"
               >
                 <ChevronRight className="h-5 w-5" />
               </button>
@@ -348,7 +348,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 type="button"
                 aria-label={t('Sign out')}
                 onClick={(event) => handleLogout(event.currentTarget)}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
               >
                 <LogOut className="h-3.5 w-3.5" />
               </button>
@@ -360,7 +360,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                 type="button"
                 onClick={(event) => handleNav('/account/security', event.currentTarget)}
                 aria-current={pathname === '/account/security' ? 'page' : undefined}
-                className="mb-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-2 text-start text-[13px] font-medium text-slate-600 transition hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-100"
+                className="mb-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-2 text-start text-body-sm font-medium text-slate-600 transition hover:bg-white/70 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-100"
                 data-testid="sidebar-sign-in-security"
               >
                 <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden /> {t('Sign-in security')}
@@ -368,10 +368,10 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
               <div className="flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-1.5 transition hover:border-slate-200/70 hover:bg-white/70 dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05]">
                 <Avatar name={user?.fullName ?? 'User'} size="sm" />
                 <div className="min-w-0 flex-1 text-start">
-                  <p className="truncate text-[13px] font-semibold text-slate-800 dark:text-slate-100">
+                  <p className="truncate text-body-sm font-semibold text-slate-800 dark:text-slate-100">
                     {user?.fullName ?? 'User'}
                   </p>
-                  <p className="truncate text-[11px] text-slate-400 dark:text-slate-500">
+                  <p className="truncate text-caption text-slate-400 dark:text-slate-500">
                     {user?.roles[0] ?? 'Member'}
                   </p>
                 </div>
@@ -379,7 +379,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                   type="button"
                   aria-label={t('Sign out')}
                   onClick={(event) => handleLogout(event.currentTarget)}
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
+                  className="grid h-6 w-6 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400"
                 >
                   <LogOut className="h-3.5 w-3.5" />
                 </button>
@@ -394,7 +394,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
           className="wg-tip pointer-events-none fixed z-[60] hidden w-[260px] -translate-y-1/2 rounded-xl border border-slate-200/80 bg-white px-3.5 py-2.5 shadow-[0_12px_32px_-12px_rgba(15,23,42,0.35)] lg:block dark:border-white/10 dark:bg-slate-900"
           style={{ top: tip.top, insetInlineStart: tip.left }}>
           <span aria-hidden className="absolute -start-[5px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-b border-s border-slate-200/80 bg-white dark:border-white/10 dark:bg-slate-900" />
-          <span className="block text-[13px] font-semibold text-slate-900 dark:text-white">{tip.label}</span>
+          <span className="block text-body-sm font-semibold text-slate-900 dark:text-white">{tip.label}</span>
           <span className="mt-0.5 block text-xs leading-snug text-slate-600 dark:text-slate-300">{t(tip.hint)}</span>
         </div>
       )}

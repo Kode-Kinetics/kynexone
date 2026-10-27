@@ -182,19 +182,19 @@ export default function PlatformLoginPage() {
               <Logo size="md" collapsed theme="dark" />
             </div>
             <div>
-              <p className="text-sm font-bold tracking-tight text-white">KynexOne</p>
+              <p className="text-sm font-semibold tracking-tight text-white">KynexOne</p>
               <p className="text-xs text-slate-400">Platform Command Center</p>
             </div>
           </div>
 
           {/* Hero */}
           <div className="relative z-10 mx-auto w-full max-w-[440px]">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[11px] font-medium tracking-wide text-slate-300 backdrop-blur">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1.5 text-caption font-medium tracking-wide text-slate-300 backdrop-blur">
               <Lock className="h-3 w-3 text-sky-300" />
               Internal operators only
             </div>
 
-            <h1 className="mt-5 text-[2rem] font-bold leading-[1.1] tracking-tight xl:text-[2.4rem]">
+            <h1 className="mt-5 text-[2rem] font-semibold leading-[1.1] tracking-tight xl:text-[2.4rem]">
               Operate the platform with{' '}
               <span className="bg-gradient-to-r from-sky-300 via-blue-300 to-indigo-300 bg-clip-text text-transparent">
                 calm precision.
@@ -222,7 +222,7 @@ export default function PlatformLoginPage() {
             <div className="mt-7 flex flex-wrap items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden />
               {TRUST_BADGES.map((b) => (
-                <span key={b} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-slate-300">
+                <span key={b} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-caption font-medium text-slate-300">
                   {b}
                 </span>
               ))}
@@ -243,15 +243,15 @@ export default function PlatformLoginPage() {
                 <Logo size="md" collapsed />
               </div>
               <div>
-                <p className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">KynexOne</p>
+                <p className="text-sm font-semibold tracking-tight text-slate-900 dark:text-white">KynexOne</p>
                 <p className="text-xs text-slate-500 dark:text-slate-400">Platform Command Center</p>
               </div>
             </div>
 
-            <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
+            <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-caption font-semibold text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
               <Lock className="h-3 w-3" /> Platform admin
             </div>
-            <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Sign in</h2>
+            <h2 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">Sign in</h2>
             <p className="mt-1.5 text-sm text-slate-500 dark:text-slate-400">
               Enter your internal operator credentials to continue.
             </p>

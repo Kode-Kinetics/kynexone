@@ -208,6 +208,23 @@ public static class KsaStatutorySpecialLeave
         return null;
     }
 
+    /// <summary>
+    /// Whether turning off or deleting this leave type touches leave the law protects: any special leave
+    /// <see cref="Classify"/> recognises, plus annual and sick leave (Labour Law Arts. 109 and 117), which carry statutory
+    /// entitlements but no special-leave floor. The server decides this from the stored code, name and category, never from
+    /// what the client says. Returns a short stable key for the audit trail, or null.
+    /// </summary>
+    public static string? ProtectedKind(string? code, string? nameEn, string? category)
+    {
+        var kind = Classify(code, nameEn, category);
+        if (kind is not null) return kind.Value.ToString();
+        var c = Norm(code); var n = Norm(nameEn); var cat = Norm(category);
+        if (n.Contains("UNPAID") || n.Contains("EXTENSION")) return null;
+        if (c is "ANNUAL" or "AL" or "VACATION" || n.Contains("ANNUAL") || n.Contains("VACATION") || cat is "ANNUAL" or "VACATION") return "Annual";
+        if (c is "SICK" or "SL" || n.Contains("SICK") || cat is "SICK") return "Sick";
+        return null;
+    }
+
     /// <summary>The kinds whose statutory length is a span of CALENDAR time (weeks, months) rather
     /// than a count of days off, so a policy for them should count weekends and holidays.</summary>
     public static bool IsCalendarSpan(KsaStatutoryLeaveKind kind)

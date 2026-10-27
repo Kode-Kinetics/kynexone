@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-10-25",
+  "pinnedAt": "2026-10-27",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -83,27 +83,75 @@
         "src/components/benefits/BenefitPlansPanel.tsx  hardcoded: 0 → 65",
         "src/components/benefits/benefitUi.tsx  locale: 0 → 1"
       ]
+    },
+    {
+      "pinnedAt": "2026-10-27",
+      "reason": "Inherited from train/wave1 (not caused by the daily-ux merge): the Setup row-removal feature (OrgRowActions/orgRowRemoval) ships 8 noun fragment keys (', ', branch, cost centre, designation, drop-down value, grade, location, removing) that were never repinned on that branch. Rewriting them means redesigning the removal sentences; left to a follow-up.",
+      "increases": [
+        "new fragment key: \", \"",
+        "new fragment key: \"branch\"",
+        "new fragment key: \"cost centre\"",
+        "new fragment key: \"designation\"",
+        "new fragment key: \"drop-down value\"",
+        "new fragment key: \"grade\"",
+        "new fragment key: \"location\"",
+        "new fragment key: \"removing\""
+      ]
+    },
+    {
+      "pinnedAt": "2026-10-27",
+      "reason": "Inherited from feat/setup-rollout merge into release/fix-program: the generalised Setup removal (leave/loan/bonus types, payslip templates, scorecards, templates, checklists, compliance profiles, country rules) passes the thing's name to OrgRowActions via msg('leave type') style noun keys (9 fragment keys, each translated); plus a few hardcoded/locale literals in UserManagementPage and PayrollPage that arrived with the merged branches. Rewriting the removal sentences around whole-sentence keys is a follow-up.",
+      "increases": [
+        "src/views/PayrollPage.tsx  locale: 32 → 34",
+        "src/views/UserManagementPage.tsx  hardcoded: 195 → 198",
+        "new fragment key: \"bonus type\"",
+        "new fragment key: \"compliance profile\"",
+        "new fragment key: \"country rule\"",
+        "new fragment key: \"leave type\"",
+        "new fragment key: \"loan type\"",
+        "new fragment key: \"notification template\"",
+        "new fragment key: \"onboarding checklist\"",
+        "new fragment key: \"payslip template\"",
+        "new fragment key: \"shift\""
+      ]
     }
   ],
   "totals": {
-    "hardcoded": 5191,
-    "rawStatus": 59,
-    "locale": 211,
+    "hardcoded": 3967,
+    "rawStatus": 52,
+    "locale": 183,
     "icons": 0,
-    "files": 135
+    "files": 121
   },
   "fragmentKeys": [
+    ", ",
     "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
+    "bonus type",
+    "branch",
     "companies in group",
+    "compliance profile",
+    "cost centre",
+    "country rule",
+    "designation",
+    "drop-down value",
     "e.g. Approved by management for Q3 expansion",
     "frozen",
+    "grade",
+    "leave type",
     "levels without a budget are uncontrolled (\"—\"), an explicit 0 freezes the level, and the total approved headcount never hard-blocks — only level budgets do.",
+    "loan type",
+    "location",
     "months of basic salary",
     "months of gross salary",
     "no event date",
     "no per-loan grade limit",
     "not set",
+    "notification template",
+    "onboarding checklist",
     "over-establishment: {n}",
+    "payslip template",
+    "removing",
+    "shift",
     "since {date}",
     "the company loan policy",
     "the company policy's limit on instalments as a share of salary",
@@ -404,7 +452,7 @@
       "rawStatus": 2
     },
     "src/components/ui/AppToast.tsx": {
-      "hardcoded": 2
+      "hardcoded": 1
     },
     "src/components/ui/ErrorBanner.tsx": {
       "hardcoded": 1
@@ -434,13 +482,6 @@
       "hardcoded": 49,
       "locale": 1
     },
-    "src/views/ApprovalsPage.tsx": {
-      "hardcoded": 33,
-      "locale": 2
-    },
-    "src/views/AttendancePage.tsx": {
-      "hardcoded": 99
-    },
     "src/views/BenefitsPage.tsx": {
       "hardcoded": 44
     },
@@ -456,16 +497,11 @@
       "hardcoded": 2
     },
     "src/views/EmployeesPage.tsx": {
-      "hardcoded": 134,
+      "hardcoded": 132,
       "locale": 5
     },
     "src/views/ExEmployeesTable.tsx": {
       "hardcoded": 11,
-      "locale": 1
-    },
-    "src/views/GosiFilingPage.tsx": {
-      "hardcoded": 62,
-      "rawStatus": 1,
       "locale": 1
     },
     "src/views/HRRequestCenterPage.tsx": {
@@ -473,27 +509,17 @@
       "rawStatus": 3,
       "locale": 3
     },
-    "src/views/HrLettersPage.tsx": {
-      "hardcoded": 56,
-      "rawStatus": 1,
-      "locale": 3
-    },
     "src/views/LeavePage.tsx": {
-      "hardcoded": 236,
+      "hardcoded": 234,
       "locale": 3
     },
     "src/views/LoansPage.tsx": {
-      "hardcoded": 269,
+      "hardcoded": 261,
       "rawStatus": 1,
       "locale": 2
     },
     "src/views/LoginPage.tsx": {
       "hardcoded": 2
-    },
-    "src/views/MigrationImportPage.tsx": {
-      "hardcoded": 52,
-      "rawStatus": 1,
-      "locale": 2
     },
     "src/views/NewHiresPage.tsx": {
       "hardcoded": 31,
@@ -502,17 +528,8 @@
     "src/views/NitaqatPanel.tsx": {
       "hardcoded": 74
     },
-    "src/views/OffboardingPage.tsx": {
-      "hardcoded": 72,
-      "rawStatus": 1,
-      "locale": 1
-    },
     "src/views/OrgChartPage.tsx": {
       "hardcoded": 10
-    },
-    "src/views/OvertimePage.tsx": {
-      "hardcoded": 155,
-      "locale": 2
     },
     "src/views/ParallelRunVariancePage.tsx": {
       "hardcoded": 58,
@@ -520,18 +537,9 @@
       "locale": 2
     },
     "src/views/PayrollPage.tsx": {
-      "hardcoded": 386,
+      "hardcoded": 328,
       "rawStatus": 10,
-      "locale": 32
-    },
-    "src/views/PayslipTemplatesPage.tsx": {
-      "hardcoded": 42,
-      "rawStatus": 1,
-      "locale": 1
-    },
-    "src/views/PerformancePage.tsx": {
-      "hardcoded": 234,
-      "locale": 2
+      "locale": 34
     },
     "src/views/PublicCredentialPage.tsx": {
       "hardcoded": 11
@@ -545,10 +553,6 @@
       "hardcoded": 83,
       "locale": 6
     },
-    "src/views/SaudiComplianceConfig.tsx": {
-      "hardcoded": 139,
-      "locale": 3
-    },
     "src/views/SaudiComplianceDashboard.tsx": {
       "hardcoded": 48,
       "locale": 2
@@ -558,30 +562,14 @@
       "rawStatus": 1,
       "locale": 3
     },
-    "src/views/ShiftsPage.tsx": {
-      "hardcoded": 112,
-      "locale": 8
-    },
-    "src/views/TaxPoliciesPage.tsx": {
-      "hardcoded": 24,
-      "rawStatus": 1
-    },
     "src/views/TenantAdminPage.tsx": {
-      "hardcoded": 64,
+      "hardcoded": 52,
       "rawStatus": 1,
       "locale": 12
     },
-    "src/views/TimesheetsPage.tsx": {
-      "hardcoded": 59,
-      "rawStatus": 1,
-      "locale": 5
-    },
     "src/views/UserManagementPage.tsx": {
-      "hardcoded": 195,
+      "hardcoded": 198,
       "locale": 3
-    },
-    "src/views/employees/EmployeeAccessOnboardingSection.tsx": {
-      "hardcoded": 5
     },
     "src/views/employees/EmployeeActivitySection.tsx": {
       "hardcoded": 7

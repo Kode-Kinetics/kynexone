@@ -38,7 +38,8 @@ const GROUPS: { id: string; label: string; items: { id: string; /** The Setup de
   ] },
   { id: 'pay', label: msg('Pay & benefits'), items: [
     { id: 'payroll', what: msg('Salary structures and pay components') },
-    { id: 'benefits', what: msg('Benefit plans and who is eligible') },
+    // The Setup section (Benefit plans), not the operations page of enrolments.
+    { id: 'benefits', dest: 'benefitPlans', what: msg('Benefit plans and who is eligible') },
     { id: 'gradeBenefits', what: msg('Allowances and benefits for each grade') },
   ] },
   { id: 'compliance', label: msg('Compliance'), items: [

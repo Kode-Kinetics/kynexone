@@ -70,10 +70,12 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
 
         var created = await Service(db).CreateAsync(
             tenantId, Request("Gradeless Package", Breakdown(8_000m, 2_000m)), Ctx(tenantId), default);
 
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the first package is staged; a different Finance login applies it
         var stored = await db.Employees.AsNoTracking().SingleAsync(x => x.Id == created.Id);
         stored.Salary.Should().Be(10_000m,
             "the operator supplied a 10,000 package; before the fix this stayed 0 and the create still returned 200");
@@ -93,6 +95,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         // The structure exists (Payroll › Salary structures, group-wide). Naming it is a choice, not a request to create one.
         var named = new SalaryStructure { TenantId = tenantId, Code = "EXEC-BAND-A", Name = "Executive band A", Currency = "AED", EffectiveDate = new DateOnly(2025, 1, 1) };
         db.SalaryStructures.Add(named);
@@ -108,6 +111,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
             },
             Ctx(tenantId), default);
 
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the first package is staged; a different Finance login applies it
         var assignment = await db.EmployeeSalaryStructures.AsNoTracking()
             .SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == created.Id && x.IsActive);
         assignment.EffectiveDate.Should().Be(new DateOnly(2026, 1, 1));
@@ -128,6 +132,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var name = $"Typo {Guid.NewGuid():N}";
 
         var act = () => Service(db).CreateAsync(
@@ -149,6 +154,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         Company Co(string name) => new()
         {
             TenantId = tenantId, LegalNameEn = name, CountryCode = "SAU", Jurisdiction = "KSA-mainland",
@@ -177,6 +183,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = new Grade { TenantId = tenantId, Code = "G7", Name = "Grade 7", Level = 7, MinSalary = 1_000m, MidSalary = 10_000m, MaxSalary = 50_000m, Currency = "SAR", IsActive = true };
         db.Grades.Add(grade);
         await db.SaveChangesAsync();
@@ -188,6 +195,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
             Request("Designation Grade", Breakdown(6_000m, 1_000m) with { SalaryStructureCode = "GRADE-G7" }) with { DesignationId = designation.Id },
             Ctx(tenantId), default);
 
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the first package is staged; a different Finance login applies it
         var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == created.Id && x.IsActive);
         (await db.SalaryStructures.AsNoTracking().SingleAsync(x => x.Id == assignment.SalaryStructureId)).Code.Should().Be("GRADE-G7");
     }
@@ -197,6 +205,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         db.SalaryStructures.Add(new SalaryStructure { TenantId = tenantId, Code = "RETIRED-BAND", Name = "Retired band", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = false });
         await db.SaveChangesAsync();
         var name = $"Retired band hire {Guid.NewGuid():N}";
@@ -216,6 +225,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var old = new SalaryStructure { TenantId = tenantId, Code = "DIRECT", Name = "Direct", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = false };
         db.SalaryStructures.Add(old);
         await db.SaveChangesAsync();
@@ -225,6 +235,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
 
         var created = await Service(db).CreateAsync(tenantId, Request("Superseded Default", Breakdown(5_000m, 1_000m)), Ctx(tenantId), default);
 
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the first package is staged; a different Finance login applies it
         (await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == created.Id && x.IsActive)).SalaryStructureId.Should().Be(current.Id);
         (await db.SalaryStructures.CountAsync(x => x.TenantId == tenantId)).Should().Be(2, "no third DIRECT structure is invented");
     }
@@ -236,7 +247,9 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var created = await Service(db).CreateAsync(tenantId, Request("Writer Backstop", Breakdown(7_000m, 1_000m)), Ctx(tenantId), default);
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the first package is staged; a different Finance login applies it
         var employee = await db.Employees.SingleAsync(x => x.Id == created.Id);
         var effective = DateOnly.FromDateTime(employee.JoiningDate);
 
@@ -263,6 +276,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = new Grade
         {
             TenantId = tenantId, Code = "G5", Name = "Grade 5", Level = 5,
@@ -277,6 +291,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
         for (var i = 0; i < 13; i++)
             await svc.CreateAsync(tenantId, Request($"Gradeless {i}", Breakdown(5_000m, 1_000m)), Ctx(tenantId), default);
 
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the first package is staged; a different Finance login applies it
         var employees = await db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted).ToListAsync();
         employees.Should().HaveCount(14);
         employees.Sum(x => x.Salary).Should().Be(12_000m + (13 * 6_000m),
@@ -291,6 +306,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
 
         var created = await Service(db).CreateAsync(tenantId, Request("No Package Yet", salary: null), Ctx(tenantId), default);
 
@@ -305,6 +321,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = new Grade
         {
             TenantId = tenantId, Code = "G7", Name = "Grade 7", Level = 7,
@@ -321,6 +338,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
         // No breakdown supplied: the grade's pay scale is still what fills the assignment.
         var created = await Service(db).CreateAsync(tenantId, Request("Graded Default", salary: null, gradeId: grade.Id), Ctx(tenantId), default);
 
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the first package is staged; a different Finance login applies it
         var assignment = await db.EmployeeSalaryStructures.AsNoTracking()
             .SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == created.Id && x.IsActive);
         assignment.BasicSalary.Should().Be(7_000m);
@@ -343,6 +361,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = await RetiredDefaultGradeAsync(db, tenantId);
 
         var created = await Service(db).CreateAsync(tenantId, Request($"No salary yet {Guid.NewGuid():N}", salary: null, gradeId: grade.Id), Ctx(tenantId), default);
@@ -356,6 +375,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = await RetiredDefaultGradeAsync(db, tenantId);
         var name = $"Unrelated edit {Guid.NewGuid():N}";
         var created = await Service(db).CreateAsync(tenantId, Request(name, salary: null, gradeId: grade.Id), Ctx(tenantId), default);
@@ -371,6 +391,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = await RetiredDefaultGradeAsync(db, tenantId);
 
         var act = () => Service(db).CreateAsync(tenantId, Request($"Paid hire {Guid.NewGuid():N}", Breakdown(5_000m, 1_000m), gradeId: grade.Id), Ctx(tenantId), default);
@@ -406,10 +427,12 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = await PackageGradeAsync(db, tenantId, "G3");
 
         var created = await Service(db).CreateAsync(tenantId, Request("Typed Basic", new EmployeeSalaryBreakdownRequest(
             4_800m, null, null, null, null, null, null, null, null, "SAR"), gradeId: grade.Id), Ctx(tenantId), default);
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // HR makes the package; a different Finance login approves it, and only then does payroll see it
 
         var assignment = await db.EmployeeSalaryStructures.AsNoTracking()
             .SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == created.Id && x.IsActive);
@@ -424,10 +447,12 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = await PackageGradeAsync(db, tenantId, "G4");
 
         var created = await Service(db).CreateAsync(tenantId, Request("Housing In Kind", new EmployeeSalaryBreakdownRequest(
             4_800m, 0m, null, null, null, null, null, null, null, "SAR"), gradeId: grade.Id), Ctx(tenantId), default);
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // HR makes the package; a different Finance login approves it, and only then does payroll see it
 
         var assignment = await db.EmployeeSalaryStructures.AsNoTracking()
             .SingleAsync(x => x.TenantId == tenantId && x.EmployeeId == created.Id && x.IsActive);
@@ -440,6 +465,7 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var grade = await PackageGradeAsync(db, tenantId, "G5", maxSalary: 6_000m);
 
         var act = () => Service(db).CreateAsync(tenantId, Request("Over Range", new EmployeeSalaryBreakdownRequest(
@@ -458,8 +484,10 @@ public sealed class EmployeeSalaryBreakdownHonouredTests
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a hire with a salary needs someone else who could approve it
         var name = $"Regraded {Guid.NewGuid():N}";
         var created = await Service(db).CreateAsync(tenantId, Request(name, Breakdown(7_000m, 1_000m)), Ctx(tenantId), default);
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the pay agreed at hire is approved by Finance before the grade change
         var newGrade = await PackageGradeAsync(db, tenantId, "G6");
 
         await Service(db).UpdateAsync(tenantId, created.Id, Request(name, salary: null, gradeId: newGrade.Id), Ctx(tenantId), default);

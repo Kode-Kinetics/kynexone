@@ -1452,6 +1452,8 @@ public class PlatformController : ControllerBase
 
         await _db.Users.Where(u => u.TenantId == tenantId).ExecuteDeleteAsync(ct);
         await _db.Tenants.Where(t => t.Id == tenantId).ExecuteDeleteAsync(ct);
+        // Set-based deletes bypass the save interceptor: end every cached session verdict of the purged tenant explicitly.
+        SessionVerdictInvalidation.Tenant(HttpContext?.RequestServices, tenantId);
 
         AuditTenant(tenantId, "TenantPurgeCompleted",
             new { tables = sweepTypes.Count },
@@ -1477,9 +1479,26 @@ public class PlatformController : ControllerBase
     {
         // IgnoreQueryFilters is intentional: GDPR erasure must reach soft-deleted and
         // company-scoped rows too; the TenantId predicate fully scopes the delete.
-        await _db.Set<TEntity>().IgnoreQueryFilters()
-            .Where(e => EF.Property<Guid?>(e, "TenantId") == tenantId)
-            .ExecuteDeleteAsync(ct);
+        var rows = _db.Set<TEntity>().IgnoreQueryFilters()
+            .Where(e => EF.Property<Guid?>(e, "TenantId") == tenantId);
+        if (!_db.Database.IsNpgsql())
+        {
+            await rows.ExecuteDeleteAsync(ct);
+            return;
+        }
+
+        // Audit tables are append-only at the database; owner-confirmed tenant erasure is the one
+        // sanctioned DELETE. Each table's delete runs in its own short transaction that sets the
+        // transaction-local erasure flag (ends at commit/rollback, so it cannot leak across the pool).
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            _ = await _db.Database.SqlQuery<string>(Zayra.Api.Infrastructure.Audit.AuditTrailGuardSql.ErasureFlagFor(tenantId))
+                .ToListAsync(ct);
+            await rows.ExecuteDeleteAsync(ct);
+            await tx.CommitAsync(ct);
+        });
     }
 
     // ── Account type (SingleCompany | Group) ──────────────────────────────────
@@ -2749,8 +2768,8 @@ public class PlatformController : ControllerBase
             try
             {
                 // F09: captured by test delivery mode is not sent; only a relay's acceptance is.
-                var delivery = await _emailService.DeliverAsync(user.TenantId, user.Email, user.FullName,
-                    "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct);
+                var delivery = await _emailService.DeliverResilientAsync(user.TenantId, user.Email, user.FullName,
+                    "Your KynexOne password reset (admin-initiated)", html, cancellationToken: ct, kind: "admin-password-reset");
                 emailSent = delivery.ReachedARelay;
                 smtpConfigured = delivery.Status != EmailDeliveryStatus.NotConfigured;
             }

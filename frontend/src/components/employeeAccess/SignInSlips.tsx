@@ -105,12 +105,12 @@ export function SignInSlips({ issued, skipped, names, emailedCount, notes, timeZ
       <div className="kx-no-print shrink-0 border-b border-slate-200 bg-white px-4 py-3 shadow-sm">
         <div className="mx-auto flex max-w-5xl flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-1">
-            <h2 id={titleId} className="text-base font-bold text-slate-950">{t('Sign-in slips')}</h2>
+            <h2 id={titleId} className="text-base font-semibold text-slate-950">{t('Sign-in slips')}</h2>
             <p className="text-sm text-slate-700" data-testid="slips-summary">{t('Slips ready: {n}. Skipped: {m}.', { n: slips.length, m: skipped.length })}</p>
             {emailedCount > 0 && <p className="text-sm text-slate-700" data-testid="slips-emailed">{t('Sign-in codes emailed: {n}.', { n: emailedCount })}</p>}
             {notes.includes('noEmail') && <p className="text-xs text-slate-600">{t("Email isn't set up, so print the sign-in slips and hand them out.")}</p>}
             {notes.includes('enteredByYou') && <p className="text-xs text-slate-600" data-testid="slips-delivery-note">{t('You entered these work emails, so print the slips and hand them over in person.')}</p>}
-            <p role="note" className="flex items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900">
+            <p role="note" className="flex items-start gap-1.5 rounded-lg bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               {t('These slips contain codes that will not be shown again after you close this page. If printing fails, give a new code.')}
             </p>

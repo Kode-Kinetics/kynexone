@@ -157,9 +157,9 @@ public sealed class SuccessionPositionService(ZayraDbContext db, IAuditService a
         row.UpdatedAtUtc = clock.GetUtcNow().UtcDateTime;
         row.UpdatedBy = actor.UserId;
         row.Version++;
+        audit.Stage("succession.position.updated", nameof(SuccessionCriticalPosition), row.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { criticalPositionId = row.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.position.updated", nameof(SuccessionCriticalPosition), row.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { criticalPositionId = row.Id }), ct);
         return (await SummariseAsync(actor.TenantId, [row], ct)).Single().MaskedFor(actor);
     }
 

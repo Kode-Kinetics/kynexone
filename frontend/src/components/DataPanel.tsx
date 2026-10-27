@@ -23,12 +23,12 @@ export function DataPanel({
   className = '',
 }: DataPanelProps) {
   return (
-    <section className={`surface rounded-xl p-5 ${className}`}>
+    <section className={`surface p-5 ${className}`}>
       <div className="mb-4 flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="text-sm font-bold text-slate-950 dark:text-white">{title}</h2>
+          <h2 className="text-body font-semibold text-fg">{title}</h2>
           {description ? (
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{description}</p>
+            <p className="mt-0.5 text-meta text-fg-muted">{description}</p>
           ) : null}
         </div>
         {action ? (
@@ -37,7 +37,7 @@ export function DataPanel({
           <button
             type="button"
             onClick={onViewAll}
-            className="flex shrink-0 items-center gap-1 text-xs font-semibold text-sapphire hover:underline dark:text-cyanAccent"
+            className="flex shrink-0 items-center gap-1 text-meta font-semibold text-primary-fg hover:underline"
           >
             View all
             <ArrowRight className="h-3 w-3" />

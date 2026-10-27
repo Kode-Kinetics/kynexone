@@ -46,7 +46,7 @@ export function JawazatPolicyEditor({ profile, onSaved }: { profile: CompanyComp
   };
   const fieldClass = 'mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-slate-900';
   return <section aria-label="Jawazat company policy" className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-white/10 dark:bg-white/[0.03]">
-    <h2 className="font-bold text-slate-800 dark:text-slate-100">Jawazat company policy</h2>
+    <h2 className="font-semibold text-slate-800 dark:text-slate-100">Jawazat company policy</h2>
     <p className="mt-1 text-sm text-slate-500">Configure employer assistance and company review rules for this profile. These settings do not certify government eligibility.</p>
     {profile.countryCode !== 'SA' && profile.countryCode !== 'SAU' && <p className="mt-2 text-sm text-amber-700">Jawazat services apply to Saudi Arabia. Verify the profile jurisdiction before enabling assistance.</p>}
     {!canEdit && <p className="mt-3 text-sm text-slate-500">An administrator or Compliance Officer can update this policy.</p>}

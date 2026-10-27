@@ -61,7 +61,7 @@ export default function PlansPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Plans & Features</h1>
+          <h1 className="text-lg font-semibold text-white">Plans & Features</h1>
           <p className="text-xs text-slate-500 mt-0.5">Configure pricing and capabilities for each plan tier</p>
         </div>
         <button type="button" onClick={load} disabled={loading} title="Refresh" aria-label="Refresh"
@@ -89,7 +89,7 @@ export default function PlansPage() {
             return (
               <div key={plan.name} className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden hover:border-white/15 transition-colors">
                 <div className={`px-4 py-2.5 border-b border-white/[0.07] flex items-center justify-between`}>
-                  <span className={`text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded ${PLAN_BADGE[key] ?? PLAN_BADGE.trial}`}>
+                  <span className={`text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded ${PLAN_BADGE[key] ?? PLAN_BADGE.trial}`}>
                     {plan.name}
                   </span>
                 </div>
@@ -116,7 +116,7 @@ export default function PlansPage() {
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 flex-1">
-                        <span className="text-2xl font-bold text-white">
+                        <span className="text-2xl font-semibold text-white">
                           {plan.monthlyPrice === 0 ? 'Free' : `$${plan.monthlyPrice}`}
                         </span>
                         {plan.monthlyPrice > 0 && <span className="text-xs text-slate-600">/mo</span>}

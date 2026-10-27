@@ -32,6 +32,7 @@ const BADGE: Record<Bucket, string> = {
   saved: 'bg-violet-50 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200',
   kept: 'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200',
   fix: 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-200',
+  remove: 'bg-amber-50 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100',
 };
 
 /** The planner's English reasons that have a plain, translated version (CompanySetupPlanner.KeptReason and reuse). */
@@ -75,7 +76,7 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
 
   const saved = useMemo(() => (existing ? savedInStep4(body, baseline, savedSections) : new Set<string>()), [existing, body, baseline, savedSections]);
   const bucketOf = (item: PlanItem): Bucket => reviewBucket(item, saved);
-  const badge = (b: Bucket) => ({ add: t('New'), update: t('Changed'), saved: t('Saved in Step 4'), kept: t('No change'), fix: t('Needs a fix') }[b]);
+  const badge = (b: Bucket) => ({ add: t('New'), update: t('Changed'), saved: t('Saved in Step 4'), kept: t('No change'), fix: t('Needs a fix'), remove: t('Removed') }[b]);
 
   /** An update names its fields in the reader's language; the rest read in plain words, never the planner's English. */
   const detail = (item: PlanItem, b: Bucket) => {
@@ -84,9 +85,10 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
       return t('Changes: {fields}', { fields: item.changedFields.map(f => (CHANGED_FIELD_LABEL[f] ? t(CHANGED_FIELD_LABEL[f]) : f)).join(sep) });
     const fromReason = item.action === 'update' ? reasonFields(item.reason) : null;
     if (fromReason) return t('Changes: {fields}', { fields: fromReason.map(k => t(k)).join(sep) });
+    if (b === 'remove') return locale === 'ar' ? item.reasonAr || item.reason || '' : item.reason || '';
     if (b === 'saved') return t('Already saved to the company in Step 4.');
     if (item.action === 'reuse') return t('Already set up. It is used as it is.');
-    if (item.action === 'unchanged' && item.reason === KEPT_REASON) return t('Kept as it is. To remove it, use its Setup tab.');
+    if (item.action === 'unchanged' && item.reason === KEPT_REASON) return t('Kept as it is. Remove it in Step 4 if you no longer need it.');
     // Anything else is the planner's own sentence, in the reader's language when the server sends it.
     if (locale === 'ar') return item.reasonAr || (item.action !== 'conflict' && item.action !== 'update' ? '' : item.reason || '');
     return item.reason || '';
@@ -155,7 +157,7 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
           </p>
           {text && <p className="mt-0.5 text-xs leading-5 text-slate-600 dark:text-slate-400"><bdi>{text}</bdi></p>}
         </div>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${BADGE[b]}`}>{badge(b)}</span>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-caption font-semibold ${BADGE[b]}`}>{badge(b)}</span>
       </li>
     );
   };
@@ -254,6 +256,7 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
     chip('add', t('{count} to add', { count: counts.add }), 'count-create'),
     chip('update', t('{count} to update', { count: counts.update }), 'count-update'),
     ...(counts.saved > 0 ? [chip('saved', t('{count} saved in Step 4', { count: counts.saved }), 'count-saved')] : []),
+    ...(counts.remove > 0 ? [chip('remove', t('{count} to remove', { count: counts.remove }), 'count-remove')] : []),
     chip('kept', t('{count} stay as they are', { count: counts.kept }), 'count-unchanged'),
   ] : [
     chip('add', t('{count} to create', { count: counts.add }), 'count-create'),

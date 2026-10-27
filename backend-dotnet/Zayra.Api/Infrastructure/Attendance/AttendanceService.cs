@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Zayra.Api.Infrastructure.Payroll;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Attendance;
@@ -42,9 +43,12 @@ public class AttendanceService : IAttendanceService
     // trailing so the hand-rolled constructions elsewhere keep compiling.
     private readonly TimeProvider _clock;
 
+    private readonly DeviceIngestOptions _ingest;
+
     public AttendanceService(ZayraDbContext db, INotificationService notifications, IHttpClientFactory httpClientFactory,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null, DeviceIngestOptions? ingestOptions = null)
     {
+        _ingest = ingestOptions ?? new DeviceIngestOptions();
         _db = db;
         _clock = clock ?? TimeProvider.System;
         _notifications = notifications;
@@ -127,6 +131,7 @@ public class AttendanceService : IAttendanceService
 
         var device = new AttendanceDevice { TenantId = tenantId, CreatedBy = context.UserId };
         ApplyDevice(device, request);
+        await StampDeviceCompanyAsync(device, ct);
         _db.AttendanceDevices.Add(device);
         await Audit(tenantId, context, "attendance.device.created", "AttendanceDevice", device.Id.ToString(), ct);
         await _db.SaveChangesAsync(ct);
@@ -138,6 +143,7 @@ public class AttendanceService : IAttendanceService
         var device = await GetDeviceAsync(tenantId, id, ct);
         if (device is null) return null;
         ApplyDevice(device, request);
+        await StampDeviceCompanyAsync(device, ct);
         device.UpdatedAtUtc = DateTime.UtcNow;
         device.UpdatedBy = context.UserId;
         await Audit(tenantId, context, "attendance.device.updated", "AttendanceDevice", device.Id.ToString(), ct);
@@ -642,73 +648,204 @@ public class AttendanceService : IAttendanceService
         return new DeviceKeyResult(device.Id, device.DeviceName, key);
     }
 
-    public async Task<DeviceIngestResult?> IngestByDeviceKeyAsync(string deviceKey, DeviceIngestRequest request, string? ip, CancellationToken ct)
+    /// <summary>Looks the device up by key hash (cross-tenant on purpose: the key IS the credential) and, when it has a
+    /// signing secret, verifies the request signature. Null = unknown/inactive key (HTTP 401). A bad signature throws
+    /// <see cref="DeviceSignatureException"/> (HTTP 401) — and is checked BEFORE the body is acted on.</summary>
+    private async Task<AttendanceDevice?> AuthenticateDeviceAsync(string deviceKey, DeviceRequestEnvelope? envelope, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(deviceKey)) return null;
         var hash = HashKey(deviceKey.Trim());
-        // IgnoreQueryFilters: this endpoint is [AllowAnonymous] — the device API key IS the
-        // authentication token, so there is no JWT and DbContext._tenantId is null. The global
-        // tenant filter is therefore already inactive; IgnoreQueryFilters here is explicit
-        // documentation of that design. The lookup is intentionally cross-tenant: the device key
-        // hash resolves which tenant owns the device. Every subsequent query in this method is
-        // scoped to device.TenantId (a DB-sourced value, not a caller parameter).
-        var device = await _db.AttendanceDevices.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.ApiKeyReference == hash && !x.IsDeleted, ct);
+        // SYSTEM CONTEXT: this endpoint is [AllowAnonymous] - the device key hash IS the credential, there is no JWT, so no
+        // tenant/company scope exists yet. The lookup is intentionally cross-tenant and cross-company (the hash resolves
+        // which tenant/company owns the device; bounded to one row by the unique key). Every subsequent query in the
+        // ingest/heartbeat path is scoped to device.TenantId (a DB-sourced value, not a caller parameter).
+        var device = await ScopedBypass.SystemWide(_db.AttendanceDevices, 1,
+            "anonymous device-key authentication: the key hash resolves the owning tenant and company before any scope exists",
+            x => x.ApiKeyReference == hash && !x.IsDeleted, x => x.Id).FirstOrDefaultAsync(ct);
         if (device is null || !device.IsActive) return null;
+
+        // Signing is enforced the moment a secret exists (H1): a device with NO secret keeps authenticating on the static
+        // key alone until an operator issues one; once issued, an unsigned request is refused, so a leaked static key no
+        // longer works against a signing device. RequireSignature additionally fails closed when the server has no master key.
+        var hasSecret = device.SigningKeyVersion > 0 && !string.IsNullOrEmpty(_ingest.SigningMasterKey);
+        if ((device.RequireSignature || device.SigningKeyVersion > 0) && !hasSecret)
+            throw new DeviceSignatureException("This device requires signed requests but signing is not configured on the server.");
+        if (hasSecret)
+        {
+            if (envelope is null) throw new DeviceSignatureException("This device requires a signed request.");
+            var now = _clock.GetUtcNow();
+            DeviceSigning.Verify(DeviceSigning.DeriveSecret(_ingest.SigningMasterKey!, device.Id, device.SigningKeyVersion),
+                envelope, now, _ingest.SignatureWindowSeconds);
+            if (!DeviceNonceCache.Shared.TryRegister(device.Id, envelope.Nonce!, now, _ingest.SignatureWindowSeconds))
+                throw new DeviceSignatureException("This request was already received (replayed nonce).");
+        }
+        return device;
+    }
+
+    public async Task<DeviceHeartbeatResult?> HeartbeatByDeviceKeyAsync(
+        string deviceKey, DeviceHeartbeatRequest request, string? ip, CancellationToken ct, DeviceRequestEnvelope? envelope = null)
+    {
+        var device = await AuthenticateDeviceAsync(deviceKey, envelope, ct);
+        if (device is null) return null;
+        var now = _clock.GetUtcNow().UtcDateTime;
+        device.LastHeartbeatAtUtc = now;
+        device.BridgeVersion = string.IsNullOrWhiteSpace(request.BridgeVersion) ? device.BridgeVersion
+            : Clean(request.BridgeVersion)[..Math.Min(40, Clean(request.BridgeVersion).Length)];
+        int? skew = request.HostTimeUtc is { } host
+            ? (int)Math.Clamp((DateTime.SpecifyKind(host, DateTimeKind.Utc) - now).TotalSeconds, int.MinValue, int.MaxValue)
+            : null;
+        device.LastClockSkewSeconds = skew;
+        // A failing bridge reports why; a healthy heartbeat does not erase the last sync error the ingest path wrote.
+        if (!string.IsNullOrWhiteSpace(request.Error))
+            device.ErrorLog = $"Bridge: {Clean(request.Error)[..Math.Min(300, Clean(request.Error).Length)]}";
+        await _db.SaveChangesAsync(ct);
+        return new DeviceHeartbeatResult(now, device.RequireSignature, skew);
+    }
+
+    public async Task<DeviceSigningSecretResult?> RotateDeviceSigningSecretAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(_ingest.SigningMasterKey))
+            throw new InvalidOperationException("Request signing is not configured on this server (Attendance:DeviceIngest:SigningMasterKey).");
+        var device = await GetDeviceAsync(tenantId, id, ct);
+        if (device is null) return null;
+        device.SigningKeyVersion += 1;
+        device.RequireSignature = true;   // H1: issuing a secret turns enforcement on; the static key alone stops working
+        device.UpdatedAtUtc = DateTime.UtcNow;
+        device.UpdatedBy = context.UserId;
+        await Audit(tenantId, context, "attendance.device.signing_secret_rotated", "AttendanceDevice", id.ToString(), ct);
+        await _db.SaveChangesAsync(ct);
+        // Shown once here; the server can always re-derive it, but no endpoint ever reads it back.
+        return new DeviceSigningSecretResult(device.Id, device.DeviceName, device.SigningKeyVersion,
+            DeviceSigning.DeriveSecret(_ingest.SigningMasterKey, device.Id, device.SigningKeyVersion), device.RequireSignature);
+    }
+
+    public async Task<bool?> SetDeviceSignatureRequiredAsync(Guid tenantId, Guid id, bool required, RequestContext context, CancellationToken ct)
+    {
+        var device = await GetDeviceAsync(tenantId, id, ct);
+        if (device is null) return null;
+        if (required && device.SigningKeyVersion == 0)
+            throw new InvalidOperationException("Generate a signing secret for this device before requiring signed requests.");
+        device.RequireSignature = required;
+        device.UpdatedAtUtc = DateTime.UtcNow;
+        device.UpdatedBy = context.UserId;
+        await Audit(tenantId, context, required ? "attendance.device.signature_required" : "attendance.device.signature_optional", "AttendanceDevice", id.ToString(), ct);
+        await _db.SaveChangesAsync(ct);
+        return required;
+    }
+
+    public async Task<DeviceIngestResult?> IngestByDeviceKeyAsync(
+        string deviceKey, DeviceIngestRequest request, string? ip, CancellationToken ct, DeviceRequestEnvelope? envelope = null)
+    {
+        var device = await AuthenticateDeviceAsync(deviceKey, envelope, ct);
+        if (device is null) return null;
         var tenantId = device.TenantId;
 
-        var syncLog = new AttendanceDeviceSyncLog { TenantId = tenantId, DeviceId = device.Id, SyncMethod = "Device push (webhook)", Status = "Started" };
-        _db.AttendanceDeviceSyncLogs.Add(syncLog);
-
         var punches = request.Punches ?? Array.Empty<DeviceIngestPunch>();
+        // Bounded work for an anonymous endpoint: an oversized batch is refused whole, before anything is stored. (The
+        // bridge bisects a refused chunk, so a mis-sized chunk still gets through in smaller pieces.)
+        if (punches.Count > _ingest.MaxBatchSize)
+            throw new AttendanceRefusalException(new AttendanceRefusal("batch_too_large",
+                $"A device batch may carry at most {_ingest.MaxBatchSize} punches (received {punches.Count}). Send smaller batches.",
+                $"الحد الأقصى لدفعة الجهاز {_ingest.MaxBatchSize} تسجيلاً (المستلم {punches.Count}). أرسل دفعات أصغر."));
         // A device never writes the server's selfie/geofence labels or an evidence: reference: the whole batch is
         // refused before anything is stored (review item 9: refuse, not rewrite).
         if (punches.Any(p => ReservedVerificationLabels.Violates(p.VerificationMethod, p.PhotoReference)))
             throw new AttendanceRefusalException(AttendanceRefusals.VerificationLabelReserved);
-        int accepted = 0, duplicates = 0, unmatched = 0;
-        var matchedEmployees = new Dictionary<int, Employee>();
-        var matchedPunches = new List<(int EmployeeId, DateTime PunchUtc)>();
 
-        foreach (var punch in punches)
+        var syncLog = new AttendanceDeviceSyncLog { TenantId = tenantId, DeviceId = device.Id, SyncMethod = "Device push (webhook)", Status = "Started" };
+        _db.AttendanceDeviceSyncLogs.Add(syncLog);
+
+        // ── per-row validation: a bad row is rejected on its own, never the batch ─────────────────────────────────────
+        var now = _clock.GetUtcNow().UtcDateTime;
+        var latest = now.AddMinutes(_ingest.MaxFutureMinutes);
+        var earliest = now.AddDays(-_ingest.MaxPastDays);
+        var rejections = new List<DeviceIngestRejection>();
+        var candidates = new List<(int Index, DeviceIngestPunch Punch, DateTime Utc, string Direction, string Code, string Key)>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+        int duplicates = 0;
+        for (var i = 0; i < punches.Count; i++)
         {
-            // Anonymous device webhook: no principal exists to scope by, so the company filter is
-            // dropped deliberately and the tenant re-applied from the authenticated device's row.
-            var employee = await ResolveEmployee(tenantId, null, punch.EmployeeCode, ct, bypassCompanyFilter: true);
+            var punch = punches[i];
+            var code = punch.EmployeeCode?.Trim() ?? string.Empty;
+            if (code.Length == 0) { rejections.Add(new(i, "employee_code_required")); continue; }
+            if (punch.PunchTimestampUtc == default) { rejections.Add(new(i, "timestamp_missing")); continue; }
+            var utc = punch.PunchTimestampUtc.Kind == DateTimeKind.Local
+                ? punch.PunchTimestampUtc.ToUniversalTime()
+                : DateTime.SpecifyKind(punch.PunchTimestampUtc, DateTimeKind.Utc);
+            if (utc > latest) { rejections.Add(new(i, "timestamp_in_future")); continue; }
+            if (utc < earliest) { rejections.Add(new(i, "timestamp_too_old")); continue; }
             var direction = NormalizeDirection(punch.PunchDirection);
-            // IgnoreQueryFilters: same null-tenantId context as above. Explicit
-            // x.TenantId == tenantId predicate (where tenantId == device.TenantId, a DB value)
-            // provides the tenant scope that the inactive global filter would otherwise give.
-            var dup = await _db.AttendanceRawEvents.IgnoreQueryFilters().AnyAsync(x =>
-                x.TenantId == tenantId && x.DeviceId == device.Id && x.PunchTimestampUtc == punch.PunchTimestampUtc &&
-                x.PunchDirection == direction &&
-                (employee == null ? x.EmployeeCode == punch.EmployeeCode : x.EmployeeId == employee.Id), ct);
-            if (dup) { duplicates++; continue; }
+            var key = DevicePunchKey.Compute(device.Id, code, utc, direction);
+            if (!seenKeys.Add(key)) { duplicates++; continue; }          // the same punch twice in one request
+            candidates.Add((i, punch, utc, direction, code, key));
+        }
 
-            _db.AttendanceRawEvents.Add(new AttendanceRawEvent
+        // Employees: one lookup per DISTINCT code (was one per punch), the company filter dropped deliberately on this
+        // anonymous path and the tenant re-applied from the authenticated device's row.
+        var employeesByCode = new Dictionary<string, Employee?>(StringComparer.Ordinal);
+        foreach (var code in candidates.Select(c => c.Code).Distinct(StringComparer.Ordinal))
+            employeesByCode[code] = await ResolveEmployee(tenantId, null, code, ct, bypassCompanyFilter: true, onlyCompanyId: device.CompanyId);
+
+        // Already stored (a resend after a timeout, or a row from before F2 that has no dedup key): ONE query for the batch.
+        // IgnoreQueryFilters: same null-tenantId context as above. Explicit x.TenantId == tenantId predicate (a DB value)
+        // provides the tenant scope that the inactive global filter would otherwise give.
+        var stamps = candidates.Select(c => c.Utc).Distinct().ToList();
+        var existing = stamps.Count == 0
+            ? []
+            : await _db.AttendanceRawEvents.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.DeviceId == device.Id && stamps.Contains(x.PunchTimestampUtc))
+                .Select(x => new { x.EmployeeId, x.EmployeeCode, x.PunchTimestampUtc, x.PunchDirection, x.DedupKey })
+                .ToListAsync(ct);
+        var existingKeys = existing.Where(x => x.DedupKey != null).Select(x => x.DedupKey!).ToHashSet(StringComparer.Ordinal);
+
+        var fresh = new List<(AttendanceRawEvent Event, Employee? Employee)>();
+        foreach (var c in candidates)
+        {
+            var employee = employeesByCode[c.Code];
+            var stored = existingKeys.Contains(c.Key) || existing.Any(x =>
+                x.PunchTimestampUtc.Ticks == c.Utc.Ticks && x.PunchDirection == c.Direction &&
+                (employee == null ? x.EmployeeCode == c.Code : x.EmployeeId == employee.Id));
+            if (stored) { duplicates++; continue; }
+            fresh.Add((new AttendanceRawEvent
             {
                 TenantId = tenantId,
                 EmployeeId = employee?.Id,
-                EmployeeCode = employee?.EmployeeCode ?? Clean(punch.EmployeeCode),
+                EmployeeCode = employee?.EmployeeCode ?? c.Code,
                 DeviceId = device.Id,
                 Source = $"Device: {device.DeviceName}",
-                PunchTimestampUtc = punch.PunchTimestampUtc,
-                PunchDirection = direction,
+                PunchTimestampUtc = c.Utc,
+                PunchDirection = c.Direction,
                 LocationName = Clean(device.LocationName),
-                Latitude = punch.Latitude,
-                Longitude = punch.Longitude,
+                Latitude = c.Punch.Latitude,
+                Longitude = c.Punch.Longitude,
                 IpAddress = Clean(ip),
-                PhotoReference = Clean(punch.PhotoReference),
-                RawPayloadJson = CleanJson(punch.RawPayloadJson),
+                PhotoReference = Clean(c.Punch.PhotoReference),
+                RawPayloadJson = CleanJson(c.Punch.RawPayloadJson),
                 SyncBatchReference = syncLog.Id.ToString(),
-                VerificationMethod = Clean(punch.VerificationMethod, "Device"),
-                ConfidenceScore = punch.ConfidenceScore,
-            });
+                VerificationMethod = Clean(c.Punch.VerificationMethod, "Device"),
+                ConfidenceScore = c.Punch.ConfidenceScore,
+                DedupKey = c.Key,
+            }, employee));
+        }
+
+        // INSERT ... ON CONFLICT DO NOTHING semantics: the unique indexes are the arbiter, so two concurrent resends of the
+        // same batch can neither 500 nor lose the rows that were new.
+        var stored2 = await SaveRawEventsIdempotentAsync(fresh.Select(f => f.Event).ToList(), ct);
+        duplicates += fresh.Count - stored2.Count;
+        var storedIds = stored2.Select(e => e.Id).ToHashSet();
+
+        int accepted = 0, unmatched = 0;
+        var matchedEmployees = new Dictionary<int, Employee>();
+        var matchedPunches = new List<(int EmployeeId, DateTime PunchUtc)>();
+        foreach (var (ev, employee) in fresh)
+        {
+            if (!storedIds.Contains(ev.Id)) continue;
             accepted++;
             if (employee is null) unmatched++;
             else
             {
                 matchedEmployees[employee.Id] = employee;
-                matchedPunches.Add((employee.Id, punch.PunchTimestampUtc));
+                matchedPunches.Add((employee.Id, ev.PunchTimestampUtc));
             }
         }
 
@@ -736,6 +873,7 @@ public class AttendanceService : IAttendanceService
         syncLog.CompletedAtUtc = DateTime.UtcNow;
         syncLog.RawEventsReceived = punches.Count;
         syncLog.RawEventsProcessed = accepted;
+        if (rejections.Count > 0) syncLog.ErrorMessage = $"{rejections.Count} punch(es) rejected: {string.Join(", ", rejections.GroupBy(r => r.Reason).Select(g => $"{g.Key} x{g.Count()}"))}.";
         await _db.SaveChangesAsync(ct);
 
         int processedDays = 0;
@@ -778,8 +916,40 @@ public class AttendanceService : IAttendanceService
             }
         }
 
-        return new DeviceIngestResult(punches.Count, accepted, duplicates, unmatched, processedDays, syncLog.Id);
+        return new DeviceIngestResult(punches.Count, accepted, duplicates, unmatched, processedDays, syncLog.Id,
+            rejections.Count, rejections);
     }
+
+    /// <summary>Stores the events, tolerating a concurrent writer: when the batch insert hits a unique index (a resend of the
+    /// same batch raced this one) the batch is retried row by row and each conflicting row is simply skipped. Returns the
+    /// events that were actually stored.</summary>
+    private async Task<List<AttendanceRawEvent>> SaveRawEventsIdempotentAsync(List<AttendanceRawEvent> events, CancellationToken ct)
+    {
+        if (events.Count == 0) return events;
+        _db.AttendanceRawEvents.AddRange(events);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return events;
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            foreach (var entry in _db.ChangeTracker.Entries<AttendanceRawEvent>().Where(e => e.State == EntityState.Added).ToList())
+                entry.State = EntityState.Detached;
+            var stored = new List<AttendanceRawEvent>();
+            foreach (var e in events)
+            {
+                _db.AttendanceRawEvents.Add(e);
+                try { await _db.SaveChangesAsync(ct); stored.Add(e); }
+                catch (DbUpdateException inner) when (IsUniqueViolation(inner)) { _db.Entry(e).State = EntityState.Detached; }
+            }
+            return stored;
+        }
+    }
+
+    internal static bool IsUniqueViolation(DbUpdateException ex) =>
+        ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation }
+        || (ex.InnerException?.GetType().Name == "SqliteException" && ex.InnerException.Message.Contains("UNIQUE constraint failed", StringComparison.Ordinal));
 
     public async Task<AttendanceImportBatch> ImportCsvAsync(Guid tenantId, ImportAttendanceRequest request, RequestContext context, CancellationToken ct)
     {
@@ -1563,11 +1733,10 @@ public class AttendanceService : IAttendanceService
         daily.MissingPunch = daily.FirstInUtc is null || daily.LastOutUtc is null || daily.LastOutUtc <= daily.FirstInUtc;
         daily.BreakMinutes = daily.MissingPunch ? 0 : policy.BreakMinutes;
         daily.TotalWorkedMinutes = !daily.MissingPunch ? Math.Max(0, (int)(daily.LastOutUtc.Value - daily.FirstInUtc.Value).TotalMinutes - policy.BreakMinutes) : 0;
-        var workWeek = await _workWeek.ResolveAsync(tenantId, employee.CompanyId,
-            string.IsNullOrWhiteSpace(employee.CountryCode) ? null : employee.CountryCode, ct);
+        // Rest days and holidays are the EMPLOYING COMPANY's, resolved by the same two functions payroll prices the day with.
+        var workWeek = await CompanyWorkWeek.ResolveAsync(_workWeek, tenantId, employee.CompanyId, ct);
         var isRestDay = workWeek.IsWeekend(date.DayOfWeek);
-        var isPublicHoliday = await _db.PublicHolidays.AsNoTracking()
-            .AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
+        var isPublicHoliday = (await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, employee.CompanyId, date, date, ct)).Contains(date);
         // Tenant-wide, with the employee re-applied: LeaveRequest is company-scoped-operational, and the device webhook is
         // anonymous — an anonymous request has an EMPTY company scope in every environment — so the filtered read saw no
         // leave and an approved leave day was recomputed as "Absent" with an absence deduction. The employee was
@@ -1593,8 +1762,14 @@ public class AttendanceService : IAttendanceService
         // resolve the company; Art. 98 now does the same. See ResolveCompanyCountryAsync.
         var (baselineMinutes, absenceMinutes) = await DayBaselineAsync(tenantId, employee, date, policy, ct);
 
-        daily.OvertimeMinutes = Math.Max(0, daily.TotalWorkedMinutes - baselineMinutes);
-        daily.UndertimeMinutes = Math.Max(0, baselineMinutes - daily.TotalWorkedMinutes);
+        // A rest day or company holiday has no normal working day to subtract: every minute worked on it is either
+        // overtime at the premium rate or earns a compensatory day, as the company chose (Setup -> Payroll rules).
+        // Subtracting the ordinary 8 hours made a full Friday shift pay nothing.
+        var payrollRules = await CompanyPayrollRules.ResolveAsync(_db, tenantId, employee.CompanyId, ct, date);
+        var dayMinutes = CompanyPayrollRules.DayMinutes(daily.TotalWorkedMinutes, baselineMinutes, isRestDay || isPublicHoliday, payrollRules.RestDayWorkMode);
+        daily.OvertimeMinutes = dayMinutes.Overtime;
+        daily.UndertimeMinutes = dayMinutes.Undertime;
+        await SyncRestDayCompOffAsync(tenantId, employee, date, daily.TotalWorkedMinutes, policy, dayMinutes.EarnsCompensatoryDay, ct);
         // "No punch at all" is !hasPunch: an out-only day has a null first-in but is not an untouched leave/holiday/rest day.
         if (!hasPunch && daily.TotalWorkedMinutes == 0 && !string.IsNullOrWhiteSpace(approvedLeave))
         {
@@ -1628,6 +1803,47 @@ public class AttendanceService : IAttendanceService
         await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
         await UpsertImpacts(tenantId, daily, absenceMinutes, ct);
         await UpsertExceptions(tenantId, daily, ct);
+    }
+
+    /// <summary>
+    /// The compensatory day a worked rest day or holiday earns when the company pays that work in time off. One credit
+    /// per employee per worked date (re-processing the day updates it instead of adding another), full day at or above
+    /// the half-day threshold and half a day below it. A credit that has already been spent is left alone.
+    /// </summary>
+    private async Task SyncRestDayCompOffAsync(Guid tenantId, Employee employee, DateOnly date, int workedMinutes,
+        AttendancePolicy policy, bool earns, CancellationToken ct)
+    {
+        const string workType = "RestDayWork";
+        var credit = _db.CompOffCredits.Local.FirstOrDefault(c => c.TenantId == tenantId && c.EmployeeId == employee.Id
+                && c.WorkedDate == date && c.WorkType == workType)
+            ?? await _db.CompOffCredits.FirstOrDefaultAsync(c => c.TenantId == tenantId && c.EmployeeId == employee.Id
+                && c.WorkedDate == date && c.WorkType == workType, ct);
+        var days = !earns || workedMinutes <= 0 ? 0m : workedMinutes >= policy.HalfDayThresholdMinutes ? 1m : 0.5m;
+        if (credit is null)
+        {
+            if (days <= 0m) return;
+            _db.CompOffCredits.Add(new CompOffCredit
+            {
+                TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, WorkedDate = date,
+                WorkType = workType, HoursWorked = Math.Round(workedMinutes / 60m, 2), DaysEarned = days,
+                // A day off is a liability: the credit waits for the same comp-off approval as every other credit. A punch
+                // on a rest day never grants one by itself.
+                Status = "Pending", ManagerApprovalNotes = "Earned by work on a rest day or holiday (Payroll rules: compensatory day).",
+            });
+            return;
+        }
+        if (credit.UsageVersion != 0) return;
+        var changed = credit.DaysEarned != days;
+        credit.HoursWorked = Math.Round(workedMinutes / 60m, 2);
+        credit.DaysEarned = days;
+        if (days <= 0m) credit.Status = "Cancelled";
+        else if (credit.Status == "Cancelled" || (changed && credit.Status == "Approved"))
+        {
+            // Re-earned, or the approved quantity moved: it needs approving again at the new quantity.
+            credit.Status = "Pending";
+            credit.ApprovedByName = string.Empty;
+            credit.ApprovedAtUtc = null;
+        }
     }
 
     /// <summary>
@@ -2013,12 +2229,14 @@ public class AttendanceService : IAttendanceService
     /// </param>
     private async Task<Employee?> ResolveEmployee(
         Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct,
-        bool bypassCompanyFilter = false)
+        bool bypassCompanyFilter = false, Guid? onlyCompanyId = null)
     {
         // IgnoreQueryFilters is intentional and GATED: only the anonymous device webhook may drop the
         // company filter, because only there is the absence of a principal the reason it matched nothing.
         // The tenant is re-applied explicitly in every predicate below.
         var employees = bypassCompanyFilter ? _db.Employees.IgnoreQueryFilters() : _db.Employees.AsQueryable();
+        // M4 - a device bound to a company resolves only that company's staff (the bypass above dropped the ambient filter).
+        if (onlyCompanyId is Guid cid) employees = employees.Where(x => x.CompanyId == cid);
 
         if (employeeId is not null)
             return await employees
@@ -2082,6 +2300,15 @@ public class AttendanceService : IAttendanceService
             .ThenBy(p => p.Code)
             .FirstOrDefault()
         ?? policies.OrderBy(p => p.Code).First();
+
+    /// <summary>M4 - a device on a branch belongs to that branch's company; its punches may only resolve that company's staff.</summary>
+    private async Task StampDeviceCompanyAsync(AttendanceDevice device, CancellationToken ct)
+    {
+        if (device.BranchId is not Guid branchId) { device.CompanyId = null; return; }
+        device.CompanyId = await _db.Branches.AsNoTracking()
+            .Where(b => b.TenantId == device.TenantId && b.Id == branchId)
+            .Select(b => (Guid?)b.CompanyId).FirstOrDefaultAsync(ct);
+    }
 
     private static void ApplyDevice(AttendanceDevice device, AttendanceDeviceRequest request)
     {

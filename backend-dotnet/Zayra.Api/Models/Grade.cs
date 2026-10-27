@@ -19,7 +19,8 @@ public class Grade : ITenantOwned, ICompanyScoped
     public decimal MinSalary { get; set; }
     public decimal MidSalary { get; set; }
     public decimal MaxSalary { get; set; }
-    public string Currency { get; set; } = "SAR";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
 
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;

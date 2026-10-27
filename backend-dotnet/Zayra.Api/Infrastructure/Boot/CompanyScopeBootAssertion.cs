@@ -37,6 +37,15 @@ public static class CompanyScopeBootAssertion
                         "employee self-service is restricted to its canonical account-linked owner. Generic status " +
                         "and HR-letter mutations reject Jawazat tickets. JawazatWorkflowTests cover these boundaries; " +
                         "ITenantOwned still applies to every ticket.",
+        ["CompanyPayrollRule"] = "Company configuration child: non-nullable Guid CompanyId (a rule belongs to exactly one " +
+                                 "company). It is read by attendance processing on the anonymous device webhook, whose company " +
+                                 "scope is empty by design, so an ambient filter would silently drop the rule; every read and " +
+                                 "write names its company explicitly, and CompanyPayrollRulesController first requires the caller's " +
+                                 "entity scope to include that company (GetEntityScope: group level, or CanAccessCompany) and the company " +
+                                 "to exist in the tenant (Company is tenant-owned only, so the scope check is the controller's). ITenantOwned applies.",
+        ["PayrollRuleChangeRequest"] = "Company configuration child (a pending change to one company's payroll rules): non-nullable Guid CompanyId. " +
+                                       "It is decided by payroll approvers, whose company scope is checked by CompanyPayrollRulesController " +
+                                       "(CanSeeCompanyAsync, group-level or the company named in the caller's scope) before any read or write. ITenantOwned applies.",
         ["Branch"] = "Org-structure child: non-nullable Guid CompanyId (a branch cannot exist " +
                      "outside a company); visibility follows its parent Company, and the " +
                      "nullable-CompanyId interface contract cannot apply.",

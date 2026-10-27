@@ -1833,8 +1833,8 @@ public class AccessManagementService : IAccessManagementService
             CreatedBy = context.UserId
         };
         _db.ApprovalDelegations.Add(delegation);
+        _auditService.Stage("access.approval_delegation_created", "ApprovalDelegation", delegation.Id.ToString(), context, System.Text.Json.JsonSerializer.Serialize(new { fromEmployeeId = from.Id, toEmployeeId = to.Id, scope = delegation.Scope }));
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.approval_delegation_created", "ApprovalDelegation", delegation.Id.ToString(), context, System.Text.Json.JsonSerializer.Serialize(new { fromEmployeeId = from.Id, toEmployeeId = to.Id, scope = delegation.Scope }), cancellationToken);
         return ToDelegationDto(delegation);
     }
 
@@ -1864,8 +1864,8 @@ public class AccessManagementService : IAccessManagementService
             CreatedBy = context.UserId
         };
         _db.ApprovalAuthorities.Add(authority);
+        _auditService.Stage("access.approval_authority_created", "ApprovalAuthority", authority.Id.ToString(), context, System.Text.Json.JsonSerializer.Serialize(new { employeeId = employee.Id, scope = authority.AuthorityScope, final = authority.CanFinalApprove }));
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.approval_authority_created", "ApprovalAuthority", authority.Id.ToString(), context, System.Text.Json.JsonSerializer.Serialize(new { employeeId = employee.Id, scope = authority.AuthorityScope, final = authority.CanFinalApprove }), cancellationToken);
         return ToAuthorityDto(authority);
     }
 
@@ -1880,10 +1880,13 @@ public class AccessManagementService : IAccessManagementService
 
     public async Task<PagedResult<UserListDto>> ListUsersAsync(Guid tenantId, UserListQuery query, EntityScopeContext entityScope, CancellationToken cancellationToken)
     {
-        var q = _db.Users
+        // Status "Deleted" is Setup's "Show deleted": removed accounts, listed so one can be restored.
+        var deletedOnly = string.Equals(query.Status, "Deleted", StringComparison.OrdinalIgnoreCase);
+        var q = (deletedOnly
+                ? ScopedBypass.TenantWide(_db.Users, tenantId, "Setup lists deleted accounts so they can be restored; the tenant is pinned and the caller's entity scope is applied below.").Where(x => x.IsDeleted)
+                : _db.Users.Where(x => x.TenantId == tenantId && !x.IsDeleted))
             .Include(x => x.UserRoles).ThenInclude(x => x.Role)
             .Include(x => x.EmployeeUserAccounts)
-            .Where(x => x.TenantId == tenantId && !x.IsDeleted)
             .ApplyEntityScope(_db, tenantId, entityScope)
             .AsNoTracking();
 
@@ -1892,7 +1895,7 @@ public class AccessManagementService : IAccessManagementService
             var s = query.Search.Trim().ToLowerInvariant();
             q = q.Where(x => x.Email.Contains(s) || x.FullName.ToLower().Contains(s));
         }
-        if (!string.IsNullOrWhiteSpace(query.Status))
+        if (!string.IsNullOrWhiteSpace(query.Status) && !deletedOnly)
             q = q.Where(x => x.Status == query.Status);
         if (!string.IsNullOrWhiteSpace(query.Role))
             q = q.Where(x => x.UserRoles.Any(r => r.Role!.NormalizedName == AuthService.Normalize(query.Role)));
@@ -2367,13 +2370,68 @@ public class AccessManagementService : IAccessManagementService
         return true;
     }
 
+    public async Task<bool> RestoreUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken)
+    {
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        var found = false;
+
+        async Task<bool> RestoreOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct)
+                ?? throw new InvalidOperationException("Tenant not found.");
+            var user = await ScopedBypass.TenantWide(_db.Users, tenantId, "Setup restores a deleted account: the soft-delete filter must not hide it; the tenant is pinned and the caller's entity scope is applied below.")
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .ApplyEntityScope(_db, tenantId, entityScope)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.IsDeleted, ct);
+            if (user is null) return true;
+            found = true;
+            await EnsureMayManageAccountAsync(tenantId, context, user, ct);
+            var emailTaken = await ScopedBypass.TenantWide(_db.Users, tenantId, "A deleted account can only come back if nobody has taken its email since.")
+                .AnyAsync(x => x.Id != userId && !x.IsDeleted && x.NormalizedEmail == user.NormalizedEmail, ct);
+            if (emailTaken) throw new InvalidOperationException("Another account now uses this email, so this one cannot be restored. Change that account's email first, or create a new account.");
+            user.IsDeleted = false;
+            user.DeletedAtUtc = null;
+            user.DeletedBy = null;
+            // The credentials of a removed account are dead on return: the old password is voided, two-step sign-in must be set up
+            // again, every outstanding reset link and session is ended. Nothing but a controlled invitation (which sets a new
+            // password) can make the account usable, so no later flip of IsActive can bring the old password back.
+            user.IsActive = false;
+            user.Status = "PendingPasswordSetup";
+            user.AccessMode = AccessModes.NoLogin;
+            user.PasswordHash = $"RESTORED${user.Id:N}";
+            user.MustChangePassword = false;
+            user.IsLocked = false; user.LockoutEnd = null; user.FailedLoginCount = 0;
+            user.MFAEnabled = false;
+            user.MfaSecretEncrypted = null; user.MfaConfiguredAtUtc = null; user.MfaLastVerifiedAtUtc = null;
+            user.MfaLastTotpStep = null; user.MfaFailedCount = 0; user.MfaRecoveryCodeHashes = null;
+            foreach (var token in await _db.PasswordResetTokens.Where(x => x.UserId == userId && x.UsedAtUtc == null).ToListAsync(ct))
+                token.UsedAtUtc = changedAtUtc;
+            await InvalidateAuthorizationSessionsAsync(new[] { user }, changedAtUtc, context, ct);
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                changedAtUtc,
+                "access.user_restored",
+                "User",
+                user.Id.ToString(),
+                context with { TenantId = tenant.Id }));
+            await _db.SaveChangesAsync(ct);
+            return true;
+        }
+
+        await ExecuteAuthorizationTransactionAsync(auditId, "access.user_restored", RestoreOnceAsync, cancellationToken);
+        return found;
+    }
+
     public async Task<bool> CancelDelegationAsync(Guid tenantId, Guid delegationId, RequestContext context, CancellationToken cancellationToken)
     {
         var delegation = await _db.ApprovalDelegations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == delegationId, cancellationToken);
         if (delegation is null) return false;
         delegation.Status = "Cancelled";
+        _auditService.Stage("access.delegation_cancelled", "ApprovalDelegation", delegationId.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.delegation_cancelled", "ApprovalDelegation", delegationId.ToString(), context, null, cancellationToken);
         return true;
     }
 
@@ -2386,8 +2444,8 @@ public class AccessManagementService : IAccessManagementService
         authority.AmountLimit = request.AmountLimit;
         authority.Currency = request.Currency ?? string.Empty;
         authority.CanFinalApprove = request.CanFinalApprove;
+        _auditService.Stage("access.authority_updated", "ApprovalAuthority", authorityId.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.authority_updated", "ApprovalAuthority", authorityId.ToString(), context, null, cancellationToken);
         return ToAuthorityDto(authority);
     }
 
@@ -3716,6 +3774,60 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.role_deactivated", DeactivateOnceAsync, cancellationToken);
         return true;
+    }
+
+    public async Task<RoleImpactDto?> GetRoleImpactAsync(Guid tenantId, Guid roleId, CancellationToken cancellationToken)
+    {
+        var role = await _db.Roles.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted)
+            .Select(x => new { x.Id, x.Name, x.IsSystem, x.IsActive }).SingleOrDefaultAsync(cancellationToken);
+        if (role is null) return null;
+        // Live people only: a removed account does not hold the role in any way the admin can act on.
+        var assigned = await _db.UserRoles.AsNoTracking().Where(x => x.RoleId == roleId && x.User != null && !x.User.IsDeleted).Select(x => x.UserId).Distinct().CountAsync(cancellationToken);
+        return new RoleImpactDto(role.Id, role.Name, role.IsSystem, role.IsActive, assigned);
+    }
+
+    public async Task<RoleRemovalResult?> DeleteRoleAsync(Guid tenantId, Guid roleId, RequestContext context, CancellationToken cancellationToken)
+    {
+        if (!await _db.Roles.AnyAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, cancellationToken))
+            return null;
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        RoleRemovalResult? outcome = null;
+
+        async Task<bool> DeleteOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct)
+                ?? throw new InvalidOperationException("Tenant not found.");
+            var role = await ScopedBypass.NullableTenantWide(_db.Roles, tenantId, "Locked auth/lifecycle graph read: the company filter is dropped and the tenant re-applied (register section 6).")
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == roleId && !x.IsDeleted, ct)
+                ?? throw new InvalidOperationException("Role not found.");
+            var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
+            await EnsureMayEditRoleAsync(tenantId, caller, await RoleFactsAsync(role, ct), null, ct);
+            var assigned = await _db.UserRoles.Where(x => x.RoleId == roleId && x.User != null && !x.User.IsDeleted).Select(x => x.UserId).Distinct().CountAsync(ct);
+            if (role.IsSystem) { outcome = new RoleRemovalResult(false, "SYSTEM", assigned); return true; }
+            if (assigned > 0) { outcome = new RoleRemovalResult(false, "ASSIGNED", assigned); return true; }
+            role.IsDeleted = true;
+            role.IsActive = false;
+            role.UpdatedAtUtc = changedAtUtc;
+            role.UpdatedBy = context.UserId;
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                changedAtUtc,
+                "access.role_deleted",
+                "Role",
+                roleId.ToString(),
+                context with { TenantId = tenant.Id },
+                System.Text.Json.JsonSerializer.Serialize(new { name = role.Name })));
+            await _db.SaveChangesAsync(ct);
+            outcome = new RoleRemovalResult(true, null, 0);
+            return true;
+        }
+
+        await ExecuteAuthorizationTransactionAsync(auditId, "access.role_deleted", DeleteOnceAsync, cancellationToken);
+        return outcome;
     }
 
     public async Task<RoleDto?> SetRolePermissionsAsync(Guid tenantId, Guid roleId, BulkRolePermissionsRequest request, RequestContext context, CancellationToken cancellationToken)

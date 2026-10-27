@@ -164,10 +164,10 @@ export default function AIAssistantPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
       <div className="flex items-center gap-3">
-        <div aria-hidden="true" className="w-10 h-10 shrink-0 rounded-xl bg-sapphire flex items-center justify-center text-white text-xl font-bold">K</div>
+        <div aria-hidden="true" className="w-10 h-10 shrink-0 rounded-xl bg-sapphire flex items-center justify-center text-white text-xl font-semibold">K</div>
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Kody the HR Assistant</h1>
-          <p className="text-sm text-gray-500">Advisory only — assists HR decisions but never replaces them</p>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Kody the HR Assistant</h1>
+          <p className="text-sm text-slate-500">Advisory only — assists HR decisions but never replaces them</p>
         </div>
         <div className="ms-auto flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full text-xs text-amber-700 font-medium">
           Advisory Label Active
@@ -175,7 +175,7 @@ export default function AIAssistantPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200">
+      <div className="flex gap-1 border-b border-slate-200">
         {tabs.map(t => (
           <button
             key={t.id}
@@ -183,7 +183,7 @@ export default function AIAssistantPage() {
             className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               tab === t.id
                 ? 'border-sapphire text-sapphire'
-                : 'border-transparent text-gray-500 hover:text-gray-700'
+                : 'border-transparent text-slate-500 hover:text-slate-700'
             }`}
           >
             {t.label}
@@ -206,7 +206,7 @@ export default function AIAssistantPage() {
       {/* Assistant Chat */}
       {tab === 'assistant' && (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          <div className="lg:col-span-3 flex flex-col bg-white rounded-xl border border-gray-200 overflow-hidden" style={{ height: 540 }}>
+          <div className="lg:col-span-3 flex flex-col bg-white rounded-xl border border-slate-200 overflow-hidden" style={{ height: 540 }}>
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
               {messages.map((msg, i) => (
@@ -216,13 +216,13 @@ export default function AIAssistantPage() {
                       ? 'bg-sapphire text-white'
                       : msg.wasBlocked
                         ? 'bg-red-50 border border-red-200 text-red-800'
-                        : 'bg-gray-50 border border-gray-200 text-gray-800'
+                        : 'bg-slate-50 border border-slate-200 text-slate-800'
                   }`}>
                     {msg.role === 'assistant' && (
                       <div className="flex items-center gap-1.5 mb-1.5">
                         <div className="w-4 h-4 rounded-full bg-sapphire"></div>
                         <span className="text-xs font-semibold text-sapphire">Kody</span>
-                        <span className="text-xs text-gray-400 ms-auto">Advisory</span>
+                        <span className="text-xs text-slate-400 ms-auto">Advisory</span>
                       </div>
                     )}
                     <p className="whitespace-pre-wrap">{msg.text}</p>
@@ -234,13 +234,13 @@ export default function AIAssistantPage() {
               ))}
               {loading && (
                 <div className="flex justify-start">
-                  <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex items-center gap-2">
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-2">
                     <div className="flex gap-1">
                       {[0, 1, 2].map(i => (
                         <div key={i} className="w-1.5 h-1.5 bg-sapphire rounded-full animate-bounce" style={{ animationDelay: `${i * 0.1}s` }} />
                       ))}
                     </div>
-                    <span className="text-sm text-gray-500">Thinking...</span>
+                    <span className="text-sm text-slate-500">Thinking...</span>
                   </div>
                 </div>
               )}
@@ -248,14 +248,14 @@ export default function AIAssistantPage() {
             </div>
 
             {/* Input */}
-            <div className="border-t border-gray-100 p-3 bg-white">
+            <div className="border-t border-slate-100 p-3 bg-white">
               <div className="flex gap-2">
                 <input
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(query); } }}
                   placeholder={providerStatus?.enabled === false ? 'Kody is not configured — see banner above' : 'Ask Kody about your workforce...'}
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sapphire disabled:bg-gray-50 disabled:text-gray-400"
+                  className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sapphire disabled:bg-slate-50 disabled:text-slate-400"
                   disabled={loading || providerStatus?.enabled === false}
                 />
                 <button
@@ -271,14 +271,14 @@ export default function AIAssistantPage() {
 
           {/* Suggestions panel */}
           <div className="space-y-3">
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">Try asking</h3>
+            <div className="bg-white rounded-xl border border-slate-200 p-4">
+              <h3 className="text-sm font-semibold text-slate-700 mb-3">Try asking</h3>
               <div className="space-y-2">
                 {SUGGESTIONS.map((s, i) => (
                   <button
                     key={i}
                     onClick={() => sendQuery(s)}
-                    className="w-full text-start text-xs px-3 py-2 bg-gray-50 hover:bg-sapphire/10 hover:text-sapphire rounded-lg border border-gray-100 transition-colors"
+                    className="w-full text-start text-xs px-3 py-2 bg-slate-50 hover:bg-sapphire/10 hover:text-sapphire rounded-lg border border-slate-100 transition-colors"
                   >
                     {s}
                   </button>
@@ -299,17 +299,17 @@ export default function AIAssistantPage() {
       {tab === 'insights' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
+            <h2 className="text-lg font-semibold text-slate-900">Insights</h2>
             <button onClick={loadInsights} className="text-sm text-sapphire hover:underline">Refresh</button>
           </div>
           {insightList.error != null && (
             <p role="alert" className="text-sm text-rose-600">Insights could not be loaded. {requestFailureReason(insightList.error)}</p>
           )}
           {insightList.loading ? (
-            <p className="py-8 text-center text-sm text-gray-400">Loading…</p>
+            <p className="py-8 text-center text-sm text-slate-400">Loading…</p>
           ) : insightList.error != null && insights.length === 0 ? null : insights.length === 0 ? (
-            <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-              <p className="text-gray-500 text-sm">No insights available. Insights are generated automatically as your modules accumulate data.</p>
+            <div className="text-center py-16 bg-white rounded-xl border border-slate-200">
+              <p className="text-slate-500 text-sm">No insights available. Insights are generated automatically as your modules accumulate data.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -318,13 +318,13 @@ export default function AIAssistantPage() {
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${SEVERITY_COLORS[insight.severity]}`}>{insight.severity}</span>
-                        <span className="text-xs text-gray-500">{insight.module} — {insight.insightType}</span>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${SEVERITY_COLORS[insight.severity]}`}>{insight.severity}</span>
+                        <span className="text-xs text-slate-500">{insight.module} — {insight.insightType}</span>
                         {insight.isAcknowledged && <span className="text-xs text-green-600">Acknowledged</span>}
                       </div>
                       <h3 className="text-sm font-semibold">{insight.title}</h3>
                       <p className="text-xs mt-1 opacity-80">{insight.summary}</p>
-                      <p className="text-xs mt-1 text-gray-400">{new Date(insight.createdAtUtc).toLocaleDateString()}</p>
+                      <p className="text-xs mt-1 text-slate-400">{new Date(insight.createdAtUtc).toLocaleDateString()}</p>
                     </div>
                     {!insight.isAcknowledged && (
                       <button
@@ -348,10 +348,10 @@ export default function AIAssistantPage() {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-gray-900">Employee Risk Scores</h2>
+              <h2 className="text-lg font-semibold text-slate-900">Employee Risk Scores</h2>
               <p className="text-xs text-amber-600">Advisory only — all scores are heuristic estimates, not final assessments</p>
               {riskScores.length >= RISK_SCORE_LIMIT && (
-                <p role="status" className="text-xs text-gray-500">
+                <p role="status" className="text-xs text-slate-500">
                   Showing the {RISK_SCORE_LIMIT} highest churn-risk scores. Employees ranked below them are not listed here.
                 </p>
               )}
@@ -366,44 +366,44 @@ export default function AIAssistantPage() {
           </div>
 
           {riskScores.length === 0 ? (
-            <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-              <p className="text-gray-500 text-sm mb-3">No risk scores yet.</p>
+            <div className="text-center py-16 bg-white rounded-xl border border-slate-200">
+              <p className="text-slate-500 text-sm mb-3">No risk scores yet.</p>
               <button onClick={computeRisk} className="px-4 py-2 bg-sapphire text-white text-sm rounded-lg">
                 Compute Now
               </button>
             </div>
           ) : (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200">
+                <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
-                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Employee</th>
-                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Department</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Churn Risk</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Burnout Risk</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Overall</th>
-                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Recommendation</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500">Employee</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500">Department</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Churn Risk</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Burnout Risk</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Overall</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500">Recommendation</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-slate-100">
                   {riskScores.map(r => (
-                    <tr key={r.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 font-medium text-gray-900">{r.employeeName}</td>
-                      <td className="px-4 py-3 text-gray-500">{r.departmentName}</td>
+                    <tr key={r.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 font-medium text-slate-900">{r.employeeName}</td>
+                      <td className="px-4 py-3 text-slate-500">{r.departmentName}</td>
                       <td className="px-4 py-3 text-center">
                         <div className="flex items-center justify-center gap-2">
-                          <div className="w-16 bg-gray-200 rounded-full h-1.5">
+                          <div className="w-16 bg-slate-200 rounded-full h-1.5">
                             <div className="bg-orange-500 h-1.5 rounded-full" style={{ width: `${r.churnRiskScore}%` }} />
                           </div>
-                          <span className="text-xs text-gray-600">{r.churnRiskScore.toFixed(0)}%</span>
+                          <span className="text-xs text-slate-600">{r.churnRiskScore.toFixed(0)}%</span>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-center">
                         <div className="flex items-center justify-center gap-2">
-                          <div className="w-16 bg-gray-200 rounded-full h-1.5">
+                          <div className="w-16 bg-slate-200 rounded-full h-1.5">
                             <div className="bg-red-500 h-1.5 rounded-full" style={{ width: `${r.burnoutRiskScore}%` }} />
                           </div>
-                          <span className="text-xs text-gray-600">{r.burnoutRiskScore.toFixed(0)}%</span>
+                          <span className="text-xs text-slate-600">{r.burnoutRiskScore.toFixed(0)}%</span>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-center">
@@ -411,7 +411,7 @@ export default function AIAssistantPage() {
                           {r.overallRiskLevel}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-500 max-w-xs truncate">{r.recommendations}</td>
+                      <td className="px-4 py-3 text-xs text-slate-500 max-w-xs truncate">{r.recommendations}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -425,8 +425,8 @@ export default function AIAssistantPage() {
       {tab === 'policy-docs' && policyIntake && (
         <div className="space-y-4">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Policy Documents</h2>
-            <p className="text-xs text-gray-500">Upload policy documents (PDF, DOCX, TXT) and ask questions grounded in their content.</p>
+            <h2 className="text-lg font-semibold text-slate-900">Policy Documents</h2>
+            <p className="text-xs text-slate-500">Upload policy documents (PDF, DOCX, TXT) and ask questions grounded in their content.</p>
           </div>
           <PolicyDocumentManager />
         </div>
@@ -435,38 +435,38 @@ export default function AIAssistantPage() {
       {/* Query Log */}
       {tab === 'history' && (
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold text-gray-900">Kody Query Log</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Kody Query Log</h2>
           {historyList.error != null && (
             <p role="alert" className="text-sm text-rose-600">The query log could not be loaded. {requestFailureReason(historyList.error)}</p>
           )}
           {historyList.loading ? (
-            <p className="py-8 text-center text-sm text-gray-400">Loading…</p>
+            <p className="py-8 text-center text-sm text-slate-400">Loading…</p>
           ) : historyList.error != null && history.length === 0 ? null : history.length === 0 ? (
-            <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-              <p className="text-gray-500 text-sm">No queries logged yet. Ask Kody to get started.</p>
+            <div className="text-center py-16 bg-white rounded-xl border border-slate-200">
+              <p className="text-slate-500 text-sm">No queries logged yet. Ask Kody to get started.</p>
             </div>
           ) : (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200">
+                <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
-                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Time</th>
-                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Role</th>
-                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Query</th>
-                    <th className="px-4 py-3 text-start text-xs font-semibold text-gray-500">Intent</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Blocked</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">Tokens</th>
-                    <th className="px-4 py-3 text-center text-xs font-semibold text-gray-500">ms</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500">Time</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500">Role</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500">Query</th>
+                    <th className="px-4 py-3 text-start text-xs font-semibold text-slate-500">Intent</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Blocked</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">Tokens</th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold text-slate-500">ms</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-slate-100">
                   {history.map(h => (
-                    <tr key={h.id} className={`hover:bg-gray-50 ${h.wasBlocked ? 'bg-red-50' : ''}`}>
-                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+                    <tr key={h.id} className={`hover:bg-slate-50 ${h.wasBlocked ? 'bg-red-50' : ''}`}>
+                      <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                         {new Date(h.createdAtUtc).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
                       </td>
                       <td className="px-4 py-3 text-xs">{h.userRole}</td>
-                      <td className="px-4 py-3 text-xs text-gray-700 max-w-xs truncate">{h.query}</td>
+                      <td className="px-4 py-3 text-xs text-slate-700 max-w-xs truncate">{h.query}</td>
                       <td className="px-4 py-3 text-xs text-sapphire">{h.intentClassified}</td>
                       <td className="px-4 py-3 text-center">
                         {h.wasBlocked ? (
@@ -475,8 +475,8 @@ export default function AIAssistantPage() {
                           <span className="text-xs text-green-600">No</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-center text-xs text-gray-500">{h.tokensUsed}</td>
-                      <td className="px-4 py-3 text-center text-xs text-gray-500">{h.responseTimeMs}</td>
+                      <td className="px-4 py-3 text-center text-xs text-slate-500">{h.tokensUsed}</td>
+                      <td className="px-4 py-3 text-center text-xs text-slate-500">{h.responseTimeMs}</td>
                     </tr>
                   ))}
                 </tbody>

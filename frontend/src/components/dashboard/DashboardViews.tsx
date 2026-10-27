@@ -135,7 +135,7 @@ export function DashboardViews({
         <div
           role="tablist"
           aria-label={t('Dashboard views')}
-          className="wg-glass mx-auto grid max-w-md grid-cols-3 gap-1 rounded-xl border p-1"
+          className="mx-auto grid max-w-md grid-cols-3 gap-1 rounded-xl border border-line bg-surface p-1"
         >
           {VIEWS.map((v, i) => {
             const selected = active === v.id;
@@ -154,13 +154,13 @@ export function DashboardViews({
                 onKeyDown={(e) => onKey(e, i)}
                 className={`wg-press flex h-9 items-center justify-center gap-1.5 rounded-lg text-sm font-semibold ${
                   selected
-                    ? 'bg-[color:var(--wg-surface)] text-sapphire shadow-sm dark:text-blue-300'
+                    ? 'bg-primary-soft text-primary-fg'
                     : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
                 }`}
               >
                 {t(v.label)}
                 {badge ? (
-                  <span className={`min-w-[1.25rem] rounded-full px-1.5 text-[11px] font-bold tabular-nums leading-5 ${selected ? 'bg-sapphire text-white dark:bg-blue-600' : 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200'}`}>
+                  <span className={`min-w-[1.25rem] rounded-full px-1.5 text-caption font-semibold tabular-nums leading-5 ${selected ? 'bg-sapphire text-white dark:bg-blue-600' : 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200'}`}>
                     {badge}
                   </span>
                 ) : null}

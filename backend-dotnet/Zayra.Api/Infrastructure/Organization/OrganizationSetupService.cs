@@ -26,6 +26,22 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         _db = db;
         _audit = audit;
+        Removal = new OrgRowRemoval(db, audit);
+    }
+
+    /// <inheritdoc />
+    public IOrgRowRemoval Removal { get; }
+
+    /// <summary>A row in use keeps its code: other records, reports and imports refer to it by that code. A code
+    /// edit on an unused row is fine. Compared in the normalised form, so re-sending the stored code never trips it.</summary>
+    private async Task EnsureCodeUnlockedAsync(OrgRowKind kind, Guid tenantId, Guid id, string currentCode, string? requestedCode, RequestContext context, CancellationToken ct)
+    {
+        if (string.Equals(OrgCodes.Normalize(currentCode), OrgCodes.Normalize(requestedCode), StringComparison.Ordinal)) return;
+        var usage = await Removal.UsageAsync(kind, tenantId, id, ct);
+        if (!usage.InUse) return;
+        await Removal.RecordRefusalAsync(kind, tenantId, id, "code_change", usage.Summary, context, ct);
+        throw new OrganizationRuleException(OrganizationRuleException.CodeLocked,
+            $"The code can't be changed because this is in use. {usage.Summary}. Change the name instead, or turn it off and add a new one.");
     }
 
     public async Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
@@ -290,8 +306,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         var branch = new Branch { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(branch, request);
         _db.Branches.Add(branch);
+        _audit.Stage("organization.branch_created", nameof(Branch), branch.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.branch_created", nameof(Branch), branch.Id.ToString(), context, null, cancellationToken);
         return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
@@ -299,6 +315,9 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var branch = await _db.Branches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (branch is null) return null;
+        await EnsureCodeUnlockedAsync(OrgRowKind.Branch, tenantId, id, branch.Code, request.Code, context, cancellationToken);
+        // On or off is changed only by Remove / Restore (permissioned and audited), never by an edit.
+        var wasActive = branch.IsActive;
         // A changed country must be a real one. An unchanged legacy value is let through: the wizard re-sends a
         // branch's stored country when it edits only the name or city, and that must not start failing.
         if (!string.Equals(CountryCodeStandard.ToStored(request.CountryCode), branch.CountryCode, StringComparison.OrdinalIgnoreCase))
@@ -306,10 +325,11 @@ public class OrganizationSetupService : IOrganizationSetupService
         await EnsureCompanyExists(tenantId, request.CompanyId, cancellationToken);
         await EnsureBranchCodeUnique(tenantId, request.CompanyId, request.Code, id, cancellationToken);
         Apply(branch, request);
+        branch.IsActive = wasActive;
         branch.UpdatedAtUtc = DateTime.UtcNow;
         branch.UpdatedBy = context.UserId;
+        _audit.Stage("organization.branch_updated", nameof(Branch), branch.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.branch_updated", nameof(Branch), branch.Id.ToString(), context, null, cancellationToken);
         return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
@@ -349,6 +369,9 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var department = await _db.Departments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (department is null) return null;
+        await EnsureCodeUnlockedAsync(OrgRowKind.Department, tenantId, id, department.Code, request.Code, context, cancellationToken);
+        // On or off is changed only by Remove / Restore (permissioned and audited), never by an edit.
+        var wasActive = department.IsActive;
         var companyId = await ResolveCompanyOnUpdateAsync(tenantId, department.CompanyId, request.CompanyId, cancellationToken);
         await EnsureDepartmentLinksAsync(tenantId, companyId, id, request, department.CostCenterId, cancellationToken);
         await EnsureDepartmentCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
@@ -357,6 +380,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         var before = DepartmentSnapshot(department);
         department.CompanyId = companyId;
         Apply(department, request);
+        department.IsActive = wasActive;
         department.UpdatedAtUtc = DateTime.UtcNow;
         department.UpdatedBy = context.UserId;
         _audit.Stage("organization.department_updated", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
@@ -395,8 +419,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         var designation = new Designation { TenantId = tenantId, CompanyId = companyId, CreatedBy = context.UserId };
         Apply(designation, request);
         _db.Designations.Add(designation);
+        _audit.Stage("organization.designation_created", nameof(Designation), designation.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.designation_created", nameof(Designation), designation.Id.ToString(), context, null, cancellationToken);
         return designation.ToDto();
     }
 
@@ -404,15 +428,19 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var designation = await _db.Designations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (designation is null) return null;
+        await EnsureCodeUnlockedAsync(OrgRowKind.Designation, tenantId, id, designation.Code, request.Code, context, cancellationToken);
+        // On or off is changed only by Remove / Restore (permissioned and audited), never by an edit.
+        var wasActive = designation.IsActive;
         var companyId = await ResolveCompanyOnUpdateAsync(tenantId, designation.CompanyId, request.CompanyId, cancellationToken);
         await EnsureDesignationLinksAsync(tenantId, companyId, request, cancellationToken);
         await EnsureDesignationCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
         designation.CompanyId = companyId;
         Apply(designation, request);
+        designation.IsActive = wasActive;
         designation.UpdatedAtUtc = DateTime.UtcNow;
         designation.UpdatedBy = context.UserId;
+        _audit.Stage("organization.designation_updated", nameof(Designation), designation.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.designation_updated", nameof(Designation), designation.Id.ToString(), context, null, cancellationToken);
         return designation.ToDto();
     }
 
@@ -441,8 +469,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         // Addendum B: a grade's currency defaults to its company's, not to a tenant-wide one.
         if (string.IsNullOrWhiteSpace(request.Currency)) grade.Currency = await CompanyCurrencyAsync(tenantId, companyId, cancellationToken) ?? grade.Currency;
         _db.Grades.Add(grade);
+        _audit.Stage("organization.grade_created", nameof(Grade), grade.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.grade_created", nameof(Grade), grade.Id.ToString(), context, null, cancellationToken);
         return grade.ToDto();
     }
 
@@ -450,11 +478,15 @@ public class OrganizationSetupService : IOrganizationSetupService
     {
         var grade = await _db.Grades.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (grade is null) return null;
+        await EnsureCodeUnlockedAsync(OrgRowKind.Grade, tenantId, id, grade.Code, request.Code, context, cancellationToken);
+        // On or off is changed only by Remove / Restore (permissioned and audited), never by an edit.
+        var wasActive = grade.IsActive;
         var companyId = await ResolveCompanyOnUpdateAsync(tenantId, grade.CompanyId, request.CompanyId, cancellationToken);
         await EnsureGradeCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
         grade.CompanyId = companyId;
         var previousCurrency = grade.Currency;
         Apply(grade, request);
+        grade.IsActive = wasActive;
         if (string.IsNullOrWhiteSpace(request.Currency)) grade.Currency = previousCurrency;
         grade.UpdatedAtUtc = DateTime.UtcNow;
         grade.UpdatedBy = context.UserId;
@@ -463,8 +495,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         var packageLines = await _db.GradePayScaleComponents.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.GradeId == grade.Id && c.IsActive).ToListAsync(cancellationToken);
         await GradeSalaryStructureSync.StageAsync(_db, grade, packageLines, context.UserId, createIfMissing: false, cancellationToken);
+        _audit.Stage("organization.grade_updated", nameof(Grade), grade.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("organization.grade_updated", nameof(Grade), grade.Id.ToString(), context, null, cancellationToken);
         return grade.ToDto();
     }
 
@@ -571,6 +603,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         if ((codeChanged || companyChanged)
             && await _db.FinanceGlEntries.AnyAsync(e => e.TenantId == tenantId && e.CostCenterId == id, cancellationToken))
             throw CostCentreRuleException.CodeLocked(costCenter.Code);
+        // The setup rule for every organisation row: a code that anything points at (not only a posted line) is not re-typed.
+        if (codeChanged) await EnsureCodeUnlockedAsync(OrgRowKind.CostCenter, tenantId, id, costCenter.Code, request.Code, context, cancellationToken);
         if (codeChanged) await EnsureCostCenterCodeUnique(tenantId, request.CompanyId, request.Code, id, cancellationToken);
         if (segmentGiven && glSegment is not null && !string.Equals(glSegment, costCenter.GlSegment, StringComparison.OrdinalIgnoreCase))
             await EnsureGlSegmentUnique(tenantId, request.CompanyId, glSegment, id, cancellationToken);
@@ -1308,8 +1342,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         entity.GetType().GetProperty("IsDeleted")?.SetValue(entity, true);
         entity.GetType().GetProperty("DeletedAtUtc")?.SetValue(entity, DateTime.UtcNow);
         entity.GetType().GetProperty("DeletedBy")?.SetValue(entity, context.UserId);
+        _audit.Stage(action, typeof(T).Name, id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync(action, typeof(T).Name, id.ToString(), context, null, cancellationToken);
         return true;
     }
 }

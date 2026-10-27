@@ -2,8 +2,14 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Setup;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Audit;
+using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Email;
 using Zayra.Api.Models;
@@ -15,7 +21,8 @@ namespace Zayra.Api.Controllers.Admin;
 public class SetupSettingsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public SetupSettingsController(ZayraDbContext db) => _db = db;
+    private readonly IAuditService _audit;
+    public SetupSettingsController(ZayraDbContext db, IAuditService audit) { _db = db; _audit = audit; }
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
@@ -41,10 +48,12 @@ public class SetupSettingsController : ControllerBase
         var existing = await _db.NumberingRules.FirstOrDefaultAsync(x => x.TenantId == tid && x.EntityType == req.EntityType, ct);
         if (existing != null)
         {
+            var before = NumberingAudit(existing);
             existing.Prefix = req.Prefix; existing.Suffix = req.Suffix ?? string.Empty;
             existing.PaddingLength = req.PaddingLength; existing.Separator = req.Separator;
             existing.IncludeYear = req.IncludeYear; existing.IncludeMonth = req.IncludeMonth;
             existing.ResetYearly = req.ResetYearly; existing.UpdatedAtUtc = DateTime.UtcNow; existing.UpdatedBy = uid;
+            this.RecordChange(_db, tid, null, "NumberingRule", existing.Id.ToString(), "Updated", before, NumberingAudit(existing));
             await _db.SaveChangesAsync(ct);
             return Ok(existing);
         }
@@ -56,6 +65,7 @@ public class SetupSettingsController : ControllerBase
             ResetYearly = req.ResetYearly, CreatedBy = uid,
         };
         _db.NumberingRules.Add(r);
+        this.RecordChange(_db, tid, null, "NumberingRule", r.Id.ToString(), "Created", null, NumberingAudit(r));
         await _db.SaveChangesAsync(ct);
         return Ok(r);
     }
@@ -243,14 +253,129 @@ public class SetupSettingsController : ControllerBase
         return Ok(g);
     }
 
+    /// <summary>Setup's Remove for a country rule. Payroll, end-of-service and work-week history refer to it, so it is never
+    /// erased: it is turned off (readers ignore it) and can be restored. Same permission and scope as editing.</summary>
+    [HttpDelete("api/admin/gcc-settings/{id:guid}")]
+    [HasPermission("security.manage")]
+    public async Task<IActionResult> RemoveGCCSetting(Guid id, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tid = GetTenantId();
+        var row = await _db.GCCComplianceSettings.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == id, ct);
+        if (row is null) return NotFound();
+        if (row.IsActive)
+        {
+            row.IsActive = false; row.TurnedOffAtUtc = DateTime.UtcNow; row.TurnedOffBy = GetUserId();
+            row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = GetUserId();
+            this.RecordChange(_db, tid, row.CompanyId, "GCCComplianceSetting", id.ToString(), "TurnedOff", new { row.CountryCode, IsActive = true }, new { row.CountryCode, IsActive = false });
+            await _db.SaveChangesAsync(ct);
+        }
+        var usage = await SetupRemoval.MeasureAsync(this, new[]
+        {
+            SetupRemoval.Of<Company>(_db, tid, "companies", "companies", c => !c.IsDeleted && c.CountryCode == row.CountryCode && (row.CompanyId == null || c.Id == row.CompanyId)),
+        }, ct);
+        return SetupRemoval.TurnedOff(this, usage);
+    }
+
+    [HttpPost("api/admin/gcc-settings/{id:guid}/restore")]
+    [HasPermission("security.manage")]
+    public async Task<IActionResult> RestoreGCCSetting(Guid id, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tid = GetTenantId();
+        var row = await _db.GCCComplianceSettings.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == id, ct);
+        if (row is null) return NotFound();
+        if (!row.IsActive)
+        {
+            if (await _db.GCCComplianceSettings.AnyAsync(x => x.TenantId == tid && x.Id != id && x.IsActive && x.CompanyId == row.CompanyId && x.CountryCode == row.CountryCode, ct))
+                return SetupRemoval.Blocked(this, "COUNTRY_RULE_EXISTS", $"Another {row.CountryCode} rule is already on for this scope. Turn it off first, then restore this one.");
+            row.IsActive = true; row.TurnedOffAtUtc = null; row.TurnedOffBy = null;
+            row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = GetUserId();
+            this.RecordChange(_db, tid, row.CompanyId, "GCCComplianceSetting", id.ToString(), "Restored", new { row.CountryCode, IsActive = false }, new { row.CountryCode, IsActive = true });
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
+    }
+
     // ── Fiscal Years ────────────────────────────────────────────────────────
 
     [HttpGet("api/admin/fiscal-years")]
     public async Task<IActionResult> ListFiscalYears(CancellationToken ct)
     {
         var tid = GetTenantId();
-        return Ok(await _db.FiscalYears.Where(x => x.TenantId == tid).OrderByDescending(x => x.Year).ToListAsync(ct));
+        var years = await _db.FiscalYears.Where(x => x.TenantId == tid).OrderByDescending(x => x.Year).ToListAsync(ct);
+        var canWrite = this.HasGroupEntityScope() && User.HasClaim("permission", "security.manage");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var rows = new List<object>();
+        // Usage (and its reason text) is only computed for callers who can manage fiscal years; everyone
+        // else gets one generic sentence. Evidence is loaded once, not per year.
+        HashSet<string> glPeriods = new(); HashSet<int> runMonths = new();
+        if (canWrite)
+        {
+            glPeriods = (await ScopedBypass.TenantWide(_db.GlPeriodCloses, tid, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.")
+                .Select(g => g.Period).Distinct().ToListAsync(ct)).ToHashSet();
+            runMonths = (await ScopedBypass.TenantWide(_db.PayrollRuns, tid, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.")
+                .Select(p => p.Year * 12 + p.Month).Distinct().ToListAsync(ct)).ToHashSet();
+        }
+        foreach (var fy in years)
+        {
+            string? blocked, closeBlocked;
+            if (!canWrite)
+            {
+                blocked = closeBlocked = "Only group administrators with security access can change fiscal years.";
+            }
+            else
+            {
+                blocked = fy.Status == "Closed" ? "This year is closed, so it is kept for the record and cannot be deleted."
+                    : FiscalYearUsage(fy, glPeriods, runMonths);
+                closeBlocked = fy.Status == "Closed" ? "This year is already closed." : null;
+            }
+            rows.Add(new
+            {
+                fy.Id, fy.TenantId, fy.Code, fy.Year, fy.StartDate, fy.EndDate, fy.Status,
+                // Derived from the dates; the stored IsCurrent flag is never maintained.
+                isCurrent = fy.StartDate <= today && today <= fy.EndDate,
+                fy.CreatedAtUtc, fy.CreatedBy, fy.ClosedAtUtc, fy.ClosedBy,
+                canClose = canWrite && fy.Status == "Open",
+                canDelete = canWrite && blocked is null,
+                closeBlockedReason = closeBlocked,
+                deleteBlockedReason = blocked,
+            });
+        }
+        return Ok(rows);
     }
+
+    /// <summary>Plain-language reason a year has history (null when nothing refers to it).</summary>
+    private static string? FiscalYearUsage(FiscalYear fy, HashSet<string> glPeriods, HashSet<int> runMonths)
+    {
+        var startKey = $"{fy.StartDate.Year:D4}-{fy.StartDate.Month:D2}";
+        var endKey = $"{fy.EndDate.Year:D4}-{fy.EndDate.Month:D2}";
+        if (glPeriods.Any(p => string.Compare(p, startKey, StringComparison.Ordinal) >= 0 && string.Compare(p, endKey, StringComparison.Ordinal) <= 0))
+            return "Accounting periods inside this year already exist, so it cannot be deleted.";
+        var ys = fy.StartDate.Year * 12 + fy.StartDate.Month; var ye = fy.EndDate.Year * 12 + fy.EndDate.Month;
+        if (runMonths.Any(m => m >= ys && m <= ye))
+            return "Payroll runs inside this year already exist, so it cannot be deleted.";
+        return null;
+    }
+
+    private async Task<string?> FiscalYearUsageAsync(Guid tid, FiscalYear fy, CancellationToken ct)
+    {
+        var startKey = $"{fy.StartDate.Year:D4}-{fy.StartDate.Month:D2}";
+        var endKey = $"{fy.EndDate.Year:D4}-{fy.EndDate.Month:D2}";
+        if (await ScopedBypass.TenantWide(_db.GlPeriodCloses, tid, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.").AnyAsync(g => g.TenantId == tid
+                && string.Compare(g.Period, startKey) >= 0 && string.Compare(g.Period, endKey) <= 0, ct))
+            return "Accounting periods inside this year already exist, so it cannot be deleted.";
+        var ys = fy.StartDate.Year * 12 + fy.StartDate.Month; var ye = fy.EndDate.Year * 12 + fy.EndDate.Month;
+        if (await ScopedBypass.TenantWide(_db.PayrollRuns, tid, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.").AnyAsync(p => p.TenantId == tid
+                && p.Year * 12 + p.Month >= ys && p.Year * 12 + p.Month <= ye, ct))
+            return "Payroll runs inside this year already exist, so it cannot be deleted.";
+        return null;
+    }
+
+    private static object NumberingAudit(NumberingRule r) => new
+    {
+        r.EntityType, r.Prefix, r.Suffix, r.PaddingLength, r.Separator, r.IncludeYear, r.IncludeMonth, r.ResetYearly, r.IsActive, r.CurrentSequence,
+    };
 
     [HttpPost("api/admin/fiscal-years")]
     [HasPermission("organization.write")]
@@ -267,20 +392,27 @@ public class SetupSettingsController : ControllerBase
             StartDate = req.StartDate, EndDate = req.EndDate, Status = "Open", CreatedBy = uid,
         };
         _db.FiscalYears.Add(fy);
+        this.RecordChange(_db, tid, null, "FiscalYear", fy.Id.ToString(), "Created", null, new { fy.Code, fy.Year, fy.StartDate, fy.EndDate });
         await _db.SaveChangesAsync(ct);
         return Ok(fy);
     }
 
     [HttpPatch("api/admin/fiscal-years/{id:guid}/close")]
     [HasPermission("security.manage")]
-    public async Task<IActionResult> CloseFiscalYear(Guid id, CancellationToken ct)
+    public Task<IActionResult> CloseFiscalYear(Guid id, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, GetTenantId(), () => CloseFiscalYearCore(id, ct), ct);
+
+    private async Task<IActionResult> CloseFiscalYearCore(Guid id, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var uid = GetUserId();
         var fy = await _db.FiscalYears.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (fy == null) return NotFound();
+        if (fy.Status == "Closed")
+            return Conflict(new { code = "FISCAL_YEAR_ALREADY_CLOSED", message = "This fiscal year is already closed." });
         fy.Status = "Closed"; fy.ClosedAtUtc = DateTime.UtcNow; fy.ClosedBy = uid;
+        this.RecordChange(_db, tid, null, "FiscalYear", fy.Id.ToString(), "Closed", new { Status = "Open" }, new { fy.Status, fy.ClosedAtUtc });
         await _db.SaveChangesAsync(ct);
         return Ok(fy);
     }
@@ -332,36 +464,41 @@ public class SetupSettingsController : ControllerBase
         loc.AddressLine1 = req.AddressLine1 ?? string.Empty; loc.City = req.City ?? string.Empty;
         loc.CountryCode = req.CountryCode ?? string.Empty; loc.PostalCode = req.PostalCode ?? string.Empty;
         loc.Latitude = req.Latitude; loc.Longitude = req.Longitude;
-        loc.GeofenceRadiusMeters = req.GeofenceRadiusMeters; loc.IsActive = req.IsActive;
+        loc.GeofenceRadiusMeters = req.GeofenceRadiusMeters;
         loc.UpdatedAtUtc = DateTime.UtcNow; loc.UpdatedBy = uid;
         await _db.SaveChangesAsync(ct);
         return Ok(loc);
     }
 
     [HttpDelete("api/admin/locations/{id:guid}")]
-    [HasPermission("organization.write")]
-    public async Task<IActionResult> DeleteLocation(Guid id, CancellationToken ct)
-    {
-        if (!this.HasGroupEntityScope()) return Forbid();
-        var tid = GetTenantId();
-        var loc = await _db.Locations.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loc == null) return NotFound();
-        loc.IsDeleted = true;
-        loc.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        return NoContent();
-    }
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> DeleteLocation(Guid id, CancellationToken ct)
+        => OrgWriteRules.RemoveAsync(this, new OrgRowRemoval(_db, _audit), OrgRowKind.Location, id,
+            new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), GetTenantId()), ct);
+
+    [HttpPost("api/admin/locations/{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> RestoreLocation(Guid id, CancellationToken ct)
+        => OrgWriteRules.RestoreAsync(this, new OrgRowRemoval(_db, _audit), OrgRowKind.Location, id,
+            new RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), GetTenantId()), ct);
 
     [HttpDelete("api/admin/fiscal-years/{id:guid}")]
     [HasPermission("security.manage")]
-    public async Task<IActionResult> DeleteFiscalYear(Guid id, CancellationToken ct)
+    public Task<IActionResult> DeleteFiscalYear(Guid id, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, GetTenantId(), () => DeleteFiscalYearCore(id, ct), ct);
+
+    private async Task<IActionResult> DeleteFiscalYearCore(Guid id, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
         var tid = GetTenantId();
         var fy = await _db.FiscalYears.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (fy == null) return NotFound();
-        if (fy.IsCurrent) return BadRequest(new { message = "Cannot delete the current fiscal year." });
+        if (fy.Status == "Closed")
+            return Conflict(new { code = "FISCAL_YEAR_CLOSED", message = "A closed fiscal year is part of the record and cannot be deleted." });
+        if (await FiscalYearUsageAsync(tid, fy, ct) is { } usage)
+            return Conflict(new { code = "FISCAL_YEAR_IN_USE", message = usage });
         _db.FiscalYears.Remove(fy);
+        this.RecordChange(_db, tid, null, "FiscalYear", fy.Id.ToString(), "Deleted", new { fy.Code, fy.Year, fy.StartDate, fy.EndDate, fy.Status }, null);
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
@@ -374,19 +511,39 @@ public class SetupSettingsController : ControllerBase
         var tid = GetTenantId();
         var rule = await _db.NumberingRules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
         if (rule == null) return NotFound();
+        // No issuing code reads or advances numbering rules today (CurrentSequence is never incremented),
+        // so there is no history to protect; the delete is audited like every other change.
         _db.NumberingRules.Remove(rule);
+        this.RecordChange(_db, tid, null, "NumberingRule", rule.Id.ToString(), "Deleted", NumberingAudit(rule), null);
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    [HttpPatch("api/admin/numbering-rules/{id:guid}/active")]
+    [HasPermission("security.manage")]
+    public async Task<IActionResult> SetNumberingRuleActive(Guid id, [FromQuery] bool active, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tid = GetTenantId();
+        var rule = await _db.NumberingRules.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid, ct);
+        if (rule == null) return NotFound();
+        if (rule.IsActive == active) return Ok(rule);
+        rule.IsActive = active; rule.UpdatedAtUtc = DateTime.UtcNow; rule.UpdatedBy = GetUserId();
+        this.RecordChange(_db, tid, null, "NumberingRule", rule.Id.ToString(), active ? "Activated" : "Deactivated", new { IsActive = !active }, new { IsActive = active });
+        await _db.SaveChangesAsync(ct);
+        return Ok(rule);
     }
 
     // ── Notification Templates ───────────────────────────────────────────────
 
     [HttpGet("api/admin/notification-templates")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> ListNotificationTemplates([FromQuery] string? channel, CancellationToken ct)
+    public async Task<IActionResult> ListNotificationTemplates([FromQuery] string? channel, [FromQuery] bool includeRemoved, CancellationToken ct)
     {
         var tid = GetTenantId();
-        var q = _db.NotificationTemplates.Where(x => x.TenantId == tid && !x.IsDeleted);
+        // "Show turned-off" also lists removed templates, so they can be restored.
+        // Only someone who could actually restore a row (same permission and group scope as Restore) is shown removed ones.
+        var q = includeRemoved && this.HasGroupEntityScope() && User.HasPermission("notifications.manage") ? ScopedBypass.TenantWide(_db.NotificationTemplates, tid, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.") : _db.NotificationTemplates.Where(x => x.TenantId == tid);
         if (!string.IsNullOrEmpty(channel)) q = q.Where(x => x.Channel == channel);
         return Ok(await q.OrderBy(x => x.EventType).ToListAsync(ct));
     }
@@ -439,8 +596,29 @@ public class SetupSettingsController : ControllerBase
         if (t == null) return NotFound();
         t.IsDeleted = true;
         t.UpdatedAtUtc = DateTime.UtcNow;
+        this.RecordChange(_db, tid, null, "NotificationTemplate", id.ToString(), "Removed", new { t.Code, t.Channel }, null);
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        // Nothing references a template by id (events look it up by code and channel), so Remove never needs to keep a used row.
+        return SetupRemoval.Deleted(this);
+    }
+
+    [HttpPost("api/admin/notification-templates/{id:guid}/restore")]
+    [HasPermission("notifications.manage")]
+    public async Task<IActionResult> RestoreNotificationTemplate(Guid id, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tid = GetTenantId();
+        var t = await ScopedBypass.TenantWide(_db.NotificationTemplates, tid, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.").FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (t == null) return NotFound();
+        if (t.IsDeleted && await _db.NotificationTemplates.AnyAsync(x => x.TenantId == tid && x.Id != id && x.Code == t.Code && x.Channel == t.Channel && !x.IsDeleted, ct))
+            return SetupRemoval.Blocked(this, "NOTIFICATION_TEMPLATE_CODE_TAKEN", $"A template with code {t.Code} on {t.Channel} now exists, so this one cannot be restored as it is.");
+        if (t.IsDeleted || !t.IsActive)
+        {
+            t.IsDeleted = false; t.IsActive = true; t.UpdatedAtUtc = DateTime.UtcNow; t.UpdatedBy = GetUserId();
+            this.RecordChange(_db, tid, null, "NotificationTemplate", id.ToString(), "Restored", null, new { t.Code, t.Channel });
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
     }
 
     // ── Admin Audit Logs ─────────────────────────────────────────────────────

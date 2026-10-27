@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
@@ -7,7 +7,15 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Employees;
 
-/// <summary>Shared effective-dated salary writer for employee creation and approved profile changes.</summary>
+/// <summary>Shared effective-dated salary writer.
+/// <para><see cref="ApplyAsync"/> writes a salary row DIRECTLY and is therefore only for callers that sit behind a decision
+/// by a second person: the approval of a hire DRAFT (the Approvals workflow decides it) and an approved employee-change
+/// request (<c>EmployeeChangeApplier</c>, whose decider must hold <c>payroll.approve</c>). It is NOT safe for a single
+/// HR user: <c>POST /employees</c> and the employee import stage a new hire's first package with
+/// <see cref="StageFirstPackageAsync"/> instead, as a <c>SalaryChangeRequest</c> that Finance (a different person) approves,
+/// and the employee cannot be activated while that package waits. Anything that changes an EXISTING employee's pay goes
+/// through <c>PayrollController</c>'s staging endpoints.</para>
+/// </summary>
 public static class EmployeeSalaryBreakdownWriter
 {
     /// <param name="fillOmittedFromGrade">
@@ -49,48 +57,7 @@ public static class EmployeeSalaryBreakdownWriter
                                             select activeStructure.Code).Distinct().ToListAsync(cancellationToken);
         foreach (var prior in replaced) prior.IsActive = false;
 
-        if (structure is null)
-        {
-            // Currency, most specific first: what the operator typed, then the grade's, then the
-            // employing company's default. Never a hard-coded literal — the entity default is "AED".
-            var structureCurrency = Clean(request?.Currency) is { Length: > 0 } requestCurrency
-                ? requestCurrency.ToUpperInvariant()
-                : grade?.Currency is { Length: > 0 } gradeCurrency
-                    ? gradeCurrency
-                    : await ResolveCompanyCurrencyAsync(db, employee, cancellationToken);
-            structure = new SalaryStructure
-            {
-                TenantId = employee.TenantId.Value,
-                CompanyId = employee.CompanyId,
-                Code = structureCode,
-                Name = grade is null ? "Direct salary structure" : $"{grade.Name} salary structure",
-                Currency = structureCurrency,
-                EffectiveDate = effectiveDate,
-                CreatedBy = context.UserId
-            };
-            db.SalaryStructures.Add(structure);
-
-            if (releaseA && grade is not null)
-                db.SalaryComponents.AddRange(EntitlementMatrixService.SalaryComponentsFor(
-                    await EntitlementMatrixService.CashAllowancesAsync(db, employee.TenantId.Value, grade.Id, employee.CompanyId, effectiveDate, cancellationToken),
-                    employee.TenantId.Value, structure.Id));
-            foreach (var component in components)
-            {
-                db.SalaryComponents.Add(new SalaryComponent
-                {
-                    TenantId = employee.TenantId.Value,
-                    SalaryStructureId = structure.Id,
-                    Code = component.ComponentCode,
-                    Name = component.ComponentName,
-                    ComponentType = component.ComponentType,
-                    CalculationType = component.CalculationType,
-                    Amount = component.Amount,
-                    Percentage = component.Percentage,
-                    IsTaxable = component.IsTaxable
-                });
-            }
-        }
-
+        structure ??= await CreateDefaultStructureAsync(db, employee, grade, request, structureCode, effectiveDate, releaseA, components, context, cancellationToken);
         var assignment = new EmployeeSalaryStructure
         {
             TenantId = employee.TenantId.Value,
@@ -111,6 +78,98 @@ public static class EmployeeSalaryBreakdownWriter
         employee.Salary = GrossSalary(salary);
         employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
         await MirrorStructureReferenceAsync(db, employee, structure.Code, previousStructureCodes, cancellationToken);
+    }
+
+
+    /// <summary>
+    /// A NEW hire's first package, STAGED for a second person instead of written: a <c>SalaryChangeRequest</c> (Source
+    /// "NewHire", or the caller's own source) that a Finance approver who is neither the maker nor the employee applies. No
+    /// salary row, and so nothing payroll can see, exists until then; while it is pending the employee cannot be activated
+    /// (see <c>EmployeeReadinessEvaluator</c>). Same resolution and structure rules as <see cref="ApplyAsync"/> (one
+    /// computation), so the approver applies exactly what the form showed. Returns null when there is no salary to stage.
+    /// The employee must already have an id.
+    /// </summary>
+    public static async Task<SalaryChangeRequest?> StageFirstPackageAsync(ZayraDbContext db, Employee employee, EmployeeSalaryBreakdownRequest? request,
+        RequestContext context, CancellationToken cancellationToken, bool fillOmittedFromGrade = false, string source = SalaryChangeSources.NewHire, Guid? batchId = null)
+    {
+        if (employee.TenantId is null || employee.Id == 0) return null;
+        var (grade, salary, releaseA, components) = await ResolveSalaryAsync(db, employee, request, fillOmittedFromGrade, cancellationToken);
+        if (GrossSalary(salary) <= 0) return null;
+        var effectiveDate = SalaryEffectiveDate(employee, request);
+        var structureCode = Clean(request?.SalaryStructureCode);
+        if (string.IsNullOrWhiteSpace(structureCode)) structureCode = DefaultStructureCode(grade);
+        var structure = await ResolveStructureAsync(db, employee, grade, structureCode, cancellationToken)
+                        ?? await CreateDefaultStructureAsync(db, employee, grade, request, structureCode, effectiveDate, releaseA, components, context, cancellationToken);
+        var makerName = context.UserId is Guid maker
+            ? await db.Users.AsNoTracking().Where(u => u.TenantId == employee.TenantId && u.Id == maker).Select(u => u.FullName).FirstOrDefaultAsync(cancellationToken) ?? string.Empty
+            : string.Empty;
+        var change = new SalaryChangeRequest
+        {
+            TenantId = employee.TenantId.Value, CompanyId = employee.CompanyId, BatchId = batchId, Source = source,
+            EmployeeId = employee.Id, EmployeeCode = employee.EmployeeCode, EmployeeName = employee.FullName,
+            SalaryStructureId = structure.Id,
+            BasicSalary = salary.BasicSalary ?? 0m, HousingAllowance = salary.HousingAllowance ?? 0m, TransportAllowance = salary.TransportAllowance ?? 0m,
+            FoodAllowance = salary.FoodAllowance ?? 0m, MobileAllowance = salary.MobileAllowance ?? 0m, OtherAllowance = salary.OtherAllowance ?? 0m,
+            FixedDeduction = salary.FixedDeduction ?? 0m, EffectiveDate = effectiveDate,
+            Currency = Clean(request?.Currency) is { Length: > 0 } currency ? currency.ToUpperInvariant() : structure.Currency,
+            PreviousBasicSalary = null, RequestedByUserId = context.UserId, RequestedByName = makerName,
+        };
+        db.SalaryChangeRequests.Add(change);
+        return change;
+    }
+
+    /// <summary>The employee-side effects of an approved FIRST package, which <c>ApplyAsync</c> performs inline: the gross on the
+    /// employee row, the payroll profile code, and the profile's structure reference. Called by the approver's apply step.</summary>
+    public static async Task ApplyFirstPackageEffectsAsync(ZayraDbContext db, Employee employee, SalaryStructure structure, SalaryChangeRequest change, CancellationToken cancellationToken)
+    {
+        var gross = change.BasicSalary + change.HousingAllowance + change.TransportAllowance + change.FoodAllowance + change.MobileAllowance + change.OtherAllowance;
+        if (employee.Salary is null or 0m) employee.Salary = gross;
+        employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
+        await MirrorStructureReferenceAsync(db, employee, structure.Code, Array.Empty<string>(), cancellationToken);
+    }
+
+    private static async Task<SalaryStructure> CreateDefaultStructureAsync(ZayraDbContext db, Employee employee, Grade? grade, EmployeeSalaryBreakdownRequest? request,
+        string structureCode, DateOnly effectiveDate, bool releaseA, List<GradePayScaleComponent> components, RequestContext context, CancellationToken cancellationToken)
+    {
+        // Currency, most specific first: what the operator typed, then the grade's, then the
+        // employing company's default. Never a hard-coded literal — the entity default is "AED".
+        var structureCurrency = Clean(request?.Currency) is { Length: > 0 } requestCurrency
+            ? requestCurrency.ToUpperInvariant()
+            : grade?.Currency is { Length: > 0 } gradeCurrency
+                ? gradeCurrency
+                : await ResolveCompanyCurrencyAsync(db, employee, cancellationToken);
+        var structure = new SalaryStructure
+        {
+            TenantId = employee.TenantId!.Value,
+            CompanyId = employee.CompanyId,
+            Code = structureCode,
+            Name = grade is null ? "Direct salary structure" : $"{grade.Name} salary structure",
+            Currency = structureCurrency,
+            EffectiveDate = effectiveDate,
+            CreatedBy = context.UserId
+        };
+        db.SalaryStructures.Add(structure);
+
+        if (releaseA && grade is not null)
+            db.SalaryComponents.AddRange(EntitlementMatrixService.SalaryComponentsFor(
+                await EntitlementMatrixService.CashAllowancesAsync(db, employee.TenantId.Value, grade.Id, employee.CompanyId, effectiveDate, cancellationToken),
+                employee.TenantId.Value, structure.Id));
+        foreach (var component in components)
+        {
+            db.SalaryComponents.Add(new SalaryComponent
+            {
+                TenantId = employee.TenantId.Value,
+                SalaryStructureId = structure.Id,
+                Code = component.ComponentCode,
+                Name = component.ComponentName,
+                ComponentType = component.ComponentType,
+                CalculationType = component.CalculationType,
+                Amount = component.Amount,
+                Percentage = component.Percentage,
+                IsTaxable = component.IsTaxable
+            });
+        }
+        return structure;
     }
 
     /// <summary>The code a salary gets when no structure is chosen: the grade's, or DIRECT for a gradeless employee.</summary>
@@ -351,4 +410,14 @@ public sealed class InactiveSalaryStructureException(string code)
 {
     public const string Code = "inactive_salary_structure";
     public override string ErrorCode => Code;
+}
+
+/// <summary>Where a <see cref="SalaryChangeRequest"/> came from. "Manual" and "Import" (payroll CSV) change an existing
+/// employee's pay; the two below stage a NEW hire's first package.</summary>
+public static class SalaryChangeSources
+{
+    public const string NewHire = "NewHire";
+    public const string EmployeeImport = "EmployeeImport";
+    /// <summary>First-package sources: the employee has no earlier package, and activation waits for the approval.</summary>
+    public static bool IsFirstPackage(string? source) => source is NewHire or EmployeeImport;
 }

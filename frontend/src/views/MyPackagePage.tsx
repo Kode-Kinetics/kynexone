@@ -49,7 +49,7 @@ function MyPackage() {
 
   const header = (
     <div>
-      <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('My package')}</h1>
+      <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('My package')}</h1>
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('Your pay, your contract benefits for this contract year, and the facilities your grade offers.')}</p>
     </div>
   );

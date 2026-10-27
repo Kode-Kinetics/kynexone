@@ -189,7 +189,7 @@ export function MyRequestsPage() {
               {thread && (
                 <EssCard title={thread.request.subject} testId="my-requests-thread">
                   <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{thread.request.description}</p>
-                  <h3 className="mt-4 text-xs font-bold text-slate-600 dark:text-slate-300">{t('Conversation with HR')}</h3>
+                  <h3 className="mt-4 text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Conversation with HR')}</h3>
                   {thread.comments.length === 0 ? (
                     <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('No replies yet. HR will reply here.')}</p>
                   ) : (
@@ -198,7 +198,7 @@ export function MyRequestsPage() {
                         <li key={c.id} className={`rounded-xl p-3 text-sm ${c.authorType === 'HR'
                           ? 'bg-sapphire/[0.06] dark:bg-cyanAccent/[0.08]'
                           : 'bg-slate-50 dark:bg-white/[0.03]'}`}>
-                          <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                          <p className="text-caption font-semibold text-slate-500 dark:text-slate-400">
                             {c.authorType === 'HR'
                               ? fillTemplate(t('HR ({name}), {date}'), { name: c.authorName, date: fmtDate(c.createdAtUtc) })
                               : fillTemplate(t('You, {date}'), { date: fmtDate(c.createdAtUtc) })}

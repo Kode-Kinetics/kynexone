@@ -20,15 +20,20 @@ public class AuditService : IAuditService
 
     public async Task WriteAsync(string action, string entityName, string? entityId, RequestContext context, string? metadata, CancellationToken cancellationToken)
     {
-        var now = DateTime.UtcNow;
-        var previousHash = _db.AuditLogs
-            .Where(x => x.TenantId == context.TenantId)
-            .OrderByDescending(x => x.CreatedAtUtc)
-            .ThenByDescending(x => x.Id)
-            .Select(x => x.EntryHash)
-            .FirstOrDefault() ?? string.Empty;
+        Stage(action, entityName, entityId, context, metadata);
+        await _db.SaveChangesAsync(cancellationToken);
+    }
 
-        var log = new AuditLog
+    /// <summary>
+    /// Adds the audit row to the context WITHOUT saving it. Call this before the business
+    /// <c>SaveChangesAsync</c> so the change and its audit row commit in one transaction: a business
+    /// change can no longer commit without its audit row (or the reverse). The chain link
+    /// (PreviousHash/EntryHash/CreatedAtUtc) is assigned by the context's sealer under the per-tenant
+    /// advisory lock at save time, so it is never computed here from an unlocked tail read.
+    /// </summary>
+    public void Stage(string action, string entityName, string? entityId, RequestContext context, string? metadata)
+    {
+        _db.AuditLogs.Add(new AuditLog
         {
             Action = action,
             EntityName = entityName,
@@ -38,12 +43,15 @@ public class AuditService : IAuditService
             IpAddress = context.IpAddress,
             UserAgent = context.UserAgent,
             Metadata = NormalizeMetadata(metadata),
-            PreviousHash = previousHash,
-            CreatedAtUtc = now
-        };
-        log.EntryHash = ComputeHash(log);
-        _db.AuditLogs.Add(log);
-        await _db.SaveChangesAsync(cancellationToken);
+            CreatedAtUtc = DateTime.UtcNow
+        });
+    }
+
+    /// <summary>Detaches every audit row that is staged (Added) but not yet saved.</summary>
+    public void DiscardStaged()
+    {
+        foreach (var entry in _db.ChangeTracker.Entries<AuditLog>().Where(e => e.State == Microsoft.EntityFrameworkCore.EntityState.Added).ToList())
+            entry.State = Microsoft.EntityFrameworkCore.EntityState.Detached;
     }
 
     /// <inheritdoc />
@@ -95,41 +103,9 @@ public class AuditService : IAuditService
 
     public static AuditIntegrityReport VerifyChain(IReadOnlyList<AuditLog> logs)
     {
-        var broken = new List<AuditIntegrityFailure>();
-        string expectedPreviousHash = string.Empty;
-
-        foreach (var log in logs)
-        {
-            if (!VerifyIntegrity(log))
-            {
-                broken.Add(new AuditIntegrityFailure(
-                    log.Id,
-                    log.CreatedAtUtc,
-                    log.Action,
-                    log.EntityName,
-                    "entry_hash_mismatch"));
-                continue;
-            }
-
-            if (!string.Equals(log.PreviousHash, expectedPreviousHash, StringComparison.Ordinal))
-            {
-                broken.Add(new AuditIntegrityFailure(
-                    log.Id,
-                    log.CreatedAtUtc,
-                    log.Action,
-                    log.EntityName,
-                    "previous_hash_mismatch"));
-            }
-
-            expectedPreviousHash = log.EntryHash;
-        }
-
-        return new AuditIntegrityReport(
-            IsValid: broken.Count == 0,
-            CheckedEntries: logs.Count,
-            FirstEntryUtc: logs.Count == 0 ? null : logs[0].CreatedAtUtc,
-            LastEntryUtc: logs.Count == 0 ? null : logs[^1].CreatedAtUtc,
-            Failures: broken);
+        var walker = new CentralChainWalker(string.Empty);
+        foreach (var log in logs) walker.Add(log);
+        return walker.Report();
     }
 
     public static string ComputeHash(AuditLog log) =>
@@ -209,48 +185,117 @@ public class AuditService : IAuditService
     /// </summary>
     public static AuditIntegrityReport VerifyPayrollChain(IReadOnlyList<PayrollAuditLog> logs)
     {
-        var broken = new List<AuditIntegrityFailure>();
-        string expectedPreviousHash = string.Empty;
-        long? previousSeq = null;
-
-        foreach (var log in logs)
-        {
-            if (string.IsNullOrEmpty(log.EntryHash))
-            {
-                broken.Add(Failure(log, "unsealed_row"));
-                expectedPreviousHash = log.EntryHash;
-                previousSeq = log.Seq;
-                continue;
-            }
-
-            if (!VerifyPayrollIntegrity(log))
-            {
-                broken.Add(Failure(log, "entry_hash_mismatch"));
-                expectedPreviousHash = log.EntryHash;
-                previousSeq = log.Seq;
-                continue;
-            }
-
-            if (previousSeq is not null && log.Seq <= previousSeq.Value)
-                broken.Add(Failure(log, "sequence_out_of_order"));
-
-            if (!string.Equals(log.PreviousHash, expectedPreviousHash, StringComparison.Ordinal))
-                broken.Add(Failure(log, "previous_hash_mismatch"));
-
-            expectedPreviousHash = log.EntryHash;
-            previousSeq = log.Seq;
-        }
-
-        return new AuditIntegrityReport(
-            IsValid: broken.Count == 0,
-            CheckedEntries: logs.Count,
-            FirstEntryUtc: logs.Count == 0 ? null : logs[0].CreatedAtUtc,
-            LastEntryUtc: logs.Count == 0 ? null : logs[^1].CreatedAtUtc,
-            Failures: broken);
+        var walker = new PayrollChainWalker(string.Empty);
+        foreach (var log in logs) walker.Add(log);
+        return walker.Report();
     }
 
-    private static AuditIntegrityFailure Failure(PayrollAuditLog log, string reason) =>
+    internal static AuditIntegrityFailure Failure(PayrollAuditLog log, string reason) =>
         new(log.Id, log.CreatedAtUtc, log.Action, log.EntityName, reason);
+}
+
+/// <summary>
+/// Incremental central-chain verifier: rows are fed in chain order (CreatedAtUtc, Id), one page at a time,
+/// so a long chain is verified in bounded memory. <paramref name="expectedPrevious"/> is the hash the first
+/// row must link to; pass null when verifying a window that starts mid-chain (the first link is then not
+/// checked, every later link is).
+/// </summary>
+public sealed class CentralChainWalker
+{
+    private string? _expected;
+    private readonly List<AuditIntegrityFailure> _broken = new();
+    private int _count;
+    private DateTime? _first, _last;
+
+    public CentralChainWalker(string? expectedPrevious) => _expected = expectedPrevious;
+
+    public void Add(AuditLog log)
+    {
+        _count++;
+        _first ??= log.CreatedAtUtc;
+        _last = log.CreatedAtUtc;
+        if (!AuditService.VerifyIntegrity(log))
+        {
+            _broken.Add(new AuditIntegrityFailure(log.Id, log.CreatedAtUtc, log.Action, log.EntityName, "entry_hash_mismatch"));
+            return;
+        }
+        if (_expected is not null && !string.Equals(log.PreviousHash, _expected, StringComparison.Ordinal))
+            _broken.Add(new AuditIntegrityFailure(log.Id, log.CreatedAtUtc, log.Action, log.EntityName, "previous_hash_mismatch"));
+        _expected = log.EntryHash;
+    }
+
+    public AuditIntegrityReport Report() => new(_broken.Count == 0, _count, _first, _last, _broken);
+}
+
+/// <summary>Incremental payroll-chain verifier (rows fed in (Seq, Id) order); see <see cref="CentralChainWalker"/>.</summary>
+public sealed class PayrollChainWalker
+{
+    private string? _expected;
+    private long? _previousSeq;
+    private readonly List<AuditIntegrityFailure> _broken = new();
+    private int _count;
+    private DateTime? _first, _last;
+
+    public PayrollChainWalker(string? expectedPrevious) => _expected = expectedPrevious;
+
+    public void Add(PayrollAuditLog log)
+    {
+        _count++;
+        _first ??= log.CreatedAtUtc;
+        _last = log.CreatedAtUtc;
+        if (string.IsNullOrEmpty(log.EntryHash))
+        {
+            _broken.Add(AuditService.Failure(log, "unsealed_row"));
+            _expected = log.EntryHash; _previousSeq = log.Seq;
+            return;
+        }
+        if (!AuditService.VerifyPayrollIntegrity(log))
+        {
+            _broken.Add(AuditService.Failure(log, "entry_hash_mismatch"));
+            _expected = log.EntryHash; _previousSeq = log.Seq;
+            return;
+        }
+        if (_previousSeq is not null && log.Seq <= _previousSeq.Value)
+            _broken.Add(AuditService.Failure(log, "sequence_out_of_order"));
+        if (_expected is not null && !string.Equals(log.PreviousHash, _expected, StringComparison.Ordinal))
+            _broken.Add(AuditService.Failure(log, "previous_hash_mismatch"));
+        _expected = log.EntryHash; _previousSeq = log.Seq;
+    }
+
+    public AuditIntegrityReport Report() => new(_broken.Count == 0, _count, _first, _last, _broken);
+}
+
+/// <summary>
+/// One chain verification at a time per tenant and kind, with a short cool-down after each, so the
+/// read-only integrity endpoints cannot be used to hammer the database. Process-local by design.
+/// </summary>
+public static class AuditIntegrityGate
+{
+    public static readonly TimeSpan CoolDown = TimeSpan.FromSeconds(5);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Guid, string), DateTime> State = new();
+    private static readonly DateTime Running = DateTime.MaxValue;
+
+    public enum Outcome { Started, AlreadyRunning, TooSoon }
+
+    public static Outcome TryBegin(Guid tenantId, string kind, DateTime nowUtc)
+    {
+        var key = (tenantId, kind);
+        while (true)
+        {
+            if (!State.TryGetValue(key, out var st))
+            {
+                if (State.TryAdd(key, Running)) return Outcome.Started;
+                continue;
+            }
+            if (st == Running) return Outcome.AlreadyRunning;
+            if (nowUtc - st < CoolDown) return Outcome.TooSoon;
+            if (State.TryUpdate(key, Running, st)) return Outcome.Started;
+        }
+    }
+
+    public static void End(Guid tenantId, string kind, DateTime nowUtc) => State[(tenantId, kind)] = nowUtc;
+
+    public static void ResetForTests() => State.Clear();
 }
 
 public sealed record AuditIntegrityReport(
@@ -258,7 +303,11 @@ public sealed record AuditIntegrityReport(
     int CheckedEntries,
     DateTime? FirstEntryUtc,
     DateTime? LastEntryUtc,
-    IReadOnlyList<AuditIntegrityFailure> Failures);
+    IReadOnlyList<AuditIntegrityFailure> Failures)
+{
+    /// <summary>The first break in chain order, or null when the chain is intact.</summary>
+    public AuditIntegrityFailure? FirstBreak => Failures.Count == 0 ? null : Failures[0];
+}
 
 public sealed record AuditIntegrityFailure(
     Guid AuditLogId,
