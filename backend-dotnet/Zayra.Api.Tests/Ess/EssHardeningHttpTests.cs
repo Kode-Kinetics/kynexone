@@ -132,4 +132,22 @@ public class EssHardeningHttpTests(EssFixture fx)
             .Should().Contain(EssCompletionHttpTests.NewIban.Replace(" ", ""), "Finance still needs the real figure to apply it");
         approvalId.Should().NotBeEmpty();
     }
+
+    [Fact]
+    public async Task EssStepUpToken_IsSingleUse_AcrossSubmissions()  // CD60
+    {
+        var e = await fx.NewEmployeeAsync("SA", configure: x => { x.BankIban = EssCompletionHttpTests.Iban; x.BankName = "SNB"; });
+        var token = await fx.StepUpAsync(e);
+        var employee = new EssCompletionHttpTests(fx);
+        using var first = await employee.Submit(e, "bank", new { iban = EssCompletionHttpTests.NewIban, bankName = "Riyad Bank" }, stepUp: token);
+        first.StatusCode.Should().Be(HttpStatusCode.OK, await first.Content.ReadAsStringAsync());
+        var id = (await EssCompletionHttpTests.Json(first)).GetProperty("requestId").GetGuid();
+        using var reject = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{id}/reject", fx.HrToken, new { notes = "Letter unclear" });
+        reject.StatusCode.Should().Be(HttpStatusCode.OK, await reject.Content.ReadAsStringAsync());
+        using var replay = await employee.Submit(e, "bank", new { iban = EssCompletionHttpTests.NewIban, bankName = "Riyad Bank" }, stepUp: token);
+        replay.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await EssCompletionHttpTests.Json(replay)).GetProperty("code").GetString().Should().Be("step_up_required");
+        using var fresh = await employee.Submit(e, "bank", new { iban = EssCompletionHttpTests.NewIban, bankName = "Riyad Bank" }, stepUp: await fx.StepUpAsync(e));
+        fresh.StatusCode.Should().Be(HttpStatusCode.OK, await fresh.Content.ReadAsStringAsync());
+    }
 }
