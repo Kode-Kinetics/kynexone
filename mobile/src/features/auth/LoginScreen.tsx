@@ -26,7 +26,6 @@ import { useTranslation } from 'react-i18next';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '@/navigation/authTypes';
 import { useAuthStore } from '@/auth/authStore';
-import { appStorage } from '@/storage';
 import { useTheme } from '@/theme/ThemeProvider';
 import {
   GlassSurface,
@@ -36,7 +35,7 @@ import {
   MotionPressable,
   Surface,
 } from '@/components/ui';
-import { normalizeEmail, normalizeWorkspace } from '@/auth/publicAuthInput';
+import { normalizeEmail } from '@/auth/publicAuthInput';
 import { authFailure } from '@/auth/authStore';
 import { isWelcomeCode, normalizeWelcomeCode } from '@/auth/welcomeCode';
 import { haptics } from '@/utils/haptics';
@@ -44,11 +43,9 @@ import { SignInLanguageToggle } from './SignInLanguageToggle';
 import { loginErrorKey, type LoginErrorKey } from './loginError';
 import { getServer } from '@/config/server';
 
-/* The company ID is asked for only when needed (a link that names it, or the server answering
-   `workspace_required`), so it is validated in onSubmit rather than by the schema. Messages are
-   translation keys, resolved where they are shown. */
+/* Email and password only: a KynexOne installation holds one organisation, and the server signs in to it.
+   Messages are translation keys, resolved where they are shown. */
 const loginSchema = z.object({
-  tenantId: z.string(),
   username: z.string().refine((value) => value.trim().length > 0, 'signin.emailRequired'),
   password: z.string().min(1, 'signin.passwordRequired'),
 });
@@ -59,7 +56,7 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 /**
  * The client's first impression. Layout, top to bottom: language switch (glass chrome over the
  * brand image) · wordmark and one-line promise · a solid sign-in card (heading, inline error,
- * email, password, optional company ID, forgot-password, Sign in) · the welcome-code way in.
+ * email, password, forgot-password, Sign in) · the welcome-code way in.
  * Motion: one short entrance (fade + 8–12pt rise, ≤260ms), nothing looping, no 3D.
  */
 export default function LoginScreen({ navigation, route }: Props) {
@@ -75,8 +72,6 @@ export default function LoginScreen({ navigation, route }: Props) {
   const [mfaJustEnabled, setMfaJustEnabled] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loginSucceeded, setLoginSucceeded] = useState(false);
-  const [showWorkspace, setShowWorkspace] = useState(!!route.params?.tenantId);
-  const [companyIdNeeded, setCompanyIdNeeded] = useState(false);
   const [failure, setFailure] = useState<LoginErrorKey | null>(null);
   const entrance = useSharedValue(reduceMotion ? 1 : 0);
 
@@ -85,30 +80,13 @@ export default function LoginScreen({ navigation, route }: Props) {
     handleSubmit,
     setValue,
     getValues,
-    setError,
     formState: { errors },
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { tenantId: '', username: '', password: '' },
+    defaultValues: { username: '', password: '' },
   });
 
-  // A remembered company ID is only a pre-fill for the day the server asks for it; it is not sent
-  // unless the field is showing.
-  const loadRememberedTenant = useCallback(async () => {
-    if (route.params?.tenantId) return;
-    const tenant = await appStorage.get<string>('zayra_tenant_id');
-    if (tenant) setValue('tenantId', normalizeWorkspace(tenant));
-  }, [route.params?.tenantId, setValue]);
-
   useEffect(() => {
-    void loadRememberedTenant();
-  }, [loadRememberedTenant]);
-
-  useEffect(() => {
-    if (route?.params?.tenantId) {
-      setValue('tenantId', normalizeWorkspace(route.params.tenantId));
-      setShowWorkspace(true);
-    }
     if (route?.params?.email) setValue('username', normalizeEmail(route.params.email));
     if (route?.params?.enrollmentComplete) setMfaJustEnabled(true);
   }, [route?.params, setValue]);
@@ -116,10 +94,6 @@ export default function LoginScreen({ navigation, route }: Props) {
   // Signed-in enrolment ends the session; say why and keep the account filled in.
   useEffect(() => {
     if (!mfaEnrolledNotice) return;
-    if (mfaEnrolledNotice.tenantId) {
-      setValue('tenantId', normalizeWorkspace(mfaEnrolledNotice.tenantId));
-      setShowWorkspace(true);
-    }
     setValue('username', normalizeEmail(mfaEnrolledNotice.email));
     setMfaJustEnabled(true);
     consumeMfaEnrolledNotice();
@@ -143,13 +117,8 @@ export default function LoginScreen({ navigation, route }: Props) {
   const onSubmit = useCallback(
     async (data: LoginFormData) => {
       setFailure(null);
-      const workspace = showWorkspace ? normalizeWorkspace(data.tenantId) : '';
-      if (showWorkspace && !workspace) {
-        setError('tenantId', { message: 'signin.companyIdRequired' });
-        return;
-      }
       try {
-        const outcome = await login(normalizeEmail(data.username), data.password, workspace || undefined);
+        const outcome = await login(normalizeEmail(data.username), data.password);
         if (outcome.kind === 'mfaChallenge') {
           navigation.navigate('MfaChallenge', { ...outcome, justEnrolled: mfaJustEnabled });
         } else if (outcome.kind === 'mfaEnrollment') {
@@ -162,12 +131,7 @@ export default function LoginScreen({ navigation, route }: Props) {
       } catch (error) {
         // The store keeps the server's raw English message; this screen shows its own plain words.
         clearError();
-        const { status, code } = authFailure(error);
-        if (status === 400 && code === 'workspace_required') {
-          setShowWorkspace(true);
-          setCompanyIdNeeded(true);
-          return;
-        }
+        const { status } = authFailure(error);
         // The 8-digit welcome code typed as the password: only after the sign-in failed, and the
         // email and code travel as in-memory navigation params (no URL, no storage).
         if ((status === 401 || status === 400) && isWelcomeCode(data.password)) {
@@ -175,7 +139,6 @@ export default function LoginScreen({ navigation, route }: Props) {
           navigation.navigate('Welcome', {
             email: normalizeEmail(data.username),
             code: normalizeWelcomeCode(data.password),
-            workspace: workspace || undefined,
             fromLogin: true,
           });
           return;
@@ -184,14 +147,13 @@ export default function LoginScreen({ navigation, route }: Props) {
         setFailure(loginErrorKey(error));
       }
     },
-    [clearError, login, mfaJustEnabled, navigation, setError, setValue, showWorkspace],
+    [clearError, login, mfaJustEnabled, navigation, setValue],
   );
 
   const openWelcome = useCallback(() => {
     const email = normalizeEmail(getValues('username'));
-    const workspace = showWorkspace ? normalizeWorkspace(getValues('tenantId')) : '';
-    navigation.navigate('Welcome', { email: email || undefined, workspace: workspace || undefined });
-  }, [getValues, navigation, showWorkspace]);
+    navigation.navigate('Welcome', { email: email || undefined });
+  }, [getValues, navigation]);
 
   const info = theme.colors.status.info;
   const danger = theme.colors.status.danger;
@@ -354,37 +316,6 @@ export default function LoginScreen({ navigation, route }: Props) {
               )}
             />
 
-            {showWorkspace ? (
-              <>
-                {companyIdNeeded ? (
-                  <Text accessibilityRole="alert" style={[theme.typography.footnote, styles.companyNotice, { color: theme.colors.text }]}>
-                    {t('signin.companyIdNeeded')}
-                  </Text>
-                ) : null}
-                <Controller
-                  control={control}
-                  name="tenantId"
-                  render={({ field: { onChange, value, onBlur } }) => (
-                    <GlassTextField
-                      label={t('signin.companyId')}
-                      icon="business-outline"
-                      value={value}
-                      onChangeText={onChange}
-                      onBlur={onBlur}
-                      placeholder={t('account.login.companyIdPlaceholder')}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      autoComplete="organization"
-                      autoFocus={companyIdNeeded}
-                      returnKeyType="done"
-                      onSubmitEditing={handleSubmit(onSubmit)}
-                      error={errors.tenantId?.message ? t(errors.tenantId.message as 'signin.companyIdRequired') : undefined}
-                    />
-                  )}
-                />
-              </>
-            ) : null}
-
             <MotionPressable
               accessibilityRole="button"
               accessibilityLabel={t('auth.forgotPassword')}
@@ -493,7 +424,6 @@ const styles = StyleSheet.create({
   bannerTitle: { fontWeight: '600' },
   flex: { flex: 1, minWidth: 0 },
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  companyNotice: { marginBottom: 8 },
   forgotShell: { alignSelf: 'flex-end', marginTop: -6, marginBottom: 10 },
   forgot: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
   link: { fontWeight: '600' },

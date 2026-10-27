@@ -165,7 +165,7 @@ Object.assign(ar, {
   "You don't have permission to reset two-step sign-in for {name}.": "ليست لديك صلاحية إعادة تعيين التحقق بخطوتين لـ {name}.",
   "Two-step sign-in could not be reset. Try again in a moment.": "تعذّرت إعادة تعيين التحقق بخطوتين. حاول مرة أخرى بعد قليل.",
 
-  // Tenant Admin → Security: the company's two-step sign-in policy.
+  // Organisation Admin → Security: the company's two-step sign-in policy.
   "Who must use two-step sign-in": "من يجب عليه استخدام التحقق بخطوتين",
   "People who can see or change payroll, banking or access":
     "من يستطيعون الاطلاع على الرواتب أو البيانات المصرفية أو صلاحيات الوصول أو تغييرها",
@@ -182,7 +182,7 @@ Object.assign(ar, {
   "Shorter is safer. Shortening it also shortens browsers already trusted.":
     "المدة الأقصر أكثر أمانًا. وتقصيرها يُقصّر أيضًا مدة المتصفحات الموثوقة حاليًا.",
 
-  // Tenant Admin → Security: sessions and lockout. Two limits end a session: inactivity, and the
+  // Organisation Admin → Security: sessions and lockout. Two limits end a session: inactivity, and the
   // maximum session length counted from sign-in («الجلسة»).
   "Sessions and lockout": "الجلسات وقفل الحساب",
   "Sign out after inactivity": "تسجيل الخروج بعد عدم النشاط",

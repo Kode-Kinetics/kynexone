@@ -13,7 +13,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '@/navigation/authTypes';
 import { authApi } from '@/api/services';
 import { authFailure, useAuthStore } from '@/auth/authStore';
-import { normalizeEmail, normalizeWorkspace } from '@/auth/publicAuthInput';
+import { normalizeEmail } from '@/auth/publicAuthInput';
 import {
   DEFAULT_MIN_PASSWORD_LENGTH,
   formatWelcomeCode,
@@ -65,8 +65,6 @@ export default function WelcomeScreen({ navigation, route }: Props) {
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(true);
-  const [workspace, setWorkspace] = useState('');
-  const [showWorkspace, setShowWorkspace] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -82,7 +80,6 @@ export default function WelcomeScreen({ navigation, route }: Props) {
     const givenEmail = normalizeEmail(params.email ?? '');
     const givenCode = normalizeWelcomeCode(params.code);
     if (givenEmail) setEmail(givenEmail);
-    if (params.workspace) setWorkspace(normalizeWorkspace(params.workspace));
     if (givenCode) setCode(givenCode);
     if (givenEmail && isWelcomeCode(givenCode)) {
       setStep('password');
@@ -92,16 +89,15 @@ export default function WelcomeScreen({ navigation, route }: Props) {
     navigation.setParams({ code: undefined, fromLogin: undefined });
   }, [navigation, route.params, t]);
 
-  const policySlug = normalizeWorkspace(workspace);
+  // The organisation's minimum length for the live tick (one organisation per installation).
   useEffect(() => {
     let live = true;
-    void authApi.passwordPolicy(policySlug || undefined).then((n) => { if (live) setMinLength(n); });
+    void authApi.passwordPolicy().then((n) => { if (live) setMinLength(n); });
     return () => { live = false; };
-  }, [policySlug]);
+  }, []);
 
   const checks = passwordChecks(password, email, minLength);
   const arabicLetters = hasArabicLetters(password);
-  const workspaceArg = () => normalizeWorkspace(workspace) || undefined;
 
   const notMyEmail = () => {
     setEmail(''); setCode(''); setPassword('');
@@ -113,15 +109,14 @@ export default function WelcomeScreen({ navigation, route }: Props) {
     setError(''); setInfo('');
     if (!email.trim() || !email.includes('@')) return setError(t('signin.emailRequired'));
     if (!isWelcomeCode(code)) return setError(t('signin.codeShape'));
-    if (showWorkspace && !workspace.trim()) return setError(t('signin.companyIdRequired'));
     setCode(normalizeWelcomeCode(code));
     setStep('password');
   };
 
   /** Sign in with the saved password. On success the root navigator switches to the app. */
-  const signIn = async (companyId?: string): Promise<boolean> => {
+  const signIn = async (): Promise<boolean> => {
     try {
-      const outcome = await login(email, password, companyId ?? workspaceArg());
+      const outcome = await login(email, password);
       if (outcome.kind === 'mfaChallenge') navigation.navigate('MfaChallenge', outcome);
       else if (outcome.kind === 'mfaEnrollment') navigation.navigate('MfaEnrollment', outcome);
       return true;
@@ -136,18 +131,15 @@ export default function WelcomeScreen({ navigation, route }: Props) {
     if (inFlight.current) return;
     setError(''); setInfo('');
     if (!checks.longEnough || !checks.notPersonal) return setError(t('signin.errors.passwordRules'));
-    if (showWorkspace && !workspace.trim()) return setError(t('signin.companyIdRequired'));
     inFlight.current = true;
     setBusy(true);
     try {
-      let companyId = workspaceArg();
       if (!passwordSet) {
-        const redeemed = await authApi.welcomeRedeem(email, code, password, workspaceArg());
+        await authApi.welcomeRedeem(email, code, password);
         setCode('');
         setPasswordSet(true);
-        if (redeemed.tenantSlug) { companyId = redeemed.tenantSlug; setWorkspace(redeemed.tenantSlug); }
       }
-      if (!(await signIn(companyId))) setInfo(t('signin.passwordSaved'));
+      if (!(await signIn())) setInfo(t('signin.passwordSaved'));
     } catch (failure) {
       const { status, code: reason } = authFailure(failure);
       if (isAmbiguousFailure(status)) {
@@ -160,7 +152,6 @@ export default function WelcomeScreen({ navigation, route }: Props) {
         setStep('code');
         setCode(formatWelcomeCode(code));
       }
-      if (key === 'companyIdNeeded') setShowWorkspace(true);
       setError(t(`signin.errors.${key}`));
     } finally {
       inFlight.current = false;
@@ -278,20 +269,6 @@ export default function WelcomeScreen({ navigation, route }: Props) {
               </>
             )}
 
-            {showWorkspace ? (
-              <GlassTextField
-                label={t('signin.companyId')}
-                icon="business-outline"
-                value={workspace}
-                onChangeText={setWorkspace}
-                placeholder="your-company"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="organization"
-                style={ltrInput}
-              />
-            ) : null}
-
             {error ? (
               <Text accessibilityRole="alert" style={[theme.typography.caption, styles.message, { color: theme.colors.danger }]}>
                 {error}
@@ -305,7 +282,7 @@ export default function WelcomeScreen({ navigation, route }: Props) {
             {step === 'code' ? (
               <LiquidButton label={t('signin.continue')} icon="arrow-forward-outline" onPress={onContinue} testID="welcome-continue" />
             ) : passwordSet && info ? (
-              <LiquidButton label={t('auth.login')} icon="log-in-outline" onPress={() => navigation.navigate('Login', { email, tenantId: workspaceArg() })} />
+              <LiquidButton label={t('auth.login')} icon="log-in-outline" onPress={() => navigation.navigate('Login', { email })} />
             ) : (
               <LiquidButton
                 label={busy ? t('signin.saving') : t('signin.save')}

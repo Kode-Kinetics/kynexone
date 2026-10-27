@@ -5,9 +5,9 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 /**
  * Employee sign-in: /login without a workspace, and /welcome (first sign-in with HR's welcome code).
  *
- * Over mocked API routes shaped exactly as the employee-access contract (§4, Amendments 2-3): login
- * with an optional tenantSlug and `workspace_required`; `POST /api/auth/welcome/redeem` answering
- * 200 `{ tenantSlug }` or 400 `{ code }`; `GET /api/auth/password-policy`. The server's rules are the
+ * Over mocked API routes shaped exactly as the employee-access contract: login with email and password
+ * only (one organisation per installation, so no company ID anywhere); `POST /api/auth/welcome/redeem`
+ * answering 200 or 400 `{ code }`; `GET /api/auth/password-policy`. The server's rules are the
  * backend suite's job; these prove the screens: what is asked, what is sent, where the code goes
  * (never into a URL that survives), and what each refusal says.
  */
@@ -19,7 +19,7 @@ const NEW_PASSWORD = 'Desert-Falcon-2026';
 interface Call { path: string; body: any }
 
 interface MockOptions {
-  /** Redeem answers, in order; the last repeats. Default: 200 { tenantSlug: 'evostel' }. */
+  /** Redeem answers, in order; the last repeats. Default: 200. */
   redeem?: Array<{ status: number; body?: unknown }>;
   /** Login answers, in order; the last repeats. Default: an authenticated session. */
   login?: Array<{ status: number; body?: unknown }>;
@@ -45,7 +45,7 @@ async function mockApi(page: Page, opts: MockOptions = {}) {
   if (opts.locale) {
     await page.addInitScript((locale) => localStorage.setItem('kynexone-locale-choice-v2', locale), opts.locale);
   }
-  const redeem = [...(opts.redeem ?? [{ status: 200, body: { tenantSlug: 'evostel' } }])];
+  const redeem = [...(opts.redeem ?? [{ status: 200, body: {} }])];
   const login = [...(opts.login ?? [{ status: 200, body: session() }])];
   const next = (list: Array<{ status: number; body?: unknown }>) => (list.length > 1 ? list.shift()! : list[0]);
 
@@ -110,9 +110,9 @@ test.describe('/welcome from the slip QR', () => {
     await page.waitForURL(/\/ess/);
     expect(paths(api.calls).slice(0, 2)).toEqual(['/api/auth/welcome/redeem', '/api/auth/login']);
     const redeemed = api.calls.find((c) => c.path === '/api/auth/welcome/redeem')!.body;
-    expect(redeemed).toEqual({ email: EMAIL, code: CODE, newPassword: NEW_PASSWORD, tenantSlug: 'evostel' });
+    expect(redeemed).toEqual({ email: EMAIL, code: CODE, newPassword: NEW_PASSWORD });
     const login = api.calls.find((c) => c.path === '/api/auth/login')!.body;
-    expect(login).toEqual({ email: EMAIL, password: NEW_PASSWORD, tenantSlug: 'evostel' });
+    expect(login).toEqual({ email: EMAIL, password: NEW_PASSWORD });
     // The code never sat in any URL the page navigated to after the first load, nor in storage.
     expect(api.urls.slice(1).some((u) => u.includes(CODE))).toBe(false);
     const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }));
@@ -154,8 +154,8 @@ test.describe('/welcome typed by hand', () => {
     await page.waitForURL(/\/ess/);
     const redeemed = api.calls.find((c) => c.path === '/api/auth/welcome/redeem')!.body;
     expect(redeemed).toEqual({ email: EMAIL, code: CODE, newPassword: NEW_PASSWORD });
-    // The server named the company; the follow-up sign-in uses it.
-    expect(api.calls.find((c) => c.path === '/api/auth/login')!.body.tenantSlug).toBe('evostel');
+    // The follow-up sign-in is email and password only.
+    expect(api.calls.find((c) => c.path === '/api/auth/login')!.body).toEqual({ email: EMAIL, password: NEW_PASSWORD });
   });
 
   test('a code that is not eight digits is caught before anything is sent', async ({ page }) => {
@@ -202,19 +202,6 @@ test.describe('/welcome refusals, each in plain words', () => {
     await expect(fault(page)).toHaveText("Email and code don't match. Check both on your sign-in slip.");
     await expect(page.getByLabel('Work email')).toHaveValue(EMAIL);
     await expect(page.getByLabel('Welcome code')).toHaveValue('4821 7730');
-  });
-
-  test('workspace_required asks for the company ID and sends it on the retry', async ({ page }) => {
-    const api = await mockApi(page, { redeem: [{ status: 400, body: { code: 'workspace_required' } }, { status: 200, body: { tenantSlug: 'evostel-ksa' } }] });
-    await page.goto(`/welcome#e=${encodeURIComponent(EMAIL)}&c=${CODE}`);
-    await passwordBox(page).fill(NEW_PASSWORD);
-    await page.getByRole('button', { name: 'Save password and sign in' }).click();
-    await expect(fault(page)).toHaveText("We couldn't find your company from your email. Enter your company ID. HR can tell you what it is.");
-    await page.getByLabel('Company ID').fill('Evostel-KSA');
-    await page.getByRole('button', { name: 'Save password and sign in' }).click();
-    await page.waitForURL(/\/ess/);
-    const redeems = api.calls.filter((c) => c.path === '/api/auth/welcome/redeem');
-    expect(redeems[1].body.tenantSlug).toBe('evostel-ksa');
   });
 
   test('a lost reply is settled by signing in, not by replaying the code', async ({ page }) => {
@@ -264,31 +251,15 @@ test.describe('/login for employees', () => {
     expect(api.calls.find((c) => c.path === '/api/auth/login')!.body).toEqual({ email: EMAIL, password: NEW_PASSWORD });
   });
 
-  test('shows Company ID only after the server asks for it', async ({ page }) => {
-    const api = await mockApi(page, { login: [{ status: 400, body: { code: 'workspace_required' } }, { status: 200, body: session() }] });
-    await page.goto('/login');
-    await page.locator('#li-em').fill(EMAIL);
-    await page.locator('#li-pw').fill(NEW_PASSWORD);
-    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await expect(page.locator('#li-ws')).toBeVisible();
-    await expect(page.locator('#li-ws')).toBeFocused();
-    await expect(fault(page)).toHaveText("We couldn't find your company from your email. Enter your company ID. HR can tell you what it is.");
-    await page.locator('#li-ws').fill('Evostel');
-    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.waitForURL(/\/ess/);
-    const logins = api.calls.filter((c) => c.path === '/api/auth/login');
-    expect(logins.map((c) => c.body.tenantSlug)).toEqual([undefined, 'evostel']);
-  });
-
-  test('a ?workspace= link still shows and sends the company ID', async ({ page }) => {
+  test('an old ?workspace= link is ignored: no field, nothing sent', async ({ page }) => {
     const api = await mockApi(page);
     await page.goto('/login?workspace=Evostel');
-    await expect(page.locator('#li-ws')).toHaveValue('evostel');
+    await expect(page.locator('#li-ws')).toHaveCount(0);
     await page.locator('#li-em').fill(EMAIL);
     await page.locator('#li-pw').fill(NEW_PASSWORD);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await page.waitForURL(/\/ess/);
-    expect(api.calls.find((c) => c.path === '/api/auth/login')!.body.tenantSlug).toBe('evostel');
+    expect(api.calls.find((c) => c.path === '/api/auth/login')!.body).toEqual({ email: EMAIL, password: NEW_PASSWORD });
   });
 
   test('a welcome code typed as the password goes to /welcome after the sign-in fails, in memory only', async ({ page }) => {

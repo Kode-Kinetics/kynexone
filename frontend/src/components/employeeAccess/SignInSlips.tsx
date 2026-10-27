@@ -63,7 +63,7 @@ export function SignInSlips({ issued, skipped, names, emailedCount, notes, timeZ
       .then(async (QRCode) => {
         const out: Record<number, string> = {};
         for (const slip of slips) {
-          out[slip.employeeId] = await QRCode.toDataURL(welcomeQrUrl(origin, slip.username, slip.code!, slip.tenantSlug), {
+          out[slip.employeeId] = await QRCode.toDataURL(welcomeQrUrl(origin, slip.username, slip.code!), {
             errorCorrectionLevel: 'M', margin: 1, width: 240, color: { dark: '#0f172a', light: '#ffffff' },
           });
         }

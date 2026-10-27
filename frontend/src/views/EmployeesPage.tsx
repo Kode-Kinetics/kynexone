@@ -647,7 +647,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       .catch((e: unknown) => {
         const status = (e as { response?: { status?: number } })?.response?.status;
         if (status === 402) {
-          setSubscriptionBanner('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
+          setSubscriptionBanner('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Organisation Admin → Licence.');
         }
       });
   }, [canReadUsage]);
@@ -1433,7 +1433,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       if (status === 422 && data?.error === 'employee_limit_reached') {
         setFormError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Contact your KynexOne supplier to extend your licence.`);
       } else if (status === 402) {
-        setFormError('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
+        setFormError('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Organisation Admin → Licence.');
       } else if (status === 409 && data?.error === 'work_email_conflict' && data.attempted && data.suggestion) {
         setFormError(`Work email ${data.attempted} is already used. Enter a different address issued by IT. Suggested available address: ${data.suggestion}.`);
       } else if (workEmailProblemKey(workEmailErrorCode(e))) {

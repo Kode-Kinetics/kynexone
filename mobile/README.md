@@ -39,7 +39,7 @@ Enterprise-grade React Native / Expo mobile app for GCC HR operations. Supports 
 
 KynexOne is installed by each client on its own server, and **one store app serves every installation**. A store
 build carries no server address. On first start the app shows **Connect to KynexOne**: the employee types their
-organisation's address, or scans the QR code an administrator shows in **Tenant Admin → Licence → Mobile app**
+organisation's address, or scans the QR code an administrator shows in **Organisation Admin → Licence → Mobile app**
 (`kynexone://server?url=https://…`). The app accepts only an HTTPS address that is not a loopback address, checks
 that it answers `GET /api/public/installation` as a set-up KynexOne server, and keeps it in secure storage.
 **Change server** on the sign-in screen goes back to it.
@@ -64,7 +64,7 @@ builds also accept `http://` addresses on the server screen; store builds do not
 
 An organisation that manages its phones (Intune, Workspace ONE, Jamf…) can distribute the same binary through its MDM
 instead of the public stores, for example as an Apple Business Manager custom app or a managed Google Play private
-app. The app is identical; employees still connect by scanning the Tenant Admin QR code or typing the address.
+app. The app is identical; employees still connect by scanning the Organisation Admin QR code or typing the address.
 
 ### Backend capabilities
 

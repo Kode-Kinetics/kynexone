@@ -49,7 +49,7 @@ creates the database, asks for the organisation's name, country and first admini
 installation; `--force-reconfigure` changes the address and TLS settings and keeps the secrets.
 
 **No licence yet?** The script prints the **installation id**. Send it to your KynexOne supplier and upload the
-licence they return in **Tenant Admin → Licence**. Until then the product answers `402 licence_missing`.
+licence they return in **Organisation Admin → Licence**. Until then the product answers `402 licence_missing`.
 
 Without a bundle the script pulls the images for `KYNEXONE_VERSION` from `KYNEXONE_REGISTRY`.
 
@@ -81,8 +81,8 @@ After changing `.env`: `docker compose up -d`.
 | Restore | `docker compose stop backend web` then `scripts/restore.sh backups/<stamp>` | same with `.\scripts\restore.ps1` |
 | Upgrade | `scripts/upgrade.sh kynexone-1.2.0.tar.gz` (or `1.2.0`) | `.\scripts\upgrade.ps1 ...` |
 | Logs | `docker compose logs -f backend` | same |
-| Replace the licence | Tenant Admin → Licence | same |
-| Maintenance mode | Tenant Admin, or `docker compose run --rm --no-deps backend --maintenance on\|off` | same |
+| Replace the licence | Organisation Admin → Licence | same |
+| Maintenance mode | Organisation Admin, or `docker compose run --rm --no-deps backend --maintenance on\|off` | same |
 
 ### Backups
 

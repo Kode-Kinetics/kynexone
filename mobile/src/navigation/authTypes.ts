@@ -17,7 +17,6 @@ export type AuthStackParamList = {
     | {
         email?: string;
         code?: string;
-        workspace?: string;
         /** Sent here by the sign-in screen because the code was typed as a password. */
         fromLogin?: boolean;
       }

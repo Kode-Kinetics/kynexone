@@ -11,8 +11,8 @@ public sealed class RequiredWorkspaceAttribute : ValidationAttribute
         value is string workspace && !string.IsNullOrWhiteSpace(workspace);
 }
 
-/// <summary>TenantSlug is optional: without it the email's domain routes to a workspace on a unique match only,
-/// otherwise the answer is 400 <c>{ code: "workspace_required" }</c> (contract §4).</summary>
+/// <summary>TenantSlug is optional and clients no longer send it: a client installation holds one organisation, and
+/// the server signs in to it (WorkspaceResolver). Deleted once no caller sends it (WP4.5).</summary>
 public record LoginRequest(
     [Required, EmailAddress] string Email,
     [Required] string Password,
@@ -22,7 +22,7 @@ public record RefreshTokenRequest([Required] string RefreshToken);
 
 public record LogoutRequest([Required] string RefreshToken);
 
-/// <summary>Without a workspace nothing is mailed: 400 <c>workspace_required</c> (F5).</summary>
+/// <summary>TenantSlug is optional: the installation's organisation is used without one (WP4.5).</summary>
 public record ForgotPasswordRequest(
     [Required, EmailAddress] string Email,
     string? TenantSlug = null);
@@ -30,12 +30,12 @@ public record ForgotPasswordRequest(
 public record ResetPasswordRequest(
     [Required] string ResetToken,
     [Required, MinLength(10)] string NewPassword,
-    [param: RequiredWorkspace] string TenantSlug);
+    string? TenantSlug = null);
 
 public record AcceptInvitationRequest(
     [Required] string InvitationToken,
     [Required, MinLength(10)] string NewPassword,
-    [param: RequiredWorkspace] string TenantSlug);
+    string? TenantSlug = null);
 
 public record CreateUserRequest(
     [Required, EmailAddress] string Email,

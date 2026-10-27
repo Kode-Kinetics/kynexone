@@ -58,10 +58,9 @@ async function signIn(page: Page, email: string, slug = world.slug) {
   await page.context().clearCookies();
   await page.goto('/login').catch(() => undefined);
   await page.evaluate(() => { localStorage.removeItem('zayra_access_token'); localStorage.removeItem('zayra_refresh_token'); }).catch(() => undefined);
-  await page.goto(`/login?workspace=${encodeURIComponent(slug)}`);
+  await page.goto('/login');
   await page.locator('#li-em, input[type="email"]').first().fill(email);
   await page.locator('#li-pw, input[type="password"]').first().fill(world.password);
-  await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(slug);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.waitForURL(/\/(dashboard|app|ess|group)/, { timeout: 60_000 });
   const later = page.getByRole('button', { name: 'Remind me later' });

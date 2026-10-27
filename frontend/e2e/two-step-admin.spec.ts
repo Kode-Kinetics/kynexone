@@ -4,7 +4,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 
 /**
  * Two-step sign-in, administered (mfa2-contract): an administrator resets another user's two-step
- * sign-in from User Management, and sets the company's policy in Tenant Admin → Security.
+ * sign-in from User Management, and sets the company's policy in Organisation Admin → Security.
  *
  * Over mocked API routes shaped as the contract: the user list's `mfaEnabled`, POST
  * /api/access/users/{id}/mfa/reset { reason } → 204 with its refusals (400 ERR_MFA_RESET_REASON,
@@ -37,7 +37,7 @@ const base = {
 const noah = { ...base, id: '11111111-1111-1111-1111-111111111111', email: 'noah.williams@kkdemo.com', fullName: 'Noah Williams', employeeName: 'Noah Williams', mfaEnabled: true };
 const layla = { ...base, id: '44444444-4444-4444-4444-444444444444', email: 'l.haddad@kkdemo.com', fullName: 'Layla Haddad', employeeName: 'Layla Haddad', mfaEnabled: false };
 // The administrator's own row: two-step on, and still never offered a reset of their own.
-const self = { ...base, id: ME, email: 'admin@kkdemo.com', fullName: 'Tenant Admin', employeeName: 'Tenant Admin', roles: ['Admin'], mfaEnabled: true };
+const self = { ...base, id: ME, email: 'admin@kkdemo.com', fullName: 'Organisation Admin', employeeName: 'Organisation Admin', roles: ['Admin'], mfaEnabled: true };
 
 type Reply = { status: number; body?: unknown };
 interface Call { method: string; path: string; body: any }
@@ -109,14 +109,14 @@ async function mockApi(page: Page, world: World = {}) {
     if (method !== 'GET') return json({}); // Never touch a real account.
 
     if (p === '/api/auth/me' && world.refreshRefusal) return json({ message: 'Unauthorized' }, 401);
-    if (p === '/api/auth/me') return json({ id: ME, tenantId: 't1', tenantSlug: 'kkdemo', email: 'admin@kkdemo.com', fullName: 'Tenant Admin', roles: ['Admin'], accountType: 'SingleCompany', isGroupScope: true, companies: [], permissions });
+    if (p === '/api/auth/me') return json({ id: ME, tenantId: 't1', tenantSlug: 'kkdemo', email: 'admin@kkdemo.com', fullName: 'Organisation Admin', roles: ['Admin'], accountType: 'SingleCompany', isGroupScope: true, companies: [], permissions });
     if (p === '/api/access/users') return json({ items: users, total: users.length, page: 1, pageSize: 20 });
     if (p === '/api/access/roles') return json(['Admin', 'HR Manager', 'Employee'].map((name, index) => ({ id: String(index), name, permissions: [] })));
     if (p === '/api/access/ceiling') return json({ userId: ME, isAdmin: true, heldPermissions: permissions, roles: [] });
     if (p === '/api/access/security-settings') return json(security);
     if (p === '/api/tenant-admin/usage') return json({ activeUsers: 3, maxUsers: 20 });
     if (p === '/api/tenant-admin/localization') return json({ defaultTimezone: 'Asia/Riyadh', currencyCode: 'SAR', countryCode: 'SA' });
-    // Tenant Admin's other tabs (subscription, invoices, AI usage…): none on file. The page catches these.
+    // Organisation Admin's other tabs (subscription, invoices, AI usage…): none on file. The page catches these.
     if (p.startsWith('/api/tenant-admin/')) return json({ message: 'Not found' }, 404);
     if (p === '/api/features/disabled-keys' || p === '/api/features/modules' || p === '/api/notifications'
       || p === '/api/access/permissions' || p.includes('help-text')) return json([]);
@@ -302,9 +302,9 @@ test.describe('User Management: reset another user\'s two-step sign-in', () => {
   });
 });
 
-test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
+test.describe('Organisation Admin → Security: the two-step sign-in group', () => {
   async function openSecurity(page: Page) {
-    await page.goto('/tenant-admin');
+    await page.goto('/organisation-admin');
     await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
     await expect(page.getByTestId('two-step-policy')).toBeVisible();
   }
@@ -368,7 +368,7 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
 
   test('Arabic: the group is Arabic, with no capitals or tracking', async ({ page }, info) => {
     await mockApi(page, { locale: 'ar' });
-    await page.goto('/tenant-admin');
+    await page.goto('/organisation-admin');
     await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
     const group = page.getByTestId('two-step-policy');
     await expect(group.getByRole('heading', { name: 'التحقق بخطوتين' })).toBeVisible();
@@ -393,13 +393,13 @@ test.describe('Tenant Admin → Security: the two-step sign-in group', () => {
 
 /*
  * Session limits (session-contract C): the idle timeout, relabelled, and the maximum session length
- * (`sessionMaxHours`, 1–168, 12 by default) in Tenant Admin → Security; and the sign-in page's
+ * (`sessionMaxHours`, 1–168, 12 by default) in Organisation Admin → Security; and the sign-in page's
  * notice when a refresh is refused with 401 ERR_SESSION_EXPIRED. That the server enforces the limit
  * is the backend tests' job; these prove what the screens show and send.
  */
-test.describe('Tenant Admin → Security: sessions and lockout', () => {
+test.describe('Organisation Admin → Security: sessions and lockout', () => {
   async function openSecurity(page: Page) {
-    await page.goto('/tenant-admin');
+    await page.goto('/organisation-admin');
     await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
     await expect(page.getByTestId('session-limits')).toBeVisible();
   }
@@ -469,7 +469,7 @@ test.describe('Tenant Admin → Security: sessions and lockout', () => {
 
   test('Arabic: the group is Arabic and right to left, with no capitals or tracking', async ({ page }, info) => {
     await mockApi(page, { locale: 'ar', security: { sessionMaxHours: 6 } });
-    await page.goto('/tenant-admin');
+    await page.goto('/organisation-admin');
     await page.getByRole('button', { name: 'Security', exact: true }).click({ timeout: 30_000 });
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
     const group = page.getByTestId('session-limits');

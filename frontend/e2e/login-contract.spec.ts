@@ -7,12 +7,10 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
  * ── What this file is for ───────────────────────────────────────────────────────────────────
  * Everything asserted here is load-bearing for something OUTSIDE the login page:
  *
- *  - `#li-em` / `#li-pw` / `#li-ws` are the ids that e2e/helpers.ts `tenantLoginLive()` fills, and
- *    that e2e/pilot-critical.spec.ts and e2e/tenant-auth.spec.ts fill directly. Rename one and the
- *    entire pilot lane logs in as nobody.
- *  - The autocomplete tokens are what password managers and the browser's own credential UI key
- *    off. `organization` on the workspace field is the only thing that stops a manager filling the
- *    tenant slug with a username.
+ *  - `#li-em` / `#li-pw` are the ids that e2e/helpers.ts `tenantLoginLive()` fills, and that
+ *    e2e/pilot-critical.spec.ts and e2e/tenant-auth.spec.ts fill directly. Rename one and the entire
+ *    pilot lane logs in as nobody. There is no company ID field: one organisation per installation.
+ *  - The autocomplete tokens are what password managers and the browser's own credential UI key off.
  *  - `.tenant-login-shell` is referenced outside this component.
  *  - The four inline auth states (login, forgot, mfa, mfa-enroll) share one component; reset and
  *    invitation are isolated public routes. This file guards the login↔forgot hop,
@@ -28,13 +26,13 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
  * here genuinely has to change, change the consumers listed above in the same commit.
  */
 
-// The login surface must be proven from a COLD, unauthenticated context. The `chromium` project
-// loads the platform-admin storage state; inheriting it here would test a page that a real
-// first-time visitor never sees.
+// The login surface must be proven from a COLD, unauthenticated context: an inherited session would
+// test a page that a real first-time visitor never sees.
 test.use({ storageState: { cookies: [], origins: [] } });
 
 const EMAIL = '#li-em';
 const PASSWORD = '#li-pw';
+/** The company ID field of the hosted product. A client installation must never show it. */
 const WORKSPACE = '#li-ws';
 const SHELL = '.tenant-login-shell';
 
@@ -85,11 +83,8 @@ const isFocused = (locator: Locator): Promise<boolean> =>
 
 test.describe('Login contract (must hold before AND after the rebrand)', () => {
   test.beforeEach(async ({ page }) => {
-    // With a workspace link. Since employee self sign-in, plain /login asks only for email and
-    // password; #li-ws appears for a ?workspace= link, a tenant subdomain, or when the API answers
-    // `workspace_required` (fixture spec e2e/employee-sign-in.spec.ts proves those). Every consumer
-    // listed above now opens /login?workspace=<slug>, so this is the shape they all depend on.
-    await page.goto('/login?workspace=contract-probe');
+    // Plain /login: email and password, nothing else.
+    await page.goto('/login');
 
     // Wait for the page to SETTLE, not merely to render. React's streaming SSR parks the shell in
     // a hidden staging container and then moves it into the body, so for a few hundred ms the
@@ -115,8 +110,9 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
       .toBe('1/1');
   });
 
-  test('the three credential fields exist, are visible and are enabled', async ({ page }) => {
-    for (const selector of [EMAIL, PASSWORD, WORKSPACE]) {
+  test('the two credential fields exist, are visible and are enabled, and there is no company ID', async ({ page }) => {
+    await expect(page.locator(WORKSPACE), 'one organisation per installation: no company ID field').toHaveCount(0);
+    for (const selector of [EMAIL, PASSWORD]) {
       const field = page.locator(selector);
       await expect(field, `${selector} must be exactly one element`).toHaveCount(1);
       await expect(field, `${selector} must be visible`).toBeVisible();
@@ -132,7 +128,6 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
     // Guards against the class surviving on some unrelated wrapper while the form moves out of it.
     await expect(page.locator(`${SHELL} ${EMAIL}`)).toHaveCount(1);
     await expect(page.locator(`${SHELL} ${PASSWORD}`)).toHaveCount(1);
-    await expect(page.locator(`${SHELL} ${WORKSPACE}`)).toHaveCount(1);
   });
 
   test('field types and autocomplete tokens are preserved', async ({ page }) => {
@@ -141,14 +136,10 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
 
     await expect(page.locator(PASSWORD)).toHaveAttribute('type', 'password');
     await expect(page.locator(PASSWORD)).toHaveAttribute('autocomplete', 'current-password');
-
-    // The workspace/tenant-slug field. `organization` is the contract; the input type itself is
-    // free to change (text, search, a combobox input) as long as the token holds.
-    await expect(page.locator(WORKSPACE)).toHaveAttribute('autocomplete', 'organization');
   });
 
   test('every credential field has a non-empty accessible name', async ({ page }) => {
-    for (const selector of [EMAIL, PASSWORD, WORKSPACE]) {
+    for (const selector of [EMAIL, PASSWORD]) {
       const name = await accessibleName(page.locator(selector));
       const technique = await namingTechnique(page, selector);
       expect(name, `${selector} has no accessible name (naming technique: ${technique})`).not.toBe('');
@@ -167,7 +158,7 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
     }
   });
 
-  test('email → password → workspace → submit are reachable by keyboard in that order', async ({ page }) => {
+  test('email → password → submit are reachable by keyboard in that order', async ({ page }) => {
     const email = page.locator(EMAIL);
     const submit = submitControl(page);
     await expect(submit, 'a submit control must exist').toHaveCount(1);
@@ -188,11 +179,9 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
 
     const seen = (token: string): number => order.indexOf(token);
     expect(seen('li-pw'), `#li-pw was never reached by Tab. Focus order: ${order.join(' → ')}`).toBeGreaterThan(-1);
-    expect(seen('li-ws'), `#li-ws was never reached by Tab. Focus order: ${order.join(' → ')}`).toBeGreaterThan(-1);
     expect(seen('submit'), `the submit control was never reached by Tab. Focus order: ${order.join(' → ')}`).toBeGreaterThan(-1);
     expect(seen('li-pw'), `#li-pw must follow #li-em. Focus order: ${order.join(' → ')}`).toBeGreaterThan(seen('li-em'));
-    expect(seen('li-ws'), `#li-ws must follow #li-pw. Focus order: ${order.join(' → ')}`).toBeGreaterThan(seen('li-pw'));
-    expect(seen('submit'), `submit must follow #li-ws. Focus order: ${order.join(' → ')}`).toBeGreaterThan(seen('li-ws'));
+    expect(seen('submit'), `submit must follow #li-pw. Focus order: ${order.join(' → ')}`).toBeGreaterThan(seen('li-pw'));
   });
 
   test('the password reveal toggle flips #li-pw between password and text', async ({ page }) => {
@@ -231,8 +220,6 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
     // gone. No assertion on headings, icons or copy.
     await expect(page.locator(PASSWORD), 'the forgot state must not show the login password field')
       .toBeHidden({ timeout: 10_000 });
-    await expect(page.locator(WORKSPACE + ':visible'), 'the login workspace field must leave with it')
-      .toHaveCount(0);
     // …and the shell survives the state change.
     await expect(page.locator(SHELL)).toHaveCount(1);
 
@@ -247,7 +234,6 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
 
     await expect(page.locator(EMAIL)).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(PASSWORD)).toBeVisible();
-    await expect(page.locator(WORKSPACE)).toBeVisible();
   });
 
   /**
@@ -370,7 +356,6 @@ test.describe('Login contract (must hold before AND after the rebrand)', () => {
 
     await page.locator(EMAIL).fill('contract-probe@example.com');
     await page.locator(PASSWORD).fill('not-a-real-password');
-    await page.locator(WORKSPACE).fill('contract-probe');
 
     const submit = submitControl(page);
     await expect(submit).toBeEnabled();

@@ -107,13 +107,13 @@ client.interceptors.response.use(
     }
 
     // 402 — no usable licence (licence_missing / licence_expired). Send the user to the
-    // Licence tab, where an administrator can import one, but NEVER from /tenant-admin itself:
+    // Licence tab, where an administrator can import one, but NEVER from /organisation-admin itself:
     // that page's other calls also 402, so a self-redirect would loop.
     const responseError = err.response?.data?.error;
     const isCompanyLimitRefusal = responseError === 'company_limit_reached';
     if (err.response?.status === 402 && !isCompanyLimitRefusal && typeof window !== 'undefined') {
-      if (!window.location.pathname.startsWith('/tenant-admin')) {
-        window.location.href = '/tenant-admin?tab=licence';
+      if (!window.location.pathname.startsWith('/organisation-admin')) {
+        window.location.href = '/organisation-admin?tab=licence';
       }
       return Promise.reject(err);
     }

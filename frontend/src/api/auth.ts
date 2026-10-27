@@ -1,5 +1,5 @@
 import client, { publicAuthClient } from './client';
-import { normalizeEmail, normalizeWorkspace, requireWorkspace } from '../lib/publicAuth';
+import { normalizeEmail } from '../lib/publicAuth';
 import { DEFAULT_MIN_PASSWORD_LENGTH, normalizeWelcomeCode, toAsciiDigits } from '../lib/welcomeCode';
 
 export interface CompanyAccess {
@@ -154,15 +154,11 @@ export function isMfaEnrollment(r: LoginResponse): r is MfaEnrollmentResponse {
 }
 
 export const authApi = {
-  /**
-   * The workspace is OPTIONAL: without one, the server finds the company from the email's domain.
-   * When that is ambiguous it answers 400 `{ code: 'workspace_required' }` and the page asks for it.
-   */
-  login: (email: string, password: string, tenantSlug?: string) =>
+  /** Email and password only: a KynexOne installation holds one organisation, and the server signs in to it. */
+  login: (email: string, password: string) =>
     publicAuthClient.post<LoginResponse>('/api/auth/login', {
       email: normalizeEmail(email),
       password,
-      ...optionalWorkspace(tenantSlug),
     }).then((r) => r.data),
 
   /**
@@ -239,48 +235,43 @@ export const authApi = {
 
   me: () => client.get<AuthUser>('/api/auth/me').then((r) => r.data),
 
-  forgotPassword: (email: string, tenantSlug?: string) =>
+  forgotPassword: (email: string) =>
     publicAuthClient.post<ForgotPasswordResponse>('/api/auth/forgot-password', {
       email: normalizeEmail(email),
-      ...optionalWorkspace(tenantSlug),
     }).then((r) => r.data),
 
-  resetPassword: (resetToken: string, newPassword: string, tenantSlug: string) =>
+  resetPassword: (resetToken: string, newPassword: string) =>
     publicAuthClient.post('/api/auth/reset-password', {
       resetToken,
       newPassword,
-      tenantSlug: requireWorkspace(tenantSlug),
     }, { timeout: 15_000 }),
 
-  acceptInvitation: (invitationToken: string, newPassword: string, tenantSlug: string) =>
+  acceptInvitation: (invitationToken: string, newPassword: string) =>
     publicAuthClient.post('/api/auth/accept-invitation', {
       invitationToken,
       newPassword,
-      tenantSlug: requireWorkspace(tenantSlug),
     }, { timeout: 15_000 }).then(() => undefined),
 
   /**
    * First sign-in: exchange the welcome code HR gave the employee for a password they choose.
-   * 200 `{ tenantSlug }` on success, and NO session: the caller signs in with the new password next,
-   * using that company ID. Refusals are 400 `{ code }` — code_invalid | code_expired | code_used |
-   * password_policy | workspace_required | sign_out_first | try_later | seat_limit — and 429. The code is normalised (Arabic-Indic / Persian digits, spaces, dashes) here
+   * 200 on success, and NO session: the caller signs in with the new password next. Refusals are 400
+   * `{ code }` — code_invalid | code_expired | code_used | password_policy | sign_out_first | try_later |
+   * seat_limit — and 429. The code is normalised (Arabic-Indic / Persian digits, spaces, dashes) here
    * as well as on the server, so what is sent is exactly the eight digits on the slip.
    */
-  welcomeRedeem: (email: string, code: string, newPassword: string, tenantSlug?: string) =>
-    publicAuthClient.post<{ tenantSlug?: string | null }>('/api/auth/welcome/redeem', {
+  welcomeRedeem: (email: string, code: string, newPassword: string) =>
+    publicAuthClient.post('/api/auth/welcome/redeem', {
       email: normalizeEmail(email),
       code: normalizeWelcomeCode(code),
       newPassword,
-      ...optionalWorkspace(tenantSlug),
-    }, { timeout: 15_000 }).then((r) => ({ tenantSlug: normalizeWorkspace(r.data?.tenantSlug) || undefined })),
+    }, { timeout: 15_000 }).then(() => undefined),
 
   /**
-   * The company's minimum password length, for the live tick on /welcome. Anonymous; with no company
-   * ID the server answers for the platform default. Any failure falls back to the shared floor.
+   * The organisation's minimum password length, for the live tick on /welcome. Anonymous. Any failure
+   * falls back to the shared floor.
    */
-  passwordPolicy: (tenantSlug?: string) =>
+  passwordPolicy: () =>
     publicAuthClient.get<{ minLength?: number }>('/api/auth/password-policy', {
-      params: optionalWorkspace(tenantSlug),
       timeout: 8_000,
     }).then((r) => {
       const n = Number(r.data?.minLength);
@@ -288,8 +279,3 @@ export const authApi = {
     }).catch(() => DEFAULT_MIN_PASSWORD_LENGTH),
 };
 
-/** `{ tenantSlug }` only when one was given: the anonymous endpoints treat a missing slug as "find it from the email". */
-function optionalWorkspace(tenantSlug?: string | null): { tenantSlug?: string } {
-  const slug = normalizeWorkspace(tenantSlug);
-  return slug ? { tenantSlug: slug } : {};
-}

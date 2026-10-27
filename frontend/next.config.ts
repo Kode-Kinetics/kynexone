@@ -39,6 +39,10 @@ const nextConfig: NextConfig = {
   // overhead. This does not extend deployment ingress limits or retry failed POSTs.
   experimental: { proxyTimeout: 120_000 },
 
+  // "Tenant Admin" is "Organisation Admin" on a client installation (WP4.9); old links and bookmarks still work.
+  async redirects() {
+    return [{ source: '/tenant-admin', destination: '/organisation-admin', permanent: false }];
+  },
   async rewrites() {
     return [
       {

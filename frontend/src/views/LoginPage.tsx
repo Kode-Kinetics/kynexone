@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail,
+  AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Mail,
   ShieldCheck, Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -14,7 +14,7 @@ import { BackupCodesStep } from '../components/account/BackupCodesStep';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
 import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
-import { isWorkspaceRequired, localReturnPathOrNull, normalizeWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
+import { localReturnPathOrNull } from '../lib/publicAuth';
 import { isWelcomeCode, normalizeWelcomeCode, toAsciiDigits } from '../lib/welcomeCode';
 import { setWelcomeHandoff } from '../lib/welcomeHandoff';
 import { takeSignInNotice, type SignInNotice } from '../lib/signInNotice';
@@ -25,7 +25,6 @@ import { getPublicInstallation } from '../api/publicInstallation';
 
 /** Shapes, not words: nothing here to translate. */
 const EMAIL_PLACEHOLDER = 'name@company.com';
-const WORKSPACE_PLACEHOLDER = 'your-workspace';
 const BACKUP_CODE_PLACEHOLDER = 'XXXXX-XXXXX';
 
 /** Whole minutes for a 429's Retry-After (the API's LoginAbuseGuard thresholds round the same way). */
@@ -105,17 +104,7 @@ function LoginCard() {
   }, []);
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
-  const [tenantSlug,   setTenantSlug]   = useState('');
-  const [tenantLocked, setTenantLocked] = useState(false);
-  /* Workspace is asked for only when it is needed: a ?workspace= link, a tenant subdomain, or the
-     server answering `workspace_required` because the email's domain belongs to more than one
-     company. Everyone else signs in with the two things they actually know. */
-  const [showWorkspace, setShowWorkspace] = useState(false);
-  const workspaceRef = useRef<HTMLInputElement>(null);
-  /* Bumped to put the cursor in the company-ID field once it has rendered (it may only just have
-     appeared, so a focus() in the same tick would find nothing). */
-  const [focusWorkspace, setFocusWorkspace] = useState(0);
-  useEffect(() => { if (focusWorkspace) workspaceRef.current?.focus(); }, [focusWorkspace]);
+  /* No company ID: a KynexOne installation holds one organisation, and the server signs in to it. */
   const [error,        setError]        = useState('');
   const [info,         setInfo]         = useState('');
   const [loading,      setLoading]      = useState(false);
@@ -164,52 +153,12 @@ function LoginCard() {
     arrivalNoticeShown.current = text;
   }, [arrivalNotice, t]);
 
-  useEffect(() => {
-    const wsParam = searchParams ? resolveWorkspaceAlias(searchParams) : '';
-    if (wsParam) { setTenantSlug(wsParam); setTenantLocked(true); setShowWorkspace(true); return; }
-    if (typeof window === 'undefined') return;
-    const hostname = window.location.hostname.toLowerCase();
-    if (hostname.endsWith('.vercel.app') || hostname.endsWith('.vercel.com')) return;
-    const parts = hostname.split('.');
-    const skip = new Set(['www', 'app', 'admin', 'mail', 'localhost']);
-    const first = parts[0];
-    const looksLikeSlug = /^[a-z][a-z0-9-]*$/i.test(first);
-    if (parts.length >= 3 && !skip.has(first) && looksLikeSlug) {
-      setTenantSlug(normalizeWorkspace(first));
-      setTenantLocked(true);
-      setShowWorkspace(true);
-    }
-  }, [searchParams]);
-
-  /** The server could not tell the company from the email alone: ask, and put the cursor there. */
-  const askForWorkspace = () => {
-    setShowWorkspace(true);
-    setTenantLocked(false);
-    setError(t("We couldn't find your company from your email. Enter your company ID. HR can tell you what it is."));
-    setFocusWorkspace((n) => n + 1);
-  };
-
-  /** Asked for by the person: their email's domain belongs to another company, or they just know it. */
-  const signInWithWorkspace = () => {
-    setShowWorkspace(true);
-    setTenantLocked(false);
-    setError('');
-    setFocusWorkspace((n) => n + 1);
-  };
-
-  const workspaceArg = () => (showWorkspace ? normalizeWorkspace(tenantSlug) || undefined : undefined);
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setInfo('');
     if (!email.trim()) { setError(t('Enter your work email.')); return; }
-    if (showWorkspace && !tenantSlug.trim()) {
-      setError(t('Enter your company ID.'));
-      workspaceRef.current?.focus();
-      return;
-    }
     setLoading(true);
     try {
-      const outcome = await login(email, password, workspaceArg());
+      const outcome = await login(email, password);
       if (outcome === 'mfa') { setMode('mfa'); return; }
       if (outcome === 'mfa-enroll') { setMode('mfa-enroll'); return; }
       setSignedIn(true);
@@ -220,22 +169,18 @@ function LoginCard() {
     // lagged behind a deploy) stays invisible.
     catch (err: any) {
       const status = err?.response?.status;
-      // This API's `workspace_required`, or the previous API's "TenantSlug is required" validation problem.
-      if (isWorkspaceRequired(err)) { askForWorkspace(); return; }
       // Someone typed the 8-digit welcome code from their slip into the Password box. That is the
       // most natural mistake on a first sign-in, so take them where the code works. Only AFTER the
       // sign-in failed (an 8-digit password is still a password), and the email and code travel in
       // memory (lib/welcomeHandoff.ts), never in a URL or storage.
       if ((status === 401 || status === 400) && email.trim() && isWelcomeCode(password)) {
-        setWelcomeHandoff({ email, code: normalizeWelcomeCode(password), workspace: workspaceArg(), source: 'login' });
+        setWelcomeHandoff({ email, code: normalizeWelcomeCode(password), source: 'login' });
         setPassword('');
         router.push('/welcome');
         return;
       }
       if (status === 401) {
-        setError(showWorkspace
-          ? t('Email, password or company ID is incorrect. Check them and try again.')
-          : t('Email or password is incorrect. Check both and try again.'));
+        setError(t('Email or password is incorrect. Check both and try again.'));
       }
       else if (status === 400) setError(t('Please check the details you entered.'));
       else if (status === 429) {
@@ -342,24 +287,22 @@ function LoginCard() {
   const handleForgot = async (e: React.FormEvent) => {
     e.preventDefault(); setError(''); setInfo(''); setNoEmailDelivery(false);
     if (!(forgotEmail || email).trim()) { setError(t('Enter your work email.')); return; }
-    if (showWorkspace && !tenantSlug.trim()) { setError(t('Enter your company ID.')); return; }
     setLoading(true);
     try {
       // The server's own sentence is English; the page says the same thing in the reader's language.
-      const res = await authApi.forgotPassword(forgotEmail || email, workspaceArg());
+      const res = await authApi.forgotPassword(forgotEmail || email);
       if (res?.emailDeliveryConfigured === false) setNoEmailDelivery(true);
       else setInfo(t('If this email has an account, a reset link is on its way to it.'));
     } catch (err: any) {
-      if (isWorkspaceRequired(err)) askForWorkspace();
-      else if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
+      if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
       else setError(t('The reset link could not be sent. Try again in a moment.'));
     }
     finally { setLoading(false); }
   };
 
-  /** First sign-in: carry whatever is already typed (email, company ID) to /welcome, in memory. */
+  /** First sign-in: carry the email already typed to /welcome, in memory. */
   const goWelcome = () => {
-    setWelcomeHandoff({ email: email.trim() || undefined, workspace: workspaceArg() });
+    setWelcomeHandoff({ email: email.trim() || undefined });
     router.push('/welcome');
   };
 
@@ -495,7 +438,7 @@ function LoginCard() {
                               keyboard; taking the control out of the tab order
                               left a keyboard-only user unable to check what
                               they had typed before submitting. It sits between
-                              the password field and Workspace, which is where
+                              the password field, which is where
                               it visually is. */}
                           <button type="button" onClick={() => setShowPw(v => !v)}
                             className="lx-reveal" data-testid="login-password-toggle"
@@ -504,27 +447,6 @@ function LoginCard() {
                           </button>
                         </span>
                       </Field>
-
-                      {/* The hint under this field ("The short name in your
-                          KynexOne address") is gone: the placeholder already
-                          shows the shape of the value, and a line of help text
-                          under the last field before the button is exactly
-                          where a form should be silent. */}
-                      {showWorkspace && (
-                        <Field legend={t('Company ID')} htmlFor="li-ws" aside={
-                          tenantLocked ? <span className="lx-tag"><Lock />{t('Auto-detected')}</span> : null
-                        }>
-                          <input id="li-ws" ref={workspaceRef} type="text" dir="ltr" value={tenantSlug}
-                            onChange={e => setTenantSlug(e.target.value)}
-                            className="lx-in lx-in-mono" placeholder={WORKSPACE_PLACEHOLDER} autoComplete="organization" required />
-                        </Field>
-                      )}
-                      {/* The way in when the email alone cannot find the company (its domain is another
-                          company's, or a shared one): in words, and only while the field is hidden. */}
-                      {!showWorkspace && (
-                        <button type="button" className="lx-link lx-link-row" dir="auto" onClick={signInWithWorkspace}
-                          data-testid="login-use-company-id">{t('Sign in with Company ID')}</button>
-                      )}
 
                       <Feedback error={error} info={info} />
                       <Submit busy={busy} label={t('Sign in')} busyLabel={t('Signing in…')} />
@@ -548,12 +470,6 @@ function LoginCard() {
                         onChange={e => setForgotEmail(e.target.value)}
                         className="lx-in" placeholder={EMAIL_PLACEHOLDER} autoComplete="email" required />
                     </Field>
-                    {showWorkspace && (
-                      <Field legend={t('Company ID')} htmlFor="fg-ws">
-                        <input id="fg-ws" type="text" dir="ltr" value={tenantSlug} onChange={e => setTenantSlug(e.target.value)}
-                          className="lx-in lx-in-mono" placeholder={WORKSPACE_PLACEHOLDER} autoComplete="organization" required />
-                      </Field>
-                    )}
                     <Feedback error={error} info={info} />
                     <Submit busy={busy} label={t('Send reset link')} busyLabel={t('Sending…')} />
                     {noEmailDelivery && (

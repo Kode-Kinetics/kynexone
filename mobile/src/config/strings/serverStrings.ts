@@ -1,5 +1,5 @@
 // The server screen: choosing the KynexOne installation this app talks to (typed or scanned from the QR code in
-// Tenant Admin). Merged into i18n under `server.*`.
+// Organisation Admin). Merged into i18n under `server.*`.
 //
 // Rules: every key in `en` must exist in `ar` (tests/strings.test.ts checks parity). Keep this file import-free so
 // tests can load it under node --test.

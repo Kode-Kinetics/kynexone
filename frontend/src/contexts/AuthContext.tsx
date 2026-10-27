@@ -40,7 +40,7 @@ interface AuthContextValue {
   mfaPending: MfaPendingState | null;
   mfaEnrollmentPending: MfaEnrollmentPendingState | null;
   /** Normal credential login. Returns mfaPending state when TOTP is required. */
-  login: (email: string, password: string, tenantSlug?: string) => Promise<LoginOutcome>;
+  login: (email: string, password: string) => Promise<LoginOutcome>;
   /**
    * Complete login after the code step: the app's 6-digit code (a string), or `{ backupCode }`.
    * `rememberDevice` only when the choice was offered; it is never sent with a backup code.
@@ -159,8 +159,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // would swap that screen for a bare spinner and back).
   const retryAuth = loadUser;
 
-  const login = useCallback(async (email: string, password: string, tenantSlug?: string) => {
-    const res = await authApi.login(email, password, tenantSlug);
+  const login = useCallback(async (email: string, password: string) => {
+    const res = await authApi.login(email, password);
     if (isMfaChallenge(res)) {
       // Credentials verified; TOTP step required before tokens are issued.
       const days = Number(res.rememberDeviceDays);

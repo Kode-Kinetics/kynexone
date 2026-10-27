@@ -125,7 +125,7 @@ test.describe('IntelliFlow tenant — demo sanity', () => {
     '/setup',
     '/shifts',
     '/tax-policies',
-    '/tenant-admin',
+    '/organisation-admin',
     '/user-management',
     '/ai-assistant',
   ];

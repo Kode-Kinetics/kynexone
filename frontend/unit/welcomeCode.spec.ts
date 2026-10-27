@@ -35,13 +35,14 @@ test('only exactly eight digits is a welcome code', () => {
 });
 
 test('the QR fragment is read without corrupting the email, and the whole fragment is scrubbed', () => {
+  // An older slip's `w=<company id>` is ignored: an installation holds one organisation.
   expect(welcomeFromFragment('#e=noah.williams%40evostel.com&c=4821%207730&w=Evostel')).toEqual({
-    email: 'noah.williams@evostel.com', code: '48217730', workspace: 'evostel',
+    email: 'noah.williams@evostel.com', code: '48217730',
   });
   // A raw '+' stays a '+' (URLSearchParams would turn it into a space).
   expect(welcomeFromFragment('#e=a+b@x.com&c=12345678').email).toBe('a+b@x.com');
-  expect(welcomeFromFragment('#e=%E0%A4%A&c=12345678')).toEqual({ email: '', code: '12345678', workspace: '' });
-  expect(welcomeFromFragment('')).toEqual({ email: '', code: '', workspace: '' });
+  expect(welcomeFromFragment('#e=%E0%A4%A&c=12345678')).toEqual({ email: '', code: '12345678' });
+  expect(welcomeFromFragment('')).toEqual({ email: '', code: '' });
 
   let replaced = '';
   const history = { state: { k: 1 }, replaceState: (_s: unknown, _u: string, url?: string | URL | null) => { replaced = String(url); } };

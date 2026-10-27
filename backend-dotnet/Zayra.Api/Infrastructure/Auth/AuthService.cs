@@ -732,9 +732,7 @@ public class AuthService : IAuthService
 
     public async Task<ForgotPasswordResponse> ForgotPasswordAsync(ForgotPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        // F5: with no workspace nothing is ever mailed; the client asks for the Company ID.
-        if (string.IsNullOrWhiteSpace(request.TenantSlug)) throw new WorkspaceRequiredException();
-        var tenantSlug = RequireWorkspace(request.TenantSlug);
+        var tenantSlug = await WorkspaceOrOrganisationAsync(request.TenantSlug, cancellationToken);
 
         // Always respond with the same message to prevent user enumeration
         const string safeMessage = "If an account with that email exists, a password reset link has been sent.";
@@ -804,7 +802,7 @@ public class AuthService : IAuthService
 
     public async Task ResetPasswordAsync(ResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var tenantSlug = RequireWorkspace(request.TenantSlug);
+        var tenantSlug = await WorkspaceOrOrganisationAsync(request.TenantSlug, cancellationToken);
         var tokenHash = _tokenService.HashToken(request.ResetToken);
         // Routing only. Every authority decision is re-established under row locks below.
         var tokenReferences = await _db.PasswordResetTokens
@@ -1004,7 +1002,7 @@ public class AuthService : IAuthService
 
     public async Task AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken)
     {
-        var tenantSlug = RequireWorkspace(request.TenantSlug);
+        var tenantSlug = await WorkspaceOrOrganisationAsync(request.TenantSlug, cancellationToken);
         var tokenHash = _tokenService.HashToken(request.InvitationToken);
         var acceptedAtUtc = DateTime.UtcNow;
         var auditId = Guid.NewGuid();
@@ -2446,14 +2444,26 @@ public class AuthService : IAuthService
     /// <inheritdoc />
     public async Task<PasswordPolicyDto> GetPasswordPolicyAsync(string? tenantSlug, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(tenantSlug)) return new PasswordPolicyDto(10);
-        var slug = tenantSlug.Trim().ToLowerInvariant();
+        // No slug (every client now): the installation's organisation.
+        var slug = string.IsNullOrWhiteSpace(tenantSlug)
+            ? await WorkspaceResolver.ResolveSlugAsync(_db, null, cancellationToken)
+            : tenantSlug.Trim().ToLowerInvariant();
+        if (slug is null) return new PasswordPolicyDto(10);
         var min = await _db.SecuritySettings.AsNoTracking()
             .Where(s => _db.Tenants.Any(t => t.Id == s.TenantId && t.Slug == slug && t.IsActive))
             .Select(s => (int?)s.PasswordMinLength)
             .FirstOrDefaultAsync(cancellationToken);
         return new PasswordPolicyDto(Math.Max(10, min ?? 10));
     }
+
+    /// <summary>
+    /// The workspace a request names, or — what every client now does — none, which means the installation's one
+    /// organisation. Only a database still holding several (a converted one) can answer workspace_required.
+    /// </summary>
+    private async Task<string> WorkspaceOrOrganisationAsync(string? requested, CancellationToken ct) =>
+        !string.IsNullOrWhiteSpace(requested)
+            ? RequireWorkspace(requested)
+            : await WorkspaceResolver.ResolveSlugAsync(_db, null, ct) ?? throw new WorkspaceRequiredException();
 
     public static string RequireWorkspace(string? value)
     {

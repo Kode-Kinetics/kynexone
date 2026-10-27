@@ -15,9 +15,9 @@ test('the code prints as two groups of four', () => {
   expect(formatWelcomeCode('123')).toBe('123');
 });
 
-test('the QR carries email, code and company in the hash, never a query string', () => {
-  const url = welcomeQrUrl('https://app.example.test/', 'noah+x@evostel.com', '48217730', 'evostel');
-  expect(url).toBe('https://app.example.test/welcome#e=noah%2Bx%40evostel.com&c=48217730&w=evostel');
+test('the QR carries email and code in the hash, never a query string', () => {
+  const url = welcomeQrUrl('https://app.example.test/', 'noah+x@evostel.com', '48217730');
+  expect(url).toBe('https://app.example.test/welcome#e=noah%2Bx%40evostel.com&c=48217730');
   expect(url).not.toContain('?');
   expect(welcomeQrUrl('https://a.test', 'a@b.co', '11112222')).toBe('https://a.test/welcome#e=a%40b.co&c=11112222');
   expect(appAddress('https://kynexone.vercel.app/')).toBe('kynexone.vercel.app');

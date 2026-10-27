@@ -127,7 +127,7 @@ if [ -n "$LICENCE" ]; then
 else
   INSTALLATION_ID="$(compose run --rm --no-deps -T backend --licence-status | sed -n 's/^Installation id *: *//p')"
   warn "No licence imported. Send this installation id to your KynexOne supplier: $INSTALLATION_ID"
-  warn "Then upload the licence in Tenant Admin -> Licence. Until then the API answers 402 licence_missing."
+  warn "Then upload the licence in Organisation Admin -> Licence. Until then the API answers 402 licence_missing."
 fi
 
 # ── 7. Start ─────────────────────────────────────────────────────────────────

@@ -538,7 +538,7 @@ const ar: Record<string, string> = {
   "We could not confirm whether the changes were saved. Try again: retrying never applies them twice.": "تعذّر التأكد من حفظ التغييرات. حاول مرة أخرى: إعادة المحاولة لا تطبّقها مرتين أبدًا.",
   "What this company has today": "ما لدى هذه الشركة حاليًا",
   "What this does": "ما الذي يفعله هذا",
-  "Workspace-wide display and calendar settings, in Tenant Admin": "إعدادات العرض والتقويم لمساحة العمل كلها، في إدارة المستأجر",
+  "Workspace-wide display and calendar settings, in Organisation Admin": "إعدادات العرض والتقويم لمساحة العمل كلها، في إدارة المؤسسة",
   "You are continuing a draft started by {name} on {when}.": "أنت تتابع مسودة بدأها {name} في {when}.",
   "You can add another administrator for {company} only. Group access is given only by a group super admin.": "يمكنك إضافة مسؤول آخر لـ {company} فقط. صلاحية المجموعة يمنحها المسؤول الأعلى للمجموعة وحده.",
   "You cannot complete setup for this company.": "لا يمكنك إكمال إعداد هذه الشركة.",

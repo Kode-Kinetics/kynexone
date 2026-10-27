@@ -25,7 +25,7 @@ export function LicenceGraceBanner() {
     <div role="status" className="flex items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
       <span>
         Your KynexOne licence has expired and is in its grace period. Everything keeps working for now — ask your
-        administrator to import the renewed licence under Tenant Admin → Licence.
+        administrator to import the renewed licence under Organisation Admin → Licence.
       </span>
       <button
         type="button"

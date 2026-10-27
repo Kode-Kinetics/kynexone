@@ -3,7 +3,7 @@
 // ============================================================
 //
 // One store app serves every KynexOne installation: the server is chosen at runtime, typed in or scanned from
-// the QR code an administrator shows in Tenant Admin (kynexone://server?url=<https url>). The rules are the ones a
+// the QR code an administrator shows in Organisation Admin (kynexone://server?url=<https url>). The rules are the ones a
 // release build applies to a configured URL: HTTPS only, never a loopback address.
 // Keep this file import-free so tests can load it under node --test.
 
@@ -19,7 +19,7 @@ export type ServerAddressResult =
   | { ok: true; origin: string }
   | { ok: false; error: ServerAddressError };
 
-/** The scheme and host of the QR code Tenant Admin shows. */
+/** The scheme and host of the QR code Organisation Admin shows. */
 export const SERVER_QR_PREFIX = 'kynexone://server';
 
 const LOOPBACK_HOST = /^(localhost|0\.0\.0\.0|127(?:\.\d{1,3}){3}|\[::1\]|::1|\[::\])$/i;
@@ -63,7 +63,7 @@ export function parseServerQr(data: string, options: { allowInsecure?: boolean }
   return normalizeServerAddress(target, options);
 }
 
-/** The QR payload for a server origin (what Tenant Admin encodes). */
+/** The QR payload for a server origin (what Organisation Admin encodes). */
 export function serverQrPayload(origin: string): string {
   return `${SERVER_QR_PREFIX}?url=${encodeURIComponent(origin)}`;
 }

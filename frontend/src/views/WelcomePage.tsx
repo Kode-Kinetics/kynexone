@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { AlertCircle, Check, CheckCircle2, Circle, Eye, EyeOff, Info, KeyRound } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { LocaleProvider, useLocale } from '../contexts/LocaleContext';
@@ -9,7 +9,6 @@ import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { VendorFooter } from '../components/LoginMarketing';
 import { SignInLanguageToggle } from '../components/SignInLanguageToggle';
-import { isWorkspaceRequired, normalizeWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
 import {
   consumeWelcomeFragment, DEFAULT_MIN_PASSWORD_LENGTH, formatWelcomeCode, hasArabicLetters, isWelcomeCode,
   normalizeWelcomeCode, passwordChecks,
@@ -54,7 +53,6 @@ function WelcomeCard() {
   const { t, dir, locale, setLocale } = useLocale();
   const { user, login, logout } = useAuth();
   const router = useRouter();
-  const searchParams = useSearchParams();
   /* Signed in: land where a normal sign-in would (lib/homePath.ts) — Self-Service for an employee,
      the usual home for HR or an admin redeeming a reset code. Waits for the user to be set. */
   const [signedIn, setSignedIn] = useState(false);
@@ -65,8 +63,6 @@ function WelcomeCard() {
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(true);
-  const [workspace, setWorkspace] = useState('');
-  const [showWorkspace, setShowWorkspace] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -75,11 +71,6 @@ function WelcomeCard() {
   const [needsSignOut, setNeedsSignOut] = useState(false);
   const consumed = useRef(false);
   const inFlight = useRef(false);
-  const workspaceRef = useRef<HTMLInputElement>(null);
-  /* Bumped to put the cursor in the company-ID field once it has rendered (it may only just have
-     appeared, so a focus() in the same tick would find nothing). */
-  const [focusWorkspace, setFocusWorkspace] = useState(0);
-  useEffect(() => { if (focusWorkspace) workspaceRef.current?.focus(); }, [focusWorkspace]);
   const [minLength, setMinLength] = useState(DEFAULT_MIN_PASSWORD_LENGTH);
 
   useLayoutEffect(() => {
@@ -92,10 +83,7 @@ function WelcomeCard() {
     const captured = {
       email: fromFragment.email || handoff?.email || '',
       code: fromFragment.code || normalizeWelcomeCode(handoff?.code),
-      workspace: fromFragment.workspace || normalizeWorkspace(handoff?.workspace),
     };
-    const slug = captured.workspace || (searchParams ? resolveWorkspaceAlias(searchParams) : '');
-    if (slug) setWorkspace(slug);
     if (captured.email) setEmail(captured.email);
     if (captured.code) setCode(captured.code);
     if (captured.email && isWelcomeCode(captured.code)) {
@@ -105,17 +93,15 @@ function WelcomeCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The company's minimum length for the live tick. The server enforces the whole policy at save.
-  const policySlug = normalizeWorkspace(workspace);
+  // The organisation's minimum length for the live tick. The server enforces the whole policy at save.
   useEffect(() => {
     let live = true;
-    authApi.passwordPolicy(policySlug || undefined).then((n) => { if (live) setMinLength(n); });
+    authApi.passwordPolicy().then((n) => { if (live) setMinLength(n); });
     return () => { live = false; };
-  }, [policySlug]);
+  }, []);
 
   const checks = passwordChecks(password, email, minLength);
   const arabicLetters = hasArabicLetters(password);
-  const workspaceArg = () => normalizeWorkspace(workspace) || undefined;
 
   const notMyEmail = () => {
     setEmail(''); setCode(''); setPassword('');
@@ -127,15 +113,14 @@ function WelcomeCard() {
     e.preventDefault(); setError(''); setInfo('');
     if (!email.trim() || !email.includes('@')) { setError(t('Enter your work email.')); return; }
     if (!isWelcomeCode(code)) { setError(t('The welcome code is 8 digits. Check your sign-in slip.')); return; }
-    if (showWorkspace && !workspace.trim()) { setError(t('Enter your company ID.')); return; }
     setCode(normalizeWelcomeCode(code));
     setStep('password');
   };
 
   /** Sign in with the password just saved, and go to the employee home. */
-  const signIn = async (companyId?: string): Promise<boolean> => {
+  const signIn = async (): Promise<boolean> => {
     try {
-      const outcome = await login(email, password, companyId ?? workspaceArg());
+      const outcome = await login(email, password);
       // A privileged login may need its second factor; the sign-in page owns that step and reads
       // the pending challenge from the same AuthProvider.
       if (outcome === 'authenticated') setSignedIn(true);
@@ -151,24 +136,20 @@ function WelcomeCard() {
     if (inFlight.current) return;
     setError(''); setInfo('');
     if (!checks.longEnough || !checks.notPersonal) { setError(t("Your password doesn't meet the rules above.")); return; }
-    if (showWorkspace && !workspace.trim()) { setError(t('Enter your company ID.')); return; }
 
     inFlight.current = true;
     setBusy(true);
     try {
-      let companyId = workspaceArg();
       if (!passwordSet) {
-        const redeemed = await authApi.welcomeRedeem(email, code, password, workspaceArg());
+        await authApi.welcomeRedeem(email, code, password);
         // The code is spent: drop it from memory now, whatever happens next.
         setCode('');
         setPasswordSet(true);
         // The language they set their password in is their choice from now on, so the first
         // app page (and every later visit) matches it.
         setLocale(locale);
-        // The server says which company the code belonged to; sign in to exactly that one.
-        if (redeemed.tenantSlug) { companyId = redeemed.tenantSlug; setWorkspace(redeemed.tenantSlug); }
       }
-      if (!(await signIn(companyId))) {
+      if (!(await signIn())) {
         setInfo(t('Your password is saved. Sign in with your email and new password.'));
       }
     } catch (err: any) {
@@ -183,11 +164,6 @@ function WelcomeCard() {
         setError(t('This code no longer works. It may have expired or already been used. Ask HR for a new one.'));
       } else if (status === 400 && reason === 'password_policy') {
         setError(t("Your password doesn't meet the rules above."));
-      } else if (isWorkspaceRequired(err)) {
-        // `workspace_required`, or an older API's "TenantSlug is required" validation problem.
-        setShowWorkspace(true);
-        setError(t("We couldn't find your company from your email. Enter your company ID. HR can tell you what it is."));
-        setFocusWorkspace((n) => n + 1);
       } else if (status === 429 || (status === 400 && reason === 'try_later')) {
         setError(t('Too many tries. Wait a few minutes and try again.'));
       } else if (status === 400 && reason === 'sign_out_first') {
@@ -208,7 +184,7 @@ function WelcomeCard() {
     }
   };
 
-  const loginHref = workspaceArg() ? `/login?workspace=${encodeURIComponent(workspaceArg()!)}` : '/login';
+  const loginHref = '/login';
 
   return (
     <div className="tenant-login-shell lx-shell">
@@ -249,7 +225,6 @@ function WelcomeCard() {
                         value={code} onChange={(event) => setCode(event.target.value)} maxLength={16}
                         className="lx-in lx-in-code" placeholder={CODE_PLACEHOLDER} required />
                     </Field>
-                    {showWorkspace && <WorkspaceField t={t} value={workspace} onChange={setWorkspace} inputRef={workspaceRef} />}
                     <Feedback error={error} info={info} />
                     <button type="submit" className="lx-submit">{t('Continue')}</button>
                   </form>
@@ -293,7 +268,6 @@ function WelcomeCard() {
                         <Info aria-hidden />{t('Use English letters so you can sign in from any keyboard.')}
                       </p>
                     )}
-                    {showWorkspace && <WorkspaceField t={t} value={workspace} onChange={setWorkspace} inputRef={workspaceRef} />}
                     <Feedback error={error} info={info} />
                     {needsSignOut && (
                       <button type="button" className="lx-alt" data-testid="welcome-sign-out"
@@ -337,18 +311,6 @@ function Field({ label, htmlFor, hint, children }: {
       {children}
       {hint && <p className="lx-hint">{hint}</p>}
     </div>
-  );
-}
-
-function WorkspaceField({ t, value, onChange, inputRef }: {
-  t: (key: string) => string; value: string; onChange: (value: string) => void;
-  inputRef: React.RefObject<HTMLInputElement | null>;
-}) {
-  return (
-    <Field label={t('Company ID')} htmlFor="wc-ws">
-      <input id="wc-ws" ref={inputRef} type="text" dir="ltr" value={value} onChange={(event) => onChange(event.target.value)}
-        className="lx-in lx-in-mono" placeholder={WORKSPACE_PLACEHOLDER} autoComplete="organization" autoCapitalize="none" required />
-    </Field>
   );
 }
 

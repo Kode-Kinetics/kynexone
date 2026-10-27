@@ -1,21 +1,17 @@
 import { expect, test } from '@playwright/test';
 import {
   consumeFragmentToken,
-  normalizeWorkspace,
-  resolveWorkspaceAlias,
   safeLocalReturnPath,
   tokenFromFragment,
 } from '../src/lib/publicAuth';
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test('workspace aliases are deterministic and blank values fall through', () => {
-  const params = new URLSearchParams('workspace=%20&workspace=Primary&Tenant=ignored&tenant=Secondary&tenantSlug=Third&w=Fourth');
-  expect(resolveWorkspaceAlias(params)).toBe('primary');
-  expect(resolveWorkspaceAlias(new URLSearchParams('workspace=%20&tenant=%20ACME%20&tenantSlug=third'))).toBe('acme');
-  expect(resolveWorkspaceAlias(new URLSearchParams('tenantSlug=%20Third%20&w=Fourth'))).toBe('third');
-  expect(resolveWorkspaceAlias(new URLSearchParams('workspace=&tenant=&tenantSlug=&w='))).toBe('');
-  expect(normalizeWorkspace(' \tMixed-Case\n')).toBe('mixed-case');
+/**
+ * One organisation per installation: no page asks for, reads or sends a workspace (WP4). Links issued
+ * before this release may still carry `?workspace=…`; the pages ignore it.
+ */
+test('return paths stay on this site', () => {
   expect(safeLocalReturnPath('/reports?month=1')).toBe('/reports?month=1');
   for (const unsafe of ['https://evil.test', '//evil.test', '/\\evil.test', 'javascript:alert(1)', 'data:text/html,x']) {
     expect(safeLocalReturnPath(unsafe)).toBe('/dashboard');
@@ -53,8 +49,9 @@ test('login with stale storage makes no protected bootstrap or refresh request',
   await expect(page.locator('#li-em')).toBeVisible();
   await page.waitForTimeout(300);
 
-  expect(apiRequests).toEqual([]);
-  await expect(page).toHaveURL(/\/login\?workspace=ACME$/);
+  // The only call before sign-in is the anonymous installation answer (is it set up?).
+  expect(apiRequests.filter((url) => !url.includes('/api/public/installation'))).toEqual([]);
+  await expect(page.locator('#li-ws'), 'no company ID field').toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBe('stale-access');
   expect(await page.evaluate(() => localStorage.getItem('zayra_refresh_token'))).toBe('stale-refresh');
 });
@@ -80,20 +77,20 @@ test('reset is fragment-token-first, isolated, exact-password, and single-submit
     await route.fulfill({ status: 204, body: '' });
   });
 
-  await page.goto('/reset-password?workspace=%20&tenant=%20ACME%20#token=A+B%2FC%3D');
+  await page.goto('/reset-password?workspace=acme#token=A+B%2FC%3D');
   await expect.poll(() => new URL(page.url()).hash).toBe('');
-  await expect(page.locator('#credential-workspace')).toHaveValue('acme');
+  await expect(page.locator('#credential-workspace'), 'no workspace field').toHaveCount(0);
   expect(await page.locator('body').textContent()).not.toContain('A+B/C=');
 
   const exactPassword = '  Paß word🔐  ';
   await page.locator('#credential-password').fill(exactPassword);
   await page.locator('#credential-confirm').fill(exactPassword);
   await page.locator('button[type="submit"]').dblclick();
-  await expect(page.getByRole('link', { name: 'Return to sign in' })).toHaveAttribute('href', '/login?workspace=acme');
+  await expect(page.getByRole('link', { name: 'Return to sign in' })).toHaveAttribute('href', '/login');
 
   expect(resetPosts).toBe(1);
   expect(refreshPosts).toBe(0);
-  expect(body).toEqual({ resetToken: 'A+B/C=', newPassword: exactPassword, tenantSlug: 'acme' });
+  expect(body).toEqual({ resetToken: 'A+B/C=', newPassword: exactPassword });
   expect(headers?.authorization).toBeUndefined();
   expect(headers?.['x-company-id']).toBeUndefined();
   expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBe('stale-access');
@@ -144,11 +141,11 @@ test('successful invitation stores no returned session credential', async ({ pag
       json: { accessToken: 'must-not-store', refreshToken: 'must-not-store-refresh' },
     });
   });
-  await page.goto('/accept-invitation?workspace=Demo#token=invite-once');
+  await page.goto('/accept-invitation#token=invite-once');
   await page.locator('#credential-password').fill('  Exact Password!  ');
   await page.locator('#credential-confirm').fill('  Exact Password!  ');
   await page.getByRole('button', { name: 'Set password' }).click();
-  await expect(page.getByRole('link', { name: 'Return to sign in' })).toHaveAttribute('href', '/login?workspace=demo');
+  await expect(page.getByRole('link', { name: 'Return to sign in' })).toHaveAttribute('href', '/login');
   expect(await page.evaluate(() => localStorage.getItem('zayra_access_token'))).toBe('existing-access');
   expect(await page.evaluate(() => localStorage.getItem('zayra_refresh_token'))).toBe('existing-refresh');
   expect(await page.evaluate(() => localStorage.getItem('unrelated-preference'))).toBe('keep-me');
@@ -168,18 +165,18 @@ test('query token is ignored and missing fragment sends no one-use request', asy
   expect(posts).toBe(0);
 });
 
-test('missing workspace rejects before the one-use request', async ({ page }) => {
-  let posts = 0;
+test('a link without a workspace is complete: the reset goes ahead', async ({ page }) => {
+  let body: Record<string, unknown> | undefined;
   await page.route('**/api/auth/reset-password', async (route) => {
-    posts += 1;
-    await route.fulfill({ status: 500 });
+    body = route.request().postDataJSON();
+    await route.fulfill({ status: 204, body: '' });
   });
   await page.goto('/reset-password#token=fragment-secret');
   await page.locator('#credential-password').fill('LongEnough1!');
   await page.locator('#credential-confirm').fill('LongEnough1!');
   await page.getByRole('button', { name: 'Update password' }).click();
-  await expect(page.locator('.lx-fault')).toContainText('Workspace is required');
-  expect(posts).toBe(0);
+  await expect(page.getByRole('link', { name: 'Return to sign in' })).toBeVisible();
+  expect(body).toEqual({ resetToken: 'fragment-secret', newPassword: 'LongEnough1!' });
 });
 
 test('ambiguous gateway failure locks the one-use form against replay', async ({ page }) => {
@@ -194,7 +191,7 @@ test('ambiguous gateway failure locks the one-use form against replay', async ({
   await page.getByRole('button', { name: 'Update password' }).click();
   await expect(page.locator('.lx-fault')).toContainText('may have succeeded');
   await expect(page.getByRole('link', { name: 'Return to sign in' }))
-    .toHaveAttribute('href', '/login?workspace=acme');
+    .toHaveAttribute('href', '/login');
   expect(posts).toBe(1);
 });
 
@@ -214,7 +211,7 @@ test('impersonate is stripped by the server before the login page is rendered', 
 
   const clean = await request.get('/login?workspace=acme', { maxRedirects: 0 });
   expect(clean.status(), 'a login URL without impersonate must not be redirected').toBe(200);
-  const other = await request.get('/platform/login?impersonate=x', { maxRedirects: 0 });
+  const other = await request.get('/welcome?impersonate=x', { maxRedirects: 0 });
   expect(other.status(), 'the middleware matcher is /login only').toBe(200);
 });
 
@@ -228,7 +225,7 @@ test('impersonate query is inert and unsafe return paths remain on the login sur
 });
 
 test('pages carry the baseline security headers and the image optimizer fetches no other site', async ({ request }) => {
-  for (const path of ['/login', '/welcome', '/accept-invitation', '/platform/login']) {
+  for (const path of ['/login', '/welcome', '/accept-invitation', '/reset-password']) {
     const res = await request.get(path, { maxRedirects: 0 });
     const headers = res.headers();
     expect(headers['x-content-type-options'], path).toBe('nosniff');

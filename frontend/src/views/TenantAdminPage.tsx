@@ -520,7 +520,7 @@ export default function TenantAdminPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Tenant Administration</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Organisation Administration</h1>
         <p className="text-sm text-gray-500">Manage the licence, modules, localization, and branding</p>
       </div>
 

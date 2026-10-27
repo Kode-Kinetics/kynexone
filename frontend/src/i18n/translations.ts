@@ -234,7 +234,7 @@ const en: Dict = {
   'Approvals': 'Approvals',
   'User Management': 'User Management',
   'Saudi Compliance': 'Saudi Compliance',
-  'Tenant Admin': 'Tenant Admin',
+  'Organisation Admin': 'Organisation Admin',
   'Setup': 'Setup',
 
   // TopBar / UI
@@ -879,7 +879,7 @@ const en: Dict = {
   'No payroll run yet': 'No payroll run yet',
   'Payroll is switched off': 'Payroll is switched off',
   'Runs, their trend and their progress appear here once the first payroll is calculated.': 'Runs, their trend and their progress appear here once the first payroll is calculated.',
-  'Turn on the payroll module in Tenant Admin to track runs here.': 'Turn on the payroll module in Tenant Admin to track runs here.',
+  'Turn on the payroll module in Organisation Admin to track runs here.': 'Turn on the payroll module in Organisation Admin to track runs here.',
   'Start a payroll run': 'Start a payroll run',
   'Payroll, {period}': 'Payroll, {period}',
   '{status}, pay date {date}': '{status}, pay date {date}',
@@ -1666,7 +1666,7 @@ const ar: Dict = {
   'Approvals': 'الموافقات',
   'User Management': 'إدارة المستخدمين',
   'Saudi Compliance': 'الامتثال السعودي',
-  'Tenant Admin': 'إدارة المستأجر',
+  'Organisation Admin': 'إدارة المؤسسة',
   'Setup': 'الإعداد',
 
   // TopBar / UI
@@ -2311,7 +2311,7 @@ const ar: Dict = {
   'No payroll run yet': 'لا يوجد مسير رواتب بعد',
   'Payroll is switched off': 'وحدة الرواتب متوقفة',
   'Runs, their trend and their progress appear here once the first payroll is calculated.': 'تظهر المسيرات واتجاهها وتقدّمها هنا بعد احتساب أول مسير رواتب.',
-  'Turn on the payroll module in Tenant Admin to track runs here.': 'فعّل وحدة الرواتب من إدارة المنشأة لمتابعة المسيرات هنا.',
+  'Turn on the payroll module in Organisation Admin to track runs here.': 'فعّل وحدة الرواتب من إدارة المنشأة لمتابعة المسيرات هنا.',
   'Start a payroll run': 'بدء مسير رواتب',
   'Payroll, {period}': 'الرواتب، {period}',
   '{status}, pay date {date}': '{status}، تاريخ الصرف {date}',
@@ -2943,7 +2943,7 @@ const fr: Dict = {
   'Approvals': 'Approbations',
   'User Management': 'Gestion des Utilisateurs',
   'Saudi Compliance': 'Conformité Saoudienne',
-  'Tenant Admin': 'Admin Tenant',
+  'Organisation Admin': "Administration de l'organisation",
   'Setup': 'Configuration',
 
   // TopBar
@@ -3184,7 +3184,7 @@ const es: Dict = {
   'Approvals': 'Aprobaciones',
   'User Management': 'Gestión de Usuarios',
   'Saudi Compliance': 'Cumplimiento Saudí',
-  'Tenant Admin': 'Admin del Sistema',
+  'Organisation Admin': 'Administración de la organización',
   'Setup': 'Configuración',
 
   // TopBar

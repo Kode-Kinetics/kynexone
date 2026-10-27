@@ -83,7 +83,7 @@ if ($Licence) {
     $status = & docker compose --env-file .env -f docker-compose.yml run --rm --no-deps -T backend --licence-status
     $id = ($status | Where-Object { $_ -match '^Installation id' }) -replace '^Installation id\s*:\s*', ''
     Warn "No licence imported. Send this installation id to your KynexOne supplier: $id"
-    Warn 'Then upload the licence in Tenant Admin -> Licence. Until then the API answers 402 licence_missing.'
+    Warn 'Then upload the licence in Organisation Admin -> Licence. Until then the API answers 402 licence_missing.'
 }
 
 # 7. Start

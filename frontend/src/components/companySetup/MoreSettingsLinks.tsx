@@ -26,8 +26,8 @@ const MORE_SETTINGS: { id: string; what: string }[] = [
 
 const destinations = new Map<string, SetupDestination>(SETUP_AREAS.flatMap(area => area.destinations.map(d => [d.id, d] as const)));
 
-/** Workspace localisation (language, time zone, working week) lives in Tenant Admin, outside the Setup areas. */
-const LOCALISATION = { href: '/tenant-admin', permission: 'security.manage', label: msg('Language, time zone and working week'), what: msg('Workspace-wide display and calendar settings, in Tenant Admin') };
+/** Workspace localisation (language, time zone, working week) lives in Organisation Admin, outside the Setup areas. */
+const LOCALISATION = { href: '/organisation-admin', permission: 'security.manage', label: msg('Language, time zone and working week'), what: msg('Workspace-wide display and calendar settings, in Organisation Admin') };
 
 export function MoreSettingsLinks({ companyId }: { companyId?: string | null }) {
   const t = useT();

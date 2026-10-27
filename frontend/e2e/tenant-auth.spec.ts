@@ -56,28 +56,24 @@ test.describe('Tenant authentication', () => {
   // ── Wrong credentials ───────────────────────────────────────────────────────
 
   test('wrong password shows error and stays on login', async ({ page }) => {
-    await page.goto('/login?workspace=probe');
+    await page.goto('/login');
     await page.locator('#li-em, input[type="email"]').first().fill(INTELLIFLOW_ADMIN.email);
     await page.locator('#li-pw, input[type="password"]').first().fill('WRONG_PASSWORD_XYZ!');
-    await page.locator('#li-ws, input[autocomplete="organization"]').first().fill(INTELLIFLOW_SLUG);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     // Wait for error message to appear after API responds
     await expect(page.getByText(/invalid|incorrect|error|wrong|credentials/i).first()).toBeVisible({ timeout: 10_000 });
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test('wrong slug shows error and stays on login', async ({ page }) => {
-    await page.goto('/login?workspace=probe');
-    await page.locator('#li-em, input[type="email"]').first().fill(INTELLIFLOW_ADMIN.email);
+  test('an unknown email shows the same error as a wrong password and stays on login', async ({ page }) => {
+    // One organisation per installation: there is no company ID to get wrong, so the remaining probe is an
+    // address that has no account. It must read exactly like a wrong password and create no session.
+    await page.goto('/login');
+    await page.locator('#li-em, input[type="email"]').first().fill('nobody-here@intelliflow.com');
     await page.locator('#li-pw, input[type="password"]').first().fill(INTELLIFLOW_ADMIN.password);
-    await page.locator('#li-ws, input[autocomplete="organization"]').first().fill('nonexistent-tenant-xyz');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    // Staying on /login is also what an entirely inert Sign-in button produces.
-    // Require the rejection to be reported, exactly as the wrong-password test does.
-    await expect(page.getByText(/invalid|incorrect|error|wrong|credentials|not found|unknown/i).first())
-      .toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/invalid|incorrect|error|wrong|credentials/i).first()).toBeVisible({ timeout: 10_000 });
     await expect(page).toHaveURL(/\/login/, { timeout: 8_000 });
-    // …and no session may have been created.
     const token = await page.evaluate(() => localStorage.getItem('zayra_access_token'));
     expect(token, 'a rejected login must not store an access token').toBeFalsy();
   });

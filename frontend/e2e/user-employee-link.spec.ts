@@ -82,7 +82,7 @@ async function openUserManagement(page: Page, opts: { slowLookupFor?: string; cr
       return json({}); // Never touch a real account.
     }
 
-    if (pathname === '/api/auth/me') return json({ id: 'admin-1', tenantId: 't1', email: 'admin@kkdemo.com', fullName: 'Tenant Admin', roles: ['Admin'], accountType: 'Group', isGroupScope: true, companies: [], permissions: ['users.manage', 'roles.manage', 'security.manage'] });
+    if (pathname === '/api/auth/me') return json({ id: 'admin-1', tenantId: 't1', email: 'admin@kkdemo.com', fullName: 'Organisation Admin', roles: ['Admin'], accountType: 'Group', isGroupScope: true, companies: [], permissions: ['users.manage', 'roles.manage', 'security.manage'] });
     if (pathname === '/api/access/users') {
       const row = linked ? { ...noah, employeeId: 42, employeeName: 'Noah Williams', employeeCode: 'EMP-0042' } : noah;
       return json({ items: [row, layla, ann], total: 3, page: 1, pageSize: 20 });

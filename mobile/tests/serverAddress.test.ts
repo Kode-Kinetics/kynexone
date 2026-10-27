@@ -30,7 +30,7 @@ test('a development build may use plain http and a local server', () => {
   assert.deepEqual(normalizeServerAddress('http://localhost:5117', { allowInsecure: true }), { ok: true, origin: 'http://localhost:5117' });
 });
 
-test('the Tenant Admin QR code round-trips', () => {
+test('the Organisation Admin QR code round-trips', () => {
   const payload = serverQrPayload('https://hr.example.sa');
   assert.equal(payload, 'kynexone://server?url=https%3A%2F%2Fhr.example.sa');
   assert.deepEqual(parseServerQr(payload), { ok: true, origin: 'https://hr.example.sa' });

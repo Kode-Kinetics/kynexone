@@ -6,7 +6,7 @@ import { helpTextsApi, type FieldHelpText } from '../api/helpTexts';
 import { useHelpTexts } from '../contexts/HelpTextContext';
 
 /**
- * Tenant Admin → Help Text: lets the company admin replace any built-in field
+ * Organisation Admin → Help Text: lets the company admin replace any built-in field
  * tooltip with their own policy wording. Every ⓘ tooltip in the app shows its
  * "key:" at the bottom — enter that key here with custom text to override it.
  */

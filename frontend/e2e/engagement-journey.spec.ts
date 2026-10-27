@@ -36,11 +36,9 @@ async function api(method: string, p: string, token: string, body?: unknown) {
 
 async function uiLogin(page: Page, email: string, slug: string, locale: 'en' | 'ar' = 'en') {
   await page.addInitScript((l) => localStorage.setItem('kynexone-locale-choice-v2', l), locale);
-  await page.goto(`/login?workspace=${encodeURIComponent(slug)}`);
+  await page.goto('/login');
   await page.locator('#li-em, input[type="email"]').first().fill(email);
   await page.locator('#li-pw, input[type="password"]').first().fill(SEED_PASSWORD);
-  const ws = page.locator('#li-ws, input[autocomplete="organization"]').first();
-  if (await ws.isVisible().catch(() => false)) await ws.fill(slug);
   await page.locator('form button[type="submit"]').first().click();
   await page.waitForURL(/\/(dashboard|app|ess)/, { timeout: 60_000 });
   // A privileged account may be offered two-step enrolment; the journey does not depend on it.

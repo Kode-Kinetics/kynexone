@@ -49,11 +49,11 @@ export function formatWelcomeCode(code: string): string {
 }
 
 /**
- * What the slip's QR opens: the welcome page with the email, code and company in the HASH, which a
- * browser never sends to a server (never a query string).
+ * What the slip's QR opens: the welcome page with the email and code in the HASH, which a browser never
+ * sends to a server (never a query string).
  */
-export function welcomeQrUrl(origin: string, email: string, code: string, tenantSlug?: string | null): string {
-  const hash = `e=${encodeURIComponent(email)}&c=${encodeURIComponent(code)}${tenantSlug ? `&w=${encodeURIComponent(tenantSlug)}` : ''}`;
+export function welcomeQrUrl(origin: string, email: string, code: string): string {
+  const hash = `e=${encodeURIComponent(email)}&c=${encodeURIComponent(code)}`;
   return `${origin.replace(/\/+$/, '')}/welcome#${hash}`;
 }
 

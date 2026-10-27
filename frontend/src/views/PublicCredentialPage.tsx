@@ -1,18 +1,15 @@
 'use client';
 
 import { useLayoutEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
 import { AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound } from 'lucide-react';
 import { authApi } from '../api/auth';
 import { Logo } from '../components/Logo';
 import { Brief, VendorFooter } from '../components/LoginMarketing';
-import { consumeFragmentToken, requireWorkspace, resolveWorkspaceAlias } from '../lib/publicAuth';
+import { consumeFragmentToken } from '../lib/publicAuth';
 
 type CredentialKind = 'reset' | 'invitation';
 
 export function PublicCredentialPage({ kind }: { kind: CredentialKind }) {
-  const searchParams = useSearchParams();
-  const [workspace, setWorkspace] = useState('');
   const [token, setToken] = useState('');
   const [fragmentRead, setFragmentRead] = useState(false);
   const [password, setPassword] = useState('');
@@ -22,13 +19,8 @@ export function PublicCredentialPage({ kind }: { kind: CredentialKind }) {
   const [completed, setCompleted] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState('');
-  const [completedWorkspace, setCompletedWorkspace] = useState('');
   const fragmentConsumed = useRef(false);
   const requestInFlight = useRef(false);
-
-  useLayoutEffect(() => {
-    setWorkspace(resolveWorkspaceAlias(searchParams));
-  }, [searchParams]);
 
   useLayoutEffect(() => {
     // React Strict Mode re-runs effects in development. The ref prevents the
@@ -45,9 +37,8 @@ export function PublicCredentialPage({ kind }: { kind: CredentialKind }) {
   const success = kind === 'reset'
     ? 'Password updated. Sign in with your new password.'
     : 'Password set. Sign in to continue.';
-  const loginHref = completedWorkspace
-    ? `/login?workspace=${encodeURIComponent(completedWorkspace)}`
-    : '/login';
+  // One organisation per installation: links may still carry an old ?workspace=, which nothing needs any more.
+  const loginHref = '/login';
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -58,16 +49,6 @@ export function PublicCredentialPage({ kind }: { kind: CredentialKind }) {
       setError(`This ${kind === 'reset' ? 'reset' : 'invitation'} link is missing its secure token. Request a new link.`);
       return;
     }
-    let normalizedWorkspace: string;
-    try {
-      normalizedWorkspace = requireWorkspace(workspace);
-    } catch {
-      setError('Workspace is required.');
-      return;
-    }
-    // Preserve the authoritative workspace even when the one-use request has an
-    // ambiguous outcome; the only safe next step is the canonical login surface.
-    setCompletedWorkspace(normalizedWorkspace);
     if (password.length < 10) {
       setError('Password must be at least 10 characters.');
       return;
@@ -80,8 +61,8 @@ export function PublicCredentialPage({ kind }: { kind: CredentialKind }) {
     requestInFlight.current = true;
     setBusy(true);
     try {
-      if (kind === 'reset') await authApi.resetPassword(token, password, normalizedWorkspace);
-      else await authApi.acceptInvitation(token, password, normalizedWorkspace);
+      if (kind === 'reset') await authApi.resetPassword(token, password);
+      else await authApi.acceptInvitation(token, password);
       setCompleted(true);
       setToken('');
     } catch (requestError: any) {
@@ -130,22 +111,11 @@ export function PublicCredentialPage({ kind }: { kind: CredentialKind }) {
                   <div className="lx-head-block" aria-live="polite">
                     <p className="lx-kicker"><KeyRound aria-hidden />Account security</p>
                     <h1 className="lx-title">{title}</h1>
-                    <p className="lx-sub">Use the workspace from your secure link and choose a password only you know.</p>
+                    <p className="lx-sub">Choose a password only you know.</p>
                   </div>
 
                   {!completed && (
                     <>
-                      <CredentialField label="Workspace" htmlFor="credential-workspace">
-                        <input
-                          id="credential-workspace"
-                          className="lx-in lx-in-mono"
-                          value={workspace}
-                          onChange={(event) => setWorkspace(event.target.value)}
-                          placeholder="your-workspace"
-                          autoComplete="organization"
-                          required
-                        />
-                      </CredentialField>
                       <CredentialField label="New password" htmlFor="credential-password" hint="Minimum 10 characters">
                         <span className="lx-inwrap">
                           <input

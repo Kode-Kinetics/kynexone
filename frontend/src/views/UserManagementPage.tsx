@@ -166,7 +166,7 @@ function UsersTab() {
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } })?.response?.status;
       if (status === 402) {
-        setSubscriptionBanner('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
+        setSubscriptionBanner('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Organisation Admin → Licence.');
       }
     }
   }, []);
@@ -1186,7 +1186,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
       if (status === 422 && data?.error === 'user_limit_reached') {
         setErr(data.message ?? `User limit reached (${data.current}/${data.limit}). Contact your KynexOne supplier to extend your licence.`);
       } else if (status === 402) {
-        setErr('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Tenant Admin → Licence.');
+        setErr('No valid KynexOne licence is installed, or it has expired. An administrator can import one under Organisation Admin → Licence.');
       } else {
         setErr(localizedRefusal(e, locale) ?? 'Failed to create user.');
       }

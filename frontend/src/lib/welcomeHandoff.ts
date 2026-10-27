@@ -11,7 +11,6 @@
 export interface WelcomeHandoff {
   email?: string;
   code?: string;
-  workspace?: string;
   /** 'login' when the sign-in page diverted a code typed as a password. */
   source?: 'login';
 }

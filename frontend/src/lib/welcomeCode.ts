@@ -40,17 +40,15 @@ function safeDecode(value: string): string {
 export interface WelcomeFragment {
   email: string;
   code: string;
-  /** The company's sign-in ID (tenant slug). The slip's QR carries it so an ambiguous email domain never stops anyone. */
-  workspace: string;
 }
 
 /**
- * Reads the slip QR's `#e=<email>&c=<code>&w=<company id>`. Unknown names
- * are ignored; a malformed value reads as empty; the first occurrence of a name wins.
+ * Reads the slip QR's `#e=<email>&c=<code>`. Unknown names (an older slip's `w=<company id>`) are ignored;
+ * a malformed value reads as empty; the first occurrence of a name wins.
  */
 export function welcomeFromFragment(fragment: string): WelcomeFragment {
   const value = fragment.startsWith('#') ? fragment.slice(1) : fragment;
-  const out: WelcomeFragment = { email: '', code: '', workspace: '' };
+  const out: WelcomeFragment = { email: '', code: '' };
   for (const pair of value.split('&')) {
     const separator = pair.indexOf('=');
     if (separator < 0) continue;
@@ -59,7 +57,6 @@ export function welcomeFromFragment(fragment: string): WelcomeFragment {
     const raw = safeDecode(pair.slice(separator + 1));
     if (name === 'e' && !out.email) out.email = raw.trim();
     if (name === 'c' && !out.code) out.code = normalizeWelcomeCode(raw);
-    if (name === 'w' && !out.workspace) out.workspace = raw.trim().toLowerCase();
   }
   return out;
 }

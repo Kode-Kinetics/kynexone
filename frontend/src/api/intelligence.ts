@@ -235,7 +235,7 @@ export const hrRequestApi = {
     ).then(r => r.data),
 };
 
-// ── Tenant Admin API ──────────────────────────────────────────────────────────
+// ── Organisation Admin API ──────────────────────────────────────────────────────────
 
 export const tenantAdminApi = {
   listFeatureFlags: () =>

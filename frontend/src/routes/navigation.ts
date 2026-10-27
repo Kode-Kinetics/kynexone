@@ -108,7 +108,7 @@ export const navigationGroups: NavGroup[] = [
       { label: 'User Management', icon: KeyRound, path: '/user-management', requiredPermissions: ['users.manage', 'roles.manage', 'security.manage'] },
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
       { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
-      { label: 'Tenant Admin', icon: Settings2, path: '/tenant-admin', requiredPermissions: ['security.manage'] },
+      { label: 'Organisation Admin', icon: Settings2, path: '/organisation-admin', requiredPermissions: ['security.manage'] },
       { label: 'Setup', icon: UserRoundCog, path: '/setup', requiredPermissions: ['organization.write', ...GL_AND_RATES_PERMISSIONS] },
       // Implementation-time screen: the consultant-facing front end for the opening-balance engine,
       // which until now had no caller at all and was driven from Postman.
@@ -165,7 +165,7 @@ export const navigationHints: Record<string, string> = {
   '/user-management': 'Users, roles and what each role is allowed to do.',
   '/saudi-compliance': 'Saudization (Nitaqat), Qiwa and Mudad status for the company.',
   '/gosi-filing': 'Prepare and check the monthly GOSI contribution filing.',
-  '/tenant-admin': 'Company-wide settings: security, localisation and modules.',
+  '/organisation-admin': 'Company-wide settings: security, localisation and modules.',
   '/setup': 'Company structure, jobs and grades, payroll and country rules, and workspace settings.',
   '/opening-balances': 'Load leave, loan and end-of-service balances when going live.',
   '/payroll/variance': 'Compare a payroll run with the previous system’s register for the same month.',

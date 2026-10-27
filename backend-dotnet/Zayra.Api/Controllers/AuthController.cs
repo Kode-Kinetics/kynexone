@@ -177,8 +177,6 @@ public class AuthController : ControllerBase
     [EnableRateLimiting("auth_login")] // throttle to prevent reset-email bombing / enumeration abuse
     public async Task<IActionResult> ForgotPassword(ForgotPasswordRequest request, CancellationToken cancellationToken)
     {
-        // F5: no workspace → nothing is mailed; the client asks for the Company ID.
-        if (string.IsNullOrWhiteSpace(request.TenantSlug)) return WorkspaceRequired();
         try { return Ok(await _authService.ForgotPasswordAsync(request, GetContext(), cancellationToken)); }
         catch (Zayra.Api.Infrastructure.Auth.WorkspaceRequiredException) { return WorkspaceRequired(); }
     }

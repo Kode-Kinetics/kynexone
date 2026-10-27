@@ -16,7 +16,7 @@ import { normalizeServerAddress, parseServerQr, type ServerAddressResult } from 
 
 /**
  * Which KynexOne installation this app talks to. Shown before sign-in when no server is chosen, and from the
- * sign-in screen's "Change server". The address is typed, or scanned from the QR code Tenant Admin shows
+ * sign-in screen's "Change server". The address is typed, or scanned from the QR code Organisation Admin shows
  * (kynexone://server?url=…); either way it must be HTTPS and must answer GET /api/public/installation as a set-up
  * KynexOne server before it is saved.
  */
