@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { getPathMatch } from 'next/dist/shared/lib/router/utils/path-match';
+import nextConfig from '../next.config';
 import { problemOf, sha256Hex } from '../src/api/esign';
 import { onboardingP4Ar, onboardingP4En } from '../src/i18n/onboardingP4';
 import { ESS_SECTIONS, activeEssPage } from '../src/routes/essSections';
@@ -36,4 +38,22 @@ test('the sign pages sit under the Requests section of the employee workspace', 
   expect(activeEssPage('/ess/sign')?.path).toBe('/ess/sign');
   expect(activeEssPage('/ess/sign/3f2b')?.path).toBe('/ess/sign');
   expect(ESS_SECTIONS.find(s => s.pages.some(p => p.path === '/ess/sign'))?.id).toBe('requests');
+});
+
+test('the sign pages cannot be framed at all, and never cached; the rest of the site keeps same-origin framing for PDF previews', async () => {
+  const rules = (await nextConfig.headers!()) as { source: string; headers: { key: string; value: string }[] }[];
+  const headersFor = (pathname: string) => {
+    const out: Record<string, string> = {};
+    for (const rule of rules) if (getPathMatch(rule.source, { strict: true, removeUnnamedParams: true })(pathname)) for (const { key, value } of rule.headers) out[key.toLowerCase()] = value;
+    return out;
+  };
+  for (const path of ['/ess/sign', '/ess/sign/3f2b9c1e-0000-4000-8000-000000000001']) {
+    const h = headersFor(path);
+    expect(h['x-frame-options'], path).toBe('DENY');
+    expect(h['content-security-policy'], path).toBe("frame-ancestors 'none'");
+    expect(h['cache-control'], path).toBe('no-store');
+  }
+  expect(headersFor('/ess/documents')['x-frame-options']).toBe('SAMEORIGIN');
+  // no rule relaxes the policy for the preview: nothing sets frame-src, default-src or child-src anywhere
+  expect(rules.flatMap(r => r.headers).filter(h => /frame-src|default-src|child-src/.test(h.value))).toEqual([]);
 });

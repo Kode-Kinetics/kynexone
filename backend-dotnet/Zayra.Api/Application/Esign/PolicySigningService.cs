@@ -78,7 +78,7 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
         try
         {
             var strategy = db.Database.CreateExecutionStrategy();
-            return await strategy.ExecuteAsync<SignOutcome>(async () =>
+            return await strategy.ExecuteAsync(async () =>
             {
                 db.ChangeTracker.Clear();
                 await using var tx = await db.Database.BeginTransactionAsync(ct);
