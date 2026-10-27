@@ -112,7 +112,8 @@ public interface IStepUpService
 public static class EssSubmitGuard
 {
     /// <summary>"notice_required" unless the client echoed the current notice version.</summary>
-    public static string? NoticeError(string? echoed) => throw new NotImplementedException();
+    public static string? NoticeError(string? echoed) =>
+        string.Equals(echoed, EssCompletion.NoticeVersion, StringComparison.Ordinal) ? null : EssProblemCodes.NoticeRequired;
 }
 
 /// <summary>Problem codes of the flow. Each has <c>ess.completion.error.&lt;code&gt;</c> in EN and AR (onboardingP2.ts).</summary>

@@ -5,8 +5,10 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees.Ess;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Authorization;
@@ -18,7 +20,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Authorize]
 [Route("api/employee-completion")]
-public sealed class EmployeeCompletionController(ZayraDbContext db, IDataScopeService scopeService) : ControllerBase
+public sealed class EmployeeCompletionController(ZayraDbContext db, IDataScopeService scopeService, IEssSectionRequester requester) : ControllerBase
 {
     public const string Category = "EmployeeProfileCompletion";
     public const string RequestReason = "Employee profile completion";
@@ -42,10 +44,17 @@ public sealed class EmployeeCompletionController(ZayraDbContext db, IDataScopeSe
 
     [HttpPost("{employeeId:int}")]
     [HasPermission("employees.write")]
-    public async Task<ActionResult<EmployeeCompletionDto>> Request(int employeeId, CancellationToken ct)
+    public async Task<ActionResult<EmployeeCompletionDto>> Request(int employeeId, [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] EmployeeCompletionTriggerRequest? body, CancellationToken ct)
     {
         var employee = await ManagedEmployee(employeeId, ct);
         if (employee is null) return NotFound();
+        if (body?.Sections is { Count: > 0 } sections)
+        {
+            // P2: ask for named sections (additive); without a body this stays "every missing section", exactly as before.
+            if (sections.Any(s => !EssSectionKeys.IsKnown(s))) return BadRequest(new { code = EssProblemCodes.ValidationFailed, message = "Unknown profile section." });
+            await requester.RequestAsync(employee.TenantId!.Value, employee.Id, sections, ct);
+            return Ok(await Status(employee, includeProfile: false, ct));
+        }
         var id = ActionId(employee.TenantId!.Value, employee.Id);
         if (!await db.EmployeeActionItems.AnyAsync(x => x.TenantId == employee.TenantId!.Value && x.Id == id, ct))
         {
@@ -185,6 +194,8 @@ public sealed class EmployeeCompletionController(ZayraDbContext db, IDataScopeSe
     }
 }
 
+/// <summary>P2: the optional body of the HR request. Absent or empty = every missing section (the original behaviour).</summary>
+public record EmployeeCompletionTriggerRequest(List<string>? Sections);
 public record EmployeeCompletionRequest(Dictionary<string, string?> Changes);
 public record EmployeeCompletionDto(bool Requested, string Status, bool SelfServiceAvailable, Guid? RequestId,
     Dictionary<string, string>? Changes, Dictionary<string, string>? Profile, string? ReviewNote);
