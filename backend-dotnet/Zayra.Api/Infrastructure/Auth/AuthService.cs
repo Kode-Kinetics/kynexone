@@ -71,7 +71,10 @@ public class AuthService : IAuthService
         // request middleware. These structural failures do not count toward password lockout.
         var ssoOnly = user is not null && await IsSsoOnlyUserAsync(user, cancellationToken);
         var entryEligibility = AuthCurrentEligibility.ForPasswordEntry(user, ssoOnly, DateTime.UtcNow);
-        var failReason = entryEligibility.Allowed || entryEligibility.Reason == "account_locked"
+        // A temporary password an administrator set (AdminSetTemporaryPasswordAsync) is still checked; Phase 4a'' below
+        // withholds the session and asks for a new password instead.
+        var temporaryPassword = entryEligibility.Reason == "must_change_password" && !ssoOnly;
+        var failReason = entryEligibility.Allowed || entryEligibility.Reason == "account_locked" || temporaryPassword
             ? null
             : entryEligibility.Reason;
 
@@ -104,7 +107,7 @@ public class AuthService : IAuthService
                 UserAgent     = context.UserAgent,
             });
             await _auditService.WriteAsync("auth.login_failed", "User", null, context,
-                $"{{\"email\":\"{request.Email}\",\"reason\":\"{failReason}\"}}", cancellationToken);
+                System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, reason = failReason }), cancellationToken);
             var refused = new UnauthorizedAccessException("Invalid email, password, or tenant.");
             if (failReason == "user_not_found") LoginFailureKind.MarkUnknownAccount(refused);
             throw refused;
@@ -137,7 +140,7 @@ public class AuthService : IAuthService
             });
             await _auditService.WriteAsync("auth.login_blocked_lockout", "User", user.Id.ToString(),
                 context with { UserId = user.Id, TenantId = user.TenantId },
-                $"{{\"email\":\"{request.Email}\",\"lockoutEnd\":\"{user.LockoutEnd:O}\"}}", cancellationToken);
+                System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, lockoutEnd = user.LockoutEnd }), cancellationToken);
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         }
 
@@ -171,7 +174,7 @@ public class AuthService : IAuthService
                 await _db.SaveChangesAsync(cancellationToken);
                 await _auditService.WriteAsync("auth.login_failed", "User", user.Id.ToString(),
                     context with { UserId = user.Id, TenantId = user.TenantId },
-                    $"{{\"email\":\"{request.Email}\",\"reason\":\"password_mismatch_known_device\"}}", cancellationToken);
+                    System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, reason = "password_mismatch_known_device" }), cancellationToken);
                 if (distrusted)
                 {
                     await _auditService.WriteAsync("auth.known_device_distrusted", "User", user.Id.ToString(),
@@ -212,7 +215,7 @@ public class AuthService : IAuthService
                 nowLocked ? "auth.account_locked" : "auth.login_failed",
                 "User", user.Id.ToString(),
                 context with { UserId = user.Id, TenantId = user.TenantId },
-                $"{{\"email\":\"{request.Email}\",\"failedCount\":{user.FailedLoginCount},\"reason\":\"password_mismatch\"}}",
+                System.Text.Json.JsonSerializer.Serialize(new { email = request.Email, failedCount = user.FailedLoginCount, reason = "password_mismatch" }),
                 cancellationToken);
             throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
         }
@@ -242,6 +245,12 @@ public class AuthService : IAuthService
                 + "for everyone else until it expires. If the failed attempts were not you, change your password.",
                 cancellationToken);
         }
+
+        // Phase 4a'' — the password proven is a temporary one an administrator set. It never opens a session:
+        // the caller is handed a single-use reset token (redeemed by ResetPasswordAsync, which refuses the
+        // temporary password itself) and signs in again with their own password, MFA included.
+        if (user.MustChangePassword && !ssoOnly)
+            return await IssuePasswordChangeChallengeAsync(user, tenantSlug, verifiedPasswordHash, context, cancellationToken);
 
         // Phase 4b — MFA challenge: if the user has TOTP enabled, issue a short-lived challenge
         // token instead of full session tokens. Full tokens are only issued after the TOTP code
@@ -349,6 +358,136 @@ public class AuthService : IAuthService
             LoginAbuseGuard.CredentialVersion(user.PasswordHash, user.MFAEnabled, user.MfaConfiguredAtUtc),
             existingDevice ?? Guid.NewGuid(), DateTime.UtcNow),
     };
+
+    /// <summary>How long the sign-in-issued "choose your own password" token lives.</summary>
+    internal const int PasswordChangeTokenMinutes = 15;
+
+    private async Task<AuthLoginResult> IssuePasswordChangeChallengeAsync(User user, string tenantSlug, string verifiedPasswordHash,
+        RequestContext context, CancellationToken cancellationToken)
+    {
+        var resetToken = _tokenService.CreateSecureToken();
+        var tokenHash = _tokenService.HashToken(resetToken);
+        var auditId = Guid.NewGuid();
+        var tenantId = user.TenantId;
+        var userId = user.Id;
+
+        // Under the same user-row lock as ResetPasswordAsync / AdminSetTemporaryPasswordAsync, and only while the
+        // temporary password this sign-in proved is still the stored one. Otherwise a sign-in racing the owner's own
+        // reset could mint a token after that reset spent every outstanding one, and overwrite the owner's choice.
+        async Task IssueOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var issuedAtUtc = DateTime.UtcNow;
+            var current = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
+            if (current is null || current.IsDeleted || !current.IsActive || !current.MustChangePassword
+                || !string.Equals(current.PasswordHash, verifiedPasswordHash, StringComparison.Ordinal))
+                throw new UnauthorizedAccessException("Invalid email, password, or tenant.");
+
+            _db.PasswordResetTokens.Add(new PasswordResetToken
+            {
+                UserId = userId,
+                TokenHash = tokenHash,
+                ExpiresAtUtc = issuedAtUtc.AddMinutes(PasswordChangeTokenMinutes),
+                CreatedAtUtc = issuedAtUtc,
+                CreatedByIp = context.IpAddress,
+            });
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                TenantId = tenantId,
+                UserId = userId,
+                EmailAttempted = current.Email,
+                EventType = LoginEventTypes.PasswordResetRequested,
+                FailureReason = "must_change_password",
+                IpAddress = context.IpAddress,
+                UserAgent = context.UserAgent,
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId, issuedAtUtc, "auth.password_change_required", "User", userId.ToString(),
+                context with { UserId = userId, TenantId = tenantId }, null));
+            await _db.SaveChangesAsync(ct);
+        }
+
+        await RunCredentialTransactionAsync(IssueOnceAsync, tenantId, auditId, cancellationToken);
+        return new AuthLoginResult(null, null)
+        {
+            PasswordChange = new PasswordChangeChallengeDto(resetToken, PasswordChangeTokenMinutes * 60, tenantSlug),
+        };
+    }
+
+    /// <inheritdoc />
+    public async Task AdminSetTemporaryPasswordAsync(Guid tenantId, Guid userId, string temporaryPassword, string reason,
+        RequestContext context, CancellationToken cancellationToken)
+    {
+        // The caller is authorized by AccessManagementService.AuthorizeAdminPasswordSetAsync (scope, ceiling, never
+        // yourself). Everything about the account itself is re-established here under the user row lock.
+        var auditId = Guid.NewGuid();
+        var passwordHash = _passwordHasher.Hash(temporaryPassword);
+        User? changed = null;
+
+        async Task SetOnceAsync(CancellationToken ct)
+        {
+            _db.ChangeTracker.Clear();
+            var setAtUtc = DateTime.UtcNow;
+
+            var tenant = await _db.Tenants
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
+            var user = await _db.Users
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
+            if (tenant?.IsActive != true || user is null || user.IsDeleted)
+                throw new InvalidOperationException("User not found.");
+            AdminPasswordSetGuard.ThrowIfAccountCannotTakeOne(user);
+
+            var passwordPolicy = await _db.SecuritySettings
+                .TagWith(RowLockingInterceptor.ForShareTag)
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
+            ValidatePasswordAgainstPolicy(temporaryPassword, passwordPolicy);
+
+            // Every session, open sign-in challenge, reset link, welcome code and trusted browser ends with the old password.
+            await InvalidateUserCredentialsAsync(user.Id, user.TenantId, MfaTrustRevokeReasons.PasswordReset, setAtUtc, context, ct);
+
+            user.PasswordHash = passwordHash;
+            user.MustChangePassword = true;
+            user.LastPasswordChangedAt = setAtUtc;
+            // A lockout from wrong passwords guarded the old password; it ends with it. An administrator's
+            // deliberate lock (Status "Locked", AccessManagementService.LockUserAsync) stays until they unlock.
+            var failureLockoutCleared = user.Status == "Active" && (user.IsLocked || user.LockoutEnd is not null || user.FailedLoginCount > 0);
+            if (user.Status == "Active")
+            {
+                user.FailedLoginCount = 0;
+                user.IsLocked = false;
+                user.LockoutEnd = null;
+            }
+            TenantSessionSecurity.RotateStamp(user, setAtUtc);
+
+            // "access.admin_password_reset" makes the caller a credential handler of this login
+            // (AccessManagementService.CredentialHandlerActions): they never link it to an employee afterwards.
+            _db.AuditLogs.Add(AuthAuditEntry.Create(
+                auditId,
+                setAtUtc,
+                "access.admin_password_reset",
+                "User",
+                user.Id.ToString(),
+                context with { TenantId = tenantId },
+                System.Text.Json.JsonSerializer.Serialize(new { reason, mustChangePassword = true, sessionsRevoked = true, failureLockoutCleared })));
+            await _db.SaveChangesAsync(ct);
+            changed = user;
+        }
+
+        await RunCredentialTransactionAsync(SetOnceAsync, tenantId, auditId, cancellationToken);
+
+        if (changed is not null)
+            await NotifyAccountOwnerAsync(changed, "security.password_set_by_admin", auditId.ToString("N"),
+                "An administrator reset your KynexOne password",
+                "An administrator in your workspace set a temporary password for your account and signed you out everywhere. "
+                + "Your administrator will give you the temporary password; you will be asked to choose your own at your next sign-in. "
+                + "If you did not expect this, contact your administrator.",
+                cancellationToken);
+    }
 
     /// <summary>
     /// Security notice to the account owner through the tenant notification OUTBOX: this only writes
@@ -877,6 +1016,10 @@ public class AuthService : IAuthService
                 .AsNoTracking()
                 .SingleOrDefaultAsync(x => x.TenantId == reference.TenantId, ct);
             ValidatePasswordAgainstPolicy(request.NewPassword, passwordPolicy);
+            // Replacing an administrator-set temporary password with itself would leave the administrator
+            // knowing the user's working password — the one thing the forced change exists to prevent.
+            if (user.MustChangePassword && _passwordHasher.Verify(request.NewPassword, user.PasswordHash))
+                throw new InvalidOperationException("Choose a new password, not the temporary one your administrator gave you.");
 
             // Conditional consume: exactly one caller can move this row from unused to used.
             if (_db.Database.IsRelational())
@@ -918,11 +1061,21 @@ public class AuthService : IAuthService
                 "User",
                 user.Id.ToString(),
                 auditContext,
-                "{\"sessionsRevoked\":true}"));
+                // The link's id: an administrator-issued link's audit (access.password_reset_link_issued) names the same one.
+                System.Text.Json.JsonSerializer.Serialize(new { sessionsRevoked = true, resetTokenId = reference.Id })));
             await _db.SaveChangesAsync(ct);
         }
 
         await RunCredentialTransactionAsync(ResetOnceAsync, reference.TenantId, auditId, cancellationToken);
+
+        // The owner hears about every password change made through a link, whoever held the link.
+        var changed = await _db.Users.AsNoTracking().SingleOrDefaultAsync(x => x.Id == reference.UserId, cancellationToken);
+        if (changed is not null)
+            await NotifyAccountOwnerAsync(changed, "security.password_reset_completed", auditId.ToString("N"),
+                "Your KynexOne password was changed",
+                "The password for your account was just changed using a reset link, and you were signed out everywhere. "
+                + "If this was not you, contact your administrator straight away.",
+                cancellationToken);
     }
 
     /// <summary>

@@ -13,6 +13,7 @@ import { glErp } from './glErp';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
+import { userPasswordReset } from './userPasswordReset';
 import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
@@ -1502,6 +1503,8 @@ const en: Dict = {
   ...glApiKeys.en,
   // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
   ...signInSecurity.en,
+  // Resetting another user's password, readable user statuses — see ./userPasswordReset.
+  ...userPasswordReset.en,
   ...reportsAnalytics.en,
   ...approvalChanges.en,
   ...compensation.en,
@@ -2969,6 +2972,7 @@ const ar: Dict = {
   ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...signInSecurity.ar,
+  ...userPasswordReset.ar,
   ...reportsAnalytics.ar,
   ...approvalChanges.ar,
   ...compensation.ar,

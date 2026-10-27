@@ -21,7 +21,7 @@ import client, { notifyApiError } from '../api/client';
 import type {
   UserListItem, RoleItem, PermissionItem, ApprovalDelegation,
   ApprovalAuthority, SecuritySetting, AuditLogItem, PermissionGrantorRecord,
-  UserAccess, PermissionMatrix, EntityGrant, PasswordResetLinkResult, AccessCeiling, MfaPolicy,
+  UserAccess, PermissionMatrix, EntityGrant, AccessCeiling, MfaPolicy,
 } from '../api/identity';
 import type { CompanyDto } from '../api/organization';
 import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwordRequirements';
@@ -31,6 +31,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
 import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
+import { ResetPasswordDialog } from '../components/access/ResetPasswordDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppToast } from '../components/ui/AppToast';
 import { Toggle } from '../components/ui/Toggle';
@@ -50,15 +51,48 @@ function StatusBadge({ value }: { value: string }) {
   const colors: Record<string, string> = {
     Active: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
     Invited: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+    PendingPasswordSetup: 'bg-sky-50 text-sky-800 ring-1 ring-inset ring-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:ring-sky-800',
     Suspended: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
     Locked: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
     Deactivated: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400',
     NoLogin: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
     Cancelled: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
   };
+  const { t } = useLocale();
   return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${colors[value] ?? 'bg-slate-100 text-slate-600'}`}>
-      {value}
+    <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${colors[value] ?? 'bg-slate-100 text-slate-600'}`}>
+      {t(STATUS_LABELS[value] ?? value)}
+    </span>
+  );
+}
+
+/** The API's status and access-mode codes, in words. */
+const STATUS_LABELS: Record<string, string> = {
+  PendingPasswordSetup: 'Password not set yet',
+  NoLogin: 'No login',
+};
+const ACCESS_MODE_LABELS: Record<string, string> = {
+  FullPortal: 'Full portal', SelfServiceOnly: 'Self-Service only', ManagerSelfService: 'Manager Self-Service',
+  ReadOnlyAuditor: 'Read-only auditor', Mobile: 'Mobile app', KioskOnly: 'Kiosk only', NoLogin: 'No login',
+};
+
+/** At most two role names inline; the rest behind "+N", all of them in the tooltip. */
+function RoleChips({ roles }: { roles: string[] }) {
+  const { t } = useLocale();
+  if (!roles.length) return <span className="text-slate-400">—</span>;
+  const shown = roles.slice(0, 2);
+  const rest = roles.length - shown.length;
+  return (
+    <span className="flex flex-wrap gap-1" title={roles.join(', ')}>
+      {shown.map(r => (
+        <span key={r} className="whitespace-nowrap rounded-md bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-700 dark:bg-slate-700/60 dark:text-slate-300">{r}</span>
+      ))}
+      {rest > 0 && (
+        <span className="whitespace-nowrap rounded-md bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"
+          aria-label={t('{count} more roles: {names}', { count: rest, names: roles.slice(2).join(', ') })}>
+          +{rest}
+        </span>
+      )}
     </span>
   );
 }
@@ -119,10 +153,8 @@ export function UsersTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showAction, setShowAction] = useState<{ type: string; userId: string } | null>(null);
   const [actionReason, setActionReason] = useState('');
-  // The issued reset link, held only until the dialog closes. Nothing refetches it: the server
-  // stores a hash, so once this is dropped the link is gone and a new one must be issued.
-  const [resetResult, setResetResult] = useState<PasswordResetLinkResult | null>(null);
-  const [resetLinkCopied, setResetLinkCopied] = useState(false);
+  // Reset another user's password (a reset link, or a temporary password), opened from a row.
+  const [resetPasswordFor, setResetPasswordFor] = useState<UserListItem | null>(null);
   const [actionErr, setActionErr] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [editUser, setEditUser] = useState<UserListItem | null>(null);
@@ -193,10 +225,6 @@ export function UsersTab() {
     if (returnTo) router.push(returnTo);
   };
 
-  // Opening any action dialog starts from a clean slate: a link issued for one user must never be
-  // left on screen over another user's dialog.
-  useEffect(() => { setResetResult(null); setResetLinkCopied(false); }, [showAction]);
-
   const doAction = async () => {
     if (!showAction) return;
     setActionLoading(true); setActionErr('');
@@ -207,16 +235,6 @@ export function UsersTab() {
       else if (type === 'lock') await usersApi.lock(userId, actionReason);
       else if (type === 'unlock') await usersApi.unlock(userId);
       else if (type === 'delete') await usersApi.delete(userId);
-      else if (type === 'reset-password') {
-        // Stay on the dialog: when no mail went out, the link it returns is the only copy and the
-        // administrator has to be able to read it before anything closes.
-        const result = await usersApi.issuePasswordResetLink(userId);
-        setResetResult(result);
-        setResetLinkCopied(false);
-        setActionLoading(false);
-        load();
-        return;
-      }
       setShowAction(null); setActionReason('');
       load();
     } catch (e: unknown) {
@@ -333,11 +351,11 @@ export function UsersTab() {
                   )}
                 </td>
                 <td className="px-4 py-3"><StatusBadge value={u.status} /></td>
-                <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
-                  {u.roles.length ? u.roles.join(', ') : '—'}
+                <td className="max-w-[14rem] px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
+                  <RoleChips roles={u.roles} />
                 </td>
-                <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{u.accessMode}</td>
-                <td className="px-4 py-3 text-xs text-slate-500">{fmtDateTime(u.lastLoginAtUtc)}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{t(ACCESS_MODE_LABELS[u.accessMode] ?? u.accessMode)}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{u.lastLoginAtUtc ? fmtDateTime(u.lastLoginAtUtc) : t('Never')}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1">
                     <button title="View Access" onClick={() => setSelected(u)} className="rounded p-1 hover:bg-slate-100 dark:hover:bg-slate-700">
@@ -365,9 +383,12 @@ export function UsersTab() {
                         <UserX className="h-3.5 w-3.5 text-amber-600" />
                       </button>
                     )}
-                    <button title="Reset Password" onClick={() => setShowAction({ type: 'reset-password', userId: u.id })} className="rounded p-1 hover:bg-violet-100 dark:hover:bg-violet-900/30">
-                      <RotateCcw className="h-3.5 w-3.5 text-violet-600" />
-                    </button>
+                    {/* Never your own: that goes through Change password, which proves the current one. */}
+                    {!isMe(u) && (
+                      <button title={t('Reset password')} aria-label={t('Reset password')} onClick={() => setResetPasswordFor(u)} className="rounded p-1 hover:bg-violet-100 dark:hover:bg-violet-900/30" data-testid="user-reset-password">
+                        <RotateCcw className="h-3.5 w-3.5 text-violet-600" />
+                      </button>
+                    )}
                     <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
@@ -422,6 +443,11 @@ export function UsersTab() {
         <LinkEmployeeLoginDialog user={employeeLink.user} onClose={() => setEmployeeLink(null)} onChanged={load} />
       )}
 
+      {/* Reset another user's password: a reset link, or a temporary password */}
+      {resetPasswordFor && (
+        <ResetPasswordDialog user={resetPasswordFor} onClose={() => setResetPasswordFor(null)} onChanged={load} />
+      )}
+
       {/* Reset another user's two-step sign-in */}
       {resetTwoStep && (
         <ResetTwoStepDialog
@@ -457,56 +483,16 @@ export function UsersTab() {
                 <input className={inp()} value={actionReason} onChange={e => setActionReason(e.target.value)} placeholder="Optional reason…" />
               </FormField>
             )}
-            {showAction.type === 'reset-password' && !resetResult && (
-              <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">
-                This sends the user a link to choose their own new password. You will not see or set
-                their password. The link works once and expires in 1 hour.
-              </p>
-            )}
-            {showAction.type === 'reset-password' && resetResult && (
-              <div className="mb-4 space-y-3">
-                <p className={`text-sm ${resetResult.emailSent ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
-                  {resetResult.message}
-                </p>
-                {resetResult.resetUrl && (
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">
-                      One-time reset link — copy it now, it is not shown again
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        readOnly
-                        value={resetResult.resetUrl}
-                        onFocus={e => e.currentTarget.select()}
-                        className={inp('font-mono text-xs')}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard?.writeText(resetResult.resetUrl!)
-                            .then(() => setResetLinkCopied(true))
-                            .catch(() => setResetLinkCopied(false));
-                        }}
-                        className="shrink-0 rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
-                        {resetLinkCopied ? 'Copied' : 'Copy'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
             {actionErr && <ErrMsg msg={actionErr} />}
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => { setShowAction(null); setActionErr(''); setActionReason(''); setResetResult(null); setResetLinkCopied(false); }}
+              <button onClick={() => { setShowAction(null); setActionErr(''); setActionReason(''); }}
                 className="rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
-                {resetResult ? 'Done' : 'Cancel'}
+                Cancel
               </button>
-              {!resetResult && (
-                <button onClick={doAction} disabled={actionLoading}
-                  className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60 ${showAction.type === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-violet-600 hover:bg-violet-700'}`}>
-                  {actionLoading ? 'Processing…' : showAction.type === 'delete' ? 'Delete' : showAction.type === 'reset-password' ? 'Send reset link' : 'Confirm'}
-                </button>
-              )}
+              <button onClick={doAction} disabled={actionLoading}
+                className={`rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-60 ${showAction.type === 'delete' ? 'bg-red-600 hover:bg-red-700' : 'bg-violet-600 hover:bg-violet-700'}`}>
+                {actionLoading ? 'Processing…' : showAction.type === 'delete' ? 'Delete' : 'Confirm'}
+              </button>
             </div>
           </div>
         </div>
@@ -1246,6 +1232,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
             </button>
           </div>
           <div id={requirementsId} className="mt-1 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800">
+            <p className="mb-2 text-slate-600 dark:text-slate-300" data-testid="create-user-temporary-note">{t('This is a temporary password. Give it to them in person; they choose their own the first time they sign in.')}</p>
             <p className="font-medium text-slate-700 dark:text-slate-200">Password requirements</p>
             {policyLoading ? (
               <p className="mt-2 text-slate-500 dark:text-slate-400" role="status">Loading workspace rules…</p>

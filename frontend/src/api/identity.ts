@@ -347,6 +347,17 @@ export const usersApi = {
       .then(r => r.data),
 
   /**
+   * Sets a TEMPORARY password for another user, for someone who cannot receive the reset email. The user must
+   * choose their own at their next sign-in, every session of theirs ends, and they are notified. A reason
+   * (3–500 characters) is required and audited. 400 with a message when the account cannot take one or the
+   * password breaks the workspace policy; 403 (privilege ceiling) for a user above you. Never yourself.
+   */
+  setTemporaryPassword: (userId: string, newPassword: string, reason: string) =>
+    client
+      .post<{ message: string }>(`/api/access/users/${encodeURIComponent(userId)}/admin-reset-password`, { newPassword, reason })
+      .then(r => r.data),
+
+  /**
    * Resets another user's two-step sign-in at once: their factor, backup codes and trusted browsers
    * are cleared and every session ends. 204. Refusals: 400 ERR_MFA_RESET_REASON (reason not 3–500
    * characters), 403 ERR_MFA_RESET_SELF or a privilege-ceiling code (`access_*`, with message /

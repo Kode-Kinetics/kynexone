@@ -223,6 +223,8 @@ public class AccessManagementScopeTests
             .Include(user => user.EntityAccesses)
             .SingleAsync(user => user.Id == created.Id);
         persisted.UserRoles.Should().ContainSingle(userRole => userRole.Role!.NormalizedName == "ADMIN");
+        // The password the administrator typed is only temporary: the first sign-in asks for the person's own.
+        persisted.MustChangePassword.Should().BeTrue();
         persisted.EntityAccesses.Should().ContainSingle(grant =>
             grant.IsActive
             && grant.CompanyId == w.CompanyA

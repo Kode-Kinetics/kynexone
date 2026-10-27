@@ -7,7 +7,7 @@ import {
   AlertCircle, CheckCircle2, Eye, EyeOff, KeyRound, Lock, Mail,
   ShieldCheck, Smartphone,
 } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { PasswordSavedSignInError, useAuth } from '../contexts/AuthContext';
 import { LocaleProvider, useLocale } from '../contexts/LocaleContext';
 import { authApi, MFA_ERRORS, normalizeBackupCode } from '../api/auth';
 import { BackupCodesStep } from '../components/account/BackupCodesStep';
@@ -63,7 +63,7 @@ const LoginAuroraScene = dynamic(
  */
 const SCENE_MIN_WIDTH = 768;
 
-type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'mfa-codes' | 'reset-notice';
+type Mode = 'login' | 'forgot' | 'mfa' | 'mfa-enroll' | 'mfa-codes' | 'reset-notice' | 'password-change';
 
 /** A backup code is 10 characters once spaces and hyphens are dropped (printed as XXXXX-XXXXX). */
 const BACKUP_CODE_LENGTH = 10;
@@ -83,7 +83,7 @@ export function LoginPage() {
 
 function LoginCard() {
   const { t, dir, locale } = useLocale();
-  const { user, login, verifyMfaChallenge, mfaPending, mfaEnrollmentPending } = useAuth();
+  const { user, login, completePasswordChange, verifyMfaChallenge, mfaPending, mfaEnrollmentPending } = useAuth();
   const router       = useRouter();
   const searchParams = useSearchParams();
   /* An explicit, safe ?from= wins. Otherwise the landing page follows who signed in:
@@ -93,6 +93,9 @@ function LoginCard() {
   const from         = askedFor ?? homePathFor(user);
 
   const [mode,         setMode]         = useState<Mode>('login');
+  // The "choose your own password" step after an administrator's temporary password.
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [email,        setEmail]        = useState('');
   const [password,     setPassword]     = useState('');
   const [tenantSlug,   setTenantSlug]   = useState('');
@@ -211,6 +214,7 @@ function LoginCard() {
     setLoading(true);
     try {
       const outcome = await login(email, password, workspaceArg());
+      if (outcome === 'password-change') { setPassword(''); setNewPassword(''); setConfirmPassword(''); setMode('password-change'); return; }
       if (outcome === 'mfa') { setMode('mfa'); return; }
       if (outcome === 'mfa-enroll') { setMode('mfa-enroll'); return; }
       setSignedIn(true);
@@ -258,6 +262,40 @@ function LoginCard() {
           ? t('Sign-in is unavailable right now (server error {status}). This is not a problem with your password. Reference: {traceId}', { status, traceId })
           : t('Sign-in is unavailable right now (server error {status}). This is not a problem with your password.', { status }));
       }
+    }
+    finally { setLoading(false); }
+  };
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault(); setError(''); setInfo('');
+    if (newPassword.length < 10) { setError(t('Use at least 10 characters.')); return; }
+    if (newPassword !== confirmPassword) { setError(t('The two passwords do not match.')); return; }
+    setLoading(true);
+    try {
+      const outcome = await completePasswordChange(newPassword);
+      setNewPassword(''); setConfirmPassword('');
+      if (outcome === 'mfa') { setMode('mfa'); return; }
+      if (outcome === 'mfa-enroll') { setMode('mfa-enroll'); return; }
+      setSignedIn(true);
+    }
+    catch (err: any) {
+      if (err instanceof PasswordSavedSignInError) {
+        // Saved, but the sign-in after it failed: the change cannot be retried (its token is spent). Back to sign in.
+        setNewPassword(''); setConfirmPassword(''); setPassword(''); setError('');
+        setMode('login');
+        setInfo(t('Your new password is saved. Sign in with it.'));
+        return;
+      }
+      const status = err?.response?.status;
+      if (!err?.response) setError(t('Cannot reach the server. Check your connection and try again.'));
+      // The temporary password itself, or one the company's password rules reject: the server says which.
+      else if (status === 400) setError(err?.response?.data?.message ?? t('Password does not meet the workspace security policy.'));
+      else if (status === 401) {
+        // The single-use token expired (15 minutes): start again from the temporary password.
+        setMode('login');
+        setError(t('That took too long. Sign in again with the temporary password.'));
+      }
+      else setError(t('Your password could not be changed. Try again in a moment.'));
     }
     finally { setLoading(false); }
   };
@@ -531,6 +569,25 @@ function LoginCard() {
                       </button>
                     </form>
                   </>
+                )}
+
+                {mode === 'password-change' && (
+                  <form onSubmit={handlePasswordChange} noValidate className="lx-form" data-testid="login-password-change">
+                    <Back onClick={() => { setMode('login'); setNewPassword(''); setConfirmPassword(''); setError(''); }} label={t('Back to sign in')} />
+                    <Head kicker={t('Security check')} title={t('Choose your own password')}
+                      sub={t('Your administrator gave you a temporary password. Choose a new one that only you know to finish signing in.')}
+                      icon={<ShieldCheck aria-hidden />} />
+                    <Field legend={t('New password')} htmlFor="pc-new" hint={t('At least 10 characters, with upper and lower case letters, a number and a symbol.')}>
+                      <input id="pc-new" dir="ltr" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                        className="lx-in" autoComplete="new-password" required data-testid="login-new-password" />
+                    </Field>
+                    <Field legend={t('Confirm new password')} htmlFor="pc-confirm">
+                      <input id="pc-confirm" dir="ltr" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                        className="lx-in" autoComplete="new-password" required data-testid="login-confirm-password" />
+                    </Field>
+                    <Feedback error={error} info={info} />
+                    <Submit busy={busy} label={t('Save and sign in')} busyLabel={t('Saving…')} />
+                  </form>
                 )}
 
                 {mode === 'forgot' && (

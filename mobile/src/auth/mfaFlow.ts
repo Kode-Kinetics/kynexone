@@ -49,6 +49,11 @@ export function classifyLoginResponse(data: unknown): LoginStep {
     if (!challengeToken) throw new Error('The server returned an invalid sign-in code request.');
     return { kind: 'mfaChallenge', challengeToken, expiresInSeconds: normalizeTtl(body.expiresInSeconds) };
   }
+  // An administrator set a temporary password: it opens no session until the person chooses their own.
+  // That step lives on the web sign-in page for now, so say so instead of treating the reply as tokens.
+  if (body?.passwordChangeRequired === true) {
+    throw new Error('Your administrator gave you a temporary password. Sign in once on the KynexOne website to choose your own password, then sign in here with it.');
+  }
   if (body?.mfaEnrollmentRequired === true) {
     const enrollmentToken = typeof body.enrollmentToken === 'string' ? body.enrollmentToken : '';
     if (!enrollmentToken) throw new Error('The server returned an invalid two-step setup request.');
