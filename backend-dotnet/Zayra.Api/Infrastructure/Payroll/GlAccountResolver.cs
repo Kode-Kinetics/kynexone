@@ -116,6 +116,12 @@ public sealed record GlResolutionContext(
     public IReadOnlyDictionary<string, Guid> FixedCostCentres { get; init; } = new Dictionary<string, Guid>(StringComparer.Ordinal);
     public IReadOnlyDictionary<Guid, GlCostCentreInfo> CostCentres { get; init; } = new Dictionary<Guid, GlCostCentreInfo>();
     public bool CostAccountingEnabled { get; init; }
+    /// <summary>
+    /// Payroll row id to the functional class its destination account was routed by, for rows whose cost-centre DIMENSION was
+    /// suppressed (the routed account does not accept one). The stamp on such a row is null, so without this the journal builder would
+    /// fall back to the classless account; with it, suppressing the dimension never changes the destination. Empty unless costing is on.
+    /// </summary>
+    public IReadOnlyDictionary<Guid, string> RowRoutingClass { get; init; } = new Dictionary<Guid, string>();
     public Guid? CompanyDefaultCostCentreId { get; init; }
     public short CostCentreSmallCellMin { get; init; }
     /// <summary>Driver keys whose classless override is a COMPANY mapping (not the tenant default). Used by
