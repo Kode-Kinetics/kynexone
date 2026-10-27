@@ -187,7 +187,7 @@ public class EsignHttpTests(EsignFixture fx)
         bare.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         (await Code(bare)).Should().Be("step_up_required");
         // the employee types their own password on HR's device
-        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, password = EsignFixture.Password });
+        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, documentId = doc.Id, documentSha256 = doc.Sha256, password = EsignFixture.Password });
         auth.StatusCode.Should().Be(HttpStatusCode.OK, await auth.Content.ReadAsStringAsync());
         var token = (await Json(auth)).GetProperty("stepUpToken").GetString()!;
         using var res = await fx.SendAsync(HttpMethod.Post, $"/api/employees/{e.Id}/signatures/{doc.Id}/sign-on-device", fx.HrToken, EsignFixture.Body(doc, "Layla Hassan"), token, Guid.NewGuid().ToString("N"));
@@ -202,7 +202,8 @@ public class EsignHttpTests(EsignFixture fx)
     public async Task Sign_OnDevice_HrOwnPassword_Rejected()
     {
         var e = await fx.NewEmployeeAsync();
-        using var res = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, password = fx.HrPassword });
+        var doc = await fx.NewDocumentAsync(e);
+        using var res = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = e.Id, documentId = doc.Id, documentSha256 = doc.Sha256, password = fx.HrPassword });
         res.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         var problem = await Json(res);
         problem.GetProperty("code").GetString().Should().Be("employee_device_auth_failed");
@@ -213,8 +214,8 @@ public class EsignHttpTests(EsignFixture fx)
     public async Task Sign_OnDevice_TokenForOtherEmployee_Rejected()
     {
         var a = await fx.NewEmployeeAsync(); var b = await fx.NewEmployeeAsync("Omar Saleh", "عمر صالح");
-        var docA = await fx.NewDocumentAsync(a);
-        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = b.Id, password = EsignFixture.Password });
+        var docA = await fx.NewDocumentAsync(a); var docB = await fx.NewDocumentAsync(b);
+        using var auth = await fx.SendAsync(HttpMethod.Post, "/api/auth/step-up/employee-device", fx.HrToken, new { employeeId = b.Id, documentId = docB.Id, documentSha256 = docB.Sha256, password = EsignFixture.Password });
         var tokenForB = (await Json(auth)).GetProperty("stepUpToken").GetString()!;
         using var res = await fx.SendAsync(HttpMethod.Post, $"/api/employees/{a.Id}/signatures/{docA.Id}/sign-on-device", fx.HrToken, EsignFixture.Body(docA, "Layla Hassan"), tokenForB, Guid.NewGuid().ToString("N"));
         res.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
