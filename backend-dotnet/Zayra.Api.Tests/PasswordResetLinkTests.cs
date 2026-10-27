@@ -233,19 +233,7 @@ public sealed class PasswordResetLinkTests
         (await db.PasswordResetTokens.CountAsync()).Should().Be(0);
     }
 
-    [Fact]
-    public async Task AdminChosenPasswords_RemainDisabled_ButNowNameTheWorkingAlternative()
-    {
-        await using var db = CreateDb();
-        var (tenant, user) = await SeedActiveUserAsync(db);
-
-        var result = await Controller(db, tenant.Id, new FakeEmailService(configured: false))
-            .AdminResetPassword(user.Id, new AdminResetPasswordRequest("AdminChosenPass1!"), default);
-
-        var body = Body(result.Should().BeOfType<ConflictObjectResult>().Subject);
-        body.GetProperty("error").GetString().Should().Be("temporary_password_flow_disabled");
-        body.GetProperty("useEndpoint").GetString().Should().Contain("password-reset-link");
-    }
+    // The administrator's temporary password (the in-person alternative to a link) is AdminSetTemporaryPasswordTests.
 
     // ── Invitations must not claim an email that never left ───────────────────
 

@@ -15,6 +15,7 @@ import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
 import { payApprovals } from './payApprovals';
+import { userPasswordReset } from './userPasswordReset';
 import { reportsAnalytics } from './reportsAnalytics';
 import { approvalChanges } from './approvalChanges';
 import { compensation } from './compensation';
@@ -1507,6 +1508,8 @@ const en: Dict = {
   ...signInSecurity.en,
   // Pay approvals (scoped new-hire pay approval view) — see ./payApprovals.
   ...payApprovals.en,
+  // Resetting another user's password, readable user statuses — see ./userPasswordReset.
+  ...userPasswordReset.en,
   ...reportsAnalytics.en,
   ...approvalChanges.en,
   ...compensation.en,
@@ -2976,6 +2979,7 @@ const ar: Dict = {
   ...glApiKeys.ar,
   ...signInSecurity.ar,
   ...payApprovals.ar,
+  ...userPasswordReset.ar,
   ...reportsAnalytics.ar,
   ...approvalChanges.ar,
   ...compensation.ar,

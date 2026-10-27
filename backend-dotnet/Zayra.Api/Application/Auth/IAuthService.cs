@@ -10,6 +10,13 @@ public interface IAuthService
     Task AcceptInvitationAsync(AcceptInvitationRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<AuthUserDto?> GetCurrentUserAsync(Guid userId, CancellationToken cancellationToken);
     Task ChangePasswordAsync(Guid userId, ChangePasswordRequest request, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>
+    /// Sets a temporary password an administrator chose for another user, already authorized by
+    /// IAccessManagementService.AuthorizeAdminPasswordSetAsync. Ends every session and outstanding credential; the user
+    /// must replace it at their next sign-in, and is told it happened.
+    /// </summary>
+    Task AdminSetTemporaryPasswordAsync(Guid tenantId, Guid userId, string temporaryPassword, string reason, RequestContext context, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
     /// <summary>Atomically verifies and consumes a tenant-login MFA challenge, then issues one session.</summary>
     Task<AuthResponse> CompleteMfaLoginAsync(string challengeToken, string totpCode, RequestContext context, CancellationToken cancellationToken);
     /// <summary>As above; <paramref name="rememberDevice"/> also trusts this browser (MfaTrustedDevices) when the tenant allows it.</summary>

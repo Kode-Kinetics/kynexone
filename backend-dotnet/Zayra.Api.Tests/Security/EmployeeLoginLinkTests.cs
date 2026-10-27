@@ -897,7 +897,19 @@ public sealed class EmployeeLoginLinkTests
         var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
 
         await AssertCredentialHandlerRefusedAsync(w, creator, login, employeeId);
-        (await SignInAsync(w, email)).Should().NotBeNull("the creator knows the password they chose");
+        // The creator knows the password they chose. It is only temporary (the first sign-in asks for a new one), but the
+        // creator can answer that too — so they still hold the login's credential, which is what this test is about.
+        const string creatorsSecondPassword = "CreatorsSecond1!Password";
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var auth = new AuthService(db, new Pbkdf2PasswordHasher(), new JwtTokenService(Jwt), new AuditService(db), new FakeEmailService(), Jwt,
+                new NullMfaService(), new TotpService(DataProtectionProvider.Create("ZayraTests")), NullLogger<AuthService>.Instance);
+            var first = await auth.LoginAsync(new LoginRequest(email, Password, w.Slug), new RequestContext("127.0.0.1", "tests"), default);
+            first.PasswordChange.Should().NotBeNull("a password typed at Create User is only temporary");
+            await auth.ResetPasswordAsync(new ResetPasswordRequest(first.PasswordChange!.ResetToken, creatorsSecondPassword, w.Slug),
+                new RequestContext("127.0.0.1", "tests"), default);
+        }
+        (await SignInAsync(w, email, creatorsSecondPassword)).Should().NotBeNull("the creator chose this one too");
         var refreshTokenId = await AddRefreshTokenAsync(login);
 
         // ...and, signed in as it, the creator enrolled their own authenticator on it.
@@ -944,7 +956,7 @@ public sealed class EmployeeLoginLinkTests
                 && x.EntityId == login.ToString())).Metadata.Should().Contain("\"mfaCleared\":true");
         }
         // Accepting the invitation, the person signs straight in with their own password: no prompt for the old TOTP.
-        await AssertCredentialRotatedAsync(w, linked, login, email, refreshTokenId, oldPassword: Password, linker: w.AdminId, accessMode: AccessModes.FullPortal);
+        await AssertCredentialRotatedAsync(w, linked, login, email, refreshTokenId, oldPassword: creatorsSecondPassword, linker: w.AdminId, accessMode: AccessModes.FullPortal);
     }
 
     /// <summary>
@@ -1043,13 +1055,15 @@ public sealed class EmployeeLoginLinkTests
             Ok<EmployeeLoginStatusDto>((await Controller(db, w, w.AdminId).EmployeeLoginStatus(employeeId, default)).Result)
                 .NextAction.Should().Be(EmployeeLoginNextActions.LinkExisting);
 
-        // The (retired, still callable) administrator reset: the administrator chose the password.
+        // The administrator's temporary password: the administrator chose (and knows) the password.
         await using (var db = _fixture.CreateRetryingDb())
         {
             var controller = Controller(db, w, w.AdminId);
             var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new AuditService(db), new JwtTokenService(Jwt));
-            await service.AdminResetPasswordAsync(w.TenantId, login, new AdminResetPasswordRequest(OwnersOwnPassword, MustChangePassword: false),
-                EntityScopeContext.FromClaims(controller.User), new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId), default);
+            var context = new RequestContext("127.0.0.1", "tests", w.AdminId, w.TenantId);
+            await service.AuthorizeAdminPasswordSetAsync(w.TenantId, login, "Locked out, asked in person",
+                EntityScopeContext.FromClaims(controller.User), context, default);
+            await Auth(db).AdminSetTemporaryPasswordAsync(w.TenantId, login, OwnersOwnPassword, "Locked out, asked in person", context, default);
         }
 
         await AssertCredentialHandlerRefusedAsync(w, w.AdminId, login, employeeId);

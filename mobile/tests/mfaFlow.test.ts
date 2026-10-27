@@ -66,6 +66,13 @@ test('malformed MFA replies fail loudly instead of signing in', () => {
   assert.throws(() => classifyLoginResponse({ mfaEnrollmentRequired: true, enrollmentToken: '' }));
 });
 
+test('a temporary password from an administrator is never mistaken for a session', () => {
+  assert.throws(
+    () => classifyLoginResponse({ passwordChangeRequired: true, resetToken: 'secret', expiresInSeconds: 900, tenantSlug: 'acme' }),
+    /temporary password/,
+  );
+});
+
 // ---- (b) grace -----------------------------------------------------------------
 
 test('grace: login returns ordinary tokens; status prompts with the enforcement date', () => {

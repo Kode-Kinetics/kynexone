@@ -66,6 +66,15 @@ public class AuthController : ControllerBase
                 MfaTrustToken = Zayra.Api.Infrastructure.Auth.MfaTrustedDevices.ReadCookie(Request),
             };
             var result = await _authService.LoginAsync(request, context, cancellationToken);
+            if (result.PasswordChange is { } change)
+                return Ok(new
+                {
+                    passwordChangeRequired = true,
+                    resetToken = change.ResetToken,
+                    expiresInSeconds = change.ExpiresInSeconds,
+                    tenantSlug = change.TenantSlug,
+                    message = "Your administrator set a temporary password. Choose your own password to continue."
+                });
             if (result.RequiresMfa)
                 return Ok(new
                 {
