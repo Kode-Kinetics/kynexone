@@ -4,6 +4,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Employees.Onboarding;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Employees.Onboarding;
 using Zayra.Api.Models;
 using Xunit;
@@ -86,5 +87,67 @@ public class HireFinalBatchActivationTests
         await using var db = CreateDb(); var (t, e) = await SeedDraftWithBadIdAsync(db);
         var errors = await EmployeeStoredDataCheck.ErrorsAsync(db, t, e.Id, null, default);
         errors.Values.SelectMany(v => v).Should().Contain(EmployeeWarningCodes.IdChecksumInvalid);
+    }
+
+    // ── CD45: pay that arrived through a writer with no approval hook still needs a second person ──
+    private static async Task<(Guid T, Employee E)> SeedDraftWithPayAsync(ZayraDbContext db, bool basic, bool iban)
+    {
+        var (t, e) = await SeedDraftWithBadIdAsync(db);
+        (await db.EmployeeComplianceRecords.SingleAsync()).FieldValue = "2000000006";   // a valid Iqama, so only the pay gate can block
+        (await db.Employees.SingleAsync(x => x.Id == e.Id)).IqamaNumber = "2000000006";
+        if (basic)
+            db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = t, EmployeeId = e.Id, SalaryStructureId = Guid.NewGuid(),
+                BasicSalary = 9000m, EffectiveDate = new DateOnly(2026, 10, 26), Currency = "SAR", IsActive = true });
+        if (iban)
+            db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t, EmployeeId = e.Id, Iban = "SA0380000000608010167519" });
+        await db.SaveChangesAsync();
+        return (t, e);
+    }
+
+    private static async Task<EmployeeReadiness> ActivateAsync(ZayraDbContext db, Guid t, Employee e)
+    {
+        var guard = new EmployeeActivationGuard(db);
+        var snap = await guard.BuildSnapshotAsync(t, e.Id, default);
+        return await guard.EnsureActivatableAsync(t, e.CompanyId, snap!, new RequestContext(null, null, TenantId: t), default);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Activation_PayWrittenByAnUnhookedWriter_WithNoApproval_IsRefused(bool basic, bool iban)
+    {
+        await using var db = CreateDb(); var (t, e) = await SeedDraftWithPayAsync(db, basic, iban);
+        var ex = await Assert.ThrowsAsync<EmployeeActivationBlockedException>(() => ActivateAsync(db, t, e));
+        ex.Readiness.Blocking.Should().Contain(b => b.Key == CompensationApprovalGate.GapType);
+    }
+
+    [Fact]
+    public async Task Activation_PayWithAnApprovalBoundToTheLiveFingerprint_IsAllowed()
+    {
+        await using var db = CreateDb(); var (t, e) = await SeedDraftWithPayAsync(db, basic: true, iban: true);
+        var fp = await CompensationApprovalGate.LiveFingerprintAsync(db, t, e.Id, default);
+        db.EmployeeImportGaps.Add(new EmployeeImportGap { TenantId = t, EmployeeId = e.Id, ImportBatchId = Guid.Empty, GapType = CompensationApprovalGate.GapType,
+            GapCategory = "pay", Detail = "x", RawValue = CompensationApprovalGate.ApprovedMarker + fp, ResolvedAtUtc = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+        (await ActivateAsync(db, t, e)).IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Activation_PayChangedAfterTheApproval_IsRefused()
+    {
+        await using var db = CreateDb(); var (t, e) = await SeedDraftWithPayAsync(db, basic: true, iban: false);
+        var fp = await CompensationApprovalGate.LiveFingerprintAsync(db, t, e.Id, default);
+        db.EmployeeImportGaps.Add(new EmployeeImportGap { TenantId = t, EmployeeId = e.Id, ImportBatchId = Guid.Empty, GapType = CompensationApprovalGate.GapType,
+            GapCategory = "pay", Detail = "x", RawValue = CompensationApprovalGate.ApprovedMarker + fp, ResolvedAtUtc = DateTime.UtcNow });
+        (await db.EmployeeSalaryStructures.SingleAsync()).BasicSalary = 12000m;
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<EmployeeActivationBlockedException>(() => ActivateAsync(db, t, e));
+    }
+
+    [Fact]
+    public async Task Activation_NoPayAtAll_IsNotBlockedByThePayGate()
+    {
+        await using var db = CreateDb(); var (t, e) = await SeedDraftWithPayAsync(db, basic: false, iban: false);
+        (await ActivateAsync(db, t, e)).IsBlocked.Should().BeFalse();
     }
 }
