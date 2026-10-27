@@ -121,4 +121,15 @@ public class EssHardeningHttpTests(EssFixture fx)
         var bodies = await fx.WithDbAsync(db => db.EmployeeNotifications.IgnoreQueryFilters().Where(n => n.EmployeeId == BankEmployee.Id && n.NotificationType == "EssBankChange").Select(n => n.Body).ToListAsync());
         bodies.Should().Contain(b => b.Contains("Finance approver") && b.Contains("manager") && b.Contains("HR manager"));
     }
+
+    [Fact]
+    public async Task AcceptedBankRequest_KeepsOnlyLast4AndHash_FullValueLivesOnTheChangeRequest()  // CD59
+    {
+        var approvalId = await AcceptBankAsync();
+        var json = await fx.WithDbAsync(db => db.EmployeeProfileChangeRequests.IgnoreQueryFilters().Where(r => r.EmployeeId == BankEmployee.Id && r.Section == "bank").Select(r => r.RequestedChangesJson).SingleAsync());
+        json.Should().NotContain(EssCompletionHttpTests.NewIban).And.NotContain(EssCompletionHttpTests.NewIban.Replace(" ", "")).And.Contain("1234").And.Contain("_last4Hash");
+        (await fx.WithDbAsync(db => db.EmployeeChangeRequests.IgnoreQueryFilters().Where(c => c.EmployeeId == BankEmployee.Id).Select(c => c.ProposedChangesJson).SingleAsync()))
+            .Should().Contain(EssCompletionHttpTests.NewIban.Replace(" ", ""), "Finance still needs the real figure to apply it");
+        approvalId.Should().NotBeEmpty();
+    }
 }

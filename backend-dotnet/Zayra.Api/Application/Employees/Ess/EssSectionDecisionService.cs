@@ -255,8 +255,31 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
         if (action.RequestedSections is { Length: 0 }) { action.RequestedSections = null; action.Status = "Completed"; }
     }
 
+    /// <summary>
+    /// Once HR has decided, the request keeps only the last four characters and a hash of them for identity and bank values
+    /// (the applied value lives on the employee, or on the Finance change request until it takes effect).
+    /// </summary>
+    private static void RedactSensitiveValues(EmployeeProfileChangeRequest change, Employee employee)
+    {
+        var section = change.Section;
+        if (section is null) return;
+        var json = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? [];
+        var rewritten = json.ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+        var hashes = new Dictionary<string, string>();
+        foreach (var field in ProfileSectionRegistry.FieldsFor(section, ClassOf(employee)).Where(f => f.Sensitive))
+        {
+            if (!json.TryGetValue(field.Key, out var v) || v.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(v.GetString())) continue;
+            rewritten[field.Key] = ProfileSectionRegistry.Mask(field, v.GetString());
+            hashes[field.Key] = Last4Hash(v.GetString()!);
+        }
+        if (hashes.Count == 0) return;
+        rewritten["_last4Hash"] = hashes;
+        change.RequestedChangesJson = JsonSerializer.Serialize(rewritten);
+    }
+
     private void StageAudit(EmployeeProfileChangeRequest change, Employee employee, RequestContext context, Dictionary<string, string> values, string section)
     {
+        RedactSensitiveValues(change, employee);
         var last4 = values.Where(kv => !string.IsNullOrEmpty(kv.Value)).ToDictionary(kv => kv.Key, kv => Last4Hash(kv.Value));
         db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, AcceptedAction, nameof(EmployeeProfileChangeRequest), change.Id.ToString(), context,
             JsonSerializer.Serialize(new { section, employeeId = employee.Id, fields = last4.Keys, last4 })));
