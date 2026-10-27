@@ -3,7 +3,6 @@ import axios, { type AxiosInstance } from 'axios';
 export interface PublicAuthClientOptions {
   baseURL: string;
   timeout: number;
-  tenantHeader: string;
 }
 
 /**
@@ -20,7 +19,8 @@ export function createIsolatedPublicAuthClient(options: PublicAuthClientOptions)
 
   client.interceptors.request.use((config) => {
     config.headers.delete('Authorization');
-    config.headers.delete(options.tenantHeader);
+    // No longer sent by any build, but an old interceptor or default must not leak one either.
+    config.headers.delete('X-Tenant-Id');
     config.headers.delete('X-Company-Id');
     return config;
   });

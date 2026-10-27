@@ -22,7 +22,6 @@ test('public auth routes strip mixed-case security headers and never replay a 40
       const client = createIsolatedPublicAuthClient({
         baseURL: 'https://api.example.test',
         timeout: 1_000,
-        tenantHeader: 'X-Tenant-Id',
       });
       let calls = 0;
       let adaptedHeaders: Record<string, unknown> = {};

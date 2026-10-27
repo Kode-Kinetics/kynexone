@@ -62,7 +62,6 @@ export default function SessionScreen() {
 
   const rows: [string, string][] = [
     [t('account.session.email'), user?.email ?? ''],
-    ...(user?.tenantSlug ? [[t('account.session.company'), user.tenantSlug] as [string, string]] : []),
     [t('account.session.access'), t(`account.session.modes.${MODE_KEYS[policy.mode]}`)],
   ];
 

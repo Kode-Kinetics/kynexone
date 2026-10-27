@@ -14,13 +14,12 @@ import type { AuthTokens, AuthUser } from '@/types';
 import { generateDeviceId } from '@/utils/device';
 import { registerPushToken } from '@/features/notifications/pushNotifications';
 import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
-import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
+import { normalizeEmail } from './publicAuthInput';
 import { isWelcomeCode } from './welcomeCode';
 import type { MfaPrompt } from './mfaFlow';
 
 interface AuthState {
   user: AuthUser | null;
-  tenantId: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   isInitialized: boolean;
@@ -30,17 +29,17 @@ interface AuthState {
   mfaPrompt: MfaPrompt | null;
   mfaPromptDismissed: boolean;
   /** Set after a signed-in enrolment ended the session, so the sign-in screen can explain why. */
-  mfaEnrolledNotice: { email: string; tenantId: string } | null;
+  mfaEnrolledNotice: { email: string } | null;
 
   initialize: () => Promise<void>;
-  /** The company ID is optional: without it the server finds the company from the email. */
-  login: (username: string, password: string, tenantId?: string) => Promise<LoginOutcome>;
-  completeMfa: (challengeToken: string, totpCode: string, tenantId: string) => Promise<void>;
+  /** Email and password only: an installation holds one organisation. */
+  login: (username: string, password: string) => Promise<LoginOutcome>;
+  completeMfa: (challengeToken: string, totpCode: string) => Promise<void>;
   refreshMfaStatus: () => Promise<void>;
   dismissMfaPrompt: () => void;
   endSessionAfterMfaEnrollment: () => Promise<void>;
   consumeMfaEnrolledNotice: () => void;
-  finishLogin: (user: AuthUser, tokens: AuthTokens, tenantId: string) => Promise<void>;
+  finishLogin: (user: AuthUser, tokens: AuthTokens) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   clearError: () => void;
@@ -49,9 +48,10 @@ interface AuthState {
   canAccess: (module: string) => boolean;
 }
 
+const LEGACY_TENANT_KEY = 'zayra_tenant_id';
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
-  tenantId: null,
   isAuthenticated: false,
   isLoading: false,
   isInitialized: false,
@@ -64,13 +64,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   initialize: async () => {
     set({ isLoading: true });
     try {
-      const [storedUser, tenantId] = await Promise.all([
-        userStorage.getUser(),
-        appStorage.get<string>('zayra_tenant_id'),
-      ]);
-
-      const normalizedTenant = normalizeWorkspace(tenantId);
-      if (!storedUser || !normalizedTenant) {
+      // The company ID older builds stored; an installation has one organisation, so it is not needed.
+      await appStorage.delete(LEGACY_TENANT_KEY);
+      const storedUser = await userStorage.getUser();
+      if (!storedUser) {
         await clearAllAuthData();
         set({ isInitialized: true, isLoading: false });
         return;
@@ -85,8 +82,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
       }
 
-      if (normalizedTenant !== tenantId) await appStorage.set('zayra_tenant_id', normalizedTenant);
-      initApiClient(normalizedTenant);
+      initApiClient();
       setSessionExpiredHandler(() => get().handleSessionExpired());
 
       try {
@@ -94,7 +90,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await userStorage.saveUser(freshUser);
         set({
           user: freshUser,
-          tenantId: normalizedTenant,
           isAuthenticated: true,
           isInitialized: true,
           isLoading: false,
@@ -108,7 +103,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         await clearAllAuthData();
         set({
           user: null,
-          tenantId: null,
           isAuthenticated: false,
           isInitialized: true,
           isLoading: false,
@@ -121,14 +115,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  finishLogin: async (user, tokens, tenantId) => {
-    await Promise.all([
-      tokenStorage.saveTokens(tokens),
-      userStorage.saveUser(user),
-      appStorage.set('zayra_tenant_id', tenantId),
-    ]);
+  finishLogin: async (user, tokens) => {
+    await Promise.all([tokenStorage.saveTokens(tokens), userStorage.saveUser(user)]);
 
-    initApiClient(tenantId);
+    initApiClient();
     setSessionExpiredHandler(() => get().handleSessionExpired());
 
     // Device and push registration are non-blocking session enhancements: a
@@ -152,7 +142,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     set({
       user,
-      tenantId,
       isAuthenticated: true,
       isInitialized: true,
       isLoading: false,
@@ -166,23 +155,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     void get().refreshMfaStatus();
   },
 
-  login: async (username, password, tenantId) => {
+  login: async (username, password) => {
     set({ isLoading: true, error: null });
     try {
-      const requested = normalizeWorkspace(tenantId);
       const email = normalizeEmail(username);
       if (!email) throw new Error('Work email is required.');
-      const outcome = await authApi.login(email, password, requested || undefined);
+      const outcome = await authApi.login(email, password);
       if (outcome.kind === 'authenticated') {
-        // Signed in by email alone: the session names its company, and the API client needs it.
-        await get().finishLogin(outcome.user, outcome.tokens, requireWorkspace(requested || outcome.user.tenantSlug));
+        await get().finishLogin(outcome.user, outcome.tokens);
       } else {
         set({ isLoading: false });
       }
       return outcome;
     } catch (error: unknown) {
-      // The sign-in screen answers these itself (ask for the company ID; or send a welcome code typed
-      // as a password to the welcome screen), so no generic alert is raised for them.
+      // The sign-in screen answers this itself (a welcome code typed as a password goes to the welcome
+      // screen), so no generic alert is raised for it.
       set({ isLoading: false, error: handledBySignInScreen(error, password) ? null : extractAuthError(error) });
       throw error;
     }
@@ -191,10 +178,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // The code screen owns its own submitting/error state (see mfaFlow.codeEntryReducer).
   // Touching the shared isLoading/error here would raise the sign-in screen's alert
   // underneath the code screen for every wrong code.
-  completeMfa: async (challengeToken, totpCode, tenantId) => {
-    const requested = normalizeWorkspace(tenantId);
-    const session = await authApi.verifyMfaChallenge(challengeToken, totpCode, requested);
-    await get().finishLogin(session.user, session.tokens, requireWorkspace(requested || session.user.tenantSlug));
+  completeMfa: async (challengeToken, totpCode) => {
+    const session = await authApi.verifyMfaChallenge(challengeToken, totpCode);
+    await get().finishLogin(session.user, session.tokens);
   },
 
   refreshMfaStatus: async () => {
@@ -216,17 +202,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   endSessionAfterMfaEnrollment: async () => {
     // Turning the factor on rotates the server-side session stamp, so this
     // session's tokens are already dead; calling /auth/logout would only 401.
-    const { user, tenantId } = get();
+    const { user } = get();
     await clearAllAuthData();
     set({
       user: null,
-      tenantId: null,
       isAuthenticated: false,
       isLoading: false,
       sessionExpired: false,
       mfaPrompt: null,
       mfaPromptDismissed: false,
-      mfaEnrolledNotice: user && tenantId ? { email: user.email, tenantId } : null,
+      mfaEnrolledNotice: user ? { email: user.email } : null,
     });
   },
 
@@ -245,7 +230,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await clearAllAuthData();
       set({
         user: null,
-        tenantId: null,
         isAuthenticated: false,
         isLoading: false,
         sessionExpired: false,
@@ -271,7 +255,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     void clearAllAuthData();
     set({
       user: null,
-      tenantId: null,
       isAuthenticated: false,
       sessionExpired: true,
       mfaPrompt: null,
@@ -299,8 +282,7 @@ export function authFailure(error: unknown): { status?: number; code?: string } 
 }
 
 function handledBySignInScreen(error: unknown, password: string): boolean {
-  const { status, code } = authFailure(error);
-  if (status === 400 && code === 'workspace_required') return true;
+  const { status } = authFailure(error);
   return (status === 401 || status === 400) && isWelcomeCode(password);
 }
 

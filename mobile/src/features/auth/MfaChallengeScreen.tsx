@@ -29,7 +29,7 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'MfaChallenge'>;
 export default function MfaChallengeScreen({ navigation, route }: Props) {
   const { t } = useTranslation();
   const { theme } = useTheme();
-  const { challengeToken, tenantId, email, expiresInSeconds, justEnrolled } = route.params;
+  const { challengeToken, email, expiresInSeconds, justEnrolled } = route.params;
   const completeMfa = useAuthStore((s) => s.completeMfa);
   const [code, setCode] = useState('');
   const { state, nowMs, run, edited } = useCodeEntry(expiresInSeconds, { justEnrolled });
@@ -43,7 +43,7 @@ export default function MfaChallengeScreen({ navigation, route }: Props) {
     const entered = code;
     // Cleared up front so a rejected code never lingers and the next one can be autofilled.
     setCode('');
-    void run(() => completeMfa(challengeToken, entered, tenantId));
+    void run(() => completeMfa(challengeToken, entered));
   };
 
   return (

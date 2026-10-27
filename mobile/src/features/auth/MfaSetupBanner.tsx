@@ -32,7 +32,6 @@ export function MfaSetupBanner() {
   const refreshMfaStatus = useAuthStore((s) => s.refreshMfaStatus);
   const endSession = useAuthStore((s) => s.endSessionAfterMfaEnrollment);
   const user = useAuthStore((s) => s.user);
-  const tenantId = useAuthStore((s) => s.tenantId);
 
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<MfaErrorKind | 'alreadyOn' | null>(null);
@@ -50,7 +49,7 @@ export function MfaSetupBanner() {
     return () => subscription.remove();
   }, [refreshMfaStatus]);
 
-  if (!prompt || prompt.kind === 'none' || !user || !tenantId) return null;
+  if (!prompt || prompt.kind === 'none' || !user) return null;
   const enforced = prompt.kind === 'enforced';
   if (dismissed && !enforced && !enrollment) return null;
 
@@ -133,7 +132,6 @@ export function MfaSetupBanner() {
             key={enrollment.enrollmentToken}
             enrollmentToken={enrollment.enrollmentToken}
             expiresInSeconds={enrollment.expiresInSeconds}
-            tenantId={tenantId}
             email={user.email}
             confirmWhenDone={false}
             onCancel={() => sheet.close()}

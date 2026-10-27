@@ -3,7 +3,6 @@ export type AuthStackParamList = {
   ServerSetup: undefined;
   Login:
     | {
-        tenantId?: string;
         email?: string;
         enrollmentComplete?: boolean;
       }
@@ -23,7 +22,6 @@ export type AuthStackParamList = {
     | undefined;
   MfaChallenge: {
     challengeToken: string;
-    tenantId: string;
     email: string;
     expiresInSeconds: number;
     /** First sign-in after enrolling: a rejected first code is most likely the enrolment code reused. */
@@ -31,7 +29,6 @@ export type AuthStackParamList = {
   };
   MfaEnrollment: {
     enrollmentToken: string;
-    tenantId: string;
     email: string;
     expiresInSeconds: number;
   };

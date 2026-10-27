@@ -10,15 +10,12 @@
 
 import { Platform } from 'react-native';
 import { apiDelete, apiGet, apiPost, apiPut, createPublicAuthClient, getApiClient, unwrapApiData } from './client';
-import { tokenStorage, userStorage, appStorage } from '@/storage';
-import { APP_CONFIG } from '@/config';
+import { tokenStorage, userStorage } from '@/storage';
 import { getApiBaseUrl } from '@/config/server';
 import { FEATURES, FeatureUnavailableError } from '@/config/features';
 import { normalizeAccessMode } from '@/auth/accessPolicy';
 import {
   normalizeEmail,
-  normalizeWorkspace,
-  optionalWorkspace,
   publicInvitationInput,
   publicLoginInput,
   publicResetInput,
@@ -173,7 +170,6 @@ function toAuthUser(raw: any): AuthUser {
   return {
     id: String(raw.id ?? ''),
     tenantId: String(raw.tenantId ?? ''),
-    tenantSlug: typeof raw.tenantSlug === 'string' ? normalizeWorkspace(raw.tenantSlug) : undefined,
     pendingResetNotice: raw.pendingResetNotice?.date ? { date: String(raw.pendingResetNotice.date) } : null,
     employeeId: raw.employeeId == null ? '' : String(raw.employeeId),
     username: raw.email ?? '',
@@ -532,14 +528,12 @@ export type LoginOutcome =
       kind: 'mfaChallenge';
       challengeToken: string;
       expiresInSeconds: number;
-      tenantId: string;
       email: string;
     }
   | {
       kind: 'mfaEnrollment';
       enrollmentToken: string;
       expiresInSeconds: number;
-      tenantId: string;
       email: string;
     };
 
@@ -562,25 +556,20 @@ function authenticatedSession(data: any): AuthenticatedSession {
 
 // ---- Auth ----
 export const authApi = {
-  async login(username: string, password: string, tenantId?: string): Promise<LoginOutcome> {
-    const input = publicLoginInput(username, password, tenantId);
+  async login(username: string, password: string): Promise<LoginOutcome> {
+    const input = publicLoginInput(username, password);
     const res = await createPublicAuthClient().post('/auth/login', input);
     const step = classifyLoginResponse(unwrapApiData<unknown>(res.data));
-    if (step.kind === 'mfaChallenge') {
-      return { ...step, tenantId: input.tenantSlug ?? '', email: input.email };
-    }
-    if (step.kind === 'mfaEnrollment') {
-      return { ...step, tenantId: input.tenantSlug ?? '', email: input.email };
+    if (step.kind === 'mfaChallenge' || step.kind === 'mfaEnrollment') {
+      return { ...step, email: input.email };
     }
     return { kind: 'authenticated', ...authenticatedSession(step.payload) };
   },
 
   async verifyMfaChallenge(
     challengeToken: string,
-    totpCode: string,
-    tenantId: string
+    totpCode: string
   ): Promise<AuthenticatedSession> {
-    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/challenge/verify', {
       challengeToken,
       totpCode,
@@ -590,10 +579,8 @@ export const authApi = {
 
   /** Exchanges a setup-only enrolment token for a fresh otpauth URI. Each call mints a new secret. */
   async startMfaEnrollment(
-    enrollmentToken: string,
-    tenantId: string
+    enrollmentToken: string
   ): Promise<{ provisioningUri: string; tempSecret: string }> {
-    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/enrollment/setup', {
       enrollmentToken,
     });
@@ -614,10 +601,8 @@ export const authApi = {
   async verifyMfaEnrollment(
     enrollmentToken: string,
     tempSecret: string,
-    totpCode: string,
-    tenantId: string
+    totpCode: string
   ): Promise<{ recoveryCodes: string[] | null }> {
-    void tenantId; // Not sent: the challenge token identifies the company. May be '' after an email-only sign-in.
     const response = await createPublicAuthClient().post('/auth/mfa/enrollment/verify-setup', {
       enrollmentToken,
       tempSecret,
@@ -660,41 +645,34 @@ export const authApi = {
    * Resolves to `{ emailDelivery: false }` when the reply says no email can be sent for this
    * company (then only HR's welcome code helps); otherwise the reply says nothing either way.
    */
-  async forgotPassword(email: string, tenantSlug?: string): Promise<{ emailDelivery?: boolean }> {
+  async forgotPassword(email: string): Promise<{ emailDelivery?: boolean }> {
     const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) throw new Error('Work email is required.');
-    const res = await createPublicAuthClient().post('/auth/forgot-password', {
-      email: normalizedEmail,
-      ...optionalWorkspace(tenantSlug),
-    });
+    const res = await createPublicAuthClient().post('/auth/forgot-password', { email: normalizedEmail });
     const data = unwrapApiData<Record<string, unknown> | undefined>(res?.data);
     const noDelivery = data?.emailDeliveryConfigured === false || data?.emailed === false || data?.emailSent === false;
     return noDelivery ? { emailDelivery: false } : {};
   },
 
   /**
-   * First sign-in: exchange HR's welcome code for a password the employee chooses. 200
-   * `{ tenantSlug }` and NO session; the caller signs in next with that company ID. Refusals are
-   * 400 `{ code }` (see auth/welcomeCode.ts welcomeErrorKey) or 429.
+   * First sign-in: exchange HR's welcome code for a password the employee chooses. 200 and NO
+   * session; the caller signs in next. Refusals are 400 `{ code }` (see auth/welcomeCode.ts
+   * welcomeErrorKey) or 429.
    */
-  async welcomeRedeem(email: string, code: string, newPassword: string, tenantSlug?: string): Promise<{ tenantSlug?: string }> {
+  async welcomeRedeem(email: string, code: string, newPassword: string): Promise<void> {
     const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) throw new Error('Work email is required.');
     const res = await createPublicAuthClient().post('/auth/welcome/redeem', {
       email: normalizedEmail,
       code: normalizeWelcomeCode(code),
       newPassword,
-      ...optionalWorkspace(tenantSlug),
     });
-    const data = unwrapApiData<{ tenantSlug?: string } | undefined>(res?.data);
-    const slug = normalizeWorkspace(data?.tenantSlug);
-    return slug ? { tenantSlug: slug } : {};
   },
 
   /** The company's minimum password length for the live tick; 10 when unknown or unreachable. */
-  async passwordPolicy(tenantSlug?: string): Promise<number> {
+  async passwordPolicy(): Promise<number> {
     try {
-      const res = await createPublicAuthClient().get('/auth/password-policy', { params: optionalWorkspace(tenantSlug) });
+      const res = await createPublicAuthClient().get('/auth/password-policy');
       const n = Number(unwrapApiData<{ minLength?: number }>(res.data)?.minLength);
       return Number.isInteger(n) && n >= 1 && n <= 128 ? n : DEFAULT_MIN_PASSWORD_LENGTH;
     } catch {
@@ -702,23 +680,13 @@ export const authApi = {
     }
   },
 
-  async resetPassword(resetToken: string, newPassword: string, tenantSlug: string): Promise<void> {
-    await createPublicAuthClient().post(
-      '/auth/reset-password',
-      publicResetInput(resetToken, newPassword, tenantSlug),
-    );
+  async resetPassword(resetToken: string, newPassword: string): Promise<void> {
+    await createPublicAuthClient().post('/auth/reset-password', publicResetInput(resetToken, newPassword));
   },
 
   /** First-time password setup from an invitation (backend: /auth/accept-invitation). */
-  async acceptInvitation(
-    invitationToken: string,
-    newPassword: string,
-    tenantSlug: string,
-  ): Promise<void> {
-    await createPublicAuthClient().post(
-      '/auth/accept-invitation',
-      publicInvitationInput(invitationToken, newPassword, tenantSlug),
-    );
+  async acceptInvitation(invitationToken: string, newPassword: string): Promise<void> {
+    await createPublicAuthClient().post('/auth/accept-invitation', publicInvitationInput(invitationToken, newPassword));
   },
 };
 
@@ -1252,10 +1220,8 @@ export const overtimeApi = {
 /** Headers for file downloads that bypass axios (FileSystem.downloadAsync). */
 async function authHeaders(): Promise<Record<string, string>> {
   const token = await tokenStorage.getAccessToken();
-  const tenant = await appStorage.get<string>('zayra_tenant_id');
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (tenant) headers[APP_CONFIG.TENANT_HEADER] = tenant;
   return headers;
 }
 

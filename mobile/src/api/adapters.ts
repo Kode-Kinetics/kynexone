@@ -82,14 +82,14 @@ export const authApi = {
   changePassword: (payload: { currentPassword: string; newPassword: string }) =>
     _authApi.changePassword(payload.currentPassword, payload.newPassword),
 
-  forgotPassword: (payload: { email: string; tenantSlug?: string }) =>
-    _authApi.forgotPassword(payload.email, payload.tenantSlug),
+  forgotPassword: (payload: { email: string }) =>
+    _authApi.forgotPassword(payload.email),
 
-  resetPassword: (payload: { token: string; newPassword: string; tenantSlug: string }) =>
-    _authApi.resetPassword(payload.token, payload.newPassword, payload.tenantSlug),
+  resetPassword: (payload: { token: string; newPassword: string }) =>
+    _authApi.resetPassword(payload.token, payload.newPassword),
 
-  acceptInvitation: (payload: { token: string; newPassword: string; tenantSlug: string }) =>
-    _authApi.acceptInvitation(payload.token, payload.newPassword, payload.tenantSlug),
+  acceptInvitation: (payload: { token: string; newPassword: string }) =>
+    _authApi.acceptInvitation(payload.token, payload.newPassword),
 };
 
 // ─── HR Requests ──────────────────────────────────────────────────────────────

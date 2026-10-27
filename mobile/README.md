@@ -82,7 +82,6 @@ endpoint is live.
 # EXPO_PUBLIC_SCREEN_TOUR: employee | manager | quick
 env EXPO_PUBLIC_API_BASE_URL=http://localhost:5117/api \
     EXPO_PUBLIC_SCREEN_TOUR=employee \
-    EXPO_PUBLIC_TOUR_TENANT=intelliflow \
     EXPO_PUBLIC_TOUR_EMAIL=employee1@intelliflow.com \
     EXPO_PUBLIC_TOUR_PASSWORD='…' \
     npx expo start --clear

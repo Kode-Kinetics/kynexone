@@ -268,8 +268,7 @@ async function runTour(mode: string) {
     await wait(4000);
     await store.login(
       process.env.EXPO_PUBLIC_TOUR_EMAIL!,
-      process.env.EXPO_PUBLIC_TOUR_PASSWORD!,
-      process.env.EXPO_PUBLIC_TOUR_TENANT!
+      process.env.EXPO_PUBLIC_TOUR_PASSWORD!
     );
   }
   await wait(3000);
@@ -315,7 +314,7 @@ export function ScreenTour() {
             navigationRef.navigate('ForgotPassword' as never);
             log('STEP', 'ForgotPassword');
             await result('forgot-password', () =>
-              authApi.forgotPassword(process.env.EXPO_PUBLIC_TOUR_EMAIL!, process.env.EXPO_PUBLIC_TOUR_TENANT!)
+              authApi.forgotPassword(process.env.EXPO_PUBLIC_TOUR_EMAIL!)
             );
           }
           log('DONE');

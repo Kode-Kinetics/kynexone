@@ -36,7 +36,6 @@ import { MfaCodeError, MfaCodeInput, useCodeEntry } from './mfaCodeEntry';
 export interface MfaEnrollmentViewProps {
   enrollmentToken: string;
   expiresInSeconds: number;
-  tenantId: string;
   email: string;
   /** Leave without enrolling (back to sign-in, or close the signed-in sheet). */
   onCancel: () => void;
@@ -67,7 +66,6 @@ type SetupState =
 export function MfaEnrollmentView({
   enrollmentToken,
   expiresInSeconds,
-  tenantId,
   email,
   onCancel,
   onEnrolled,
@@ -104,7 +102,7 @@ export function MfaEnrollmentView({
     let active = true;
     setSetup({ kind: 'loading' });
     authApi
-      .startMfaEnrollment(enrollmentToken, tenantId)
+      .startMfaEnrollment(enrollmentToken)
       .then((result) => {
         if (!active) return;
         setProvisioningUri(result.provisioningUri);
@@ -122,7 +120,7 @@ export function MfaEnrollmentView({
     return () => {
       active = false;
     };
-  }, [enrollmentToken, tenantId, attempt]);
+  }, [enrollmentToken, attempt]);
 
   // Never keep the key past this screen.
   useEffect(
@@ -158,7 +156,7 @@ export function MfaEnrollmentView({
     const entered = code;
     setCode('');
     void run(async () => {
-      const result = await authApi.verifyMfaEnrollment(enrollmentToken, secret, entered, tenantId);
+      const result = await authApi.verifyMfaEnrollment(enrollmentToken, secret, entered);
       setSecret('');
       setProvisioningUri('');
       if (!result.recoveryCodes && !confirmWhenDone) {

@@ -10,15 +10,14 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'MfaEnrollment'>;
  * and not set up. No session exists; enrolling returns the user to sign in.
  */
 export default function MfaEnrollmentScreen({ navigation, route }: Props) {
-  const { enrollmentToken, tenantId, email, expiresInSeconds } = route.params;
+  const { enrollmentToken, email, expiresInSeconds } = route.params;
   return (
     <MfaEnrollmentView
       enrollmentToken={enrollmentToken}
       expiresInSeconds={expiresInSeconds}
-      tenantId={tenantId}
       email={email}
       onCancel={() => navigation.goBack()}
-      onEnrolled={() => navigation.navigate('Login', { tenantId, email, enrollmentComplete: true })}
+      onEnrolled={() => navigation.navigate('Login', { email, enrollmentComplete: true })}
     />
   );
 }

@@ -8,7 +8,7 @@ import axios, {
   AxiosResponse,
   InternalAxiosRequestConfig,
 } from 'axios';
-import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
+import { API_TIMEOUT_MS } from '@/config';
 import { getApiBaseUrl } from '@/config/server';
 import { tokenStorage, clearAllAuthData } from '@/storage';
 import { createIsolatedPublicAuthClient } from './publicAuthClient';
@@ -31,7 +31,6 @@ export function createPublicAuthClient(): AxiosInstance {
   const client = createIsolatedPublicAuthClient({
     baseURL: getApiBaseUrl(),
     timeout: API_TIMEOUT_MS,
-    tenantHeader: APP_CONFIG.TENANT_HEADER,
   });
 
   client.interceptors.response.use(
@@ -110,14 +109,11 @@ async function refreshAccessToken(): Promise<string> {
   return accessToken;
 }
 
-export function createApiClient(tenantId: string): AxiosInstance {
+export function createApiClient(): AxiosInstance {
   const client = axios.create({
     baseURL: getApiBaseUrl(),
     timeout: API_TIMEOUT_MS,
-    headers: {
-      'Content-Type': 'application/json',
-      [APP_CONFIG.TENANT_HEADER]: tenantId,
-    },
+    headers: { 'Content-Type': 'application/json' },
   });
 
   // Request interceptor: attach Bearer token
@@ -201,8 +197,8 @@ export function createApiClient(tenantId: string): AxiosInstance {
 // Global API client (initialized after login)
 let _apiClient: AxiosInstance | null = null;
 
-export function initApiClient(tenantId: string): AxiosInstance {
-  _apiClient = createApiClient(tenantId);
+export function initApiClient(): AxiosInstance {
+  _apiClient = createApiClient();
   return _apiClient;
 }
 

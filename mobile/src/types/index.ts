@@ -35,8 +35,6 @@ export interface Permission {
 export interface AuthUser {
   id: string;
   tenantId: string;
-  /** The company ID (tenant slug) the session belongs to; signing in by email alone learns it from here. */
-  tenantSlug?: string;
   /** Set while HR has issued a reset code for this login that is still unused (ISO date issued). */
   pendingResetNotice?: { date: string } | null;
   employeeId: string;

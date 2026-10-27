@@ -14,21 +14,18 @@ const configuredApiBaseUrl =
 const ENV = {
   development: {
     API_BASE_URL: configuredApiBaseUrl,
-    TENANT_HEADER: 'X-Tenant-Id',
     PUSH_NOTIFICATIONS_ENABLED: true,
     GEOFENCE_ENABLED: true,
     BIOMETRIC_ENABLED: true,
   },
   staging: {
     API_BASE_URL: configuredApiBaseUrl,
-    TENANT_HEADER: 'X-Tenant-Id',
     PUSH_NOTIFICATIONS_ENABLED: true,
     GEOFENCE_ENABLED: true,
     BIOMETRIC_ENABLED: true,
   },
   production: {
     API_BASE_URL: configuredApiBaseUrl,
-    TENANT_HEADER: 'X-Tenant-Id',
     PUSH_NOTIFICATIONS_ENABLED: true,
     GEOFENCE_ENABLED: true,
     BIOMETRIC_ENABLED: true,

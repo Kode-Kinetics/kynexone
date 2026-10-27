@@ -6,8 +6,7 @@
 // EssDocumentRequestResponse in EmployeeSelfServiceController.cs.
 
 import * as FileSystem from 'expo-file-system/legacy';
-import { APP_CONFIG } from '@/config';
-import { appStorage, tokenStorage } from '@/storage';
+import { tokenStorage } from '@/storage';
 import { apiGet, apiPost, getApiClient } from './client';
 import {
   letterFileName,
@@ -37,13 +36,11 @@ function mapRequest(raw: any): LetterRequest {
   };
 }
 
-/** Bearer token and tenant header, as the payslip download sends them (downloadAsync bypasses axios). */
+/** The bearer token, as the payslip download sends it (downloadAsync bypasses axios). */
 async function downloadHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { Accept: 'application/pdf' };
   const token = await tokenStorage.getAccessToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  const tenant = await appStorage.get<string>('zayra_tenant_id');
-  if (tenant) headers[APP_CONFIG.TENANT_HEADER] = tenant;
   return headers;
 }
 
