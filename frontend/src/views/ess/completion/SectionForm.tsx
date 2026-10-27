@@ -4,18 +4,19 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Loader2, Send } from 'lucide-react';
 import { essCompletionApi, isStepUpRequired, problemOf, type EssCompletion, type EssDocument, type EssField, type EssSection } from '../../../api/essCompletion';
 import { useLocale } from '../../../contexts/LocaleContext';
+import { hijriLine } from '../../../lib/hire/dates';
 import { EssNotice, essInput, essPrimaryButton } from '../../../components/ess/EssParts';
 import { DocumentUploader } from './DocumentUploader';
 import { StepUpDialog } from './StepUpDialog';
 
-const LTR_KINDS = new Set(['Phone', 'Iban', 'NationalId', 'Iqama', 'Border', 'Email']);
+const LTR_KINDS = new Set(['Phone', 'Iban', 'NationalId', 'Iqama', 'Border', 'Email', 'GccId', 'Passport', 'Date']);
 const isEditable = (s: EssSection) => s.state === 'Missing' || s.state === 'Confirm' || s.state === 'ChangesRequested';
 
 /** One section: purpose and privacy notice first, then the fields (prefilled where HR already holds a value). */
 export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
   section: EssSection; meta: Pick<EssCompletion, 'noticeVersion' | 'hosting'>; canWrite: boolean; onChanged: () => void; onBack: () => void;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const [values, setValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [summary, setSummary] = useState<string | null>(null);
@@ -67,7 +68,7 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
     const id = `${formId}-${f.key}`; const errId = `${id}-err`; const hintId = `${id}-hint`;
     const ltr = LTR_KINDS.has(f.kind);
     const common = {
-      id, 'aria-invalid': errors[f.key] ? true : undefined, 'aria-describedby': [errors[f.key] ? errId : '', f.sensitive && f.value ? hintId : ''].filter(Boolean).join(' ') || undefined,
+      id, 'aria-invalid': errors[f.key] ? true : undefined, 'aria-describedby': [errors[f.key] ? errId : '', f.sensitive && f.value ? hintId : '', f.kind === 'Date' && hijriLine(values[f.key] ?? f.value, locale) ? `${id}-hijri` : ''].filter(Boolean).join(' ') || undefined,
       className: essInput, disabled: !editable || busy, maxLength: f.maxLength, dir: ltr ? ('ltr' as const) : undefined,
     };
     // A sensitive value is never sent to the browser in full: the field starts empty and the masked value is shown beside it.
@@ -86,8 +87,9 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
           </select>
         ) : (
           <input {...common} value={value} onChange={e => onChange(e.target.value)} autoComplete="off"
-            type={f.kind === 'Email' ? 'email' : f.kind === 'Phone' ? 'tel' : 'text'} inputMode={f.kind === 'NationalId' || f.kind === 'Iqama' || f.kind === 'Border' ? 'numeric' : undefined} />
+            type={f.kind === 'Email' ? 'email' : f.kind === 'Phone' ? 'tel' : f.kind === 'Date' ? 'date' : 'text'} inputMode={f.kind === 'NationalId' || f.kind === 'Iqama' || f.kind === 'Border' ? 'numeric' : undefined} />
         )}
+        {f.kind === 'Date' && hijriLine(value, locale) && <p id={`${id}-hijri`} data-testid={`hijri-${f.key}`} dir="auto" className="text-xs text-slate-500 dark:text-slate-400">{t('Hijri: {date}', { date: hijriLine(value, locale) })}</p>}
         {f.sensitive && f.value && <p id={hintId} className="text-xs text-slate-500 dark:text-slate-400">{t('Current value: {value}', { value: '' })}<bdi dir="ltr">{f.value}</bdi><br />{t('Type a new value only if it is wrong')}</p>}
         <p id={errId} role="alert" className="text-xs font-medium text-rose-700 dark:text-rose-300">{errors[f.key]}</p>
       </div>

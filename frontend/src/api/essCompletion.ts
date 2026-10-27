@@ -16,11 +16,11 @@ export interface EssField {
   key: string;
   /** Dictionary key (`ess.completion.field.*`); `label` is the English fallback. */
   labelKey: string;
-  label: string;
+  label?: string;
   /** Masked when `sensitive`; the editable value otherwise. */
   value: string;
   required: boolean;
-  kind: 'Text' | 'Email' | 'Phone' | 'Enum' | 'NationalId' | 'Iqama' | 'Border' | 'Iban' | 'BankName';
+  kind: 'Text' | 'Email' | 'Phone' | 'Enum' | 'NationalId' | 'Iqama' | 'Border' | 'Iban' | 'BankName' | 'GccId' | 'Passport' | 'Date';
   maxLength: number;
   sensitive: boolean;
   options?: string[];

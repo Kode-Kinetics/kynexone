@@ -20,6 +20,8 @@ export const SECTIONS: Record<string, MockSection> = {
   documents: { key: 'documents', state: 'Missing', fields: [] },
 };
 
+const SAUDI_ID = SECTIONS.id;
+
 export interface EssMockOptions {
   locale?: 'en' | 'ar';
   persona?: 'employee' | 'hr';
@@ -32,6 +34,8 @@ export interface EssMockOptions {
   stepUpFailures?: number;
   hrItems?: any[];
   hrPermissions?: string[];
+  /** Identity fields of an expatriate (Iqama, passport, expiries) instead of the Saudi National ID. */
+  idClass?: 'saudi' | 'expat';
 }
 
 export const INBOX_ITEMS = [
@@ -47,6 +51,8 @@ export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string)
   const log = { submits: [] as any[], uploads: [] as string[], stepUps: [] as any[], decisions: [] as Array<{ id: string; verb: string; body: any }>, headers: [] as Array<Record<string, string>>, errors: [] as string[], calls: [] as string[] };
   const keys = o.sections ?? ['person', 'emergency', 'arabicName', 'id', 'bank', 'documents'];
   const state: Record<string, SectionState> = { ...Object.fromEntries(keys.map(k => [k, SECTIONS[k].state])), ...(o.states ?? {}) };
+  SECTIONS.id = SAUDI_ID;   // the table is module-level and shared by every test in the worker
+  if (o.idClass === 'expat') SECTIONS.id = { ...SECTIONS.id, fields: [F('iqamaNumber', 'Iqama', '', { maxLength: 10, sensitive: true, required: false }), F('iqamaExpiry', 'Date', '2027-02-02', { maxLength: 10, required: false }), F('passportNumber', 'Passport', '', { maxLength: 20, sensitive: true, required: false }), F('passportExpiry', 'Date', '', { maxLength: 10, required: false })] };
   let inbox = [...(o.hrItems ?? INBOX_ITEMS)];
   let failures = o.stepUpFailures ?? 0;
   const docs: any[] = [];
@@ -123,3 +129,12 @@ export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string)
   await page.goto(path ?? (persona === 'employee' ? '/ess/onboarding' : '/people/onboarding-review'));
   return log;
 }
+
+export const ID_INBOX_ITEM = {
+  requestId: 'req-id', employee: { id: 13, code: 'E-0013', name: 'Imran Khan' }, section: 'id', status: 'PendingHR', submittedAtUtc: '2026-10-27T10:00:00Z', goesToFinance: false,
+  diff: [
+    { field: 'iqamaNumber', labelKey: 'ess.completion.field.iqamaNumber', before: '', after: '******0006', changed: true },
+    { field: 'iqamaExpiry', labelKey: 'ess.completion.field.iqamaExpiry', before: '2026-02-02', after: '2027-02-02', changed: true },
+  ],
+  documents: [],
+};

@@ -44,3 +44,13 @@ test('Arabic HR review at 360 px', async ({ page }, info) => {
   await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2-hr-review-ar-360.png` : info.outputPath('hr.png'), animations: 'disabled' });
   expect(log.errors).toEqual([]);
 });
+
+test('Arabic: the expiry shows its Hijri date in Arabic, left-to-right date input', async ({ page }) => {
+  const log = await bootEss(page, { locale: 'ar', sections: ['id'], idClass: 'expat' });
+  await page.getByTestId('section-id').click();
+  await expect(page.getByTestId('hijri-iqamaExpiry')).toContainText('الهجري:');
+  await expect(page.getByLabel('تاريخ انتهاء الإقامة')).toHaveAttribute('dir', 'ltr');
+  expect(await noHorizontalScroll(page)).toBe(true);
+  if (process.env.P2_SHOTS) await page.screenshot({ path: `${process.env.P2_SHOTS}/p2-ess-identity-hijri-ar-360.png`, animations: 'disabled' });
+  expect(log.errors).toEqual([]);
+});

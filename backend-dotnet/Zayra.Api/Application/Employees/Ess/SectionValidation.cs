@@ -13,6 +13,8 @@ namespace Zayra.Api.Application.Employees.Ess;
 public static class SectionValidation
 {
     private static readonly Regex ArabicName = new(@"^[\p{IsArabic}\s'’\-.]+$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex GccIdShape = new(@"^[A-Za-z0-9]{6,20}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex PassportShape = new(@"^[A-Za-z0-9]{5,20}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex ArabicLetter = new(@"\p{IsArabic}", RegexOptions.Compiled);
 
     private static string CompanyIso(string? companyCountry) =>
@@ -57,6 +59,17 @@ public static class SectionValidation
                     foreach (var code in IdentityNumberRules.Check(v, kind, nationalityClass).HardErrors) Err(key, code);
                     break;
                 }
+                case EssFieldKind.GccId:
+                    // The P1 identity rules cover the Saudi classes only; a GCC national ID is checked for shape, as the wizard does.
+                    if (!GccIdShape.IsMatch(v)) Err(key, EmployeeFieldErrors.IdFormatInvalid);
+                    break;
+                case EssFieldKind.Passport:
+                    if (!PassportShape.IsMatch(v)) Err(key, EmployeeFieldErrors.InvalidFormat);
+                    break;
+                case EssFieldKind.Date:
+                    if (!DateOnly.TryParseExact(v, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var date) || date.Year is < 1950 or > 2100)
+                        Err(key, EmployeeFieldErrors.InvalidFormat);
+                    break;
                 case EssFieldKind.Iban:
                 {
                     var cleaned = v.Replace(" ", "").ToUpperInvariant();
@@ -72,7 +85,7 @@ public static class SectionValidation
         if (requireComplete)
         {
             string Get(string k) => values.TryGetValue(k, out var x) ? x.Trim() : string.Empty;
-            if (sectionKey == EssSectionKeys.Id && nationalityClass != NationalityClass.Saudi)
+            if (sectionKey == EssSectionKeys.Id && nationalityClass is not (NationalityClass.Saudi or NationalityClass.Gcc))
             {
                 if (Get("iqamaNumber").Length == 0 && Get("borderNumber").Length == 0) Err("iqamaNumber", EmployeeFieldErrors.Required);
             }
@@ -99,6 +112,7 @@ public static class SectionValidation
                 EssFieldKind.Phone => v.Length == 0 ? v : PhoneNormalizer.Normalize(v, iso, PhoneKind.Mobile) ?? v,
                 EssFieldKind.Iban => v.Replace(" ", "").ToUpperInvariant(),
                 EssFieldKind.NationalId or EssFieldKind.Iqama or EssFieldKind.Border => IdentityNumberRules.NormalizeDigits(v),
+                EssFieldKind.GccId or EssFieldKind.Passport => v.ToUpperInvariant(),
                 _ => v,
             };
         }

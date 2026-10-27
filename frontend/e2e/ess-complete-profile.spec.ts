@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootEss, INBOX_ITEMS } from './ess/essMocks';
+import { bootEss, ID_INBOX_ITEM, INBOX_ITEMS } from './ess/essMocks';
 
 /** P2 Browser Pilot (mocked API): the employee's list and sections, step-up, pending, the HR inbox round trip. */
 
@@ -150,4 +150,29 @@ test('HR sends a section back: the note is required', async ({ page }) => {
 test('HR without the sensitive permission is told values are masked', async ({ page }) => {
   await bootEss(page, { persona: 'hr', hrPermissions: ['employees.read', 'employees.write'] });
   await expect(page.getByText('Values are masked. You need the sensitive-data permission to see them in full.')).toBeVisible();
+});
+
+test('an expatriate sees Iqama, passport and expiries, each expiry with its Hijri date beside it', async ({ page }) => {
+  await bootEss(page, { sections: ['id'], idClass: 'expat' });
+  await page.getByTestId('section-id').click();
+  await expect(page.getByLabel('Iqama number')).toBeVisible();
+  await expect(page.getByLabel('Passport number')).toBeVisible();
+  await expect(page.getByLabel('National ID number (Emirates ID, QID or Civil ID)')).toHaveCount(0);
+  const expiry = page.getByLabel('Iqama expiry date');
+  await expect(expiry).toHaveValue('2027-02-02');
+  await expect(page.getByTestId('hijri-iqamaExpiry')).toContainText('Hijri:');
+  await expect(page.getByTestId('hijri-iqamaExpiry')).toContainText('1448');
+  await expect(page.getByTestId('hijri-passportExpiry')).toHaveCount(0);
+  await page.getByLabel('Passport expiry date').fill('2030-02-02');
+  await expect(page.getByTestId('hijri-passportExpiry')).toContainText('AH');
+  if (process.env.P2_SHOTS) await page.screenshot({ path: `${process.env.P2_SHOTS}/p2-ess-identity-hijri-en-1440.png`, animations: 'disabled' });
+});
+
+test('HR sees the Hijri date under each expiry in the review diff, before and after', async ({ page }) => {
+  await bootEss(page, { persona: 'hr', hrItems: [ID_INBOX_ITEM] });
+  const item = page.getByTestId('inbox-item');
+  await item.getByRole('button', { name: 'Review' }).click();
+  await expect(item.getByTestId('hijri-before-iqamaExpiry')).toContainText('Hijri:');
+  await expect(item.getByTestId('hijri-after-iqamaExpiry')).toContainText('Hijri:');
+  await expect(item.getByTestId('hijri-after-iqamaNumber')).toHaveCount(0);
 });

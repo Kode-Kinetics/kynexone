@@ -17,7 +17,7 @@ public static class EssSectionKeys
     public static bool IsKnown(string? key) => key is not null && All.Contains(key, StringComparer.Ordinal);
 }
 
-public enum EssFieldKind { Text, Email, Phone, Enum, NationalId, Iqama, Border, Iban, BankName }
+public enum EssFieldKind { Text, Email, Phone, Enum, NationalId, Iqama, Border, Iban, BankName, GccId, Passport, Date }
 
 /// <param name="LabelKey">i18n key for the field label (EN + AR in onboardingP2.ts).</param>
 public sealed record EssFieldSpec(string Key, string LabelKey, int MaxLength, bool Required, EssFieldKind Kind,

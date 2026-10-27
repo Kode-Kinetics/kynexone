@@ -30,10 +30,22 @@ public static class ProfileSectionRegistry
     ];
     private static readonly EssFieldSpec[] ArabicFields = [Spec("arabicName", 150, true, EssFieldKind.Text)];
     private static readonly EssFieldSpec[] SaudiIdFields = [Spec("nationalId", 10, true, EssFieldKind.NationalId, sensitive: true)];
+    // The classes are the P1 catalog's (NationalityCatalog): a Saudi holds a National ID; a GCC national their own national ID and a
+    // passport (never an Iqama or Border Number); anyone else an Iqama or Border Number and a passport, with expiries.
+    private static readonly EssFieldSpec[] GccIdFields =
+    [
+        Spec("gccNationalId", 20, true, EssFieldKind.GccId, sensitive: true),
+        Spec("gccIdExpiry", 10, false, EssFieldKind.Date),
+        Spec("passportNumber", 20, false, EssFieldKind.Passport, sensitive: true),
+        Spec("passportExpiry", 10, false, EssFieldKind.Date),
+    ];
     private static readonly EssFieldSpec[] ExpatIdFields =
     [
         Spec("iqamaNumber", 10, false, EssFieldKind.Iqama, sensitive: true),
+        Spec("iqamaExpiry", 10, false, EssFieldKind.Date),
         Spec("borderNumber", 10, false, EssFieldKind.Border, sensitive: true),
+        Spec("passportNumber", 20, false, EssFieldKind.Passport, sensitive: true),
+        Spec("passportExpiry", 10, false, EssFieldKind.Date),
     ];
     private static readonly EssFieldSpec[] BankFields =
     [
@@ -55,7 +67,16 @@ public static class ProfileSectionRegistry
 
     /// <summary>A Saudi holds a National ID; everyone else (and an employee whose nationality is not yet classified) an Iqama or a Border Number.</summary>
     public static IReadOnlyList<EssFieldSpec> FieldsFor(string key, NationalityClass? nationalityClass) =>
-        key == EssSectionKeys.Id && nationalityClass == NationalityClass.Saudi ? SaudiIdFields : (Find(key)?.Fields ?? []);
+        key == EssSectionKeys.Id
+            ? nationalityClass switch { NationalityClass.Saudi => SaudiIdFields, NationalityClass.Gcc => GccIdFields, _ => ExpatIdFields }
+            : (Find(key)?.Fields ?? []);
+
+    /// <summary>A GCC national's own ID lives in the column of their nationality (the same columns the field registry binds per country).</summary>
+    private static string GccId(Employee e) => (e.NationalityCode?.ToUpperInvariant()) switch { "AE" => e.EmiratesId, "QA" => e.Qid, _ => e.CivilId } ?? string.Empty;
+    private static DateOnly? GccExpiry(Employee e) => (e.NationalityCode?.ToUpperInvariant()) switch { "AE" => e.EmiratesIdExpiryDate, "QA" => e.QidExpiryDate, _ => e.CivilIdExpiryDate };
+    private static string Iso(DateOnly? d) => d?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+    private static DateOnly? ParseDate(string v) =>
+        DateOnly.TryParseExact(v.Trim(), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d) ? d : null;
 
     public static IReadOnlyList<string> UnknownFields(string key, NationalityClass? nationalityClass, IEnumerable<string> fields)
     {
@@ -74,7 +95,12 @@ public static class ProfileSectionRegistry
         (EssSectionKeys.ArabicName, "arabicName") => e.ArabicName,
         (EssSectionKeys.Id, "nationalId") => e.IdNumber,
         (EssSectionKeys.Id, "iqamaNumber") => e.IqamaNumber,
+        (EssSectionKeys.Id, "iqamaExpiry") => Iso(e.IqamaExpiryDate),
         (EssSectionKeys.Id, "borderNumber") => e.BorderNumber,
+        (EssSectionKeys.Id, "gccNationalId") => GccId(e),
+        (EssSectionKeys.Id, "gccIdExpiry") => Iso(GccExpiry(e)),
+        (EssSectionKeys.Id, "passportNumber") => e.PassportNumber,
+        (EssSectionKeys.Id, "passportExpiry") => Iso(e.PassportExpiryDate),
         (EssSectionKeys.Bank, "iban") => e.BankIban,
         (EssSectionKeys.Bank, "bankName") => e.BankName,
         _ => string.Empty,
@@ -85,9 +111,12 @@ public static class ProfileSectionRegistry
         EssSectionKeys.Person => Blank(employee.PersonalEmail) || Blank(employee.Phone),
         EssSectionKeys.Emergency => Blank(employee.EmergencyContactName) || Blank(employee.EmergencyContactPhone),
         EssSectionKeys.ArabicName => Blank(employee.ArabicName),
-        EssSectionKeys.Id => facts.NationalityClass == NationalityClass.Saudi
-            ? Blank(employee.IdNumber)
-            : Blank(employee.IqamaNumber) && Blank(employee.BorderNumber),
+        EssSectionKeys.Id => facts.NationalityClass switch
+        {
+            NationalityClass.Saudi => Blank(employee.IdNumber),
+            NationalityClass.Gcc => Blank(GccId(employee)),
+            _ => Blank(employee.IqamaNumber) && Blank(employee.BorderNumber),
+        },
         EssSectionKeys.Bank => Blank(employee.BankIban),
         EssSectionKeys.Documents => !facts.HasIdDocument,
         _ => false,
@@ -139,7 +168,14 @@ public static class ProfileSectionRegistry
             case EssSectionKeys.Id:
                 if (Has("nationalId")) { e.IdNumber = V("nationalId"); e.IdType = "NationalId"; }
                 if (Has("iqamaNumber")) e.IqamaNumber = V("iqamaNumber");
+                if (Has("iqamaExpiry")) e.IqamaExpiryDate = ParseDate(V("iqamaExpiry"));
                 if (Has("borderNumber")) e.BorderNumber = V("borderNumber");
+                if (Has("passportNumber")) e.PassportNumber = V("passportNumber");
+                if (Has("passportExpiry")) e.PassportExpiryDate = ParseDate(V("passportExpiry"));
+                if (Has("gccNationalId"))
+                    switch (e.NationalityCode?.ToUpperInvariant()) { case "AE": e.EmiratesId = V("gccNationalId"); break; case "QA": e.Qid = V("gccNationalId"); break; default: e.CivilId = V("gccNationalId"); break; }
+                if (Has("gccIdExpiry"))
+                    switch (e.NationalityCode?.ToUpperInvariant()) { case "AE": e.EmiratesIdExpiryDate = ParseDate(V("gccIdExpiry")); break; case "QA": e.QidExpiryDate = ParseDate(V("gccIdExpiry")); break; default: e.CivilIdExpiryDate = ParseDate(V("gccIdExpiry")); break; }
                 break;
             case EssSectionKeys.Documents:
                 break;   // the attached files are the section; nothing is written to the employee row

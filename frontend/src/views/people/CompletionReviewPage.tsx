@@ -7,6 +7,7 @@ import { hrCompletionApi, problemOf, SECTION_ORDER, type InboxItem, type Section
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
+import { hijriLine } from '../../lib/hire/dates';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { EssEmpty, EssLoadError, EssNotice, essInput, essPrimaryButton } from '../../components/ess/EssParts';
 
@@ -14,7 +15,7 @@ type Decision = { item: InboxItem; kind: 'accept' | 'reject' } | null;
 
 /** HR's inbox of per-section submissions: what changes (before and after, in words), then accept or send back with a note. */
 export function CompletionReviewPage() {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const { user, hasPermission } = useAuth();
   const { date } = useFormat();
   const [items, setItems] = useState<InboxItem[] | null>(null);
@@ -111,8 +112,8 @@ export function CompletionReviewPage() {
                         {item.diff.map(d => (
                           <tr key={d.field} className="border-t border-slate-100 dark:border-white/10">
                             <th scope="row" className="py-1.5 pe-3 text-start font-medium">{t(d.labelKey)}</th>
-                            <td className="py-1.5 pe-3 text-start" dir="ltr"><bdi>{d.before || '—'}</bdi></td>
-                            <td className={`py-1.5 pe-3 text-start ${d.changed ? 'font-bold' : ''}`} dir="ltr"><bdi>{d.after || '—'}</bdi></td>
+                            <td className="py-1.5 pe-3 text-start"><span dir="ltr"><bdi>{d.before || '—'}</bdi></span>{hijriLine(d.before, locale) && <span className="block text-xs text-slate-500" data-testid={`hijri-before-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.before, locale) })}</span>}</td>
+                            <td className={`py-1.5 pe-3 text-start ${d.changed ? 'font-bold' : ''}`}><span dir="ltr"><bdi>{d.after || '—'}</bdi></span>{hijriLine(d.after, locale) && <span className="block text-xs font-normal text-slate-500" data-testid={`hijri-after-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.after, locale) })}</span>}</td>
                             <td className="py-1.5 text-start"><span className={d.changed ? 'rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'text-xs text-slate-500'}>{d.changed ? t('Changed') : t('Unchanged')}</span></td>
                           </tr>
                         ))}
