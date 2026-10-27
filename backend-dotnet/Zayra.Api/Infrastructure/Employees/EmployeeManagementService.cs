@@ -203,7 +203,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await _db.SaveChangesAsync(cancellationToken);
                 // The hire's first attribution stays on the trail, as an action that does not count toward lock SoD (only a change to an existing employee does).
                 await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, hireAttributionBefore, context.UserId, cancellationToken,
-                    initial: true, overrideAlreadyAudited: true);
+                    reason: request.CostCenterReason, initial: true, overrideAlreadyAudited: true);
                 await EnsurePrimaryReportingLineAsync(employee, context, cancellationToken);
                 await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
@@ -1466,7 +1466,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// and a new one is validated by the one validator against the employee's own company. An explicit cost centre that differs from the department's is
     /// an override; one equal to the department's is just a copy. Setting, re-pointing or removing the override needs a reason (M-10), which the audit row keeps.
     /// </summary>
-    private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null, string? reason = null)
+    private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null, string? reason = null, bool hire = false)
     {
         if (requested is not Guid costCenterId) return;
         var wasOverride = employee.CostCenterIsOverride;
@@ -1487,7 +1487,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.CostCenterId = newCostCentre;
         employee.CostCenterIsOverride = newOverride;
         // The audit action finance's separation-of-duties check reads; staged, so it commits with the employee.
-        if (overrideChanged)
+        // A hire's first attribution is recorded once, as the initial attribution (with this reason), by the create flow.
+        if (overrideChanged && !hire)
             _audit.Stage("employee.cost_centre_override.changed", nameof(Employee),
                 employee.Id != 0 ? employee.Id.ToString() : employee.PublicId.ToString(),
                 (context ?? new RequestContext(null, null, null)) with { TenantId = tenantId },
@@ -1522,7 +1523,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
         employee.GradeId = request.GradeId;
-        await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken, context, request.CostCenterReason);
+        await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken, context, request.CostCenterReason, hire: employee.Id == 0 && _db.Entry(employee).State == EntityState.Detached);
         employee.PositionId = request.PositionId;
         // AM-9: someone in a run awaiting finance review or lock cannot be moved to another cost centre until the run is reopened or locked.
         await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);

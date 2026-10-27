@@ -92,7 +92,7 @@ public partial class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
 
         var code = (req.Code ?? "").Trim();
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "Code and Name are required." });
@@ -227,7 +227,7 @@ public partial class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         var isDryRun = dryRun ?? true;
 
         if (file is null || file.Length == 0)
@@ -370,7 +370,7 @@ public partial class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         var mappings = body?.Mappings ?? new List<GlMappingRequest>();
         // The reason is read from the body; the query value is kept for one release and loses to a non-blank body reason.
         reason = string.IsNullOrWhiteSpace(body?.Reason) ? reason : body!.Reason;
@@ -544,7 +544,7 @@ public partial class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.drivers.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
 
         var validation = await ValidateDriverAsync(tid.Value, companyId, req, null, ct);
         if (validation is not null) return validation;
@@ -763,7 +763,7 @@ public partial class FinanceGlController : ControllerBase
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         if (!IsValidPeriod(period)) return BadRequest(new { message = "Period must be in YYYY-MM format." });
 
         // IgnoreQueryFilters is intentional: scope authorised above (ScopeError); WHERE re-applies exact
@@ -798,7 +798,7 @@ public partial class FinanceGlController : ControllerBase
     {
         if (!HasPermission(PeriodReopenPermission)) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         if (string.IsNullOrWhiteSpace(req?.Reason))
             return BadRequest(new { message = "A reason is required to reopen a closed period (audited)." });
 
@@ -1142,6 +1142,18 @@ public partial class FinanceGlController : ControllerBase
     /// requires CanAccessCompany; a group-default (companyId==null) scope requires a GROUP grant —
     /// judged by HasGroupEntityScope (the caller's grant), not GetEntityScope (which narrows to the
     /// company selected in the switcher and used to 403 a group admin viewing one company).</summary>
+    /// <summary>For WRITES that name a company: the caller's grant (<see cref="ScopeError"/>), and the company must be a live company
+    /// of the caller's own tenant, so a group-scope admin cannot write rows under another tenant's company id (404).</summary>
+    private async Task<IActionResult?> WriteScopeErrorAsync(Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        if (ScopeError(companyId) is { } err) return err;
+        if (companyId is not { } id) return null;
+        var exists = await ScopedBypass.TenantWide(_db.Companies, tenantId,
+                "A GL write names a company; it must exist in the caller's tenant whatever company the switcher shows.")
+            .AsNoTracking().AnyAsync(c => c.Id == id, ct);
+        return exists ? null : NotFound(new { error = "company_not_found", message = "Company not found." });
+    }
+
     private IActionResult? ScopeError(Guid? companyId)
     {
         if (companyId is null)

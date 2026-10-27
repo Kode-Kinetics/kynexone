@@ -6,8 +6,8 @@ namespace Zayra.Api.Infrastructure.Finance;
 
 /// <summary>
 /// AM-22: the production <see cref="IJournalExportSeparationOfDuties"/>, over WP-B's <see cref="CostAccountingSod"/>.
-/// <para>A person is barred when they changed the company's costing set-up since its previous lock; so is an ERP API key's
-/// creator (a key acts for its creator, AM-14), checked on the creator's user id. The rule applies only while the company's
+/// <para>A person is barred when they changed the company's costing set-up since its previous lock (ERP API keys cannot create
+/// exports, so only a signed-in person is ever checked). The rule applies only while the company's
 /// costing switch is on (AM-26): <see cref="CostAccountingSod.HasConflictAsync"/> answers false for a company that is off or
 /// unknown. When the export names no company (a group export) every company of the tenant is checked, because the file would
 /// carry them all; a run-only request resolves its company and month from the run. When the period cannot be determined the
@@ -27,7 +27,8 @@ public sealed class CostAccountingJournalExportSeparationOfDuties(ZayraDbContext
             if (run is not null)
             {
                 if (run.CompanyId is { } rc) companyIds.Add(rc);
-                if (string.IsNullOrWhiteSpace(period)) period = $"{run.Year:0000}-{run.Month:00}";
+                // The run decides the period the file is built for; a client value never narrows the review window.
+                period = $"{run.Year:0000}-{run.Month:00}";
             }
         }
         if (request.CompanyId is { } c) companyIds.Add(c);
@@ -35,13 +36,9 @@ public sealed class CostAccountingJournalExportSeparationOfDuties(ZayraDbContext
             companyIds = await ScopedBypass.TenantWide(db.Companies, request.TenantId, "A tenant-wide export is checked against every company of the tenant.")
                 .AsNoTracking().Select(x => x.Id).ToListAsync(ct);
 
-        var users = new List<Guid> { request.ActorUserId };
-        if (request.ApiKeyCreatorUserId is { } creator) users.Add(creator);
-
         foreach (var company in companyIds.Distinct())
-            foreach (var user in users.Distinct())
-                if (await CostAccountingSod.HasConflictAsync(db, request.TenantId, company, period ?? string.Empty, user, ct))
-                    return true;
+            if (await CostAccountingSod.HasConflictAsync(db, request.TenantId, company, period ?? string.Empty, request.ActorUserId, ct))
+                return true;
         return false;
     }
 }

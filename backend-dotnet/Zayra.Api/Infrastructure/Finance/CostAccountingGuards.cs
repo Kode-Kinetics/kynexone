@@ -80,11 +80,10 @@ public static class CostAccountingGuards
 /// <summary>
 /// Identity segregation of duties for cost accounting (AM-14). A user who changed a posting input of a company since the
 /// previous Lock — a mapping, an account rule, the functional class of a cost centre, the switch, the default cost centre,
-/// an employee override or K — cannot Lock, or create a journal export for, that company's run, and neither can an ERP API
-/// key that user created. The check is by IDENTITY, so an Admin holding every permission is refused like anyone else.
+/// an employee override or K — cannot Lock, or create a journal export for, that company's run. The check is by IDENTITY, so an Admin holding every permission is refused like anyone else.
 /// <para>It only applies while the company's cost-accounting switch is ON, so tenants that never use the feature keep
 /// today's behaviour exactly. Tenant-default changes (null company) count for every company of the tenant.</para>
-/// <para>WP-C calls <see cref="HasConflictAsync"/> from Lock; WP-D calls it (and <see cref="ApiKeyHasConflictAsync"/>) from
+/// <para>WP-C calls <see cref="HasConflictAsync"/> from Lock; WP-D calls it from
 /// export create, and answers 403 with <see cref="RefusalBody"/>.</para>
 /// </summary>
 public static class CostAccountingSod
@@ -129,15 +128,6 @@ public static class CostAccountingSod
             .AsNoTracking()
             .AnyAsync(a => a.UserId == userId && actions.Contains(a.Action) && (a.CompanyId == companyId || a.CompanyId == null)
                            && (since == null || a.CreatedAtUtc >= since), ct);
-    }
-
-    /// <summary>True when the key's creator has a conflict. An unknown key fails closed.</summary>
-    public static async Task<bool> ApiKeyHasConflictAsync(ZayraDbContext db, Guid tenantId, Guid companyId, string period, Guid apiKeyId, CancellationToken ct)
-    {
-        var creator = await ScopedBypass.TenantWide(db.ErpApiKeys, tenantId, "SoD resolves the creator of the ERP key acting on the company.")
-            .AsNoTracking().Where(k => k.Id == apiKeyId).Select(k => (Guid?)k.CreatedByUserId).FirstOrDefaultAsync(ct);
-        if (creator is not { } userId) return true;
-        return await HasConflictAsync(db, tenantId, companyId, period, userId, ct);
     }
 
     /// <summary>Start of the review window: the latest Lock of an EARLIER period of the company, else the beginning of time.

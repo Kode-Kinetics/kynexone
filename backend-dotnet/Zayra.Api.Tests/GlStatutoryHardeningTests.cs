@@ -199,6 +199,7 @@ public class GlStatutoryHardeningTests
         var created = (OkObjectResult)await gl.CreateDriver(null, new GlDriverRequest("EARN:WELLNESS", "Wellness", GlDriverCategories.Earning, "DR", "5090", "", MatchMode: "Exact", MatchComponentCode: "WELLNESS"), default);
         var id = (Guid)Prop(Prop(created.Value!, "driver")!, "Id")!;
         var company = Guid.NewGuid();
+        db.Companies.Add(new Company { Id = company, TenantId = tid, LegalNameEn = "Co" }); await db.SaveChangesAsync();
         (await gl.SetMappings(company, new() { new GlMappingRequest("EARN:WELLNESS", acct.Id) }, default)).Should().BeOfType<OkObjectResult>();
         (await gl.DeleteDriver(id, default)).Should().BeOfType<ConflictObjectResult>();
         (await gl.SetMappings(company, new(), default)).Should().BeOfType<OkObjectResult>();
@@ -230,6 +231,7 @@ public class GlStatutoryHardeningTests
         (await gl.SetMappings(null, new() { new("EARN:BASIC", expense.Id, cc.Id), new("NET_PAYABLE", liability.Id) }, default))
             .Should().BeOfType<UnprocessableEntityObjectResult>();
         var company = Guid.NewGuid();
+        db.Companies.Add(new Company { Id = company, TenantId = tid, LegalNameEn = "Co" }); await db.SaveChangesAsync();
         await db.CostCenters.Where(x => x.Id == cc.Id).ExecuteUpdateAsync(u => u.SetProperty(x => x.CompanyId, (Guid?)company));
         (await gl.SetMappings(company, new() { new("EARN:BASIC", expense.Id, cc.Id), new("NET_PAYABLE", liability.Id) }, default, "Pin basic pay to the Riyadh cost centre")).Should().BeOfType<OkObjectResult>();
         var last = await db.AuditLogs.AsNoTracking().Where(a => a.Action == "finance.gl.mapping.saved").OrderByDescending(a => a.CreatedAtUtc).FirstAsync();

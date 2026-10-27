@@ -1,13 +1,11 @@
 namespace Zayra.Api.Infrastructure.Finance;
 
 /// <summary>
-/// Who is asking to create a journal export, and for what. The question the rule below answers is "did this person (or the
-/// person who created this API key) change the cost-accounting set-up this export is built from?".
+/// Who is asking to create a journal export, and for what. The question the rule below answers is "did this person change the cost-accounting set-up this export is built from?".
 /// </summary>
-/// <param name="ApiKeyCreatorUserId">The user who created the ERP API key the caller is using; null for a person's own session.
-/// A key acts for its creator, so the creator's changes bar the key as well (AM-14).</param>
+/// <remarks>An ERP API key cannot create an export, so the actor is always a signed-in person.</remarks>
 public sealed record JournalExportSodRequest(
-    Guid TenantId, Guid? CompanyId, string? Period, Guid? PayrollRunId, Guid ActorUserId, Guid? ApiKeyCreatorUserId);
+    Guid TenantId, Guid? CompanyId, string? Period, Guid? PayrollRunId, Guid ActorUserId);
 
 /// <summary>
 /// SEAM for contract AM-14 / S-004. A user who changed a mapping, a functional class, the cost-accounting switch, the company

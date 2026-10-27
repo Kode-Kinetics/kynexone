@@ -30,7 +30,7 @@ public partial class FinanceGlController
     {
         if (!HasPermission("finance.gl.manage")) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
-        if (ScopeError(companyId) is { } err) return err;
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         return await CostAccountingGuards.SerializeAsync(_db, tid.Value, companyId, () => PresetCoreAsync(tid.Value, companyId, dryRun, req?.Reason, ct), ct);
     }
 

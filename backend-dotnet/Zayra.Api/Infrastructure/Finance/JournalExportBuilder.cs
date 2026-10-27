@@ -412,7 +412,7 @@ public static class JournalExportBuilder
             ExternalAccountCode: string.IsNullOrWhiteSpace(external) ? null : external.Trim(),
             Scale: scaleOf?.Invoke(e) ?? JournalAmount.ScaleFor(e.Currency),
             CostCenterCode: costed ? e.CostCenterCode : null,
-            CostCenterName: costed ? e.CostCenterName : null,
+            CostCenterName: costed ? Zayra.Api.Application.Organization.CostCentreText.StripDirectionControls(e.CostCenterName) : null,
             CostCenterGlSegment: costed ? e.CostCenterGlSegment : null);
     }
 
