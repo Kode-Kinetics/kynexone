@@ -194,6 +194,35 @@ public class PayrollCostingLockTests
         (await k.Db.PayrollEarnings.AsNoTracking().SingleAsync(e => e.PayrollRunId == run.Id && e.ComponentCode == "OVERTIME")).CostCenterSource.Should().Be("MappingFixed");
     }
 
+    // ── routing survives a suppressed cost-centre dimension ──────────────────
+
+    [Theory]
+    [InlineData("Optional")]
+    [InlineData("Required")]
+    public async Task AFunctionalClassRoute_ToAnAccountThatDoesNotAcceptACostCentre_StaysOnThatAccount_UncostedAndBalanced(string baseRule)
+    {
+        await using var k = await OrgAsync();
+        await k.AddEmployee("E1", "D-SAL");   // CC-200, class SELLING
+        await k.AddEmployee("E2", "D-FIN");   // CC-110, no class route
+        (await k.Db.GlAccounts.SingleAsync(a => a.TenantId == k.TenantId && a.Code == "5001")).CostCenterRule = baseRule;
+        var selling = new GlAccount { TenantId = k.TenantId, CompanyId = k.CompanyId, Code = "5011", Name = "Selling basic", AccountType = "Expense", CostCenterRule = "NotAllowed" };
+        k.Db.GlAccounts.Add(selling);
+        await k.Db.SaveChangesAsync();
+        k.Db.GlAccountMappings.Add(new GlAccountMapping { TenantId = k.TenantId, CompanyId = k.CompanyId, DriverKey = "EARN:BASIC", FunctionalClass = "SELLING", AccountId = selling.Id });
+        await k.Db.SaveChangesAsync();
+        var run = await k.SeedRunAsync(new[] { E("E1", "BASIC", 3000m), E("E2", "BASIC", 2000m) }, Array.Empty<(string, string, string, decimal, bool)>());
+
+        (await k.ApproveAndLockAsync(run.Id)).Should().BeOfType<OkObjectResult>();
+        var gl = await k.GlAsync(run.Id);
+
+        var sellingLine = Dr(gl, "5011").Should().ContainSingle().Which;
+        (sellingLine.Amount, sellingLine.CostCenterId).Should().Be((3000m, (Guid?)null));
+        var baseLine = Dr(gl, "5001").Should().ContainSingle().Which;
+        (baseLine.Amount, baseLine.CostCenterCode).Should().Be((2000m, "CC-110"), "the destination of the other employee is untouched");
+        GlPostingKit.Debits(gl).Should().Be(GlPostingKit.Credits(gl));
+        gl.Select(l => l.PostingKey).Should().OnlyHaveUniqueItems();
+    }
+
     // ── rounding line (T-023) ────────────────────────────────────────────────
 
     [Fact]
