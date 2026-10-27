@@ -99,7 +99,13 @@ public class HireFunctionalHardeningHttpTests : IClassFixture<HireIntegrityHttpF
         var id = (await Json(created)).GetProperty("id").GetInt32();
 
         var draft = Hire("Draft IBAN Saved", b => { b["contractType"] = "Unlimited"; b["payrollProfile"] = new { iban = BadIban, bankName = "Test Bank" }; });
-        using var saved = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}/hire-draft", new { request = draft }, token);
+        DateTime basis;
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var stored = await scope.ServiceProvider.GetRequiredService<ZayraDbContext>().Employees.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == id);
+            basis = stored.UpdatedAtUtc ?? stored.CreatedAtUtc;   // an autosave names the version it was made from (CD49)
+        }
+        using var saved = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}/hire-draft", new { baseUpdatedAtUtc = basis, request = draft }, token);
         saved.StatusCode.Should().Be(HttpStatusCode.OK, "autosave keeps accepting invalid values: " + await saved.Content.ReadAsStringAsync());
 
         using var activate = await _fx.SendAsync(HttpMethod.Post, $"/api/employees/{id}/activate",
