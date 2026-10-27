@@ -19,5 +19,9 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     viewport: { width: 1280, height: 900 },
   },
-  projects: [{ name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } }],
+  projects: [
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } },
+    // CI's Browser Pilot runs `--project=chromium` = Desktop Chrome at its own 1280x720: the shortest viewport this screen is judged at.
+    { name: 'ci-chromium', use: { ...devices['Desktop Chrome'] } },
+  ],
 });
