@@ -52,6 +52,36 @@ public sealed class OwnerAndStepUpTests
     }
 
     [Fact]
+    public async Task AnotherAdmin_CannotOverrideTheOwnersPermissions()
+    {
+        await using var db = CreateDb();
+        var w = await SeedAsync(db);
+        db.Permissions.Add(new Permission { Key = "security.manage", Module = "Security", Description = "Manage security" });
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, w, w.AdminId, StepUpTestKit.AlwaysConfirmed(db))
+            .SetPermissionOverride(w.OwnerId, new PermissionOverrideRequest("security.manage", "Deny", "x", null), default);
+
+        AssertOwnerProtected(result.Result);
+        (await db.UserPermissionOverrides.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MakingSomeoneAnAdmin_TellsEveryAdmin()
+    {
+        await using var db = CreateDb();
+        var w = await SeedAsync(db);
+        var notices = new CapturingNotices();
+
+        var result = await Controller(db, w, w.OwnerId, StepUpTestKit.AlwaysConfirmed(db), notices)
+            .AssignRoles(w.EmployeeId, new AssignRolesRequest(["Admin"]), default);
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+        notices.Requests.Select(x => x.UserId).Should().BeEquivalentTo(new Guid?[] { w.AdminId, w.EmployeeId },
+            "the new Admin and every other Admin are told; the one who did it is not");
+    }
+
+    [Fact]
     public async Task TheOwner_StillManagesOtherAdmins()
     {
         await using var db = CreateDb();
@@ -278,8 +308,9 @@ public sealed class OwnerAndStepUpTests
         new(db, new Pbkdf2PasswordHasher(), new AuditService(db), new JwtTokenService(Jwt),
             new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["APP_URL"] = "https://app.kynexone.test" }).Build());
 
-    private static AccessController Controller(ZayraDbContext db, World w, Guid callerId, StepUpService stepUp) =>
-        new(Service(db), db, new NoEmail(), Auth(db), stepUp: stepUp)
+    private static AccessController Controller(ZayraDbContext db, World w, Guid callerId, StepUpService stepUp,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? notices = null) =>
+        new(Service(db), db, new NoEmail(), Auth(db), stepUp: stepUp, adminNotices: notices)
         {
             ControllerContext = new ControllerContext
             {
@@ -313,6 +344,18 @@ public sealed class OwnerAndStepUpTests
     }
 
     private static void AssertOwnerProtected(IActionResult? result) => Code(result).Should().Be(PrivilegeCeiling.Codes.OwnerProtected);
+
+    private sealed class CapturingNotices : Zayra.Api.Infrastructure.Notifications.INotificationService
+    {
+        public List<Zayra.Api.Infrastructure.Notifications.NotificationRequest> Requests { get; } = [];
+        public Task NotifyAsync(Guid tenantId, Guid? userId, string title, string message, string entityName, string? entityId, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task SendEmailAsync(Guid tenantId, string templateCode, string toAddress, string toName, Dictionary<string, string> variables, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<IReadOnlyList<NotificationDelivery>> EnqueueAsync(Zayra.Api.Infrastructure.Notifications.NotificationRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult<IReadOnlyList<NotificationDelivery>>([]);
+        }
+    }
 
     private sealed class NoEmail : IEmailService
     {

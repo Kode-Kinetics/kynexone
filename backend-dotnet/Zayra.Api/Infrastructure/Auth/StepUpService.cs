@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Jobs;
 
 namespace Zayra.Api.Infrastructure.Auth;
 
@@ -46,14 +47,40 @@ public class StepUpService
     public async Task<StepUpResult> ConfirmAsync(Guid userId, Guid tenantId, string password, string? totpCode,
         RequestContext context, CancellationToken cancellationToken)
     {
+        // The (slow) password proof runs before any lock; the locked section re-checks that the hash it proved is still
+        // the stored one, so the whole read → check → write is serialized without holding a row lock through PBKDF2.
+        var route = await _db.Users.AsNoTracking()
+            .Where(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted && x.IsActive)
+            .Select(x => new { x.PasswordHash })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (route is null) return new StepUpResult(StepUpOutcome.Unavailable);
+        var passwordOk = await PasswordVerificationGate.RunAsync(_gate, () => _hasher.Verify(password, route.PasswordHash), cancellationToken);
+
+        var result = await RunLockedAsync(ct => ConfirmLockedAsync(userId, tenantId, route.PasswordHash, passwordOk, totpCode, ct), cancellationToken);
+
+        var auditContext = context with { UserId = userId, TenantId = tenantId };
+        if (result.Outcome == StepUpOutcome.Confirmed)
+            await _audit.WriteAsync("auth.step_up_confirmed", "User", userId.ToString(), auditContext, null, cancellationToken);
+        else if (result.Outcome is StepUpOutcome.WrongPassword or StepUpOutcome.WrongCode or StepUpOutcome.LockedOut)
+            await _audit.WriteAsync("auth.step_up_failed", "User", userId.ToString(), auditContext,
+                System.Text.Json.JsonSerializer.Serialize(new { outcome = result.Outcome.ToString() }), cancellationToken);
+        return result;
+    }
+
+    /// <summary>Under the user row lock (as the MFA verification paths): lockout, code freshness, counters, token.</summary>
+    private async Task<StepUpResult> ConfirmLockedAsync(Guid userId, Guid tenantId, string provenHash, bool passwordOk, string? totpCode,
+        CancellationToken ct)
+    {
+        _db.ChangeTracker.Clear();
         var nowUtc = DateTime.UtcNow;
         var user = await _db.Users
-            .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted && x.IsActive, cancellationToken);
+            .TagWith(RowLockingInterceptor.ForUpdateTag)
+            .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId && !x.IsDeleted && x.IsActive, ct);
         if (user is null) return new StepUpResult(StepUpOutcome.Unavailable);
         if (AuthCurrentEligibility.IsFailureLockoutActive(user, nowUtc)) return new StepUpResult(StepUpOutcome.LockedOut);
+        // The password changed while it was being checked: the proof was of a password that is no longer this account's.
+        if (!string.Equals(user.PasswordHash, provenHash, StringComparison.Ordinal)) passwordOk = false;
 
-        var storedHash = user.PasswordHash;
-        var passwordOk = await PasswordVerificationGate.RunAsync(_gate, () => _hasher.Verify(password, storedHash), cancellationToken);
         var codeNeeded = user.MFAEnabled && !string.IsNullOrEmpty(user.MfaSecretEncrypted);
         long? step = null;
         var codeOk = true;
@@ -66,10 +93,9 @@ public class StepUpService
             codeOk = TotpService.IsFreshStep(step, user.MfaLastTotpStep);
         }
 
-        var auditContext = context with { UserId = userId, TenantId = tenantId };
         if (!passwordOk || !codeOk)
         {
-            var policy = await _db.SecuritySettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, cancellationToken);
+            var policy = await _db.SecuritySettings.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
             user.FailedLoginCount++;
             var locked = user.FailedLoginCount >= (policy?.MaxFailedLoginAttempts ?? 5);
             if (locked)
@@ -77,20 +103,28 @@ public class StepUpService
                 user.IsLocked = true;
                 user.LockoutEnd = nowUtc.AddMinutes(policy?.LockoutDurationMinutes ?? 15);
             }
-            await _db.SaveChangesAsync(cancellationToken);
-            await _audit.WriteAsync("auth.step_up_failed", "User", userId.ToString(), auditContext,
-                System.Text.Json.JsonSerializer.Serialize(new { reason = passwordOk ? "code" : "password", locked }), cancellationToken);
+            await _db.SaveChangesAsync(ct);
             return new StepUpResult(locked ? StepUpOutcome.LockedOut : passwordOk ? StepUpOutcome.WrongCode : StepUpOutcome.WrongPassword);
         }
 
         user.FailedLoginCount = 0;
         if (step is not null) user.MfaLastTotpStep = step;
-        await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("auth.step_up_confirmed", "User", userId.ToString(), auditContext,
-            System.Text.Json.JsonSerializer.Serialize(new { withCode = codeNeeded }), cancellationToken);
-
+        await _db.SaveChangesAsync(ct);
         var token = _protector.Protect($"{userId:N}|{tenantId:N}|{TenantSessionSecurity.StampValue(user)}", Lifetime);
         return new StepUpResult(StepUpOutcome.Confirmed, token, (int)Lifetime.TotalSeconds);
+    }
+
+    private async Task<StepUpResult> RunLockedAsync(Func<CancellationToken, Task<StepUpResult>> operation, CancellationToken cancellationToken)
+    {
+        if (!_db.Database.IsRelational()) return await operation(cancellationToken);
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async ct =>
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct);
+            var outcome = await operation(ct);
+            await transaction.CommitAsync(ct);
+            return outcome;
+        }, cancellationToken);
     }
 
     /// <summary>True when <paramref name="token"/> is this user's own, unexpired, and minted under their current session stamp.</summary>

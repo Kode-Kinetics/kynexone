@@ -32,7 +32,7 @@ const sam = { ...base, id: '33333333-3333-3333-3333-333333333333', email: 'sam@k
 type Reply = { status: number; body?: unknown };
 interface Call { method: string; path: string; body: any; stepUp: string | null }
 
-async function mockApi(page: Page, opts: { meIsOwner?: boolean; stepUp?: Reply[] } = {}) {
+async function mockApi(page: Page, opts: { meIsOwner?: boolean; stepUp?: Reply[]; selfOffPage?: boolean } = {}) {
   const calls: Call[] = [];
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -75,7 +75,16 @@ async function mockApi(page: Page, opts: { meIsOwner?: boolean; stepUp?: Reply[]
     }
     if (method !== 'GET') return json({});
     if (p === '/api/auth/me') return json({ id: ME, tenantId: 't1', tenantSlug: 'kkdemo', email: 'me@kkdemo.com', fullName: 'Me Admin', roles: ['Admin'], accountType: 'SingleCompany', isGroupScope: true, companies: [], permissions });
-    if (p === '/api/access/users') return json({ items: users, total: users.length, page: 1, pageSize: 20 });
+    if (p === '/api/access/users') {
+      // The signed-in owner on another page of the list (or filtered out by a search).
+      const shown = opts.selfOffPage ? users.filter((u) => u.id !== ME) : users;
+      return json({ items: shown, total: users.length, page: 1, pageSize: 20 });
+    }
+    const one = p.match(/^\/api\/access\/users\/([^/]+)$/);
+    if (one) {
+      const found = users.find((u) => u.id === decodeURIComponent(one[1]));
+      return found ? json(found) : json({ message: 'Not found' }, 404);
+    }
     if (p === '/api/access/roles') return json(['Admin', 'Employee'].map((name, index) => ({ id: String(index), name, permissions: [] })));
     if (p === '/api/access/ceiling') return json({ userId: ME, isAdmin: true, heldPermissions: permissions, roles: [] });
     if (p === '/api/tenant-admin/usage') return json({ activeUsers: 4, maxUsers: 20 });
@@ -132,6 +141,14 @@ test.describe('Setup → Users: the workspace owner', () => {
     const makeOwner = api.calls.filter((c) => c.path.endsWith('/make-owner'));
     expect(makeOwner.map((c) => c.stepUp)).toEqual([null, 'confirmed-token']);
     expect(api.calls.find((c) => c.path === '/api/auth/step-up')!.body).toEqual({ password: 'My-Password-1!' });
+  });
+});
+
+test.describe('Setup → Users: the owner, wherever their own row is', () => {
+  test('the owner sees "Make owner" even when their own row is not on this page', async ({ page }) => {
+    await mockApi(page, { meIsOwner: true, selfOffPage: true });
+    await openUsers(page);
+    await expect(rowOf(page, 'Amy Admin').getByTestId('user-make-owner')).toBeVisible();
   });
 });
 

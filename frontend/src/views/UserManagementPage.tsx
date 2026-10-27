@@ -175,7 +175,16 @@ export function UsersTab() {
   const isMe = (u: UserListItem) => (!!me && me.id.toLowerCase() === u.id.toLowerCase()) || isSelf(ceiling, u.id);
   // The workspace owner's account is changed by nobody else (the server refuses: access_owner_protected).
   const protectedOwner = (u: UserListItem) => u.isOwner === true && !isMe(u);
-  const meIsOwner = users.some(u => isMe(u) && u.isOwner === true);
+  // Whether YOU are the owner is read from your own account, not from whichever page of the list is showing.
+  const [callerIsOwner, setCallerIsOwner] = useState(false);
+  const [ownerCheck, setOwnerCheck] = useState(0);
+  useEffect(() => {
+    if (!me?.id) return;
+    let live = true;
+    usersApi.get(me.id).then(u => { if (live) setCallerIsOwner(u?.isOwner === true); }).catch(() => { if (live) setCallerIsOwner(false); });
+    return () => { live = false; };
+  }, [me?.id, ownerCheck]);
+  const meIsOwner = callerIsOwner;
   const canMakeOwner = (u: UserListItem) => meIsOwner && !isMe(u) && u.status === 'Active' && u.roles.includes('Admin');
   const canResetTwoStep = (u: UserListItem) => canManageUsers && u.mfaEnabled === true && !isMe(u) && !protectedOwner(u);
 
@@ -239,7 +248,7 @@ export function UsersTab() {
       else if (type === 'lock') await usersApi.lock(userId, actionReason);
       else if (type === 'unlock') await usersApi.unlock(userId);
       else if (type === 'delete') await usersApi.delete(userId);
-      else if (type === 'make-owner') await usersApi.makeOwner(userId);
+      else if (type === 'make-owner') { await usersApi.makeOwner(userId); setOwnerCheck(n => n + 1); }
       setShowAction(null); setActionReason('');
       load();
     } catch (e: unknown) {

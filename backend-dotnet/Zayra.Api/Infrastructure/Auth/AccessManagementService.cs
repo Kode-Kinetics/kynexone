@@ -836,7 +836,8 @@ public class AccessManagementService : IAccessManagementService
         var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
         if (user.Id == caller.UserId)
             return Status(null, matching, EmployeeLoginNextActions.Blocked, SelfLinkRefusal().MessageEn);
-        var above = PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user));
+        var above = PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user))
+            ?? (user.IsWorkspaceOwner ? PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.OwnerProtected, null) : null);
         if (above is not null)
             return Status(null, matching, EmployeeLoginNextActions.Blocked, above.MessageEn);
         // The same decision the write makes: a handled login is linked by resetting its credential. Say so first.
@@ -981,6 +982,7 @@ public class AccessManagementService : IAccessManagementService
             if (NeedsGroupAdmin(user, tenantId, entityScope))
                 throw new EmployeeLinkRefusedException(EmployeeLinkRefusals.GroupAdminRequired());
             ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
+            ThrowIfOwnerProtected(caller.UserId, user);
 
             // Idempotent: this exact link already live → answer it and write nothing...
             var sameLink = employeeLinks.FirstOrDefault(x => x.UserId == user.Id);
@@ -1730,6 +1732,7 @@ public class AccessManagementService : IAccessManagementService
                 user.Id,
                 user.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
                 AuthService.GetPermissions(user)));
+            ThrowIfOwnerProtected(caller.UserId, user);
             if (effect == "Allow")
                 ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { request.PermissionKey }));
 
@@ -3142,6 +3145,7 @@ public class AccessManagementService : IAccessManagementService
         var target = await LoadAccessUser(tenantId, targetUserId, entityScope, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
         ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, target.Id, HoldsAdmin(target), AuthService.GetPermissions(target)));
+        ThrowIfOwnerProtected(caller.UserId, target);
         ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, granted));
     }
 
@@ -3950,6 +3954,7 @@ public class AccessManagementService : IAccessManagementService
             target.Id,
             target.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
             AuthService.GetPermissions(target)));
+        ThrowIfOwnerProtected(caller.UserId, target);
         if (ov.IsActive && ov.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase))
             ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { ov.PermissionKey }));
         _db.UserPermissionOverrides.Remove(ov);

@@ -187,7 +187,11 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            return await _accessManagement.DeletePermissionOverrideAsync(tenantId.Value, userId, overrideId, ManagementScope(), GetContext(), cancellationToken) ? NoContent() : NotFound();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
+            if (!await _accessManagement.DeletePermissionOverrideAsync(tenantId.Value, userId, overrideId, ManagementScope(), GetContext(), cancellationToken)) return NotFound();
+            await NoticeAdminActionAsync(tenantId.Value, gate, "removed a permission override of", cancellationToken);
+            return NoContent();
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.permission_override_deleted", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -700,7 +704,8 @@ public class AccessController : ControllerBase
             var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken, always: grantsAdmin);
             if (gate.Refusal is not null) return gate.Refusal;
             var assigned = await _accessManagement.AssignRolesAsync(tenantId.Value, userId, request, ManagementScope(), GetContext(), cancellationToken);
-            await NoticeAdminActionAsync(tenantId.Value, gate, "changed the roles of", cancellationToken);
+            // Granting Admin is reported too: the person was not an Admin when the gate looked.
+            await NoticeAdminActionAsync(tenantId.Value, gate with { TargetIsAdmin = gate.TargetIsAdmin || grantsAdmin }, "changed the roles of", cancellationToken);
             return Ok(assigned);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.roles_assigned", "User", userId.ToString()); }
@@ -945,8 +950,12 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
             var access = await _accessManagement.SetPermissionOverrideAsync(tenantId.Value, userId, request, ManagementScope(), GetContext(), cancellationToken);
-            return access is null ? NotFound() : Ok(access);
+            if (access is null) return NotFound();
+            await NoticeAdminActionAsync(tenantId.Value, gate, "changed a permission override of", cancellationToken);
+            return Ok(access);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.permission_override", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
