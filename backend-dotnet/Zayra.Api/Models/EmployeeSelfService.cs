@@ -34,6 +34,8 @@ public class EmployeeProfileChangeRequest : ITenantOwned
     public string? NoticeVersion { get; set; }
     /// <summary>When the employee re-proved their identity for a sensitive section.</summary>
     public DateTime? StepUpAtUtc { get; set; }
+    /// <summary>The id of the step-up token that opened this submission: a token opens one submission only (unique where set).</summary>
+    public Guid? StepUpJti { get; set; }
     /// <summary>HR's note when a section was sent back (replaces the notification smuggle for new rows).</summary>
     public string? ReviewNote { get; set; }
 }

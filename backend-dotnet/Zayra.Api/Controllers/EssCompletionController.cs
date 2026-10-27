@@ -96,6 +96,15 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         if (spec.RequiresStepUp && !stepUp.IsFresh(Request.Headers[EssCompletion.StepUpHeader].FirstOrDefault(), User, StepUpPurposes.EssSensitive, StepUpPurposes.EssSensitiveMaxAge))
             return EssProblem.StepUpRequired(HttpContext);
 
+        // One token, one submission: a spent token is the same answer as a missing one.
+        Guid? stepUpJti = null;
+        if (spec.RequiresStepUp)
+        {
+            stepUpJti = Guid.TryParseExact(stepUp.ReadJti(Request.Headers[EssCompletion.StepUpHeader].FirstOrDefault(), ctx.UserId ?? Guid.Empty, ctx.TenantId, StepUpPurposes.EssSensitive), "N", out var j) ? j : null;
+            if (stepUpJti is null || await db.EmployeeProfileChangeRequests.AsNoTracking().AnyAsync(x => x.StepUpJti == stepUpJti, ct))
+                return EssProblem.StepUpRequired(HttpContext);
+        }
+
         var state = (await BuildAsync(ctx, section, ct)).Dto.State;
         if (state == EssCompletion.Pending) return EssProblem.Create(HttpContext, 409, EssProblemCodes.SectionPending);
         if (state == EssCompletion.AwaitingFinance) return EssProblem.Create(HttpContext, 409, EssProblemCodes.FinancePending);
@@ -132,7 +141,7 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
         {
             TenantId = ctx.TenantId, EmployeeId = ctx.Employee.Id, CreatedBy = ctx.UserId, Section = section,
             Reason = $"ESS section: {section}", RequestedChangesJson = JsonSerializer.Serialize(body),
-            ContainsSensitiveFields = spec.RequiresStepUp, NoticeVersion = request.NoticeVersion, StepUpAtUtc = spec.RequiresStepUp ? now : null,
+            ContainsSensitiveFields = spec.RequiresStepUp, NoticeVersion = request.NoticeVersion, StepUpAtUtc = spec.RequiresStepUp ? now : null, StepUpJti = stepUpJti,
         };
         db.EmployeeProfileChangeRequests.Add(row);
         db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
@@ -153,6 +162,8 @@ public sealed class EssCompletionController(ZayraDbContext db, IStepUpService st
             db.ChangeTracker.Clear();
             if (await db.EmployeeProfileChangeRequests.AsNoTracking().AnyAsync(x => x.TenantId == ctx.TenantId && x.EmployeeId == ctx.Employee.Id && x.Section == section && x.Status == "PendingHR", ct))
                 return EssProblem.Create(HttpContext, 409, EssProblemCodes.SectionPending);
+            if (stepUpJti is not null && await db.EmployeeProfileChangeRequests.AsNoTracking().AnyAsync(x => x.StepUpJti == stepUpJti, ct))
+                return EssProblem.StepUpRequired(HttpContext);
             throw;
         }
         return Ok((await BuildAsync(ctx, section, ct)).Dto);
