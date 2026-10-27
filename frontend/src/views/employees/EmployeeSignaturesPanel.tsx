@@ -1,5 +1,6 @@
 'use client';
 
+import { isolateName } from '../../lib/bidi';
 import { useCallback, useEffect, useState } from 'react';
 import { BadgeCheck, FileSignature, Loader2, ShieldAlert } from 'lucide-react';
 import type { EmployeeDetail } from '../../api/employees';
@@ -75,7 +76,7 @@ export function EmployeeSignaturesPanel({ employee }: { employee: EmployeeDetail
                 {r.integrityFlagged && <p role="alert" className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-rose-700 dark:text-rose-300"><ShieldAlert className="h-4 w-4" aria-hidden="true" />{t('esign.error.document_tampered')}</p>}
                 {r.status === 'Signed' && (
                   <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-                    {t(r.method === 'esign_hr_device' ? 'Signed by {name} on {date}, on the HR device' : 'Signed by {name} on {date}', { name: r.typedName ?? '', date: fx.dateTime(r.signedAtUtc) })}
+                    {t(r.method === 'esign_hr_device' ? 'Signed by {name} on {date}, on the HR device' : 'Signed by {name} on {date}', { name: isolateName(r.typedName ?? ''), date: isolateName(fx.dateTime(r.signedAtUtc)) })}
                     {' · '}<bdi dir="ltr" className="font-mono text-xs">{r.verificationCode}</bdi>
                   </p>
                 )}

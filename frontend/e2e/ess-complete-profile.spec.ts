@@ -219,3 +219,25 @@ test('CD66: scan states in the review inbox: trusted source is labelled, quarant
   await expect(row('pending.pdf')).toContainText('Waiting for the security scan.');
   await expect(row('pending.pdf').getByRole('link', { name: 'Download' })).toHaveCount(0);
 });
+
+test('screenshots: privacy notice and review with scan states, English at 1440 px', async ({ page }, info) => {
+  const dir = process.env.P2_SHOTS;
+  test.skip(!dir, 'only when P2_SHOTS is set');
+  await bootEss(page, { sections: ['person'] });
+  await page.getByTestId('section-person').click();
+  await expect(page.getByTestId('section-form')).toBeVisible();
+  await page.screenshot({ path: `${dir}/p2p4h-ess-privacy-en-1440.png`, animations: 'disabled' });
+});
+
+test('screenshot: HR review with scan states, English at 1440 px', async ({ page }) => {
+  const dir = process.env.P2_SHOTS;
+  test.skip(!dir, 'only when P2_SHOTS is set');
+  const item = { ...INBOX_ITEMS[1], documents: [
+    { id: 'd-trusted', kind: 'bank_letter', scanStatus: 'not_scanned_trusted_source', fileName: 'trusted.pdf' },
+    { id: 'd-quar', kind: 'bank_letter', scanStatus: 'quarantined', fileName: 'quarantined.pdf' },
+  ] };
+  await bootEss(page, { persona: 'hr', hrItems: [item] });
+  await page.getByTestId('inbox-item').getByRole('button', { name: 'Review' }).click();
+  await expect(page.getByTestId('scan-refused')).toBeVisible();
+  await page.screenshot({ path: `${dir}/p2p4h-hr-review-en-1440.png`, animations: 'disabled' });
+});

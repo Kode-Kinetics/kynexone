@@ -52,6 +52,8 @@ test('Arabic HR signatures panel and sign-in-person dialog at 360 px', async ({ 
   await expect(page.getByText('سجلات الهوية الخاصة بالدولة')).toBeVisible();
   await expect(page.getByRole('link', { name: 'رفع مستند', exact: true })).toBeVisible();
   await panel.scrollIntoViewIfNeeded();
+  // CD65: the signer's Latin name is isolated inside the Arabic sentence
+  expect(await panel.getByTestId('signature-row').filter({ hasText: 'IT acceptable use' }).textContent()).toContain('\u2068Sam Rider\u2069');
   expect(await noHorizontalScroll(page)).toBe(true);
   if (shots) await page.screenshot({ path: `${shots}/p4-hr-signatures-ar-360.png`, animations: 'disabled' });
   await panel.getByTestId('signature-row').first().getByRole('button', { name: 'التوقيع حضوريًا' }).click();
