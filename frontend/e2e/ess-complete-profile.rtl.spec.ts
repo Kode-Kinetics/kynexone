@@ -85,5 +85,5 @@ test('Arabic: the trusted-source and refused scan states at 360 px', async ({ pa
   await expect(card).toContainText('لم يُفحص بحثًا عن الفيروسات (مصدر موثوق)');
   await expect(card).toContainText('حُجب بسبب الفحص الأمني. لا يمكن تنزيله.');
   expect(await noHorizontalScroll(page)).toBe(true);
-  await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2p4h-scan-states-ar-360.png` : info.outputPath('scan.png'), animations: 'disabled' });
+  await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2p4h-scan-states-ar-360.png` : info.outputPath('scan.png'), animations: 'disabled', fullPage: true });
 });
