@@ -593,6 +593,7 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Za
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Retention.DataRetentionScheduler>();
 // P4 — click-to-sign acknowledgement: built-in (no vendor, no outbound call); PolicySigningService writes the hash-chained record and certificate.
 builder.Services.AddScoped<Zayra.Api.Application.Esign.PolicySigningService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.IRetentionRule, Zayra.Api.Infrastructure.Retention.Rules.EsignEvidenceRetentionRule>();
 
 // Approved employee changes with a FUTURE effective date (bank details included) take effect when that date
 // arrives in the tenant's timezone: an hourly scheduler enqueues one `employee.effective-changes` job per
