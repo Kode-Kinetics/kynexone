@@ -5,6 +5,7 @@ import { Download, ExternalLink, FileText, Loader2, ShieldCheck } from 'lucide-r
 import { Modal } from '../../../components/Modal';
 import { useLocale } from '../../../contexts/LocaleContext';
 import { essInput, essPrimaryButton } from '../../../components/ess/EssParts';
+import { consentOrder } from '../../../lib/consentOrder';
 import { openBlob, problemOf, type ConsentView } from '../../../api/esign';
 
 /** Always the same words: this is an acknowledgement, not a qualified electronic signature (CD13). */
@@ -19,11 +20,12 @@ export function NotQualifiedBadge() {
 
 /** The consent text in BOTH languages, as real text, each in its own direction. */
 export function ConsentText({ consent }: { consent: ConsentView }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   return (
     <section aria-label={t('What you are acknowledging')} data-testid="consent-text" className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-relaxed text-slate-800 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
-      <p lang="en" dir="ltr" className="text-start">{consent.textEn}</p>
-      <p lang="ar" dir="rtl" className="text-start">{consent.textAr}</p>
+      {consentOrder(locale).map(lang => lang === 'ar'
+        ? <p key="ar" lang="ar" dir="rtl" className="text-start">{consent.textAr}</p>
+        : <p key="en" lang="en" dir="ltr" className="text-start">{consent.textEn}</p>)}
       <p className="text-[11px] text-slate-500">{t('Consent text {version}', { version: consent.consentVersion })}</p>
     </section>
   );

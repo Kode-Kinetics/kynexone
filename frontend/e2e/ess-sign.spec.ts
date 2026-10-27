@@ -58,7 +58,7 @@ test('read, type the name, confirm with the password, get a certificate', async 
   expect(log.signs).toHaveLength(1);
   const sent = log.signs[0];
   expect(sent.documentSha256).toMatch(/^[0-9a-f]{64}$/);
-  expect(sent.consentVersion).toBe('ack-1');
+  expect(sent.consentVersion).toBe('ack-2');
   expect(sent.typedName).toBe(EMPLOYEE_NAME.toUpperCase());
   expect(Object.keys(sent).filter(k => /time|date|signedat/i.test(k))).toEqual([]);
   expect(log.headers.at(-1)).toMatchObject({ 'x-step-up': 'step-up-token-1' });

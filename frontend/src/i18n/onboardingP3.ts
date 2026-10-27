@@ -83,7 +83,7 @@ const ar: Record<string, string> = {
   'Hire template': 'قالب التوظيف',
   'Onboarding checklist': 'قائمة مهام الانضمام',
   'Suggested for this designation: {name}.': 'مقترح لهذا المسمى الوظيفي: {name}.',
-  '{filled, plural, one {# field filled} other {# fields filled}}, {kept, plural, one {# left as you entered it.} other {# left as you entered them.}}': '{filled, plural, zero {لم يُعبأ أي حقل} one {عُبئ حقل واحد} two {عُبئ حقلان} few {عُبئت # حقول} many {عُبئ # حقلًا} other {عُبئ # حقل}}، {kept, plural, zero {ولم يبق شيء كما أدخلته.} one {وبقي حقل واحد كما أدخلته.} two {وبقي حقلان كما أدخلتهما.} few {وبقيت # حقول كما أدخلتها.} many {وبقي # حقلًا كما أدخلتها.} other {وبقي # حقل كما أدخلتها.}}',
+  '{filled, plural, one {# field filled} other {# fields filled}}, {kept, plural, one {# left as you entered it.} other {# left as you entered them.}}': '{filled, plural, zero {لم يُعبأ أي حقل} one {عُبئ حقل واحد} two {عُبئ حقلان} few {عُبئت # حقول} many {عُبئ # حقلًا} other {عُبئ # حقل}}، {kept, plural, zero {ولم يُغيَّر أي حقل أدخلته.} one {وبقي حقل واحد كما أدخلته.} two {وبقي حقلان كما أدخلتهما.} few {وبقيت # حقول كما أدخلتها.} many {وبقي # حقلًا كما أدخلته.} other {وبقي # حقل كما أدخلتها.}}',
   '{name} (suggested)': '{name} (مقترح)',
   '{tasks, plural, one {# task} other {# tasks}}, {blocking, plural, one {# blocks activation} other {# block activation}}': '{tasks, plural, zero {لا مهام} one {مهمة واحدة} two {مهمتان} few {# مهام} many {# مهمة} other {# مهمة}}، {blocking, plural, zero {لا شيء منها يمنع التفعيل} one {واحدة تمنع التفعيل} two {اثنتان تمنعان التفعيل} few {# تمنع التفعيل} many {# تمنع التفعيل} other {# تمنع التفعيل}}',
   // Worklist

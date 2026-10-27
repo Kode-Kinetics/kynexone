@@ -10,7 +10,7 @@ test('Arabic list, sign page and password dialog at 360 px', async ({ page }) =>
   const log = await bootEsign(page, { locale: 'ar' });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   await expect(page.getByRole('heading', { name: 'مستندات للتوقيع', exact: true })).toBeVisible();
-  await expect(page.getByTestId('not-qualified').first()).toContainText('وليس توقيعًا مؤهلًا');
+  await expect(page.getByTestId('not-qualified').first()).toContainText('وليس توقيعًا إلكترونيًا معتمدًا');
   expect(await noHorizontalScroll(page)).toBe(true);
   if (shots) await page.screenshot({ path: `${shots}/p4-ess-list-ar-360.png`, animations: 'disabled' });
 
@@ -19,14 +19,14 @@ test('Arabic list, sign page and password dialog at 360 px', async ({ page }) =>
   await expect(page.getByTestId('consent-text').locator('[lang="ar"]')).toContainText('أقرّ بأنني قرأت');
   // CD65: the Arabic wording comes first in an Arabic session, aligned to the right
   await expect(page.getByTestId('consent-text').locator('p').first()).toHaveAttribute('lang', 'ar');
-  await expect(page.getByTestId('consent-text').locator('p').first()).toHaveCSS('text-align', 'right');
+  await expect(page.getByTestId('consent-text').locator('p').first()).toHaveCSS('direction', 'rtl');
   await expect(page.getByTestId('sign-submit')).toHaveText('أُقرّ وأوقّع');
   await page.getByLabel('قرأت هذا المستند').check();
   const name = page.getByLabel(/اكتب اسمك الكامل/);
   await name.fill(EMPLOYEE_NAME_AR);
   expect(await noHorizontalScroll(page)).toBe(true);
   if (shots) await page.screenshot({ path: `${shots}/p4-ess-sign-ar-360.png`, animations: 'disabled' });
-  await page.getByRole('button', { name: 'توقيع', exact: true }).click();
+  await page.getByRole('button', { name: 'أُقرّ وأوقّع', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'أكّد أنك أنت' });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel(/كلمة المرور/)).toHaveAttribute('dir', 'ltr');

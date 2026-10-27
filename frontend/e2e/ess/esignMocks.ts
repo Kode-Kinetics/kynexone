@@ -34,10 +34,10 @@ const norm = (v: string) => v.normalize('NFKC').replace(/[\u064B-\u065F\u0640]/g
 const NAMES = [EMPLOYEE_NAME, EMPLOYEE_NAME_AR].map(norm);
 
 const consentFor = (id: string) => ({
-  consentVersion: 'ack-1',
-  text: 'I confirm that I have read and understood the document above in full. By typing my full name and confirming with my password, I electronically acknowledge it. This is an electronic acknowledgement, not a qualified electronic signature.',
+  consentVersion: 'ack-2',
+  text: 'I confirm that I have read and understood the document above in full. By typing my full name and confirming with my password, I electronically acknowledge it. We record your typed name, the time, your IP address and device details as evidence of this acknowledgement. This is an electronic acknowledgement, not a qualified electronic signature.',
   textEn: 'I confirm that I have read and understood the document above in full. By typing my full name and confirming with my password, I electronically acknowledge it. This is an electronic acknowledgement, not a qualified electronic signature.',
-  textAr: 'أقرّ بأنني قرأت المستند أعلاه وفهمته بالكامل. بكتابة اسمي الكامل وتأكيد كلمة المرور، أُقرّ به إلكترونياً. هذا إقرار إلكتروني وليس توقيعاً إلكترونياً مؤهلاً.',
+  textAr: 'أقرّ بأنني قرأت المستند أعلاه وفهمته بالكامل. بكتابة اسمي الكامل وتأكيد كلمة المرور، أُقرّ به إلكترونياً. نسجّل اسمك المكتوب والوقت وعنوان IP وبيانات جهازك كدليل على هذا الإقرار. هذا إقرار إلكتروني وليس توقيعاً إلكترونياً معتمداً.',
   textSha256: 'b'.repeat(64), documentSha256: DOC_SHA, documentVersion: 1, title: id === 'doc-2' ? 'Code of conduct policy' : 'Employment contract', fileName: id === 'doc-2' ? 'code-of-conduct.pdf' : 'contract.pdf', integrityFlagged: false,
 });
 
