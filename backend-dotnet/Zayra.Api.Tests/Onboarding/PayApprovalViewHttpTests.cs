@@ -24,6 +24,8 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
 {
     private const string Iban1 = "SA0380000000608010167519";
     private const string Iban2 = "SA4420000001234567891234";
+    private const string Iban3 = "SA7380000000608010167520";
+    private const string Iban4 = "SA2445200000012345678912";
     private const string Iqama = "2123456789";
     private const string Passport = "ZX9988776";
     private const string NationalId = "1098765432";
@@ -105,7 +107,7 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
     private static void AssertNoSensitive(string raw)
     {
         raw.Should().NotContain(Iqama).And.NotContain(Passport).And.NotContain(NationalId)
-            .And.NotContain("1987").And.NotContain(Iban1).And.NotContain(Iban2).And.NotContain("0608010167");
+            .And.NotContain("1987").And.NotContain(Iban1).And.NotContain(Iban2).And.NotContain(Iban3).And.NotContain(Iban4).And.NotContain("0608010167");
     }
 
     // ── the Finance Approver sees the queue and the scoped view, and nothing else ─────────────────
@@ -114,7 +116,7 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
     {
         var hr = await _fx.NewUserAsync("od4a", "employees.write", "employees.read");
         var finance = await _fx.NewUserAsync("od4af", "payroll.approve");
-        var (id, name) = await CreateHireAsync(hr);
+        var (id, name) = await CreateHireAsync(hr, Iban3);
 
         using var list = await ListAsync(finance);
         list.StatusCode.Should().Be(HttpStatusCode.OK, await list.Content.ReadAsStringAsync());
@@ -135,7 +137,7 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
         d.GetProperty("components").GetProperty("gross").GetDecimal().Should().Be(10500m);
         d.GetProperty("components").GetProperty("currency").GetString().Should().Be("SAR");
         d.GetProperty("bank").GetProperty("bankName").GetString().Should().Be("Riyad Test Bank");
-        d.GetProperty("bank").GetProperty("ibanLast4").GetString().Should().Be("7519");
+        d.GetProperty("bank").GetProperty("ibanLast4").GetString().Should().Be("7520");
         d.GetProperty("bank").GetProperty("accountHolderName").GetString().Should().Be(name);
         d.GetProperty("enteredBy").GetProperty("name").GetString().Should().Contain("od4a");
         d.GetProperty("enteredBy").GetProperty("atUtc").GetDateTime().Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(5));
@@ -289,11 +291,11 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
     {
         var hr = await _fx.NewUserAsync("od4i", "employees.write", "employees.read");
         var scoped = await _fx.NewScopedUserAsync("od4if", _fx.CompanyId, "payroll.approve");
-        var (id, _) = await CreateHireAsync(hr, Iban1);
+        var (id, _) = await CreateHireAsync(hr, Iban4);
         var farName = $"Hidden Person {Guid.NewGuid():N}"[..20];
         var farCode = $"FARX-{Guid.NewGuid():N}"[..12];
-        await SeedOtherWithIbanAsync(_fx.OtherCompanyId, Iban1, farName, farCode);
-        await SeedOtherWithIbanAsync(_fx.CompanyId, "SA03 8000 0000 6080 1016 7519", $"Near Person {Guid.NewGuid():N}"[..20], $"NEAR-{Guid.NewGuid():N}"[..12]);
+        await SeedOtherWithIbanAsync(_fx.OtherCompanyId, Iban4, farName, farCode);
+        await SeedOtherWithIbanAsync(_fx.CompanyId, "SA24 4520 0000 0123 4567 8912", $"Near Person {Guid.NewGuid():N}"[..20], $"NEAR-{Guid.NewGuid():N}"[..12]);
 
         using var r = await DetailAsync(scoped, id);
         r.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -318,12 +320,12 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
             using var missing = await DetailAsync(token, 987654);
             hidden.StatusCode.Should().Be(HttpStatusCode.NotFound);
             missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
-            (await hidden.Content.ReadAsStringAsync()).Should().Be(await missing.Content.ReadAsStringAsync());
+            Untraced(await hidden.Content.ReadAsStringAsync()).Should().Be(Untraced(await missing.Content.ReadAsStringAsync()));
             using var d1 = await DecideAsync(token, id, "x", "approve");
             using var d2 = await DecideAsync(token, 987654, "x", "approve");
             d1.StatusCode.Should().Be(HttpStatusCode.NotFound);
             d2.StatusCode.Should().Be(HttpStatusCode.NotFound);
-            (await d1.Content.ReadAsStringAsync()).Should().Be(await d2.Content.ReadAsStringAsync());
+            Untraced(await d1.Content.ReadAsStringAsync()).Should().Be(Untraced(await d2.Content.ReadAsStringAsync()));
         }
     }
 
@@ -337,6 +339,8 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
         (await DetailAsync(finance, id)).StatusCode.Should().Be(HttpStatusCode.Conflict);
         ListHas(await Json(await ListAsync(finance)), id).Should().BeFalse();
     }
+
+    private static string Untraced(string body) => System.Text.RegularExpressions.Regex.Replace(body, "\"traceId\":\"[^\"]*\"", "");
 
     private async Task<DateTime> UpdatedAtAsync(int id)
     {

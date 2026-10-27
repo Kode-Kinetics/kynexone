@@ -223,6 +223,25 @@ public static class CompensationApprovalGate
         return null;
     }
 
+    /// <summary>
+    /// True when <paramref name="caller"/> may not approve this hire's pay (CD39 / CD46): the creator, anyone who wrote the pay since
+    /// the last approval (including the workflow approver of a change), the last editor of the employee or profile, the subject, or
+    /// the person who handed the subject their sign-in code. Shared by the full approve route and the scoped approval view.
+    /// </summary>
+    public static async Task<bool> IsBarredAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid caller, CancellationToken ct)
+    {
+        var profile = await db.EmployeePayrollProfiles.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employee.Id && !p.IsDeleted, ct);
+        var makers = new HashSet<Guid>(await PayWritersSinceApprovalAsync(db, tenantId, employee.Id, ct));
+        if (profile?.CreatedBy is Guid pc) makers.Add(pc);
+        if (profile?.UpdatedBy is Guid pu) makers.Add(pu);
+        if (employee.UpdatedBy is Guid eu) makers.Add(eu);
+        var subjects = new HashSet<Guid>(await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(db, tenantId, employee.Id, ct));
+        if (employee.UserAccountId is Guid u) subjects.Add(u);
+        var refusal = RefusalFor(caller, employee.CreatedBy, subjects.Contains(caller) ? caller : employee.UserAccountId, makers);
+        return refusal is not null || await CredentialHandlerBar.IsBarredAsync(db, tenantId, employee.Id, caller, DateTime.UtcNow, ct);
+    }
+
     private static object Fingerprint(decimal? salary, string? iban)
     {
         var normalisedIban = (iban ?? string.Empty).Replace(" ", "", StringComparison.Ordinal).ToUpperInvariant();
