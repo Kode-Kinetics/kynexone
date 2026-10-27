@@ -150,4 +150,40 @@ public class EssHardeningHttpTests(EssFixture fx)
         using var fresh = await employee.Submit(e, "bank", new { iban = EssCompletionHttpTests.NewIban, bankName = "Riyad Bank" }, stepUp: await fx.StepUpAsync(e));
         fresh.StatusCode.Should().Be(HttpStatusCode.OK, await fresh.Content.ReadAsStringAsync());
     }
+
+    // ── CD62 ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task FilesOfARejectedSubmission_DoNotCountTowardsTheSectionCap()  // CD62
+    {
+        var e = await fx.NewEmployeeAsync("SA");
+        var ids = new List<Guid>();
+        for (var i = 0; i < EssCompletion.MaxAttachmentsPerSection; i++) ids.Add(await UploadAsync(e, "documents", "national_id_copy"));
+        using var blocked = await UploadRawAsync(e, "documents", "national_id_copy");
+        blocked.StatusCode.Should().Be(HttpStatusCode.BadRequest, "the cap holds while the files are live");
+        using var submit = await fx.SendAsync(HttpMethod.Post, "/api/ess/completion/documents/submit", e.Token,
+            new { noticeVersion = EssCompletion.NoticeVersion, confirm = false, values = new { }, documentIds = ids.ToArray() });
+        submit.StatusCode.Should().Be(HttpStatusCode.OK, await submit.Content.ReadAsStringAsync());
+        var requestId = (await EssCompletionHttpTests.Json(submit)).GetProperty("requestId").GetGuid();
+        using var reject = await fx.SendAsync(HttpMethod.Post, $"/api/ess/profile-change-requests/{requestId}/reject", fx.HrToken, new { notes = "Scans are unreadable" });
+        reject.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var again = await UploadRawAsync(e, "documents", "national_id_copy");
+        again.StatusCode.Should().Be(HttpStatusCode.Created, await again.Content.ReadAsStringAsync());
+    }
+
+    private async Task<HttpResponseMessage> UploadRawAsync(EssEmployeeHandle e, string section, string kind)
+    {
+        var form = new MultipartFormDataContent { { new StringContent(section), "section" }, { new StringContent(kind), "kind" } };
+        var file = new ByteArrayContent([.. Pdf, .. Guid.NewGuid().ToByteArray()]);
+        file.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/pdf");
+        form.Add(file, "file", "scan.pdf");
+        return await fx.SendRawAsync(new HttpRequestMessage(HttpMethod.Post, "/api/ess/completion/documents") { Content = form }, e.Token);
+    }
+
+    private async Task<Guid> UploadAsync(EssEmployeeHandle e, string section, string kind)
+    {
+        using var res = await UploadRawAsync(e, section, kind);
+        res.StatusCode.Should().Be(HttpStatusCode.Created, await res.Content.ReadAsStringAsync());
+        return JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement.GetProperty("id").GetGuid();
+    }
 }
