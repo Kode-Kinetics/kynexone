@@ -173,4 +173,41 @@ public sealed class EssPostgresTests(PostgresFixture fx)
         left.Should().Equal("accepted.pdf", "fresh.pdf", "freshrejected.pdf");
         storage.Objects.Keys.Select(k => Path.GetFileNameWithoutExtension(k)).Order().Should().Equal("accepted", "fresh", "freshrejected");
     }
+
+    [Fact]
+    public async Task Retention_RejectedRequest_KeepsFilesAResubmissionOrTheRecordStillUses()
+    {
+        await using var seed = fx.CreateDb();
+        var tenant = await PostgresFixture.SeedMinimalTenant(seed);
+        var now = DateTime.UtcNow;
+        var storage = new Zayra.Api.Tests.Esign.InMemoryDocumentStorage();
+        EmployeeDocument Doc(string name, string approval = "Pending")
+        {
+            var key = $"storage/documents/{tenant:N}/{name}.pdf"; storage.Objects[key] = [1, 2, 3];
+            return new EmployeeDocument { TenantId = tenant, EmployeeId = 7600, DocumentType = "National ID", DocumentCategory = "national_id_copy", FileName = name + ".pdf", StorageUrl = key, SourceSection = "documents", ScanStatus = "clean", ApprovalStatus = approval, UploadedAtUtc = now.AddDays(-45) };
+        }
+        var reusedByPending = Doc("pending-reuse"); var reusedByAccepted = Doc("accepted-reuse", "Approved"); var onRecordOnly = Doc("approved-only", "Approved"); var unreferenced = Doc("unreferenced");
+        seed.EmployeeDocuments.AddRange(reusedByPending, reusedByAccepted, onRecordOnly, unreferenced);
+        EmployeeProfileChangeRequest Req(string status, DateTime? decided, params EmployeeDocument[] docs)
+        {
+            var r = Request(tenant, 7600, "documents", status, now.AddDays(-50)); r.DecidedAtUtc = decided;
+            r.RequestedChangesJson = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> { ["_documents"] = docs.Select(d => d.Id.ToString()).ToArray() });
+            return r;
+        }
+        var oldRejected = Req("Rejected", now.AddDays(-35), reusedByPending, reusedByAccepted, onRecordOnly, unreferenced);
+        seed.EmployeeProfileChangeRequests.AddRange(oldRejected, Req("PendingHR", null, reusedByPending), Req("Approved", now.AddDays(-20), reusedByAccepted));
+        await seed.SaveChangesAsync();
+
+        using var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection().AddSingleton<Zayra.Api.Infrastructure.Documents.IDocumentStorage>(storage).BuildServiceProvider();
+        await using var db = fx.CreateDb();
+        var ctx = new JobExecutionContext(new(Guid.NewGuid(), tenant, "data-retention", "{}", 1, 1, Guid.NewGuid(), null), db, services, [], TimeSpan.FromMinutes(2), default, default);
+        var rule = new EssCompletionRejectedRetentionRule();
+        foreach (var c in await rule.EvaluateAsync(ctx, now, 100, CancellationToken.None)) await rule.ApplyAsync(ctx, c, now, CancellationToken.None);
+
+        await using var verify = fx.CreateDb();
+        (await verify.EmployeeDocuments.IgnoreQueryFilters().Where(d => d.TenantId == tenant).Select(d => d.FileName).ToListAsync()).Order()
+            .Should().Equal("accepted-reuse.pdf", "approved-only.pdf", "pending-reuse.pdf");
+        storage.Objects.Keys.Select(k => Path.GetFileNameWithoutExtension(k)).Order().Should().Equal("accepted-reuse", "approved-only", "pending-reuse");
+        (await verify.EmployeeProfileChangeRequests.IgnoreQueryFilters().SingleAsync(r => r.Id == oldRejected.Id)).Status.Should().Be("Expired");
+    }
 }
