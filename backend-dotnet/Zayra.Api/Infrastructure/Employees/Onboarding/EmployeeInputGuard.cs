@@ -43,6 +43,21 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
         IReadOnlyCollection<AcknowledgedWarning>? acknowledged = null)
     {
         var errors = await EmployeeStoredDataCheck.ErrorsAsync(_db, tenantId, employeeId, _clock, ct);
+        // CD44: a failing check digit is waivable here by a holder of the override permission with a reason; nothing else is.
+        if (errors.Any(kv => kv.Value.Contains(EmployeeWarningCodes.IdChecksumInvalid))
+            && acknowledged?.FirstOrDefault(a => a.Code == EmployeeWarningCodes.IdChecksumInvalid) is { } ack)
+        {
+            RequireAllowed(context.Permissions?.Contains(OverridePermission) == true);
+            RequireReason(ack);
+            _db.AuditLogs.Add(Zayra.Api.Infrastructure.Auth.AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, EmployeeStoredDataCheck.WaiverAction,
+                "Employee", employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture), context with { TenantId = tenantId },
+                System.Text.Json.JsonSerializer.Serialize(new { code = ack.Code, reason = ack.Reason?.Trim() })));
+            foreach (var key in errors.Keys.ToList())
+            {
+                errors[key].RemoveAll(c => c == EmployeeWarningCodes.IdChecksumInvalid);
+                if (errors[key].Count == 0) errors.Remove(key);
+            }
+        }
         if (errors.Count > 0)
             throw new EmployeeValidationException(400, EmployeeProblemCodes.ValidationFailed,
                 errors.ToDictionary(k => k.Key, k => k.Value.ToArray()),

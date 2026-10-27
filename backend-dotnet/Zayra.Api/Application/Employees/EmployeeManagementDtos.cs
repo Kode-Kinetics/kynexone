@@ -101,7 +101,9 @@ public record EmployeeStatusChangeRequest(
     // unaffected; when omitted a direct termination records "Termination", the conservative reading of
     // an employer-initiated command. It is stated on the COMMAND rather than guessed later, because
     // this value decides the gratuity.
-    [MaxLength(60)] string? SeparationType = null);
+    [MaxLength(60)] string? SeparationType = null,
+    // CD44: the privileged waiver of a failing stored identity check digit, with a reason (activation only).
+    IReadOnlyCollection<Zayra.Api.Application.Employees.Onboarding.AcknowledgedWarning>? AcknowledgedWarnings = null);
 
 public record EmployeeDocumentUploadMetadata(
     [Required, MaxLength(80)] string DocumentType,

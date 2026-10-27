@@ -12,7 +12,9 @@ namespace Zayra.Api.Infrastructure.Employees.Onboarding;
 /// CD28: validates what is STORED for an employee against the same hard rules the create guard applies. A draft may
 /// hold an invalid IBAN, phone, identity number or contract date (autosave never fights typing); each one is reported
 /// here so it can be shown as a readiness blocker and so activation refuses it with the field code.
-/// A checksum failure that an authorised user already waived at write time is not re-asked (the waiver is audited).
+/// A checksum failure stays an error until an authorised user waives it with a reason; the waiver is an audited
+/// <c>employee.warning_overridden</c> row written by the create/update guard or by the activation step, and a waiver recorded
+/// before the identity row last changed does not count.
 /// </summary>
 public static class EmployeeStoredDataCheck
 {
@@ -48,13 +50,30 @@ public static class EmployeeStoredDataCheck
 
         var result = EmployeeInputValidator.Validate(request, new EmployeeInputValidationContext(country, today, EmployeeGuardMode.Create, tz));
         var errors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var waived = result.Errors.Values.Any(c => c.Contains(EmployeeWarningCodes.IdChecksumInvalid))
+            && await ChecksumWaivedAsync(db, tenantId, employeeId, records, ct);
         foreach (var (field, codes) in result.Errors)
         {
-            var kept = codes.Where(c => c != EmployeeWarningCodes.IdChecksumInvalid).ToList();
+            var kept = waived ? codes.Where(c => c != EmployeeWarningCodes.IdChecksumInvalid).ToList() : codes.ToList();
             if (kept.Count > 0) errors[field] = kept;
         }
         return errors;
     }
+
+    /// <summary>True when an audited checksum waiver exists that is newer than the last change to the stored identity rows.</summary>
+    private static async Task<bool> ChecksumWaivedAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId, IReadOnlyCollection<EmployeeComplianceRecord> records, CancellationToken ct)
+    {
+        var id = employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // Ten seconds of slack: a waiver and the identity row it covers are written by the same request.
+        var changedAt = records.Count == 0 ? DateTime.MinValue.AddMinutes(1) : records.Max(r => r.UpdatedAtUtc ?? r.CreatedAtUtc);
+        var rows = await ScopedBypass.NullableTenantWide(db.AuditLogs, tenantId, "Checksum waiver lookup for activation; tenant pinned, entity pinned.")
+            .AsNoTracking().Where(a => a.EntityName == "Employee" && a.EntityId == id && a.Action == WaiverAction && a.CreatedAtUtc >= changedAt.AddSeconds(-10))
+            .Select(a => a.Metadata).ToListAsync(ct);
+        return rows.Any(m => m is not null && m.Contains(EmployeeWarningCodes.IdChecksumInvalid, StringComparison.Ordinal));
+    }
+
+    public const string WaiverAction = "employee.warning_overridden";
 
     /// <summary>
     /// Adds one blocking item per invalid stored value to a DRAFT's readiness, so the checklist and the blocker count
