@@ -17,7 +17,7 @@ using Zayra.Api.Models;
 namespace Zayra.Api.Controllers;
 
 public sealed record SignatureRequestBody(Guid? DocumentId);
-public sealed record EmployeeDeviceStepUpBody(int? EmployeeId, string? Password, string? MfaCode);
+public sealed record EmployeeDeviceStepUpBody(int? EmployeeId, Guid? DocumentId, string? DocumentSha256, string? Password, string? MfaCode);
 
 /// <summary>
 /// Built-in click-to-sign ACKNOWLEDGEMENT (P4). The employee reads the stored PDF, types their name, re-enters their password and
@@ -31,6 +31,8 @@ public sealed record EmployeeDeviceStepUpBody(int? EmployeeId, string? Password,
 [NoStore]
 public sealed class ESignController(ZayraDbContext db, PolicySigningService signing, IStepUpService stepUp, IDocumentStorage storage, IConfiguration config) : ControllerBase
 {
+    private const int MaxDeviceFailures = 5;
+    private const int DeviceFailureWindowMinutes = 15;
     private static readonly byte[] PdfMagic = "%PDF-"u8.ToArray();
 
     // ── Employee (self-service) ───────────────────────────────────────────────────────────────────
@@ -174,15 +176,36 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
     public async Task<IActionResult> EmployeeDeviceStepUp([FromBody] EmployeeDeviceStepUpBody? body, CancellationToken ct)
     {
         if (!HrMayManageDocuments()) return Forbid();
-        if (body?.EmployeeId is not { } employeeId) return Err(400, EsignProblemCodes.ValidationFailed);
+        if (body?.EmployeeId is not { } employeeId || body.DocumentId is not { } documentId || string.IsNullOrWhiteSpace(body.DocumentSha256)) return Err(400, EsignProblemCodes.ValidationFailed);
         var tenantId = TenantId();
+        if (!await db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tenantId && e.Id == employeeId && !e.IsDeleted, ct)) return Err(404, EsignProblemCodes.NotFound);
+        var doc = await OwnSignableAsync(tenantId, employeeId, documentId, ct);
+        if (doc is null) return Err(404, EsignProblemCodes.NotFound);
+        var bytes = await ReadAsync(tenantId, doc, ct);
+        if (bytes is null) return Err(404, EsignProblemCodes.NotFound);
+        var sha = Application.Esign.SignatureChain.Sha256Hex(bytes);
+        if (!string.Equals(sha, body.DocumentSha256.Trim(), StringComparison.OrdinalIgnoreCase)) return Err(409, EsignProblemCodes.DocumentChanged);
+        var hr = CallerId();
+        if (hr is null) return Forbid();
+
+        // The device flow has its own counter, read from its own audit rows: five failures in a quarter of an hour pause the flow for
+        // that employee. The employee's sign-in lockout is never touched, so HR cannot lock anyone out of their account by guessing.
+        var since = DateTime.UtcNow.AddMinutes(-DeviceFailureWindowMinutes);
+        if (await db.EmployeeSelfServiceAuditLogs.AsNoTracking().CountAsync(a => a.TenantId == tenantId && a.EmployeeId == employeeId && a.Action == "esign.device_auth_failed" && a.CreatedAtUtc >= since, ct) >= MaxDeviceFailures)
+        {
+            Response.Headers.RetryAfter = (DeviceFailureWindowMinutes * 60).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return Err(429, EsignProblemCodes.RateLimited);
+        }
+
         var employeeUser = await EmployeeUserAsync(tenantId, employeeId, ct);
-        if (employeeUser is null) return Err(404, EsignProblemCodes.NotFound);
-        if (employeeUser == CallerId()) return Err(403, EsignProblemCodes.SubjectCannotSignForEmployee);
-        var result = await stepUp.VerifyAsync(employeeUser.Value, StepUpPurposes.Esign, new StepUpCredential(body.Password, body.MfaCode), ct);
+        if (employeeUser == hr) return Err(403, EsignProblemCodes.SubjectCannotSignForEmployee);
+        // "no login" and "wrong password" are one answer, and both are counted.
+        var result = employeeUser is null
+            ? new StepUpResult(false, null, null, EssProblemCodes.InvalidCredentials)
+            : await stepUp.VerifyDeviceAsync(employeeUser.Value, hr.Value, PolicySigningService.DeviceBinding(employeeId, documentId, sha), new StepUpCredential(body.Password, body.MfaCode), ct);
         db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
         {
-            TenantId = tenantId, EmployeeId = employeeId, UserId = CallerId(), Action = result.Ok ? "esign.device_auth_ok" : "esign.device_auth_failed", EntityName = "Employee", EntityId = employeeId.ToString(),
+            TenantId = tenantId, EmployeeId = employeeId, UserId = hr, Action = result.Ok ? "esign.device_auth_ok" : "esign.device_auth_failed", EntityName = "Employee", EntityId = employeeId.ToString(),
         });
         await db.SaveChangesAsync(ct);
         if (!result.Ok) return Err(401, EsignProblemCodes.EmployeeDeviceAuthFailed, detail: result.Error == EssProblemCodes.MfaRequired ? EssProblemCodes.MfaRequired : null);

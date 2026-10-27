@@ -15,8 +15,9 @@ public sealed class FakeStepUp : IStepUpService
 {
     public Task<StepUpResult> VerifyAsync(Guid userId, string purpose, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
     public bool IsFresh(string? token, ClaimsPrincipal principal, string purpose, TimeSpan max) => Guid.TryParseExact(token, "N", out _);
-    public bool IsFresh(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max) => Guid.TryParseExact(token, "N", out _);
-    public string? ReadJti(string? token, Guid userId, Guid tenantId, string purpose) => Guid.TryParseExact(token, "N", out _) ? token : null;
+    public Task<StepUpResult> VerifyDeviceAsync(Guid employeeUserId, Guid witnessUserId, string bind, StepUpCredential credential, CancellationToken ct) => throw new NotSupportedException();
+    public bool IsFresh(string? token, Guid userId, Guid tenantId, string purpose, TimeSpan max, string? bind = null, Guid? witness = null) => Guid.TryParseExact(token, "N", out _);
+    public string? ReadJti(string? token, Guid userId, Guid tenantId, string purpose, string? bind = null, Guid? witness = null) => Guid.TryParseExact(token, "N", out _) ? token : null;
 }
 
 /// <summary>P4 on real PostgreSQL: the append-only trigger and grants, the chain under concurrency, the evidence constraints.</summary>

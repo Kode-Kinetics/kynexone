@@ -29,6 +29,8 @@ public sealed record VerifyOutcome(bool Found, bool Valid, bool DocumentIntact, 
 /// </summary>
 public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage storage, IStepUpService stepUp, PdfRenderGate? gate = null, Func<DateTime>? clock = null)
 {
+    public static string DeviceBinding(int employeeId, Guid documentId, string sha256) => $"{employeeId}:{documentId:N}:{sha256.ToLowerInvariant()}";
+
     private DateTime Now() => SignatureChain.ToMicroseconds((clock ?? (() => DateTime.UtcNow))());
 
     private static SignOutcome Fail(int status, string code, Guid? ackId = null) => new(status, code, ackId, null, null, null, null);
@@ -55,8 +57,10 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException) { return Fail(404, EsignProblemCodes.NotFound); }
         var sha = SignatureChain.Sha256Hex(bytes);
 
-        var jtiText = stepUp.ReadJti(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign);
-        var fresh = stepUp.IsFresh(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge) && Guid.TryParseExact(jtiText, "N", out _);
+        // An HR-device token was issued for exactly this employee, this document and these bytes, to this HR user.
+        var bind = c.WitnessUserId is null ? null : DeviceBinding(c.EmployeeId, c.DocumentId, sha);
+        var jtiText = stepUp.ReadJti(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign, bind, c.WitnessUserId);
+        var fresh = stepUp.IsFresh(c.StepUpToken, c.SignerUserId, tenant, StepUpPurposes.Esign, StepUpPurposes.EsignMaxAge, bind, c.WitnessUserId) && Guid.TryParseExact(jtiText, "N", out _);
         var refusal = ClickSignGuard.Evaluate(new ClickSignFacts(sha, c.Body.DocumentSha256, c.SignerUserId, c.EmployeeUserId, fresh, c.Body.ConsentVersion, c.Body.TypedName,
             [employee.EnglishName, employee.ArabicName, employee.FullName], doc.IntegrityFlaggedAtUtc is not null, false));
         if (refusal is not null) return Fail(refusal.Status, refusal.Code);
