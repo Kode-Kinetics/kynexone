@@ -161,8 +161,12 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
         else
         {
             var before = await db.EmployeePolicyAcknowledgements.AsNoTracking().FirstOrDefaultAsync(a => a.TenantId == tenantId && a.ChainSeq == ack.ChainSeq - 1 && a.Method != EsignConstants.MethodLegacy, ct);
-            chainIntact = recordValid && before is not null && ack.PrevHash == before.RecordHash
-                && SignatureChain.IsRecordValid(before.PrevHash!, before.RecordHash!, EvidenceOf(before));
+            if (before is not null)
+                chainIntact = recordValid && ack.PrevHash == before.RecordHash && SignatureChain.IsRecordValid(before.PrevHash!, before.RecordHash!, EvidenceOf(before));
+            else
+                // The predecessor is gone. That is expected only when the retention purge removed it and left its marker; any other absence is a break.
+                chainIntact = recordValid && await db.EmployeeSelfServiceAuditLogs.AsNoTracking().AnyAsync(l => l.TenantId == tenantId
+                    && l.Action == Zayra.Api.Infrastructure.Retention.Rules.EsignEvidenceRetentionRule.PurgeMarkerAction && l.EntityId == ack.PrevHash, ct);
         }
 
         var doc = await db.EmployeeDocuments.FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == ack.PolicyId, ct);
@@ -175,11 +179,15 @@ public sealed class PolicySigningService(ZayraDbContext db, IDocumentStorage sto
         if (!documentIntact || !chainIntact)
         {
             if (doc is not null && doc.IntegrityFlaggedAtUtc is null && !documentIntact) doc.IntegrityFlaggedAtUtc = checkedAt;
-            db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
-            {
-                TenantId = tenantId, EmployeeId = ack.EmployeeId, Action = documentIntact ? "esign.chain_failed" : "esign.integrity_failed", EntityName = "EmployeePolicyAcknowledgement", EntityId = ack.Id.ToString(),
-            });
-            await db.SaveChangesAsync(ct);
+            // Asking again must not write again: one alarm per record and kind, however often the page is opened.
+            var action = documentIntact ? "esign.chain_failed" : "esign.integrity_failed";
+            var already = await db.EmployeeSelfServiceAuditLogs.AsNoTracking().AnyAsync(l => l.TenantId == tenantId && l.Action == action && l.EntityId == ack.Id.ToString(), ct);
+            if (!already)
+                db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
+                {
+                    TenantId = tenantId, EmployeeId = ack.EmployeeId, Action = action, EntityName = "EmployeePolicyAcknowledgement", EntityId = ack.Id.ToString(),
+                });
+            if (!already || db.ChangeTracker.HasChanges()) await db.SaveChangesAsync(ct);
         }
         return new VerifyOutcome(true, recordValid && documentIntact && chainIntact, documentIntact, chainIntact, ack.RecordHash, checkedAt, ack.PolicyId);
     }

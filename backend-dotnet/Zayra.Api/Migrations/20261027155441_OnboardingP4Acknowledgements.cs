@@ -36,6 +36,26 @@ namespace Zayra.Api.Migrations
               FOR EACH STATEMENT EXECUTE FUNCTION ack_append_only_guard();
             """;
 
+    private const string RevokeFromAppRole = """
+            DO $$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
+                REVOKE UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements FROM kynex_app;
+              END IF;
+            END
+            $$;
+            """;
+
+    private const string GrantToAppRole = """
+            DO $$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
+                GRANT UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements TO kynex_app;
+              END IF;
+            END
+            $$;
+            """;
+
     private const string Drop = """
             DROP TRIGGER IF EXISTS trg_ack_append_only ON employee_policy_acknowledgements;
             DROP TRIGGER IF EXISTS trg_ack_no_truncate ON employee_policy_acknowledgements;
@@ -241,11 +261,14 @@ namespace Zayra.Api.Migrations
             // destructive-migration guard can read it; a test pins it equal to AckAppendOnlySql.
             migrationBuilder.Sql(CreateFunction);
             migrationBuilder.Sql(CreateTrigger);
+            // Layer two: the API's role can neither rewrite nor remove evidence even if the trigger were ever disabled.
+            migrationBuilder.Sql(RevokeFromAppRole);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.Sql(GrantToAppRole);
             migrationBuilder.Sql(Drop);
 
             migrationBuilder.DropForeignKey(

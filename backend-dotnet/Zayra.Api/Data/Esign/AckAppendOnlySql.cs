@@ -60,6 +60,31 @@ public static class AckAppendOnlySql
         return $"REVOKE UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements FROM \"{role}\";";
     }
 
+    /// <summary>
+    /// The runtime role (<c>kynex_app</c>, the API) keeps INSERT and SELECT only. The purge runs as the job role (<c>kynex_job</c>), which keeps DELETE.
+    /// Guarded so a database without the role (a developer database, a test cluster) migrates unchanged.
+    /// </summary>
+    public const string RevokeFromAppRole = """
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
+            REVOKE UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements FROM kynex_app;
+          END IF;
+        END
+        $$;
+        """;
+
+    /// <summary>The Down of <see cref="RevokeFromAppRole"/>: back to the baseline grants.</summary>
+    public const string GrantToAppRole = """
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kynex_app') THEN
+            GRANT UPDATE, DELETE, TRUNCATE ON employee_policy_acknowledgements TO kynex_app;
+          END IF;
+        END
+        $$;
+        """;
+
     public const string Drop = """
         DROP TRIGGER IF EXISTS trg_ack_append_only ON employee_policy_acknowledgements;
         DROP TRIGGER IF EXISTS trg_ack_no_truncate ON employee_policy_acknowledgements;
