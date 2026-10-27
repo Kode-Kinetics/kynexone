@@ -39,6 +39,14 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
     public const string WaiverAction = "employee.id_checksum_waived";
     public const string AwaitingFinance = "AwaitingFinance";
 
+    /// <summary>One audit row per employee whose unmasked section values an HR inbox page showed. Lives here, not in the controller, so the action text is not read as a permission key.</summary>
+    public static void StageInboxViewAudit(ZayraDbContext db, Guid tenantId, int employeeId, Guid? viewer, Guid requestId) =>
+        db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog
+        {
+            TenantId = tenantId, EmployeeId = employeeId, UserId = viewer, Action = "ess.completion.inbox_viewed_by_hr",
+            EntityName = nameof(EmployeeProfileChangeRequest), EntityId = requestId.ToString(),
+        });
+
     private HttpContext Http => http.HttpContext!;
 
     public static Dictionary<string, string> ReadValues(string json)

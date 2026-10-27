@@ -79,7 +79,7 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
             // Unmasked values left the server: one audit row per employee on the page, so a view is as traceable as a download.
             var viewer = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var vid) ? vid : (Guid?)null;
             foreach (var x in rows)
-                db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog { TenantId = tenantId, EmployeeId = x.Employee.Id, UserId = viewer, Action = "ess.completion.inbox_viewed_by_hr", EntityName = nameof(EmployeeProfileChangeRequest), EntityId = x.Request.Id.ToString() });
+                EssSectionDecisionService.StageInboxViewAudit(db, tenantId, x.Employee.Id, viewer, x.Request.Id);
             await db.SaveChangesAsync(ct);
         }
         return Ok(items);
