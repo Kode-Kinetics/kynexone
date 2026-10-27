@@ -101,10 +101,10 @@ public class EssUploadAndSecurityHttpTests(EssFixture fx)
         var e = await fx.NewEmployeeAsync("SA");
         var (res, body) = await Upload(e, "documents", "national_id_copy", Pdf, "../../evil name.pdf");
         res.StatusCode.Should().Be(HttpStatusCode.Created, await res.Content.ReadAsStringAsync());
-        body.GetProperty("scanStatus").GetString().Should().Be("Clean");
+        body.GetProperty("scanStatus").GetString().Should().Be("clean");
         var id = body.GetProperty("id").GetGuid();
         var doc = await fx.WithDbAsync(db => db.EmployeeDocuments.IgnoreQueryFilters().SingleAsync(d => d.Id == id));
-        doc.SourceSection.Should().Be("documents"); doc.ScanStatus.Should().Be("Clean"); doc.ApprovalStatus.Should().Be("Pending");
+        doc.SourceSection.Should().Be("documents"); doc.ScanStatus.Should().Be("clean"); doc.ApprovalStatus.Should().Be("Pending");
         doc.FileName.Should().NotContain("/").And.NotContain("..");
         using var download = await fx.SendAsync(HttpMethod.Get, $"/api/ess/documents/{id}/download", e.Token);
         download.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -122,7 +122,7 @@ public class EssUploadAndSecurityHttpTests(EssFixture fx)
         {
             var (res, body) = await Upload(e, "documents", "national_id_copy", Pdf);
             res.StatusCode.Should().Be(HttpStatusCode.Created);
-            body.GetProperty("scanStatus").GetString().Should().Be("Quarantined");
+            body.GetProperty("scanStatus").GetString().Should().Be("quarantined");
             var id = body.GetProperty("id").GetGuid();
             using var own = await fx.SendAsync(HttpMethod.Get, $"/api/ess/documents/{id}/download", e.Token);
             own.StatusCode.Should().Be(HttpStatusCode.Conflict);

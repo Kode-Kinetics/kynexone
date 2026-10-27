@@ -74,7 +74,7 @@ public sealed class EssPostgresTests(PostgresFixture fx)
         var doc = new EmployeeDocument { TenantId = tenant, EmployeeId = 1, DocumentType = "Passport", FileName = "p.pdf" };
         docs.EmployeeDocuments.Add(doc);
         await docs.SaveChangesAsync();
-        (await fx.CreateDb().EmployeeDocuments.IgnoreQueryFilters().SingleAsync(d => d.Id == doc.Id)).ScanStatus.Should().Be("Clean");
+        (await fx.CreateDb().EmployeeDocuments.IgnoreQueryFilters().SingleAsync(d => d.Id == doc.Id)).ScanStatus.Should().Be("clean");
         await using var badDoc = fx.CreateDb();
         badDoc.EmployeeDocuments.Add(new EmployeeDocument { TenantId = tenant, EmployeeId = 1, DocumentType = "x", FileName = "x.pdf", ScanStatus = "Maybe" });
         var ex2 = await Assert.ThrowsAsync<DbUpdateException>(() => badDoc.SaveChangesAsync());

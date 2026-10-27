@@ -34,8 +34,9 @@ public sealed class RecordingHandler : DelegatingHandler
 
 public sealed class SwitchableScanner : IMalwareScanner
 {
-    public ScanVerdict Verdict { get; set; } = ScanVerdict.Clean;
-    public Task<ScanVerdict> ScanAsync(ReadOnlyMemory<byte> bytes, string fileName, CancellationToken ct) => Task.FromResult(Verdict);
+    public ScanResult Result { get; set; } = new(ScanVerdict.Clean);
+    public ScanVerdict Verdict { get => Result.Verdict; set => Result = new ScanResult(value); }
+    public Task<ScanResult> ScanAsync(ReadOnlyMemory<byte> bytes, string fileName, CancellationToken ct) => Task.FromResult(Result);
 }
 
 /// <summary>Records which entity types each SaveChanges wrote, so a test can prove a decision, its effect and its audit land together.</summary>
