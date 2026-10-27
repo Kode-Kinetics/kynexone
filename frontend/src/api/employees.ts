@@ -401,6 +401,8 @@ export interface EmployeeDocument {
   approvalStatus: string;
   versionNumber: number;
   uploadedAtUtc: string;
+  /** CD66: `clean`, `not_scanned_trusted_source`, `quarantined` or `quarantined_pending`; absent on older APIs. */
+  scanStatus?: string;
 }
 
 export interface EmployeeHistory {

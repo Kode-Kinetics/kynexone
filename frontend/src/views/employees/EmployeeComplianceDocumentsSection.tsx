@@ -14,6 +14,7 @@ import {
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { describeApiError } from '../../lib/apiError';
+import { canDownloadScanned, scanLabelKey, scanRefusalKey, scanState } from '../../lib/scanState';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { EmployeeSignaturesPanel } from './EmployeeSignaturesPanel';
 
@@ -89,7 +90,7 @@ export function EmployeeComplianceDocumentsSection({ employee, readiness, panel,
         {error && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-200 sm:col-span-2">{error}</p>}
         <button type="button" onClick={() => void upload()} disabled={!file || uploading} className="btn-primary justify-center disabled:opacity-50 sm:col-span-2">{uploading ? t('Uploading…') : t('Upload {type}', { type: documentType })}</button>
       </div>}
-      {documents.length ? <ul className="mt-4 grid gap-3 sm:grid-cols-2">{documents.map(document => <li key={document.id} className="flex gap-3 rounded-xl border border-slate-200 p-4 dark:border-white/10"><FileText className="h-5 w-5 text-blue-600" /><div><p className="font-bold">{document.documentType}</p><p className="text-sm text-slate-500">{document.fileName} · {document.approvalStatus}</p></div></li>)}</ul> : <p className="mt-3 text-sm text-slate-500">{t('No documents are recorded for this employee.')}</p>}
+      {documents.length ? <ul className="mt-4 grid gap-3 sm:grid-cols-2">{documents.map(document => <li key={document.id} className="flex gap-3 rounded-xl border border-slate-200 p-4 dark:border-white/10"><FileText className="h-5 w-5 text-blue-600" /><div><p className="font-bold">{document.documentType}</p><p className="text-sm text-slate-500">{document.fileName} · {document.approvalStatus}</p>{scanLabelKey(scanState(document.scanStatus)) && <p className={`text-xs ${canDownloadScanned(scanState(document.scanStatus)) ? 'text-slate-500' : 'font-medium text-rose-700 dark:text-rose-300'}`} data-testid="doc-scan">{t(scanLabelKey(scanState(document.scanStatus)) as string)}{scanRefusalKey(scanState(document.scanStatus)) && ` ${t(scanRefusalKey(scanState(document.scanStatus)) as string)}`}</p>}</div></li>)}</ul> : <p className="mt-3 text-sm text-slate-500">{t('No documents are recorded for this employee.')}</p>}
     </div>
     {canManageDocuments && <EmployeeSignaturesPanel employee={employee} />}
   </section>;

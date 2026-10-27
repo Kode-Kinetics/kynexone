@@ -4,6 +4,7 @@ import { useId, useRef, useState } from 'react';
 import { Loader2, Upload } from 'lucide-react';
 import { ACCEPTED_TYPES, DOCUMENT_KINDS, MAX_ATTACHMENTS, MAX_FILE_BYTES, essCompletionApi, isStepUpRequired, problemOf, type DocumentKind, type EssDocument, type SectionKey } from '../../../api/essCompletion';
 import { useLocale } from '../../../contexts/LocaleContext';
+import { scanLabelKey, scanState } from '../../../lib/scanState';
 import { essInput, essPrimaryButton } from '../../../components/ess/EssParts';
 
 const KINDS_BY_SECTION: Record<string, DocumentKind[]> = {
@@ -75,7 +76,7 @@ export function DocumentUploader({ section, documents, disabled, getStepUp, onNe
             {documents.map(d => (
               <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                 <span className="min-w-0 break-words"><bdi>{d.fileName ?? t(`ess.completion.doc.${d.kind}`)}</bdi> · {t(`ess.completion.doc.${d.kind}`)}</span>
-                <span className="text-xs font-medium">{t(`ess.completion.doc.scan.${d.scanStatus}`)}</span>
+                <span className="text-xs font-medium">{scanLabelKey(scanState(d.scanStatus)) ? t(scanLabelKey(scanState(d.scanStatus)) as string) : ''}</span>
               </li>
             ))}
           </ul>
