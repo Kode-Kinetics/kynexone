@@ -124,7 +124,7 @@ public static class PrivilegedMfaPolicy
         "finance.gl.manage", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
         "finance.gl.period.reopen", // un-freezes closed books
         // Employee records and bulk changes.
-        "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates",
+        "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates", "onboarding.templates.manage",
         // Waive integrity checks on a hire (checksum, duplicate): CD43.
         "employees.override_validation", "employees.duplicate_override",
         "employees.bulk_import", "employees.access.issue", "employees.access.reset", "dashboard.export", "reports.export", "reports.schedule", "audit.export",

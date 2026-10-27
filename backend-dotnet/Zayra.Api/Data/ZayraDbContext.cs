@@ -1348,6 +1348,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<OnboardingChecklist> OnboardingChecklists => Set<OnboardingChecklist>();
     public DbSet<OnboardingChecklistTemplateTask> OnboardingChecklistTemplateTasks => Set<OnboardingChecklistTemplateTask>();
     public DbSet<OnboardingTask> OnboardingTasks => Set<OnboardingTask>();
+    public DbSet<HireTemplate> HireTemplates => Set<HireTemplate>();   // P3
     public DbSet<RecruitmentAuditLog> RecruitmentAuditLogs => Set<RecruitmentAuditLog>();
     // ── Compliance Module ──────────────────────────────────────────────────────
     public DbSet<DocType> DocTypes => Set<DocType>();
@@ -4275,23 +4276,83 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.IsActive, x.IsDeleted });
+            entity.Property(x => x.NameAr).HasMaxLength(200);
+            entity.Property(x => x.IsDefault).HasDefaultValue(false);
+            // P3: one default checklist per company (a company-less legacy checklist never takes part).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId }).IsUnique().HasDatabaseName("ux_onb_checklist_default")
+                  .HasFilter("is_default AND NOT is_deleted AND company_id IS NOT NULL");
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<OnboardingChecklistTemplateTask>(entity =>
         {
-            entity.ToTable("onboarding_checklist_template_tasks");
+            entity.ToTable("onboarding_checklist_template_tasks", t =>
+            {
+                t.HasCheckConstraint("ck_onb_template_tasks__owner_role", "owner_role IN ('HR','IT','Manager','Payroll','Finance','Admin','Gov','Employee')");
+                t.HasCheckConstraint("ck_onb_template_tasks__nationality_class", "condition_nationality_class IN ('any','saudi','gcc','expat')");
+            });
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.ChecklistId, x.OrderIndex });
             entity.HasIndex(x => new { x.TenantId, x.ChecklistId, x.TaskTitle }).IsUnique();
+            entity.Property(x => x.TitleAr).HasMaxLength(200);
+            entity.Property(x => x.DescriptionAr).HasMaxLength(1000);
+            entity.Property(x => x.OwnerRole).HasMaxLength(16).HasDefaultValue("HR");
+            entity.Property(x => x.ConditionNationalityClass).HasMaxLength(8).HasDefaultValue("any");
+            entity.Property(x => x.LinkSection).HasMaxLength(40);
+            entity.Property(x => x.BlocksActivation).HasDefaultValue(false);
+            entity.Property(x => x.IsStatutory).HasDefaultValue(false);
+            entity.Property(x => x.EvidenceRequired).HasDefaultValue(false);
         });
 
         modelBuilder.Entity<OnboardingTask>(entity =>
         {
-            entity.ToTable("onboarding_tasks");
+            entity.ToTable("onboarding_tasks", t =>
+            {
+                t.HasCheckConstraint("ck_onb_tasks__owner_role", "owner_role IN ('HR','IT','Manager','Payroll','Finance','Admin','Gov','Employee')");
+                t.HasCheckConstraint("ck_onb_tasks__source", "source IN ('manual','template','offer')");
+            });
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.ApplicationId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.ChecklistId, x.OrderIndex });
+            entity.Property(x => x.OwnerRole).HasMaxLength(16).HasDefaultValue("HR");
+            entity.Property(x => x.Source).HasMaxLength(12).HasDefaultValue("manual");
+            entity.Property(x => x.TitleAr).HasMaxLength(200);
+            entity.Property(x => x.LinkSection).HasMaxLength(40);
+            entity.Property(x => x.DueOverrideReason).HasMaxLength(300);
+            entity.Property(x => x.BlocksActivation).HasDefaultValue(false);
+            entity.Property(x => x.IsStatutory).HasDefaultValue(false);
+            entity.Property(x => x.EvidenceRequired).HasDefaultValue(false);
+            // Exactly-once generation under retries and races: one instance per (employee, template task).
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.TemplateTaskId }).IsUnique().HasDatabaseName("ux_onb_task_once")
+                  .HasFilter("template_task_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.OwnerRole, x.DueDate }).HasDatabaseName("ix_onb_task_worklist")
+                  .HasFilter("status IN ('Pending','InProgress','Blocked')");
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId }).HasDatabaseName("ix_onb_task_blockers")
+                  .HasFilter("blocks_activation AND status IN ('Pending','InProgress','Blocked')");
+            entity.HasOne<EmployeeDocument>().WithMany().HasForeignKey(x => x.EvidenceDocumentId).OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<HireTemplate>(entity =>
+        {
+            entity.ToTable("hire_templates");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.CompanyId).IsRequired();
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.NameKey).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.NameAr).HasMaxLength(120);
+            entity.Property(x => x.MatchKey).HasMaxLength(110).IsRequired();
+            entity.Property(x => x.EssCompletionSections).HasMaxLength(200);
+            entity.Property(x => x.Defaults).HasColumnType("jsonb").HasDefaultValue("{}");
+            entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Designation>().WithMany().HasForeignKey(x => x.MatchDesignationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Grade>().WithMany().HasForeignKey(x => x.MatchGradeId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Branch>().WithMany().HasForeignKey(x => x.MatchBranchId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<OnboardingChecklist>().WithMany().HasForeignKey(x => x.ChecklistId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.NameKey }).IsUnique().HasDatabaseName("ux_hire_templates_name")
+                  .HasFilter("NOT is_deleted");
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.MatchKey }).IsUnique().HasDatabaseName("ux_hire_templates_match")
+                  .HasFilter("is_active AND NOT is_deleted AND match_key <> '00000000-0000-0000-0000-000000000000|00000000-0000-0000-0000-000000000000|00000000-0000-0000-0000-000000000000'");
         });
 
         modelBuilder.Entity<RecruitmentAuditLog>(entity =>

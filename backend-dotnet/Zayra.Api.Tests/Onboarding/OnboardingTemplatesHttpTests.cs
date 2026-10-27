@@ -427,7 +427,7 @@ public class OnboardingTemplatesHttpTests : IClassFixture<OnboardingTemplatesFix
     [Fact]
     public async Task LegacyRecruitmentOnboardingRoutes_Unchanged()
     {
-        var token = await _fx.NewUserAsync("legacy", "HR Manager", Manage);
+        var token = await _fx.NewUserAsync("legacy", "HR Manager", Manage, "recruitment.read", "recruitment.write");
         using var list = await _fx.SendAsync(HttpMethod.Get, "/api/recruitment/onboarding/checklists", null, token);
         list.StatusCode.Should().Be(HttpStatusCode.OK, await list.Content.ReadAsStringAsync());
         (await Json(list)).ValueKind.Should().Be(JsonValueKind.Array);

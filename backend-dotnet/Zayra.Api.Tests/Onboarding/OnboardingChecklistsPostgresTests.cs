@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Onboarding;
 using Zayra.Api.Data;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Models;
 using Xunit;
@@ -19,7 +20,7 @@ public sealed class OnboardingChecklistsPostgresTests
 
     private sealed record Seeded(Guid TenantId, Guid CompanyId, Guid ChecklistId, Employee Employee);
 
-    private async Task<Seeded> SeedAsync(int taskCount = 3, string nationality = "SA", bool blocking = false)
+    private async Task<Seeded> SeedAsync(int taskCount = 3, string nationality = "SA", bool blocking = false, bool withId = true)
     {
         await using var db = _fixture.CreateDb();
         var tenant = new Tenant { Name = "P3 " + Guid.NewGuid().ToString("N")[..6], Slug = "p3-" + Guid.NewGuid().ToString("N"), IsActive = true };
@@ -33,7 +34,7 @@ public sealed class OnboardingChecklistsPostgresTests
         var employee = new Employee
         {
             TenantId = tenant.Id, CompanyId = company.Id, EmployeeCode = "P3-" + Guid.NewGuid().ToString("N")[..8], FullName = "New Hire", EnglishName = "New Hire",
-            Status = "Draft", Nationality = nationality, JoiningDate = new DateTime(2026, 11, 8, 0, 0, 0, DateTimeKind.Utc),
+            Status = "Draft", Nationality = nationality, IdNumber = withId ? "1000000008" : "", JoiningDate = new DateTime(2026, 11, 8, 0, 0, 0, DateTimeKind.Utc),
         };
         db.Employees.Add(employee);
         await db.SaveChangesAsync();
@@ -181,6 +182,21 @@ public sealed class OnboardingChecklistsPostgresTests
         await db.SaveChangesAsync();
         var act = () => guard.EnsureActivatableAsync(s.TenantId, s.CompanyId, snapshot, new RequestContext(null, "", Guid.NewGuid(), s.TenantId), default);
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Activation_OtherBlockersAndOpenBlockingTask_AreListedTogether()
+    {
+        var s = await SeedAsync(taskCount: 2, blocking: true, withId: false);
+        await using var db = _fixture.CreateDb();
+        var employee = await db.Employees.SingleAsync(e => e.Id == s.Employee.Id);
+        await new ChecklistGenerator(db).EnsureAsync(s.TenantId, employee, s.ChecklistId, true, default);
+        var guard = new EmployeeActivationGuard(db);
+        var snapshot = (await guard.BuildSnapshotAsync(s.TenantId, employee.Id, default))!;
+        var ex = await Assert.ThrowsAsync<EmployeeActivationBlockedException>(() =>
+            guard.EnsureActivatableAsync(s.TenantId, s.CompanyId, snapshot, new RequestContext(null, "", Guid.NewGuid(), s.TenantId), default));
+        var keys = ex.Readiness.Blocking.Select(b => b.Key).ToList();
+        keys.Should().Contain(k => k.StartsWith(OnboardingTaskBlockers.KeyPrefix)).And.Contain("IdNumber");
     }
 
     [Fact]

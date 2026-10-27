@@ -218,7 +218,7 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("employees.") || x.Key.StartsWith("attendance.") || x.Key.StartsWith("leave.") ||
             x.Key.StartsWith("overtime.") || x.Key.StartsWith("dashboard.") || x.Key.StartsWith("organization.") ||
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
-            x.Key.StartsWith("performance.") ||
+            x.Key.StartsWith("performance.") || x.Key == "onboarding.templates.manage" ||
             x.Key is "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
             "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
@@ -395,6 +395,7 @@ public class AuthSeeder : IAuthSeeder
             ("employees.approve", "Employees", "Approve employee drafts, changes, and transfers"),
             ("employees.documents", "Employees", "Upload and download employee documents"),
             ("employees.templates", "Employees", "Generate localized employee document templates"),
+            ("onboarding.templates.manage", "Onboarding", "Manage onboarding checklist templates and hire templates"),
             ("employees.bulk_import", "Employees", "Bulk import employee records"),
             ("employees.duplicate_override", "Employees", "Create an employee despite a detected duplicate (with a reason)"),
             ("employees.override_validation", "Employees", "Override an ID checksum refusal when hiring (with a reason)"),

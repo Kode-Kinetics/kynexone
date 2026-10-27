@@ -24,7 +24,7 @@ public class ChecklistGeneratorUnitTests
     public void ChecklistGenerator_DueIsStartPlusOffset_NegativeOffsetsAllowed()
     {
         var start = new DateOnly(2026, 11, 8);
-        var plan = ChecklistPlanner.Plan(new[] { T("Contract", -7), T("Badge", 0), T("Probation review", 76) }, NationalityClasses.Saudi, start);
+        var plan = ChecklistPlanner.Plan(new[] { T("Contract", -7, order: 0), T("Badge", 0, order: 1), T("Probation review", 76, order: 2) }, NationalityClasses.Saudi, start);
         plan.Select(p => p.DueDate).Should().Equal(new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 8), new DateOnly(2027, 1, 23));
     }
 
