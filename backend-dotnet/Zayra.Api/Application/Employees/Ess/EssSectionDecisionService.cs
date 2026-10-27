@@ -191,6 +191,9 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
             SensitiveFields = string.Join(',', proposed.Keys),
             ProposedChangesJson = JsonSerializer.Serialize(proposed),
         };
+        // One accept wins: a concurrent accept of the same request finds it already claimed and creates nothing.
+        if (!await TryClaimForFinanceAsync(db, tenantId, change.Id, ct))
+            return new ConflictObjectResult(new { message = "Profile change request is already decided." });
         db.EmployeeChangeRequests.Add(changeRequest);
         change.Status = AwaitingFinance;
         var json = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? [];
@@ -201,7 +204,7 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
         db.EmployeeNotifications.Add(new EmployeeNotification
         {
             TenantId = tenantId, EmployeeId = employee.Id, NotificationType = "EssBankChange",
-            Title = "Your bank details were sent for approval", Body = "HR checked your new bank details. Finance approves them before they apply, from the next day.",
+            Title = "Your bank details were sent for approval", Body = "HR checked your new bank details. They now need approval from your manager, an HR manager and a Finance approver (a payroll approver, never the HR reviewer) before they apply, from the next day.",
         });
         await db.SaveChangesAsync(ct);
         try
@@ -264,23 +267,27 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
         });
     }
 
+    public const string BankWorkflowCode = "EMPLOYEE-BANK-CHANGE";
+    public const string FinanceApproverRole = "Finance Approver";
+
     private async Task<ApprovalWorkflow> EnsureEmployeeChangeWorkflowAsync(Guid tenantId, CancellationToken ct)
     {
-        // The same two-step "EMPLOYEE-CHANGE" workflow EmployeesController provisions for any sensitive employee change.
-        var workflow = await db.ApprovalWorkflows.Include(w => w.Steps).FirstOrDefaultAsync(w => w.TenantId == tenantId && w.Code == "EMPLOYEE-CHANGE" && w.IsActive, ct);
+        // A salary destination is a payment instruction, so it has its own three-step chain ending with a Finance approver
+        // (payroll.approve is enforced for that step by ApprovalWorkflowService); the generic employee-change chain has none.
+        var workflow = await db.ApprovalWorkflows.Include(w => w.Steps).FirstOrDefaultAsync(w => w.TenantId == tenantId && w.Code == BankWorkflowCode && w.IsActive, ct);
         if (workflow is null)
         {
-            workflow = new ApprovalWorkflow { TenantId = tenantId, Code = "EMPLOYEE-CHANGE", Name = "Employee Master Change Approval", EntityName = nameof(EmployeeChangeRequest), IsActive = true };
+            workflow = new ApprovalWorkflow { TenantId = tenantId, Code = BankWorkflowCode, Name = "Employee bank details change approval", EntityName = nameof(EmployeeChangeRequest), IsActive = true };
             db.ApprovalWorkflows.Add(workflow);
         }
-        if (workflow.Steps.Count != 2
-            || workflow.Steps.All(x => !string.Equals(x.ApproverType, "Manager", StringComparison.OrdinalIgnoreCase))
-            || workflow.Steps.All(x => !string.Equals(x.ApproverType, "Role", StringComparison.OrdinalIgnoreCase)))
+        var last = workflow.Steps.OrderBy(x => x.StepOrder).LastOrDefault();
+        if (workflow.Steps.Count != 3 || last is null || !last.IsFinalStep || !string.Equals(last.ApproverRole, FinanceApproverRole, StringComparison.OrdinalIgnoreCase))
         {
             db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
             workflow.Steps.Clear();
             workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 1, StepName = "Direct Manager Review", ApproverRole = "Manager", ApproverType = "Manager", EscalationAfterHours = 24, IsFinalStep = false });
-            workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 2, StepName = "HR Final Approval", ApproverRole = "HR Manager", ApproverType = "Role", EscalationAfterHours = 48, IsFinalStep = true });
+            workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 2, StepName = "HR Final Approval", ApproverRole = "HR Manager", ApproverType = "Role", EscalationAfterHours = 48, IsFinalStep = false });
+            workflow.Steps.Add(new ApprovalWorkflowStep { TenantId = tenantId, WorkflowId = workflow.Id, StepOrder = 3, StepName = "Finance Approval", ApproverRole = FinanceApproverRole, ApproverType = "Role", EscalationAfterHours = 48, IsFinalStep = true });
         }
         return workflow;
     }
