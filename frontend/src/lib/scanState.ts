@@ -24,3 +24,10 @@ export const scanLabelKey = (state: ScanState) => LABEL[state];
 
 export const scanRefusalKey = (state: ScanState): string | null =>
   state === 'quarantined' ? 'ess.completion.doc.scan.quarantinedNote' : state === 'pending' ? 'ess.completion.doc.scan.pendingNote' : null;
+
+/** HR may run the scan again only on a file the scanner could not judge (`quarantined_pending`), and only with the document permissions. A file found infected is never offered. */
+export const canRescan = (raw: string | null | undefined, can: { write: boolean; documents: boolean }) =>
+  can.write && can.documents && !!raw && raw.toLowerCase().replace(/[_\s-]/g, '') === 'quarantinedpending';
+
+/** The status the server answered with, in the words of the existing labels. */
+export const rescanStatusKey = (raw?: string | null) => scanLabelKey(scanState(raw)) ?? 'ess.completion.doc.scan.PendingScan';

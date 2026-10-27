@@ -7,7 +7,7 @@ import { hrCompletionApi, problemOf, SECTION_ORDER, type InboxItem, type Section
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
-import { canDownloadScanned, scanLabelKey, scanRefusalKey, scanState } from '../../lib/scanState';
+import { canDownloadScanned, canRescan, rescanStatusKey, scanLabelKey, scanRefusalKey, scanState } from '../../lib/scanState';
 import { hijriLine } from '../../lib/hire/dates';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { EssEmpty, EssLoadError, EssNotice, essInput, essPrimaryButton } from '../../components/ess/EssParts';
@@ -33,6 +33,9 @@ export function CompletionReviewPage() {
   const ids = { section: useId(), company: useId(), note: useId(), override: useId() };
   const canOverride = hasPermission('employees.override_validation');
   const sensitive = hasPermission('employees.sensitive');
+  const mayRescan = hasPermission('employees.write') && hasPermission('employees.documents');
+  const [scanned, setScanned] = useState<Record<string, string>>({});
+  const [rescanning, setRescanning] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -58,6 +61,19 @@ export function CompletionReviewPage() {
       const p = problemOf(e);
       setMessage({ tone: 'error', text: t(p.titleKey ?? `ess.completion.error.${p.code ?? 'validation_failed'}`) });
     } finally { setBusy(false); }
+  };
+
+  const rescan = async (id: string) => {
+    setRescanning(id); setMessage(null);
+    try {
+      const r = await hrCompletionApi.rescan(id);
+      setScanned(prev => ({ ...prev, [id]: r.scanStatus }));
+      setMessage({ tone: 'ok', text: t('ess.completion.rescan.done', { status: t(rescanStatusKey(r.scanStatus)) }) });
+    } catch (e) {
+      const status = (e as { response?: { status?: number } } | null)?.response?.status;
+      if (status === 409) { setMessage({ tone: 'error', text: t('ess.completion.rescan.notPending') }); await load(); }
+      else setMessage({ tone: 'error', text: t('ess.completion.rescan.failed') });
+    } finally { setRescanning(null); }
   };
 
   const companies = user?.companies ?? [];
@@ -125,14 +141,19 @@ export function CompletionReviewPage() {
                     <div>
                       <h3 className="text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Attachments')}</h3>
                       <ul className="mt-1 text-sm">
-                        {item.documents.map((d, index) => (
+                        {item.documents.map((doc, index) => { const d = { ...doc, scanStatus: (doc.id && scanned[doc.id]) || doc.scanStatus }; return (
                           <li key={d.id ?? `${d.fileName}-${index}`} className="flex flex-wrap items-center justify-between gap-2 py-1">
                             <span className="min-w-0"><bdi>{d.fileName}</bdi> · {t(`ess.completion.doc.${d.kind}`)}{scanLabelKey(scanState(d.scanStatus)) && <> · <span data-testid="scan-label">{t(scanLabelKey(scanState(d.scanStatus)) as string)}</span></>}</span>
                             {scanRefusalKey(scanState(d.scanStatus)) && <span className="basis-full text-xs text-rose-700 dark:text-rose-300" data-testid="scan-refused">{t(scanRefusalKey(scanState(d.scanStatus)) as string)}</span>}
                             {!d.id && canDownloadScanned(scanState(d.scanStatus)) && <span className="text-xs text-slate-500" data-testid="attachment-hidden">{t('You need the sensitive-data permission to download this file.')}</span>}
                             {d.id && canDownloadScanned(scanState(d.scanStatus)) && <a href={hrCompletionApi.documentUrl(d.id)} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire underline dark:text-cyanAccent"><Download className="h-3.5 w-3.5" aria-hidden="true" />{t('Download')}</a>}
+                            {d.id && mayRescan && canRescan(d.scanStatus, { write: true, documents: true }) && (
+                              <button type="button" data-testid="rescan" disabled={rescanning === d.id} onClick={() => void rescan(d.id as string)} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire underline dark:text-cyanAccent">
+                                {rescanning === d.id ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden="true" /> : <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />}{rescanning === d.id ? t('Scanning…') : t('Scan again')}
+                              </button>
+                            )}
                           </li>
-                        ))}
+                        ); })}
                       </ul>
                     </div>
                   )}

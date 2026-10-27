@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 // ESS_COMPLETE_BASE_URL=http://127.0.0.1:<port> npx playwright test -c e2e/playwright.ess-complete-profile.config.ts
 export default defineConfig({
   testDir: '.',
-  testMatch: /ess-complete-profile(\.rtl|\.a11y)?\.spec\.ts|employee-onboarding-completion\.spec\.ts/,
+  testMatch: /ess-complete-profile(\.rtl|\.a11y)?\.spec\.ts|hr-profile-completion-review\.spec\.ts|employee-onboarding-completion\.spec\.ts/,
   workers: 1,
   retries: 0,
   timeout: 90_000,

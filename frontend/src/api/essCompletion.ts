@@ -93,5 +93,6 @@ export const hrCompletionApi = {
   inbox: (q: InboxQuery = {}) => client.get<InboxItem[]>('/api/hr/profile-completion/inbox', { params: { status: q.status ?? 'PendingHR', section: q.section || undefined, companyId: q.companyId || undefined, page: q.page } }).then(r => r.data),
   accept: (id: string, notes: string, overrideReason?: string) => client.post<{ outcome?: string; changeRequestId?: string }>(`/api/ess/profile-change-requests/${id}/approve`, { notes, overrideReason }).then(r => r.data),
   requestChanges: (id: string, notes: string) => client.post(`/api/ess/profile-change-requests/${id}/reject`, { notes }),
+  rescan: (id: string) => client.post<{ id: string; scanStatus: string }>(`/api/hr/profile-completion/documents/${id}/rescan`, undefined, noRefresh).then(r => r.data),
   documentUrl: (id: string) => `/api/hr/profile-completion/documents/${id}/download`,
 };

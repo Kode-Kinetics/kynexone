@@ -38,6 +38,8 @@ export interface EssMockOptions {
   idClass?: 'saudi' | 'expat';
   /** CD58: the inbox omits document ids for a caller without employees.sensitive. */
   hideDocIds?: boolean;
+  /** What POST .../documents/{id}/rescan answers: 200 with a scanStatus, or an error status (409 = no longer pending). */
+  rescan?: { status: number; scanStatus?: string };
 }
 
 export const INBOX_ITEMS = [
@@ -50,7 +52,7 @@ export const INBOX_ITEMS = [
 
 export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string) {
   const persona = o.persona ?? 'employee';
-  const log = { submits: [] as any[], uploads: [] as string[], stepUps: [] as any[], decisions: [] as Array<{ id: string; verb: string; body: any }>, headers: [] as Array<Record<string, string>>, errors: [] as string[], calls: [] as string[] };
+  const log = { submits: [] as any[], uploads: [] as string[], stepUps: [] as any[], decisions: [] as Array<{ id: string; verb: string; body: any }>, headers: [] as Array<Record<string, string>>, errors: [] as string[], calls: [] as string[], rescans: [] as string[] };
   const keys = o.sections ?? ['person', 'emergency', 'arabicName', 'id', 'bank', 'documents'];
   const state: Record<string, SectionState> = { ...Object.fromEntries(keys.map(k => [k, SECTIONS[k].state])), ...(o.states ?? {}) };
   SECTIONS.id = SAUDI_ID;   // the table is module-level and shared by every test in the worker
@@ -119,6 +121,14 @@ export async function bootEss(page: Page, o: EssMockOptions = {}, path?: string)
       return reply({ id: doc.id, kind, scanStatus: 'Clean' }, 201);
     }
     if (p === '/api/hr/profile-completion/inbox') return reply(o.hideDocIds ? inbox.map(i => ({ ...i, documents: (i.documents ?? []).map(({ id: _id, ...d }: any) => d) })) : inbox);
+    m = /^\/api\/hr\/profile-completion\/documents\/([\w-]+)\/rescan$/.exec(p);
+    if (m && method === 'POST') {
+      log.rescans.push(m[1]);
+      const r = o.rescan ?? { status: 200, scanStatus: 'clean' };
+      if (r.status !== 200) return reply({ type: 'about:blank', status: r.status, code: r.status === 409 ? 'document_quarantined' : 'server_error' }, r.status);
+      inbox = inbox.map(i => ({ ...i, documents: (i.documents ?? []).map((d: any) => d.id === m![1] ? { ...d, scanStatus: r.scanStatus } : d) }));
+      return reply({ id: m[1], scanStatus: r.scanStatus });
+    }
     m = /^\/api\/ess\/profile-change-requests\/([\w-]+)\/(approve|reject)$/.exec(p);
     if (m && method === 'POST') {
       log.decisions.push({ id: m[1], verb: m[2], body });
