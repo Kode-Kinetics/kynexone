@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 /**
  * CD57: the Add Employee entry never renders a blank screen and the legacy dialog is the default.
- * Unanswered flags show a status message and then the legacy dialog; errored flags show it at once.
+ * Errored flags show the legacy dialog at once; unanswered flags keep the module gate's busy state.
  */
 const company = {
   id: 'company-flags', legalNameEn: 'Flags Test Company', legalNameAr: '', tradeName: 'Flags Test Company',
@@ -31,10 +31,11 @@ async function boot(page: Page, flags: 'hang' | 'error') {
   await page.goto('/people/new');
 }
 
-test('flags that never answer: a status message, then the legacy dialog after the wait', async ({ page }) => {
+// Flags that never answer are held at the route level: ModuleGate shows its own aria-busy spinner until the
+// request settles, so the entry component is not reached (its own 4 s fallback is covered by unit/createFlowMode.spec.ts).
+test('flags that never answer: the module gate shows a busy state, not a blank page', async ({ page }) => {
   await boot(page, 'hang');
-  await expect(page.getByRole('status').filter({ hasText: 'Loading' })).toBeVisible();
-  await expect(page.getByRole('dialog', { name: 'Add Employee', exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('main [aria-busy="true"]')).toBeVisible();
 });
 
 test('flags that error: the legacy dialog straight away', async ({ page }) => {
