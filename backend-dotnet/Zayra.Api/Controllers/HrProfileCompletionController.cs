@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Employees.Ess;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
@@ -58,7 +59,7 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
             }).ToList();
             var attached = EssSectionDecisionService.ReadDocumentIds(x.Request.RequestedChangesJson)
                 .Select(id => docs.FirstOrDefault(d => d.Id == id)).Where(d => d is not null)
-                .Select(d => new { id = d!.Id, kind = d.DocumentCategory, scanStatus = d.ScanStatus, fileName = d.FileName }).ToList();
+                .Select(d => new { id = mayRevealSensitive ? (Guid?)d!.Id : null, kind = d!.DocumentCategory, scanStatus = d.ScanStatus, fileName = d.FileName }).ToList();
             return new
             {
                 requestId = x.Request.Id,
@@ -71,6 +72,14 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
                 documents = attached,
             };
         }).ToList();
+        if (mayRevealSensitive && rows.Count > 0)
+        {
+            // Unmasked values left the server: one audit row per employee on the page, so a view is as traceable as a download.
+            var viewer = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var vid) ? vid : (Guid?)null;
+            foreach (var x in rows)
+                db.EmployeeSelfServiceAuditLogs.Add(new EmployeeSelfServiceAuditLog { TenantId = tenantId, EmployeeId = x.Employee.Id, UserId = viewer, Action = "ess.completion.inbox_viewed_by_hr", EntityName = nameof(EmployeeProfileChangeRequest), EntityId = x.Request.Id.ToString() });
+            await db.SaveChangesAsync(ct);
+        }
         return Ok(items);
     }
 
@@ -78,10 +87,13 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
     [HasPermission("employees.write")]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct)
     {
+        // Same conjunction as the workspace download; HasPermission above is ANY-of, so it is enforced here.
+        if (!User.HasPermission("employees.read") || !User.HasPermission("employees.documents")) return Forbid();
         var tenantId = Guid.Parse(User.FindFirstValue("tenant_id")!);
         // The document row carries the company scope filter; an HR user outside the employee's company gets the same 404 as a missing id.
         var doc = await db.EmployeeDocuments.FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == id && d.SourceSection != null && !d.IsDeleted, ct);
         if (doc is null || doc.EmployeeId is null) return EssProblem.Create(HttpContext, 404, EssProblemCodes.NotFound);
+        if (EmployeeDocumentDto.IsSensitiveDocument(doc.DocumentType, doc.DocumentCategory) && !User.HasPermission("employees.sensitive")) return Forbid();
         if (doc.ScanStatus != "Clean") return EssProblem.Create(HttpContext, 409, EssProblemCodes.DocumentQuarantined);
         byte[] bytes;
         try { bytes = await storage.GetBytesAsync(tenantId, doc.StorageUrl, ct); }
