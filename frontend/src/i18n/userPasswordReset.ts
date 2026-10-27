@@ -60,6 +60,26 @@ const ar: Record<string, string> = {
   "That took too long. Sign in again with the temporary password.": "انتهت المهلة. سجّل الدخول مجددًا بكلمة المرور المؤقتة.",
   "Your password could not be changed. Try again in a moment.": "تعذّر تغيير كلمة المرور. حاول مرة أخرى بعد قليل.",
   "Your new password is saved. Sign in with it.": "تم حفظ كلمة المرور الجديدة. سجّل الدخول بها.",
+
+  // The workspace owner (Users list)
+  "Owner": "المالك",
+  "Workspace owner: no other administrator can change this account.": "مالك مساحة العمل: لا يمكن لأي مسؤول آخر تغيير هذا الحساب.",
+  "Make owner": "تعيين مالكًا",
+  "Make workspace owner?": "تعيين مالك مساحة العمل؟",
+  "{name} will become the workspace owner, and no other administrator will be able to change their account. You stay an Admin, but you will no longer be protected.":
+    "سيصبح {name} مالك مساحة العمل، ولن يتمكن أي مسؤول آخر من تغيير حسابه. ستبقى مسؤولًا، لكن حسابك لن يكون محميًا بعد ذلك.",
+
+  // "Confirm it's you" before an action against an Admin or the owner
+  "Confirm it's you": "تأكيد هويتك",
+  "This changes an administrator account. Enter your password to continue.": "هذا الإجراء يغيّر حساب مسؤول. أدخل كلمة المرور للمتابعة.",
+  "Your password": "كلمة المرور الخاصة بك",
+  "From your authenticator app.": "من تطبيق المصادقة.",
+  "Confirm": "تأكيد",
+  "That didn't match. Check your password and the newest code from your authenticator app.":
+    "لم تتطابق البيانات. تحقّق من كلمة المرور ومن أحدث رمز في تطبيق المصادقة.",
+  "That password didn't match. Try again.": "كلمة المرور غير صحيحة. حاول مرة أخرى.",
+  "Your account is locked after too many wrong attempts. Try again later.": "تم قفل حسابك بعد محاولات خاطئة كثيرة. حاول لاحقًا.",
+  "Could not confirm it is you. Try again in a moment.": "تعذّر التأكد من هويتك. حاول مرة أخرى بعد قليل.",
 };
 
 export const userPasswordReset = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) };

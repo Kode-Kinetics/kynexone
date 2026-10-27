@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { STEP_UP_HEADER, currentStepUpToken, isStepUpRequired, requestStepUp } from './stepUp';
 import { RefreshQueue } from './refreshQueue';
 import { isRefreshRefused } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from './clearSession';
@@ -49,6 +50,8 @@ export function setActiveCompanyId(companyId: string | null) {
 client.interceptors.request.use((config) => {
   const token = localStorage.getItem('zayra_access_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  const stepUp = currentStepUpToken();
+  if (stepUp) config.headers[STEP_UP_HEADER] = stepUp;
   if (activeCompanyId && !config.workspaceScope) config.headers['X-Company-Id'] = activeCompanyId;
   return config;
 });
@@ -107,6 +110,14 @@ client.interceptors.response.use(
       if (!isOnPlanAndBilling(window.location.pathname, window.location.search)) {
         window.location.href = SUBSCRIPTION_ALERT_HREF;
       }
+      return Promise.reject(err);
+    }
+
+    // 403 step_up_required — an action against an Admin or the workspace owner needs "Confirm it's you" first. The
+    // refused request changed nothing, so after the person confirms it is repeated once, now carrying the token.
+    if (isStepUpRequired(err) && original && !original._stepUpRetried && typeof window !== 'undefined') {
+      original._stepUpRetried = true;
+      if (await requestStepUp()) return client(original);
       return Promise.reject(err);
     }
 

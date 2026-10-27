@@ -26,18 +26,24 @@ public class AccessController : ControllerBase
     private readonly IAccessManagementService _accessManagement;
     private readonly ZayraDbContext _db;
     private readonly IAuthService? _authService;
+    private readonly StepUpService? _stepUp;
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _adminNotices;
     private readonly IEmailService _emailService;
 
     public AccessController(
         IAccessManagementService accessManagement,
         ZayraDbContext db,
         IEmailService emailService,
-        IAuthService? authService = null)
+        IAuthService? authService = null,
+        StepUpService? stepUp = null,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? adminNotices = null)
     {
         _accessManagement = accessManagement;
         _db = db;
         _emailService = emailService;
         _authService = authService;
+        _stepUp = stepUp;
+        _adminNotices = adminNotices;
     }
 
     [HttpGet("roles")]
@@ -223,6 +229,9 @@ public class AccessController : ControllerBase
             var callerScope = this.GetEntityScope();
             var createsAdministrator = request.Roles.Any(role =>
                 string.Equals(role?.Trim(), "Admin", StringComparison.OrdinalIgnoreCase));
+            // A new Admin is a new key to the whole workspace: confirm it's you first.
+            if (createsAdministrator && (await AdminTargetGateAsync(tenantId.Value, Guid.Empty, cancellationToken, always: true)).Refusal is { } stepUp)
+                return stepUp;
             if (request.IsGroupScope && !this.HasGroupEntityScope()) return Forbid();
             if (request.IsGroupScope && request.CompanyId.HasValue)
                 return BadRequest(new { message = "Choose either group-wide access or one company, not both." });
@@ -294,7 +303,10 @@ public class AccessController : ControllerBase
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
             if (GetUserId() is null) return Unauthorized();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
             await _accessManagement.SuspendUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, ManagementScope(), GetContext(), cancellationToken);
+            await NoticeAdminActionAsync(tenantId.Value, gate, "suspended the account of", cancellationToken);
             return NoContent();
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_suspended", "User", userId.ToString()); }
@@ -309,7 +321,10 @@ public class AccessController : ControllerBase
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
             if (GetUserId() is null) return Unauthorized();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
             await _accessManagement.LockUserAsync(tenantId.Value, userId, body?.Reason ?? string.Empty, ManagementScope(), GetContext(), cancellationToken);
+            await NoticeAdminActionAsync(tenantId.Value, gate, "locked the account of", cancellationToken);
             return NoContent();
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_locked", "User", userId.ToString()); }
@@ -350,9 +365,12 @@ public class AccessController : ControllerBase
             if (tenantId is null) return Unauthorized();
             if (GetUserId() is null) return Unauthorized();
             if (_authService is null) return StatusCode(StatusCodes.Status503ServiceUnavailable);
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
             var context = GetContext();
             await _accessManagement.AuthorizeAdminPasswordSetAsync(tenantId.Value, userId, request.Reason, ManagementScope(), context, cancellationToken);
             await _authService.AdminSetTemporaryPasswordAsync(tenantId.Value, userId, request.NewPassword, request.Reason!.Trim(), context, cancellationToken);
+            await NoticeAdminActionAsync(tenantId.Value, gate, "set a temporary password for", cancellationToken);
             return Ok(new
             {
                 userId,
@@ -391,6 +409,8 @@ public class AccessController : ControllerBase
             if (tenantId is null) return Unauthorized();
 
             if (GetUserId() is null) return Unauthorized();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
             var link = await _accessManagement.IssuePasswordResetLinkAsync(
                 tenantId.Value, userId, ManagementScope(), GetContext(), cancellationToken);
 
@@ -517,6 +537,8 @@ public class AccessController : ControllerBase
     {
         var tenantId = GetTenantId();
         if (tenantId is null || GetUserId() is null) return Unauthorized();
+        var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+        if (gate.Refusal is not null) return gate.Refusal;
         MfaAdminResetResult result;
         try
         {
@@ -556,7 +578,96 @@ public class AccessController : ControllerBase
                     + "Your trusted browsers and backup codes no longer work. Set up two-step sign-in again the next time you sign in. "
                     + "If you did not ask for this, contact your administrator now.",
             }, cancellationToken);
+        await NoticeAdminActionAsync(tenantId.Value, gate, "reset two-step sign-in for", cancellationToken);
         return NoContent();
+    }
+
+    /// <summary>
+    /// The workspace owner hands ownership to another active Admin (User.IsWorkspaceOwner). Only the owner may, and only
+    /// after confirming it's them. The new owner and every Admin are told. 400 when the caller is not the owner or the
+    /// new owner is not an active Admin who can sign in.
+    /// </summary>
+    [HttpPost("users/{userId:guid}/make-owner")]
+    public async Task<IActionResult> MakeOwner(Guid userId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = GetTenantId();
+            if (tenantId is null || GetUserId() is null) return Unauthorized();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken, always: true);
+            if (gate.Refusal is not null) return gate.Refusal;
+            await _accessManagement.TransferOwnershipAsync(tenantId.Value, userId, GetContext(), cancellationToken);
+            await NoticeAdminActionAsync(tenantId.Value, gate with { TargetIsAdmin = true }, "made the workspace owner:", cancellationToken);
+            return NoContent();
+        }
+        catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.ownership_transferred", "User", userId.ToString()); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>Who an Admin-sensitive action is about, and the refusal when the caller has not confirmed it's them.</summary>
+    private sealed record AdminTargetGate(ActionResult? Refusal, bool TargetIsAdmin, Guid TargetUserId, string TargetName);
+
+    /// <summary>
+    /// "Confirm it's you" (StepUpService) before any action against an Admin or the workspace owner — or always, for
+    /// actions that create one. Fails closed: without a valid X-Step-Up token the answer is 403 step_up_required, and
+    /// the page asks for the password (and two-step code) and repeats the request. Never asked for your own account.
+    /// </summary>
+    private async Task<AdminTargetGate> AdminTargetGateAsync(Guid tenantId, Guid targetUserId, CancellationToken cancellationToken, bool always = false)
+    {
+        // Through the caller's own scope: a user they cannot see is answered by the action itself (404 / 403), never
+        // with a confirmation prompt that would say the account exists and is an Admin.
+        var target = targetUserId == Guid.Empty ? null
+            : await _accessManagement.GetUserAsync(tenantId, targetUserId, ManagementScope(), cancellationToken);
+        var name = target is null ? string.Empty : (string.IsNullOrWhiteSpace(target.FullName) ? target.Email : target.FullName);
+        var isAdmin = target is not null
+            && (target.IsOwner || target.Roles.Any(role => string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase)));
+        var callerId = GetUserId();
+        if (callerId is null) return new(Unauthorized(), isAdmin, targetUserId, name);
+        if ((!isAdmin && !always) || callerId == targetUserId) return new(null, isAdmin, targetUserId, name);
+        if (_stepUp is not null
+            && await _stepUp.IsConfirmedAsync(callerId.Value, tenantId, Request.Headers[StepUpService.HeaderName].ToString(), cancellationToken))
+            return new(null, isAdmin, targetUserId, name);
+        return new(StatusCode(StatusCodes.Status403Forbidden, new
+        {
+            code = StepUpService.RequiredCode,
+            error = StepUpService.RequiredCode,
+            message = "Confirm it's you to continue: enter your password, and your two-step code if it is on.",
+        }), isAdmin, targetUserId, name);
+    }
+
+    /// <summary>
+    /// After an action against an Admin: the Admin and every other active Admin are told who did what, so an action
+    /// nobody expected is seen at once. Never fails the action it reports.
+    /// </summary>
+    private async Task NoticeAdminActionAsync(Guid tenantId, AdminTargetGate gate, string what, CancellationToken cancellationToken)
+    {
+        if (!gate.TargetIsAdmin || _adminNotices is null) return;
+        try
+        {
+            var callerId = GetUserId();
+            var actor = await _db.Users.AsNoTracking().Where(u => u.Id == callerId)
+                .Select(u => string.IsNullOrWhiteSpace(u.FullName) ? u.Email : u.FullName).FirstOrDefaultAsync(cancellationToken) ?? "An administrator";
+            var admins = await _db.Users.AsNoTracking()
+                .Where(u => u.TenantId == tenantId && !u.IsDeleted && u.IsActive
+                    && u.UserRoles.Any(r => r.Role != null && r.Role.NormalizedName == "ADMIN" && r.Role.IsActive && !r.Role.IsDeleted))
+                .Select(u => u.Id).ToListAsync(cancellationToken);
+            var sentAt = DateTime.UtcNow;
+            foreach (var recipient in admins.Append(gate.TargetUserId).Where(id => id != Guid.Empty && id != callerId).Distinct())
+                await _adminNotices.EnqueueAsync(new Zayra.Api.Infrastructure.Notifications.NotificationRequest
+                {
+                    TenantId = tenantId,
+                    UserId = recipient,
+                    EventCode = "security.admin_account_action",
+                    EntityName = "User",
+                    EntityId = $"{gate.TargetUserId:D}:{sentAt:yyyyMMddHHmmssfff}",
+                    Title = "An administrator account was changed",
+                    Message = $"{actor} {what} {gate.TargetName}. If this was not expected, contact the workspace owner or KynexOne support now.",
+                }, cancellationToken);
+        }
+        catch (Exception)
+        {
+            // The action is already committed; a notice that could not be queued must not turn it into an error.
+        }
     }
 
     [HttpDelete("users/{userId:guid}")]
@@ -567,7 +678,11 @@ public class AccessController : ControllerBase
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
             if (GetUserId() is null) return Unauthorized();
-            return await _accessManagement.DeleteUserAsync(tenantId.Value, userId, ManagementScope(), GetContext(), cancellationToken) ? NoContent() : NotFound();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
+            if (!await _accessManagement.DeleteUserAsync(tenantId.Value, userId, ManagementScope(), GetContext(), cancellationToken)) return NotFound();
+            await NoticeAdminActionAsync(tenantId.Value, gate, "deleted the account of", cancellationToken);
+            return NoContent();
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.user_deleted", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -580,7 +695,13 @@ public class AccessController : ControllerBase
         {
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
-            return Ok(await _accessManagement.AssignRolesAsync(tenantId.Value, userId, request, ManagementScope(), GetContext(), cancellationToken));
+            // Making someone an Admin is as sensitive as acting on one.
+            var grantsAdmin = request.Roles?.Any(role => string.Equals(role?.Trim(), "Admin", StringComparison.OrdinalIgnoreCase)) == true;
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken, always: grantsAdmin);
+            if (gate.Refusal is not null) return gate.Refusal;
+            var assigned = await _accessManagement.AssignRolesAsync(tenantId.Value, userId, request, ManagementScope(), GetContext(), cancellationToken);
+            await NoticeAdminActionAsync(tenantId.Value, gate, "changed the roles of", cancellationToken);
+            return Ok(assigned);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.roles_assigned", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -806,8 +927,12 @@ public class AccessController : ControllerBase
             var tenantId = GetTenantId();
             if (tenantId is null) return Unauthorized();
             if (GetUserId() is null) return Unauthorized();
+            var gate = await AdminTargetGateAsync(tenantId.Value, userId, cancellationToken);
+            if (gate.Refusal is not null) return gate.Refusal;
             var access = await _accessManagement.SetAccessModeAsync(tenantId.Value, userId, request, ManagementScope(), GetContext(), cancellationToken);
-            return access is null ? NotFound() : Ok(access);
+            if (access is null) return NotFound();
+            await NoticeAdminActionAsync(tenantId.Value, gate, "changed the sign-in access of", cancellationToken);
+            return Ok(access);
         }
         catch (PrivilegeCeilingException ex) { return await CeilingRefusedAsync(ex, "access.mode_changed", "User", userId.ToString()); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }

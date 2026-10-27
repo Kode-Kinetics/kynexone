@@ -3321,6 +3321,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ProvisioningSource).HasMaxLength(40).HasDefaultValue("Local");
             entity.Property(x => x.Status).HasMaxLength(40).HasDefaultValue("Active");
             entity.Property(x => x.AccessMode).HasMaxLength(40).HasDefaultValue("FullPortal");
+            // One owner per workspace, enforced here rather than remembered by the service. A transfer clears the old
+            // owner before setting the new one, in one transaction (AccessManagementService.TransferOwnershipAsync).
+            entity.Property(x => x.IsWorkspaceOwner).HasDefaultValue(false);
+            entity.HasIndex(x => x.TenantId).IsUnique().HasFilter("is_workspace_owner").HasDatabaseName("ux_users__one_workspace_owner");
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
             entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(1024);
             // Raised by the save hook (EndSessionsOfAsync); trg_users__session_epoch_increments keeps every raise to

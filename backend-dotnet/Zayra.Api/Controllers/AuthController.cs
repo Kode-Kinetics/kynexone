@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Zayra.Api.Application.Auth;
@@ -242,6 +243,37 @@ public class AuthController : ControllerBase
         }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         catch (UnauthorizedAccessException ex) { return Unauthorized(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// "Confirm it's you" before an action against another Admin or the workspace owner (StepUpService). 200 with a
+    /// five-minute token to send back in the X-Step-Up header; 400 ERR_STEP_UP_CODE_REQUIRED when the password is right and
+    /// a two-step code is still needed; 400 ERR_STEP_UP_WRONG on a wrong password or code (it counts toward the lockout);
+    /// 423 ERR_STEP_UP_LOCKED when the account is locked.
+    /// </summary>
+    [HttpPost("step-up")]
+    [Authorize]
+    [EnableRateLimiting("auth_login")]
+    public async Task<IActionResult> StepUp([FromBody] StepUpRequest request,
+        [FromServices] Zayra.Api.Infrastructure.Auth.StepUpService stepUp, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var tenantId = GetTenantId();
+        if (userId is null || tenantId is null) return Unauthorized();
+        var result = await stepUp.ConfirmAsync(userId.Value, tenantId.Value, request.Password ?? string.Empty, request.TotpCode,
+            GetContext(), cancellationToken);
+        return result.Outcome switch
+        {
+            Zayra.Api.Infrastructure.Auth.StepUpOutcome.Confirmed =>
+                Ok(new { stepUpToken = result.Token, expiresInSeconds = result.ExpiresInSeconds }),
+            Zayra.Api.Infrastructure.Auth.StepUpOutcome.CodeRequired =>
+                BadRequest(new { code = "ERR_STEP_UP_CODE_REQUIRED", message = "Enter the 6-digit code from your authenticator app." }),
+            Zayra.Api.Infrastructure.Auth.StepUpOutcome.WrongPassword or Zayra.Api.Infrastructure.Auth.StepUpOutcome.WrongCode =>
+                BadRequest(new { code = "ERR_STEP_UP_WRONG", message = "That didn't match. Check it and try again." }),
+            Zayra.Api.Infrastructure.Auth.StepUpOutcome.LockedOut =>
+                StatusCode(StatusCodes.Status423Locked, new { code = "ERR_STEP_UP_LOCKED", message = "Your account is locked after too many wrong attempts. Try again later." }),
+            _ => Unauthorized(),
+        };
     }
 
     private RequestContext GetContext()

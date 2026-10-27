@@ -697,6 +697,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_locked");
 
+                    b.Property<bool>("IsWorkspaceOwner")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_workspace_owner");
+
                     b.Property<DateTime?>("LastLoginAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_login_at_utc");
@@ -812,6 +818,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_users__one_workspace_owner")
+                        .HasFilter("is_workspace_owner");
 
                     b.HasIndex("TenantId", "IsDeleted");
 
