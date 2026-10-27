@@ -383,9 +383,12 @@ export function UsersTab() {
                         <UserX className="h-3.5 w-3.5 text-amber-600" />
                       </button>
                     )}
-                    <button title={t('Reset password')} aria-label={t('Reset password')} onClick={() => setResetPasswordFor(u)} className="rounded p-1 hover:bg-violet-100 dark:hover:bg-violet-900/30" data-testid="user-reset-password">
-                      <RotateCcw className="h-3.5 w-3.5 text-violet-600" />
-                    </button>
+                    {/* Never your own: that goes through Change password, which proves the current one. */}
+                    {!isMe(u) && (
+                      <button title={t('Reset password')} aria-label={t('Reset password')} onClick={() => setResetPasswordFor(u)} className="rounded p-1 hover:bg-violet-100 dark:hover:bg-violet-900/30" data-testid="user-reset-password">
+                        <RotateCcw className="h-3.5 w-3.5 text-violet-600" />
+                      </button>
+                    )}
                     <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
                       <Trash2 className="h-3.5 w-3.5 text-red-500" />
                     </button>
@@ -1229,6 +1232,7 @@ function CreateUserModal({ roles, ceiling, onClose, onCreated }: { roles: RoleIt
             </button>
           </div>
           <div id={requirementsId} className="mt-1 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-700 dark:bg-slate-800">
+            <p className="mb-2 text-slate-600 dark:text-slate-300" data-testid="create-user-temporary-note">{t('This is a temporary password. Give it to them in person; they choose their own the first time they sign in.')}</p>
             <p className="font-medium text-slate-700 dark:text-slate-200">Password requirements</p>
             {policyLoading ? (
               <p className="mt-2 text-slate-500 dark:text-slate-400" role="status">Loading workspace rules…</p>

@@ -897,7 +897,19 @@ public sealed class EmployeeLoginLinkTests
         var employeeId = await AddEmployeeAsync(w, w.CompanyA, email);
 
         await AssertCredentialHandlerRefusedAsync(w, creator, login, employeeId);
-        (await SignInAsync(w, email)).Should().NotBeNull("the creator knows the password they chose");
+        // The creator knows the password they chose. It is only temporary (the first sign-in asks for a new one), but the
+        // creator can answer that too — so they still hold the login's credential, which is what this test is about.
+        const string creatorsSecondPassword = "CreatorsSecond1!Password";
+        await using (var db = _fixture.CreateRetryingDb())
+        {
+            var auth = new AuthService(db, new Pbkdf2PasswordHasher(), new JwtTokenService(Jwt), new AuditService(db), new FakeEmailService(), Jwt,
+                new NullMfaService(), new TotpService(DataProtectionProvider.Create("ZayraTests")), NullLogger<AuthService>.Instance);
+            var first = await auth.LoginAsync(new LoginRequest(email, Password, w.Slug), new RequestContext("127.0.0.1", "tests"), default);
+            first.PasswordChange.Should().NotBeNull("a password typed at Create User is only temporary");
+            await auth.ResetPasswordAsync(new ResetPasswordRequest(first.PasswordChange!.ResetToken, creatorsSecondPassword, w.Slug),
+                new RequestContext("127.0.0.1", "tests"), default);
+        }
+        (await SignInAsync(w, email, creatorsSecondPassword)).Should().NotBeNull("the creator chose this one too");
         var refreshTokenId = await AddRefreshTokenAsync(login);
 
         // ...and, signed in as it, the creator enrolled their own authenticator on it.
@@ -944,7 +956,7 @@ public sealed class EmployeeLoginLinkTests
                 && x.EntityId == login.ToString())).Metadata.Should().Contain("\"mfaCleared\":true");
         }
         // Accepting the invitation, the person signs straight in with their own password: no prompt for the old TOTP.
-        await AssertCredentialRotatedAsync(w, linked, login, email, refreshTokenId, oldPassword: Password, linker: w.AdminId, accessMode: AccessModes.FullPortal);
+        await AssertCredentialRotatedAsync(w, linked, login, email, refreshTokenId, oldPassword: creatorsSecondPassword, linker: w.AdminId, accessMode: AccessModes.FullPortal);
     }
 
     /// <summary>

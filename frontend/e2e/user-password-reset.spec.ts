@@ -105,6 +105,9 @@ test.describe('Setup → Users: the list reads in words', () => {
     await expect(rowOf(page, 'Amy Baker')).toContainText('Never');
     await expect(rowOf(page, 'Tenant Admin')).toContainText('+5');
     await expect(rowOf(page, 'Tenant Admin')).not.toContainText('Payroll Manager');
+    // Your own password changes through Change password, never from this list.
+    await expect(rowOf(page, 'Tenant Admin').getByTestId('user-reset-password')).toHaveCount(0);
+    await expect(rowOf(page, 'Amy Baker').getByTestId('user-reset-password')).toHaveCount(1);
     await shot(page, 'users-list-en', info.outputPath.bind(info));
     expect(api.errors).toEqual([]);
   });

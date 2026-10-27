@@ -101,7 +101,7 @@ public class AccessManagementService : IAccessManagementService
                 || !committed.IsEmailConfirmed
                 || committed.IsLocked
                 || committed.LockoutEnd is not null
-                || committed.MustChangePassword
+                || !committed.MustChangePassword
                 || !string.Equals(committed.Status, "Active", StringComparison.Ordinal)
                 || !string.Equals(committed.AccessMode, AccessModes.FullPortal, StringComparison.Ordinal)
                 || !string.Equals(committed.IdentityProvider, "Local", StringComparison.OrdinalIgnoreCase)
@@ -235,6 +235,9 @@ public class AccessManagementService : IAccessManagementService
                 IsEmailConfirmed = true,
                 // The administrator chose this password: stamp it, so a later owner-set password is provably newer.
                 LastPasswordChangedAt = createdAtUtc,
+                // ...and it is only ever a temporary one: the first sign-in asks for the person's own
+                // (AuthService.LoginAsync, Phase 4a''), so the administrator never knows a password in use.
+                MustChangePassword = true,
                 CreatedAtUtc = createdAtUtc
             };
             _db.Users.Add(user);
@@ -1831,7 +1834,7 @@ public class AccessManagementService : IAccessManagementService
         };
         _db.ApprovalDelegations.Add(delegation);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.approval_delegation_created", "ApprovalDelegation", delegation.Id.ToString(), context, $"{{\"fromEmployeeId\":{from.Id},\"toEmployeeId\":{to.Id},\"scope\":\"{delegation.Scope}\"}}", cancellationToken);
+        await _auditService.WriteAsync("access.approval_delegation_created", "ApprovalDelegation", delegation.Id.ToString(), context, System.Text.Json.JsonSerializer.Serialize(new { fromEmployeeId = from.Id, toEmployeeId = to.Id, scope = delegation.Scope }), cancellationToken);
         return ToDelegationDto(delegation);
     }
 
@@ -1862,7 +1865,7 @@ public class AccessManagementService : IAccessManagementService
         };
         _db.ApprovalAuthorities.Add(authority);
         await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("access.approval_authority_created", "ApprovalAuthority", authority.Id.ToString(), context, $"{{\"employeeId\":{employee.Id},\"scope\":\"{authority.AuthorityScope}\",\"final\":{authority.CanFinalApprove.ToString().ToLowerInvariant()}}}", cancellationToken);
+        await _auditService.WriteAsync("access.approval_authority_created", "ApprovalAuthority", authority.Id.ToString(), context, System.Text.Json.JsonSerializer.Serialize(new { employeeId = employee.Id, scope = authority.AuthorityScope, final = authority.CanFinalApprove }), cancellationToken);
         return ToAuthorityDto(authority);
     }
 
@@ -1997,7 +2000,7 @@ public class AccessManagementService : IAccessManagementService
             entityScope,
             context,
             "access.user_suspended",
-            $"{{\"reason\":\"{reason}\"}}",
+            System.Text.Json.JsonSerializer.Serialize(new { reason }),
             (user, _) =>
             {
                 user.IsActive = false;
@@ -2014,7 +2017,7 @@ public class AccessManagementService : IAccessManagementService
             entityScope,
             context,
             "access.user_locked",
-            $"{{\"reason\":\"{reason}\"}}",
+            System.Text.Json.JsonSerializer.Serialize(new { reason }),
             (user, changedAtUtc) =>
             {
                 user.IsLocked = true;
@@ -2098,6 +2101,11 @@ public class AccessManagementService : IAccessManagementService
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
 
+        // Never yourself: your own password changes through Change password, which proves the current one. A link
+        // you are handed would let anyone holding your session set a new password without it.
+        if (context.UserId is { } callerId && callerId == user.Id)
+            throw new InvalidOperationException("You cannot send yourself a reset link here. Use Change password in your account instead.");
+
         // These three are exactly the conditions AuthService.ResetPasswordAsync re-checks when the
         // link is redeemed. Refusing here means an administrator is never handed a link that is
         // guaranteed to fail in the user's hands — the alternative is a silent dead end, which is
@@ -2135,14 +2143,15 @@ public class AccessManagementService : IAccessManagementService
         foreach (var stale in superseded) stale.ExpiresAtUtc = issuedAtUtc;
 
         // Only the hash is persisted; the raw token leaves in the return value and is unrecoverable.
-        _db.PasswordResetTokens.Add(new PasswordResetToken
+        var issuedToken = new PasswordResetToken
         {
             UserId = user.Id,
             TokenHash = _tokenService.HashToken(resetToken),
             ExpiresAtUtc = expiresAtUtc,
             CreatedAtUtc = issuedAtUtc,
             CreatedByIp = context.IpAddress
-        });
+        };
+        _db.PasswordResetTokens.Add(issuedToken);
         _db.LoginActivities.Add(new LoginActivity
         {
             TenantId = user.TenantId,
@@ -2162,6 +2171,8 @@ public class AccessManagementService : IAccessManagementService
             System.Text.Json.JsonSerializer.Serialize(new
             {
                 initiatedBy = "tenant_admin",
+                // auth.password_reset carries the same id when the link is used: who issued it, and who redeemed it.
+                resetTokenId = issuedToken.Id,
                 supersededLinks = superseded.Count,
                 expiresAtUtc
             }),
