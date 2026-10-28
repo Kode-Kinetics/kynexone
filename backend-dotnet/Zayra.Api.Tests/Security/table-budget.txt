@@ -177,6 +177,10 @@ HRRequestCategories
 HRRequestComments
 HRRequestSLAs
 HRRequests
+# P3 hire_templates: per-company hire presets (match keys designation/grade/branch, defaults, checklist) the Add Employee wizard applies.
+# Why no existing table: OnboardingChecklist has no match semantics and a different lifecycle; the grade master stays the pay source (a template holds no money).
+# Owner: HR (Admin / HR Manager). Retention: life of the company, config only, no personal data; soft-deleted rows 7 years.
+HireTemplates
 HrLetterTemplates
 IncrementRecommendations
 InterviewFeedbacks

@@ -1144,6 +1144,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             catch (InvalidOperationException) { return false; }
         }
         var permissions = context.Permissions ?? Array.Empty<string>();
+        // The Finance step of an employee bank-details change releases a payment instruction: it is decided by a payroll approver
+        // only, before the override shortcut below can wave anyone through.
+        if (string.Equals(approval.EntityName, nameof(EmployeeChangeRequest), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(Clean(approval.CurrentApproverRole), Zayra.Api.Application.Employees.Ess.EssSectionDecisionService.FinanceApproverRole, StringComparison.OrdinalIgnoreCase)
+            && !permissions.Any(x => x.Equals("payroll.approve", StringComparison.OrdinalIgnoreCase)))
+            return false;
         if (permissions.Any(x => x.Equals("approvals.override", StringComparison.OrdinalIgnoreCase)))
             return true;
 

@@ -39,7 +39,14 @@ public static class OnboardingDefaultChecklist
             .FirstOrDefaultAsync(ct);
         if (applicationId is null) return new(DefaultChecklistOutcome.NotAnOfferHire, null, 0);
 
-        var defaults = await db.OnboardingChecklists
+        // P3: a company's own default checklist wins; otherwise the tenant-wide "All" checklist as before.
+        var companyDefault = employee.CompanyId is Guid companyId
+            ? await db.OnboardingChecklists
+                .Where(c => c.TenantId == tenantId && c.CompanyId == companyId && c.IsDefault && c.IsActive && !c.IsDeleted
+                            && db.OnboardingChecklistTemplateTasks.Any(t => t.TenantId == tenantId && t.ChecklistId == c.Id && t.IsActive))
+                .Select(c => (Guid?)c.Id).FirstOrDefaultAsync(ct)
+            : null;
+        var defaults = companyDefault is Guid cd ? new List<Guid> { cd } : await db.OnboardingChecklists
             .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted && c.ApplicableTo == ApplicableToAll
                         && db.OnboardingChecklistTemplateTasks.Any(t => t.TenantId == tenantId && t.ChecklistId == c.Id && t.IsActive))
             .Select(c => c.Id)
@@ -60,24 +67,12 @@ public static class OnboardingDefaultChecklist
             .OrderBy(t => t.OrderIndex).ThenBy(t => t.TaskTitle)
             .ToListAsync(ct);
         var startDate = DateOnly.FromDateTime(employee.JoiningDate);
-        foreach (var t in templates)
-        {
-            db.OnboardingTasks.Add(new OnboardingTask
-            {
-                TenantId = tenantId,
-                ChecklistId = checklistId,
-                EmployeeId = employee.PublicId,
-                ApplicationId = applicationId,
-                TaskTitle = t.TaskTitle,
-                TaskDescription = t.TaskDescription,
-                Category = t.Category,
-                AssignedToName = t.AssignedToName,
-                AssignedToUserId = t.AssignedToUserId,
-                DueDate = startDate.AddDays(t.DueOffsetDays),
-                OrderIndex = t.OrderIndex,
-                IsMandatory = t.IsMandatory,
-            });
-        }
+        // The same planner as every other hire: owners, the blocking flag and the Arabic title are copied, and a task that
+        // does not apply to the hire's nationality class (an Iqama task for a Saudi) is not raised.
+        var planned = Zayra.Api.Application.Onboarding.ChecklistPlanner.Plan(templates,
+            Zayra.Api.Application.Onboarding.NationalityClasses.Of(employee.Nationality), startDate);
+        foreach (var p in planned)
+            db.OnboardingTasks.Add(Zayra.Api.Application.Onboarding.ChecklistPlanner.Instantiate(p, tenantId, checklistId, employee.PublicId, applicationId, "offer"));
         db.RecruitmentAuditLogs.Add(new RecruitmentAuditLog
         {
             TenantId = tenantId,
@@ -86,8 +81,8 @@ public static class OnboardingDefaultChecklist
             Action = "DefaultChecklistAttached",
             PerformedByUserId = actorUserId,
             PerformedByName = "Hire activation",
-            NewValuesJson = JsonSerializer.Serialize(new { checklistId, draftId, employeePublicId = employee.PublicId, taskCount = templates.Count }),
+            NewValuesJson = JsonSerializer.Serialize(new { checklistId, draftId, employeePublicId = employee.PublicId, taskCount = planned.Count }),
         });
-        return new(DefaultChecklistOutcome.Attached, checklistId, templates.Count);
+        return new(DefaultChecklistOutcome.Attached, checklistId, planned.Count);
     }
 }

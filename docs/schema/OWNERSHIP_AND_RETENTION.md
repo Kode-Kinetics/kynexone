@@ -393,6 +393,14 @@ filter).
 |---|---|---|
 | `mfa_trusted_devices` | T | `retention_policies` row: `rule_key = auth.mfa-trusted-device-expired`, `trigger_event = RecordDate` (the row's `expires_at_utc`, or `revoked_at_utc` when earlier), `minimum_retention_months = 0`, `disposition = HardDelete`. A credential, not a business record (like `refresh_tokens`): deleted by `MfaTrustedDeviceRetentionRule` **30 days** after it expired or was revoked, a forensic grace matching refresh tokens. It holds a browser User-Agent and an IP address, which have no purpose once the trust is over. The `auth.mfa.*` audit rows naming it are kept with the audit log. |
 
+**Owner:** HR (Admin, HR Manager) · **Approved by:** HR lead. RLS: shape (a) (live bridge: the `ITenantOwned` query filter; company scope through `ICompanyScoped`).
+
+| Table | Class | Note |
+|---|---|---|
+| `hire_templates` | C | Configuration, no personal data. Kept for the life of the company; a soft-deleted row is kept 7 years. Per company, copied (never shared) to a sister company. |
+| `onboarding_checklists` / `onboarding_checklist_template_tasks` | C | Configuration. Same rule. Removing a checklist that raised tasks turns it off instead of deleting it. |
+| `onboarding_tasks` | O | Operational follow-up work per hire; follows the employee record. A task is a copy of its template task, so editing a template never changes it. |
+
 ---
 
 ## 4. What the DPO must still decide

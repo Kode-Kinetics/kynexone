@@ -152,7 +152,7 @@ test('the sidebar offers one Self-Service entry; its pages are tabs inside the w
   await expect(sections.getByRole('link', { name: 'Requests' })).toBeFocused();
   await expect(sections.getByRole('link', { name: 'Requests' })).toHaveAttribute('aria-current', 'page');
   const tabs = page.getByRole('navigation', { name: 'Pages in Requests' });
-  await expect(tabs.getByRole('link')).toHaveText(['HR requests', 'Letters', 'Exit and re-entry visa']);
+  await expect(tabs.getByRole('link')).toHaveText(['HR requests', 'To sign', 'Letters', 'Exit and re-entry visa']);
   await expect(tabs.getByRole('link', { name: 'HR requests' })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { level: 1, name: 'My HR Requests' })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText('Back to Self-Service')).toHaveCount(0);
@@ -224,7 +224,7 @@ test('without ess.read there is no workspace menu, only the refusal', async ({ p
 test('outside Saudi Arabia there is no Exit and re-entry visa tab', async ({ page }) => {
   await boot(page, '/ess/requests', { country: 'KW' });
   const tabs = page.getByRole('navigation', { name: 'Pages in Requests' });
-  await expect(tabs.getByRole('link')).toHaveText(['HR requests', 'Letters'], { timeout: 60_000 });
+  await expect(tabs.getByRole('link')).toHaveText(['HR requests', 'To sign', 'Letters'], { timeout: 60_000 });
 });
 
 test('a module switched off takes its section out of the workspace', async ({ page }) => {

@@ -4,9 +4,18 @@ import { useLocale } from '@/src/contexts/LocaleContext';
 import { FieldShell, inputClass } from '../fields/FieldShell';
 import { DateField } from '../fields/DateField';
 import type { StepProps } from '../types';
+import { TemplatePicker, type AppliedTemplate } from '../TemplatePicker';
+import { useHireTemplate } from '../useHireTemplate';
+import type { HireTemplate } from '@/src/api/onboardingTemplates';
 
-export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, singleCompany, onNameBlur }: StepProps & { onNameBlur: () => void }) {
+export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, singleCompany, onNameBlur, applied, onApplyTemplate, onUndoTemplate }: StepProps & {
+  onNameBlur: () => void;
+  applied?: AppliedTemplate | null;
+  onApplyTemplate?: (template: HireTemplate) => void;
+  onUndoTemplate?: () => void;
+}) {
   const { t, locale } = useLocale();
+  const choices = useHireTemplate(form.companyId, form.designationId, form.gradeId, form.branchId);
   const ar = locale === 'ar';
   const inCompany = <T extends { companyId?: string | null }>(rows: T[]) => rows.filter(r => !r.companyId || !form.companyId || r.companyId === form.companyId);
   const designations = inCompany(lookups.designations.filter(d => d.isActive));
@@ -36,6 +45,7 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
           </select>
         )}
       </FieldShell>
+      {onApplyTemplate && onUndoTemplate && <TemplatePicker choices={choices} applied={applied ?? null} onApply={onApplyTemplate} onUndo={onUndoTemplate} />}
       <DateField field="startDate" label={t('Start date')} hint={form.startDate ? undefined : t('Needed before activation')} value={form.startDate} onChange={v => set('startDate', v)} onBlur={() => blur('startDate')} error={errorFor('startDate')} />
       <FieldShell field="designationId" label={t('Designation')} error={errorFor('designationId')} hint={form.designationId || form.gradeId ? t('A designation brings its own grade.') : t('Needed before activation: choose a designation or a grade.')}>
         {p => (
