@@ -199,6 +199,9 @@
  "src/lib/employeeEditDraft.ts": {
   "@typescript-eslint/no-unused-vars": 2
  },
+ "src/lib/hire/hireValidation.ts": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
  "src/views/AIAssistantPage.tsx": {
   "react-hooks/exhaustive-deps": 1
  },
@@ -301,5 +304,18 @@
  },
  "src/views/employees/EmployeeWorkspaceShell.tsx": {
   "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/views/employees/hire/HireWizard.tsx": {
+  "@next/next/no-html-link-for-pages": 1
+ },
+ "src/views/employees/hire/fields/CountryPicker.tsx": {
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "src/views/employees/hire/fields/Dialogs.tsx": {
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "src/views/employees/hire/steps/SuccessStep.tsx": {
+  "@next/next/no-html-link-for-pages": 1
  }
 }

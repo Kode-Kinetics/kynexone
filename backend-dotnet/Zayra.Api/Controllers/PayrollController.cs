@@ -54,6 +54,7 @@ public partial class PayrollController : ControllerBase
     // keeps compiling; DI always supplies the real ones.
     private readonly IProrationPolicyResolver _prorationPolicy;
     private readonly Zayra.Api.Application.WorkWeek.IWorkWeekService _workWeek;
+    private readonly Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService _salaryDecisions;
     // The payroll-run computation (moved out of this controller); shared with the background job.
     private readonly PayrollRunProcessor _processor;
 
@@ -63,7 +64,8 @@ public partial class PayrollController : ControllerBase
         ICompanyTaxPolicyResolver? taxResolver = null,
         Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard? activationGuard = null,
         IProrationPolicyResolver? prorationPolicy = null,
-        Zayra.Api.Application.WorkWeek.IWorkWeekService? workWeek = null)
+        Zayra.Api.Application.WorkWeek.IWorkWeekService? workWeek = null,
+        Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService? salaryDecisions = null)
     {
         _db = db;
         _scopeService = scopeService;
@@ -79,6 +81,7 @@ public partial class PayrollController : ControllerBase
         _activationGuard = activationGuard ?? new Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard(db);
         _prorationPolicy = prorationPolicy ?? new ProrationPolicyResolver(new CompanyRatePolicyResolver(db));
         _workWeek = workWeek ?? new Zayra.Api.Infrastructure.WorkWeek.WorkWeekService(db);
+        _salaryDecisions = salaryDecisions ?? new Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService(db, _activationGuard);
         _processor = new PayrollRunProcessor(db, packResolver, ruleReader, _taxResolver, _activationGuard, _prorationPolicy, _workWeek);
     }
 
@@ -9072,12 +9075,6 @@ public partial class PayrollController : ControllerBase
             await _db.SaveChangesAsync(cancellationToken);
         }
         return Ok(new { received = rows.Count, created = 0, updated = 0, pendingApproval = pending, batchId = pending > 0 ? batchId : (Guid?)null, skipped, errors = errors.Take(20) });
-    }
-
-    /// <summary>A retried import found that another writer changed a key's salary rows after the first attempt.</summary>
-    private sealed class SalaryImportRaceException((int EmployeeId, DateOnly EffectiveDate) key) : Exception("salary row race")
-    {
-        public (int EmployeeId, DateOnly EffectiveDate) Key { get; } = key;
     }
 
     private sealed record PlannedSalaryRow(int RowNum, int EmployeeId, string EmployeeCode, Guid StructureId, decimal Basic, decimal Housing, decimal Transport,

@@ -156,13 +156,23 @@ public sealed class EmployeeImportAtomicityPostgresTests
     [Fact]
     public async Task AFailureWritingTheImportAudit_RollsBackTheWholeFile()
     {
-        // The audit rows are written last, inside the same transaction — so they cannot fail on their own.
+        // The audit rows are written inside the same transaction, so they cannot fail on their own. A hire with pay now also
+        // stages its compensation-set audit row with the employees (CD37), so the failure can surface at that save and be
+        // answered as the 422 persist refusal rather than thrown after it; either way the whole file is rolled back.
         var tenant = await SeedAsync();
         await using (var failing = Db(new FailWhenSaving(typeof(AuditLog))))
         {
-            // The audit seal wraps the database failure; the whole file still rolls back.
-            var seal = await Assert.ThrowsAsync<Zayra.Api.Data.AuditSealFailedException>(() => Import(failing, tenant, File(3)));
-            Assert.IsAssignableFrom<DbUpdateException>(seal.InnerException);
+            // The audit seal wraps a database failure (AuditSealFailedException); a hire with pay stages its compensation-set audit row
+            // with the employees, so the failure can also surface at that save and be answered as the 422 persist refusal. Either way
+            // the whole file is rolled back.
+            try
+            {
+                var response = await Import(failing, tenant, File(3));
+                var refused = Assert.IsType<UnprocessableEntityObjectResult>(response);
+                Assert.Equal("import_persist_failed", Body(refused).GetProperty("error").GetString());
+            }
+            catch (Zayra.Api.Data.AuditSealFailedException seal) { Assert.IsAssignableFrom<DbUpdateException>(seal.InnerException); }
+            catch (DbUpdateException) { /* thrown after the save boundary: also a refusal */ }
         }
         await AssertNothingPersisted(tenant);
     }

@@ -748,7 +748,7 @@ public sealed class AccessPrivilegeCeilingTests
             new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "group", c = Array.Empty<Guid>() })),
         };
         var service = new AccessManagementService(db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(db), new FakeTokenService());
-        return new AccessController(service, db, email!)
+        return new AccessController(service, db, email!, stepUp: StepUpTestKit.AlwaysConfirmed(db))
         {
             ControllerContext = new ControllerContext
             {

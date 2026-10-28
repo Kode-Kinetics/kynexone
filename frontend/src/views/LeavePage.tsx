@@ -2,7 +2,7 @@
 
 import { BelowMinimumPanel } from '../components/BelowMinimumPanel';
 import {
-  acknowledgementsFor, checksFromWarnings, coveringAck, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
+  acknowledgementsFor, checksFromWarnings, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
   type FloorCheck,
 } from '../lib/belowMinimum';
 import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
@@ -1282,7 +1282,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
         annualEntitlementDays: form.annualEntitlementDays, maximumDaysPerRequest: form.maximumDaysPerRequest, payrollImpact: form.payrollImpact,
         weekendsIncluded: form.weekendsIncluded, publicHolidaysIncluded: form.publicHolidaysIncluded,
         minimumServiceMonths: form.minimumServiceMonths, policyId: existing?.id, status: form.status,
-      }).then(checks => { if (live) setFloorChecks(checks); }).catch(() => { if (live) setFloorChecks([]); });
+      }).then(checks => { if (live) setFloorChecks(Array.isArray(checks) ? checks : []); }).catch(() => { if (live) setFloorChecks([]); });
     }, 250);
     return () => { live = false; clearTimeout(timer); };
   }, [form.leaveTypeId, form.countryCode, form.companyId, form.annualEntitlementDays, form.maximumDaysPerRequest, form.payrollImpact,

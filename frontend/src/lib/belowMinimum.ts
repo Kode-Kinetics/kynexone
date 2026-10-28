@@ -102,8 +102,9 @@ export function coveringAck(stored: readonly StoredFloorAck[], c: FloorCheck): S
 }
 
 /** The checks still waiting for an acknowledgement. */
-export function openChecks(checks: readonly FloorCheck[], stored: readonly StoredFloorAck[] = []): FloorCheck[] {
-  return checks.filter(c => c.below && !coveringAck(stored, c));
+export function openChecks(checks: readonly FloorCheck[] | null | undefined, stored: readonly StoredFloorAck[] = []): FloorCheck[] {
+  // A dry run that answered without a list (or not at all) has nothing below the minimum to show.
+  return (Array.isArray(checks) ? checks : []).filter(c => c.below && !coveringAck(stored, c));
 }
 
 /** True when the form may be saved: nothing open, or the open ones are acknowledged with a real reason. */

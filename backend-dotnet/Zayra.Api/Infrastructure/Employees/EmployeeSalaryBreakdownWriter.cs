@@ -114,6 +114,24 @@ public static class EmployeeSalaryBreakdownWriter
             Currency = Clean(request?.Currency) is { Length: > 0 } currency ? currency.ToUpperInvariant() : structure.Currency,
             PreviousBasicSalary = null, RequestedByUserId = context.UserId, RequestedByName = makerName,
         };
+        // A draft saved again: the same figures keep the pending request (no duplicate); different figures replace it, so Finance only
+        // ever decides the latest proposal. The replacing writer becomes the maker, so they can never approve it.
+        var pending = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.SalaryChangeRequests, employee.TenantId.Value,
+                "Staging a first package: the employee's own pending first packages, to keep or replace them; tenant and employee pinned.")
+            .Where(x => x.EmployeeId == employee.Id && x.Status == SalaryChangeRequest.Pending
+                && (x.Source == SalaryChangeSources.NewHire || x.Source == SalaryChangeSources.EmployeeImport))
+            .ToListAsync(cancellationToken);
+        var same = pending.FirstOrDefault(x => x.SalaryStructureId == change.SalaryStructureId && x.BasicSalary == change.BasicSalary
+            && x.HousingAllowance == change.HousingAllowance && x.TransportAllowance == change.TransportAllowance && x.FoodAllowance == change.FoodAllowance
+            && x.MobileAllowance == change.MobileAllowance && x.OtherAllowance == change.OtherAllowance && x.FixedDeduction == change.FixedDeduction
+            && x.EffectiveDate == change.EffectiveDate && string.Equals(x.Currency, change.Currency, StringComparison.Ordinal));
+        if (same is not null) return same;
+        foreach (var old in pending)
+        {
+            old.Status = SalaryChangeRequest.Cancelled;
+            old.DecidedAtUtc = DateTime.UtcNow;
+            old.DecisionNote = "Superseded by a newer proposal while the draft was edited.";
+        }
         db.SalaryChangeRequests.Add(change);
         return change;
     }

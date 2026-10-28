@@ -6,7 +6,7 @@ namespace Zayra.Api.Application.Employees;
 public record EmployeeCreateRequest(
     string? EmployeeCode,
     bool ManualEmployeeCode,
-    [Required, MaxLength(180)] string EnglishName,
+    [Required, MaxLength(150)] string EnglishName,
     [MaxLength(180)] string? ArabicName,
     [MaxLength(120)] string? PreferredName,
     // Creation stores an incomplete Draft; configured readiness still requires gender before activation.
@@ -43,12 +43,19 @@ public record EmployeeCreateRequest(
     EmployeeSalaryBreakdownRequest? SalaryBreakdown,
     IReadOnlyCollection<EmployeeComplianceRecordRequest>? ComplianceRecords,
     Guid? PositionId = null,
+    // Onboarding hire contract: ISO 3166 alpha-2 nationality, the reason for a duplicate/ID override, and the
+    // statutory-floor warnings the caller chose to override (409 warnings_require_acknowledgement replay).
+    [MaxLength(2)] string? NationalityCode = null,
+    [MaxLength(500)] string? DuplicateOverrideReason = null,
+    IReadOnlyCollection<Zayra.Api.Application.Employees.Onboarding.AcknowledgedWarning>? AcknowledgedWarnings = null,
     // Explicit "create anyway" override for the duplicate-person backstop. Default false → an
     // unacknowledged STRONG national-identity match is refused with 409 possible_duplicate (never-silent-
     // dup). Set only when the operator dismisses the warning; the create then records an audited override.
     bool AcknowledgeDuplicate = false,
     // Explicit "keep this probation" for a probation longer than the company's own maximum (Setup > Payroll rules).
     bool AcknowledgeProbationOverLimit = false,
+    // CD26: end of a fixed-term contract. Stored on Employee.ContractEndDate; CD17 rules in the input guard.
+    DateOnly? ContractEndDate = null,
     // Cost-centre accounting (contract 2.9, M-10): why the employee's cost-centre override is being set or removed. Required (422
     // cost_centre_reason_required) whenever the request changes the override; recorded in the employee.cost_centre_override.changed audit row.
     string? CostCenterReason = null);
@@ -61,8 +68,9 @@ public record EmployeePayrollProfileRequest(
     string? SalaryCurrency,
     string? PayrollGroup,
     string? SalaryStructureReference,
-    bool WpsEligible,
-    bool EosbEligible,
+    // CD30: null = take the default from the employing company's country policy (server-side), never from what was typed.
+    bool? WpsEligible,
+    bool? EosbEligible,
     string? SocialInsuranceReference,
     string? MolId,
     string? BankRoutingCode);
@@ -98,7 +106,9 @@ public record EmployeeStatusChangeRequest(
     // unaffected; when omitted a direct termination records "Termination", the conservative reading of
     // an employer-initiated command. It is stated on the COMMAND rather than guessed later, because
     // this value decides the gratuity.
-    [MaxLength(60)] string? SeparationType = null);
+    [MaxLength(60)] string? SeparationType = null,
+    // CD44: the privileged waiver of a failing stored identity check digit, with a reason (activation only).
+    IReadOnlyCollection<Zayra.Api.Application.Employees.Onboarding.AcknowledgedWarning>? AcknowledgedWarnings = null);
 
 public record EmployeeDocumentUploadMetadata(
     [Required, MaxLength(80)] string DocumentType,
@@ -170,6 +180,10 @@ public record EmployeeDetailDto
     public DateOnly? DateOfBirth { get; init; }
     public string MaritalStatus { get; init; } = string.Empty;
     public string Nationality { get; init; } = string.Empty;
+    /// <summary>ISO 3166 alpha-2 nationality (null until one is chosen). A resumed draft restores the picker from this, not from the English name.</summary>
+    public string? NationalityCode { get; init; }
+    /// <summary>Unset | Confirmed | ProposedAuto | Unresolved.</summary>
+    public string NationalityMappingState { get; init; } = string.Empty;
     public string CountryCode { get; init; } = string.Empty;
     public string EmergencyContactName { get; init; } = string.Empty;
     public string EmergencyContactPhone { get; init; } = string.Empty;
@@ -274,6 +288,8 @@ public record EmployeeDetailDto
     /// <summary>Most recent active salary assignment, exposed only with employees.sensitive.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     public EmployeeSalaryBreakdownRequest? SalaryBreakdown { get; init; }
+    /// <summary>"Pending" while <see cref="SalaryBreakdown"/> is a new hire's first package still waiting for Finance (not yet approved pay); null otherwise.</summary>
+    public string? SalaryApprovalState { get; init; }
     public IReadOnlyCollection<EmployeeComplianceRecord> ComplianceRecords { get; init; } = [];
     public IReadOnlyCollection<EmployeeDocumentDto> Documents { get; init; } = [];
     public IReadOnlyCollection<EmployeeHistoryDto> History { get; init; } = [];
@@ -311,6 +327,8 @@ public record EmployeeDetailDto
             DateOfBirth                   = e.DateOfBirth,
             MaritalStatus                 = e.MaritalStatus,
             Nationality                   = e.Nationality,
+            NationalityCode               = e.NationalityCode,
+            NationalityMappingState       = e.NationalityMappingState,
             CountryCode                   = e.CountryCode,
             EmergencyContactName          = e.EmergencyContactName,
             EmergencyContactPhone         = e.EmergencyContactPhone,

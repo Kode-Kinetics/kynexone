@@ -14,6 +14,7 @@ const AssistantDrawer = dynamic(() => import('./AssistantDrawer').then((m) => m.
 import { MobileBottomNav } from './MobileBottomNav';
 import { MfaEnrollmentPrompt } from '../components/MfaEnrollmentPrompt';
 import { ResetCodeNotice } from '../components/ResetCodeNotice';
+import { StepUpHost } from '../components/access/StepUpHost';
 import { authApi } from '../api/auth';
 import { employeesApi } from '../api/employees';
 import { reportsApi } from '../api/reports';
@@ -451,6 +452,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             className="mx-4 mt-4 sm:mx-6 lg:mx-8"
           />
           <ResetCodeNotice className="mx-4 mt-4 sm:mx-6 lg:mx-8" />
+          {/* "Confirm it's you" before actions against an Admin or the workspace owner (src/api/stepUp.ts). */}
+          <StepUpHost />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
           <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}><SetupWorkspaceReturn />{children}</main>
         </div>

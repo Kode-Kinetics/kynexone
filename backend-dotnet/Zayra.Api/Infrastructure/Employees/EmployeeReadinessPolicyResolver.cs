@@ -109,6 +109,9 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
         if (floor.Count > 0) sources.Add("floor");
         foreach (var item in floor)
             Union(merged, ApplyConditions(item, nat, wpsEnabled), contradictions);
+        // Onboarding: a recorded nationality is needed to ACTIVATE (blank is unknown, never "expat"). Activate-gated only;
+        // the gate runs on the Draft-to-Active transition, so existing Active employees are not blocked by it.
+        if (floor.Count > 0) Union(merged, new ReadinessRequirement("Nationality", "personal", true, "activate", "floor", iso2), contradictions);
 
         // ── Layer tenant default, then company (config: add or upgrade only) ──
         if (tenantDefault is not null)

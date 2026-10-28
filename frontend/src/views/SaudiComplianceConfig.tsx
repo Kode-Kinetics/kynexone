@@ -739,7 +739,7 @@ function LaborPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting | null; on
     let live = true;
     const timer = setTimeout(() => {
       gccSettingsApi.floorCheck({ countryCode: 'SA', eosbYears1To5Rate: form.eosbYears1To5Rate, eosbYearsAbove5Rate: form.eosbYearsAbove5Rate })
-        .then(c => { if (live) setFloorChecks(c); }).catch(() => { if (live) setFloorChecks([]); });
+        .then(c => { if (live) setFloorChecks(Array.isArray(c) ? c : []); }).catch(() => { if (live) setFloorChecks([]); });
     }, 250);
     return () => { live = false; clearTimeout(timer); };
   }, [form.eosbEnabled, form.eosbYears1To5Rate, form.eosbYearsAbove5Rate]);

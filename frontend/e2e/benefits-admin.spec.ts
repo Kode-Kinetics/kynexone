@@ -39,6 +39,8 @@ async function createGradedEmployee(request: APIRequestContext, token: string) {
   const employeeResponse = await request.post('/api/employees', { headers, data: {
     employeeCode: `BE${code}`, manualEmployeeCode: true, englishName: `Benefits Employee ${code}`,
     companyId: company.id, gradeId: grade.id, joiningDate: '2026-01-01T00:00:00Z',
+    // A joining date more than 30 days back needs a reason (CD14); the date is kept so the plan window stays as written.
+    acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'Synthetic benefits scenario with a fixed historical start date' }],
   } });
   expect(employeeResponse.status(), await employeeResponse.text()).toBe(201);
   const employee = await employeeResponse.json();

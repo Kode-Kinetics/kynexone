@@ -76,7 +76,8 @@ async function boot(page: Page, options: MockOptions = {}) {
       isGroupScope: !!options.multipleCompanies, accountType: options.multipleCompanies ? 'Group' : 'SingleCompany',
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: 'TEST', countryCode: item.countryCode, isActive: true })),
     });
-    if (path === '/api/features/disabled-keys') return reply(['release_a']);
+    // hire_wizard_v2 is opt-in: the server lists it as disabled until the platform switches it on, so this is the flag-OFF (legacy) wizard.
+    if (path === '/api/features/disabled-keys') return reply(['release_a', 'hire_wizard_v2']);
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (path === '/api/companies') return reply(paged(companies));
     if (path === '/api/admin/master-data/values') return reply(options.masterData?.[url.searchParams.get('typeCode') ?? ''] ?? []);

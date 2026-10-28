@@ -125,6 +125,8 @@ public static class FeatureKeys
     /// (PUT /api/platform/tenants/{id}/features/release_a), never from Tenant Admin. See OptInFeatures.
     /// </summary>
     public const string ReleaseA = "release_a";
+    /// <summary>New hire wizard (opt-in; absent row = OFF). Server-side hire hardening is NOT behind this flag.</summary>
+    public const string HireWizardV2 = "hire_wizard_v2";
     /// <summary>
     /// Selfie attendance (a photo with each punch, single-use evidence id, consent per policy version). OPT-IN: an
     /// absent row means OFF. Only the platform team can switch it on, and the platform endpoint refuses unless the

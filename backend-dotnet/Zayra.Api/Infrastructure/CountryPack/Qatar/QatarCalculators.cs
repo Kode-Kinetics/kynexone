@@ -73,10 +73,10 @@ public sealed class QatarDeductionCalculator : IStatutoryDeductionCalculator
         return new(empContrib, erContrib, lines);
     }
 
-    private static bool IsQatariNational(string nat)
-        => string.Equals(nat, CountryCodes.Qatar, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(nat, "QA", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(nat, "Qatari", StringComparison.OrdinalIgnoreCase);
+    // The shared GCC normaliser, so the country NAME the hire wizard now records ("Qatar") is read as national exactly
+    // as the demonym staff used to type ("Qatari"). A superset of the spellings accepted before.
+    internal static bool IsQatariNational(string nat)
+        => Zayra.Api.Infrastructure.Employees.GccReadinessFloor.NormalizeNationality(nat) == "QA";
 }
 
 // ── Qatar EOSB calculator ─────────────────────────────────────────────────────

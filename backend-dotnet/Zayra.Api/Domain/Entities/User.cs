@@ -27,6 +27,14 @@ public class User : ITenantOwned
     public int FailedLoginCount { get; set; }
     public DateTime? LastPasswordChangedAt { get; set; }
     public bool MustChangePassword { get; set; }
+
+    /// <summary>
+    /// The workspace OWNER: at most one per tenant (ux_users__one_workspace_owner). No other Admin may suspend, lock,
+    /// delete, demote, set to no-login, or reset the password or two-step sign-in of the owner (access_owner_protected).
+    /// Only the owner hands it on (AccessManagementService.TransferOwnershipAsync); KynexOne support sets it when the
+    /// owner is gone. No row set means no owner designated, and nobody is protected.
+    /// </summary>
+    public bool IsWorkspaceOwner { get; set; }
     // True when this user has group-level (cross-company) access within their tenant.
     // Derives from explicit is_group_scope=true JWT claim (post-migration) or is used
     // to elevate scoped users by an Admin via the AccessController.SetGroupScope endpoint.

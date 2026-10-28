@@ -29,7 +29,7 @@ const fmt = (n: number | null | undefined) => (n == null ? '' : String(Number(n.
  */
 export function BelowMinimumPanel({ checks, stored = [], acknowledged, onAcknowledged, reason, onReason, heading }: Props) {
   const { t, locale } = useLocale();
-  if (checks.length === 0) return null;
+  if (!Array.isArray(checks) || checks.length === 0) return null;
   const open = checks.filter(c => c.below && !coveringAck(stored, c));
   return (
     <div data-testid="below-minimum-panel" className="rounded-lg border border-slate-200 p-4 dark:border-white/10">

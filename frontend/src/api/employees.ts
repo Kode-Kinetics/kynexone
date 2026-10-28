@@ -318,6 +318,9 @@ export interface EmployeeEntity {
   dateOfBirth?: string;
   maritalStatus: string;
   nationality: string;
+  /** ISO 3166 alpha-2 nationality as stored (null when none is chosen). */
+  nationalityCode?: string | null;
+  nationalityMappingState?: string;
   countryCode: string;
   companyId?: string;
   branchId?: string;
@@ -434,6 +437,8 @@ export interface EmployeeTransferRequest {
 export interface EmployeeDetail extends EmployeeEntity {
   /** Null means no package yet; omission means the API does not support package editing. */
   salaryBreakdown?: EmployeeSalaryBreakdownRequest | null;
+  /** "Pending" while salaryBreakdown is a new hire's first package still waiting for Finance (not approved pay). */
+  salaryApprovalState?: 'Pending' | null;
   payrollProfile?: EmployeePayrollProfileRequest;
   complianceRecords: EmployeeComplianceRecordRequest[];
   documents: EmployeeDocument[];

@@ -724,6 +724,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Added
             if (scoped.CompanyId is Guid explicitCompany)
             {
+                await Zayra.Api.Infrastructure.Employees.Onboarding.TenantCompanyMembershipGuard.AssertAsync(this, explicitCompany, ResolveEntryTenantId(entry) ?? tenantClaim.Value, ct);
                 if (!scope.CanAccessCompany(explicitCompany))
                     throw new UnauthorizedAccessException(
                         $"company_scope_denied: cannot create {entry.Metadata.ClrType.Name} in a company outside your access.");
@@ -1729,6 +1730,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.PublicId })
                   .HasDatabaseName("ux_employees_tenant_public_id")
                   .IsUnique();
+            entity.Property(x => x.CreateRequestFingerprint).HasMaxLength(64);
+            entity.HasIndex(x => new { x.TenantId, x.CreateIdempotencyKey })
+                  .HasDatabaseName("ux_employees_tenant_create_idempotency_key")
+                  .IsUnique()
+                  .HasFilter("create_idempotency_key IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.Status });
             // "Needs info" worklist filter — employees whose readiness is Blocked.
             entity.HasIndex(x => new { x.TenantId, x.ReadinessState });
@@ -3552,6 +3558,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ProvisioningSource).HasMaxLength(40).HasDefaultValue("Local");
             entity.Property(x => x.Status).HasMaxLength(40).HasDefaultValue("Active");
             entity.Property(x => x.AccessMode).HasMaxLength(40).HasDefaultValue("FullPortal");
+            // One owner per workspace, enforced here rather than remembered by the service. A transfer clears the old
+            // owner before setting the new one, in one transaction (AccessManagementService.TransferOwnershipAsync).
+            entity.Property(x => x.IsWorkspaceOwner).HasDefaultValue(false);
+            entity.HasIndex(x => x.TenantId).IsUnique().HasFilter("is_workspace_owner").HasDatabaseName("ux_users__one_workspace_owner");
             entity.Property(x => x.MfaSecretEncrypted).HasMaxLength(1024);
             entity.Property(x => x.MfaRecoveryCodeHashes).HasMaxLength(1024);
             // Raised by the save hook (EndSessionsOfAsync); trg_users__session_epoch_increments keeps every raise to
@@ -5812,6 +5822,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         // Release A (entitlements, contract-year package, renewal case) — same append-only convention.
         ReleaseAModelConfiguration.Configure(modelBuilder, Database.IsNpgsql());
+        // Employee onboarding P1: nationality code/state, original joining date (migration OnboardingP1).
+        OnboardingModelConfiguration.Configure(modelBuilder);
         SelfieAttendanceModelConfiguration.Configure(modelBuilder);
         // LRN — learning management (same append-only convention).
         LearningModelConfiguration.Configure(modelBuilder);

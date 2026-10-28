@@ -22,7 +22,7 @@ export function BelowMinimumRules() {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let live = true;
-    belowMinimumApi.list().then(r => { if (live) setItems(r); }).catch(() => { if (live) setFailed(true); });
+    belowMinimumApi.list().then(r => { if (live) setItems(Array.isArray(r) ? r : []); }).catch(() => { if (live) setFailed(true); });
     return () => { live = false; };
   }, []);
   if (failed) return null; // a caller without the HR roles simply does not get the list

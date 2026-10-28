@@ -127,7 +127,13 @@ public sealed class EmployeeDraftCreateHttpFixture : IAsyncLifetime
         var connection = $"Data Source=file:employee-draft-create-{Guid.NewGuid():N}?mode=memory&cache=shared";
         _anchor = new SqliteConnection(connection);
         await _anchor.OpenAsync();
-        Host = new AuthorizationPipelineHost(connection);
+        // These suites create dozens of employees as one user in seconds; the per-user create limit (10/min, which now
+        // really applies) is exercised by HireIntegrityHttpTests on the default limits, so it is raised here only.
+        Host = new AuthorizationPipelineHost(connection, configuration: new Dictionary<string, string?>
+        {
+            ["RateLimit:Employees:employee-create:PerUser"] = "10000",
+            ["RateLimit:Employees:employee-create:PerTenant"] = "100000",
+        });
         _client = Host.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
         using (var scope = Host.Services.CreateScope())
         {

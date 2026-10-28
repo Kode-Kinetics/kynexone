@@ -348,7 +348,9 @@ public record UserListDto(
     string? EmployeeName = null,
     string? EmployeeCode = null,
     // Two-step sign-in is on for this login (drives the admin's "Reset two-step sign-in" action).
-    bool MfaEnabled = false);
+    bool MfaEnabled = false,
+    // The workspace owner (User.IsWorkspaceOwner): no other Admin can change this account.
+    bool IsOwner = false);
 
 public record UpdateUserRequest(
     [MaxLength(180)] string? FullName,
@@ -565,6 +567,9 @@ public record MfaSelfDisableRequest(string? TotpCode = null, string? BackupCode 
 
 public record MfaDisableRequest(
     [System.ComponentModel.DataAnnotations.Required] string TotpCode);
+
+/// <summary>POST /api/auth/step-up: the password, and the two-step code when two-step sign-in is on.</summary>
+public record StepUpRequest([MaxLength(128)] string? Password, [MaxLength(16)] string? TotpCode);
 
 public record ReasonRequest([MaxLength(500)] string? Reason);
 

@@ -32,6 +32,15 @@ public interface IAccessManagementService
     /// ceiling exception) when not: a reason is required, never yourself, the user must be in your scope, below your
     /// ceiling, and hold an active local login. The password itself is written by IAuthService.AdminSetTemporaryPasswordAsync.
     /// </summary>
+    /// <summary>
+    /// The workspace owner hands ownership to another operational Admin of the tenant. Only the current owner may;
+    /// <see cref="InvalidOperationException"/> otherwise, or when the new owner is not an active Admin who can sign in.
+    /// </summary>
+    Task TransferOwnershipAsync(Guid tenantId, Guid newOwnerUserId, RequestContext context, CancellationToken cancellationToken);
+
+    /// <summary>KynexOne support sets the owner when the current one is gone (after verifying the customer).</summary>
+    Task SetOwnerByPlatformAsync(Guid tenantId, Guid newOwnerUserId, string reason, RequestContext context, CancellationToken cancellationToken);
+
     Task AuthorizeAdminPasswordSetAsync(Guid tenantId, Guid userId, string? reason, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
 
     /// <summary>

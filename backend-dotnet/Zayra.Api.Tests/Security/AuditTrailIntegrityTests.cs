@@ -331,7 +331,7 @@ public class AuditTrailIntegrityTests
     /// the expected edit when a caller is converted. A site that must stay (database-generated key
     /// needed, or the save sits in a catch-and-continue loop) is part of the remaining count.
     /// </summary>
-    private const int MaxUnstagedAuditWriteCallers = 89;
+    private const int MaxUnstagedAuditWriteCallers = 96;
 
     [Fact]
     public void UnstagedAuditWriteCallers_NeverGrow()

@@ -1409,7 +1409,7 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────────────────
 
-    private static CompanySetupController Controller(ZayraDbContext db, Guid tenantId, Guid userId, Guid? scopedCompany = null, string role = "Admin")
+    private static CompanySetupController Controller(ZayraDbContext db, Guid tenantId, Guid userId, Guid? scopedCompany = null, string role = "Admin", Zayra.Api.Infrastructure.Auth.StepUpService? stepUp = null)
     {
         var claims = new List<Claim>
         {
@@ -1421,7 +1421,8 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         };
         var audit = new AuditService(db);
         return new CompanySetupController(db, new OrganizationSetupService(db, audit),
-            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail())
+            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail(),
+            stepUp ?? StepUpTestKit.AlwaysConfirmed(db))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } },
         };

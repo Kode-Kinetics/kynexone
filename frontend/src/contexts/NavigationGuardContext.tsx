@@ -141,6 +141,8 @@ export function NavigationGuardProvider({ children }: { children: React.ReactNod
       if (!target || target.target === '_blank' || target.hasAttribute('download')) return;
       const url = new URL(target.href, window.location.href);
       if (url.origin !== window.location.origin || url.href === window.location.href) return;
+      // A link to an anchor on this same page (an error-summary link) leaves nothing behind to protect.
+      if (url.hash && url.pathname === window.location.pathname && url.search === window.location.search) return;
       if (activeBlockers().length === 0) return;
       event.preventDefault();
       event.stopPropagation();

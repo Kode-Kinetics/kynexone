@@ -320,7 +320,7 @@ public class FloorWarningsTests
         await db.SaveChangesAsync();
         await Settings(db, tenant).UpsertGCCSetting(Gcc(10m, 30m, [new FloorAcknowledgement("eosb_tier1_below_minimum", "Group policy for casual staff")]), default);
 
-        var list = new FloorComplianceController(db)
+        var list = new FloorComplianceController(new Zayra.Api.Infrastructure.Compliance.BelowMinimumReportService(db))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(
                 [new Claim("tenant_id", tenant.ToString()), new Claim("is_group_scope", "true")], "t")) } },

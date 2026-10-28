@@ -57,9 +57,11 @@ const INVITED = { email: `sara@${EN_CO.domain}`, fullName: 'Sara Al-Qahtani' };
 
 // ── direct API (the assertions' source of truth) ──────────────────────────────────────────────
 
-async function call<T = any>(method: string, p: string, opts: { token?: string; body?: unknown } = {}): Promise<{ status: number; body: T; text: string }> {
+async function call<T = any>(method: string, p: string, opts: { token?: string; body?: unknown; stepUp?: string } = {}): Promise<{ status: number; body: T; text: string }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+  // "Confirm it's you" (POST /api/auth/step-up): actions against an Admin carry it in X-Step-Up.
+  if (opts.stepUp) headers['X-Step-Up'] = opts.stepUp;
   const res = await fetch(`${API}${p}`, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
   const text = await res.text();
   let body: any = null;
@@ -73,6 +75,26 @@ function ok<T>(res: { status: number; body: T; text: string }, what: string, acc
 }
 
 const items = (body: any): any[] => Array.isArray(body) ? body : body?.items ?? body?.Items ?? [];
+
+/** A five-minute "Confirm it's you" token for the signed-in caller (StepUpService). */
+async function stepUpToken(token: string, password = PASSWORD): Promise<string> {
+  return (ok(await call('POST', '/api/auth/step-up', { token, body: { password } }), 'confirm it is you') as any).stepUpToken;
+}
+
+/** The web app's "Confirm it's you" dialog: an action against an Admin asks the signed-in user for their password once. */
+async function confirmItsYou(page: Page, password = PASSWORD) {
+  const dialog = page.getByTestId('step-up-dialog');
+  await expect(dialog).toBeVisible({ timeout: 20_000 });
+  await dialog.getByTestId('step-up-password').fill(password);
+  await page.getByTestId('step-up-confirm').click();
+  await expect(dialog).toHaveCount(0, { timeout: 20_000 });
+}
+
+/** As above when the action might not need it (an admin choice that makes nobody an Admin, or a confirmation still fresh). */
+async function confirmItsYouIfAsked(page: Page, password = PASSWORD) {
+  const dialog = page.getByTestId('step-up-dialog');
+  if (await dialog.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false)) await confirmItsYou(page, password);
+}
 
 async function tenantToken(email: string, password = PASSWORD): Promise<string> {
   const body = ok(await call('POST', '/api/auth/login', { body: { email, password, tenantSlug: SLUG } }), `login ${email}`);
@@ -280,6 +302,8 @@ test('EN: the seven steps create the company, its setup and an invited super adm
   await expect(create).toBeEnabled();
   await shot(page, info, 'en-7-review');
   await create.click();
+  // Inviting a company super admin makes someone an Admin: the signed-in owner confirms it's them first.
+  await confirmItsYou(page);
   await expectCreated(page, t, EN_CO);
   const adminRow = page.getByTestId('readiness-companyAdmin');
   await expect(adminRow).toContainText(`Send ${INVITED.fullName} their sign-in link`);
@@ -287,6 +311,8 @@ test('EN: the seven steps create the company, its setup and an invited super adm
   // One click sends the invited super admin their sign-in link. This stack has no SMTP, so the server hands the link
   // back once, here, to be passed on through the company's own channel.
   await adminRow.getByRole('button', { name: t('Send sign-in link'), exact: true }).click();
+  // The invited super admin is an Admin: the confirmation given at "Create company" is still fresh (five minutes).
+  await confirmItsYouIfAsked(page);
   const linkOutcome = adminRow.getByTestId('sign-in-link-result');
   await expect(linkOutcome).toBeVisible({ timeout: 20_000 });
   const emailed = (await linkOutcome.getAttribute('data-emailed')) === 'true';
@@ -304,7 +330,10 @@ test('EN: the seven steps create the company, its setup and an invited super adm
   expect(rows.map(r => r.legalNameEn)).toEqual([EN_CO.legalNameEn]);
   expect(rows[0].wpsEmployerId).toBe(EN_CO.mol);
   expect(await companiesUsed(owner)).toBe(before + 1);
-  expect(commits).toHaveLength(1);
+  // One click: refused once for "Confirm it's you" (403, nothing written), then the same request — same idempotency
+  // key — repeated once after the owner confirmed.
+  expect(new Set(commits).size).toBe(1);
+  expect(commits.answers.map(a => a.status)).toEqual([403, 201]);
   const readiness = ok(await call('GET', `/api/company-setup/readiness/${rows[0].id}`, { token: owner }), 'readiness') as any[];
   expect(readiness.length).toBeGreaterThan(0);
   expect(pageErrors).toEqual([]);
@@ -349,6 +378,8 @@ test('AR: the same journey in Arabic, with an existing company admin as the supe
   await expect(create).toBeEnabled();
   await shot(page, info, 'ar-7-review');
   await create.click();
+  // Giving an existing user the Admin role: the signed-in owner confirms it's them first.
+  await confirmItsYou(page);
   await expectCreated(page, t, AR_CO, 'ar');
   await shot(page, info, 'ar-8-created');
 
@@ -443,6 +474,7 @@ test('a double-click on Create makes exactly one company', async ({ page }) => {
   const create = page.getByRole('button', { name: t('Create company'), exact: true });
   await expect(create).toBeEnabled();
   await create.dblclick();
+  await confirmItsYouIfAsked(page);
   await expectCreated(page, t, DOUBLE_CO);
 
   expect(await companiesWithCr(owner, DOUBLE_CO.cr)).toHaveLength(1);
@@ -483,7 +515,7 @@ test('the invited company super admin signs in and sees only their company', asy
   // The product's own hand-over: the single-use sign-in link the group admin sent from the success screen (no
   // password typed by them). Only when that one was emailed is a fresh one issued here.
   const resetUrl = invitedSignInLink
-    ?? (ok(await call('POST', `/api/access/users/${invited.id}/password-reset-link`, { token: owner }), 'reset link') as any).resetUrl;
+    ?? (ok(await call('POST', `/api/access/users/${invited.id}/password-reset-link`, { token: owner, stepUp: await stepUpToken(owner) }), 'reset link') as any).resetUrl;
   const token = decodeURIComponent(new URL(resetUrl).hash.replace(/^#token=/, ''));
   const newPassword = `Sa${randomBytes(8).toString('hex')}!aA9`;
   ok(await call('POST', '/api/auth/reset-password', { body: { resetToken: token, newPassword, tenantSlug: SLUG } }), 'set password');

@@ -378,6 +378,7 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyPayrollRules
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.StepUpService>();
 builder.Services.AddScoped<IAccessManagementService, AccessManagementService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.EmployeeAccessService>();
 builder.Services.AddScoped<IEnterpriseIdentityService, EnterpriseIdentityService>();
@@ -404,6 +405,8 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Governance.ICompanyTaxPolicy
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessPolicyResolver, Zayra.Api.Infrastructure.Employees.EmployeeReadinessPolicyResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessEvaluator, Zayra.Api.Infrastructure.Employees.EmployeeReadinessEvaluator>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard, Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.BelowMinimumReportService>();
 // Duplicate-person detection — the ONE authoritative, server-side detector shared by the pre-create
 // check, the create commit backstop, and (via the preloaded-dictionary matcher) the bulk importer.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeDuplicateDetector, Zayra.Api.Infrastructure.Employees.EmployeeDuplicateDetector>();
@@ -686,6 +689,8 @@ Zayra.Api.Infrastructure.Engagement.EngagementServiceCollectionExtensions.AddEng
 // back (setup assistant, advisory) impose their own, tighter budget on top of this ceiling.
 builder.Services.AddHttpClient<ILlmClient, LlmClient>(c => c.Timeout = TimeSpan.FromSeconds(120));
 builder.Services.AddHttpContextAccessor();
+
+Zayra.Api.Infrastructure.Employees.Onboarding.OnboardingServiceRegistration.AddOnboardingServices(builder.Services);
 
 // Country pack framework — scoped per request (strategies depend on scoped IStatutoryRuleReader).
 // Default (no-op) pack registered as the non-keyed fallback for each interface.
@@ -1194,6 +1199,20 @@ using (var scope = app.Services.CreateScope())
     {
         try { await PayrollAuditChainBackfill.RunAsync(dbContext, logger); }
         catch (Exception ex) { logger.LogError(ex, "PayrollAuditChainBackfill failed — continuing startup."); }
+    }
+
+    // Onboarding P1 nationality mapping — maps each employee's free-text nationality onto the ISO catalog.
+    // Idempotent (only touches rows still 'Unset'), a no-op on an empty database, never changes what a reader
+    // classifies (a class change is only PROPOSED for HR to confirm), and non-fatal: if the column is not there
+    // yet (migrations deferred) the next boot catches up. Kill switch: Onboarding:NationalityBackfill=false.
+    if (!string.Equals(app.Configuration["Onboarding:NationalityBackfill"], "false", StringComparison.OrdinalIgnoreCase))
+    {
+        try
+        {
+            var mapped = await Zayra.Api.Infrastructure.Employees.Onboarding.NationalityBackfill.RunAllAsync(dbContext, CancellationToken.None);
+            if (mapped > 0) logger.LogInformation("NationalityBackfill classified {Count} employee(s).", mapped);
+        }
+        catch (Exception ex) { logger.LogError(ex, "NationalityBackfill failed — continuing startup."); }
     }
 
     // Seed data — each step is independently non-fatal so one failure never

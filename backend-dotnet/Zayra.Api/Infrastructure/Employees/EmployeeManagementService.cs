@@ -39,9 +39,15 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
+    private readonly IHttpContextAccessor? _http;
+    private readonly Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard? _inputGuard;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHttpContextAccessor? httpContextAccessor = null, Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard? inputGuard = null)
     {
+        _http = httpContextAccessor;
+        // Hire input guard (validation, references, acknowledgement). DI always supplies it in production;
+        // direct-construction test sites that predate it pass nothing and skip it.
+        _inputGuard = inputGuard;
         _db = db;
         _audit = audit;
         _documents = documents;
@@ -100,7 +106,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (includeSensitive)
             await _audit.WriteAsync("employee.sensitive_viewed", "Employee", id.ToString(), context, null, cancellationToken);
 
-        return EmployeeDetailDto.Project(
+        var detail = EmployeeDetailDto.Project(
             employee,
             includeSensitive,
             includeSensitive ? await _db.EmployeePayrollProfiles.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted, cancellationToken) : null,
@@ -112,6 +118,26 @@ public class EmployeeManagementService : IEmployeeManagementService
             SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
             CostCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken),
         };
+        // A new hire's first package waits for Finance as a pending request: no salary row exists yet, but the pay HR typed must not look
+        // lost when the draft is reopened. It is shown (marked Pending, never as approved pay) to exactly the callers who see applied pay.
+        if (includeSensitive && detail.SalaryBreakdown is null
+            && await Onboarding.CompensationApprovalGate.PendingFirstPackageAsync(_db, tenantId, id, cancellationToken) is { } pending)
+        {
+            var structureCode = await _db.SalaryStructures.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && s.Id == pending.SalaryStructureId).Select(s => s.Code).FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+            var staged = new EmployeeSalaryBreakdownRequest(pending.BasicSalary, pending.HousingAllowance, pending.TransportAllowance, pending.FoodAllowance,
+                pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction, structureCode, pending.EffectiveDate, pending.Currency);
+            detail = detail with
+            {
+                SalaryBreakdown = staged,
+                Salary = detail.Salary is > 0m ? detail.Salary : EmployeeSalaryBreakdownChanges.Gross(staged),
+                PayrollProfileCode = string.IsNullOrWhiteSpace(detail.PayrollProfileCode) ? structureCode : detail.PayrollProfileCode,
+                PayrollProfile = detail.PayrollProfile is { } pp && string.IsNullOrWhiteSpace(pp.SalaryStructureReference)
+                    ? pp with { SalaryStructureReference = structureCode } : detail.PayrollProfile,
+                SalaryApprovalState = "Pending",
+            };
+        }
+        return detail;
     }
 
     /// <summary>
@@ -131,6 +157,8 @@ public class EmployeeManagementService : IEmployeeManagementService
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
+        // Onboarding input guard: exactly once, before anything is persisted or a code number is burnt.
+        if (_inputGuard is not null) request = await _inputGuard.EnforceCreateAsync(tenantId, request, context, cancellationToken);
         // ── HOME JURISDICTION PRECONDITION (server-authoritative) ───────────────────────────────────
         // The EMPLOYING company's country keys every statutory requirement (identity documents, leave
         // entitlements, activation gates). A blank one resolves an EMPTY requirement set, so the create
@@ -168,6 +196,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
 
         var employee = new Employee { TenantId = tenantId, EmployeeCode = code, CreatedBy = context.UserId };
+        Onboarding.IdempotentEmployeeCreateFilter.Stamp(_http, employee);
         var hireAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
@@ -183,7 +212,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // EMPLOYING company's domain (multi-company req). Sets employee.WorkEmail; may throw
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, context, cancellationToken);
-        var stagedGross = await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: true);
+        var stagedGross = await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: true, request.AcknowledgedWarnings);
         // The first package waits for a Finance approver who is not the maker: refuse BEFORE anything is saved when nobody could ever approve it.
         if (stagedGross > 0 && !await Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.ExistsAsync(_db, tenantId, "payroll.approve", context.UserId, null, employee.CompanyId, cancellationToken))
             throw new Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.NoEligibleApproverException("payroll.approve", "adding an employee with a salary", "إضافة موظف براتب");
@@ -205,6 +234,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         async Task<bool> PersistAsync() => await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
             excludeEmployeeId: null, path: "create", context, async () =>
             {
+                await Onboarding.EmployeeIdentityLock.AcquireAndRecheckAsync(_db, _duplicateDetector, tenantId, BuildCreateProbe(request, excludeEmployeeId: null), duplicateMatches.Select(m => m.EmployeeId).ToList(), request.AcknowledgeDuplicate, cancellationToken);
                 if (!request.ManualEmployeeCode)
                     employee.EmployeeCode = await AllocateEmployeeCodeAsync(tenantId, request, context, cancellationToken);
                 _db.Employees.Add(employee);
@@ -221,6 +251,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 // Grade defaults are part of the hire transaction, before any individual HR exceptions.
                 await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
                     _db, employee, context.UserId, cancellationToken);
+                await Onboarding.CompensationApprovalGate.OpenAsync(_db, employee, context, cancellationToken);
                 // The login belongs to the profile from creation onwards (contract §3): staged now, in this transaction.
                 await new Zayra.Api.Infrastructure.Auth.EmployeeLoginProvisioner(_db).EnsureStagedLoginAsync(tenantId, employee, context, cancellationToken);
                 await AddHistory(employee, "Created", "Employee", string.Empty, employee.EmployeeCode, DateOnly.FromDateTime(DateTime.UtcNow), "Employee created", context, cancellationToken);
@@ -277,6 +308,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 ProbationRuleGate.AuditJson(probationFinding, employee.ProbationStartDate, employee.ProbationEndDate));
         await _db.SaveChangesAsync(cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
+        await WriteWarningOverrideAuditAsync(employee.Id, request, context, cancellationToken);
         var workEmailHasExistingLogin = await WorkEmailLoginGuard.BelongsToExistingLoginAsync(_db, tenantId, employee.WorkEmail, cancellationToken);
         // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
         // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match
@@ -285,12 +317,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             var action = strongDuplicates.Count > 0 ? "employee.duplicate_override_created" : "employee.created_with_possible_duplicate";
             await _audit.WriteAsync(action, "Employee", employee.Id.ToString(), context,
-                JsonSerializer.Serialize(new
-                {
-                    matchedEmployeeIds = duplicateMatches.Select(m => m.EmployeeId),
-                    matchType = strongDuplicates.Count > 0 ? "strong" : "probable",
-                    signals = duplicateMatches.SelectMany(m => m.Signals).Distinct(),
-                }), cancellationToken);
+                Onboarding.DuplicateOverridePolicy.AuditPayload(duplicateMatches, _http, strongDuplicates.Count > 0, request.DuplicateOverrideReason), cancellationToken);
         }
         // The write response is a READ of the record, so it obeys the SAME mask gate as GET {id}.
         // Hard-coding true here made every create/update/status-flip an unmasked salary + IBAN read for
@@ -302,8 +329,23 @@ public class EmployeeManagementService : IEmployeeManagementService
         };
     }
 
+    /// <summary>
+    /// One <c>employee.warning_overridden</c> row per statutory warning the caller acknowledged. Codes and the
+    /// caller's reason only, never the values that tripped the warning. Written once the employee id exists; the
+    /// guard narrows <c>AcknowledgedWarnings</c> to the warnings it actually consumed.
+    /// </summary>
+    private async Task WriteWarningOverrideAuditAsync(int employeeId, EmployeeCreateRequest request, RequestContext context, CancellationToken ct)
+    {
+        if (request.AcknowledgedWarnings is not { Count: > 0 } acks) return;
+        foreach (var ack in acks.Where(a => !string.IsNullOrWhiteSpace(a.Code)))
+            await _audit.WriteAsync("employee.warning_overridden", "Employee", employeeId.ToString(), context,
+                System.Text.Json.JsonSerializer.Serialize(new { code = ack.Code, reason = ack.Reason?.Trim() }), ct);
+    }
+
     public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
     {
+        // Onboarding input guard: a request the guard already normalised (the draft autosave path) is not re-checked.
+        if (_inputGuard is not null) request = await _inputGuard.EnforceUpdateAsync(tenantId, id, request, context, cancellationToken);
         var publicId = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted)
             .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken);
         if (!publicId.HasValue) return null;
@@ -321,6 +363,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var employee = await _db.Employees.TagWith(RowLockingInterceptor.ForUpdateTag)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
+        var priorPay = await Onboarding.CompensationApprovalGate.LiveFingerprintAsync(_db, tenantId, id, cancellationToken);
         var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
         var priorPositionId = employee.PositionId;
         // Capture BEFORE ApplyEmployee overwrites WorkEmail — needed for the login-identity rename guard.
@@ -357,7 +400,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // run the login-identity rename guard (keeps a linked User in sync; blocks a rename that would collide
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail, isUpdate: true, context, cancellationToken);
-        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: false);
+        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: false, request.AcknowledgedWarnings);
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, context.UserId, cancellationToken);
         employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -367,7 +410,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Changing an EXISTING employee's pay is a salary change (HR proposes, Finance approves) or an approved employee change,
         // never a side effect of saving the profile: the breakdown only writes when the employee has no active salary yet.
         var hasActiveSalary = await _db.EmployeeSalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.IsActive, cancellationToken);
-        if (!hasActiveSalary && !await _db.SalaryChangeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.Status == SalaryChangeRequest.Pending, cancellationToken))
+        if (!hasActiveSalary)   // a pending first package is kept when the figures are unchanged and replaced when they differ (the writer decides)
             await StageFirstSalaryPackageAsync(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: false);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
@@ -390,6 +433,7 @@ public class EmployeeManagementService : IEmployeeManagementService
             await _db.SaveChangesAsync(cancellationToken);
             await SynchronizePositionIncumbencyAsync(employee, priorPositionId, context, cancellationToken);
         }
+        await Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, priorPay, context, cancellationToken);
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         if (probationFinding is not null)
@@ -399,6 +443,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         updateAudit.CompanyId = employee.CompanyId;
         _db.AuditLogs.Add(updateAudit);
         await _db.SaveChangesAsync(cancellationToken);
+        await WriteWarningOverrideAuditAsync(id, request, context, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         // Same mask gate as GET {id} — see CreateAsync.
         var updated = await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
@@ -476,6 +521,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // occupying→occupying and are deliberately NOT gated (mandated reinstatement is never refused).
         if (_activationGuard.ShouldGate(oldStatus, request.Status))
         {
+            if (_inputGuard is not null) await _inputGuard.EnforceActivationAsync(tenantId, id, context, ct, request.AcknowledgedWarnings);   // CD28/CD44
             var gateSnapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, ct);
             if (gateSnapshot is not null)
                 await _activationGuard.EnsureActivatableAsync(tenantId, employee.CompanyId, gateSnapshot, context, ct);
@@ -1544,7 +1590,24 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.PreferredName = Clean(request.PreferredName);
         employee.Gender = Clean(request.Gender);
         employee.DateOfBirth = request.DateOfBirth;
-        employee.Nationality = Clean(request.Nationality);
+        // CD67: a draft autosave that does not mention nationality (neither the code nor the text) is silent, not an instruction
+        // to clear it. Anywhere else a blank request still clears, as before.
+        var natGiven = !string.IsNullOrWhiteSpace(request.NationalityCode) || !string.IsNullOrWhiteSpace(request.Nationality);
+        if (natGiven || !string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase))
+        {
+            employee.Nationality = Clean(request.Nationality);
+            if (!string.IsNullOrWhiteSpace(request.NationalityCode))
+            {
+                var picked = Zayra.Api.Application.Employees.Onboarding.NationalityCatalog.FindByIso2(request.NationalityCode);
+                if (picked is not null) { employee.NationalityCode = picked.Iso2; employee.NationalityMappingState = NationalityMappingStates.Confirmed; }
+            }
+            else if (employee.NationalityCode is not null
+                && !string.Equals(Zayra.Api.Application.Employees.Onboarding.NationalityCatalog.FindByIso2(employee.NationalityCode)?.NameEn, employee.Nationality, StringComparison.OrdinalIgnoreCase))
+            {
+                // The text was changed on its own: the stored code no longer describes it.
+                employee.NationalityCode = null; employee.NationalityMappingState = NationalityMappingStates.Unset;
+            }
+        }
         employee.MaritalStatus = Clean(request.MaritalStatus);
         employee.PersonalEmail = Clean(request.PersonalEmail);
         employee.WorkEmail = Clean(request.WorkEmail);
@@ -1594,6 +1657,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.ConfirmationDate = request.ConfirmationDate;
         employee.ProbationStartDate = request.ProbationStartDate;
         employee.ProbationEndDate = request.ProbationEndDate;
+        employee.ContractEndDate = request.ContractEndDate ?? (Zayra.Api.Application.Employees.Onboarding.ContractRules.IsFixedTerm(employee.ContractType) ? employee.ContractEndDate : null);   // CD26
         employee.NoticePeriodDays = request.NoticePeriodDays;
         employee.WorkLocation = Clean(request.WorkLocation);
         employee.PayrollProfileCode = Clean(request.PayrollGroup);
@@ -1787,7 +1851,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         // A bad IBAN persisted here silently blocks the entire payroll run weeks later; fail fast so
         // the person entering it fixes it now. Empty is allowed (bank details filled in later).
         var cleanIban = Clean(request.Iban);
-        if (!string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
+        var draftAutosave = _inputGuard is not null && employee.Id != 0 && employee.Status == EmployeeStatuses.Draft;   // CD28: a draft keeps what was typed; activation refuses it
+        if (!draftAutosave && !string.IsNullOrWhiteSpace(cleanIban) && !Zayra.Api.Infrastructure.Payroll.IbanValidator.IsValid(cleanIban))
             throw new InvalidOperationException($"{Zayra.Api.Infrastructure.Payroll.IbanValidator.Describe(cleanIban)}. Enter a correct IBAN before saving.");
         profile.Iban = cleanIban;
         profile.AccountNumber = Clean(request.AccountNumber);
@@ -1795,8 +1860,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         profile.SalaryCurrency = Clean(request.SalaryCurrency);
         profile.PayrollGroup = Clean(request.PayrollGroup);
         profile.SalaryStructureReference = Clean(request.SalaryStructureReference);
-        profile.WpsEligible = request.WpsEligible;
-        profile.EosbEligible = request.EosbEligible;
+        profile.WpsEligible = request.WpsEligible ?? profile.WpsEligible;     // CD30: null = the server-side country default, already applied by the guard
+        profile.EosbEligible = request.EosbEligible ?? profile.EosbEligible;
         profile.SocialInsuranceReference = Clean(request.SocialInsuranceReference);
         profile.MolId = Clean(request.MolId);
         profile.BankRoutingCode = Clean(request.BankRoutingCode);
@@ -1810,7 +1875,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// <summary>Returns the gross of the package that will be STAGED (0 when there is none), so a hire can be refused up front when
     /// no second person could ever approve it.</summary>
     private async Task<decimal> ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken,
-        bool isNewEmployee)
+        bool isNewEmployee, IReadOnlyCollection<Zayra.Api.Application.Employees.Onboarding.AcknowledgedWarning>? acknowledged = null)
     {
         if (employee.PositionId is not null)
         {
@@ -1874,11 +1939,23 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var grossSalary = GrossSalary(package);
         if (grossSalary <= 0) return 0m;
-        if (grade.MinSalary > 0 && grossSalary < grade.MinSalary)
+        var belowMin = grade.MinSalary > 0 && grossSalary < grade.MinSalary;
+        var aboveMax = grade.MaxSalary > 0 && grossSalary > grade.MaxSalary;
+        if (!belowMin && !aboveMax) return grossSalary;
+        if (_inputGuard is not null)
+        {
+            // With the onboarding guard in place the grade band is a statutory-floor style WARNING (G08): acknowledged
+            // with a reason it saves, otherwise the caller gets the 409 warning shape instead of a hard 400.
+            // The guard has already checked the reason's length; here only its presence matters.
+            const string code = Zayra.Api.Application.Employees.Onboarding.EmployeeWarningCodes.GradeBandOutOfRange;
+            if (acknowledged?.Any(a => a.Code == code) == true) return grossSalary;
+            throw new Zayra.Api.Application.Employees.Onboarding.EmployeeWarningsRequireAckException([
+                new Zayra.Api.Application.Employees.Onboarding.EmployeeWarning(code, "salaryBreakdown",
+                    "Total pay is outside the salary band of the selected grade.")]);
+        }
+        if (belowMin)
             throw new InvalidOperationException($"Salary package {grossSalary:N2} is below grade {grade.Code} minimum {grade.MinSalary:N2} {grade.Currency}.");
-        if (grade.MaxSalary > 0 && grossSalary > grade.MaxSalary)
-            throw new InvalidOperationException($"Salary package {grossSalary:N2} exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}.");
-        return grossSalary;
+        throw new InvalidOperationException($"Salary package {grossSalary:N2} exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}.");
     }
 
     private async Task SynchronizePositionIncumbencyAsync(Employee employee, Guid? priorPositionId, RequestContext context, CancellationToken cancellationToken)

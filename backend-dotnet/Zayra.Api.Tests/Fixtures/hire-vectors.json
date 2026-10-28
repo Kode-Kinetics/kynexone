@@ -1,0 +1,53 @@
+{
+  "_comment": "Shared hire validation vectors. Consumed by backend tests and frontend/unit/hireVectors.spec.ts. All identity numbers are synthetic. Checksum: Luhn variant, odd positions (1-based) doubled, minus 9 when above 9, total mod 10 = 0.",
+  "saudiNationalId": {
+    "valid": ["1000000008", "1000000016", "1000000024", "1000000040"],
+    "invalidChecksum": ["1000000009", "1000000000", "1234567890"],
+    "invalidFormat": ["100000008", "10000000080", "10000000O8", "", "abcdefghij"]
+  },
+  "iqama": {
+    "valid": ["2000000006", "2000000014", "2000000022"],
+    "invalidChecksum": ["2000000007", "2000000000"],
+    "invalidFormat": ["200000006", "20000000060", "2000 00006"]
+  },
+  "leadingDigitMismatch": {
+    "_comment": "Checksum-valid but wrong leading digit for the class: not a National ID, not an Iqama.",
+    "notIdNorIqama": ["3000000004"]
+  },
+  "borderNumber": {
+    "_comment": "Advisory: leading 3, checksum is a warning only, never a block.",
+    "valid": ["3000000004"],
+    "advisoryChecksumFailure": ["3000000000"],
+    "invalidFormat": ["300000004", "30000000044"]
+  },
+  "digitNormalisation": [
+    { "input": "١٠٠٠٠٠٠٠٠٨", "expected": "1000000008" },
+    { "input": "۱۰۰۰۰۰۰۰۰۸", "expected": "1000000008" },
+    { "input": " 1000000008 ", "expected": "1000000008" }
+  ],
+  "saIban": {
+    "valid": ["SA0380000000608010167519", "SA0910000000000000000001", "SA6605000000000000000002", "SA03 8000 0000 6080 1016 7519"],
+    "invalidChecksum": ["SA0480000000608010167519"],
+    "invalidLength": ["SA03800000006080101675", "SA038000000060801016751900"],
+    "invalidStructure": ["SA03X0000000608010167519", "GB82WEST12345698765432"]
+  },
+  "phoneE164": {
+    "_comment": "Company country SA. normalised is the stored E.164 value; null means rejected.",
+    "cases": [
+      { "input": "0512345678", "normalised": "+966512345678" },
+      { "input": "512345678", "normalised": "+966512345678" },
+      { "input": "+966512345678", "normalised": "+966512345678" },
+      { "input": "966512345678", "normalised": "+966512345678" },
+      { "input": "00966512345678", "normalised": "+966512345678" },
+      { "input": "+966 51 234 5678", "normalised": "+966512345678" },
+      { "input": "٠٥١٢٣٤٥٦٧٨", "normalised": "+966512345678" },
+      { "input": "+971501234567", "normalised": "+971501234567" },
+      { "input": "+919876543210", "normalised": "+919876543210" },
+      { "input": "0412345678", "normalised": null },
+      { "input": "05123", "normalised": null },
+      { "input": "+96651234567890123", "normalised": null },
+      { "input": "abc", "normalised": null },
+      { "input": "+0123456789", "normalised": null }
+    ]
+  }
+}

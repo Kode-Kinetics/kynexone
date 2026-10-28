@@ -84,6 +84,13 @@ services:
       Auth__LoginThrottle__AccountAttempts: ${LOGIN_ACCOUNT_ATTEMPT_LIMIT:-50}
       Auth__LoginThrottle__IpFailures: ${LOGIN_IP_FAILURE_LIMIT:-150}
       Auth__PasswordVerification__MaxConcurrency: ${PASSWORD_HASH_CONCURRENCY:-1}
+      # Employee-create and pay-approval ceilings (per user / per tenant, per minute). Production defaults 10 / 60; the
+      # e2e bootstrap creates a whole fixture world through one admin in a few minutes, so a disposable
+      # stack may raise them. Deployed environments keep the default.
+      RateLimit__Employees__employee-create__PerUser: ${EMPLOYEE_CREATE_PER_USER_LIMIT:-10}
+      RateLimit__Employees__employee-create__PerTenant: ${EMPLOYEE_CREATE_PER_TENANT_LIMIT:-60}
+      RateLimit__Employees__compensation-approve__PerUser: ${COMPENSATION_APPROVE_PER_USER_LIMIT:-10}
+      RateLimit__Employees__compensation-approve__PerTenant: ${COMPENSATION_APPROVE_PER_TENANT_LIMIT:-60}
     ports:
       - "${BACKEND_PORT:-5117}:5117"
     extra_hosts:

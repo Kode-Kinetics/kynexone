@@ -26,6 +26,8 @@
  */
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { saudiNationalId, saudiIqama } from './saudiIds';
+import { ensurePayApprover, type PayApprover } from './payApprover';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -493,7 +495,7 @@ async function ensureGrade(adminToken: string): Promise<string | null> {
 async function ensureEmployees(
   adminToken: string, fixture: FixtureTenant,
   companies: Array<{ code: string; id: string; countryCode: string }>,
-  gradeId: string | null,
+  gradeId: string | null, approver: PayApprover,
 ): Promise<number> {
   let created = 0;
   for (const company of companies) {
@@ -533,6 +535,7 @@ async function ensureEmployees(
       // because the activation guard's required set IS nationality-aware: it demands an Iqama of a
       // non-Saudi and not of a Saudi. An expatriate with the gap simply never activates.
       const iqamaGap = fixture.slug !== 'intelliflow' && n % 3 === 0;
+      const nationalIsSaudi = isSaudi || iqamaGap;
       const res: Res<any> = await call('POST', '/api/employees', {
         token: adminToken,
         companyId: company.id,
@@ -592,9 +595,12 @@ async function ensureEmployees(
           // supplies the whole set and the oddity is recorded here rather than hidden.
           complianceRecords: [
             idRecord('civil_id', 'Civil ID', `1${String(200000000 + seq).slice(0, 9)}`),
-            idRecord('id_number', 'Government ID number', `1${String(300000000 + seq).slice(0, 9)}`),
+            // ID class must fit the nationality (checksum-valid; Saudi + Iqama prefix is a hard error):
+            // a Saudi national carries a National ID, an expatriate carries an Iqama.
+            ...(nationalIsSaudi
+              ? [idRecord('id_number', 'Government ID number', saudiNationalId(300000000 + seq))]
+              : [idRecord('iqama_number', 'Iqama Number', saudiIqama(400000000 + seq))]),
             idRecord('gosi_reference', 'GOSI reference', `GOSI-${code}`),
-            ...(iqamaGap ? [] : [idRecord('iqama_number', 'Iqama Number', `2${String(400000000 + seq).slice(0, 9)}`)]),
             idRecord('emirates_id', 'Emirates ID', `784-1990-${String(1000000 + seq).slice(0, 7)}-1`),
             idRecord('work_permit', 'Work permit number', `WP-${code}`),
             idRecord('passport_number', 'Passport number', `P${String(10000000 + seq).slice(0, 8)}`),
@@ -605,10 +611,20 @@ async function ensureEmployees(
             idRecord('qiwa_contract_reference', 'Qiwa contract reference', `QC-${code}`),
           ],
           acknowledgeDuplicate: true,
+          duplicateOverrideReason: 'E2E fixture world: deterministic synthetic people re-created per run',
+          // The historical joining date (2024) is load-bearing for payroll / EOSB specs.
+          acknowledgedWarnings: [{ code: 'joining_backdated', reason: 'E2E fixture: historical joining date needed by payroll and EOSB specs' }],
         },
       });
       expectOk(res, `create employee '${code}'`, [200, 201]);
-      if (n === 1) managerId = Number(res.body?.id ?? res.body?.Id) || null;
+      if (n === 1) {
+        managerId = Number(res.body?.id ?? res.body?.Id) || null;
+        // A line manager must not be a Draft (reference validator), so approve its pay (second person) and activate it as soon as it exists.
+        await approver.approve(managerId!);
+        expectOk(await call('POST', `/api/employees/${managerId}/activate`, {
+          token: adminToken, body: { status: 'Active', reason: 'e2e fixture world bootstrap' },
+        }), `activate line manager '${code}'`, [200]);
+      }
       created++;
     }
   }
@@ -630,7 +646,7 @@ const idRecord = (fieldKey: string, fieldLabel: string, fieldValue: string) => {
  * employee it refuses is reported, never forced, and the caller asserts a floor afterwards: silently
  * ending up with zero Active employees is the failure this whole bootstrap exists to prevent.
  */
-async function activateEmployees(adminToken: string, slug: string, floor: number): Promise<number> {
+async function activateEmployees(adminToken: string, slug: string, floor: number, approver: PayApprover): Promise<number> {
   const rows = await allEmployees(adminToken);
   const blocked: string[] = [];
   let active = 0;
@@ -638,6 +654,8 @@ async function activateEmployees(adminToken: string, slug: string, floor: number
   for (const row of rows) {
     const status = String(row.status ?? row.Status ?? '');
     if (status === 'Active') { active++; continue; }
+    // The pay package of a new hire needs a second person before activation.
+    await approver.approve(Number(row.id ?? row.Id));
     const res = await call('POST', `/api/employees/${row.id ?? row.Id}/activate`, {
       token: adminToken, body: { status: 'Active', reason: 'e2e fixture world bootstrap' },
     });
@@ -1355,9 +1373,13 @@ export async function provisionWorld(baseUrl: string): Promise<ProvisionResult> 
     const userIds = await ensureUsers(platformToken, tenantId, fixture, companies);
     await ensureEntityGrants(adminToken, fixture, userIds, companies);
     const gradeId = fixture.slug === 'intelliflow' ? await ensureGrade(adminToken) : null;
-    manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId);
+    const approver = await ensurePayApprover({ apiBase: API_BASE, platformToken, tenantId, slug: fixture.slug, password: fixture.admin.password });
+    manifest.employeesCreated += await ensureEmployees(adminToken, fixture, companies, gradeId, approver);
+    // A hire's pay (the figures and the bank details) is ONE approval by a second person. Where a Finance Approver persona
+    // exists it decides the staged first packages in bulk here; the pay approver then covers whatever is left (a tenant with no
+    // such persona, a package with bank details only) inside activateEmployees. Either door closes the same single record.
     await approvePendingSalaryChanges(fixture);
-    const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees);
+    const active = await activateEmployees(adminToken, fixture.slug, fixture.minActiveEmployees, approver);
     const portalLogins = await ensureEmployeePortalLogins(adminToken, fixture, companies);
     const salaries = await ensureSalaries(fixture, adminToken, companies);
     const documents = await ensureEmployeeDocuments(adminToken, companies);

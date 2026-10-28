@@ -74,7 +74,7 @@ public sealed class FloorWarningsPostgresTests(PostgresFixture fixture)
             var audit = await db.LeaveAuditLogs.IgnoreQueryFilters().SingleAsync(a => a.EntityId == policyId.ToString() && a.Action == "BelowStatutoryMinimumAcknowledged");
             (audit.PerformedByName, audit.Reason).Should().Match<(string, string)>(x => x.Item1 == "Hana HR" && x.Item2.Contains("Seasonal staff"));
 
-            var list = With(new FloorComplianceController(db), Admin(tenant));
+            var list = With(new FloorComplianceController(new Zayra.Api.Infrastructure.Compliance.BelowMinimumReportService(db)), Admin(tenant));
             var items = JsonSerializer.SerializeToElement(((OkObjectResult)await list.BelowMinimum(default)).Value, new JsonSerializerOptions(JsonSerializerDefaults.Web))
                 .GetProperty("items").EnumerateArray().ToList();
             items.Should().ContainSingle(i => i.GetProperty("code").GetString() == "leave_annual_below_minimum" && i.GetProperty("acknowledged").GetBoolean());

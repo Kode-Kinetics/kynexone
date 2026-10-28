@@ -697,6 +697,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_locked");
 
+                    b.Property<bool>("IsWorkspaceOwner")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_workspace_owner");
+
                     b.Property<DateTime?>("LastLoginAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_login_at_utc");
@@ -812,6 +818,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("updated_at_utc");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_users__one_workspace_owner")
+                        .HasFilter("is_workspace_owner");
 
                     b.HasIndex("TenantId", "IsDeleted");
 
@@ -9689,6 +9700,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("country_code");
 
+                    b.Property<Guid?>("CreateIdempotencyKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("create_idempotency_key");
+
+                    b.Property<string>("CreateRequestFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("create_request_fingerprint");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -9899,6 +9919,19 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("nationality");
 
+                    b.Property<string>("NationalityCode")
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)")
+                        .HasColumnName("nationality_code");
+
+                    b.Property<string>("NationalityMappingState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasDefaultValue("Unset")
+                        .HasColumnName("nationality_mapping_state");
+
                     b.Property<int?>("NoticePeriodDays")
                         .HasColumnType("integer")
                         .HasColumnName("notice_period_days");
@@ -9907,6 +9940,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("occupation_code");
+
+                    b.Property<DateOnly?>("OriginalJoiningDate")
+                        .HasColumnType("date")
+                        .HasColumnName("original_joining_date");
 
                     b.Property<DateOnly?>("PassportExpiryDate")
                         .HasColumnType("date")
@@ -10163,6 +10200,10 @@ namespace Zayra.Api.Migrations
                         .HasDatabaseName("ix_employees_bidx_bank_iban")
                         .HasFilter("bank_iban_bidx IS NOT NULL");
 
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_employees_nationality_review")
+                        .HasFilter("nationality_mapping_state IN ('ProposedAuto','Unresolved') AND NOT is_deleted");
+
                     b.HasIndex("TenantId", "BorderNumber")
                         .HasDatabaseName("ix_employees_dup_border_number")
                         .HasFilter("border_number <> ''");
@@ -10180,6 +10221,11 @@ namespace Zayra.Api.Migrations
                         .HasFilter("civil_id_bidx IS NOT NULL");
 
                     b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CreateIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_employees_tenant_create_idempotency_key")
+                        .HasFilter("create_idempotency_key IS NOT NULL");
 
                     b.HasIndex("TenantId", "DateOfBirth")
                         .HasDatabaseName("ix_employees_dup_dob");
@@ -10255,6 +10301,8 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("employees", null, t =>
                         {
+                            t.HasCheckConstraint("ck_employees__nationality_mapping_state", "nationality_mapping_state IN ('Unset','Confirmed','ProposedAuto','Unresolved')");
+
                             t.HasCheckConstraint("ck_employees_bank_iban_bidx_pair", "bank_iban_bidx IS NULL OR (bank_iban_enc IS NOT NULL AND octet_length(bank_iban_bidx) = 32)");
 
                             t.HasCheckConstraint("ck_employees_bank_iban_enc_shape", "bank_iban_enc IS NULL OR (octet_length(bank_iban_enc) BETWEEN 30 AND 1024 AND get_byte(bank_iban_enc, 0) IN (1, 2) AND get_byte(bank_iban_enc, 1) > 0)");

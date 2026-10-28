@@ -65,6 +65,8 @@ public sealed class DropDeadConfigColumnsMigrationPostgresTests
         previous.Should().EndWith("_StopMappingDeadConfigColumns", "release 2 follows release 1 directly");
         // Later migrations may follow (other releases land after it); the test moves to and from THIS migration explicitly,
         // so it only needs the drop to come after release 1, which the line above pins.
+        // Present and ordered after its release-1 predecessor; later migrations may follow it (I-11).
+        all.IndexOf(thisMigration!).Should().BeGreaterThan(all.IndexOf(previous));
 
         await migrator.MigrateAsync(previous);
         const string tenant = "'10000000-0000-0000-0000-0000000000d2'";
@@ -72,6 +74,7 @@ public sealed class DropDeadConfigColumnsMigrationPostgresTests
         await Exec(container, await InsertRowSql(container, "attendance_policies", new() { ["tenant_id"] = tenant, ["code"] = "'KEEP'", ["grace_minutes"] = "7", ["late_threshold_minutes"] = "33" }));
 
         await migrator.MigrateAsync(thisMigration);
+        (await db.Database.GetAppliedMigrationsAsync()).Should().Contain(thisMigration, "the drop is applied");
 
         foreach (var (table, column, _) in Expected)
             (await Scalar<long>(container, $"SELECT count(*) FROM information_schema.columns WHERE table_name = '{table}' AND column_name = '{column}'"))

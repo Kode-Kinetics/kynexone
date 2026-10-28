@@ -142,8 +142,7 @@ public sealed class EmployeeDuplicateMatcher
             var overCap = dobList.Count > IdentityValueNormalizer.DobBlockCap;
             foreach (var c in dobList)
             {
-                if (overCap && (string.IsNullOrWhiteSpace(probe.Nationality)
-                    || !string.Equals(c.Nationality?.Trim(), probe.Nationality.Trim(), System.StringComparison.OrdinalIgnoreCase)))
+                if (overCap && !NationalityKey.Same(c.Nationality, probe.Nationality))
                     continue;
                 if (NameMatches(probe, c)) Hit(c, DuplicateMatchTypes.Probable, "Same date of birth and a matching name");
             }

@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { AlertTriangle, CheckCircle2, Circle, Clock, FileUp, Wallet } from 'lucide-react';
 import type { ReadinessItem, ReadinessView } from '../api/employees';
+import { useLocale } from '../contexts/LocaleContext';
+import { reviewItemLabel } from '../lib/hire/reviewLabels';
 
 // Progress-first activation checklist. Rendered identically from the live GET /readiness
 // response and the 422 employee_not_activatable body (both satisfy ReadinessView), so the
@@ -59,6 +61,8 @@ function ItemRow({
   onFixDocument?: ReadinessChecklistProps['onFixDocument'];
   fieldFixMode?: ReadinessChecklistProps['fieldFixMode'];
 }) {
+  const { t } = useLocale();
+  const itemLabel = reviewItemLabel(item, t);
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -98,7 +102,7 @@ function ItemRow({
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 text-sm font-medium text-slate-800 dark:text-slate-100">
             <Circle className={`h-3 w-3 shrink-0 ${dotColor}`} aria-hidden="true" />
-            <span className="truncate">{item.label}</span>
+            <span className="truncate">{itemLabel}</span>
           </p>
           {why && <p className="mt-0.5 ps-5 text-caption text-slate-500 dark:text-slate-400">{why}</p>}
           {notice && <p className="mt-1 ps-5 text-caption font-medium text-amber-700 dark:text-amber-400">{notice}</p>}

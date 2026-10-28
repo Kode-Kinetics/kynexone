@@ -15,7 +15,7 @@ namespace Zayra.Api.Controllers;
 public sealed record RecoveryExportRequest(string? Passphrase, string? PublicKeyPem, string? TotpCode);
 public sealed record RecoveryRestoreRequest(string RecoveryCopy, string? Passphrase, string? PrivateKeyPem, string? TotpCode);
 public sealed record RevokeRequest(string Confirm, string? TotpCode);
-public sealed record StepUpRequest(string? TotpCode);
+public sealed record KeyCustodyStepUpRequest(string? TotpCode);
 public sealed record SliceRequest(int MaxRows = 2000, Dictionary<string, int>? Cursor = null);
 
 internal static class CustodyResults
@@ -67,7 +67,7 @@ public class TenantFieldEncryptionController(FieldEncryptionAdminService admin) 
     }
 
     [HttpPost("revoke/cancel")]
-    public Task<IActionResult> CancelRevoke([FromBody] StepUpRequest req, CancellationToken ct) =>
+    public Task<IActionResult> CancelRevoke([FromBody] KeyCustodyStepUpRequest req, CancellationToken ct) =>
         !TopAdmin ? Task.FromResult<IActionResult>(Forbid())
             : CustodyResults.Run(this, async () => { await admin.CancelRevokeAsync(TenantId, req.TotpCode, ActorKind.TenantAdmin, Ctx, ct); return NoContent(); });
 
@@ -104,13 +104,13 @@ public class PlatformFieldEncryptionController(FieldEncryptionAdminService admin
 
     [HttpPost("rotate-dek")]
     [RequirePlatformRole(PlatformRoles.Admin)]
-    public Task<IActionResult> Rotate(Guid tenantId, [FromBody] StepUpRequest req, CancellationToken ct) =>
+    public Task<IActionResult> Rotate(Guid tenantId, [FromBody] KeyCustodyStepUpRequest req, CancellationToken ct) =>
         CustodyResults.Run(this, async () => Ok(new { activeVersion = await admin.RotateDekAsync(tenantId, req.TotpCode, ActorKind.PlatformOperator, Ctx(tenantId), ct) }));
 
     /// <summary>KEK rotation step: rewrap this tenant's key rows under the active KEK version (run for every tenant before removing the old KEK).</summary>
     [HttpPost("rewrap-kek")]
     [RequirePlatformRole(PlatformRoles.Admin)]
-    public Task<IActionResult> RewrapKek(Guid tenantId, [FromBody] StepUpRequest req, CancellationToken ct) =>
+    public Task<IActionResult> RewrapKek(Guid tenantId, [FromBody] KeyCustodyStepUpRequest req, CancellationToken ct) =>
         CustodyResults.Run(this, async () => Ok(new { rowsRewrapped = await admin.RewrapKekAsync(tenantId, req.TotpCode, ActorKind.PlatformOperator, Ctx(tenantId), ct) }));
 
     [HttpPost("backfill")]
@@ -174,13 +174,13 @@ public class PlatformDataProtectionRingController(DataProtectionRingJob job, ISt
 
     [HttpPost("encrypt")]
     [RequirePlatformRole(PlatformRoles.Admin)]
-    public Task<IActionResult> Encrypt([FromBody] StepUpRequest req, CancellationToken ct) => Op("DpRingEncrypt", req, job.EncryptAsync, ct);
+    public Task<IActionResult> Encrypt([FromBody] KeyCustodyStepUpRequest req, CancellationToken ct) => Op("DpRingEncrypt", req, job.EncryptAsync, ct);
 
     [HttpPost("rewrap")]
     [RequirePlatformRole(PlatformRoles.Admin)]
-    public Task<IActionResult> Rewrap([FromBody] StepUpRequest req, CancellationToken ct) => Op("DpRingRewrap", req, job.RewrapAsync, ct);
+    public Task<IActionResult> Rewrap([FromBody] KeyCustodyStepUpRequest req, CancellationToken ct) => Op("DpRingRewrap", req, job.RewrapAsync, ct);
 
-    private Task<IActionResult> Op(string action, StepUpRequest req, Func<CancellationToken, Task<RingJobResult>> run, CancellationToken ct) =>
+    private Task<IActionResult> Op(string action, KeyCustodyStepUpRequest req, Func<CancellationToken, Task<RingJobResult>> run, CancellationToken ct) =>
         CustodyResults.Run(this, async () =>
         {
             if (!await stepUp.VerifyAsync(ActorKind.PlatformOperator, Ctx.UserId, Guid.Empty, req.TotpCode, ct))

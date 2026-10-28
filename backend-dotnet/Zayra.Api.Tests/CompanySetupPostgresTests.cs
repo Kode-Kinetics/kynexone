@@ -590,6 +590,26 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
     // ── Company Super Admin ─────────────────────────────────────────────────────────────────────────────
 
     [Fact]
+    public async Task Inviting_a_company_super_admin_asks_the_caller_to_confirm_it_is_them_first()
+    {
+        var w = await SeedAsync();
+        var admin = new CompanySetupCompanyAdmin(V.AdminInvite, null, "Huda Admin", null, "huda.admin@confirm.sa");
+        var draft = await NewDraftAsync(w, Body(emailDomain: "confirm.sa", admin: admin));
+
+        await using var db = fixture.CreateDb();
+        var companiesBefore = await db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == w.TenantId);
+        var controller = Controller(db, w.TenantId, w.AdminId, stepUp: StepUpTestKit.Real(db));
+        var refused = await controller.Commit(new CompanySetupCommitRequest(draft.Id, draft.Version), draft.Id.ToString(), default);
+
+        var body = refused.Result.Should().BeAssignableTo<ObjectResult>().Subject;
+        body.StatusCode.Should().Be(403);
+        ErrorBody(body.Value).GetProperty("code").GetString().Should().Be(Zayra.Api.Infrastructure.Auth.StepUpService.RequiredCode);
+        (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.NormalizedEmail == "HUDA.ADMIN@CONFIRM.SA")).Should().BeFalse();
+        (await db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == w.TenantId)).Should().Be(companiesBefore,
+            "nothing is committed before the caller confirms it's them");
+    }
+
+    [Fact]
     public async Task An_invited_company_super_admin_is_scoped_to_the_new_company_only()
     {
         var w = await SeedAsync();
@@ -787,7 +807,7 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         (await db.AuditLogs.CountAsync(a => a.TenantId == w.TenantId && a.Action == CompanySetupService.SetupCreatedAction)).Should().Be(0);
     }
 
-    private static CompanySetupController Controller(ZayraDbContext db, Guid tenantId, Guid userId, Guid? scopedCompany = null)
+    private static CompanySetupController Controller(ZayraDbContext db, Guid tenantId, Guid userId, Guid? scopedCompany = null, Zayra.Api.Infrastructure.Auth.StepUpService? stepUp = null)
     {
         var claims = new List<Claim>
         {
@@ -799,7 +819,8 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
         };
         var audit = new AuditService(db);
         return new CompanySetupController(db, new OrganizationSetupService(db, audit),
-            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail())
+            new AccessManagementService(db, new Pbkdf2PasswordHasher(), audit, new FakeTokenService()), new WorkWeekService(db), new NoEmail(),
+            stepUp ?? StepUpTestKit.AlwaysConfirmed(db))
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } },
         };
