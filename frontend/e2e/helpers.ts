@@ -107,11 +107,15 @@ export async function tenantLoginLive(
   await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {/* ignore timeout */});
 }
 
-/** Reuse a setup-time persona session for feature/workflow UI assertions. */
+/**
+ * Reuse a setup-time persona session for feature/workflow UI assertions. The setup session was minted when the suite
+ * started; a spec that runs later than the tenant's idle timeout (60 minutes by default) finds it expired and the app
+ * sends it to /login. Then the persona signs in for real, once, instead of failing an unrelated assertion.
+ */
 export async function tenantLogin(
   page: Page,
   email: string,
-  _password: string,
+  password: string,
   slug: string
 ): Promise<void> {
   const session = await tenantSetupSession(email, slug);
@@ -121,7 +125,10 @@ export async function tenantLogin(
     localStorage.setItem('zayra_refresh_token', refreshToken);
   }, session);
   await page.goto('/dashboard');
-  await page.waitForURL(/\/(dashboard|app|group)/, { timeout: 15_000 });
+  const landed = await page.waitForURL(/\/(dashboard|app|group|ess)/, { timeout: 15_000 }).then(() => true, () => false);
+  // Still signed in after the landing page's own calls settle? A refused refresh lands back on /login a moment later.
+  if (landed) await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {/* ignore timeout */});
+  if (!landed || new URL(page.url()).pathname.startsWith('/login')) await tenantLoginLive(page, email, password, slug);
 }
 
 export async function tenantLogout(page: Page): Promise<void> {
