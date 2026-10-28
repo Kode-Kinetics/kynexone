@@ -216,7 +216,7 @@ public class SetupSettingsController : ControllerBase
 
     /// <summary>Dry run for the country-rules screen: the end-of-service floors that apply, below or not. Saves nothing.</summary>
     [HttpPost("api/admin/gcc-settings/floor-check")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("security.manage")]
     public async Task<IActionResult> EosbFloorCheck([FromBody] EosbFloorCheckRequest req, CancellationToken ct)
     {
         var checks = await KsaEosbFloorChecks.ChecksAsync(new StatutoryRuleReader(_db), req.CountryCode,

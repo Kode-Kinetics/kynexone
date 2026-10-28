@@ -7,6 +7,7 @@ using Zayra.Api.Application.Compliance;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
@@ -256,7 +257,7 @@ public class LeavePoliciesController : ControllerBase
     /// <summary>Dry run for the policy screen: every Saudi floor that applies to the policy as typed, below or not, so
     /// the screen can show the Saudi default beside the value and the amber warning when it is under. Saves nothing.</summary>
     [HttpPost("floor-check")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("leave.policy_manage")]
     public async Task<IActionResult> FloorCheck([FromBody] LeaveFloorCheckRequest req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
