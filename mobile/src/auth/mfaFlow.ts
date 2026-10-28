@@ -29,7 +29,8 @@ export const MFA_CODE_LENGTH = 6;
 export type LoginStep =
   | { kind: 'authenticated'; payload: unknown }
   | { kind: 'mfaChallenge'; challengeToken: string; expiresInSeconds: number }
-  | { kind: 'mfaEnrollment'; enrollmentToken: string; expiresInSeconds: number };
+  | { kind: 'mfaEnrollment'; enrollmentToken: string; expiresInSeconds: number }
+  | { kind: 'passwordChange'; resetToken: string; expiresInSeconds: number; tenantSlug: string };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -50,9 +51,15 @@ export function classifyLoginResponse(data: unknown): LoginStep {
     return { kind: 'mfaChallenge', challengeToken, expiresInSeconds: normalizeTtl(body.expiresInSeconds) };
   }
   // An administrator set a temporary password: it opens no session until the person chooses their own.
-  // That step lives on the web sign-in page for now, so say so instead of treating the reply as tokens.
   if (body?.passwordChangeRequired === true) {
-    throw new Error('Your administrator gave you a temporary password. Sign in once on the KynexOne website to choose your own password, then sign in here with it.');
+    const resetToken = typeof body.resetToken === 'string' ? body.resetToken : '';
+    if (!resetToken) throw new Error('The server returned an invalid password change request.');
+    return {
+      kind: 'passwordChange',
+      resetToken,
+      expiresInSeconds: normalizeTtl(body.expiresInSeconds ?? 900),
+      tenantSlug: typeof body.tenantSlug === 'string' ? body.tenantSlug : '',
+    };
   }
   if (body?.mfaEnrollmentRequired === true) {
     const enrollmentToken = typeof body.enrollmentToken === 'string' ? body.enrollmentToken : '';

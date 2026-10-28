@@ -4,6 +4,8 @@ export type AuthStackParamList = {
         tenantId?: string;
         email?: string;
         enrollmentComplete?: boolean;
+        /** Why the person is back here after choosing a password. */
+        notice?: 'passwordSaved' | 'passwordChangeExpired';
       }
     | undefined;
   ForgotPassword: undefined;
@@ -33,5 +35,13 @@ export type AuthStackParamList = {
     tenantId: string;
     email: string;
     expiresInSeconds: number;
+  };
+  /** Admin gave a temporary password. The reset token is in-memory navigation state only. */
+  PasswordChange: {
+    resetToken: string;
+    expiresInSeconds: number;
+    tenantSlug: string;
+    tenantId: string;
+    email: string;
   };
 };

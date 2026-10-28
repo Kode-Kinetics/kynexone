@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import LoginScreen from '@/features/auth/LoginScreen';
 import ForgotPasswordScreen from '@/features/auth/ForgotPasswordScreen';
 import MfaChallengeScreen from '@/features/auth/MfaChallengeScreen';
+import PasswordChangeScreen from '@/features/auth/PasswordChangeScreen';
 import MfaEnrollmentScreen from '@/features/auth/MfaEnrollmentScreen';
 import WelcomeScreen from '@/features/auth/WelcomeScreen';
 import type { AuthStackParamList } from './authTypes';
@@ -16,6 +17,7 @@ export function AuthStack() {
       <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
       <Stack.Screen name="Welcome" component={WelcomeScreen} />
       <Stack.Screen name="MfaChallenge" component={MfaChallengeScreen} />
+      <Stack.Screen name="PasswordChange" component={PasswordChangeScreen} />
       <Stack.Screen name="MfaEnrollment" component={MfaEnrollmentScreen} />
     </Stack.Navigator>
   );
