@@ -127,7 +127,11 @@ async function mockApi(page: Page, world: World = {}) {
 }
 
 const rowOf = (page: Page, name: string) => page.locator('tbody tr').filter({ hasText: name });
-const resetButton = (page: Page, name: string) => rowOf(page, name).getByRole('button', { name: 'Reset two-step sign-in' });
+/** Opens a row's "More actions" menu (portalled to <body>) and returns its "Reset two-step sign-in" item. */
+async function resetItem(page: Page, name: string) {
+  await rowOf(page, name).getByTestId('user-more-actions').click();
+  return page.getByTestId('user-actions-menu').getByTestId('user-reset-two-step');
+}
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Reset two-step sign-in?' });
 
 async function openUsers(page: Page) {
@@ -146,13 +150,16 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
   test('offered for someone with two-step on; never for yourself or someone without it', async ({ page }, info) => {
     await mockApi(page);
     await openUsers(page);
-    await expect(resetButton(page, 'Noah Williams')).toBeVisible();
+    await expect(await resetItem(page, 'Noah Williams')).toBeVisible();
+    await page.keyboard.press('Escape');
     await expect(rowOf(page, 'Noah Williams').getByTestId('user-two-step-on')).toHaveText('Two-step sign-in is on');
-    await expect(resetButton(page, 'Layla Haddad')).toHaveCount(0);
+    await expect(await resetItem(page, 'Layla Haddad')).toHaveCount(0);
+    await page.keyboard.press('Escape');
     await expect(rowOf(page, 'Layla Haddad').getByTestId('user-two-step-on')).toHaveCount(0);
     // Your own row says two-step is on, but has no reset: the subject never acts on themselves.
     await expect(rowOf(page, 'admin@kkdemo.com').getByTestId('user-two-step-on')).toBeVisible();
-    await expect(rowOf(page, 'admin@kkdemo.com').getByRole('button', { name: 'Reset two-step sign-in' })).toHaveCount(0);
+    await expect(await resetItem(page, 'admin@kkdemo.com')).toHaveCount(0);
+    await page.keyboard.press('Escape');
     await shot(page, 'admin-users-list-en', info.outputPath.bind(info));
   });
 
@@ -169,7 +176,7 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
   test('the dialog: plain words, a required reason, focus kept inside, Escape closes', async ({ page }, info) => {
     const api = await mockApi(page);
     await openUsers(page);
-    await resetButton(page, 'Noah Williams').click();
+    await (await resetItem(page, 'Noah Williams')).click();
     const d = dialog(page);
     await expect(d).toBeVisible();
     await expect(d.getByTestId('reset-two-step-explainer')).toHaveText('Noah Williams will be signed out everywhere and set up two-step sign-in again the next time they sign in. Their trusted browsers and backup codes stop working.');
@@ -203,7 +210,8 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
     }
     await page.keyboard.press('Escape');
     await expect(d).toHaveCount(0);
-    await expect(resetButton(page, 'Noah Williams')).toBeFocused();
+    // Focus goes back to the row's "More actions" button, which opened the dialog.
+    await expect(rowOf(page, 'Noah Williams').getByTestId('user-more-actions')).toBeFocused();
     expect(api.calls.some((c) => c.path.endsWith('/mfa/reset'))).toBe(false);
     expect(api.errors).toEqual([]);
   });
@@ -211,7 +219,7 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
   test('a reason, then the reset: the exact request, a toast with the name, and the row updates', async ({ page }) => {
     const api = await mockApi(page);
     await openUsers(page);
-    await resetButton(page, 'Noah Williams').click();
+    await (await resetItem(page, 'Noah Williams')).click();
     await dialog(page).getByRole('textbox', { name: /Reason/ }).fill('  Lost his phone on a site visit ');
     await dialog(page).getByRole('button', { name: 'Reset two-step sign-in' }).click();
     await expect(dialog(page)).toHaveCount(0);
@@ -219,7 +227,8 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
     const sent = api.calls.filter((c) => c.path.endsWith('/mfa/reset'));
     expect(sent).toEqual([{ method: 'POST', path: `/api/access/users/${noah.id}/mfa/reset`, body: { reason: 'Lost his phone on a site visit' } }]);
     // The list is read again: Noah no longer has two-step, so the action is gone.
-    await expect(resetButton(page, 'Noah Williams')).toHaveCount(0);
+    await expect(await resetItem(page, 'Noah Williams')).toHaveCount(0);
+    await page.keyboard.press('Escape');
     await expect(rowOf(page, 'Noah Williams').getByTestId('user-two-step-on')).toHaveCount(0);
   });
 
@@ -235,7 +244,7 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
       ],
     });
     await openUsers(page);
-    await resetButton(page, 'Noah Williams').click();
+    await (await resetItem(page, 'Noah Williams')).click();
     const d = dialog(page);
     const reason = d.getByRole('textbox', { name: /Reason/ });
     const confirm = d.getByRole('button', { name: 'Reset two-step sign-in' });
@@ -261,7 +270,7 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
   test('409: two-step was already off, nothing changed', async ({ page }) => {
     await mockApi(page, { reset: [{ status: 409, body: { code: 'ERR_MFA_NOT_ENABLED', message: 'Not enabled.' } }] });
     await openUsers(page);
-    await resetButton(page, 'Noah Williams').click();
+    await (await resetItem(page, 'Noah Williams')).click();
     await dialog(page).getByRole('textbox', { name: /Reason/ }).fill('Lost phone');
     await dialog(page).getByRole('button', { name: 'Reset two-step sign-in' }).click();
     await expect(dialog(page).getByTestId('reset-two-step-error')).toHaveText('Two-step sign-in is already off for Noah Williams. Nothing was changed.');
@@ -272,7 +281,7 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
     await mockApi(page);
     await openUsers(page);
     await page.route('**/api/access/users/*/mfa/reset', (route) => route.abort('internetdisconnected'));
-    await resetButton(page, 'Noah Williams').click();
+    await (await resetItem(page, 'Noah Williams')).click();
     await dialog(page).getByRole('textbox', { name: /Reason/ }).fill('Lost phone');
     await dialog(page).getByRole('button', { name: 'Reset two-step sign-in' }).click();
     await expect(dialog(page).getByTestId('reset-two-step-error')).toHaveText('Cannot reach the server. Check your connection and try again.');
@@ -282,8 +291,10 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
     await mockApi(page, { locale: 'ar' });
     await page.goto('/setup?tab=users');
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-    const button = rowOf(page, 'Noah Williams').getByRole('button', { name: 'إعادة تعيين التحقق بخطوتين' });
-    await button.click({ timeout: 30_000 });
+    // The row's "More actions" menu, in Arabic too: the item reads «إعادة تعيين التحقق بخطوتين».
+    await rowOf(page, 'Noah Williams').getByTestId('user-more-actions').click({ timeout: 30_000 });
+    const item = page.getByTestId('user-actions-menu').getByRole('menuitem', { name: 'إعادة تعيين التحقق بخطوتين' });
+    await item.click();
     const d = page.getByRole('dialog', { name: 'إعادة تعيين التحقق بخطوتين؟' });
     await expect(d.getByTestId('reset-two-step-explainer')).toHaveText('سيُسجَّل خروج Noah Williams من كل الأجهزة، وسيُعدّ التحقق بخطوتين من جديد عند تسجيل الدخول التالي. وستتوقف متصفحاته الموثوقة ورموزه الاحتياطية عن العمل.');
     await expect(d.getByRole('textbox', { name: /السبب/ })).toBeFocused();
@@ -296,7 +307,7 @@ test.describe('Setup → Users: reset another user\'s two-step sign-in', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockApi(page, { theme: 'dark' });
     await openUsers(page);
-    await resetButton(page, 'Noah Williams').click();
+    await (await resetItem(page, 'Noah Williams')).click();
     await expect(dialog(page)).toBeVisible();
     await expect(page.locator('html')).toHaveClass(/dark/);
     const box = (await dialog(page).boundingBox())!;

@@ -888,6 +888,15 @@ public class AuthService : IAuthService
 
         // Always respond with the same message to prevent user enumeration
         const string safeMessage = "If an account with that email exists, a password reset link has been sent.";
+        // ...and in about the same time: every answer waits out a floor, so whether an account exists (a token written,
+        // an email sent) does not show in how long the request took.
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        async Task<ForgotPasswordResponse> AnswerAsync(bool? delivery)
+        {
+            var remaining = ForgotPasswordMinimumResponse - started.Elapsed;
+            if (remaining > TimeSpan.Zero) await Task.Delay(remaining, cancellationToken);
+            return new ForgotPasswordResponse(safeMessage, null, null) { EmailDeliveryConfigured = delivery };
+        }
 
         // Workspace-level only (the same for every address in it), so it reveals nothing about the email.
         var resolvedTenantId = await _db.Tenants.AsNoTracking().Where(t => t.Slug == tenantSlug && t.IsActive)
@@ -897,28 +906,70 @@ public class AuthService : IAuthService
 
         var user = await LoadUserGraph(request.Email, tenantSlug, cancellationToken);
         if (user?.Tenant is null || !user.IsActive || !user.Tenant.IsActive)
-            return new ForgotPasswordResponse(safeMessage, null, null) { EmailDeliveryConfigured = deliveryConfigured };
+            return await AnswerAsync(deliveryConfigured);
 
+        // Per account, whatever address the requests come from: one new link a minute, five an hour. Beyond that the
+        // answer is the same, and nothing is written or sent — someone else cannot bury the owner's inbox in links.
+        // The check, the superseding and the new link happen under the user row lock in one transaction, so concurrent
+        // requests for one account cannot all pass the limit or leave more than the newest link alive.
         var resetToken = _tokenService.CreateSecureToken();
-        var expiresAt = DateTime.UtcNow.AddHours(1);
-        _db.PasswordResetTokens.Add(new PasswordResetToken
+        var auditId = Guid.NewGuid();
+        var userId = user.Id;
+        var tenantId = user.TenantId;
+        var issued = false;
+
+        async Task IssueOnceAsync(CancellationToken ct)
         {
-            UserId = user.Id,
-            TokenHash = _tokenService.HashToken(resetToken),
-            ExpiresAtUtc = expiresAt,
-            CreatedByIp = context.IpAddress
-        });
-        _db.LoginActivities.Add(new LoginActivity
+            _db.ChangeTracker.Clear();
+            issued = false;
+            var nowUtc = DateTime.UtcNow;
+            var locked = await _db.Users.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
+            if (locked is null || locked.IsDeleted || !locked.IsActive) return;
+
+            var recent = await _db.PasswordResetTokens.AsNoTracking()
+                .Where(x => x.UserId == userId && x.CreatedAtUtc > nowUtc.AddHours(-1))
+                .Select(x => x.CreatedAtUtc).ToListAsync(ct);
+            var auditContext = context with { UserId = userId, TenantId = tenantId };
+            if (recent.Count >= ForgotPasswordHourlyLimit || recent.Any(at => at > nowUtc.Add(-ForgotPasswordCooldown)))
+            {
+                _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, nowUtc, "auth.password_reset_throttled", "User", userId.ToString(), auditContext, null));
+                await _db.SaveChangesAsync(ct);
+                return;
+            }
+
+            // A new link supersedes every live one: only the newest link in the owner's inbox works.
+            foreach (var stale in await _db.PasswordResetTokens
+                         .Where(x => x.UserId == userId && x.UsedAtUtc == null && x.ExpiresAtUtc > nowUtc).ToListAsync(ct))
+                stale.ExpiresAtUtc = nowUtc;
+            _db.PasswordResetTokens.Add(new PasswordResetToken
+            {
+                UserId = userId,
+                TokenHash = _tokenService.HashToken(resetToken),
+                ExpiresAtUtc = nowUtc.AddHours(1),
+                CreatedAtUtc = nowUtc,
+                CreatedByIp = context.IpAddress
+            });
+            _db.LoginActivities.Add(new LoginActivity
+            {
+                TenantId      = tenantId,
+                UserId        = userId,
+                EmailAttempted = locked.Email,
+                EventType     = LoginEventTypes.PasswordResetRequested,
+                IpAddress     = context.IpAddress,
+                UserAgent     = context.UserAgent,
+            });
+            _db.AuditLogs.Add(AuthAuditEntry.Create(auditId, nowUtc, "auth.password_reset_requested", "User", userId.ToString(), auditContext, null));
+            await _db.SaveChangesAsync(ct);
+            issued = true;
+        }
+
+        await RunCredentialTransactionAsync(IssueOnceAsync, tenantId, auditId, cancellationToken);
+        if (!issued)
         {
-            TenantId      = user.TenantId,
-            UserId        = user.Id,
-            EmailAttempted = user.Email,
-            EventType     = LoginEventTypes.PasswordResetRequested,
-            IpAddress     = context.IpAddress,
-            UserAgent     = context.UserAgent,
-        });
-        await _db.SaveChangesAsync(cancellationToken);
-        await _auditService.WriteAsync("auth.password_reset_requested", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
+            _log.LogInformation("Password reset request for user {UserId} held back by the per-account limit.", userId);
+            return await AnswerAsync(deliveryConfigured);
+        }
 
         // Build reset URL — falls back to a relative path fragment if APP_URL is not set.
         var resetUrl = AuthLinkBuilder.ResetPassword(_appUrl, user.Tenant.Slug, resetToken);
@@ -949,8 +1000,16 @@ public class AuthService : IAuthService
             _log.LogInformation("SMTP not configured — reset token saved for user {UserId}, no email sent.", user.Id);
         }
 
-        return new ForgotPasswordResponse(safeMessage, null, null) { EmailDeliveryConfigured = deliveryConfigured };
+        return await AnswerAsync(deliveryConfigured);
     }
+
+    /// <summary>Forgot-password, per account: one new link per cooldown, at most this many an hour.</summary>
+    internal static readonly TimeSpan ForgotPasswordCooldown = TimeSpan.FromSeconds(60);
+    internal const int ForgotPasswordHourlyLimit = 5;
+
+    /// <summary>The floor every forgot-password answer waits out (Auth:ForgotPasswordMinimumMs, default 1200).</summary>
+    private TimeSpan ForgotPasswordMinimumResponse =>
+        TimeSpan.FromMilliseconds(int.TryParse(_configuration?["Auth:ForgotPasswordMinimumMs"], out var ms) ? Math.Clamp(ms, 0, 10_000) : 1200);
 
     public async Task ResetPasswordAsync(ResetPasswordRequest request, RequestContext context, CancellationToken cancellationToken)
     {
@@ -1043,6 +1102,14 @@ public class AuthService : IAuthService
             user.PasswordHash = passwordHash;
             user.MustChangePassword = false;
             user.LastPasswordChangedAt = resetAtUtc;
+            // A lockout from wrong passwords guarded the old password and ends with it; an administrator's lock
+            // (Status "Locked") stays until they unlock (as AdminSetTemporaryPasswordAsync).
+            if (user.Status == "Active")
+            {
+                user.FailedLoginCount = 0;
+                user.IsLocked = false;
+                user.LockoutEnd = null;
+            }
             TenantSessionSecurity.RotateStamp(user, resetAtUtc);
 
             _db.LoginActivities.Add(new LoginActivity

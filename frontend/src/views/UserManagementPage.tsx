@@ -32,6 +32,7 @@ import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
 import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
 import { ResetPasswordDialog } from '../components/access/ResetPasswordDialog';
+import { UserRowActions, type UserRowAction } from '../components/access/UserRowActions';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppToast } from '../components/ui/AppToast';
 import { Toggle } from '../components/ui/Toggle';
@@ -187,6 +188,30 @@ export function UsersTab() {
   const meIsOwner = callerIsOwner;
   const canMakeOwner = (u: UserListItem) => meIsOwner && !isMe(u) && u.status === 'Active' && u.roles.includes('Admin');
   const canResetTwoStep = (u: UserListItem) => canManageUsers && u.mfaEnabled === true && !isMe(u) && !protectedOwner(u);
+  // Activate is offered only where the server accepts it (AccessManagementService.ActivateUserAsync): not for a no-login,
+  // suspended, deactivated or not-yet-set-up account, which needs an invitation instead.
+  const canActivate = (u: UserListItem) => u.status !== 'Active' && u.isActive && u.accessMode !== 'NoLogin'
+    && !['Suspended', 'Deactivated', 'PendingPasswordSetup', 'PasswordResetRequired'].includes(u.status);
+
+  /** The labelled actions for one row; anything the server would refuse for this person is left out. */
+  const rowActions = (u: UserListItem): UserRowAction[] => {
+    const me = isMe(u);
+    const actions: UserRowAction[] = [{ key: 'edit', label: t('Edit details'), onSelect: () => openEdit(u) }];
+    if (!me) actions.push({ key: 'reset-password', label: t('Reset password'), onSelect: () => setResetPasswordFor(u), testId: 'user-reset-password' });
+    if (canResetTwoStep(u)) actions.push({ key: 'reset-two-step', label: t('Reset two-step sign-in'), onSelect: () => setResetTwoStep(u), testId: 'user-reset-two-step' });
+    if (!me && !u.employeeId) actions.push({ key: 'link-employee', label: t('Link to employee record'), onSelect: () => setEmployeeLink({ user: u }), testId: 'user-link-employee' });
+    if (canMakeOwner(u)) actions.push({ key: 'make-owner', label: t('Make owner'), onSelect: () => setShowAction({ type: 'make-owner', userId: u.id }), testId: 'user-make-owner' });
+    if (me) return actions;
+    const status: UserRowAction[] = [];
+    if (canActivate(u)) status.push({ key: 'activate', label: t('Activate'), onSelect: () => setShowAction({ type: 'activate', userId: u.id }) });
+    status.push(u.isLocked
+      ? { key: 'unlock', label: t('Unlock'), onSelect: () => setShowAction({ type: 'unlock', userId: u.id }) }
+      : { key: 'lock', label: t('Lock'), onSelect: () => setShowAction({ type: 'lock', userId: u.id }) });
+    if (u.isActive) status.push({ key: 'suspend', label: t('Suspend'), onSelect: () => setShowAction({ type: 'suspend', userId: u.id }) });
+    status[0].separatorBefore = true;
+    return [...actions, ...status,
+      { key: 'delete', label: t('Remove access'), onSelect: () => setShowAction({ type: 'delete', userId: u.id }), destructive: true, separatorBefore: true }];
+  };
 
   const pageSize = 20;
 
@@ -372,80 +397,17 @@ export function UsersTab() {
                     </p>
                   )}
                 </td>
-                <td className="px-4 py-3"><StatusBadge value={u.status} /></td>
+                <td className="px-4 py-3"><StatusBadge value={u.accessMode === 'NoLogin' && u.status === 'Active' ? 'NoLogin' : u.status} /></td>
                 <td className="max-w-[14rem] px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
                   <RoleChips roles={u.roles} />
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600 dark:text-slate-400">{t(ACCESS_MODE_LABELS[u.accessMode] ?? u.accessMode)}</td>
                 <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{u.lastLoginAtUtc ? fmtDateTime(u.lastLoginAtUtc) : t('Never')}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-1">
-                    <button title="View Access" onClick={() => setSelected(u)} className="rounded p-1 hover:bg-slate-100 dark:hover:bg-slate-700">
-                      <Eye className="h-3.5 w-3.5 text-slate-500" />
-                    </button>
-                    {!protectedOwner(u) && (<>
-                    <button title="Edit User" onClick={() => openEdit(u)} className="rounded p-1 hover:bg-violet-100 dark:hover:bg-violet-900/30">
-                      <Edit2 className="h-3.5 w-3.5 text-violet-500" />
-                    </button>
-                    {u.status !== 'Active' && (
-                      <button title="Activate" onClick={() => setShowAction({ type: 'activate', userId: u.id })} className="rounded p-1 hover:bg-green-100 dark:hover:bg-green-900/30">
-                        <UserCheck className="h-3.5 w-3.5 text-green-600" />
-                      </button>
-                    )}
-                    {u.isLocked ? (
-                      <button title="Unlock" onClick={() => setShowAction({ type: 'unlock', userId: u.id })} className="rounded p-1 hover:bg-amber-100 dark:hover:bg-amber-900/30">
-                        <Unlock className="h-3.5 w-3.5 text-amber-600" />
-                      </button>
-                    ) : (
-                      <button title="Lock" onClick={() => setShowAction({ type: 'lock', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
-                        <Lock className="h-3.5 w-3.5 text-red-500" />
-                      </button>
-                    )}
-                    {u.isActive && (
-                      <button title="Suspend" onClick={() => setShowAction({ type: 'suspend', userId: u.id })} className="rounded p-1 hover:bg-amber-100 dark:hover:bg-amber-900/30">
-                        <UserX className="h-3.5 w-3.5 text-amber-600" />
-                      </button>
-                    )}
-                    {/* Never your own: that goes through Change password, which proves the current one. */}
-                    {!isMe(u) && (
-                      <button title={t('Reset password')} aria-label={t('Reset password')} onClick={() => setResetPasswordFor(u)} className="rounded p-1 hover:bg-violet-100 dark:hover:bg-violet-900/30" data-testid="user-reset-password">
-                        <RotateCcw className="h-3.5 w-3.5 text-violet-600" />
-                      </button>
-                    )}
-                    <button title="Delete User" onClick={() => setShowAction({ type: 'delete', userId: u.id })} className="rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/30">
-                      <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                    </button>
-                    </>)}
-                    {canMakeOwner(u) && (
-                      <button
-                        type="button"
-                        onClick={() => setShowAction({ type: 'make-owner', userId: u.id })}
-                        className="ms-1 whitespace-nowrap rounded-lg border border-amber-200 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-900/30"
-                        data-testid="user-make-owner"
-                      >
-                        {t('Make owner')}
-                      </button>
-                    )}
-                    {canResetTwoStep(u) && (
-                      <button
-                        type="button"
-                        onClick={() => setResetTwoStep(u)}
-                        className="ms-1 whitespace-nowrap rounded-lg border border-rose-200 px-2 py-1 text-xs font-medium text-rose-700 rtl:text-[13px] hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-900/30"
-                        data-testid="user-reset-two-step"
-                      >
-                        {t('Reset two-step sign-in')}
-                      </button>
-                    )}
-                    {!u.employeeId && (
-                      <button
-                        type="button"
-                        onClick={() => setEmployeeLink({ user: u })}
-                        className="ms-1 whitespace-nowrap rounded-lg border border-violet-200 px-2 py-1 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-900/30"
-                      >
-                        {t('Link to employee record')}
-                      </button>
-                    )}
-                  </div>
+                  {protectedOwner(u)
+                    // The owner's account is changed by nobody else: only View.
+                    ? <UserRowActions userName={u.fullName || u.email} onView={() => setSelected(u)} actions={[]} />
+                    : <UserRowActions userName={u.fullName || u.email} onView={() => setSelected(u)} actions={rowActions(u)} />}
                 </td>
               </tr>
             ))}
@@ -514,7 +476,7 @@ export function UsersTab() {
             )}
             {showAction.type === 'delete' && (
               <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">
-                This will permanently remove the user's access. This action cannot be undone.
+                {t("This removes {name}'s access to KynexOne. The account is kept for the audit trail, and its email cannot be used for a new login.", { name: users.find(x => x.id === showAction.userId)?.fullName ?? '' })}
               </p>
             )}
             {['suspend', 'lock'].includes(showAction.type) && (

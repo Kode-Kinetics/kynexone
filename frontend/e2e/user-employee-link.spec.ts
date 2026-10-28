@@ -141,7 +141,8 @@ async function pickEmployee(page: Page, name: string) {
 test('an existing login is linked to its employee record from the user row', async ({ page }, testInfo) => {
   const { writes, errors } = await openUserManagement(page);
   const row = page.getByRole('row').filter({ hasText: noah.email });
-  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  await row.getByTestId('user-more-actions').click();
+  await page.getByTestId('user-actions-menu').getByTestId('user-link-employee').click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Link to employee record' })).toBeVisible();
@@ -175,7 +176,9 @@ test('an existing login is linked to its employee record from the user row', asy
   await dialog.getByRole('button', { name: 'Close', exact: true }).last().click();
   // The row now names the employee and no longer offers the link.
   await expect(row.getByText('Employee: Noah Williams (EMP-0042)')).toBeVisible();
-  await expect(row.getByRole('button', { name: 'Link to employee record' })).toHaveCount(0);
+  await row.getByTestId('user-more-actions').click();
+  await expect(page.getByTestId('user-actions-menu').getByTestId('user-link-employee')).toHaveCount(0);
+  await page.keyboard.press('Escape');
   expect(errors).toEqual([]);
 });
 
@@ -183,7 +186,8 @@ test('a login an administrator had handled is linked with a fresh password invit
   await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
   const { writes, errors } = await openUserManagement(page, { credentialReset: true });
   const row = page.getByRole('row').filter({ hasText: noah.email });
-  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  await row.getByTestId('user-more-actions').click();
+  await page.getByTestId('user-actions-menu').getByTestId('user-link-employee').click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByTestId('employee-login-status')).toBeVisible();
@@ -209,7 +213,8 @@ test('a login an administrator had handled is linked with a fresh password invit
 test('a work email changed after the record was created must be confirmed with the person before linking', async ({ page }) => {
   const { writes, errors } = await openUserManagement(page, { emailChanged: true });
   const row = page.getByRole('row').filter({ hasText: noah.email });
-  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  await row.getByTestId('user-more-actions').click();
+  await page.getByTestId('user-actions-menu').getByTestId('user-link-employee').click();
 
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByTestId('work-email-set-by')).toHaveText('Work email set by Hana Haddad on 2026-10-01.');
@@ -276,7 +281,8 @@ test('a login that works in another company is explained, and nothing is offered
 test('a login whose email is on no employee record gets employees with a similar name to choose from', async ({ page }) => {
   const { writes, errors } = await openUserManagement(page);
   const row = page.getByRole('row').filter({ hasText: layla.email });
-  await row.getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  await row.getByTestId('user-more-actions').click();
+  await page.getByTestId('user-actions-menu').getByTestId('user-link-employee').click();
 
   const dialog = page.getByRole('dialog');
   const suggestions = dialog.getByTestId('employee-suggestions');
@@ -308,7 +314,8 @@ test('search results stay inside the dialog, with room to read them', async ({ p
 
 test('an employee whose work email only contains the login email is offered, never picked automatically', async ({ page }) => {
   const { writes, errors } = await openUserManagement(page);
-  await page.getByRole('row').filter({ hasText: ann.email }).getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  await page.getByRole('row').filter({ hasText: ann.email }).getByTestId('user-more-actions').click();
+  await page.getByTestId('user-actions-menu').getByTestId('user-link-employee').click();
   const dialog = page.getByRole('dialog');
   const suggestions = dialog.getByTestId('employee-suggestions');
   await expect(suggestions).toContainText(`No employee record has exactly the work email ${ann.email}, but these records mention it.`);
@@ -321,7 +328,8 @@ test('an employee whose work email only contains the login email is offered, nev
 
 test('an employee chosen by hand is never replaced by the automatic lookup answering late', async ({ page }) => {
   const { errors } = await openUserManagement(page, { slowLookupFor: noah.email });
-  await page.getByRole('row').filter({ hasText: noah.email }).getByRole('button', { name: 'Link to employee record', exact: true }).click();
+  await page.getByRole('row').filter({ hasText: noah.email }).getByTestId('user-more-actions').click();
+  await page.getByTestId('user-actions-menu').getByTestId('user-link-employee').click();
   const dialog = page.getByRole('dialog');
   await pickEmployee(page, 'Omar Saleh');
   await expect(dialog.getByText('This login works in a different company.', { exact: false })).toBeVisible();
