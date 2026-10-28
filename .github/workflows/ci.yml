@@ -35,7 +35,7 @@ jobs:
   # everything. `docs_only` is true only when EVERY changed file is documentation.
   changes:
     name: Detect docs-only change
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
     steps:
@@ -59,7 +59,7 @@ jobs:
   # ── Backend: fast unit lane (no Docker image pulls) ────────────────────────────
   backend-unit:
     name: Backend Unit + ratchets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     steps:
@@ -98,7 +98,7 @@ jobs:
   # straddles two shards (the Postgres collection fixtures are per class).
   backend-integration:
     name: Backend Integration (shard ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     strategy:
@@ -158,7 +158,7 @@ jobs:
   # only when the unit lane and all four integration shards passed (or were skipped on a docs-only PR).
   backend-tests:
     name: Backend Tests (security gate)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes, backend-unit, backend-integration]
     if: always()
     steps:
@@ -185,7 +185,7 @@ jobs:
   # that passed vacuously and a health check that always returned zero.
   deploy-preflight:
     name: Deploy Preflight (required env vars — gate self-test)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Self-test the required-env-var gate
@@ -200,7 +200,7 @@ jobs:
   # ── Frontend: typecheck ───────────────────────────────────────────────────────
   frontend-typecheck:
     name: Frontend Typecheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     steps:
@@ -251,7 +251,7 @@ jobs:
   # token) from reaching the deploy step. Scans the full history on push.
   secret-scan:
     name: Secret Scan (gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -275,7 +275,7 @@ jobs:
   # trees: backend-dotnet/Zayra.Api (NuGet), frontend/ and mobile/ (npm).
   dependency-scan:
     name: Dependency Vulnerability Scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -382,7 +382,7 @@ jobs:
   # produces a green run. That is fine for an advisory suite and disqualifying for a required check.
   chrome-security-gate:
     name: Chrome Security Gate (roles + isolation)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     # 30 → 40: the gate now signs in the whole system-role catalog (18 roles, paced under the login
@@ -604,7 +604,7 @@ jobs:
 
   schema-gates:
     name: Schema Gates (drift, fresh deploy, upgrade)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         # Services start before steps can configure Docker; use the same official image via its cache.
@@ -815,7 +815,7 @@ jobs:
   # syntax 16 rejects.
   baseline-schema-gates:
     name: Baseline Schema Gates (schema.sql, apply order, ratchets)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
       postgres:
@@ -931,7 +931,7 @@ jobs:
   # env misuse). The deployed artifact is the build, so the build is what must be gated.
   frontend-build:
     name: Frontend Production Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     steps:
@@ -957,7 +957,7 @@ jobs:
   # bootstrap account must never suppress the client-pilot proof for dashboard + HRM modules.
   browser-pilot:
     name: Browser Pilot (seeded tenant, core modules)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The production-shaped stack takes about ten minutes to build and provision before the
     # Chromium suite starts (about 1,040 tests since the Setup design wave; 29+ minutes on its own).
     # 45 minutes cut that run off mid-suite with no failure, so keep enough headroom for the full gate
@@ -1147,7 +1147,7 @@ jobs:
   # only the connection-string secret (env stays Development so no JWT/SeedAdmin prod fail-fast).
   migrate-backend:
     name: Apply DB Migrations (deploy gate)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
     # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
     # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
@@ -1245,7 +1245,7 @@ jobs:
   # image (runtime: image) and only PULLS it — removing Render's builder from the deploy path for good.
   build-image:
     name: Build & push backend image (GHCR)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
     # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
     # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
@@ -1321,7 +1321,7 @@ jobs:
   # ── Deploy: trigger Render redeploy after tests + security gates + migrations pass (main only) ──
   deploy-backend:
     name: Deploy Backend (Render)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [backend-tests, frontend-typecheck, secret-scan, dependency-scan, migrate-backend]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     # WAVE 1 A4 — protected environment: production deploys require explicit approval.
@@ -1473,7 +1473,7 @@ jobs:
   # what hid this.
   release-outcome:
     name: Release outcome (main)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [migrate-backend, deploy-backend]
     if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
