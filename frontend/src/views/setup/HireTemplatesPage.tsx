@@ -194,7 +194,7 @@ export function HireTemplatesPanel({ companyId: scopeCompany, companies: given, 
               <div>
                 <label htmlFor={`${uid}-n`} className="block text-sm font-medium">{t('Name')} <span className="text-xs font-normal text-slate-500">{t('(required)')}</span></label>
                 <input id={`${uid}-n`} className={input} dir="ltr" value={form.name} aria-invalid={tried && nameBad ? true : undefined} aria-describedby={tried && nameBad ? `${uid}-n-err` : undefined} onChange={e => change({ name: e.target.value })} />
-                {tried && nameBad && <p id={`${uid}-n-err`} className="mt-1 text-xs font-medium text-rose-700">{t('Enter a name.')}</p>}
+                {tried && nameBad && <p id={`${uid}-n-err`} className="mt-1 text-xs font-medium text-rose-700">{t('onboarding.templates.enterName')}</p>}
               </div>
               <div><label htmlFor={`${uid}-na`} className="block text-sm font-medium">{t('Name in Arabic')}</label><input id={`${uid}-na`} className={input} dir="rtl" value={form.nameAr} onChange={e => change({ nameAr: e.target.value })} /></div>
             </div>

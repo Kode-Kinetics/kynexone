@@ -29,7 +29,7 @@ export function SectionList({ data, selected, onSelect }: { data: EssCompletion;
     <div className="space-y-3">
       <div>
         <div className="flex items-center justify-between text-xs font-semibold text-slate-600 dark:text-slate-300">
-          <span id="ess-progress-label">{t('Progress')}</span>
+          <span id="ess-progress-label">{t('ess.completion.ui.progress')}</span>
           <span>{t('{done} of {total} sections done', { done, total })}</span>
         </div>
         <div role="progressbar" aria-labelledby="ess-progress-label" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done} className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">

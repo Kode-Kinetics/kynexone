@@ -89,7 +89,7 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
         </label>
         {f.kind === 'Enum' ? (
           <select {...common} value={value} onChange={e => onChange(e.target.value)}>
-            <option value="">{t('Select')}</option>
+            <option value="">{t('ess.completion.ui.select')}</option>
             {(f.options ?? []).map(o => <option key={o} value={o}>{t(o)}</option>)}
           </select>
         ) : (

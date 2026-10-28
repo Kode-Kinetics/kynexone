@@ -12,7 +12,7 @@ const ar: Record<string, string> = {
   'Due when the start date is set': 'يُحدد الاستحقاق عند تحديد تاريخ المباشرة',
   'Each task needs its own title.': 'يجب أن يكون لكل مهمة عنوانها الخاص.',
   'Edit checklist': 'تعديل القائمة',
-  'Enter a name.': 'أدخل اسمًا.',
+  'onboarding.templates.enterName': 'أدخل اسمًا.',
   'Enter a task title of 200 characters or fewer.': 'أدخل عنوان مهمة لا يتجاوز 200 حرف.',
   'Expatriate hire': 'موظف وافد',
   'Expatriates only': 'الوافدون فقط',
@@ -139,6 +139,7 @@ const ar: Record<string, string> = {
 
 /** English for the machine keys (owner, status, section, problem). Every other key is its own English sentence. */
 const namespacedEn: Record<string, string> = {
+  'onboarding.templates.enterName': 'Enter a name.',
   'onboarding.owner.HR': 'HR', 'onboarding.owner.IT': 'IT', 'onboarding.owner.Manager': 'Line manager', 'onboarding.owner.Payroll': 'Payroll',
   'onboarding.owner.Finance': 'Finance', 'onboarding.owner.Admin': 'Administration', 'onboarding.owner.Gov': 'Government relations', 'onboarding.owner.Employee': 'The employee',
   'onboarding.status.Pending': 'Pending', 'onboarding.status.InProgress': 'In progress', 'onboarding.status.Blocked': 'Blocked', 'onboarding.status.Completed': 'Completed', 'onboarding.status.Skipped': 'Skipped',

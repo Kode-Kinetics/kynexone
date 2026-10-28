@@ -209,7 +209,7 @@ function ChecklistEditor({ draft, companyId, onChange, onClose, onSaved, onError
           <div>
             <label htmlFor={`${uid}-name`} className="block text-sm font-medium">{t('Name')} <span className="text-xs font-normal text-slate-500">{t('(required)')}</span></label>
             <input id={`${uid}-name`} className={input} dir="ltr" value={draft.name} aria-invalid={tried && nameBad ? true : undefined} aria-describedby={tried && nameBad ? `${uid}-name-err` : undefined} onChange={e => onChange({ ...draft, name: e.target.value })} />
-            {tried && nameBad && <p id={`${uid}-name-err`} className="mt-1 text-xs font-medium text-rose-700">{t('Enter a name.')}</p>}
+            {tried && nameBad && <p id={`${uid}-name-err`} className="mt-1 text-xs font-medium text-rose-700">{t('onboarding.templates.enterName')}</p>}
           </div>
           <div>
             <label htmlFor={`${uid}-name-ar`} className="block text-sm font-medium">{t('Name in Arabic')}</label>

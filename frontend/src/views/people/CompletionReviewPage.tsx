@@ -85,7 +85,7 @@ export function CompletionReviewPage() {
       </div>
       <div className="flex flex-wrap items-end gap-3" role="group" aria-label={t('Profile review')}>
         <label htmlFor={ids.section} className="space-y-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-          <span>{t('Section')}</span>
+          <span>{t('ess.completion.ui.section')}</span>
           <select id={ids.section} className={essInput} value={section} onChange={e => setSection(e.target.value as SectionKey | '')}>
             <option value="">{t('All sections')}</option>
             {SECTION_ORDER.map(s => <option key={s} value={s}>{t(`ess.completion.section.${s}.title`)}</option>)}
@@ -95,7 +95,7 @@ export function CompletionReviewPage() {
           <label htmlFor={ids.company} className="space-y-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
             <span>{t('Company')}</span>
             <select id={ids.company} className={essInput} value={companyId} onChange={e => setCompanyId(e.target.value)}>
-              <option value="">{t('All companies')}</option>
+              <option value="">{t('ess.completion.ui.allCompanies')}</option>
               {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </label>
@@ -112,7 +112,7 @@ export function CompletionReviewPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-slate-800 dark:text-slate-100"><bdi>{item.employee.name}</bdi> <span className="font-normal text-slate-500" dir="ltr">{item.employee.code}</span></p>
-                  <p className="text-xs text-slate-600 dark:text-slate-300">{t(`ess.completion.section.${item.section}.title`)} · {t('Submitted')} {date(item.submittedAtUtc)}</p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{t(`ess.completion.section.${item.section}.title`)} · {t('ess.completion.ui.submitted')} {date(item.submittedAtUtc)}</p>
                 </div>
                 {item.goesToFinance && <span className="rounded-full bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-800 dark:bg-violet-500/10 dark:text-violet-300">{t('Goes to Finance')}</span>}
               </div>
@@ -124,14 +124,14 @@ export function CompletionReviewPage() {
                   <div className="overflow-x-auto" role="region" tabIndex={0} aria-label={t(`ess.completion.section.${item.section}.title`)}>
                     <table className="block w-full text-sm sm:table sm:min-w-[20rem]" role="table">
                       <caption className="sr-only">{t(`ess.completion.section.${item.section}.title`)}</caption>
-                      <thead className="sr-only sm:table-header-group sm:not-sr-only" role="rowgroup"><tr className="text-xs text-slate-500" role="row"><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Field')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Current')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Proposed')}</th><th scope="col" role="columnheader" className="py-1 text-start">{t('Changed')}</th></tr></thead>
+                      <thead className="sr-only sm:table-header-group sm:not-sr-only" role="rowgroup"><tr className="text-xs text-slate-500" role="row"><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Field')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Current')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Proposed')}</th><th scope="col" role="columnheader" className="py-1 text-start">{t('ess.completion.ui.changed')}</th></tr></thead>
                       <tbody className="block space-y-2 sm:table-row-group sm:space-y-0" role="rowgroup">
                         {item.diff.map(d => (
                           <tr key={d.field} role="row" data-testid="diff-row" className="block space-y-1 rounded-xl border border-slate-200 p-3 sm:table-row sm:space-y-0 sm:rounded-none sm:border-0 sm:border-t sm:border-slate-100 sm:p-0 dark:border-white/10">
                             <th scope="row" role="rowheader" className="block py-1.5 pe-3 text-start font-medium sm:table-cell">{t(d.labelKey)}</th>
                             <td role="cell" className="flex items-start justify-between gap-3 py-1 pe-3 text-start sm:table-cell sm:py-1.5"><span className="shrink-0 text-xs text-slate-500 sm:hidden" aria-hidden="true">{t('Current')}</span><div className="min-w-0 text-end sm:text-start"><span dir="ltr"><bdi>{d.before || '—'}</bdi></span>{hijriLine(d.before, locale) && <span className="block text-xs text-slate-500" data-testid={`hijri-before-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.before, locale) })}</span>}</div></td>
                             <td role="cell" className={`flex items-start justify-between gap-3 py-1 pe-3 text-start sm:table-cell sm:py-1.5 ${d.changed ? 'font-bold' : ''}`}><span className="shrink-0 text-xs font-normal text-slate-500 sm:hidden" aria-hidden="true">{t('Proposed')}</span><div className="min-w-0 text-end sm:text-start"><span dir="ltr"><bdi>{d.after || '—'}</bdi></span>{hijriLine(d.after, locale) && <span className="block text-xs font-normal text-slate-500" data-testid={`hijri-after-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.after, locale) })}</span>}</div></td>
-                            <td role="cell" className="py-1 text-start sm:table-cell sm:py-1.5"><span className={d.changed ? 'rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'text-xs text-slate-500'}>{d.changed ? t('Changed') : t('Unchanged')}</span></td>
+                            <td role="cell" className="py-1 text-start sm:table-cell sm:py-1.5"><span className={d.changed ? 'rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'text-xs text-slate-500'}>{d.changed ? t('ess.completion.ui.changed') : t('ess.completion.ui.unchanged')}</span></td>
                           </tr>
                         ))}
                       </tbody>
