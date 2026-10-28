@@ -47,7 +47,7 @@ test('Arabic HR review at 360 px', async ({ page }, info) => {
   const row = page.getByTestId('diff-row').first();
   await expect(row).toContainText('الحالي');
   await expect(row).toContainText('المقترح');
-  await expect(page.getByTestId('company-switcher')).toContainText('كل الشركات');
+  await expect(page.getByTestId('company-switcher')).toContainText('جميع الشركات');
   await page.screenshot({ path: process.env.P2_SHOTS ? `${process.env.P2_SHOTS}/p2-hr-review-ar-360.png` : info.outputPath('hr.png'), animations: 'disabled' });
   expect(log.errors).toEqual([]);
 });
