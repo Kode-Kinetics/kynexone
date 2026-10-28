@@ -78,7 +78,7 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
   const warnings = reviewWarnings(form, { today });
   if (grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary)) warnings.push('grade_band_out_of_range');
   const bank = companyCountry === 'SA' ? bankNameFor(form.iban, banks, locale) : '';
-  const workEmail = composeWorkEmail(form.workEmailLocal, company?.emailDomain || undefined) ?? '';
+  const workEmail = composeWorkEmail(form.workEmail, company?.emailDomain || undefined) ?? '';
   const missing = [
     ...activationNeeds(form).map(n => t(n.key === 'startDate' ? 'Start date' : 'Designation or grade')),
     !form.nationalityCode && t('Nationality'), !form.idNumber.trim() && t('ID number'), !form.iban.trim() && t('IBAN'), !form.arabicName.trim() && t('Arabic full name'), !form.dob && t('Date of birth'),

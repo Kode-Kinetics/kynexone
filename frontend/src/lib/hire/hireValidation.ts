@@ -27,7 +27,7 @@ export interface ValidationContext {
 }
 
 const STEP: Partial<Record<keyof HireForm, 1 | 2 | 3>> = {
-  englishName: 1, companyId: 1, startDate: 1, designationId: 1, gradeId: 1, workEmailLocal: 1,
+  englishName: 1, companyId: 1, startDate: 1, designationId: 1, gradeId: 1, workEmail: 1,
   nationalityCode: 2, dob: 2, mobileNational: 2, personalEmail: 2, arabicName: 2, preferredName: 2,
   idNumber: 3, idExpiry: 3, passportNumber: 3, passportExpiry: 3, probationEndDate: 3, iban: 3, molId: 3, workLocation: 3, basic: 3, housing: 3, transport: 3, other: 3, contractEndDate: 3,
 };
@@ -43,7 +43,7 @@ export const FIELD_LIMITS: Partial<Record<keyof HireForm, { limit: number; label
   iban: { limit: 34, label: 'IBAN' },
   mobileNational: { limit: 60, label: 'Mobile number' },
   personalEmail: { limit: 254, label: 'Personal email' },
-  workEmailLocal: { limit: 254, label: 'Work email' },
+  workEmail: { limit: 254, label: 'Work email' },
   idNumber: { limit: 200, label: 'ID number' },
   passportNumber: { limit: 200, label: 'Passport number' },
 };
@@ -83,8 +83,8 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
     add('gradeId', 'This designation belongs to grade {grade}.', { grade: ctx.designationGrade.gradeCode });
   }
 
-  if (!blank(form.workEmailLocal) && form.workEmailLocal.includes('@') && ctx.emailDomain) {
-    if (!form.workEmailLocal.trim().toLowerCase().endsWith(`@${ctx.emailDomain.toLowerCase()}`)) add('workEmailLocal', 'Work email must end in @{domain}.', { domain: ctx.emailDomain });
+  if (!blank(form.workEmail) && form.workEmail.includes('@') && ctx.emailDomain) {
+    if (!form.workEmail.trim().toLowerCase().endsWith(`@${ctx.emailDomain.toLowerCase()}`)) add('workEmail', 'Work email must end in @{domain}.', { domain: ctx.emailDomain });
   }
 
   if (!blank(form.nationalityCode) && !KNOWN_COUNTRIES.has(form.nationalityCode)) add('nationalityCode', 'Choose a nationality from the list.');

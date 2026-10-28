@@ -108,8 +108,8 @@ test.describe('hireValidation', () => {
     expect(validateHire({ ...four, iban: 'SA03 8000 0000 6080 1016 7519' }, ctx, 'draft')).toEqual([]);
   });
   test('work email local part must not carry another domain', () => {
-    expect(msg(validateHire({ ...four, workEmailLocal: 'alex@gmail.com' }, ctx, 'draft'), 'workEmailLocal')).toBe('Work email must end in @example.test.');
-    expect(validateHire({ ...four, workEmailLocal: 'alex.morgan' }, ctx, 'draft')).toEqual([]);
+    expect(msg(validateHire({ ...four, workEmail: 'alex@gmail.com' }, ctx, 'draft'), 'workEmail')).toBe('Work email must end in @example.test.');
+    expect(validateHire({ ...four, workEmail: 'alex.morgan' }, ctx, 'draft')).toEqual([]);
   });
   test('amounts: negative and overflow (AC 25)', () => {
     expect(msg(validateHire({ ...four, housing: '-5' }, ctx, 'draft'), 'housing')).toBe('Amount cannot be negative.');

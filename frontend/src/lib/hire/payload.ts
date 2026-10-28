@@ -89,7 +89,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     contractType: opt(form.contractType),
     contractEndDate: isFixedTerm(form.contractType) ? opt(form.contractEndDate) : undefined,
     probationEndDate: opt(form.probationEndDate),
-    workEmail: composeWorkEmail(form.workEmailLocal, ctx.emailDomain),
+    workEmail: composeWorkEmail(form.workEmail, ctx.emailDomain),
     joiningDate: opt(form.startDate),
     workLocation: opt(form.workLocation),
     payrollProfile: hasPayroll ? { iban, molId: opt(form.molId), salaryCurrency: ctx.currency } : undefined,

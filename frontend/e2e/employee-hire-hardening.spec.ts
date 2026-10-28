@@ -398,7 +398,7 @@ test.describe('CD34 Arabic copy in the form', () => {
   test('employee code and the domain hint', async ({ page }) => {
     await bootHire(page, { locale: 'ar' });
     await expect(page.getByLabel('الرقم الوظيفي')).toBeVisible();
-    const hint = page.locator('#hire-workEmailLocal-hint');
+    const hint = page.locator('#hire-workEmail-hint');
     await expect(hint).toContainText('يُضاف نطاق');
     await expect(hint).toContainText('KynexOne');
     await expect(hint).not.toContainText('كاينكس');

@@ -4,7 +4,7 @@ import type { HireForm } from './hireForm';
 const MAP: Record<string, keyof HireForm> = {
   englishName: 'englishName', arabicName: 'arabicName', preferredName: 'preferredName', dateOfBirth: 'dob',
   nationality: 'nationalityCode', nationalityCode: 'nationalityCode', mobileNumber: 'mobileNational', personalEmail: 'personalEmail',
-  workEmail: 'workEmailLocal', companyId: 'companyId', branchId: 'branchId', departmentId: 'departmentId', designationId: 'designationId',
+  workEmail: 'workEmail', companyId: 'companyId', branchId: 'branchId', departmentId: 'departmentId', designationId: 'designationId',
   gradeId: 'gradeId', reportingManagerEmployeeId: 'managerId', joiningDate: 'startDate', contractEndDate: 'contractEndDate',
   probationEndDate: 'probationEndDate', contractType: 'contractType', employmentType: 'employmentType', workLocation: 'workLocation', employeeCode: 'employeeCode',
   idNumber: 'idNumber', 'payrollProfile.iban': 'iban', 'payrollProfile.molId': 'molId',

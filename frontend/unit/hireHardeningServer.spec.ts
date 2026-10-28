@@ -39,7 +39,7 @@ test.describe('CD26 server codes say the true thing', () => {
 test.describe('server field names land on the new form fields', () => {
   test('probation end date, work email and contract end date', () => {
     expect(serverFieldToForm('probationEndDate')).toBe('probationEndDate');
-    expect(serverFieldToForm('workEmail')).toBe('workEmailLocal');
+    expect(serverFieldToForm('workEmail')).toBe('workEmail');
     expect(serverFieldToForm('contractEndDate')).toBe('contractEndDate');
   });
   test('the second compliance record is the passport', () => {

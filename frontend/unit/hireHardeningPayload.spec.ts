@@ -9,14 +9,14 @@ const base = { ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'c1' }
 
 test.describe('CD26 work email is sent', () => {
   test('local part plus the company domain', () => {
-    expect(buildCreateRequest({ ...base, workEmailLocal: ' alex.morgan ' }, ctx).workEmail).toBe('alex.morgan@example.test');
+    expect(buildCreateRequest({ ...base, workEmail: ' alex.morgan ' }, ctx).workEmail).toBe('alex.morgan@example.test');
   });
   test('a typed full address at the company domain is kept; blank sends nothing', () => {
-    expect(buildCreateRequest({ ...base, workEmailLocal: 'alex@example.test' }, ctx).workEmail).toBe('alex@example.test');
+    expect(buildCreateRequest({ ...base, workEmail: 'alex@example.test' }, ctx).workEmail).toBe('alex@example.test');
     expect(buildCreateRequest(base, ctx).workEmail).toBeUndefined();
   });
   test('without a company domain a bare local part cannot be composed, so nothing is sent', () => {
-    expect(buildCreateRequest({ ...base, workEmailLocal: 'alex' }, { companyCountry: 'SA', currency: 'SAR' }).workEmail).toBeUndefined();
+    expect(buildCreateRequest({ ...base, workEmail: 'alex' }, { companyCountry: 'SA', currency: 'SAR' }).workEmail).toBeUndefined();
   });
 });
 

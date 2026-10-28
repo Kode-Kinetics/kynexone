@@ -93,11 +93,11 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
         </FieldShell>
         {!form.manualCode && <button type="button" className="mt-1 text-xs font-medium text-sapphire underline" onClick={() => set('manualCode', true)}>{t('Set manually')}</button>}
       </div>
-      <FieldShell field="workEmailLocal" label={t('Work email')} error={errorFor('workEmailLocal')}
+      <FieldShell field="workEmail" label={t('Work email')} error={errorFor('workEmail')}
         hint={domain ? t('The company domain @{domain} is added. KynexOne never creates the mailbox.', { domain }) : t('The company has no email domain yet.')}>
         {p => (
           <div className="flex items-center gap-1" dir="ltr">
-            <input {...p} value={form.workEmailLocal} onChange={e => set('workEmailLocal', e.target.value)} onBlur={() => blur('workEmailLocal')} className={`${inputClass} text-start`} />
+            <input {...p} value={form.workEmail} onChange={e => set('workEmail', e.target.value)} onBlur={() => blur('workEmail')} className={`${inputClass} text-start`} />
             {domain && <span className="shrink-0 text-sm text-slate-500">@{domain}</span>}
           </div>
         )}

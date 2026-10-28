@@ -12,7 +12,7 @@ export interface HireForm {
   managerId: string;
   employeeCode: string;
   manualCode: boolean;
-  workEmailLocal: string;
+  workEmail: string;
   arabicName: string;
   preferredName: string;
   gender: string;
@@ -45,7 +45,7 @@ export interface HireForm {
 export function emptyHireForm(): HireForm {
   return {
     englishName: '', companyId: '', startDate: '', designationId: '', gradeId: '', branchId: '', departmentId: '', managerId: '',
-    employeeCode: '', manualCode: false, workEmailLocal: '', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
+    employeeCode: '', manualCode: false, workEmail: '', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
     nationalityCode: '', idType: '', idNumber: '', idExpiry: '', idChecksumOverrideReason: '', passportNumber: '', passportExpiry: '', dob: '', mobileCountry: '', mobileNational: '',
     personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', workLocation: '', iban: '', molId: '',
     basic: '', housing: '', transport: '', other: '',
