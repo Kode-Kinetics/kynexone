@@ -174,7 +174,9 @@ public partial class OfferComponentOptionsTests
         before.Options.Should().BeEmpty(); before.CanonicalBasic.Code.Should().Be("BASIC");
         var at = (OfferComponentOptionsDto)((OkObjectResult)await controller.Options(_start, default)).Value!;
         at.Options.Should().ContainSingle().Which.Id.Should().Be(future.Id);
-        JsonSerializer.Serialize(at).Should().NotContain("999");
+        // No shared amount (the definition's Value 999) leaks as a JSON number. A substring check also matched random
+        // GUIDs that happen to contain "999", which failed this test about one run in fifty.
+        JsonSerializer.Serialize(at).Should().NotMatchRegex(@"[:\[,]\s*999(\.0+)?\s*[,}\]]");
         (await controller.Options(null, default)).Should().BeOfType<BadRequestObjectResult>();
     }
 

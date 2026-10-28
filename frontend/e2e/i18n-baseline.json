@@ -117,7 +117,7 @@
     }
   ],
   "totals": {
-    "hardcoded": 3951,
+    "hardcoded": 3944,
     "rawStatus": 51,
     "locale": 183,
     "icons": 0,
@@ -565,7 +565,7 @@
       "locale": 12
     },
     "src/views/UserManagementPage.tsx": {
-      "hardcoded": 195,
+      "hardcoded": 188,
       "locale": 3
     },
     "src/views/employees/EmployeeActivitySection.tsx": {

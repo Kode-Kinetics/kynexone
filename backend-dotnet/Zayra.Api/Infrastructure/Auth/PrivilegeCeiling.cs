@@ -46,6 +46,7 @@ public static class PrivilegeCeiling
         public const string ReservedRoleName = "access_reserved_role_name";
         public const string RoleHolderAbove = "access_role_holder_above";
         public const string OwnerProtected = "access_owner_protected";
+        public const string TargetOtherCompanies = "access_target_other_companies";
     }
 
     /// <summary>
@@ -267,6 +268,9 @@ public static class PrivilegeCeiling
             Codes.OwnerProtected => (
                 "This user is the workspace owner. No other administrator can change the owner's account, roles or sign-in. The owner can hand ownership to another Admin first.",
                 "هذا المستخدم هو مالك مساحة العمل. لا يمكن لأي مسؤول آخر تغيير حساب المالك أو أدواره أو تسجيل دخوله. يمكن للمالك نقل الملكية إلى مسؤول آخر أولًا."),
+            Codes.TargetOtherCompanies => (
+                "This user also works in companies outside your access, or across the whole group. Only a group administrator can change their account, roles or sign-in.",
+                "يعمل هذا المستخدم أيضًا في شركات خارج نطاق صلاحياتك، أو على مستوى المجموعة كلها. لا يمكن تغيير حسابه أو أدواره أو تسجيل دخوله إلا من قِبل مسؤول على مستوى المجموعة."),
             Codes.OwnRole => (
                 $"You hold the '{role}' role, so you cannot change it. Ask another administrator.",
                 $"أنت تملك دور '{role}'، لذلك لا يمكنك تعديله. اطلب ذلك من مسؤول آخر."),
