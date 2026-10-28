@@ -86,6 +86,11 @@ async function mockAdmin(page: Page, opts: { link?: Reply; temporary?: Reply } =
 }
 
 const rowOf = (page: Page, name: string) => page.locator('tbody tr').filter({ hasText: name });
+/** Opens a row's "More actions" menu (portalled to <body>) and returns it. */
+async function rowMenu(page: Page, name: string) {
+  await rowOf(page, name).getByTestId('user-more-actions').click();
+  return page.getByTestId('user-actions-menu');
+}
 const dialog = (page: Page) => page.getByTestId('reset-password-dialog');
 
 async function openUsers(page: Page) {
@@ -106,8 +111,11 @@ test.describe('Setup → Users: the list reads in words', () => {
     await expect(rowOf(page, 'Tenant Admin')).toContainText('+5');
     await expect(rowOf(page, 'Tenant Admin')).not.toContainText('Payroll Manager');
     // Your own password changes through Change password, never from this list.
-    await expect(rowOf(page, 'Tenant Admin').getByTestId('user-reset-password')).toHaveCount(0);
-    await expect(rowOf(page, 'Amy Baker').getByTestId('user-reset-password')).toHaveCount(1);
+    await expect((await rowMenu(page, 'Tenant Admin')).getByTestId('user-reset-password')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect((await rowMenu(page, 'Amy Baker')).getByTestId('user-reset-password')).toHaveCount(1);
+    await shot(page, 'users-row-menu-en', info.outputPath.bind(info));
+    await page.keyboard.press('Escape');
     await shot(page, 'users-list-en', info.outputPath.bind(info));
     expect(api.errors).toEqual([]);
   });
@@ -117,7 +125,7 @@ test.describe('Setup → Users: reset another user\'s password', () => {
   test('a reset link is the default, and a link that was not emailed is shown once to copy', async ({ page }, info) => {
     const api = await mockAdmin(page);
     await openUsers(page);
-    await rowOf(page, 'Amy Baker').getByTestId('user-reset-password').click();
+    await (await rowMenu(page, 'Amy Baker')).getByTestId('user-reset-password').click();
     const d = dialog(page);
     await expect(d).toBeVisible();
     await expect(d.getByTestId('reset-password-method-link')).toBeChecked();
@@ -132,7 +140,7 @@ test.describe('Setup → Users: reset another user\'s password', () => {
   test('a temporary password: generated, needs a reason, sent with it, then shown once', async ({ page }, info) => {
     const api = await mockAdmin(page);
     await openUsers(page);
-    await rowOf(page, 'Amy Baker').getByTestId('user-reset-password').click();
+    await (await rowMenu(page, 'Amy Baker')).getByTestId('user-reset-password').click();
     const d = dialog(page);
     await d.getByTestId('reset-password-method-temporary').check();
     const box = d.getByTestId('reset-password-temporary');
@@ -162,7 +170,7 @@ test.describe('Setup → Users: reset another user\'s password', () => {
   test('the server\'s refusal is said as it is', async ({ page }) => {
     await mockAdmin(page, { temporary: { status: 400, body: { message: 'This person has not finished setting up their login yet. Resend the invitation instead.' } } });
     await openUsers(page);
-    await rowOf(page, 'Amy Baker').getByTestId('user-reset-password').click();
+    await (await rowMenu(page, 'Amy Baker')).getByTestId('user-reset-password').click();
     const d = dialog(page);
     await d.getByTestId('reset-password-method-temporary').check();
     await d.getByTestId('reset-password-reason').fill('Asked in person');
