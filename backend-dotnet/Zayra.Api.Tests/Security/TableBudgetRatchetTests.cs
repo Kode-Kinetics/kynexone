@@ -168,7 +168,11 @@ public class TableBudgetRatchetTests
         // second HR approver, because leave converts to cash through encashment. No existing table can hold it:
         // leave_balance_transactions is the ledger of APPLIED changes and has no maker, status or decision columns, and a pending
         // row there would read as a balance movement. Retention: kept with the employee's leave history; removed by erasure.
-        DeclaredDbSets().Should().HaveCount(380,
+        // Release train + P3 hire_templates: 380 -> 381 once both sides are merged.
+        // P3 hire_templates (375 -> 376): per-company hire presets (match keys designation/grade/branch, non-pay defaults, checklist).
+        // No existing table can carry it: onboarding_checklists has no match semantics and a different lifecycle, and the grade master
+        // stays the only pay source (a template holds no money). Owner HR; kept for the life of the company (config, no personal data).
+        DeclaredDbSets().Should().HaveCount(381,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

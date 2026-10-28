@@ -5,6 +5,7 @@ import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
+import { onboardingP3 } from './onboardingP3';
 import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
@@ -53,6 +54,8 @@ import { dailyB } from './dailyB';
 import { dailyC } from './dailyC';
 import { dailyD } from './dailyD';
 import { dailyE } from './dailyE';
+import { onboardingP2 } from './onboardingP2';
+import { onboardingP4 } from './onboardingP4';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1521,6 +1524,9 @@ const en: Dict = {
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
   ...hireWizard.en,
+  ...onboardingP2.en,
+  ...onboardingP3.en,
+  ...onboardingP4.en,
   ...setupExperience.en,
   ...glSetup.en,
   ...costCentres.en,
@@ -3007,6 +3013,9 @@ const ar: Dict = {
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
   ...hireWizard.ar,
+  ...onboardingP2.ar,
+  ...onboardingP3.ar,
+  ...onboardingP4.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
   ...costCentres.ar,

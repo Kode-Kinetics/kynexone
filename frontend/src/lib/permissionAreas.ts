@@ -9,6 +9,7 @@ export const PERMISSION_AREA_LABELS: Record<string, string> = {
   dashboard: msg('Dashboard'),
   ess: msg('Self-Service'),
   employees: msg('Employee records'),
+  onboarding: msg('Onboarding'),
   attendance: msg('Attendance'),
   leave: msg('Leave'),
   overtime: msg('Overtime'),

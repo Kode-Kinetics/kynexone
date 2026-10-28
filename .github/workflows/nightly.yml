@@ -35,12 +35,17 @@ jobs:
               playwright.policy-form-prefill.config.ts
               playwright.policy-intake-kill-switch.config.ts
               playwright.statutory-rules.config.ts
+              playwright.leave-floor-warnings.config.ts
           - name: gl-and-compensation
             configs: >-
               playwright.gl-api-keys.config.ts
               playwright.gl-eosb.config.ts
               playwright.gl-journal-exports.config.ts
               playwright.gl-setup.config.ts
+              playwright.gl-cost-centres.config.ts
+              playwright.payroll-cost-centre-journal.config.ts
+              playwright.cost-centres-master.config.ts
+              playwright.cost-centre-employee.config.ts
               playwright.compensation.config.ts
               playwright.grade-package.config.ts
               playwright.benefit-defaults.config.ts
@@ -49,6 +54,11 @@ jobs:
             configs: >-
               playwright.employee-import.config.ts
               playwright.employee-wizard.config.ts
+              playwright.employee-hire.config.ts
+              playwright.pay-approvals.config.ts
+              playwright.onboarding-p3.config.ts
+              playwright.ess-complete-profile.config.ts
+              playwright.esign.config.ts
               playwright.ess-workspace.config.ts
               playwright.jawazat.config.ts
               playwright.leave-per-company.config.ts
@@ -75,6 +85,15 @@ jobs:
       GL_EOSB_BASE_URL: http://127.0.0.1:5197
       GL_EXPORTS_BASE_URL: http://127.0.0.1:5197
       GL_SETUP_BASE_URL: http://127.0.0.1:5197
+      COST_CENTRE_EMPLOYEE_BASE_URL: http://127.0.0.1:5197
+      COST_CENTRES_MASTER_BASE_URL: http://127.0.0.1:5197
+      EMPLOYEE_HIRE_BASE_URL: http://127.0.0.1:5197
+      ESS_COMPLETE_BASE_URL: http://127.0.0.1:5197
+      ESIGN_BASE_URL: http://127.0.0.1:5197
+      FLOOR_BASE_URL: http://127.0.0.1:5197
+      GL_COST_CENTRES_BASE_URL: http://127.0.0.1:5197
+      PAY_APPROVALS_BASE_URL: http://127.0.0.1:5197
+      PAYROLL_CC_BASE_URL: http://127.0.0.1:5197
       GRADE_PACKAGE_BASE_URL: http://127.0.0.1:5197
       LEAVE_BASE_URL: http://127.0.0.1:5197
       LEARNING_BASE_URL: http://127.0.0.1:5197

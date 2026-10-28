@@ -82,6 +82,9 @@ public class OrgRowReferencesRatchetTests
         {
             var row = Activator.CreateInstance(r.Entity)!;
             r.Entity.GetProperty("TenantId")!.SetValue(row, r.Entity.GetProperty("TenantId")!.PropertyType == typeof(Guid) ? tenant : (Guid?)tenant);
+            // A table that scopes its rows to a company (a hire template) requires one; any company will do for the reference test.
+            if (r.Entity.GetProperty("CompanyId") is { CanWrite: true } company && company.Name != r.Property)
+                company.SetValue(row, company.PropertyType == typeof(Guid) ? Guid.NewGuid() : (Guid?)Guid.NewGuid());
             var p = r.Entity.GetProperty(r.Property)!;
             p.SetValue(row, p.PropertyType == typeof(Guid) ? grade.Id : (Guid?)grade.Id);
             db.Add(row); made++;

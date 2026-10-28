@@ -1420,6 +1420,9 @@ public class PlatformController : ControllerBase
             new { purgedBy = "platform_admin", purgedAtUtc = DateTime.UtcNow });
         await _db.SaveChangesAsync(ct);
 
+        // P4: signed-acknowledgement evidence is append-only; it is removed first, in its own purge transaction.
+        await Zayra.Api.Infrastructure.Retention.RetentionPurgeScope.PurgeTenantAcknowledgementsAsync(_db, tenantId, ct);
+
         // Hard-delete tenant-owned data. Phase 2: the erasure set is derived from the EF
         // MODEL (every ITenantOwned/INullableTenantOwned entity), not a hand-maintained
         // table list — the old fixed list silently orphaned employees, companies, payroll

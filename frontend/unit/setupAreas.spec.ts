@@ -39,6 +39,8 @@ test('areas_are_the_navigation_groups_and_hold_exactly_the_sections_the_navigati
   expect(destination('adminAuditLogs').areaId).toBe('workspace');
   expect(destination('accessLog').areaId).toBe('accessSecurity');
   expect(destination('gccSettings').areaId).toBe('payrollCompliance');
+  // The hire presets and onboarding checklists sit with the other talent services (one taxonomy, no separate onboarding area).
+  for (const id of ['onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates']) expect(destination(id).areaId, id).toBe('talentServices');
   expect(destinations().some(item => item.id === 'countryPayrollKeys')).toBe(false);
 });
 

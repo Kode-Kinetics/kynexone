@@ -10403,6 +10403,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
+                    b.Property<string>("RequestedSections")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("requested_sections");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
@@ -11146,6 +11151,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("file_name");
 
+                    b.Property<DateTime?>("IntegrityFlaggedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("integrity_flagged_at");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
@@ -11174,6 +11183,27 @@ namespace Zayra.Api.Migrations
                     b.Property<DateOnly?>("RenewalReminderDate")
                         .HasColumnType("date")
                         .HasColumnName("renewal_reminder_date");
+
+                    b.Property<string>("ScanStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("clean")
+                        .HasColumnName("scan_status");
+
+                    b.Property<Guid?>("SignatureRequestedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("signature_requested_by");
+
+                    b.Property<DateTime?>("SignatureRequiredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("signature_required_at");
+
+                    b.Property<string>("SourceSection")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("source_section");
 
                     b.Property<string>("StorageUrl")
                         .IsRequired()
@@ -11212,9 +11242,16 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EmployeeId");
 
+                    b.HasIndex("TenantId", "EmployeeId", "SignatureRequiredAtUtc")
+                        .HasDatabaseName("ix_empdoc_sign_pending")
+                        .HasFilter("signature_required_at IS NOT NULL");
+
                     b.HasIndex("TenantId", "EmployeeId", "DocumentType", "IsDeleted");
 
-                    b.ToTable("employee_documents", (string)null);
+                    b.ToTable("employee_documents", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_documents__scan_status", "scan_status IN ('clean','not_scanned_trusted_source','quarantined','quarantined_pending')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeDocumentRequest", b =>
@@ -13608,28 +13645,138 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("acknowledged_at_utc");
 
+                    b.Property<string>("AuthMethod")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("auth_method");
+
+                    b.Property<Guid?>("CertificateDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("certificate_document_id");
+
+                    b.Property<long?>("ChainSeq")
+                        .HasColumnType("bigint")
+                        .HasColumnName("chain_seq");
+
+                    b.Property<string>("ConsentTextSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("consent_text_sha256")
+                        .IsFixedLength();
+
+                    b.Property<string>("ConsentVersion")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("consent_version");
+
+                    b.Property<string>("DeviceId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("DocumentSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("document_sha256")
+                        .IsFixedLength();
+
+                    b.Property<int?>("DocumentVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("document_version");
+
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(45)
+                        .HasColumnType("character varying(45)")
+                        .HasColumnName("ip_address");
+
+                    b.Property<string>("Language")
+                        .HasMaxLength(2)
+                        .HasColumnType("character varying(2)")
+                        .HasColumnName("language");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("legacy_click")
+                        .HasColumnName("method");
 
                     b.Property<Guid>("PolicyId")
                         .HasColumnType("uuid")
                         .HasColumnName("policy_id");
 
+                    b.Property<string>("PrevHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("prev_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("RecordHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("record_hash")
+                        .IsFixedLength();
+
+                    b.Property<DateTime?>("StepUpAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("step_up_at");
+
+                    b.Property<Guid?>("StepUpJti")
+                        .HasColumnType("uuid")
+                        .HasColumnName("step_up_jti");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
+
+                    b.Property<string>("TypedName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("typed_name");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("user_agent");
 
                     b.Property<Guid?>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
+                    b.Property<Guid?>("WitnessUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("witness_user_id");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("CertificateDocumentId");
+
+                    b.HasIndex("StepUpJti")
+                        .IsUnique()
+                        .HasDatabaseName("ux_ack_stepup_jti")
+                        .HasFilter("step_up_jti IS NOT NULL");
+
+                    b.HasIndex("TenantId", "ChainSeq")
+                        .IsUnique()
+                        .HasDatabaseName("ux_ack_chain")
+                        .HasFilter("method <> 'legacy_click'");
 
                     b.HasIndex("TenantId", "EmployeeId", "PolicyId")
                         .IsUnique();
 
-                    b.ToTable("employee_policy_acknowledgements", (string)null);
+                    b.ToTable("employee_policy_acknowledgements", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_epa__esign_evidence", "method = 'legacy_click' OR (document_sha256 IS NOT NULL AND typed_name IS NOT NULL AND ip_address IS NOT NULL AND record_hash IS NOT NULL AND chain_seq IS NOT NULL AND step_up_jti IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_epa__method", "method IN ('legacy_click','esign_ess','esign_hr_device')");
+
+                            t.HasCheckConstraint("ck_epa__witness", "(method = 'esign_hr_device') = (witness_user_id IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeProfileChangeRequest", b =>
@@ -13663,6 +13810,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
 
+                    b.Property<string>("NoticeVersion")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("notice_version");
+
                     b.Property<string>("Reason")
                         .IsRequired()
                         .HasColumnType("text")
@@ -13673,10 +13825,28 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("json")
                         .HasColumnName("requested_changes_json");
 
+                    b.Property<string>("ReviewNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("review_note");
+
+                    b.Property<string>("Section")
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("section");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("status");
+
+                    b.Property<DateTime?>("StepUpAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("step_up_at_utc");
+
+                    b.Property<Guid?>("StepUpJti")
+                        .HasColumnType("uuid")
+                        .HasColumnName("step_up_jti");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
@@ -13684,9 +13854,27 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("StepUpJti")
+                        .IsUnique()
+                        .HasDatabaseName("ux_epcr_step_up_jti")
+                        .HasFilter("step_up_jti IS NOT NULL");
+
+                    b.HasIndex("TenantId", "EmployeeId", "Section")
+                        .IsUnique()
+                        .HasDatabaseName("ix_epcr_section_pending")
+                        .HasFilter("status = 'PendingHR' AND section IS NOT NULL");
+
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
-                    b.ToTable("employee_profile_change_requests", (string)null);
+                    b.HasIndex("TenantId", "Status", "CreatedAtUtc")
+                        .IsDescending(false, false, true)
+                        .HasDatabaseName("ix_epcr_inbox")
+                        .HasFilter("status = 'PendingHR'");
+
+                    b.ToTable("employee_profile_change_requests", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_epcr__section", "section IS NULL OR section IN ('person','emergency','arabicName','id','bank','documents')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeRiskScore", b =>
@@ -17288,6 +17476,120 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "CategoryId", "Priority");
 
                     b.ToTable("hr_request_slas", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.HireTemplate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ChecklistId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("checklist_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .IsRequired()
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Defaults")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("defaults");
+
+                    b.Property<string>("EssCompletionSections")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("ess_completion_sections");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
+
+                    b.Property<Guid?>("MatchBranchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("match_branch_id");
+
+                    b.Property<Guid?>("MatchDesignationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("match_designation_id");
+
+                    b.Property<Guid?>("MatchGradeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("match_grade_id");
+
+                    b.Property<string>("MatchKey")
+                        .IsRequired()
+                        .HasMaxLength(110)
+                        .HasColumnType("character varying(110)")
+                        .HasColumnName("match_key");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name_ar");
+
+                    b.Property<string>("NameKey")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name_key");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChecklistId");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("MatchBranchId");
+
+                    b.HasIndex("MatchDesignationId");
+
+                    b.HasIndex("MatchGradeId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "CompanyId", "MatchKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_hire_templates_match")
+                        .HasFilter("is_active AND NOT is_deleted AND match_key <> '00000000-0000-0000-0000-000000000000|00000000-0000-0000-0000-000000000000|00000000-0000-0000-0000-000000000000'");
+
+                    b.HasIndex("TenantId", "CompanyId", "NameKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_hire_templates_name")
+                        .HasFilter("NOT is_deleted");
+
+                    b.ToTable("hire_templates", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.HrLetterTemplate", b =>
@@ -24083,6 +24385,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("code");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -24105,6 +24411,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsDefault")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_default");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
@@ -24114,14 +24426,26 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name_ar");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CompanyId");
+
                     b.HasIndex("TenantId", "Code")
                         .IsUnique();
+
+                    b.HasIndex("TenantId", "CompanyId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_onb_checklist_default")
+                        .HasFilter("is_default AND NOT is_deleted AND company_id IS NOT NULL");
 
                     b.HasIndex("TenantId", "IsActive", "IsDeleted");
 
@@ -24144,6 +24468,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("assigned_to_user_id");
 
+                    b.Property<bool>("BlocksActivation")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("blocks_activation");
+
                     b.Property<string>("Category")
                         .IsRequired()
                         .HasColumnType("text")
@@ -24153,13 +24483,32 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("checklist_id");
 
+                    b.Property<string>("ConditionNationalityClass")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasDefaultValue("any")
+                        .HasColumnName("condition_nationality_class");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
 
+                    b.Property<string>("DescriptionAr")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description_ar");
+
                     b.Property<int>("DueOffsetDays")
                         .HasColumnType("integer")
                         .HasColumnName("due_offset_days");
+
+                    b.Property<bool>("EvidenceRequired")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("evidence_required");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
@@ -24169,9 +24518,28 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_mandatory");
 
+                    b.Property<bool>("IsStatutory")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_statutory");
+
+                    b.Property<string>("LinkSection")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("link_section");
+
                     b.Property<int>("OrderIndex")
                         .HasColumnType("integer")
                         .HasColumnName("order_index");
+
+                    b.Property<string>("OwnerRole")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("HR")
+                        .HasColumnName("owner_role");
 
                     b.Property<string>("TaskDescription")
                         .IsRequired()
@@ -24187,6 +24555,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
 
+                    b.Property<string>("TitleAr")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title_ar");
+
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at_utc");
@@ -24199,7 +24572,12 @@ namespace Zayra.Api.Migrations
                         .IsUnique()
                         .HasDatabaseName("IX_onboarding_checklist_template_tasks_tenant_id_checklist_id~1");
 
-                    b.ToTable("onboarding_checklist_template_tasks", (string)null);
+                    b.ToTable("onboarding_checklist_template_tasks", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_onb_template_tasks__nationality_class", "condition_nationality_class IN ('any','saudi','gcc','expat')");
+
+                            t.HasCheckConstraint("ck_onb_template_tasks__owner_role", "owner_role IN ('HR','IT','Manager','Payroll','Finance','Admin','Gov','Employee')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.OnboardingTask", b =>
@@ -24222,6 +24600,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("assigned_to_user_id");
 
+                    b.Property<bool>("BlocksActivation")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("blocks_activation");
+
                     b.Property<string>("Category")
                         .IsRequired()
                         .HasColumnType("text")
@@ -24230,6 +24614,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("ChecklistId")
                         .HasColumnType("uuid")
                         .HasColumnName("checklist_id");
+
+                    b.Property<Guid?>("CompletedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("completed_by");
 
                     b.Property<DateOnly?>("CompletedDate")
                         .HasColumnType("date")
@@ -24243,13 +24631,43 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("due_date");
 
+                    b.Property<int?>("DueOffsetDays")
+                        .HasColumnType("integer")
+                        .HasColumnName("due_offset_days");
+
+                    b.Property<string>("DueOverrideReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("due_override_reason");
+
                     b.Property<Guid?>("EmployeeId")
                         .HasColumnType("uuid")
                         .HasColumnName("employee_id");
 
+                    b.Property<Guid?>("EvidenceDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("evidence_document_id");
+
+                    b.Property<bool>("EvidenceRequired")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("evidence_required");
+
                     b.Property<bool>("IsMandatory")
                         .HasColumnType("boolean")
                         .HasColumnName("is_mandatory");
+
+                    b.Property<bool>("IsStatutory")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_statutory");
+
+                    b.Property<string>("LinkSection")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("link_section");
 
                     b.Property<string>("Notes")
                         .IsRequired()
@@ -24259,6 +24677,22 @@ namespace Zayra.Api.Migrations
                     b.Property<int>("OrderIndex")
                         .HasColumnType("integer")
                         .HasColumnName("order_index");
+
+                    b.Property<string>("OwnerRole")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("HR")
+                        .HasColumnName("owner_role");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(12)
+                        .HasColumnType("character varying(12)")
+                        .HasDefaultValue("manual")
+                        .HasColumnName("source");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -24275,9 +24709,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("task_title");
 
+                    b.Property<Guid?>("TemplateTaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("template_task_id");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
+
+                    b.Property<string>("TitleAr")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("title_ar");
 
                     b.Property<DateTime?>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -24285,13 +24728,33 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("EvidenceDocumentId");
+
+                    b.HasIndex("TenantId", "EmployeeId")
+                        .HasDatabaseName("ix_onb_task_blockers")
+                        .HasFilter("blocks_activation AND status IN ('Pending','InProgress','Blocked')");
+
                     b.HasIndex("TenantId", "ApplicationId", "Status");
 
                     b.HasIndex("TenantId", "ChecklistId", "OrderIndex");
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
-                    b.ToTable("onboarding_tasks", (string)null);
+                    b.HasIndex("TenantId", "EmployeeId", "TemplateTaskId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_onb_task_once")
+                        .HasFilter("template_task_id IS NOT NULL");
+
+                    b.HasIndex("TenantId", "OwnerRole", "DueDate")
+                        .HasDatabaseName("ix_onb_task_worklist")
+                        .HasFilter("status IN ('Pending','InProgress','Blocked')");
+
+                    b.ToTable("onboarding_tasks", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_onb_tasks__owner_role", "owner_role IN ('HR','IT','Manager','Payroll','Finance','Admin','Gov','Employee')");
+
+                            t.HasCheckConstraint("ck_onb_tasks__source", "source IN ('manual','template','offer')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.OpeningBalanceOrigin", b =>
@@ -33612,6 +34075,15 @@ namespace Zayra.Api.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.EmployeePolicyAcknowledgement", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("CertificateDocumentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_epa__certificate_document");
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.EmployeeSalaryStructure", b =>
                 {
                     b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
@@ -33739,6 +34211,35 @@ namespace Zayra.Api.Migrations
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.HireTemplate", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.OnboardingChecklist", null)
+                        .WithMany()
+                        .HasForeignKey("ChecklistId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Models.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("MatchBranchId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Designation", null)
+                        .WithMany()
+                        .HasForeignKey("MatchDesignationId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Zayra.Api.Models.Grade", null)
+                        .WithMany()
+                        .HasForeignKey("MatchGradeId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.JobApplication", b =>
@@ -34158,6 +34659,22 @@ namespace Zayra.Api.Migrations
                         .HasForeignKey("TenantId", "LegacyRootOfferId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OnboardingChecklist", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.OnboardingTask", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeDocument", null)
+                        .WithMany()
+                        .HasForeignKey("EvidenceDocumentId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.PayBenchmarkRow", b =>

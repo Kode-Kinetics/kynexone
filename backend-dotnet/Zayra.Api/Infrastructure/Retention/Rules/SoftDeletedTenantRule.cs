@@ -230,6 +230,8 @@ public sealed class SoftDeletedTenantRule : IRetentionRule
         if (ctx.Db.Database.IsNpgsql())
             _ = await ctx.Db.Database.SqlQuery<string>(Zayra.Api.Infrastructure.Audit.AuditTrailGuardSql.ErasureFlagFor(ctx.TenantId))
                 .ToListAsync(ct);
+        // Acknowledgement evidence is append-only; this erasure is one of the two things allowed to delete it (transaction-local).
+        await RetentionPurgeScope.EnableInCurrentTransactionAsync(ctx.Db, ct);
 
         var failures = new List<string>();
         // Two passes: a dependent that blocks its parent on pass 1 is usually gone by pass 2. The manual

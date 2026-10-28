@@ -47,6 +47,15 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
     const mountedDialog = dialogRef.current;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    // A true modal: everything else on the page is inert (no focus, no pointer, out of the accessibility tree) until it closes.
+    const madeInert: HTMLElement[] = [];
+    if (mountedDialog) {
+      for (const child of Array.from(document.body.children)) {
+        if (!(child instanceof HTMLElement) || child.contains(mountedDialog) || child.hasAttribute('inert')) continue;
+        child.setAttribute('inert', '');
+        madeInert.push(child);
+      }
+    }
     const focusFrame = requestAnimationFrame(() => closeButtonRef.current?.focus());
 
     const onKey = (e: KeyboardEvent) => {
@@ -83,6 +92,7 @@ export function Modal({ isOpen, title, onClose, children, footer, headerContent,
       cancelAnimationFrame(focusFrame);
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = previousOverflow;
+      for (const el of madeInert) el.removeAttribute('inert');
       // Strict Mode replays effects while the closing dialog is still in the DOM.
       const remainingDialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).filter(dialog => dialog !== mountedDialog);
       const parentDialog = remainingDialogs[remainingDialogs.length - 1];

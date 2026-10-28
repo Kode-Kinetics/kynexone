@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-10-27",
+  "pinnedAt": "2026-10-28",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -117,11 +117,11 @@
     }
   ],
   "totals": {
-    "hardcoded": 3967,
-    "rawStatus": 52,
+    "hardcoded": 3951,
+    "rawStatus": 51,
     "locale": 183,
     "icons": 0,
-    "files": 121
+    "files": 120
   },
   "fragmentKeys": [
     ", ",
@@ -305,9 +305,6 @@
     },
     "app/terms/page.tsx": {
       "hardcoded": 46
-    },
-    "src/components/CompanySwitcher.tsx": {
-      "hardcoded": 3
     },
     "src/components/CountrySelect.tsx": {
       "hardcoded": 2
@@ -558,7 +555,7 @@
       "locale": 2
     },
     "src/views/SetupPage.tsx": {
-      "hardcoded": 79,
+      "hardcoded": 77,
       "rawStatus": 1,
       "locale": 3
     },
@@ -568,18 +565,18 @@
       "locale": 12
     },
     "src/views/UserManagementPage.tsx": {
-      "hardcoded": 198,
+      "hardcoded": 195,
       "locale": 3
     },
     "src/views/employees/EmployeeActivitySection.tsx": {
       "hardcoded": 7
     },
     "src/views/employees/EmployeeComplianceDocumentsSection.tsx": {
-      "hardcoded": 10,
+      "hardcoded": 3,
       "rawStatus": 1
     },
     "src/views/employees/EmployeeEmploymentSection.tsx": {
-      "hardcoded": 21,
+      "hardcoded": 20,
       "rawStatus": 1
     },
     "src/views/employees/EmployeeOverview.tsx": {
@@ -595,8 +592,7 @@
       "hardcoded": 7
     },
     "src/views/employees/EmployeeWorkspaceShell.tsx": {
-      "hardcoded": 4,
-      "rawStatus": 1
+      "hardcoded": 4
     }
   }
 }

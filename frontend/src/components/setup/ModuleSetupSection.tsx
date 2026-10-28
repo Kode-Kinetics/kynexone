@@ -71,6 +71,15 @@ const OnboardingChecklists = dynamic(() => import('./OnboardingPolicyWorkspace')
   return Panel;
 }));
 
+const OnboardingChecklistTemplates = dynamic(() => import('../../views/setup/OnboardingChecklistTemplatesPage').then(module => {
+  const Panel = ({ onDirtyChange, companyId, companies }: ModuleSetupPanelProps) => <module.OnboardingChecklistTemplatesPanel onDirtyChange={onDirtyChange} companyId={companyId} companies={companies} />;
+  return Panel;
+}));
+const HireTemplates = dynamic(() => import('../../views/setup/HireTemplatesPage').then(module => {
+  const Panel = ({ onDirtyChange, companyId, companies }: ModuleSetupPanelProps) => <module.HireTemplatesPanel onDirtyChange={onDirtyChange} companyId={companyId} companies={companies} />;
+  return Panel;
+}));
+
 const BenefitPlans = dynamic(() => import('../benefits/BenefitPlansPanel').then(module => {
   const Panel = (_props: ModuleSetupPanelProps) => <module.BenefitPlansPanel />;
   return Panel;
@@ -120,6 +129,8 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   bonusTypes: BonusTypes,
   payslipTemplates: PayslipTemplates,
   onboardingChecklists: OnboardingChecklists,
+  onboardingChecklistTemplates: OnboardingChecklistTemplates,
+  hireTemplates: HireTemplates,
   performanceScorecards: PerformanceScorecards,
   letterTemplates: LetterTemplates,
   engagementPrivacy: EngagementPrivacy,

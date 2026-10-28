@@ -3542,6 +3542,9 @@ public class EmployeesController : ControllerBase
             return NotFound();
         }
 
+        // P2: a file the upload scan has not passed (ESS completion uploads) is not served to HR either.
+        if (!Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(document.ScanStatus)) return Conflict(new { code = "document_quarantined", message = "This file is not available: it did not pass the security scan." });
+
         byte[] contents;
         try
         {
@@ -3562,6 +3565,7 @@ public class EmployeesController : ControllerBase
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.document_downloaded", "EmployeeDocument", documentId.ToString(), cancellationToken);
 
+        Response.Headers["X-Content-Type-Options"] = "nosniff";   // P2
         return File(contents, document.ContentType, document.FileName);
     }
 

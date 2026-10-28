@@ -395,6 +395,14 @@ filter).
 | `payroll_rule_change_requests` | T | Kept with the audit log for the life of the company: a decided row is the evidence of who proposed and who approved a pay-lowering rule change. Owner: Payroll Engineering. RLS: target shape (a) (live bridge: the `ITenantOwned` query filter). |
 | `company_payroll_rules` | T | Kept for the life of the company. No deletion rule: dated rows are the company's payroll-rule history (a period is priced on the row in force on its first day), and one carrying `acknowledged_by`/`acknowledged_at_utc` is the evidence that a below-statutory value was confirmed, so it is cleared only when HR moves the value back above the minimum (the change is audited as `payroll.rules.changed` with the old and new value, and that audit row is kept with the audit log). Owner: Payroll Engineering. RLS: target shape (a) (live bridge: the `ITenantOwned` query filter). |
 
+**Owner:** HR (Admin, HR Manager) · **Approved by:** HR lead. RLS: shape (a) (live bridge: the `ITenantOwned` query filter; company scope through `ICompanyScoped`).
+
+| Table | Class | Note |
+|---|---|---|
+| `hire_templates` | C | Configuration, no personal data. Kept for the life of the company; a soft-deleted row is kept 7 years. Per company, copied (never shared) to a sister company. |
+| `onboarding_checklists` / `onboarding_checklist_template_tasks` | C | Configuration. Same rule. Removing a checklist that raised tasks turns it off instead of deleting it. |
+| `onboarding_tasks` | O | Operational follow-up work per hire; follows the employee record. A task is a copy of its template task, so editing a template never changes it. |
+
 ---
 
 ## 4. What the DPO must still decide

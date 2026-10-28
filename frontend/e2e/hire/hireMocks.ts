@@ -46,6 +46,25 @@ export interface HireMockOptions {
   /** Hold the create response until released (double-click test). */
   holdCreate?: Promise<void>;
   permissions?: string[];
+  /** P3: the company's hire templates. Omitted = the picker is not shown (the endpoint answers an empty list). */
+  hireTemplates?: Array<Record<string, any>>;
+  /** The template the server suggests for the chosen designation. */
+  suggestedTemplateId?: string;
+}
+
+export const hireTemplateFixture = {
+  id: 'tpl-cashier', companyId: 'company-hire', name: 'Branch cashier', nameAr: 'أمين صندوق فرع', isActive: true, isDeleted: false, essCompletionSections: ['id', 'bank'],
+  matchDesignationId: 'desig-1', checklistId: 'cl-1', checklistTaskCount: 4, checklistBlockingCount: 1,
+  defaults: { departmentId: 'dept-1', employmentType: 'Full-time', contractType: 'Permanent', probationDays: 90, workLocation: 'Riyadh branch' },
+};
+/** What checklist-preview answers: an Iqama task only for a hire who is not Saudi. */
+export function checklistPreviewFor(nationality: string | null) {
+  const tasks = [
+    { templateTaskId: 't1', title: 'Create the company mailbox', titleAr: 'إنشاء البريد الإلكتروني للشركة', ownerRole: 'IT', dueDate: null, blocksActivation: false },
+    { templateTaskId: 't2', title: 'Register with GOSI', titleAr: 'التسجيل في التأمينات', ownerRole: 'Gov', dueDate: null, blocksActivation: true },
+    ...(nationality && nationality !== 'SA' ? [{ templateTaskId: 't3', title: 'Issue the Iqama through Muqeem', titleAr: 'إصدار الإقامة عبر مقيم', ownerRole: 'Gov', dueDate: null, blocksActivation: false }] : []),
+  ];
+  return { tasks, blockingCount: tasks.filter(x => x.blocksActivation).length };
 }
 
 export async function bootHire(page: Page, options: HireMockOptions = {}, path = '/people/new') {
@@ -89,7 +108,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (p === '/api/companies') return reply(paged(companies));
     if (p === '/api/branches') return reply(paged([{ id: 'branch-1', companyId: company.id, code: 'RYD', nameEn: 'Riyadh', isActive: true }]));
-    if (p === '/api/departments') return reply(paged([{ id: 'dept-1', branchId: 'branch-1', code: 'OPS', nameEn: 'Operations', isActive: true }]));
+    if (p === '/api/departments') return reply(paged([{ id: 'dept-1', branchId: 'branch-1', code: 'OPS', nameEn: 'Operations', isActive: true }, { id: 'dept-2', branchId: 'branch-1', code: 'FIN', nameEn: 'Finance', isActive: true }]));
     if (p === '/api/designations') return reply(paged([
       { id: 'desig-1', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true, companyId: company.id },
       { id: 'desig-2', code: 'FREE', titleEn: 'Associate', isActive: true, companyId: company.id },
@@ -136,6 +155,9 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (/^\/api\/employees\/\d+\/rehire$/.test(p)) { rehires.push(body); return reply({ id: 44, status: 'Draft', fullName: 'Alex Morgan', updatedAtUtc: '2026-10-27T09:00:00Z' }); }
     if (/^\/api\/employees\/\d+\/draft$/.test(p) && method === 'DELETE') { discards.push(p); return route.fulfill({ status: 204 }); }
     if (p.endsWith('/pay-scale')) return reply([]);
+    if (p === '/api/onboarding/hire-templates') return reply(options.hireTemplates ?? []);
+    if (p === '/api/onboarding/hire-templates/resolve') return reply({ candidates: options.hireTemplates ?? [], suggestedId: options.suggestedTemplateId ?? null });
+    if (/^\/api\/onboarding\/hire-templates\/[^/]+\/checklist-preview$/.test(p)) return reply(checklistPreviewFor(url.searchParams.get('nationality')));
     if (p === '/api/compensation/benefits/grade-defaults') return reply([]);
     if (p === '/api/localization/transliterate') return reply({ suggestion: 'أليكس مورغان', requiresManualEntry: false });
     return reply(p.includes('/features/') || p === '/api/notifications' ? [] : paged([]));

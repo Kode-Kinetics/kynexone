@@ -65,7 +65,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.log(JSON.stringify(now, null, 2));
     process.exit(0);
   }
-  const baseline = existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, 'utf8')) : null;
+  let baseline = null;
+  try { baseline = JSON.parse(readFileSync(baselinePath, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (mode === '--update') {
     if (baseline) {
       const raised = Object.keys(now).filter(k => k in baseline && now[k] > baseline[k]);

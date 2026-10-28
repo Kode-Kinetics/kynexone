@@ -9,7 +9,7 @@
  */
 import { chromium } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,7 +26,7 @@ const i = spec.indexOf('function dataset(');
 const j = spec.indexOf('\n}\n', i) + 3;
 const months = spec.match(/const months = .*?\n/)[0];
 const companyDecl = spec.match(/const COMPANY = .*?\n/)[0];
-const tmp = join(tmpdir(), `ds-dataset-${process.pid}.mts`);
+const tmp = join(mkdtempSync(join(tmpdir(), 'ds-dataset-')), 'dataset.mts');
 writeFileSync(tmp, `${months}${companyDecl}export ${spec.slice(i, j)}export { COMPANY };\n`);
 const { dataset, COMPANY } = await import(pathToFileURL(tmp).href);
 

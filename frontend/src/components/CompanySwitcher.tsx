@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Building2 } from 'lucide-react';
 import { useCompany } from '../contexts/CompanyContext';
+import { useLocale } from '../contexts/LocaleContext';
 
 /**
  * TopBar company switcher (mirrors the LanguageSwitcher interaction pattern).
@@ -11,6 +12,7 @@ import { useCompany } from '../contexts/CompanyContext';
  * request scope from the X-Company-Id header and fails closed on tampering.
  */
 export function CompanySwitcher() {
+  const { t } = useLocale();
   const { companies, selectedCompanyId, setSelectedCompany, isGroupScope, showSwitcher } = useCompany();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -28,7 +30,7 @@ export function CompanySwitcher() {
   if (!showSwitcher) return null;
 
   const current = companies.find((c) => c.id === selectedCompanyId);
-  const label = current ? current.code : 'All companies';
+  const label = current ? current.code : t('All companies');
 
   return (
     <div ref={ref} className="relative" data-testid="company-switcher">
@@ -36,7 +38,7 @@ export function CompanySwitcher() {
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-label="Switch company"
+        aria-label={t('Switch company')}
         aria-expanded={open}
         className="flex h-control-md max-w-[220px] items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-xs font-semibold text-slate-600 transition hover:border-line-strong hover:bg-surface-sunken dark:text-slate-300"
       >
@@ -45,7 +47,7 @@ export function CompanySwitcher() {
       </button>
 
       {open && (
-        <div role="menu" aria-label="Select company" className="absolute start-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-line bg-surface-overlay shadow-e2">
+        <div role="menu" aria-label={t('Select company')} className="absolute start-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-line bg-surface-overlay shadow-e2">
           {isGroupScope && (
             <button
               type="button"
@@ -53,7 +55,7 @@ export function CompanySwitcher() {
               onClick={() => { setSelectedCompany(null, triggerRef.current); setOpen(false); }}
               className={`flex w-full items-center justify-between px-4 py-2.5 text-sm transition hover:bg-slate-50 dark:hover:bg-white/[0.04] ${selectedCompanyId === null ? 'bg-sapphire/[0.06] font-semibold text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}
             >
-              <span>All companies</span>
+              <span>{t('All companies')}</span>
               {selectedCompanyId === null && <span className="h-1.5 w-1.5 rounded-full bg-sapphire dark:bg-cyanAccent" />}
             </button>
           )}

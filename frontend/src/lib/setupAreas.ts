@@ -76,7 +76,7 @@ export const SETUP_SECTION_ORDER: readonly SetupSectionId[] = [
   'grades', 'designations', 'establishment',
   'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'attendanceDevices', 'overtimePolicies', 'leaveTypes', 'leavePolicies', 'holidayCalendars',
   'benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates', 'payrollRules',
-  'onboardingChecklists', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy', 'notificationTemplates',
+  'onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy', 'notificationTemplates',
   'glMapping', 'fiscalYears', 'gccSettings', 'statutoryRules', 'taxPolicies', 'complianceProfiles', 'saudiCompliance',
   'users', 'roles', 'permissionMatrix', 'permissions', 'permissionGrantors', 'approvalAuthorities', 'approvalDelegations', 'signInSecurity', 'accessLog',
   'localization', 'branding', 'modules', 'planBilling', 'masterData', 'helpText', 'numberingRules', 'emailConfig', 'systemSettings', 'adminAuditLogs',

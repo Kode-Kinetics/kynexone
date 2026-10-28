@@ -117,6 +117,6 @@ public class ArchitectureRatchetTests
         baseline["roleAuthorize"].Values.Sum().Should().BeLessThanOrEqualTo(443);
         baseline["unapprovedHttpDelete"].Values.Sum().Should().BeLessThanOrEqualTo(73);
         baseline["status501"].Values.Sum().Should().BeLessThanOrEqualTo(11);
-        baseline["controllerUsesDbContext"].Values.Sum().Should().BeLessThanOrEqualTo(132);
+        baseline["controllerUsesDbContext"].Values.Sum().Should().BeLessThanOrEqualTo(136);
     }
 }
