@@ -69,6 +69,14 @@ const ar: Record<string, string> = {
   "{name} will become the workspace owner, and no other administrator will be able to change their account. You stay an Admin, but you will no longer be protected.":
     "سيصبح {name} مالك مساحة العمل، ولن يتمكن أي مسؤول آخر من تغيير حسابه. ستبقى مسؤولًا، لكن حسابك لن يكون محميًا بعد ذلك.",
 
+  // The Users list's row: View, and the "More actions" menu
+  "Activate": "تفعيل",
+  "Unlock": "إلغاء القفل",
+  "Lock": "قفل",
+  "Remove access": "إزالة الوصول",
+  "This removes {name}'s access to KynexOne. The account is kept for the audit trail, and its email cannot be used for a new login.":
+    "سيؤدي هذا إلى إزالة وصول {name} إلى KynexOne. يُحتفظ بالحساب لسجل التدقيق، ولا يمكن استخدام بريده الإلكتروني لتسجيل دخول جديد.",
+
   // "Confirm it's you" before an action against an Admin or the owner
   "Confirm it's you": "تأكيد هويتك",
   "This changes an administrator account. Enter your password to continue.": "هذا الإجراء يغيّر حساب مسؤول. أدخل كلمة المرور للمتابعة.",

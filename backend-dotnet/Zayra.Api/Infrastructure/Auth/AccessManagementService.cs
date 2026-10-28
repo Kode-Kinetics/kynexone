@@ -1508,6 +1508,7 @@ public class AccessManagementService : IAccessManagementService
                 previousRoles.Any(x => x.IsActive && x.NormalizedName == PrivilegeCeiling.AdminRoleNormalizedName),
                 AuthService.GetPermissions(user)));
             ThrowIfOwnerProtected(caller.UserId, user);
+            await ThrowIfBeyondManagementScopeAsync(tenantId, user.Id, entityScope, ct);
             var previousRoleIds = previousRoles.Select(x => x.Id).ToHashSet();
             var nextRoleIds = roles.Select(x => x.Id).ToHashSet();
             foreach (var changed in roles.Where(x => !previousRoleIds.Contains(x.Id))
@@ -1617,6 +1618,7 @@ public class AccessManagementService : IAccessManagementService
                 var caller = await LoadCallerCeilingAsync(tenantId, context, ct);
                 ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, user.Id, HoldsAdmin(user), AuthService.GetPermissions(user)));
                 ThrowIfOwnerProtected(caller.UserId, user);
+                await ThrowIfBeyondManagementScopeAsync(tenantId, user.Id, entityScope, ct);
                 ThrowIfRefused(PrivilegeCeiling.AccessModeRefusal(caller, AuthService.AccessModePermissions(accessMode)));
             }
             var accessModeBefore = user.AccessMode;
@@ -1733,6 +1735,7 @@ public class AccessManagementService : IAccessManagementService
                 user.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
                 AuthService.GetPermissions(user)));
             ThrowIfOwnerProtected(caller.UserId, user);
+            await ThrowIfBeyondManagementScopeAsync(tenantId, user.Id, entityScope, ct);
             if (effect == "Allow")
                 ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { request.PermissionKey }));
 
@@ -1949,7 +1952,7 @@ public class AccessManagementService : IAccessManagementService
         if (user is null) return null;
         var target = await LoadAccessUser(tenantId, userId, entityScope, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
-        await EnsureMayManageAccountAsync(tenantId, context, target, cancellationToken);
+        await EnsureMayManageAccountAsync(tenantId, context, target, cancellationToken, entityScope);
         var before = new { user.FullName, user.PhoneNumber, user.PreferredLanguage, user.Timezone };
         if (!string.IsNullOrWhiteSpace(request.FullName)) user.FullName = request.FullName.Trim();
         if (request.PhoneNumber is not null) user.PhoneNumber = request.PhoneNumber.Trim();
@@ -2081,7 +2084,7 @@ public class AccessManagementService : IAccessManagementService
         // PRIVILEGE CEILING: whoever sets the password knows it, so setting one for a user above you is a takeover.
         await EnsureMayManageAccountAsync(tenantId, context,
             await LoadAccessUser(tenantId, userId, entityScope, cancellationToken) ?? throw new InvalidOperationException("User not found."),
-            cancellationToken);
+            cancellationToken, entityScope);
     }
 
     /// <summary>How long an administrator-issued reset link stays redeemable. Matches the
@@ -2124,6 +2127,10 @@ public class AccessManagementService : IAccessManagementService
         if (user.Status is "Deactivated" or "Suspended")
             throw new InvalidOperationException(
                 $"This account is {user.Status.ToLowerInvariant()}. Restore access first, then send a reset link.");
+        // An administrator's lock outlasts any password: the link would work and the person still could not sign in.
+        if (user.Status == "Locked")
+            throw new InvalidOperationException(
+                "This account is locked by an administrator. Unlock it first, then send a reset link.");
 
         // WorkEmailSetterRule: the reset link goes to the login's address, which a linked employee's work email set —
         // a caller who set it is handed the link (to pass on in person), never has it emailed.
@@ -2133,7 +2140,7 @@ public class AccessManagementService : IAccessManagementService
         // above you is a takeover of their account.
         await EnsureMayManageAccountAsync(tenantId, context,
             await LoadAccessUser(tenantId, userId, entityScope, cancellationToken) ?? throw new InvalidOperationException("User not found."),
-            cancellationToken);
+            cancellationToken, entityScope);
 
         var issuedAtUtc = DateTime.UtcNow;
         var expiresAtUtc = issuedAtUtc.AddHours(AdminResetLinkLifetimeHours);
@@ -2232,7 +2239,7 @@ public class AccessManagementService : IAccessManagementService
             // Another tenant's user, an unknown id and a user outside the caller's company scope all read as absent.
             var user = await LockAccessUserAsync(tenantId, userId, entityScope, ct);
             if (user is null) return false;
-            await EnsureMayManageAccountAsync(tenantId, context, user, ct);
+            await EnsureMayManageAccountAsync(tenantId, context, user, ct, entityScope);
             if (!user.MFAEnabled && string.IsNullOrEmpty(user.MfaSecretEncrypted))
             {
                 outcome = MfaAdminResetOutcome.NotEnabled;
@@ -2346,7 +2353,7 @@ public class AccessManagementService : IAccessManagementService
                 ?? throw new InvalidOperationException("User not found.");
             if (user.Id == context.UserId)
                 throw new InvalidOperationException("You cannot delete your own account.");
-            await EnsureMayManageAccountAsync(tenantId, context, user, ct);
+            await EnsureMayManageAccountAsync(tenantId, context, user, ct, entityScope);
 
             if (IsOperationalAdmin(user, changedAtUtc))
                 EnsureAnotherOperationalAdmin(adminCohort, user.Id, changedAtUtc);
@@ -3146,6 +3153,7 @@ public class AccessManagementService : IAccessManagementService
             ?? throw new InvalidOperationException("User not found.");
         ThrowIfRefused(PrivilegeCeiling.TargetRefusal(caller, target.Id, HoldsAdmin(target), AuthService.GetPermissions(target)));
         ThrowIfOwnerProtected(caller.UserId, target);
+        await ThrowIfBeyondManagementScopeAsync(tenantId, target.Id, entityScope, cancellationToken);
         ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, granted));
     }
 
@@ -3162,12 +3170,14 @@ public class AccessManagementService : IAccessManagementService
     /// with <c>UserId: null</c> behind <c>RequirePlatformRole</c>, outside any tenant's ceiling. The tenant Access
     /// API never does: AccessController answers 401 before calling an account action without a user.</para>
     /// </summary>
-    private async Task EnsureMayManageAccountAsync(Guid tenantId, RequestContext context, User target, CancellationToken cancellationToken)
+    private async Task EnsureMayManageAccountAsync(Guid tenantId, RequestContext context, User target, CancellationToken cancellationToken,
+        EntityScopeContext? scope = null)
     {
         if (context.UserId is null) return;
         var caller = await LoadCallerCeilingAsync(tenantId, context, cancellationToken);
         if (target.Id == caller.UserId) return;
         ThrowIfOwnerProtected(caller.UserId, target);
+        if (scope is not null) await ThrowIfBeyondManagementScopeAsync(tenantId, target.Id, scope, cancellationToken);
         ThrowIfRefused(PrivilegeCeiling.AboveCallerRefusal(caller, HoldsAdmin(target), AuthService.GetPermissions(target)));
     }
 
@@ -3254,6 +3264,34 @@ public class AccessManagementService : IAccessManagementService
     /// THE WORKSPACE OWNER (<see cref="User.IsWorkspaceOwner"/>): nobody but the owner changes the owner's account, roles,
     /// access or sign-in — not even another Admin. The owner hands ownership on first (<see cref="TransferOwnershipAsync"/>).
     /// </summary>
+    private const string ManagementScopeWhy =
+        "Management scope: which companies one user belongs to (employee links and company grants), read across companies so a company-scoped administrator cannot change someone who also works elsewhere; the tenant stays pinned.";
+
+    /// <summary>
+    /// CHANGING an account needs the person entirely inside the caller's companies. Seeing them (ApplyEntityScope) needs
+    /// only one shared company, but a company-scoped administrator who could lock, demote or reset a user who also works
+    /// in another company — or across the group — would be acting on access that is not theirs. Group-level callers pass.
+    /// </summary>
+    private async Task ThrowIfBeyondManagementScopeAsync(Guid tenantId, Guid targetUserId, EntityScopeContext scope, CancellationToken ct)
+    {
+        if (scope.IsGroupLevel) return;
+        var allowed = scope.AccessibleCompanyIds.ToHashSet();
+        var groupWide = await _db.Users.AsNoTracking().Where(u => u.Id == targetUserId && u.TenantId == tenantId)
+            .Select(u => u.IsGroupScope).FirstOrDefaultAsync(ct);
+        var grants = await ScopedBypass.TenantWide(_db.UserEntityAccesses, tenantId, ManagementScopeWhy).AsNoTracking()
+            .Where(g => g.UserId == targetUserId && g.IsActive)
+            .Select(g => new { g.GrantMode, g.CompanyId }).ToListAsync(ct);
+        var employeeIds = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, ManagementScopeWhy).AsNoTracking()
+            .Where(l => l.UserId == targetUserId && !l.IsDeleted).Select(l => l.EmployeeId).ToListAsync(ct);
+        var employeeCompanies = employeeIds.Count == 0 ? [] : await ScopedBypass.TenantWideByConvention(_db.Employees, tenantId, ManagementScopeWhy).AsNoTracking()
+            .Where(e => employeeIds.Contains(e.Id) && !e.IsDeleted && e.CompanyId != null).Select(e => e.CompanyId!.Value).ToListAsync(ct);
+        var beyond = groupWide
+            || grants.Any(g => g.GrantMode != EntityGrantModes.SelectedCompanies || g.CompanyId is not Guid c || !allowed.Contains(c))
+            || employeeCompanies.Any(c => !allowed.Contains(c));
+        if (beyond)
+            throw new PrivilegeCeilingException(PrivilegeCeiling.Refuse(PrivilegeCeiling.Codes.TargetOtherCompanies, null));
+    }
+
     private static void ThrowIfOwnerProtected(Guid callerId, User target)
     {
         if (target.IsWorkspaceOwner && target.Id != callerId)
@@ -3955,6 +3993,7 @@ public class AccessManagementService : IAccessManagementService
             target.UserRoles.Any(x => x.Role is { NormalizedName: PrivilegeCeiling.AdminRoleNormalizedName, IsActive: true, IsDeleted: false }),
             AuthService.GetPermissions(target)));
         ThrowIfOwnerProtected(caller.UserId, target);
+        await ThrowIfBeyondManagementScopeAsync(tenantId, target.Id, entityScope, cancellationToken);
         if (ov.IsActive && ov.Effect.Equals("Deny", StringComparison.OrdinalIgnoreCase))
             ThrowIfRefused(PrivilegeCeiling.GrantRefusal(caller, new[] { ov.PermissionKey }));
         _db.UserPermissionOverrides.Remove(ov);
@@ -4243,7 +4282,7 @@ public class AccessManagementService : IAccessManagementService
             var blocksLogin = auditAction is "access.user_suspended" or "access.user_locked";
             if (blocksLogin && user.Id == context.UserId)
                 throw new InvalidOperationException("You cannot suspend or lock your own account.");
-            await EnsureMayManageAccountAsync(tenantId, context, user, ct);
+            await EnsureMayManageAccountAsync(tenantId, context, user, ct, entityScope);
             var wasOperationalAdmin = IsOperationalAdmin(user, changedAtUtc);
             var statusBefore = user.Status;
 

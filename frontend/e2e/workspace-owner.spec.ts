@@ -98,6 +98,11 @@ async function mockApi(page: Page, opts: { meIsOwner?: boolean; stepUp?: Reply[]
 }
 
 const rowOf = (page: Page, name: string) => page.locator('tbody tr').filter({ hasText: name });
+/** Opens a row's "More actions" menu (portalled to <body>) and returns it. */
+async function rowMenu(page: Page, name: string) {
+  await rowOf(page, name).getByTestId('user-more-actions').click();
+  return page.getByTestId('user-actions-menu');
+}
 
 async function openUsers(page: Page) {
   await page.goto('/setup?tab=users');
@@ -112,12 +117,12 @@ test.describe('Setup → Users: the workspace owner', () => {
     await openUsers(page);
     const ownerRow = rowOf(page, 'Olivia Owner');
     await expect(ownerRow.getByTestId('user-owner-badge')).toHaveText('Owner');
-    await expect(ownerRow.getByTitle('Lock')).toHaveCount(0);
-    await expect(ownerRow.getByTitle('Delete User')).toHaveCount(0);
-    await expect(ownerRow.getByTestId('user-reset-password')).toHaveCount(0);
-    await expect(ownerRow.getByTitle('View Access')).toHaveCount(1);
-    // Not the owner: nobody is offered "Make owner".
-    await expect(page.getByTestId('user-make-owner')).toHaveCount(0);
+    // Only View: no "More actions" at all on the owner's row.
+    await expect(ownerRow.getByTestId('user-more-actions')).toHaveCount(0);
+    await expect(ownerRow.getByTestId('user-view')).toHaveCount(1);
+    // Not the owner: "Make owner" is offered on nobody's row.
+    await expect((await rowMenu(page, 'Amy Admin')).getByTestId('user-make-owner')).toHaveCount(0);
+    await page.keyboard.press('Escape');
     await shot(page, 'users-owner-en', info.outputPath.bind(info));
     expect(api.errors).toEqual([]);
   });
@@ -125,8 +130,9 @@ test.describe('Setup → Users: the workspace owner', () => {
   test('the owner hands ownership to another Admin, after confirming it is them', async ({ page }, info) => {
     const api = await mockApi(page, { meIsOwner: true });
     await openUsers(page);
-    await expect(rowOf(page, 'Sam Staff').getByTestId('user-make-owner')).toHaveCount(0);
-    await rowOf(page, 'Amy Admin').getByTestId('user-make-owner').click();
+    await expect((await rowMenu(page, 'Sam Staff')).getByTestId('user-make-owner')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await (await rowMenu(page, 'Amy Admin')).getByTestId('user-make-owner').click();
     await expect(page.getByTestId('make-owner-explainer')).toContainText('Amy Admin will become the workspace owner');
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();
 
@@ -148,7 +154,7 @@ test.describe('Setup → Users: the owner, wherever their own row is', () => {
   test('the owner sees "Make owner" even when their own row is not on this page', async ({ page }) => {
     await mockApi(page, { meIsOwner: true, selfOffPage: true });
     await openUsers(page);
-    await expect(rowOf(page, 'Amy Admin').getByTestId('user-make-owner')).toBeVisible();
+    await expect((await rowMenu(page, 'Amy Admin')).getByTestId('user-make-owner')).toBeVisible();
   });
 });
 
@@ -162,7 +168,7 @@ test.describe("Confirm it's you", () => {
       ],
     });
     await openUsers(page);
-    await rowOf(page, 'Amy Admin').getByTitle('Lock').click();
+    await (await rowMenu(page, 'Amy Admin')).getByTestId('user-action-lock').click();
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();
 
     await page.getByTestId('step-up-password').fill('My-Password-1!');
@@ -184,7 +190,7 @@ test.describe("Confirm it's you", () => {
   test('cancelling sends nothing more', async ({ page }) => {
     const api = await mockApi(page);
     await openUsers(page);
-    await rowOf(page, 'Amy Admin').getByTitle('Lock').click();
+    await (await rowMenu(page, 'Amy Admin')).getByTestId('user-action-lock').click();
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.getByTestId('step-up-cancel').click();
     await expect(page.getByTestId('step-up-dialog')).toHaveCount(0);
