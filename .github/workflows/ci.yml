@@ -82,6 +82,7 @@ jobs:
         run: |
           dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj \
             --no-build -c Release --filter "Category!=Integration" \
+            --settings backend-dotnet/coverage.runsettings \
             --collect:"XPlat Code Coverage" --results-directory backend-dotnet/Zayra.Api.Tests/TestResults/unit \
             --logger "trx;LogFileName=unit.trx"
 
@@ -103,6 +104,7 @@ jobs:
     if: needs.changes.outputs.docs_only != 'true'
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         shard: [1, 2, 3, 4]
     steps:
@@ -142,6 +144,7 @@ jobs:
           filter=$(./scripts/ci/shard-tests.sh backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj "$SHARD" 4)
           dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj \
             --no-build -c Release --filter "Category=Integration&($filter)" \
+            --settings backend-dotnet/coverage.runsettings \
             --collect:"XPlat Code Coverage" --results-directory backend-dotnet/Zayra.Api.Tests/TestResults/shard-$SHARD \
             --logger "trx;LogFileName=shard-$SHARD.trx"
 
