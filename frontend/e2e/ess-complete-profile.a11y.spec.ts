@@ -50,3 +50,34 @@ for (const [locale, viewport] of [['en', { width: 1440, height: 1000 }], ['ar', 
     });
   });
 }
+
+test.describe('step-up dialog is a true modal', () => {
+  test.use({ viewport: { width: 320, height: 640 } });
+  test('the page behind it is inert, and axe is clean even when a wide Arabic font lets the dialog overlap the navigation', async ({ page }) => {
+    await bootEss(page, { locale: 'ar', sections: ['id'] });
+    // The CI condition: wider glyphs make the dialog taller and the navigation links shorter, so they overlap.
+    await page.addStyleTag({ content: '*{letter-spacing:.08em!important}[role=dialog]{font-size:20px!important}' });
+    await page.getByTestId('section-id').click();
+    await page.locator('input[inputmode="numeric"]').fill('1000000008');
+    await page.locator('form button[type="submit"]').click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute('aria-modal', 'true');
+    // Everything outside the dialog is inert: not focusable, not in the accessibility tree.
+    const outside = await page.evaluate(() => {
+      const d = document.querySelector('[role="dialog"]')!;
+      return Array.from(document.querySelectorAll('nav[aria-label] a')).map(a => ({ href: a.getAttribute('href'), inert: !!a.closest('[inert]'), inDialog: d.contains(a) }));
+    });
+    expect(outside.length).toBeGreaterThan(3);
+    for (const link of outside) expect(link.inert || link.inDialog, link.href ?? '').toBe(true);
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press('Tab');
+      expect(await page.evaluate(() => !!document.activeElement?.closest('[role="dialog"]')), `Tab ${i}`).toBe(true);
+    }
+    await clean(page, 'step-up dialog over the navigation');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    expect(await page.evaluate(() => document.querySelectorAll('[inert]').length)).toBe(0);
+    await expect(page.locator('nav[aria-label] a').first()).toBeVisible();
+  });
+});
