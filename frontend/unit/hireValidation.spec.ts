@@ -19,7 +19,6 @@ const COPY: Array<[string, string, string]> = [
   ['Start date missing', 'Enter the start date.', 'أدخل تاريخ المباشرة.'],
   ['Start date out of range', 'Start date must be between {min} and {max}.', 'يجب أن يكون تاريخ المباشرة بين {min} و{max}.'],
   ['Designation/grade missing', 'Choose a designation or a grade.', 'اختر المسمى الوظيفي أو الدرجة.'],
-  ['Grade conflict', 'This designation belongs to grade {grade}.', 'هذا المسمى الوظيفي تابع للدرجة {grade}.'],
   ['Nationality unknown', 'Choose a nationality from the list.', 'اختر الجنسية من القائمة.'],
   ['National ID invalid', 'National ID must be 10 digits starting with 1.', 'يجب أن يتكون رقم الهوية الوطنية من 10 أرقام ويبدأ بالرقم 1.'],
   ['Iqama invalid', 'Iqama number must be 10 digits starting with 2.', 'يجب أن يتكون رقم الإقامة من 10 أرقام ويبدأ بالرقم 2.'],
@@ -28,7 +27,6 @@ const COPY: Array<[string, string, string]> = [
   ['DOB over 100', 'Date of birth cannot be more than 100 years ago.', 'لا يمكن أن يكون تاريخ الميلاد قبل أكثر من 100 سنة.'],
   ['Phone invalid', 'Enter a valid {country} mobile number.', 'أدخل رقم جوال {country} صحيحًا.'],
   ['IBAN invalid', 'Saudi IBANs have 24 characters and start with SA.', 'يتكون الآيبان السعودي من 24 خانة ويبدأ بـ SA.'],
-  ['Work email wrong domain', 'Work email must end in @{domain}.', 'يجب أن ينتهي البريد الإلكتروني الوظيفي بـ \u200e@{domain}.'],
   ['Negative amount', 'Amount cannot be negative.', 'لا يمكن أن يكون المبلغ سالبًا.'],
 ];
 
@@ -67,10 +65,9 @@ test.describe('hireValidation', () => {
     expect(validateHire({ ...four, startDate: '2020-01-01' }, ctx, 'create')).toEqual([]);
     expect(keys(validateHire({ ...four, startDate: '2026-02-30' }, ctx, 'create'))).toEqual(['startDate']);
   });
-  test('grade conflict: designation tied to G1, grade G2 chosen (AC 9)', () => {
+  test('OD8: a grade other than the designation\'s is not an error (the server asks for a reason)', () => {
     const c = { ...ctx, designationGrade: { gradeId: 'g1', gradeCode: 'G1' } };
-    const issues = validateHire({ ...four, gradeId: 'g2' }, c, 'create');
-    expect(msg(issues, 'gradeId')).toBe('This designation belongs to grade G1.');
+    expect(validateHire({ ...four, gradeId: 'g2' }, c, 'create')).toEqual([]);
     expect(validateHire({ ...four, gradeId: 'g1' }, c, 'create')).toEqual([]);
   });
   test('nationality must be a code from the list (AC 15)', () => {
@@ -107,9 +104,16 @@ test.describe('hireValidation', () => {
     expect(msg(validateHire({ ...four, iban: 'SA03800000006080101675' }, ctx, 'draft'), 'iban')).toBe('Saudi IBANs have 24 characters and start with SA.');
     expect(validateHire({ ...four, iban: 'SA03 8000 0000 6080 1016 7519' }, ctx, 'draft')).toEqual([]);
   });
-  test('work email local part must not carry another domain', () => {
-    expect(msg(validateHire({ ...four, workEmail: 'alex@gmail.com' }, ctx, 'draft'), 'workEmail')).toBe('Work email must end in @example.test.');
-    expect(validateHire({ ...four, workEmail: 'alex.morgan' }, ctx, 'draft')).toEqual([]);
+  test('OD7: the work email is one full address on any domain; only its format is checked', () => {
+    expect(validateHire({ ...four, workEmail: 'alex@gmail.com' }, ctx, 'draft')).toEqual([]);
+    expect(validateHire({ ...four, workEmail: ' Alex.Morgan@issued.example ' }, ctx, 'draft')).toEqual([]);
+    expect(validateHire({ ...four, workEmail: '' }, ctx, 'draft')).toEqual([]);
+    for (const bad of ['alex.morgan', 'alex@', '@issued.example', 'a b@issued.example', 'alex+x@issued.example', 'alex@@issued.example']) {
+      expect(msg(validateHire({ ...four, workEmail: bad }, ctx, 'draft'), 'workEmail'), bad).toBeTruthy();
+    }
+    expect(msg(validateHire({ ...four, workEmail: 'alex.morgan' }, ctx, 'draft'), 'workEmail'))
+      .toBe('Enter the complete work email address issued by IT, for example name@company.com.');
+    expect(msg(validateHire({ ...four, workEmail: 'alex.morgan' }, ctx, 'draft'), 'workEmail', 'ar')).toMatch(/[؀-ۿ]/);
   });
   test('amounts: negative and overflow (AC 25)', () => {
     expect(msg(validateHire({ ...four, housing: '-5' }, ctx, 'draft'), 'housing')).toBe('Amount cannot be negative.');

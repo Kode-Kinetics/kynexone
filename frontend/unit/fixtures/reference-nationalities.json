@@ -1,0 +1,1502 @@
+[
+ {
+  "iso2": "AF",
+  "nameEn": "Afghanistan",
+  "nameAr": "أفغانستان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AX",
+  "nameEn": "Åland Islands",
+  "nameAr": "جزر أولاند",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AL",
+  "nameEn": "Albania",
+  "nameAr": "ألبانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "DZ",
+  "nameEn": "Algeria",
+  "nameAr": "الجزائر",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AS",
+  "nameEn": "American Samoa",
+  "nameAr": "ساموا الأمريكية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AD",
+  "nameEn": "Andorra",
+  "nameAr": "أندورا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AO",
+  "nameEn": "Angola",
+  "nameAr": "أنغولا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AI",
+  "nameEn": "Anguilla",
+  "nameAr": "أنغويلا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AQ",
+  "nameEn": "Antarctica",
+  "nameAr": "أنتاركتيكا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AG",
+  "nameEn": "Antigua and Barbuda",
+  "nameAr": "أنتيغوا وبربودا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AR",
+  "nameEn": "Argentina",
+  "nameAr": "الأرجنتين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AM",
+  "nameEn": "Armenia",
+  "nameAr": "أرمينيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AW",
+  "nameEn": "Aruba",
+  "nameAr": "أروبا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AU",
+  "nameEn": "Australia",
+  "nameAr": "أستراليا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AT",
+  "nameEn": "Austria",
+  "nameAr": "النمسا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AZ",
+  "nameEn": "Azerbaijan",
+  "nameAr": "أذربيجان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BS",
+  "nameEn": "Bahamas",
+  "nameAr": "جزر البهاما",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BH",
+  "nameEn": "Bahrain",
+  "nameAr": "البحرين",
+  "class": "Gcc"
+ },
+ {
+  "iso2": "BD",
+  "nameEn": "Bangladesh",
+  "nameAr": "بنغلاديش",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BB",
+  "nameEn": "Barbados",
+  "nameAr": "بربادوس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BY",
+  "nameEn": "Belarus",
+  "nameAr": "بيلاروسيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BE",
+  "nameEn": "Belgium",
+  "nameAr": "بلجيكا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BZ",
+  "nameEn": "Belize",
+  "nameAr": "بليز",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BJ",
+  "nameEn": "Benin",
+  "nameAr": "بنين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BM",
+  "nameEn": "Bermuda",
+  "nameAr": "برمودا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BT",
+  "nameEn": "Bhutan",
+  "nameAr": "بوتان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BO",
+  "nameEn": "Bolivia",
+  "nameAr": "بوليفيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BQ",
+  "nameEn": "Bonaire, Sint Eustatius and Saba",
+  "nameAr": "بونير وسينت أوستاتيوس وسابا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BA",
+  "nameEn": "Bosnia and Herzegovina",
+  "nameAr": "البوسنة والهرسك",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BW",
+  "nameEn": "Botswana",
+  "nameAr": "بوتسوانا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BV",
+  "nameEn": "Bouvet Island",
+  "nameAr": "جزيرة بوفيه",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BR",
+  "nameEn": "Brazil",
+  "nameAr": "البرازيل",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IO",
+  "nameEn": "British Indian Ocean Territory",
+  "nameAr": "إقليم المحيط الهندي البريطاني",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BN",
+  "nameEn": "Brunei",
+  "nameAr": "بروناي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BG",
+  "nameEn": "Bulgaria",
+  "nameAr": "بلغاريا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BF",
+  "nameEn": "Burkina Faso",
+  "nameAr": "بوركينا فاسو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BI",
+  "nameEn": "Burundi",
+  "nameAr": "بوروندي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CV",
+  "nameEn": "Cabo Verde",
+  "nameAr": "الرأس الأخضر",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KH",
+  "nameEn": "Cambodia",
+  "nameAr": "كمبوديا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CM",
+  "nameEn": "Cameroon",
+  "nameAr": "الكاميرون",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CA",
+  "nameEn": "Canada",
+  "nameAr": "كندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KY",
+  "nameEn": "Cayman Islands",
+  "nameAr": "جزر كايمان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CF",
+  "nameEn": "Central African Republic",
+  "nameAr": "جمهورية أفريقيا الوسطى",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TD",
+  "nameEn": "Chad",
+  "nameAr": "تشاد",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CL",
+  "nameEn": "Chile",
+  "nameAr": "تشيلي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CN",
+  "nameEn": "China",
+  "nameAr": "الصين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CX",
+  "nameEn": "Christmas Island",
+  "nameAr": "جزيرة كريسماس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CC",
+  "nameEn": "Cocos (Keeling) Islands",
+  "nameAr": "جزر كوكوس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CO",
+  "nameEn": "Colombia",
+  "nameAr": "كولومبيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KM",
+  "nameEn": "Comoros",
+  "nameAr": "جزر القمر",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CG",
+  "nameEn": "Congo",
+  "nameAr": "الكونغو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CD",
+  "nameEn": "Democratic Republic of the Congo",
+  "nameAr": "جمهورية الكونغو الديمقراطية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CK",
+  "nameEn": "Cook Islands",
+  "nameAr": "جزر كوك",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CR",
+  "nameEn": "Costa Rica",
+  "nameAr": "كوستاريكا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CI",
+  "nameEn": "Côte d'Ivoire",
+  "nameAr": "ساحل العاج",
+  "class": "Expat"
+ },
+ {
+  "iso2": "HR",
+  "nameEn": "Croatia",
+  "nameAr": "كرواتيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CU",
+  "nameEn": "Cuba",
+  "nameAr": "كوبا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CW",
+  "nameEn": "Curaçao",
+  "nameAr": "كوراساو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CY",
+  "nameEn": "Cyprus",
+  "nameAr": "قبرص",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CZ",
+  "nameEn": "Czechia",
+  "nameAr": "التشيك",
+  "class": "Expat"
+ },
+ {
+  "iso2": "DK",
+  "nameEn": "Denmark",
+  "nameAr": "الدنمارك",
+  "class": "Expat"
+ },
+ {
+  "iso2": "DJ",
+  "nameEn": "Djibouti",
+  "nameAr": "جيبوتي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "DM",
+  "nameEn": "Dominica",
+  "nameAr": "دومينيكا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "DO",
+  "nameEn": "Dominican Republic",
+  "nameAr": "جمهورية الدومينيكان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "EC",
+  "nameEn": "Ecuador",
+  "nameAr": "الإكوادور",
+  "class": "Expat"
+ },
+ {
+  "iso2": "EG",
+  "nameEn": "Egypt",
+  "nameAr": "مصر",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SV",
+  "nameEn": "El Salvador",
+  "nameAr": "السلفادور",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GQ",
+  "nameEn": "Equatorial Guinea",
+  "nameAr": "غينيا الاستوائية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ER",
+  "nameEn": "Eritrea",
+  "nameAr": "إريتريا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "EE",
+  "nameEn": "Estonia",
+  "nameAr": "إستونيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SZ",
+  "nameEn": "Eswatini",
+  "nameAr": "إسواتيني",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ET",
+  "nameEn": "Ethiopia",
+  "nameAr": "إثيوبيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "FK",
+  "nameEn": "Falkland Islands",
+  "nameAr": "جزر فوكلاند",
+  "class": "Expat"
+ },
+ {
+  "iso2": "FO",
+  "nameEn": "Faroe Islands",
+  "nameAr": "جزر فارو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "FJ",
+  "nameEn": "Fiji",
+  "nameAr": "فيجي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "FI",
+  "nameEn": "Finland",
+  "nameAr": "فنلندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "FR",
+  "nameEn": "France",
+  "nameAr": "فرنسا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GF",
+  "nameEn": "French Guiana",
+  "nameAr": "غويانا الفرنسية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PF",
+  "nameEn": "French Polynesia",
+  "nameAr": "بولينيزيا الفرنسية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TF",
+  "nameEn": "French Southern Territories",
+  "nameAr": "الأقاليم الجنوبية الفرنسية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GA",
+  "nameEn": "Gabon",
+  "nameAr": "الغابون",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GM",
+  "nameEn": "Gambia",
+  "nameAr": "غامبيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GE",
+  "nameEn": "Georgia",
+  "nameAr": "جورجيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "DE",
+  "nameEn": "Germany",
+  "nameAr": "ألمانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GH",
+  "nameEn": "Ghana",
+  "nameAr": "غانا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GI",
+  "nameEn": "Gibraltar",
+  "nameAr": "جبل طارق",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GR",
+  "nameEn": "Greece",
+  "nameAr": "اليونان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GL",
+  "nameEn": "Greenland",
+  "nameAr": "غرينلاند",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GD",
+  "nameEn": "Grenada",
+  "nameAr": "غرينادا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GP",
+  "nameEn": "Guadeloupe",
+  "nameAr": "غوادلوب",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GU",
+  "nameEn": "Guam",
+  "nameAr": "غوام",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GT",
+  "nameEn": "Guatemala",
+  "nameAr": "غواتيمالا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GG",
+  "nameEn": "Guernsey",
+  "nameAr": "غيرنزي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GN",
+  "nameEn": "Guinea",
+  "nameAr": "غينيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GW",
+  "nameEn": "Guinea-Bissau",
+  "nameAr": "غينيا بيساو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GY",
+  "nameEn": "Guyana",
+  "nameAr": "غيانا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "HT",
+  "nameEn": "Haiti",
+  "nameAr": "هايتي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "HM",
+  "nameEn": "Heard Island and McDonald Islands",
+  "nameAr": "جزيرة هيرد وجزر ماكدونالد",
+  "class": "Expat"
+ },
+ {
+  "iso2": "VA",
+  "nameEn": "Holy See",
+  "nameAr": "الفاتيكان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "HN",
+  "nameEn": "Honduras",
+  "nameAr": "هندوراس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "HK",
+  "nameEn": "Hong Kong",
+  "nameAr": "هونغ كونغ",
+  "class": "Expat"
+ },
+ {
+  "iso2": "HU",
+  "nameEn": "Hungary",
+  "nameAr": "المجر",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IS",
+  "nameEn": "Iceland",
+  "nameAr": "آيسلندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IN",
+  "nameEn": "India",
+  "nameAr": "الهند",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ID",
+  "nameEn": "Indonesia",
+  "nameAr": "إندونيسيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IR",
+  "nameEn": "Iran",
+  "nameAr": "إيران",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IQ",
+  "nameEn": "Iraq",
+  "nameAr": "العراق",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IE",
+  "nameEn": "Ireland",
+  "nameAr": "أيرلندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IM",
+  "nameEn": "Isle of Man",
+  "nameAr": "جزيرة مان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IL",
+  "nameEn": "Israel",
+  "nameAr": "إسرائيل",
+  "class": "Expat"
+ },
+ {
+  "iso2": "IT",
+  "nameEn": "Italy",
+  "nameAr": "إيطاليا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "JM",
+  "nameEn": "Jamaica",
+  "nameAr": "جامايكا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "JP",
+  "nameEn": "Japan",
+  "nameAr": "اليابان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "JE",
+  "nameEn": "Jersey",
+  "nameAr": "جيرسي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "JO",
+  "nameEn": "Jordan",
+  "nameAr": "الأردن",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KZ",
+  "nameEn": "Kazakhstan",
+  "nameAr": "كازاخستان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KE",
+  "nameEn": "Kenya",
+  "nameAr": "كينيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KI",
+  "nameEn": "Kiribati",
+  "nameAr": "كيريباتي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KP",
+  "nameEn": "North Korea",
+  "nameAr": "كوريا الشمالية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KR",
+  "nameEn": "South Korea",
+  "nameAr": "كوريا الجنوبية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "XK",
+  "nameEn": "Kosovo",
+  "nameAr": "كوسوفو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KW",
+  "nameEn": "Kuwait",
+  "nameAr": "الكويت",
+  "class": "Gcc"
+ },
+ {
+  "iso2": "KG",
+  "nameEn": "Kyrgyzstan",
+  "nameAr": "قيرغيزستان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LA",
+  "nameEn": "Laos",
+  "nameAr": "لاوس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LV",
+  "nameEn": "Latvia",
+  "nameAr": "لاتفيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LB",
+  "nameEn": "Lebanon",
+  "nameAr": "لبنان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LS",
+  "nameEn": "Lesotho",
+  "nameAr": "ليسوتو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LR",
+  "nameEn": "Liberia",
+  "nameAr": "ليبيريا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LY",
+  "nameEn": "Libya",
+  "nameAr": "ليبيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LI",
+  "nameEn": "Liechtenstein",
+  "nameAr": "ليختنشتاين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LT",
+  "nameEn": "Lithuania",
+  "nameAr": "ليتوانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LU",
+  "nameEn": "Luxembourg",
+  "nameAr": "لوكسمبورغ",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MO",
+  "nameEn": "Macao",
+  "nameAr": "ماكاو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MG",
+  "nameEn": "Madagascar",
+  "nameAr": "مدغشقر",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MW",
+  "nameEn": "Malawi",
+  "nameAr": "ملاوي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MY",
+  "nameEn": "Malaysia",
+  "nameAr": "ماليزيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MV",
+  "nameEn": "Maldives",
+  "nameAr": "جزر المالديف",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ML",
+  "nameEn": "Mali",
+  "nameAr": "مالي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MT",
+  "nameEn": "Malta",
+  "nameAr": "مالطا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MH",
+  "nameEn": "Marshall Islands",
+  "nameAr": "جزر مارشال",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MQ",
+  "nameEn": "Martinique",
+  "nameAr": "مارتينيك",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MR",
+  "nameEn": "Mauritania",
+  "nameAr": "موريتانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MU",
+  "nameEn": "Mauritius",
+  "nameAr": "موريشيوس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "YT",
+  "nameEn": "Mayotte",
+  "nameAr": "مايوت",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MX",
+  "nameEn": "Mexico",
+  "nameAr": "المكسيك",
+  "class": "Expat"
+ },
+ {
+  "iso2": "FM",
+  "nameEn": "Micronesia",
+  "nameAr": "ميكرونيزيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MD",
+  "nameEn": "Moldova",
+  "nameAr": "مولدوفا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MC",
+  "nameEn": "Monaco",
+  "nameAr": "موناكو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MN",
+  "nameEn": "Mongolia",
+  "nameAr": "منغوليا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ME",
+  "nameEn": "Montenegro",
+  "nameAr": "الجبل الأسود",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MS",
+  "nameEn": "Montserrat",
+  "nameAr": "مونتسيرات",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MA",
+  "nameEn": "Morocco",
+  "nameAr": "المغرب",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MZ",
+  "nameEn": "Mozambique",
+  "nameAr": "موزمبيق",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MM",
+  "nameEn": "Myanmar",
+  "nameAr": "ميانمار",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NA",
+  "nameEn": "Namibia",
+  "nameAr": "ناميبيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NR",
+  "nameEn": "Nauru",
+  "nameAr": "ناورو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NP",
+  "nameEn": "Nepal",
+  "nameAr": "نيبال",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NL",
+  "nameEn": "Netherlands",
+  "nameAr": "هولندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NC",
+  "nameEn": "New Caledonia",
+  "nameAr": "كاليدونيا الجديدة",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NZ",
+  "nameEn": "New Zealand",
+  "nameAr": "نيوزيلندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NI",
+  "nameEn": "Nicaragua",
+  "nameAr": "نيكاراغوا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NE",
+  "nameEn": "Niger",
+  "nameAr": "النيجر",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NG",
+  "nameEn": "Nigeria",
+  "nameAr": "نيجيريا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NU",
+  "nameEn": "Niue",
+  "nameAr": "نيوي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NF",
+  "nameEn": "Norfolk Island",
+  "nameAr": "جزيرة نورفولك",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MK",
+  "nameEn": "North Macedonia",
+  "nameAr": "مقدونيا الشمالية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MP",
+  "nameEn": "Northern Mariana Islands",
+  "nameAr": "جزر ماريانا الشمالية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "NO",
+  "nameEn": "Norway",
+  "nameAr": "النرويج",
+  "class": "Expat"
+ },
+ {
+  "iso2": "OM",
+  "nameEn": "Oman",
+  "nameAr": "عُمان",
+  "class": "Gcc"
+ },
+ {
+  "iso2": "PK",
+  "nameEn": "Pakistan",
+  "nameAr": "باكستان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PW",
+  "nameEn": "Palau",
+  "nameAr": "بالاو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PS",
+  "nameEn": "Palestine",
+  "nameAr": "فلسطين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PA",
+  "nameEn": "Panama",
+  "nameAr": "بنما",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PG",
+  "nameEn": "Papua New Guinea",
+  "nameAr": "بابوا غينيا الجديدة",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PY",
+  "nameEn": "Paraguay",
+  "nameAr": "باراغواي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PE",
+  "nameEn": "Peru",
+  "nameAr": "بيرو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PH",
+  "nameEn": "Philippines",
+  "nameAr": "الفلبين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PN",
+  "nameEn": "Pitcairn Islands",
+  "nameAr": "جزر بيتكيرن",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PL",
+  "nameEn": "Poland",
+  "nameAr": "بولندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PT",
+  "nameEn": "Portugal",
+  "nameAr": "البرتغال",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PR",
+  "nameEn": "Puerto Rico",
+  "nameAr": "بورتوريكو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "QA",
+  "nameEn": "Qatar",
+  "nameAr": "قطر",
+  "class": "Gcc"
+ },
+ {
+  "iso2": "RE",
+  "nameEn": "Réunion",
+  "nameAr": "ريونيون",
+  "class": "Expat"
+ },
+ {
+  "iso2": "RO",
+  "nameEn": "Romania",
+  "nameAr": "رومانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "RU",
+  "nameEn": "Russia",
+  "nameAr": "روسيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "RW",
+  "nameEn": "Rwanda",
+  "nameAr": "رواندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "BL",
+  "nameEn": "Saint Barthélemy",
+  "nameAr": "سان بارتيلمي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SH",
+  "nameEn": "Saint Helena",
+  "nameAr": "سانت هيلانة",
+  "class": "Expat"
+ },
+ {
+  "iso2": "KN",
+  "nameEn": "Saint Kitts and Nevis",
+  "nameAr": "سانت كيتس ونيفيس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LC",
+  "nameEn": "Saint Lucia",
+  "nameAr": "سانت لوسيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "MF",
+  "nameEn": "Saint Martin",
+  "nameAr": "سان مارتن",
+  "class": "Expat"
+ },
+ {
+  "iso2": "PM",
+  "nameEn": "Saint Pierre and Miquelon",
+  "nameAr": "سان بيير وميكلون",
+  "class": "Expat"
+ },
+ {
+  "iso2": "VC",
+  "nameEn": "Saint Vincent and the Grenadines",
+  "nameAr": "سانت فنسنت والغرينادين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "WS",
+  "nameEn": "Samoa",
+  "nameAr": "ساموا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SM",
+  "nameEn": "San Marino",
+  "nameAr": "سان مارينو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ST",
+  "nameEn": "São Tomé and Príncipe",
+  "nameAr": "ساو تومي وبرينسيبي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SA",
+  "nameEn": "Saudi Arabia",
+  "nameAr": "المملكة العربية السعودية",
+  "class": "Saudi"
+ },
+ {
+  "iso2": "SN",
+  "nameEn": "Senegal",
+  "nameAr": "السنغال",
+  "class": "Expat"
+ },
+ {
+  "iso2": "RS",
+  "nameEn": "Serbia",
+  "nameAr": "صربيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SC",
+  "nameEn": "Seychelles",
+  "nameAr": "سيشل",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SL",
+  "nameEn": "Sierra Leone",
+  "nameAr": "سيراليون",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SG",
+  "nameEn": "Singapore",
+  "nameAr": "سنغافورة",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SX",
+  "nameEn": "Sint Maarten",
+  "nameAr": "سينت مارتن",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SK",
+  "nameEn": "Slovakia",
+  "nameAr": "سلوفاكيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SI",
+  "nameEn": "Slovenia",
+  "nameAr": "سلوفينيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SB",
+  "nameEn": "Solomon Islands",
+  "nameAr": "جزر سليمان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SO",
+  "nameEn": "Somalia",
+  "nameAr": "الصومال",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ZA",
+  "nameEn": "South Africa",
+  "nameAr": "جنوب أفريقيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "GS",
+  "nameEn": "South Georgia and the South Sandwich Islands",
+  "nameAr": "جورجيا الجنوبية وجزر ساندويتش الجنوبية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SS",
+  "nameEn": "South Sudan",
+  "nameAr": "جنوب السودان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ES",
+  "nameEn": "Spain",
+  "nameAr": "إسبانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "LK",
+  "nameEn": "Sri Lanka",
+  "nameAr": "سريلانكا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SD",
+  "nameEn": "Sudan",
+  "nameAr": "السودان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SR",
+  "nameEn": "Suriname",
+  "nameAr": "سورينام",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SJ",
+  "nameEn": "Svalbard and Jan Mayen",
+  "nameAr": "سفالبارد وجان ماين",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SE",
+  "nameEn": "Sweden",
+  "nameAr": "السويد",
+  "class": "Expat"
+ },
+ {
+  "iso2": "CH",
+  "nameEn": "Switzerland",
+  "nameAr": "سويسرا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "SY",
+  "nameEn": "Syria",
+  "nameAr": "سوريا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TW",
+  "nameEn": "Taiwan",
+  "nameAr": "تايوان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TJ",
+  "nameEn": "Tajikistan",
+  "nameAr": "طاجيكستان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TZ",
+  "nameEn": "Tanzania",
+  "nameAr": "تنزانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TH",
+  "nameEn": "Thailand",
+  "nameAr": "تايلاند",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TL",
+  "nameEn": "Timor-Leste",
+  "nameAr": "تيمور الشرقية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TG",
+  "nameEn": "Togo",
+  "nameAr": "توغو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TK",
+  "nameEn": "Tokelau",
+  "nameAr": "توكيلاو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TO",
+  "nameEn": "Tonga",
+  "nameAr": "تونغا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TT",
+  "nameEn": "Trinidad and Tobago",
+  "nameAr": "ترينيداد وتوباغو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TN",
+  "nameEn": "Tunisia",
+  "nameAr": "تونس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TR",
+  "nameEn": "Türkiye",
+  "nameAr": "تركيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TM",
+  "nameEn": "Turkmenistan",
+  "nameAr": "تركمانستان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TC",
+  "nameEn": "Turks and Caicos Islands",
+  "nameAr": "جزر تركس وكايكوس",
+  "class": "Expat"
+ },
+ {
+  "iso2": "TV",
+  "nameEn": "Tuvalu",
+  "nameAr": "توفالو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "UG",
+  "nameEn": "Uganda",
+  "nameAr": "أوغندا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "UA",
+  "nameEn": "Ukraine",
+  "nameAr": "أوكرانيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "AE",
+  "nameEn": "United Arab Emirates",
+  "nameAr": "الإمارات العربية المتحدة",
+  "class": "Gcc"
+ },
+ {
+  "iso2": "GB",
+  "nameEn": "United Kingdom",
+  "nameAr": "المملكة المتحدة",
+  "class": "Expat"
+ },
+ {
+  "iso2": "US",
+  "nameEn": "United States",
+  "nameAr": "الولايات المتحدة",
+  "class": "Expat"
+ },
+ {
+  "iso2": "UM",
+  "nameEn": "United States Minor Outlying Islands",
+  "nameAr": "جزر الولايات المتحدة الصغيرة النائية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "UY",
+  "nameEn": "Uruguay",
+  "nameAr": "الأوروغواي",
+  "class": "Expat"
+ },
+ {
+  "iso2": "UZ",
+  "nameEn": "Uzbekistan",
+  "nameAr": "أوزبكستان",
+  "class": "Expat"
+ },
+ {
+  "iso2": "VU",
+  "nameEn": "Vanuatu",
+  "nameAr": "فانواتو",
+  "class": "Expat"
+ },
+ {
+  "iso2": "VE",
+  "nameEn": "Venezuela",
+  "nameAr": "فنزويلا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "VN",
+  "nameEn": "Vietnam",
+  "nameAr": "فيتنام",
+  "class": "Expat"
+ },
+ {
+  "iso2": "VG",
+  "nameEn": "British Virgin Islands",
+  "nameAr": "جزر العذراء البريطانية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "VI",
+  "nameEn": "United States Virgin Islands",
+  "nameAr": "جزر العذراء الأمريكية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "WF",
+  "nameEn": "Wallis and Futuna",
+  "nameAr": "والس وفوتونا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "EH",
+  "nameEn": "Western Sahara",
+  "nameAr": "الصحراء الغربية",
+  "class": "Expat"
+ },
+ {
+  "iso2": "YE",
+  "nameEn": "Yemen",
+  "nameAr": "اليمن",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ZM",
+  "nameEn": "Zambia",
+  "nameAr": "زامبيا",
+  "class": "Expat"
+ },
+ {
+  "iso2": "ZW",
+  "nameEn": "Zimbabwe",
+  "nameAr": "زيمبابوي",
+  "class": "Expat"
+ }
+]

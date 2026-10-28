@@ -7,16 +7,15 @@ import { buildCreateRequest, newIdempotencyKey } from '../src/lib/hire/payload';
 const ctx = { companyCountry: 'SA', currency: 'SAR', emailDomain: 'example.test' };
 const base = { ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'c1' };
 
-test.describe('CD26 work email is sent', () => {
-  test('local part plus the company domain', () => {
-    expect(buildCreateRequest({ ...base, workEmail: ' alex.morgan ' }, ctx).workEmail).toBe('alex.morgan@example.test');
-  });
-  test('a typed full address at the company domain is kept; blank sends nothing', () => {
+test.describe('OD7 work email is sent exactly as typed', () => {
+  test('a full address is sent trimmed, on any domain, whatever the company domain is', () => {
+    expect(buildCreateRequest({ ...base, workEmail: ' alex@issued.example ' }, ctx).workEmail).toBe('alex@issued.example');
     expect(buildCreateRequest({ ...base, workEmail: 'alex@example.test' }, ctx).workEmail).toBe('alex@example.test');
-    expect(buildCreateRequest(base, ctx).workEmail).toBeUndefined();
+    expect(buildCreateRequest({ ...base, workEmail: 'alex@issued.example' }, { companyCountry: 'SA', currency: 'SAR' }).workEmail).toBe('alex@issued.example');
   });
-  test('without a company domain a bare local part cannot be composed, so nothing is sent', () => {
-    expect(buildCreateRequest({ ...base, workEmail: 'alex' }, { companyCountry: 'SA', currency: 'SAR' }).workEmail).toBeUndefined();
+  test('blank sends nothing, and a bare local part is never completed with the company domain', () => {
+    expect(buildCreateRequest(base, ctx).workEmail).toBeUndefined();
+    expect(buildCreateRequest({ ...base, workEmail: 'alex' }, ctx).workEmail).toBe('alex');
   });
 });
 

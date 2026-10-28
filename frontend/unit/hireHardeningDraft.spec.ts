@@ -19,7 +19,7 @@ test.describe('CD26 draft resume', () => {
     expect(f).toMatchObject({
       englishName: 'Alex Morgan', companyId: 'c1', startDate: '2026-11-01', designationId: 'd1', gradeId: 'g1', branchId: 'b1', departmentId: 'dp1', managerId: '17',
       arabicName: 'أليكس مورغان', preferredName: 'Alex', gender: 'Male', maritalStatus: 'Single', nationalityCode: 'PK', dob: '1990-06-01', personalEmail: 'alex@mail.test',
-      workEmail: 'alex.morgan', mobileCountry: 'SA', mobileNational: '0512345678', employmentType: 'Full-time', contractType: 'Fixed term', contractEndDate: '2027-11-01',
+      workEmail: 'alex.morgan@example.test', mobileCountry: 'SA', mobileNational: '0512345678', employmentType: 'Full-time', contractType: 'Fixed term', contractEndDate: '2027-11-01',
       probationEndDate: '2027-01-30', workLocation: 'HQ', iban: 'SA0380000000608010167519', molId: '1-123', basic: '12000.5', housing: '3000',
       idType: 'iqama', idNumber: '2000000006', idExpiry: '2027-01-01', passportNumber: 'AB1234567', passportExpiry: '2030-05-05',
     });
