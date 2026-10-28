@@ -16,6 +16,7 @@ import {
   type StatutoryValueDisplay,
 } from '../lib/statutoryRuleLabels';
 import { Modal } from './Modal';
+import { BelowMinimumRules } from './BelowMinimumRules';
 import { useSetupEditorState } from './setup/SetupEditorState';
 
 type ScopeFilter = 'all' | 'default' | 'override';
@@ -624,6 +625,7 @@ export function StatutoryRulesPanel() {
           </div>
         )}
       </Modal>
+      <BelowMinimumRules />
     </div>
   );
 }

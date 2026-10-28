@@ -18,8 +18,7 @@ public static class KsaEosbFloorChecks
     public const string Citation = "Labor Law Art. 84";
 
     public static bool IsKsa(string? countryCode)
-        => string.Equals(countryCode?.Trim(), "SA", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(countryCode?.Trim(), "SAU", StringComparison.OrdinalIgnoreCase);
+        => KsaStatutorySpecialLeave.IsKsa(countryCode);
 
     public static async Task<List<FloorCheck>> ChecksAsync(
         IStatutoryRuleReader rules, string? countryCode, decimal tier1Rate, decimal tier2Rate, DateOnly on, CancellationToken ct)
@@ -37,7 +36,7 @@ public static class KsaEosbFloorChecks
         => new(new FloorWarning(code, field,
             $"The end-of-service rate for {label.ToLowerInvariant()} is {configured:0.##} days a year, below the legal minimum of {floor:0.##} days a year ({Citation}). Employees may claim the difference.",
             false, floor, configured, Citation,
-            $"معدل مكافأة نهاية الخدمة لـ{bandAr} هو {configured:0.##} يومًا في السنة، وهو أقل من الحد الأدنى النظامي البالغ {floor:0.##} يومًا في السنة (نظام العمل، المادة 84). قد يطالب الموظفون بالفرق."),
+            $"معدل مكافأة نهاية الخدمة لـ{bandAr} هو {configured:0.##} يومًا في السنة، وهو أقل من الحد الأدنى النظامي البالغ {floor:0.##} يومًا في السنة (نظام العمل، المادة 84). قد يطالب الموظفون بالفرق.", "نظام العمل، المادة 84"),
             configured < floor, label, labelAr);
 
     /// <summary>True when the stored acknowledgements answer <paramref name="code"/> for exactly this rate.</summary>

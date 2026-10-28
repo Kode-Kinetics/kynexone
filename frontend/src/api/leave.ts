@@ -1,3 +1,4 @@
+import type { FloorCheck } from '../lib/belowMinimum';
 import client from './client';
 import { setupRowApi } from './orgRows';
 import { requireList } from '../lib/listResponse';
@@ -59,6 +60,8 @@ export interface LeavePolicy {
   approvalWorkflowId: string | null;
   /** Company choice to grant Hajj leave beyond Saudi Labour Law Art. 114 eligibility. */
   allowsHajjBeyondStatutoryEligibility?: boolean;
+  /** JSON of the acknowledgements held for values set below a legal minimum (who, when, value, citation, note). */
+  belowMinimumAcksJson?: string | null;
   status: string;
   createdAtUtc: string;
   updatedAtUtc: string | null;
@@ -348,6 +351,11 @@ export const leavePoliciesApi = {
     client.put<LeavePolicy>(`/api/leave/policies/${id}`, body).then(r => r.data),
   delete: (id: string) =>
     client.delete(`/api/leave/policies/${id}`).then(r => r.data),
+  /** Dry run: every Saudi legal minimum that applies to the policy as typed, below or not. Saves nothing. */
+  floorCheck: (body: {
+    leaveTypeId: string; countryCode?: string; companyId?: string; annualEntitlementDays: number; maximumDaysPerRequest: number;
+    payrollImpact?: string; weekendsIncluded: boolean; publicHolidaysIncluded: boolean; minimumServiceMonths?: number; policyId?: string; status?: string;
+  }) => client.post<{ checks: FloorCheck[] }>('/api/leave/policies/floor-check', body).then(r => r.data.checks),
 };
 
 // The list endpoints below are paged (the server's default page is 25–50 rows) and send a `total`.

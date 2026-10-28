@@ -1,5 +1,10 @@
 'use client';
 
+import { BelowMinimumPanel } from '../components/BelowMinimumPanel';
+import {
+  acknowledgementsFor, checksFromWarnings, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
+  type FloorCheck,
+} from '../lib/belowMinimum';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CheckCircle, XCircle, RefreshCw, Save, Wifi, WifiOff, Eye, EyeOff,
@@ -609,7 +614,7 @@ function WpsPanel({ company, onCompanyUpdate, gcc, onGccUpdate }: {
           wpsMolCode: form.wpsMolCode,
           sifEnabled: form.sifEnabled,
           eosbEnabled: gcc?.eosbEnabled ?? false,
-          eosbYears1To5Rate: gcc?.eosbYears1To5Rate ?? 21,
+          eosbYears1To5Rate: gcc?.eosbYears1To5Rate ?? 15,
           eosbYearsAbove5Rate: gcc?.eosbYearsAbove5Rate ?? 30,
           eosbMinYears: gcc?.eosbMinYears ?? 1,
           workWeek: gcc?.workWeek ?? 'SunThu',
@@ -714,7 +719,7 @@ function LaborPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting | null; on
     workWeek: 'SunThu',
     weekendDays: 'FriSat',
     eosbEnabled: true,
-    eosbYears1To5Rate: 21,
+    eosbYears1To5Rate: 15,
     eosbYearsAbove5Rate: 30,
     eosbMinYears: 1,
     ramadanHoursEnabled: false,
@@ -723,13 +728,28 @@ function LaborPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting | null; on
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [isErr, setIsErr] = useState(false);
+  // Art. 84 minimums are defaults, not walls (owner decision 2026-10-25): under one, tick the acknowledgement and say why.
+  const [floorChecks, setFloorChecks] = useState<FloorCheck[]>([]);
+  const [floorAck, setFloorAck] = useState(false);
+  const [floorReason, setFloorReason] = useState('');
+  const storedAcks = parseStoredAcks(gcc?.eosbBelowFloorAcksJson);
+  const stillOpen = openChecks(floorChecks, storedAcks);
+  useEffect(() => {
+    if (!form.eosbEnabled) { setFloorChecks([]); return; }
+    let live = true;
+    const timer = setTimeout(() => {
+      gccSettingsApi.floorCheck({ countryCode: 'SA', eosbYears1To5Rate: form.eosbYears1To5Rate, eosbYearsAbove5Rate: form.eosbYearsAbove5Rate })
+        .then(c => { if (live) setFloorChecks(c); }).catch(() => { if (live) setFloorChecks([]); });
+    }, 250);
+    return () => { live = false; clearTimeout(timer); };
+  }, [form.eosbEnabled, form.eosbYears1To5Rate, form.eosbYearsAbove5Rate]);
 
   useEffect(() => {
     if (gcc) setForm({
       workWeek: gcc.workWeek ?? 'SunThu',
       weekendDays: gcc.weekendDays ?? 'FriSat',
       eosbEnabled: gcc.eosbEnabled,
-      eosbYears1To5Rate: gcc.eosbYears1To5Rate ?? 21,
+      eosbYears1To5Rate: gcc.eosbYears1To5Rate ?? 15,
       eosbYearsAbove5Rate: gcc.eosbYearsAbove5Rate ?? 30,
       eosbMinYears: gcc.eosbMinYears ?? 1,
       ramadanHoursEnabled: gcc.ramadanHoursEnabled,
@@ -738,6 +758,9 @@ function LaborPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting | null; on
   }, [gcc]);
 
   const save = async () => {
+    if (form.eosbEnabled && !readyToSave(stillOpen, floorAck, floorReason)) {
+      setMsg(t('Tick the box and give a reason to save below the legal minimum.')); setIsErr(true); return;
+    }
     setSaving(true); setMsg(''); setIsErr(false);
     try {
       const updated = await gccSettingsApi.upsert({
@@ -752,11 +775,14 @@ function LaborPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting | null; on
         iqamaRequired: gcc?.iqamaRequired ?? true,
         iqamaAlertDays: gcc?.iqamaAlertDays ?? 30,
         emiratesIdRequired: gcc?.emiratesIdRequired ?? false,
+        ...(form.eosbEnabled && stillOpen.length > 0 ? { acknowledgedWarnings: acknowledgementsFor(stillOpen, floorReason) } : {}),
       });
       onGccUpdate(updated);
       setMsg(t('Labor and EOSB settings saved.'));
-    } catch {
-      setMsg(t('Failed to save settings.')); setIsErr(true);
+    } catch (e) {
+      const refused = parseFloorWarnings(e);
+      if (refused) setFloorChecks(prev => [...prev.filter(c => !refused.some(w => w.code === c.code)), ...checksFromWarnings(refused)]);
+      setMsg(refused || isReasonRequired(e) ? t('Tick the box and give a reason to save below the legal minimum.') : t('Failed to save settings.')); setIsErr(true);
     } finally { setSaving(false); }
   };
 
@@ -811,12 +837,17 @@ function LaborPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting | null; on
               <Field label={t('Min Service Years')} hint={t('Minimum tenure before EOSB is payable')}>
                 <input type="number" min={0} value={form.eosbMinYears} onChange={e => setForm(x => ({ ...x, eosbMinYears: Number(e.target.value) }))} className="input w-full" title={t('Min Service Years')} />
               </Field>
-              <Field label={t('Rate: Years 1–5 (days/yr)')} hint={t('Default: 21 days = ½ month')}>
+              <Field label={t('Rate: Years 1–5 (days/yr)')} hint={t('Saudi default: 15 days = ½ month')}>
                 <input type="number" min={0} step={0.5} value={form.eosbYears1To5Rate} onChange={e => setForm(x => ({ ...x, eosbYears1To5Rate: Number(e.target.value) }))} className="input w-full" title={t('EOSB Rate Years 1 to 5')} />
               </Field>
-              <Field label={t('Rate: Years 5+ (days/yr)')} hint={t('Default: 30 days = 1 month')}>
+              <Field label={t('Rate: Years 5+ (days/yr)')} hint={t('Saudi default: 30 days = 1 month')}>
                 <input type="number" min={0} step={0.5} value={form.eosbYearsAbove5Rate} onChange={e => setForm(x => ({ ...x, eosbYearsAbove5Rate: Number(e.target.value) }))} className="input w-full" title={t('EOSB Rate Years Above 5')} />
               </Field>
+            </div>
+          )}
+          {form.eosbEnabled && (
+            <div className="mt-3">
+              <BelowMinimumPanel checks={floorChecks} stored={storedAcks} acknowledged={floorAck} onAcknowledged={setFloorAck} reason={floorReason} onReason={setFloorReason} />
             </div>
           )}
         </div>
@@ -882,7 +913,7 @@ function DocumentTrackingPanel({ gcc, onGccUpdate }: { gcc: GCCComplianceSetting
         wpsMolCode: gcc?.wpsMolCode ?? '',
         sifEnabled: gcc?.sifEnabled ?? true,
         eosbEnabled: gcc?.eosbEnabled ?? true,
-        eosbYears1To5Rate: gcc?.eosbYears1To5Rate ?? 21,
+        eosbYears1To5Rate: gcc?.eosbYears1To5Rate ?? 15,
         eosbYearsAbove5Rate: gcc?.eosbYearsAbove5Rate ?? 30,
         eosbMinYears: gcc?.eosbMinYears ?? 1,
         workWeek: gcc?.workWeek ?? 'SunThu',

@@ -280,7 +280,7 @@ public class LeavePoliciesController : ControllerBase
             {
                 c.Warning.Code, c.Warning.Field, c.Label, c.LabelAr, c.Below,
                 c.Warning.StatutoryValue, c.Warning.ConfiguredValue, c.Warning.Citation,
-                c.Warning.Message, c.Warning.MessageAr,
+                c.Warning.Message, c.Warning.MessageAr, c.Warning.CitationAr,
             }),
         });
     }

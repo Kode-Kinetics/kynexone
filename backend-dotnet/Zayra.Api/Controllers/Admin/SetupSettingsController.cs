@@ -226,7 +226,7 @@ public class SetupSettingsController : ControllerBase
             checks = checks.Select(c => new
             {
                 c.Warning.Code, c.Warning.Field, c.Label, c.LabelAr, c.Below,
-                c.Warning.StatutoryValue, c.Warning.ConfiguredValue, c.Warning.Citation, c.Warning.Message, c.Warning.MessageAr,
+                c.Warning.StatutoryValue, c.Warning.ConfiguredValue, c.Warning.Citation, c.Warning.Message, c.Warning.MessageAr, c.Warning.CitationAr,
             }),
         });
     }
@@ -248,7 +248,12 @@ public class SetupSettingsController : ControllerBase
                 .Where(c => c.Below).Select(c => c.Warning).ToList()
             : [];
         var storedAcks = FloorAckStore.Parse(existing?.EosbBelowFloorAcksJson);
-        var gate = FloorWarningGate.Evaluate(floorWarnings, req.AcknowledgedWarnings, w => FloorAckStore.Covering(storedAcks, w) is not null);
+        // Only a rate this request CHANGES is asked about: another panel re-sending an unchanged stored rate must not fail
+        // on a setting it did not touch. Unchanged and unacknowledged stays visible on the "below the legal minimum" list.
+        var asked = floorWarnings.Where(w => existing is null
+            || (w.Field == "eosbYears1To5Rate" ? existing.EosbYears1To5Rate != req.EosbYears1To5Rate : existing.EosbYearsAbove5Rate != req.EosbYearsAbove5Rate)
+            || !existing.EosbEnabled).ToList();
+        var gate = FloorWarningGate.Evaluate(asked, req.AcknowledgedWarnings, w => FloorAckStore.Covering(storedAcks, w) is not null);
         if (gate.Unacknowledged.Count > 0) return FloorWarningGate.AckRequired(gate.Unacknowledged, HttpContext?.TraceIdentifier);
         if (gate.ReasonInvalid) return FloorWarningGate.ReasonRequired(HttpContext?.TraceIdentifier);
         var byName = User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? User.FindFirst("name")?.Value ?? "Admin";

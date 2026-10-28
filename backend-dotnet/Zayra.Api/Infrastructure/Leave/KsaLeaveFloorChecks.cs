@@ -57,25 +57,25 @@ public static class KsaLeaveFloorChecks
                         $"{what} is {f:0.##} calendar days by law, and this policy counts working days at {days:0.##}"
                         + (cap > 0m ? $" (cap {cap:0.##})" : string.Empty) + $", below the legal minimum ({cite}). To meet it, count weekends and public holidays and set at least {f:0.##} days.",
                         $"{whatAr} مدتها {f:0.##} يومًا تقويميًا بحكم النظام، وهذه السياسة تحتسب أيام العمل بواقع {days:0.##} يومًا، وهو أقل من الحد الأدنى النظامي ({citeAr}).",
-                        "Working-day count vs the legal calendar minimum", "احتساب أيام العمل مقابل الحد الأدنى النظامي بالتقويم"));
+                        "Working-day count vs the legal calendar minimum", "احتساب أيام العمل مقابل الحد الأدنى النظامي بالتقويم", citeAr));
                 }
                 else
                 {
                     checks.Add(Make(SpecialEntitlement, "annualEntitlementDays", days < f, days, f, cite,
                         $"{what}: this policy grants {days:0.##} days, below the legal minimum of {f:0.##} days ({cite}).",
                         $"{whatAr}: تمنح هذه السياسة {days:0.##} يومًا، وهو أقل من الحد الأدنى النظامي البالغ {f:0.##} يومًا ({citeAr}).",
-                        "Days granted", "عدد الأيام الممنوحة"));
+                        "Days granted", "عدد الأيام الممنوحة", citeAr));
                     if (cap > 0m)
                         checks.Add(Make(SpecialCap, "maximumDaysPerRequest", cap < f, cap, f, cite,
                             $"{what}: a cap of {cap:0.##} days per request is below the legal minimum of {f:0.##} days ({cite}).",
                             $"{whatAr}: الحد الأقصى {cap:0.##} يومًا للطلب الواحد أقل من الحد الأدنى النظامي البالغ {f:0.##} يومًا ({citeAr}).",
-                            "Maximum days per request", "الحد الأقصى للأيام في الطلب"));
+                            "Maximum days per request", "الحد الأقصى للأيام في الطلب", citeAr));
                 }
                 checks.Add(Make(SpecialUnpaid, "payrollImpact",
                     string.Equals(policy.PayrollImpact?.Trim(), "Unpaid", StringComparison.OrdinalIgnoreCase), null, null, cite,
                     $"{what} is fully paid by law ({cite}); this policy makes it unpaid.",
                     $"{whatAr} مدفوعة الأجر بالكامل بحكم النظام ({citeAr})، وهذه السياسة تجعلها بدون أجر.",
-                    "Pay treatment", "معاملة الأجر"));
+                    "Pay treatment", "معاملة الأجر", citeAr));
 
                 if (reach == KsaPolicyReach.Mixed && checks.Any(c => c.Below))
                 {
@@ -103,7 +103,7 @@ public static class KsaLeaveFloorChecks
                 checks.Add(Make(Annual, "annualEntitlementDays", days < floor, days, floor, "Labor Law Art. 109",
                     $"Annual leave of {days:0.##} days is below the legal minimum of {floor:0.##} days ({tiered:0.##} after five years of service) (Labor Law Art. 109).",
                     $"الإجازة السنوية {days:0.##} يومًا أقل من الحد الأدنى النظامي البالغ {floor:0.##} يومًا ({tiered:0.##} يومًا بعد خمس سنوات من الخدمة) (نظام العمل، المادة 109).",
-                    "Annual leave days", "أيام الإجازة السنوية"));
+                    "Annual leave days", "أيام الإجازة السنوية", "نظام العمل، المادة 109"));
             }
             else if (protectedKind == "Sick")
             {
@@ -115,12 +115,12 @@ public static class KsaLeaveFloorChecks
                 checks.Add(Make(Sick, "annualEntitlementDays", days < floor, days, floor, "Labor Law Art. 117",
                     $"Sick leave of {days:0.##} days a year is below the legal scale of {floor:0.##} days (30 full pay, 60 at three quarters, 30 unpaid) (Labor Law Art. 117).",
                     $"الإجازة المرضية {days:0.##} يومًا في السنة أقل من السلم النظامي البالغ {floor:0.##} يومًا (30 بأجر كامل و60 بثلاثة أرباع الأجر و30 بدون أجر) (نظام العمل، المادة 117).",
-                    "Sick leave days per year", "أيام الإجازة المرضية في السنة"));
+                    "Sick leave days per year", "أيام الإجازة المرضية في السنة", "نظام العمل، المادة 117"));
                 checks.Add(Make(SickService, "minimumServiceMonths", policy.MinimumServiceMonths > 0, policy.MinimumServiceMonths, 0m, "Labor Law Art. 117",
                     "Sick leave for employees in Saudi Arabia applies from the first day of service (Labor Law Art. 117); this policy requires "
                     + $"{policy.MinimumServiceMonths} months of service first.",
                     $"الإجازة المرضية للعاملين في المملكة تسري من اليوم الأول للخدمة (نظام العمل، المادة 117)، وهذه السياسة تشترط {policy.MinimumServiceMonths} شهرًا من الخدمة أولًا.",
-                    "Service required before use (months)", "مدة الخدمة المطلوبة قبل الاستخدام (بالأشهر)"));
+                    "Service required before use (months)", "مدة الخدمة المطلوبة قبل الاستخدام (بالأشهر)", "نظام العمل، المادة 117"));
             }
         }
         return checks;
@@ -134,8 +134,8 @@ public static class KsaLeaveFloorChecks
         => checks.Where(c => c.Below).Select(c => c.Warning).ToList();
 
     private static FloorCheck Make(string code, string field, bool below, decimal? configured, decimal? statutory, string citation,
-        string messageEn, string messageAr, string label, string labelAr)
-        => new(new FloorWarning(code, field, messageEn, false, statutory, configured, citation, messageAr), below, label, labelAr);
+        string messageEn, string messageAr, string label, string labelAr, string? citationAr = null)
+        => new(new FloorWarning(code, field, messageEn, false, statutory, configured, citation, messageAr, citationAr), below, label, labelAr);
 
     private static (string En, string Ar) Cite(KsaStatutoryLeaveKind kind) => kind switch
     {

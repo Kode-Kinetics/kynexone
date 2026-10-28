@@ -192,6 +192,18 @@ public class FloorWarningsTests
         (await c.Create(Req(sick.Id, 120m), default)).Should().BeOfType<CreatedResult>();
     }
 
+    [Theory]
+    [InlineData("SA")]
+    [InlineData("SAU")]
+    [InlineData("KSA")]
+    public async Task EverySpellingOfSaudiArabiaIsHeldToTheFloors_IncludingTheScreensKsa(string country)
+    {
+        await using var db = Db();
+        var (tenant, _) = await TenantWithSaudiCompanyAsync(db);
+        var annual = await TypeAsync(db, tenant, "ANNUAL", "Annual Leave", "Annual");
+        Body(await Controller(db, tenant).Create(Req(annual.Id, 15m) with { CountryCode = country }, default), 409);
+    }
+
     [Fact]
     public async Task NonSaudiPolicies_AreNeverWarned()
     {
@@ -267,6 +279,19 @@ public class FloorWarningsTests
         var audit = await db.AdminAuditLogs.SingleAsync(a => a.Action == "BelowStatutoryMinimumAcknowledged");
         audit.NewValuesJson.Should().Contain("Group policy for casual staff").And.Contain("Art. 84").And.Contain("Sami Super");
         audit.PerformedBy.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Eosb_AnotherPanelResendingAnUnchangedLegacyBelowFloorRate_IsNotBlocked_ButAChangeIs()
+    {
+        await using var db = Db();
+        var tenant = Guid.NewGuid();
+        db.GCCComplianceSettings.Add(new GCCComplianceSetting { TenantId = tenant, CountryCode = "SA", EosbEnabled = true, EosbYears1To5Rate = 10m, EosbYearsAbove5Rate = 30m });
+        await db.SaveChangesAsync();
+        var c = Settings(db, tenant);
+
+        (await c.UpsertGCCSetting(Gcc(10m, 30m), default)).Should().BeOfType<OkObjectResult>("the WPS panel re-sends the stored rate untouched");
+        Body(await c.UpsertGCCSetting(Gcc(9m, 30m), default), 409);
     }
 
     [Fact]

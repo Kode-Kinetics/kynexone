@@ -27,7 +27,7 @@ public class FloorComplianceController : ControllerBase
 
     public sealed record BelowMinimumItem(
         string Source, string Code, Guid? CompanyId, string? CompanyName, string Rule, string RuleAr, string? Subject,
-        decimal? Configured, decimal? Statutory, string? Citation, string Message, string? MessageAr,
+        decimal? Configured, decimal? Statutory, string? Citation, string? CitationAr, string Message, string? MessageAr,
         bool Acknowledged, string? AcknowledgedBy, DateTime? AcknowledgedAtUtc, string? Note);
 
     [HttpGet("below-minimum")]
@@ -55,7 +55,7 @@ public class FloorComplianceController : ControllerBase
                 var w = check.Warning;
                 var ack = FloorAckStore.Covering(stored, w);
                 items.Add(new("leave_policy", w.Code, policy.CompanyId, NameOf(policy.CompanyId), $"{type.NameEn}: {check.Label}", $"{type.NameAr}: {check.LabelAr}",
-                    policy.Name, w.ConfiguredValue, w.StatutoryValue, w.Citation, w.Message, w.MessageAr,
+                    policy.Name, w.ConfiguredValue, w.StatutoryValue, w.Citation, w.CitationAr, w.Message, w.MessageAr,
                     ack is not null, ack?.AcknowledgedBy, ack?.AcknowledgedAtUtc, ack?.Reason));
             }
         }
@@ -73,7 +73,7 @@ public class FloorComplianceController : ControllerBase
                 var w = check.Warning;
                 var ack = FloorAckStore.Covering(stored, w);
                 items.Add(new("eosb", w.Code, g.CompanyId, NameOf(g.CompanyId), $"End of service: {check.Label}", $"مكافأة نهاية الخدمة: {check.LabelAr}",
-                    g.CountryCode, w.ConfiguredValue, w.StatutoryValue, w.Citation, w.Message, w.MessageAr,
+                    g.CountryCode, w.ConfiguredValue, w.StatutoryValue, w.Citation, w.CitationAr, w.Message, w.MessageAr,
                     ack is not null, ack?.AcknowledgedBy, ack?.AcknowledgedAtUtc, ack?.Reason));
             }
         }
@@ -85,7 +85,7 @@ public class FloorComplianceController : ControllerBase
                 decimal? configured = decimal.TryParse(v.Value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : null;
                 decimal? statutory = v.WarningCode == CompanyPayrollRules.WarnBelowOvertimeFloor ? CompanyPayrollRules.StatutoryOvertimeFloor : null;
                 items.Add(new("payroll_rule", v.WarningCode!, company.Id, company.LegalNameEn, v.Key, v.Key, null, configured, statutory,
-                    null, v.Warning ?? string.Empty, null, v.Acknowledged, null, v.AcknowledgedAtUtc, v.AcknowledgementNote));
+                    null, null, v.Warning ?? string.Empty, null, v.Acknowledged, null, v.AcknowledgedAtUtc, v.AcknowledgementNote));
             }
 
         return Ok(new { items = items.OrderBy(i => i.CompanyName).ThenBy(i => i.Source).ThenBy(i => i.Rule).ToList() });

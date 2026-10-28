@@ -1,5 +1,10 @@
 'use client';
 
+import { BelowMinimumPanel } from '../components/BelowMinimumPanel';
+import {
+  acknowledgementsFor, checksFromWarnings, coveringAck, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
+  type FloorCheck,
+} from '../lib/belowMinimum';
 import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { Modal as SharedModal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
@@ -1255,8 +1260,39 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
   const [error, setError] = useState('');
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
-  const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
+  const [daysTouched, setDaysTouched] = useState(false);
+  const set = (k: keyof typeof form, v: string | number | boolean) => {
+    if (k === 'annualEntitlementDays') setDaysTouched(true);
+    setForm(f => ({ ...f, [k]: v }));
+  };
   const { t, locale } = useLocale();
+  // Statutory minimums are defaults, not walls (owner decision 2026-10-25): the server says which legal minimums apply to
+  // what is typed; under one, the admin ticks the acknowledgement and gives a reason, and Save sends them.
+  const [floorChecks, setFloorChecks] = useState<FloorCheck[]>([]);
+  const [floorAck, setFloorAck] = useState(false);
+  const [floorReason, setFloorReason] = useState('');
+  const storedAcks = parseStoredAcks(existing?.belowMinimumAcksJson);
+  const stillOpen = openChecks(floorChecks, storedAcks);
+  useEffect(() => {
+    if (!form.leaveTypeId) { setFloorChecks([]); return; }
+    let live = true;
+    const timer = setTimeout(() => {
+      leavePoliciesApi.floorCheck({
+        leaveTypeId: form.leaveTypeId, countryCode: form.countryCode, companyId: form.companyId || undefined,
+        annualEntitlementDays: form.annualEntitlementDays, maximumDaysPerRequest: form.maximumDaysPerRequest, payrollImpact: form.payrollImpact,
+        weekendsIncluded: form.weekendsIncluded, publicHolidaysIncluded: form.publicHolidaysIncluded,
+        minimumServiceMonths: form.minimumServiceMonths, policyId: existing?.id, status: form.status,
+      }).then(checks => { if (live) setFloorChecks(checks); }).catch(() => { if (live) setFloorChecks([]); });
+    }, 250);
+    return () => { live = false; clearTimeout(timer); };
+  }, [form.leaveTypeId, form.countryCode, form.companyId, form.annualEntitlementDays, form.maximumDaysPerRequest, form.payrollImpact,
+    form.weekendsIncluded, form.publicHolidaysIncluded, form.minimumServiceMonths, form.status, existing?.id]);
+  // A new policy starts at the country's statutory figure ("Saudi default"); typing over it is the admin's choice.
+  useEffect(() => {
+    if (isEdit || daysTouched) return;
+    const days = floorChecks.find(c => c.field === 'annualEntitlementDays' && c.statutoryValue != null);
+    if (days && days.statutoryValue !== form.annualEntitlementDays) setForm(f => ({ ...f, annualEntitlementDays: days.statutoryValue as number }));
+  }, [floorChecks, isEdit, daysTouched, form.annualEntitlementDays]);
   // Employment Type is several ticks. The tenant's reference list is offered (code stored, label shown); a stored
   // value the list does not offer (retired, or typed before the list) stays ticked so an edit never drops it.
   const employmentTypes = splitEmploymentTypes(form.employmentType);
@@ -1282,15 +1318,24 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
     if (!form.name || !form.leaveTypeId) { setError('Name and Leave Type are required.'); return; }
     if (form.encashmentAllowed && !(form.encashmentMaxDays > 0)) { setError(t('Enter the maximum days per encashment, or untick Encashment Allowed.')); return; }
     if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
+    if (!readyToSave(stillOpen, floorAck, floorReason)) { setError(t('Tick the box and give a reason to save below the legal minimum.')); return; }
     setSaving(true); setError('');
     try {
-      if (isEdit) {
-        await leavePoliciesApi.update(existing!.id, { ...form, companyId: form.companyId || undefined });
-      } else {
-        await leavePoliciesApi.create({ ...form, companyId: form.companyId || undefined });
-      }
+      const body = {
+        ...form, companyId: form.companyId || undefined,
+        ...(stillOpen.length > 0 ? { acknowledgedWarnings: acknowledgementsFor(stillOpen, floorReason) } : {}),
+      };
+      if (isEdit) await leavePoliciesApi.update(existing!.id, body);
+      else await leavePoliciesApi.create(body);
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
+    } catch (e) {
+      // The server may know a minimum the screen did not (a rule changed): show it and ask, nothing was saved.
+      const refused = parseFloorWarnings(e);
+      if (refused) { setFloorChecks(prev => [...prev.filter(c => !refused.some(w => w.code === c.code)), ...checksFromWarnings(refused)]); setError(t('Tick the box and give a reason to save below the legal minimum.')); }
+      else if (isReasonRequired(e)) setError(t('Tick the box and give a reason to save below the legal minimum.'));
+      else setError(apiErrorReason(e, 'Save failed.'));
+      setSaving(false);
+    }
   };
 
   return (
@@ -1416,6 +1461,8 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
             </p>
           )}
         </div>
+
+        <BelowMinimumPanel checks={floorChecks} stored={storedAcks} acknowledged={floorAck} onAcknowledged={setFloorAck} reason={floorReason} onReason={setFloorReason} />
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Payroll Impact">

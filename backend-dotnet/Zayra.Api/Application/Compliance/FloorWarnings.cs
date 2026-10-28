@@ -23,7 +23,8 @@ public sealed record FloorAcknowledgement(string Code, string? Reason);
 /// <summary>A below-the-legal-minimum warning. <see cref="Message"/> is English; <see cref="MessageAr"/> Arabic.</summary>
 public sealed record FloorWarning(
     string Code, string Field, string Message, bool RequiresPermission = false,
-    decimal? StatutoryValue = null, decimal? ConfiguredValue = null, string? Citation = null, string? MessageAr = null)
+    decimal? StatutoryValue = null, decimal? ConfiguredValue = null, string? Citation = null, string? MessageAr = null,
+    string? CitationAr = null)
 {
     /// <summary>Alias of <see cref="Message"/> for clients that name the English text explicitly.</summary>
     public string MessageEn => Message;
