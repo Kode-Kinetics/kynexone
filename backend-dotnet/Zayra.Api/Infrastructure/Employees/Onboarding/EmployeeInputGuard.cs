@@ -75,8 +75,11 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
         IReadOnlyCollection<AcknowledgedWarning>? acknowledged)
     {
         var e = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Stored designation/grade pair for the activation check; tenant re-applied.")
-            .AsNoTracking().Where(x => x.Id == employeeId).Select(x => new { x.DesignationId, x.GradeId }).FirstOrDefaultAsync(ct);
-        if (e?.DesignationId is not Guid designationId || e.GradeId is not Guid gradeId) return;
+            .AsNoTracking().Where(x => x.Id == employeeId).Select(x => new { x.Status, x.DesignationId, x.GradeId }).FirstOrDefaultAsync(ct);
+        // First activation only (Draft to Active). Someone previously employed who is reinstated or rehired keeps the pair they
+        // already had; legacy data commonly has such pairs and the offboarding flow has no way to acknowledge one.
+        if (e is null || !string.Equals(e.Status, "Draft", StringComparison.OrdinalIgnoreCase)) return;
+        if (e.DesignationId is not Guid designationId || e.GradeId is not Guid gradeId) return;
         var designationGrade = await ScopedBypass.TenantWide(_db.Designations, tenantId, "Designation's grade for the activation check; tenant re-applied.")
             .AsNoTracking().Where(d => d.Id == designationId).Select(d => d.GradeId).FirstOrDefaultAsync(ct);
         if (designationGrade is null || designationGrade == gradeId) return;
