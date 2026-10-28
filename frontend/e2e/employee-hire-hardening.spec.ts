@@ -25,13 +25,13 @@ async function pickNationality(page: Page, text: string, re: RegExp, l: typeof L
 async function toStep(page: Page, n: 2 | 3 | 4, l: typeof L.en | typeof L.ar = L.en) { await basics(page, l); for (let i = 1; i < n; i++) await next(page, l); }
 
 test.describe('CD26 work email, contract end date, probation, wps/eosb (payload)', () => {
-  test('the work email local part is sent with the company domain', async ({ page }) => {
+  test('OD7: the work email is one full address, sent exactly as typed (any domain)', async ({ page }) => {
     const api = await bootHire(page);
     await basics(page);
-    await page.getByLabel('Work email').fill('alex.morgan');
+    await page.getByLabel('Work email').fill('alex.morgan@issued.example');
     await saveDraft(page);
     await expect(page.getByTestId('saved-indicator')).toContainText('Saved');
-    expect(api.creates[0].body.workEmail).toBe('alex.morgan@example.test');
+    expect(api.creates[0].body.workEmail).toBe('alex.morgan@issued.example');
   });
 
   test('CD17: the contract end date is disabled until the contract is fixed-term; it is checked against the start date and cleared when the type changes', async ({ page }) => {
@@ -215,7 +215,7 @@ test.describe('CD26 draft resume (/people/new?draft=<id>)', () => {
     const api = await bootHire(page, { draftDetail: detail }, '/people/new?draft=44');
     await expect(page.getByLabel('English full name')).toHaveValue('Alex Morgan');
     await expect(page.getByLabel('Start date')).toHaveValue('2026-11-01');
-    await expect(page.getByLabel('Work email')).toHaveValue('alex.morgan');
+    await expect(page.getByLabel('Work email')).toHaveValue('alex.morgan@example.test');
     expect(api.gets).toContain('/api/employees/44');
     await page.getByLabel('English full name').fill('Alex J Morgan');
     await expect.poll(() => api.puts.length, { timeout: 6000 }).toBe(1);
@@ -331,7 +331,7 @@ test.describe('CD32 override hint', () => {
 test.describe('CD34 Review and Success', () => {
   async function fillForReview(page: Page, l: typeof L.en | typeof L.ar) {
     await basics(page, l, { start: '2026-01-05' });
-    await page.getByLabel(l === L.en ? 'Work email' : 'البريد الإلكتروني الوظيفي').fill('alex.morgan');
+    await page.getByLabel(l === L.en ? 'Work email' : 'البريد الإلكتروني الوظيفي').fill('alex.morgan@example.test');
     await next(page, l);
     await pickNationality(page, l === L.en ? 'paki' : 'باك', /Pakistan|باكستان/, l);
     await next(page, l);
@@ -399,8 +399,8 @@ test.describe('CD34 Arabic copy in the form', () => {
     await bootHire(page, { locale: 'ar' });
     await expect(page.getByLabel('الرقم الوظيفي')).toBeVisible();
     const hint = page.locator('#hire-workEmail-hint');
-    await expect(hint).toContainText('يُضاف نطاق');
-    await expect(hint).toContainText('KynexOne');
+    await expect(hint).toContainText('الخدمة الذاتية');
+    await expect(hint).toContainText('تسجيل الدخول');
     await expect(hint).not.toContainText('كاينكس');
   });
   test('the MOL ID label', async ({ page }) => {

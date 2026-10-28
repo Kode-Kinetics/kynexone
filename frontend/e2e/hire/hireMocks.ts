@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import realEmployeeDraft from '../../unit/fixtures/hire-real/employee-draft.json';
+import nationalitiesFixture from '../../unit/fixtures/reference-nationalities.json';
 
 /**
  * GET /api/employees/{id} for a draft, exactly as the API sends it (captured by the backend test HireDraftResumeContractTests;
@@ -46,6 +47,8 @@ export interface HireMockOptions {
   /** Hold the create response until released (double-click test). */
   holdCreate?: Promise<void>;
   permissions?: string[];
+  /** Arabic name suggestions the transliterate endpoint knows, by the English text sent. Any other name answers requiresManualEntry. */
+  transliterations?: Record<string, string>;
   /** P3: the company's hire templates. Omitted = the picker is not shown (the endpoint answers an empty list). */
   hireTemplates?: Array<Record<string, any>>;
   /** The template the server suggests for the chosen designation. */
@@ -77,6 +80,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
   const discards: string[] = [];
   const gets: string[] = [];
   const errors: string[] = [];
+  const translits: Array<Record<string, any>> = [];
   let seq = 0;
   const co = options.companyCountry ? { ...company, countryCode: options.companyCountry, jurisdiction: options.companyCountry } : company;
   const companies = options.multipleCompanies ? [co, { ...co, id: 'company-other', legalNameEn: 'Other Test Company' }] : [co];
@@ -116,7 +120,8 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/grades') return reply(paged([grade, grade2]));
     if (p === '/api/organization/cost-centers') return reply(paged([]));
     if (p === '/api/admin/master-data/values') return reply([]);
-    if (p === '/api/reference/nationalities') return reply({}, 404);
+    // The real endpoint's rows ({ iso2, nameEn, nameAr, class }), not a shape invented for the mock.
+    if (p === '/api/reference/nationalities') return reply(nationalitiesFixture);
     if (p === '/api/reference/sa-banks') return reply(saBanks);
     if (p === '/api/employees/field-catalog') { catalogCalls.push(url.search); return reply({ countryCode: 'SA', fields: [] }); }
     if (p === '/api/employees/derive-work-email') return reply({ domain: 'example.test', pattern: 'first.last', localPart: 'alex.morgan', workEmail: 'alex.morgan@example.test', unique: true, suggestion: 'alex.morgan', status: 'derived' });
@@ -159,11 +164,17 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/onboarding/hire-templates/resolve') return reply({ candidates: options.hireTemplates ?? [], suggestedId: options.suggestedTemplateId ?? null });
     if (/^\/api\/onboarding\/hire-templates\/[^/]+\/checklist-preview$/.test(p)) return reply(checklistPreviewFor(url.searchParams.get('nationality')));
     if (p === '/api/compensation/benefits/grade-defaults') return reply([]);
-    if (p === '/api/localization/transliterate') return reply({ suggestion: 'أليكس مورغان', requiresManualEntry: false });
+    if (p === '/api/localization/transliterate') {
+      translits.push(body);
+      const known = options.transliterations?.[String(body?.text)];
+      if (known) return reply({ suggestion: known, requiresManualEntry: false });
+      if (options.transliterations) return reply({ suggestion: '', requiresManualEntry: true });
+      return reply({ suggestion: 'أليكس مورغان', requiresManualEntry: false });
+    }
     return reply(p.includes('/features/') || p === '/api/notifications' ? [] : paged([]));
   });
   await page.goto(path);
-  return { calls, gets, creates, puts, dupChecks, catalogCalls, rehires, discards, errors, apiCount: () => calls.filter(c => !/auth|features|localization|notifications/.test(c)).length };
+  return { calls, gets, translits, creates, puts, dupChecks, catalogCalls, rehires, discards, errors, apiCount: () => calls.filter(c => !/auth|features|localization|notifications/.test(c)).length };
 }
 
 export async function expectNoHorizontalScroll(page: Page) {
