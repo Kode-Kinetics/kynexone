@@ -15610,6 +15610,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("emirates_id_required");
 
+                    b.Property<string>("EosbBelowFloorAcksJson")
+                        .HasColumnType("text")
+                        .HasColumnName("eosb_below_floor_acks_json");
+
                     b.Property<bool>("EosbEnabled")
                         .HasColumnType("boolean")
                         .HasColumnName("eosb_enabled");
@@ -20138,6 +20142,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("ApprovalWorkflowId")
                         .HasColumnType("uuid")
                         .HasColumnName("approval_workflow_id");
+
+                    b.Property<string>("BelowMinimumAcksJson")
+                        .HasColumnType("text")
+                        .HasColumnName("below_minimum_acks_json");
 
                     b.Property<Guid?>("BranchId")
                         .HasColumnType("uuid")

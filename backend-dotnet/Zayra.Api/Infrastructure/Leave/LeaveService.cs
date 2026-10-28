@@ -335,7 +335,12 @@ public class LeaveService : ILeaveService
                 // Non-KSA entities and non-annual leave types are completely unaffected.
                 var effectiveAnnualDays = policy.AnnualEntitlementDays;
                 var accrualReason = "Monthly accrual";
-                if (policyIsAnnualLeave)
+                if (policyIsAnnualLeave && KsaLeaveFloorChecks.IsAcknowledgedBelowMinimum(policy, KsaLeaveFloorChecks.Annual))
+                {
+                    // The company chose, and an admin acknowledged (audited), fewer days than Art. 109: honoured, never raised.
+                    accrualReason = $"Monthly accrual (configured {policy.AnnualEntitlementDays:0.##} days/yr, below the KSA Art.109 minimum; acknowledged)";
+                }
+                else if (policyIsAnnualLeave)
                 {
                     var statutoryDays = await ResolveKsaAnnualEntitlementAsync(
                         employeeCountryCode, emp.JoiningDate, serviceEnd < accrualOn ? serviceEnd : accrualOn, ct);
