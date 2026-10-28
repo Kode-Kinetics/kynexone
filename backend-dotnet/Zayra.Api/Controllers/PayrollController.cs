@@ -5813,7 +5813,11 @@ public partial class PayrollController : ControllerBase
             // S1 — the three EOSB fields the country compliance-config screen has always let a customer
             // edit and which nothing read. The pack decides what it is lawful to honour.
             Policy             = gcc is null ? null : new EosbPolicyOverride(
-                                     gcc.EosbYears1To5Rate, gcc.EosbYearsAbove5Rate, gcc.EosbMinYears),
+                                     gcc.EosbYears1To5Rate, gcc.EosbYearsAbove5Rate, gcc.EosbMinYears,
+                                     Zayra.Api.Infrastructure.CountryPack.Ksa.KsaEosbFloorChecks.IsAcknowledged(
+                                         gcc.EosbBelowFloorAcksJson, Zayra.Api.Infrastructure.CountryPack.Ksa.KsaEosbFloorChecks.Tier1, gcc.EosbYears1To5Rate),
+                                     Zayra.Api.Infrastructure.CountryPack.Ksa.KsaEosbFloorChecks.IsAcknowledged(
+                                         gcc.EosbBelowFloorAcksJson, Zayra.Api.Infrastructure.CountryPack.Ksa.KsaEosbFloorChecks.Tier2, gcc.EosbYearsAbove5Rate)),
         };
 
         var result = await calc.CalculateAsync(input, ct);

@@ -1,3 +1,4 @@
+import type { FloorAcknowledgement, FloorCheck } from '../lib/belowMinimum';
 import client from './client';
 import { setupRowApi } from './orgRows';
 import { type RawImportCommit, toImportResult } from './organization';
@@ -74,6 +75,8 @@ export interface GCCComplianceSetting {
   ramadanReducedHoursPerDay: number;
   /** False once Setup's Remove turned the rule off; payroll and compliance ignore it until it is restored. */
   isActive?: boolean;
+  /** JSON of the acknowledgements held for end-of-service rates set below the Art. 84 floor. */
+  eosbBelowFloorAcksJson?: string | null;
 }
 
 export interface Location {
@@ -194,8 +197,12 @@ export const gccSettingsApi = {
   list: (countryCode?: string) =>
     client.get<GCCComplianceSetting[]>('/api/admin/gcc-settings', { params: { countryCode } }).then(r => r.data),
 
-  upsert: (body: Partial<GCCComplianceSetting> & { countryCode: string }) =>
+  upsert: (body: Partial<GCCComplianceSetting> & { countryCode: string; acknowledgedWarnings?: FloorAcknowledgement[] }) =>
     client.post<GCCComplianceSetting>('/api/admin/gcc-settings', body).then(r => r.data),
+
+  /** Dry run: the end-of-service legal minimums that apply to these rates, below or not. Saves nothing. */
+  floorCheck: (body: { countryCode: string; eosbYears1To5Rate: number; eosbYearsAbove5Rate: number }) =>
+    client.post<{ checks: FloorCheck[] }>('/api/admin/gcc-settings/floor-check', body).then(r => r.data.checks),
 
   /** Setup's Remove / Restore: a country rule is turned off, never erased (payroll history refers to it). */
   removal: setupRowApi('/api/admin/gcc-settings'),
@@ -248,4 +255,29 @@ export const notificationTemplatesApi = {
 export const adminAuditApi = {
   list: (params: { entityType?: string; from?: string; to?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; page: number; pageSize: number; items: AdminAuditLog[] }>('/api/admin/audit-logs', { params }).then(r => r.data),
+};
+
+export interface BelowMinimumItem {
+  source: 'leave_policy' | 'eosb' | 'payroll_rule';
+  code: string;
+  companyId: string | null;
+  companyName: string | null;
+  rule: string;
+  ruleAr: string;
+  subject: string | null;
+  configured: number | null;
+  statutory: number | null;
+  citation: string | null;
+  citationAr: string | null;
+  message: string;
+  messageAr: string | null;
+  acknowledged: boolean;
+  acknowledgedBy: string | null;
+  acknowledgedAtUtc: string | null;
+  note: string | null;
+}
+
+/** "Rules below the legal minimum": every configured rule under a statutory minimum, acknowledged or not. */
+export const belowMinimumApi = {
+  list: () => client.get<{ items: BelowMinimumItem[] }>('/api/compliance/below-minimum').then(r => r.data.items),
 };

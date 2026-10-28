@@ -4,6 +4,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Compliance;
+using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Setup;
@@ -211,6 +214,23 @@ public class SetupSettingsController : ControllerBase
         return Ok(await q.ToListAsync(ct));
     }
 
+    /// <summary>Dry run for the country-rules screen: the end-of-service floors that apply, below or not. Saves nothing.</summary>
+    [HttpPost("api/admin/gcc-settings/floor-check")]
+    [HasPermission("security.manage")]
+    public async Task<IActionResult> EosbFloorCheck([FromBody] EosbFloorCheckRequest req, CancellationToken ct)
+    {
+        var checks = await KsaEosbFloorChecks.ChecksAsync(new StatutoryRuleReader(_db), req.CountryCode,
+            req.EosbYears1To5Rate, req.EosbYearsAbove5Rate, DateOnly.FromDateTime(DateTime.UtcNow), ct);
+        return Ok(new
+        {
+            checks = checks.Select(c => new
+            {
+                c.Warning.Code, c.Warning.Field, c.Label, c.LabelAr, c.Below,
+                c.Warning.StatutoryValue, c.Warning.ConfiguredValue, c.Warning.Citation, c.Warning.Message, c.Warning.MessageAr, c.Warning.CitationAr,
+            }),
+        });
+    }
+
     [HttpPost("api/admin/gcc-settings")]
     [HasPermission("security.manage")]
     public async Task<IActionResult> UpsertGCCSetting([FromBody] GCCSettingRequest req, CancellationToken ct)
@@ -220,6 +240,32 @@ public class SetupSettingsController : ControllerBase
         var uid = GetUserId();
         var existing = await _db.GCCComplianceSettings.FirstOrDefaultAsync(
             x => x.TenantId == tid && x.CountryCode == req.CountryCode, ct);
+
+        // Art. 84 rates below the floor are WARNINGS (owner decision 2026-10-25): saved only with an audited acknowledgement.
+        var floorWarnings = req.EosbEnabled
+            ? (await KsaEosbFloorChecks.ChecksAsync(new StatutoryRuleReader(_db), req.CountryCode,
+                req.EosbYears1To5Rate, req.EosbYearsAbove5Rate, DateOnly.FromDateTime(DateTime.UtcNow), ct))
+                .Where(c => c.Below).Select(c => c.Warning).ToList()
+            : [];
+        var storedAcks = FloorAckStore.Parse(existing?.EosbBelowFloorAcksJson);
+        // Only a rate this request CHANGES is asked about: another panel re-sending an unchanged stored rate must not fail
+        // on a setting it did not touch. Unchanged and unacknowledged stays visible on the "below the legal minimum" list.
+        var asked = floorWarnings.Where(w => existing is null
+            || (w.Field == "eosbYears1To5Rate" ? existing.EosbYears1To5Rate != req.EosbYears1To5Rate : existing.EosbYearsAbove5Rate != req.EosbYearsAbove5Rate)
+            || !existing.EosbEnabled).ToList();
+        var gate = FloorWarningGate.Evaluate(asked, req.AcknowledgedWarnings, w => FloorAckStore.Covering(storedAcks, w) is not null);
+        if (gate.Unacknowledged.Count > 0) return FloorWarningGate.AckRequired(gate.Unacknowledged, HttpContext?.TraceIdentifier);
+        if (gate.ReasonInvalid) return FloorWarningGate.ReasonRequired(HttpContext?.TraceIdentifier);
+        var byName = User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? User.FindFirst("name")?.Value ?? "Admin";
+        var keptAcks = FloorAckStore.Serialize(FloorAckStore.Merge(storedAcks, floorWarnings, gate.Consumed, byName, uid, DateTime.UtcNow));
+        void AuditAcks(Guid entityId)
+        {
+            foreach (var (w, ack) in gate.Consumed)
+                this.RecordChange(_db, tid, existing?.CompanyId, "GCCComplianceSetting", entityId.ToString(), "BelowStatutoryMinimumAcknowledged",
+                    new { code = w.Code, statutoryValue = w.StatutoryValue },
+                    new { code = w.Code, configuredValue = w.ConfiguredValue, statutoryValue = w.StatutoryValue, citation = w.Citation, note = ack.Reason!.Trim(), acknowledgedBy = byName });
+        }
+
         if (existing != null)
         {
             existing.WpsEnabled = req.WpsEnabled; existing.WpsAgentId = req.WpsAgentId ?? string.Empty;
@@ -232,6 +278,8 @@ public class SetupSettingsController : ControllerBase
             existing.EmiratesIdRequired = req.EmiratesIdRequired;
             existing.RamadanHoursEnabled = req.RamadanHoursEnabled; existing.RamadanReducedHoursPerDay = req.RamadanReducedHoursPerDay;
             existing.UpdatedAtUtc = DateTime.UtcNow; existing.UpdatedBy = uid;
+            existing.EosbBelowFloorAcksJson = keptAcks;
+            AuditAcks(existing.Id);
             await _db.SaveChangesAsync(ct);
             return Ok(existing);
         }
@@ -247,8 +295,10 @@ public class SetupSettingsController : ControllerBase
             EmiratesIdRequired = req.EmiratesIdRequired,
             RamadanHoursEnabled = req.RamadanHoursEnabled, RamadanReducedHoursPerDay = req.RamadanReducedHoursPerDay,
             UpdatedBy = uid,
+            EosbBelowFloorAcksJson = keptAcks,
         };
         _db.GCCComplianceSettings.Add(g);
+        AuditAcks(g.Id);
         await _db.SaveChangesAsync(ct);
         return Ok(g);
     }
@@ -652,7 +702,9 @@ public record GCCSettingRequest(
     string WorkWeek, string WeekendDays,
     bool VisaTrackingEnabled, int VisaAlertDays,
     bool IqamaRequired, int IqamaAlertDays, bool EmiratesIdRequired,
-    bool RamadanHoursEnabled, int RamadanReducedHoursPerDay);
+    bool RamadanHoursEnabled, int RamadanReducedHoursPerDay,
+    IReadOnlyCollection<Zayra.Api.Application.Compliance.FloorAcknowledgement>? AcknowledgedWarnings = null);
+public record EosbFloorCheckRequest(string CountryCode, decimal EosbYears1To5Rate, decimal EosbYearsAbove5Rate);
 public record FiscalYearRequest(int Year, DateOnly StartDate, DateOnly EndDate);
 public record LocationRequest(Guid? BranchId, string Code, string NameEn, string? NameAr, string? AddressLine1, string? City, string? CountryCode, string? PostalCode, decimal? Latitude, decimal? Longitude, decimal? GeofenceRadiusMeters, bool IsActive = true);
 public record NotificationTemplateRequest(string Code, string EventType, string Channel, string? SubjectEn, string? SubjectAr, string BodyEn, string? BodyAr, string? Variables, bool IsActive = true);

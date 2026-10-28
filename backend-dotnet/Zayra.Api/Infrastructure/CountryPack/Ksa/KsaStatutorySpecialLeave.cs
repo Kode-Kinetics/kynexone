@@ -168,7 +168,9 @@ public static class KsaStatutorySpecialLeave
     {
         var cc = (countryCode ?? string.Empty).Trim();
         return cc.Equals("SA", StringComparison.OrdinalIgnoreCase)
-            || cc.Equals("SAU", StringComparison.OrdinalIgnoreCase);
+            || cc.Equals("SAU", StringComparison.OrdinalIgnoreCase)
+            // The policy screen's country list says KSA; a policy saved with it is a Saudi policy.
+            || cc.Equals("KSA", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

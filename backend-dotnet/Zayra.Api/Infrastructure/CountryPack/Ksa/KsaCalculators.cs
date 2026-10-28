@@ -317,7 +317,10 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         // StatutoryRateGuard's `eosb.enhancement_days_per_year`); it may not go under them.
         decimal tier1Days = await Days(RuleKeys.EosbTier1DaysPerYear, 15m, eff, ct);
         decimal tier2Days = await Days(RuleKeys.EosbTier2DaysPerYear, 30m, eff, ct);
+        var floorTier1 = tier1Days;
+        var floorTier2 = tier2Days;
         (tier1Days, tier2Days) = ApplyPolicyRates(input.Policy, tier1Days, tier2Days, notices);
+        var belowFloorHonoured = tier1Days < floorTier1 || tier2Days < floorTier2;
 
         // ── S1: the MINIMUM-SERVICE GATE ──────────────────────────────────────────────────────────
         // Deliberately NOT applied as a nil in KSA, and that is the whole point of implementing it.
@@ -359,7 +362,17 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
             bd.Add(new(adjustmentLabel, total - totalBeforeDiscount));
         }
 
-        return new EndOfServiceResult(total, "KSA-LaborLaw-Art84", bd) { Notices = notices, AppliedWageBase = wage, ServiceYearsAwarded = serviceYears };
+        decimal? statutoryTotal = null;
+        if (belowFloorHonoured)
+        {
+            // What the statute alone would pay on the same service, wage and reason, shown beside the lower figure.
+            var statutoryBefore = Math.Round(tier1Years * (floorTier1 / 30m) * wage, 2) + Math.Round(tier2Years * (floorTier2 / 30m) * wage, 2);
+            statutoryTotal = Math.Round(ApplyReasonAdjustment(statutoryBefore, serviceYears, input.TerminationReason, new List<string>()), 2);
+            bd.Add(new($"Configured below the statutory minimum (Art. 84): statutory would be {statutoryTotal.Value:N2}", 0m));
+        }
+
+        return new EndOfServiceResult(total, "KSA-LaborLaw-Art84", bd)
+        { Notices = notices, AppliedWageBase = wage, ServiceYearsAwarded = serviceYears, StatutoryTotalGratuity = statutoryTotal };
 
         async Task<bool> Flag(string key, bool fallback, DateOnly on, CancellationToken token)
             => await StatutoryFlag.ReadAsync(_rules, CountryCodes.Saudi, Jurisdictions.KsaMainland, key, on, fallback, token);
@@ -369,21 +382,22 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
     }
 
     /// <summary>
-    /// Applies the tenant's configured days-per-year rates as an ENHANCEMENT only. A configured rate
-    /// above the statutory floor is honoured — enhancing end-of-service above the Art. 84 minimum is
-    /// lawful and common. A configured rate BELOW the floor is refused and named, because the floor
-    /// is the law and a settings screen is not a way around it.
+    /// Applies the tenant's configured days-per-year rates. A rate above the Art. 84 floor is honoured (an enhancement).
+    /// A rate BELOW the floor is honoured only when an admin acknowledged it at configuration time (owner decision
+    /// 2026-10-25: statutory values are defaults, below-minimum needs an audited acknowledgement); the notice says what
+    /// the law would pay. Without an acknowledgement the floor still applies and the notice names it, so a tenant that
+    /// never configured a below-floor rate is paid exactly as before.
     /// </summary>
     internal static (decimal Tier1, decimal Tier2) ApplyPolicyRates(
         EosbPolicyOverride? policy, decimal floorTier1, decimal floorTier2, List<string> notices)
     {
         if (policy is null) return (floorTier1, floorTier2);
 
-        var t1 = Resolve(policy.Tier1DaysPerYear, floorTier1, "Years 1–5");
-        var t2 = Resolve(policy.Tier2DaysPerYear, floorTier2, "Years 5+");
+        var t1 = Resolve(policy.Tier1DaysPerYear, floorTier1, "Years 1–5", policy.Tier1BelowFloorAcknowledged);
+        var t2 = Resolve(policy.Tier2DaysPerYear, floorTier2, "Years 5+", policy.Tier2BelowFloorAcknowledged);
         return (t1, t2);
 
-        decimal Resolve(decimal? configured, decimal floor, string label)
+        decimal Resolve(decimal? configured, decimal floor, string label, bool acknowledged)
         {
             if (configured is not decimal c || c <= 0m) return floor;   // not configured
             if (c >= floor)
@@ -394,10 +408,17 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
                                 "has been applied. This is a contractual benefit, not a statutory one.");
                 return c;
             }
+            if (acknowledged)
+            {
+                notices.Add($"[ACK-KSA] The configured '{label}' end-of-service rate of {c:0.##} days/year is BELOW the " +
+                            $"KSA Art. 84 statutory minimum of {floor:0.##} days/year. It was acknowledged by an administrator " +
+                            "and has been applied as configured. The employee may claim the difference.");
+                return c;
+            }
             notices.Add($"[CERT-KSA] The configured '{label}' end-of-service rate of {c:0.##} days/year is BELOW the " +
-                        $"KSA Art. 84 statutory floor of {floor:0.##} days/year, so it has been IGNORED and the floor " +
+                        $"KSA Art. 84 statutory floor of {floor:0.##} days/year and has NOT been acknowledged, so it has been IGNORED and the floor " +
                         "applied. Art. 84 awards half a month's wage per year for the first five years and a full " +
-                        "month per year thereafter; that is a minimum, not a default. Correct the configuration.");
+                        "month per year thereafter. Acknowledge the lower rate in Setup (Saudi compliance) to apply it.");
             return floor;
         }
     }
