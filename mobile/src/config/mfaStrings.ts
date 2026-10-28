@@ -59,6 +59,22 @@ export const mfaEn = {
   bannerAction: 'Set up now',
   bannerDismiss: 'Not now',
   alreadyOn: 'Two-step sign-in is already on for your account.',
+  passwordChange: {
+    title: 'Choose your own password',
+    body: 'Your administrator gave you a temporary password. Choose a new one that only you know to finish signing in.',
+    newLabel: 'New password',
+    confirmLabel: 'Confirm new password',
+    tooShort: 'Use at least 10 characters.',
+    mismatch: 'The two passwords do not match.',
+    submit: 'Save and sign in',
+    expired: 'That took too long. Sign in again with the temporary password.',
+    saved: 'Your new password is saved. Sign in with it.',
+    rateLimited: 'Too many tries in a short time. Wait a minute, then try again.',
+    network: "Can't reach KynexOne. Check your connection and try again.",
+    server: 'Something went wrong on our side. Try again in a moment.',
+    rejected: "That password can't be used. Choose a different one.",
+    maybeSaved: "We couldn't confirm your new password was saved. Sign in with your new password; if it doesn't work, use the temporary one.",
+  },
 };
 
 export const mfaAr: typeof mfaEn = {
@@ -118,4 +134,20 @@ export const mfaAr: typeof mfaEn = {
   bannerAction: 'الإعداد الآن',
   bannerDismiss: 'ليس الآن',
   alreadyOn: 'تسجيل الدخول بخطوتين مفعّل بالفعل لحسابك.',
+  passwordChange: {
+    title: 'اختر كلمة المرور الخاصة بك',
+    body: 'أعطاك مسؤول النظام كلمة مرور مؤقتة. اختر كلمة مرور جديدة لا يعرفها أحد غيرك لإكمال تسجيل الدخول.',
+    newLabel: 'كلمة المرور الجديدة',
+    confirmLabel: 'تأكيد كلمة المرور الجديدة',
+    tooShort: 'استخدم 10 أحرف على الأقل.',
+    mismatch: 'كلمتا المرور غير متطابقتين.',
+    submit: 'حفظ وتسجيل الدخول',
+    expired: 'انتهت المهلة. سجّل الدخول مجددًا بكلمة المرور المؤقتة.',
+    saved: 'تم حفظ كلمة المرور الجديدة. سجّل الدخول بها.',
+    rateLimited: 'محاولات كثيرة في وقت قصير. انتظر دقيقة ثم حاول مرة أخرى.',
+    network: 'تعذّر الوصول إلى KynexOne. تحقق من اتصالك وحاول مرة أخرى.',
+    server: 'حدث خطأ من جانبنا. حاول مرة أخرى بعد قليل.',
+    rejected: 'لا يمكن استخدام كلمة المرور هذه. اختر كلمة مرور أخرى.',
+    maybeSaved: 'تعذّر التأكد من حفظ كلمة المرور الجديدة. سجّل الدخول بكلمة المرور الجديدة، وإذا لم تنجح فاستخدم كلمة المرور المؤقتة.',
+  },
 };

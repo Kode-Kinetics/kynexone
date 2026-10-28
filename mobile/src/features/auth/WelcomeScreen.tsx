@@ -124,6 +124,7 @@ export default function WelcomeScreen({ navigation, route }: Props) {
       const outcome = await login(email, password, companyId ?? workspaceArg());
       if (outcome.kind === 'mfaChallenge') navigation.navigate('MfaChallenge', outcome);
       else if (outcome.kind === 'mfaEnrollment') navigation.navigate('MfaEnrollment', outcome);
+      else if (outcome.kind === 'passwordChange') navigation.navigate('PasswordChange', outcome);
       return true;
     } catch {
       // The store raised its own alert for this failure; this screen says what to do next instead.

@@ -540,6 +540,14 @@ export type LoginOutcome =
       expiresInSeconds: number;
       tenantId: string;
       email: string;
+    }
+  | {
+      kind: 'passwordChange';
+      resetToken: string;
+      expiresInSeconds: number;
+      tenantSlug: string;
+      tenantId: string;
+      email: string;
     };
 
 function authenticatedSession(data: any): AuthenticatedSession {
@@ -570,6 +578,11 @@ export const authApi = {
     }
     if (step.kind === 'mfaEnrollment') {
       return { ...step, tenantId: input.tenantSlug ?? '', email: input.email };
+    }
+    if (step.kind === 'passwordChange') {
+      // Prefer the workspace the server named; fall back to the one typed (email-only sign-in).
+      const tenantSlug = step.tenantSlug || input.tenantSlug || '';
+      return { ...step, tenantSlug, tenantId: tenantSlug, email: input.email };
     }
     return { kind: 'authenticated', ...authenticatedSession(step.payload) };
   },

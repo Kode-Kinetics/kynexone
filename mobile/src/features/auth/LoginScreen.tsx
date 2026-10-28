@@ -72,6 +72,7 @@ export default function LoginScreen({ navigation, route }: Props) {
   const mfaEnrolledNotice = useAuthStore((s) => s.mfaEnrolledNotice);
   const consumeMfaEnrolledNotice = useAuthStore((s) => s.consumeMfaEnrolledNotice);
   const [mfaJustEnabled, setMfaJustEnabled] = useState(false);
+  const [notice, setNotice] = useState<'passwordSaved' | 'passwordChangeExpired' | 'passwordMaybeSaved' | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [loginSucceeded, setLoginSucceeded] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(!!route.params?.tenantId);
@@ -110,6 +111,7 @@ export default function LoginScreen({ navigation, route }: Props) {
     }
     if (route?.params?.email) setValue('username', normalizeEmail(route.params.email));
     if (route?.params?.enrollmentComplete) setMfaJustEnabled(true);
+    if (route?.params?.notice) setNotice(route.params.notice);
   }, [route?.params, setValue]);
 
   // Signed-in enrolment ends the session; say why and keep the account filled in.
@@ -142,6 +144,7 @@ export default function LoginScreen({ navigation, route }: Props) {
   const onSubmit = useCallback(
     async (data: LoginFormData) => {
       setFailure(null);
+      setNotice(null);
       const workspace = showWorkspace ? normalizeWorkspace(data.tenantId) : '';
       if (showWorkspace && !workspace) {
         setError('tenantId', { message: 'signin.companyIdRequired' });
@@ -153,6 +156,9 @@ export default function LoginScreen({ navigation, route }: Props) {
           navigation.navigate('MfaChallenge', { ...outcome, justEnrolled: mfaJustEnabled });
         } else if (outcome.kind === 'mfaEnrollment') {
           navigation.navigate('MfaEnrollment', outcome);
+        } else if (outcome.kind === 'passwordChange') {
+          setValue('password', '');
+          navigation.navigate('PasswordChange', outcome);
         } else {
           haptics.success();
           setLoginSucceeded(true);
@@ -269,6 +275,15 @@ export default function LoginScreen({ navigation, route }: Props) {
                     {t('mfa.doneSignInAgain')}
                   </Text>
                 </View>
+              </View>
+            ) : null}
+
+            {notice ? (
+              <View accessibilityRole="alert" style={[styles.banner, { backgroundColor: info.tint }]} testID="login-notice">
+                <Ionicons accessible={false} name="information-circle-outline" size={20} color={info.fg} />
+                <Text style={[theme.typography.subheadline, styles.flex, { color: theme.colors.text }]}>
+                  {t(notice === 'passwordSaved' ? 'mfa.passwordChange.saved' : notice === 'passwordMaybeSaved' ? 'mfa.passwordChange.maybeSaved' : 'mfa.passwordChange.expired')}
+                </Text>
               </View>
             ) : null}
 

@@ -66,10 +66,17 @@ test('malformed MFA replies fail loudly instead of signing in', () => {
   assert.throws(() => classifyLoginResponse({ mfaEnrollmentRequired: true, enrollmentToken: '' }));
 });
 
-test('a temporary password from an administrator is never mistaken for a session', () => {
+test('a temporary password from an administrator becomes a passwordChange step, never a session', () => {
+  assert.deepEqual(
+    classifyLoginResponse({ passwordChangeRequired: true, resetToken: 'tok', expiresInSeconds: 900, tenantSlug: 'acme', message: 'x' }),
+    { kind: 'passwordChange', resetToken: 'tok', expiresInSeconds: 900, tenantSlug: 'acme' },
+  );
+});
+
+test('a passwordChange reply without a reset token is rejected', () => {
   assert.throws(
-    () => classifyLoginResponse({ passwordChangeRequired: true, resetToken: 'secret', expiresInSeconds: 900, tenantSlug: 'acme' }),
-    /temporary password/,
+    () => classifyLoginResponse({ passwordChangeRequired: true, expiresInSeconds: 900, tenantSlug: 'acme' }),
+    /invalid password change/,
   );
 });
 
