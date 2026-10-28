@@ -72,7 +72,7 @@ export default function LoginScreen({ navigation, route }: Props) {
   const mfaEnrolledNotice = useAuthStore((s) => s.mfaEnrolledNotice);
   const consumeMfaEnrolledNotice = useAuthStore((s) => s.consumeMfaEnrolledNotice);
   const [mfaJustEnabled, setMfaJustEnabled] = useState(false);
-  const [notice, setNotice] = useState<'passwordSaved' | 'passwordChangeExpired' | null>(null);
+  const [notice, setNotice] = useState<'passwordSaved' | 'passwordChangeExpired' | 'passwordMaybeSaved' | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [loginSucceeded, setLoginSucceeded] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(!!route.params?.tenantId);
@@ -282,7 +282,7 @@ export default function LoginScreen({ navigation, route }: Props) {
               <View accessibilityRole="alert" style={[styles.banner, { backgroundColor: info.tint }]} testID="login-notice">
                 <Ionicons accessible={false} name="information-circle-outline" size={20} color={info.fg} />
                 <Text style={[theme.typography.subheadline, styles.flex, { color: theme.colors.text }]}>
-                  {t(notice === 'passwordSaved' ? 'mfa.passwordChange.saved' : 'mfa.passwordChange.expired')}
+                  {t(notice === 'passwordSaved' ? 'mfa.passwordChange.saved' : notice === 'passwordMaybeSaved' ? 'mfa.passwordChange.maybeSaved' : 'mfa.passwordChange.expired')}
                 </Text>
               </View>
             ) : null}

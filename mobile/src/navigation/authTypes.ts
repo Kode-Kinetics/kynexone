@@ -5,7 +5,7 @@ export type AuthStackParamList = {
         email?: string;
         enrollmentComplete?: boolean;
         /** Why the person is back here after choosing a password. */
-        notice?: 'passwordSaved' | 'passwordChangeExpired';
+        notice?: 'passwordSaved' | 'passwordChangeExpired' | 'passwordMaybeSaved';
       }
     | undefined;
   ForgotPassword: undefined;

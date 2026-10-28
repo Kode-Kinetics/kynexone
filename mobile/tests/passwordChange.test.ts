@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { afterPasswordSaved, classifyResetFailure, validateNewPassword } from '../src/auth/passwordChange.ts';
+import {
+  afterAmbiguousReset, afterPasswordSaved, classifyResetFailure, validateNewPassword } from '../src/auth/passwordChange.ts';
 
 test('validation: length first, then match', () => {
   assert.equal(validateNewPassword('short', 'short'), 'tooShort');
@@ -25,4 +26,12 @@ test('after the password is saved, a failed or unusable re-login returns to sign
   assert.equal(afterPasswordSaved({ ok: true, kind: 'passwordChange' }), 'signInWithNotice');
   assert.equal(afterPasswordSaved({ ok: true, kind: 'authenticated' }), 'continue');
   assert.equal(afterPasswordSaved({ ok: true, kind: 'mfaChallenge' }), 'continue');
+});
+
+test('an ambiguous reset is settled by signing in with the new password', () => {
+  assert.equal(afterAmbiguousReset({ ok: true, kind: 'authenticated' }), 'continue');
+  assert.equal(afterAmbiguousReset({ ok: true, kind: 'mfaChallenge' }), 'continue');
+  assert.equal(afterAmbiguousReset({ ok: false, status: 401 }), 'stayAndRetry', 'not saved: the token is still good');
+  assert.equal(afterAmbiguousReset({ ok: false }), 'signInMaybeSaved', 'still no answer: try the new password, then the temporary one');
+  assert.equal(afterAmbiguousReset({ ok: false, status: 503 }), 'signInMaybeSaved');
 });

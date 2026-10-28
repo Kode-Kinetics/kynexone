@@ -73,6 +73,7 @@ export const mfaEn = {
     network: "Can't reach KynexOne. Check your connection and try again.",
     server: 'Something went wrong on our side. Try again in a moment.',
     rejected: "That password can't be used. Choose a different one.",
+    maybeSaved: "We couldn't confirm your new password was saved. Sign in with your new password; if it doesn't work, use the temporary one.",
   },
 };
 
@@ -147,5 +148,6 @@ export const mfaAr: typeof mfaEn = {
     network: 'تعذّر الوصول إلى KynexOne. تحقق من اتصالك وحاول مرة أخرى.',
     server: 'حدث خطأ من جانبنا. حاول مرة أخرى بعد قليل.',
     rejected: 'لا يمكن استخدام كلمة المرور هذه. اختر كلمة مرور أخرى.',
+    maybeSaved: 'تعذّر التأكد من حفظ كلمة المرور الجديدة. سجّل الدخول بكلمة المرور الجديدة، وإذا لم تنجح فاستخدم كلمة المرور المؤقتة.',
   },
 };

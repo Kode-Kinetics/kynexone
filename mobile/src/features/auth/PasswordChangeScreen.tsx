@@ -9,6 +9,8 @@ import {
   afterPasswordSaved,
   classifyResetFailure,
   validateNewPassword,
+  afterAmbiguousReset,
+  type SignInProbe,
   type PasswordChangeFieldError,
 } from '@/auth/passwordChange';
 import { GlassSurface, GlassTextField, LiquidBackdrop, LiquidButton, ScreenHero } from '@/components/ui';
@@ -35,7 +37,7 @@ export default function PasswordChangeScreen({ navigation, route }: Props) {
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
 
-  const backToSignIn = (notice: 'passwordSaved' | 'passwordChangeExpired') => {
+  const backToSignIn = (notice: 'passwordSaved' | 'passwordChangeExpired' | 'passwordMaybeSaved') => {
     navigation.navigate('Login', { email, tenantId: tenantId || undefined, notice });
   };
 
@@ -50,28 +52,49 @@ export default function PasswordChangeScreen({ navigation, route }: Props) {
     try {
       await authApi.resetPassword({ token: resetToken, newPassword, tenantSlug });
     } catch (error) {
-      inFlight.current = false;
-      setBusy(false);
       const failure = classifyResetFailure(error);
-      if (failure.kind === 'expired') return backToSignIn('passwordChangeExpired');
-      if (failure.kind === 'rejected') return setServerError(failure.message ?? t('mfa.passwordChange.rejected'));
-      return setServerError(t(`mfa.passwordChange.${failure.reason}`));
+      if (failure.kind === 'expired') { inFlight.current = false; setBusy(false); return backToSignIn('passwordChangeExpired'); }
+      if (failure.kind === 'rejected') { inFlight.current = false; setBusy(false); return setServerError(failure.message ?? t('mfa.passwordChange.rejected')); }
+      if (failure.reason === 'rateLimited') { inFlight.current = false; setBusy(false); return setServerError(t('mfa.passwordChange.rateLimited')); }
+      // No clear answer (network, 5xx): the password may already be saved and the token spent. Sign in with the new
+      // password to find out, rather than ask for a retry that could only fail.
+      let probe: SignInProbe;
+      let outcome: Awaited<ReturnType<typeof login>> | null = null;
+      try {
+        outcome = await login(email, newPassword, tenantId || tenantSlug || undefined);
+        probe = { ok: true, kind: outcome.kind };
+      } catch (signInError) {
+        const status = (signInError as { response?: { status?: number } } | null)?.response?.status;
+        probe = { ok: false, status };
+      }
+      clearError();
+      const next = afterAmbiguousReset(probe);
+      if (next === 'stayAndRetry') {
+        inFlight.current = false;
+        setBusy(false);
+        return setServerError(t(`mfa.passwordChange.${failure.reason}`));
+      }
+      if (next === 'signInMaybeSaved') return backToSignIn('passwordMaybeSaved');
+      return continueAfterSignIn(outcome!);
     }
     // The token is spent from here on: never leave the person on this form.
     try {
       const outcome = await login(email, newPassword, tenantId || tenantSlug || undefined);
-      if (afterPasswordSaved({ ok: true, kind: outcome.kind }) === 'signInWithNotice') {
-        backToSignIn('passwordSaved');
-      } else if (outcome.kind === 'mfaChallenge') {
-        navigation.navigate('MfaChallenge', outcome);
-      } else if (outcome.kind === 'mfaEnrollment') {
-        navigation.navigate('MfaEnrollment', outcome);
-      }
-      // 'authenticated': the store has finished sign-in and the root navigator switches to the app.
+      if (afterPasswordSaved({ ok: true, kind: outcome.kind }) === 'signInWithNotice') backToSignIn('passwordSaved');
+      else continueAfterSignIn(outcome);
     } catch {
       clearError();
       backToSignIn('passwordSaved');
     }
+  };
+
+  /** Onward from a successful sign-in with the new password. The spent form is REPLACED, never left underneath: the
+   * two-step screens' "back to sign-in" must reach sign-in, not a form whose token is gone. */
+  const continueAfterSignIn = (outcome: Awaited<ReturnType<typeof login>>) => {
+    if (outcome.kind === 'mfaChallenge') navigation.replace('MfaChallenge', outcome);
+    else if (outcome.kind === 'mfaEnrollment') navigation.replace('MfaEnrollment', outcome);
+    else if (outcome.kind === 'passwordChange') backToSignIn('passwordSaved');
+    // 'authenticated': the store has finished sign-in and the root navigator switches to the app.
   };
 
   const fieldMessage = fieldError ? t(`mfa.passwordChange.${fieldError}`) : undefined;

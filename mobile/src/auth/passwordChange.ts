@@ -52,3 +52,16 @@ export function afterPasswordSaved(relogin: { ok: true; kind: string } | { ok: f
   // A second passwordChange reply cannot be acted on (new token needs the temp password).
   return relogin.kind === 'passwordChange' ? 'signInWithNotice' : 'continue';
 }
+
+export type SignInProbe = { ok: true; kind: string } | { ok: false; status?: number };
+
+/**
+ * The reset request failed without a clear answer (network, 5xx): the server may have saved the new password and spent
+ * the token. The screen signs in with the new password to find out. Worked → it was saved, carry on; a definite 401 →
+ * it was not, stay and retry (the token is still good); anything else → back to sign-in, telling the person to try the
+ * new password first and the temporary one if that fails.
+ */
+export function afterAmbiguousReset(probe: SignInProbe): 'continue' | 'stayAndRetry' | 'signInMaybeSaved' {
+  if (probe.ok) return probe.kind === 'passwordChange' ? 'stayAndRetry' : 'continue';
+  return probe.status === 401 ? 'stayAndRetry' : 'signInMaybeSaved';
+}
