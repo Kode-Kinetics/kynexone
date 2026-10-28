@@ -61,6 +61,8 @@ public static class EmployeeWarningCodes
     // CD31: the Saudization wage-floor warning is deferred (the threshold is a VERIFY number); no constant until it is verified.
     public const string BasicBelow50Pct = "basic_below_50pct";
     public const string GradeBandOutOfRange = "grade_band_out_of_range";
+    /// <summary>OD8: the chosen grade is not the grade of the chosen designation. A warning with a reason, never permission-gated.</summary>
+    public const string GradeDiffersFromDesignation = "grade_differs_from_designation";
     public const string MobileForeignForCompany = "mobile_foreign_for_company";
     public const string IdPrefixNationalityMismatch = "id_prefix_nationality_mismatch";
     public const string DuplicateProbable = "duplicate_probable";

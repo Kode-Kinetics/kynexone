@@ -13,6 +13,12 @@ namespace Zayra.Api.Infrastructure.Localization;
 public sealed class TransliterationService : ITransliterationService
 {
     private static readonly IReadOnlyDictionary<string, string> PersonNameReadings = BuildPersonNameReadings();
+    private static readonly IReadOnlyDictionary<string, string> Particles = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["bin"] = "بن", ["ibn"] = "بن", ["bint"] = "بنت", ["abu"] = "أبو", ["abo"] = "أبو", ["umm"] = "أم",
+    };
+    private static readonly IReadOnlyDictionary<string, string> Families = BuildFamilies();
+    private static readonly IReadOnlyDictionary<string, string> Attributes = BuildAttributes();
     private static readonly int MaximumPersonNameParts = PersonNameReadings.Keys.Max(key => key.Count(c => c == ' ') + 1);
 
     // Two-letter phonemes, checked before single letters.
@@ -84,11 +90,55 @@ public sealed class TransliterationService : ITransliterationService
                 matchedParts = count;
                 break;
             }
-            if (reading is null) return string.Empty; // no partial result and no letter-by-letter fallback
-            result.Add(reading);
+            if (reading is null && !TryReadStructuredPart(tokens, index, out reading, out matchedParts))
+                return string.Empty; // no partial result and no letter-by-letter fallback
+            result.Add(reading!);
             index += matchedParts;
         }
         return string.Join(' ', result);
+    }
+
+    private static readonly string[] Articles = ["al", "el", "ash", "as", "ad", "ar", "an", "at", "az", "ath", "adh"];
+    private static readonly string[] AbdPrefixes = ["abdul", "abdel", "abdal", "abdur", "abder", "abdu", "abd"];
+
+    /// <summary>
+    /// The conventional parts that are built from a rule rather than listed whole: a family name behind the article
+    /// (Al-Qahtani, AlHarbi), bin / bint / abu before a name, a family name on its own (Khan, Siddiqui), and
+    /// Abdul / Abd al- before one of God's attributes (Abdul Majeed). A part is only read when every word of it is in
+    /// the curated lists; anything else still refuses the whole name.
+    /// </summary>
+    private static bool TryReadStructuredPart(string[] tokens, int index, out string? reading, out int consumed)
+    {
+        reading = null; consumed = 0;
+        var word = tokens[index].ToLowerInvariant();
+        var hasNext = index + 1 < tokens.Length;
+
+        // bin / ibn / bint / abu / umm + the next word (which must itself be read, so a dangling particle refuses).
+        if (hasNext && Particles.TryGetValue(word, out var particle)) { reading = particle; consumed = 1; return true; }
+
+        // Abdul / Abd (al) + an attribute: one word (abdulmajeed) or two or three (abdul majeed, abd al majeed).
+        foreach (var prefix in AbdPrefixes)
+        {
+            if (!word.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            var rest = word[prefix.Length..];
+            if (rest.Length > 0 && Attributes.TryGetValue(rest, out var joined)) { reading = "عبد ال" + joined; consumed = 1; return true; }
+            if (rest.Length > 0) continue;
+            var at = index + 1;
+            if (at < tokens.Length && Array.IndexOf(Articles, tokens[at].ToLowerInvariant()) >= 0 && at + 1 < tokens.Length) at++;
+            if (at < tokens.Length && Attributes.TryGetValue(tokens[at].ToLowerInvariant(), out var attribute))
+            { reading = "عبد ال" + attribute; consumed = at - index + 1; return true; }
+        }
+
+        // The article + a family name, as two words (Al Harbi) or one (AlHarbi).
+        if (hasNext && Array.IndexOf(Articles, word) >= 0 && Families.TryGetValue(tokens[index + 1].ToLowerInvariant(), out var family))
+        { reading = "ال" + family; consumed = 2; return true; }
+        foreach (var article in Articles)
+            if (word.Length > article.Length + 2 && word.StartsWith(article, StringComparison.Ordinal) && Families.TryGetValue(word[article.Length..], out var joinedFamily))
+            { reading = "ال" + joinedFamily; consumed = 1; return true; }
+
+        // A family name on its own (no article).
+        if (Families.TryGetValue(word, out var bare)) { reading = bare; consumed = 1; return true; }
+        return false;
     }
 
     /// <summary>Curated wording only (OrganizationLabelArabic); "" when any word is not covered. Never phonetic.</summary>
@@ -155,6 +205,98 @@ public sealed class TransliterationService : ITransliterationService
         Add("صفية", "safiya", "safiyyah");
         Add("نور", "noor", "nur");
 
+        // More common given names. TryAdd keeps a name that is already listed above untouched.
+        void AddNew(string arabic, params string[] aliases) { foreach (var a in aliases) names.TryAdd(a, arabic); }
+        AddNew("سعود", "saud", "soud");
+        AddNew("سلمان", "salman");
+        AddNew("سلطان", "sultan");
+        AddNew("تركي", "turki", "turky");
+        AddNew("فهد", "fahad", "fahd");
+        AddNew("نواف", "nawaf");
+        AddNew("مشعل", "mishal", "meshal", "mishaal");
+        AddNew("بدر", "badr", "bader");
+        AddNew("سعد", "saad", "sad");
+        AddNew("ماجد", "majed", "majid");
+        AddNew("حمد", "hamad");
+        AddNew("وليد", "waleed", "walid");
+        AddNew("طلال", "talal");
+        AddNew("بندر", "bandar");
+        AddNew("نايف", "naif", "nayef", "nayif");
+        AddNew("منصور", "mansour", "mansoor", "mansur");
+        AddNew("مبارك", "mubarak");
+        AddNew("هشام", "hisham", "hesham");
+        AddNew("عمران", "imran");
+        AddNew("زيد", "zaid", "zayd");
+        AddNew("جابر", "jaber", "jabir");
+        AddNew("عادل", "adel", "adil");
+        AddNew("هاني", "hani", "hany");
+        AddNew("كريم", "karim", "kareem");
+        AddNew("نبيل", "nabil", "nabeel");
+        AddNew("سمير", "samir", "sameer");
+        AddNew("سامي", "sami", "samy");
+        AddNew("رامي", "rami", "ramy");
+        AddNew("زياد", "ziad", "ziyad");
+        AddNew("عمرو", "amr", "amro");
+        AddNew("مازن", "mazen", "mazin");
+        AddNew("جمال", "jamal");
+        AddNew("كمال", "kamal");
+        AddNew("نادر", "nader", "nadir");
+        AddNew("وائل", "wael");
+        AddNew("أيمن", "ayman");
+        AddNew("عدنان", "adnan");
+        AddNew("ياسين", "yasin", "yaseen");
+        AddNew("إدريس", "idris", "idrees");
+        AddNew("سليمان", "sulaiman", "sulayman", "suleiman", "sulaimaan");
+        AddNew("داود", "dawood", "daoud", "daud");
+        AddNew("هارون", "harun", "haroon");
+        AddNew("أيوب", "ayub", "ayyub", "ayoub");
+        AddNew("زكريا", "zakaria", "zakariya", "zakariyya");
+        AddNew("إلياس", "ilyas", "elias");
+        AddNew("جبريل", "jibril", "jibreel");
+        AddNew("رضوان", "ridwan", "rizwan", "radwan");
+        AddNew("شاهد", "shahid");
+        AddNew("عرفان", "irfan");
+        AddNew("نديم", "nadeem");
+        AddNew("ساجد", "sajid");
+        AddNew("زبير", "zubair", "zubayr");
+        AddNew("عارف", "arif", "aarif");
+        AddNew("فاروق", "farooq", "faruq");
+        AddNew("كاشف", "kashif");
+        AddNew("شعيب", "shoaib", "shuaib", "shuayb");
+        AddNew("جنيد", "junaid", "junayd");
+        AddNew("آصف", "asif");
+        AddNew("عثمان", "usman", "uthman", "othman", "osman");
+        AddNew("بكر", "bakr", "bakar", "abubakr");
+        AddNew("محمود", "mahmood");
+        AddNew("نورة", "noura", "nora", "norah", "nourah");
+        AddNew("سارة", "sara", "sarah");
+        AddNew("لمى", "lama");
+        AddNew("ريم", "reem", "rim");
+        AddNew("دينا", "dina", "deena");
+        AddNew("هند", "hind");
+        AddNew("لينا", "lina", "leena");
+        AddNew("رنا", "rana");
+        AddNew("منى", "mona", "muna");
+        AddNew("ندى", "nada");
+        AddNew("أمل", "amal");
+        AddNew("عبير", "abeer");
+        AddNew("آية", "aya");
+        AddNew("جمانة", "jumana");
+        AddNew("رهف", "rahaf");
+        AddNew("غادة", "ghada");
+        AddNew("شهد", "shahd");
+        AddNew("رزان", "razan");
+        AddNew("هيا", "haya");
+        AddNew("مها", "maha");
+        AddNew("سلوى", "salwa");
+        AddNew("حليمة", "halima", "halimah");
+        AddNew("زهراء", "zahra", "zahraa");
+        AddNew("آمنة", "amna", "aamna", "amnah");
+        AddNew("هاجر", "hajar", "hajer");
+        AddNew("إيمان", "iman", "eman");
+        AddNew("سعدية", "sadia", "saadia");
+        AddNew("تسنيم", "tasneem", "tasnim");
+
         // Compound aliases are whole names. Their fragments (Abd/Abdul/Al/Bin) are never guessed.
         Add("عبد الله", "abdullah", "abdallah", "abd allah", "abd ullah");
         Add("عبد الرحمن", "abdulrahman", "abdurrahman", "abdelrahman", "abderrahman",
@@ -169,6 +311,139 @@ public sealed class TransliterationService : ITransliterationService
         Add("عبد الوهاب", "abdulwahab", "abdelwahab", "abdul wahab", "abdel wahab", "abd al wahab");
         Add("نور الدين", "nooruddin", "nuruddin", "noureddine", "noor ud din", "nur ud din", "noor al din", "nur al din");
         Add("صلاح الدين", "salahuddin", "salahuddeen", "salah ud din", "salah al din");
+        return names;
+    }
+
+    private static IReadOnlyDictionary<string, string> BuildFamilies()
+    {
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
+        void Add(string arabic, params string[] aliases) { foreach (var a in aliases) names.TryAdd(a, arabic); }
+        // Gulf and Arabian tribal / family names (written with the article when it is present: ال + this).
+        Add("قحطاني", "qahtani", "qahtany", "kahtani", "qahtanee");
+        Add("حربي", "harbi", "harby");
+        Add("عتيبي", "otaibi", "utaibi", "otaiby", "otaibe", "oteibi", "utaybi");
+        Add("دوسري", "dosari", "dosary", "dossari", "dawsari");
+        Add("شهري", "shehri", "shahri", "shehry", "shahry");
+        Add("غامدي", "ghamdi", "ghamidi", "ghamdy");
+        Add("زهراني", "zahrani", "zahrany");
+        Add("شمري", "shammari", "shamari", "shammary");
+        Add("مطيري", "mutairi", "mutairy", "mutayri", "mtairi");
+        Add("عنزي", "anazi", "enezi", "anzi", "aniza");
+        Add("سبيعي", "subaie", "subaiy", "subaie", "sebaie", "subai");
+        Add("يامي", "yami", "yamy");
+        Add("جهني", "juhani", "juhany", "johani");
+        Add("بلوي", "balawi", "balawy");
+        Add("حارثي", "harthi", "harithi", "harthy");
+        Add("عسيري", "asiri", "assiri", "asiry");
+        Add("حازمي", "hazmi", "hazmy");
+        Add("مالكي", "maliki", "malki", "malky");
+        Add("سلمي", "sulami", "solami", "sulamy");
+        Add("تميمي", "tamimi", "tamimy", "temimi");
+        Add("رشيدي", "rashidi", "rasheedi");
+        Add("عمري", "amri", "omari", "amry");
+        Add("شمراني", "shamrani", "shamrany");
+        Add("أحمدي", "ahmadi", "ahmedi");
+        Add("مصري", "masri", "misri", "masry");
+        Add("خطيب", "khatib", "khateeb");
+        Add("نجار", "najjar", "najar");
+        Add("حكيم", "hakim", "hakeem");
+        Add("شريف", "sharif", "shareef");
+        Add("حبيب", "habib", "habeeb");
+        Add("حمدان", "hamdan");
+        Add("جابر", "jaber", "jabir");
+        Add("هاجري", "hajri", "hajry");
+        Add("غانم", "ghanem", "ghanim");
+        Add("منصور", "mansour", "mansoor", "mansur");
+        Add("سعود", "saud", "soud");
+        // South Asian family names in their conventional Arabic spelling.
+        Add("خان", "khan");
+        Add("شاه", "shah");
+        Add("ملك", "malik");
+        Add("شيخ", "sheikh", "shaikh", "shiekh", "sheik");
+        Add("صديقي", "siddiqui", "siddiqi", "sidiqui", "siddique");
+        Add("قريشي", "qureshi", "quraishi", "qurashi", "koreshi");
+        Add("أنصاري", "ansari", "ansary");
+        Add("هاشمي", "hashmi", "hashimi");
+        Add("سيد", "syed", "sayed", "sayyid");
+        Add("رضا", "raza", "reza", "rida");
+        Add("إقبال", "iqbal");
+        Add("أكرم", "akram");
+        Add("نواز", "nawaz");
+        Add("ميرزا", "mirza");
+        Add("فاروقي", "farooqui", "faruqi", "farooqi");
+        Add("عثماني", "usmani", "osmani", "uthmani");
+        Add("نقوي", "naqvi", "naqavi");
+        Add("رضوي", "rizvi", "rizwi");
+        Add("زيدي", "zaidi", "zaydi");
+        Add("جعفري", "jafri", "jaafari", "jafry");
+        Add("عباسي", "abbasi", "abbassi");
+        Add("رحمن", "rahman", "rehman");
+        Add("رحيم", "rahim", "raheem");
+        Add("إسلام", "islam");
+        Add("أختر", "akhtar", "akhter");
+        Add("أسلم", "aslam");
+        Add("أشرف", "ashraf");
+        Add("أعظم", "azam", "azim");
+        Add("بشير", "bashir", "basheer");
+        Add("غلام", "ghulam", "gulam");
+        Add("حيدر", "haider", "hyder", "hayder");
+        Add("جميل", "jamil", "jameel");
+        Add("لطيف", "latif", "lateef");
+        Add("قاسم", "qasim", "kasim", "qassim");
+        Add("رفيق", "rafiq", "rafique", "rafeeq");
+        Add("شفيق", "shafiq", "shafique", "shafeeq");
+        Add("طاهر", "tahir", "taher");
+        Add("يعقوب", "yaqoob", "yaqub", "yacoob", "yakub");
+        Add("ظفر", "zafar");
+        Add("زاهد", "zahid", "zaheed");
+        Add("ضياء", "zia", "diya");
+        return names;
+    }
+
+    private static IReadOnlyDictionary<string, string> BuildAttributes()
+    {
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
+        void Add(string arabic, params string[] aliases) { foreach (var a in aliases) names.TryAdd(a, arabic); }
+        // The part after "عبد ال": Abdul + this. Written as one word each (the ال is added by the caller).
+        Add("رحمن", "rahman", "rehman");
+        Add("رحيم", "rahim", "raheem", "rahiem");
+        Add("عزيز", "aziz", "azeez");
+        Add("كريم", "karim", "kareem");
+        Add("ملك", "malik");
+        Add("قادر", "qadir", "qader", "kadir", "qadeer");
+        Add("لطيف", "latif", "lateef");
+        Add("وهاب", "wahab", "wahhab");
+        Add("حميد", "hamid", "hameed");
+        Add("مجيد", "majid", "majeed");
+        Add("سلام", "salam", "salaam");
+        Add("غني", "ghani", "ghany");
+        Add("جبار", "jabbar", "jabar");
+        Add("صمد", "samad");
+        Add("رزاق", "razzaq", "razaq", "razak", "razzak");
+        Add("حكيم", "hakim", "hakeem");
+        Add("باسط", "basit", "basid");
+        Add("رؤوف", "rauf", "raouf", "raof", "rauff");
+        Add("ولي", "wali", "waly");
+        Add("ناصر", "nasser", "nasir", "naser");
+        Add("باري", "bari");
+        Add("غفار", "ghaffar", "ghafar");
+        Add("رشيد", "rashid", "rasheed");
+        Add("حليم", "halim", "haleem");
+        Add("هادي", "hadi");
+        Add("منان", "mannan");
+        Add("محسن", "muhsin", "mohsin");
+        Add("كبير", "kabir", "kabeer");
+        Add("قيوم", "qayyum", "qayum");
+        Add("ودود", "wadud");
+        Add("فتاح", "fattah", "fatah");
+        Add("حفيظ", "hafiz", "hafeez");
+        Add("جليل", "jalil", "jaleel");
+        Add("خالق", "khaliq", "khaleq");
+        Add("واحد", "wahid", "waheed");
+        Add("منعم", "monem", "moneim", "munim", "mun'im");
+        Add("سميع", "samee", "sami");
+        Add("بصير", "baseer", "basir");
+        Add("مطلب", "muttalib", "mutalib");
         return names;
     }
 

@@ -1865,8 +1865,8 @@ public class EmployeeManagementService : IEmployeeManagementService
                 .Select(x => new { x.GradeId, x.TitleEn })
                 .FirstOrDefaultAsync(cancellationToken);
             if (designation is null) throw new InvalidOperationException("Selected designation is not active.");
-            if (designation.GradeId is not null && employee.GradeId is not null && designation.GradeId != employee.GradeId)
-                throw new InvalidOperationException($"Designation '{designation.TitleEn}' is eligible only for its configured grade.");
+            // OD8: a grade other than the designation's is an acknowledged exception (the input guard asks for the reason),
+            // not a refusal; the grade the caller chose is kept.
             employee.GradeId ??= designation.GradeId;
         }
 

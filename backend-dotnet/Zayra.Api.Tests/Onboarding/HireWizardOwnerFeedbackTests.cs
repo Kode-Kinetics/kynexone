@@ -190,7 +190,7 @@ public class HireWizardOwnerFeedbackTests : IClassFixture<HireIntegrityHttpFixtu
         r.StatusCode.Should().Be(HttpStatusCode.OK, await r.Content.ReadAsStringAsync());
         var list = (await Json(r)).EnumerateArray().ToList();
         list.Count.Should().BeGreaterThanOrEqualTo(245);
-        list.Should().OnlyContain(e => e.TryGetProperty("iso2", out _) && e.TryGetProperty("nameEn", out _) && e.TryGetProperty("nameAr", out _));
+        list.All(e => e.TryGetProperty("iso2", out _) && e.TryGetProperty("nameEn", out _) && e.TryGetProperty("nameAr", out _)).Should().BeTrue();
         list.Select(e => e.GetProperty("iso2").GetString()).Should().OnlyHaveUniqueItems();
         list.Should().OnlyContain(e => e.GetProperty("nameEn").GetString()!.Length > 1 && e.GetProperty("nameAr").GetString()!.Length > 1);
     }
