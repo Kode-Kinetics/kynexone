@@ -274,6 +274,20 @@ public class HireWizardOwnerFeedbackTests : IClassFixture<HireIntegrityHttpFixtu
         await Assert.ThrowsAsync<Zayra.Api.Application.Employees.Onboarding.EmployeeWarningsRequireAckException>(() => guard.EnforceActivationAsync(t, id, Ctx(t), default));
     }
 
+    [Theory]
+    [InlineData("Offboarded")]
+    [InlineData("Suspended")]
+    [InlineData("Terminated")]
+    public async Task Reinstatement_OfSomeoneWithAMismatchedPair_RaisesNoGradeWarning_ButFirstActivationStillDoes(string status)
+    {
+        var (db, t, id, _, _, _) = await GuardWorldAsync();
+        await using var _ = db;
+        await Assert.ThrowsAsync<Zayra.Api.Application.Employees.Onboarding.EmployeeWarningsRequireAckException>(() => GuardFor(db).EnforceActivationAsync(t, id, Ctx(t), default));
+        (await db.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == id)).Status = status;
+        await db.SaveChangesAsync();
+        await GuardFor(db).EnforceActivationAsync(t, id, Ctx(t), default);
+    }
+
     [Fact]
     public async Task ActivationGuard_AShortReasonIsRefused_AndTheDesignationsOwnGradeNeedsNothing()
     {
