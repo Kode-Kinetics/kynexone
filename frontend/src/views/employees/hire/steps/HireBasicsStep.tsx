@@ -21,8 +21,10 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
   const designations = inCompany(lookups.designations.filter(d => d.isActive));
   const departments = lookups.departments.filter(d => d.isActive && (!d.companyId || !form.companyId || d.companyId === form.companyId));
   const branches = lookups.branches.filter(b => b.isActive && (!form.companyId || b.companyId === form.companyId));
-  const grades = lookups.grades.filter(g => g.isActive);
-  const domain = company?.emailDomain?.trim();
+  // OD8: any active grade of the employing company (or a shared one) can be chosen, whatever the designation's own grade is.
+  const grades = inCompany(lookups.grades.filter(g => g.isActive));
+  const designationGrade = lookups.designations.find(d => d.id === form.designationId)?.gradeId;
+  const gradeDiffers = !!designationGrade && !!form.gradeId && form.gradeId !== designationGrade;
   const select = 'input w-full min-w-0 aria-[invalid=true]:border-red-500';
 
   const onDesignation = (id: string) => {
@@ -55,7 +57,7 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
           </select>
         )}
       </FieldShell>
-      <FieldShell field="gradeId" label={t('Grade')} error={errorFor('gradeId')}>
+      <FieldShell field="gradeId" label={t('Grade')} error={errorFor('gradeId')} hint={gradeDiffers ? t('This grade differs from the designation’s grade. You will be asked for a reason.') : undefined}>
         {p => (
           <select {...p} value={form.gradeId} onChange={e => { set('gradeId', e.target.value); blur('gradeId'); }} onBlur={() => blur('gradeId')} className={select}>
             <option value="">{t('Not chosen')}</option>
@@ -94,13 +96,8 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
         {!form.manualCode && <button type="button" className="mt-1 text-xs font-medium text-sapphire underline" onClick={() => set('manualCode', true)}>{t('Set manually')}</button>}
       </div>
       <FieldShell field="workEmail" label={t('Work email')} error={errorFor('workEmail')}
-        hint={domain ? t('The company domain @{domain} is added. KynexOne never creates the mailbox.', { domain }) : t('The company has no email domain yet.')}>
-        {p => (
-          <div className="flex items-center gap-1" dir="ltr">
-            <input {...p} value={form.workEmail} onChange={e => set('workEmail', e.target.value)} onBlur={() => blur('workEmail')} className={`${inputClass} text-start`} />
-            {domain && <span className="shrink-0 text-sm text-slate-500">@{domain}</span>}
-          </div>
-        )}
+        hint={t('The employee signs in to Self-Service with this address. Enter the full address IT issued, for example name@company.com.')}>
+        {p => <input {...p} type="email" inputMode="email" dir="ltr" autoComplete="off" value={form.workEmail} onChange={e => set('workEmail', e.target.value)} onBlur={() => blur('workEmail')} className={`${inputClass} text-start`} />}
       </FieldShell>
     </div>
   );

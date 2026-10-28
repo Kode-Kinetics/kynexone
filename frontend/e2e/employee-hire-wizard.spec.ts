@@ -113,12 +113,13 @@ test.describe('quick hire (desktop)', () => {
     await expect(code).not.toHaveAttribute('readonly', '');
   });
 
-  test('G02/AC9: grade that conflicts with the designation shows the conflict', async ({ page }) => {
+  test('G02/OD8: a grade other than the designation\'s is allowed, with a hint that a reason will be asked', async ({ page }) => {
     await bootHire(page);
     await basics(page);
     await page.getByLabel('Grade').selectOption({ label: 'G6 - Senior' });
     await page.getByLabel('Grade').blur();
-    await expect(page.locator('#hire-gradeId-error')).toHaveText('This designation belongs to grade G5.');
+    await expect(page.locator('#hire-gradeId-error')).toHaveCount(0);
+    await expect(page.locator('#hire-gradeId-hint')).toHaveText('This grade differs from the designation’s grade. You will be asked for a reason.');
   });
 
   test('G01/AC7: a start date beyond today+2y is an inline error (EN and AR); a date 40 days back is not an error', async ({ page }) => {

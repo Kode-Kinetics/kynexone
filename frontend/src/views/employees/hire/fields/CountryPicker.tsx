@@ -23,7 +23,7 @@ export function CountryPicker({ field, label, value, onSelect, onFreeText, onBlu
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const text = query ?? (selected ? nameOf(selected) : value.startsWith('~') ? value.slice(1) : '');
-  const matches = useMemo(() => searchCountries(options, query ?? '', locale).slice(0, 60), [options, query, locale]);
+  const matches = useMemo(() => searchCountries(options, query ?? '', locale), [options, query, locale]);
   const wrap = useRef<HTMLDivElement>(null);
 
   const choose = (o: CountryOption) => { setQuery(null); setOpen(false); onSelect(o.code); };

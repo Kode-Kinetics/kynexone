@@ -12,7 +12,7 @@ import { useTenantSettings } from '@/src/contexts/TenantSettingsContext';
 import { branchesApi, companiesApi, departmentsApi, designationsApi, gradesApi } from '@/src/api/organization';
 import { employeesApi } from '@/src/api/employees';
 import { employeeFieldCatalogApi } from '@/src/api/employeeFieldCatalog';
-import { employeeHireApi, type ApiNationality } from '@/src/api/employeeHire';
+import { employeeHireApi } from '@/src/api/employeeHire';
 import { EMPTY_EMPLOYEE_REFERENCE_LISTS, loadEmployeeReferenceLists } from '@/src/hooks/useReferenceLists';
 import { createAutosave, type AutosaveState } from '@/src/lib/hire/autosave';
 import { dateLocale } from '@/src/lib/format';
@@ -21,7 +21,7 @@ import { emptyHireForm, hasContent, type HireForm } from '@/src/lib/hire/hireFor
 import { stepOf, validateHire, type FieldIssue } from '@/src/lib/hire/hireValidation';
 import { draftLoadProblem, formFromEmployee, isResumable } from '@/src/lib/hire/draftHydrate';
 import type { SaBank } from '@/src/lib/hire/iban';
-import { defaultIdType, type CountryOption } from '@/src/lib/hire/nationality';
+import { countryOptionsFromApi, defaultIdType, type CountryOption } from '@/src/lib/hire/nationality';
 import { buildCreateRequest, newIdempotencyKey, type AcknowledgedWarning } from '@/src/lib/hire/payload';
 import { parseHireProblem, serverFieldIssue, type HireProblem, type ServerWarning } from '@/src/lib/hire/problem';
 import { serverFieldToForm } from '@/src/lib/hire/serverFields';
@@ -148,7 +148,8 @@ export function HireWizard() {
     }).catch(() => { if (!cancelled) { setLoadFailed(true); setLoaded(true); } });
     employeeHireApi.saBanks().then(list => { if (!cancelled && list) setBanks(list); });
     employeeHireApi.nationalities().then(list => {
-      if (!cancelled && list?.length) { const opts = list.map((n: ApiNationality) => ({ code: n.code, nameEn: n.nameEn, nameAr: n.nameAr })); nationalityOptions.current = opts; setCountryOptions(opts); }
+      const opts = countryOptionsFromApi(list as unknown as Array<Record<string, unknown>> | null);
+      if (!cancelled && opts.length) { nationalityOptions.current = opts; setCountryOptions(opts); }
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

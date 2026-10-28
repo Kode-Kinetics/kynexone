@@ -75,10 +75,12 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
     return () => { live = false; };
   }, [templateId, form.nationalityCode, form.startDate]);
   const raised = checklist && checklist.templateId === templateId ? checklist.tasks : null;
-  const warnings = reviewWarnings(form, { today });
+  const designationGradeId = lookups.designations.find(d => d.id === form.designationId)?.gradeId;
+  const designationGrade = designationGradeId ? { gradeId: designationGradeId, gradeCode: lookups.grades.find(g => g.id === designationGradeId)?.code ?? '' } : undefined;
+  const warnings = reviewWarnings(form, { today, designationGrade });
   if (grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary)) warnings.push('grade_band_out_of_range');
   const bank = companyCountry === 'SA' ? bankNameFor(form.iban, banks, locale) : '';
-  const workEmail = composeWorkEmail(form.workEmail, company?.emailDomain || undefined) ?? '';
+  const workEmail = composeWorkEmail(form.workEmail) ?? '';
   const missing = [
     ...activationNeeds(form).map(n => t(n.key === 'startDate' ? 'Start date' : 'Designation or grade')),
     !form.nationalityCode && t('Nationality'), !form.idNumber.trim() && t('ID number'), !form.iban.trim() && t('IBAN'), !form.arabicName.trim() && t('Arabic full name'), !form.dob && t('Date of birth'),

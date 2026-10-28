@@ -92,6 +92,7 @@ export const SERVER_CODE_KEYS: Record<string, string> = {
   salary_below_wage_floor: 'The salary is below the wage floor.',
   basic_below_50pct: 'Basic salary is under 50% of the total package.',
   grade_band_out_of_range: 'The basic salary is outside the pay band of the grade.',
+  grade_differs_from_designation: 'This grade is not the grade of the chosen designation.',
   mobile_foreign_for_company: 'The mobile number is from a different country than the company.',
   duplicate_probable: 'This name matches someone already on file.',
 };

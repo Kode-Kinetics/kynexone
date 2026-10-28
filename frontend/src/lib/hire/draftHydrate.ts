@@ -58,9 +58,7 @@ function nationalityOf(d: EmployeeDetail, options?: readonly CountryOption[]): s
  */
 export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireForm {
   const f = emptyHireForm();
-  const domain = (ctx.emailDomain ?? '').trim().toLowerCase();
   const work = text(d.workEmail).trim();
-  const workLocal = work && domain && work.toLowerCase().endsWith(`@${domain}`) ? work.slice(0, work.length - domain.length - 1) : work;
 
   const day = (v: unknown) => normaliseDate(v, ctx.timeZone);
   const identities: Array<[IdType, string, string | undefined]> = [
@@ -82,7 +80,7 @@ export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireFo
     ...f,
     englishName: text(d.englishName) || text(d.fullName), companyId: text(d.companyId), startDate: day(d.joiningDate), designationId: text(d.designationId), gradeId: text(d.gradeId),
     branchId: text(d.branchId), departmentId: text(d.departmentId), managerId: d.managerEmployeeId ? String(d.managerEmployeeId) : '',
-    workEmail: workLocal, arabicName: text(d.arabicName), preferredName: text(d.preferredName), gender: text(d.gender), maritalStatus: text(d.maritalStatus),
+    workEmail: work, arabicName: text(d.arabicName), preferredName: text(d.preferredName), gender: text(d.gender), maritalStatus: text(d.maritalStatus),
     nationalityCode: nationalityOf(d, ctx.countryOptions), dob: day(d.dateOfBirth), mobileCountry, mobileNational, personalEmail: text(d.personalEmail),
     employmentType: text(d.employmentType), contractType: text(d.contractType),
     contractEndDate: day((d as { contractEndDate?: string }).contractEndDate), probationEndDate: day(d.probationEndDate), workLocation: text(d.workLocation),
