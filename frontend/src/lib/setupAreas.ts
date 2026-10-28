@@ -185,7 +185,11 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
   {
     id: 'onboarding', label: 'Onboarding and confirmation',
     description: 'Shared onboarding checklists and tasks; probation and confirmation remain in Performance.',
-    destinations: [moduleSetting('onboarding', 'onboardingChecklists', 'tenant', navigation('templates-tasks', 'Templates and tasks', 0, 0))],
+    destinations: [
+      moduleSetting('onboarding', 'onboardingChecklists', 'tenant', navigation('templates-tasks', 'Templates and tasks', 0, 0)),
+      moduleSetting('onboarding', 'onboardingChecklistTemplates', 'company', navigation('templates-tasks', 'Templates and tasks', 0, 1)),
+      moduleSetting('onboarding', 'hireTemplates', 'company', navigation('templates-tasks', 'Templates and tasks', 0, 2)),
+    ],
   },
   {
     id: 'time', label: 'Time and attendance',

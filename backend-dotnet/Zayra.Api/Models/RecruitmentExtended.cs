@@ -153,7 +153,7 @@ public class OfferApproval : ITenantOwned
 
 // ── Onboarding Checklist (Template) ───────────────────────────────────────────
 
-public class OnboardingChecklist : ITenantOwned
+public class OnboardingChecklist : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
@@ -166,6 +166,12 @@ public class OnboardingChecklist : ITenantOwned
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public bool IsDeleted { get; set; }
+
+    // P3: checklists belong to a company (null = the legacy tenant-wide checklist, still listed to everyone).
+    public Guid? CompanyId { get; set; }
+    public string? NameAr { get; set; }
+    /// <summary>The checklist new hires of the company get when no hire template names one. At most one per company.</summary>
+    public bool IsDefault { get; set; }
 }
 
 public class OnboardingChecklistTemplateTask : ITenantOwned
@@ -184,6 +190,17 @@ public class OnboardingChecklistTemplateTask : ITenantOwned
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
+
+    // P3: who owns the task, whether it can hold up activation (CD4: never by default), and who it applies to.
+    public string? TitleAr { get; set; }
+    public string? DescriptionAr { get; set; }
+    public string OwnerRole { get; set; } = OnboardingOwnerRoles.Hr;
+    public bool BlocksActivation { get; set; }
+    /// <summary>any | saudi | gcc | expat. The hire's derived nationality class decides which tasks are generated.</summary>
+    public string ConditionNationalityClass { get; set; } = "any";
+    public string? LinkSection { get; set; }
+    public bool IsStatutory { get; set; }
+    public bool EvidenceRequired { get; set; }
 }
 
 // ── Onboarding Task (instance) ────────────────────────────────────────────────
@@ -208,6 +225,36 @@ public class OnboardingTask : ITenantOwned
     public bool IsMandatory { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? UpdatedAtUtc { get; set; }
+
+    // P3: a task is a COPY of its template task (editing the template never changes it); TemplateTaskId is traceability only.
+    public Guid? TemplateTaskId { get; set; }
+    public string OwnerRole { get; set; } = OnboardingOwnerRoles.Hr;
+    public bool BlocksActivation { get; set; }
+    public string? TitleAr { get; set; }
+    public string? LinkSection { get; set; }
+    public bool IsStatutory { get; set; }
+    public bool EvidenceRequired { get; set; }
+    /// <summary>Days from the joining date, copied from the template so the due date can be re-based when the joining date changes.</summary>
+    public int? DueOffsetDays { get; set; }
+    public string? DueOverrideReason { get; set; }
+    public Guid? EvidenceDocumentId { get; set; }
+    public Guid? CompletedBy { get; set; }
+    /// <summary>manual | template | offer</summary>
+    public string Source { get; set; } = "manual";
+}
+
+public static class OnboardingOwnerRoles
+{
+    public const string Hr = "HR";
+    public const string It = "IT";
+    public const string Manager = "Manager";
+    public const string Payroll = "Payroll";
+    public const string Finance = "Finance";
+    public const string Admin = "Admin";
+    public const string Gov = "Gov";
+    public const string Employee = "Employee";
+    public static readonly string[] All = { Hr, It, Manager, Payroll, Finance, Admin, Gov, Employee };
+    public static bool IsValid(string? value) => value is not null && All.Contains(value, StringComparer.Ordinal);
 }
 
 // ── Recruitment Audit Log ──────────────────────────────────────────────────────

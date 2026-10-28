@@ -30,7 +30,7 @@ test('catalogue_keeps_exactly_twelve_areas_and_all_existing_destinations', () =>
       ['people', '/people'], ['contractRenewals', '/contract-renewals'],
     ] },
     { id: 'recruitment', destinations: [['recruitment', '/recruitment']] },
-    { id: 'onboarding', destinations: [['onboardingChecklists', '/setup?tab=onboardingChecklists']] },
+    { id: 'onboarding', destinations: [['onboardingChecklists', '/setup?tab=onboardingChecklists'], ['onboardingChecklistTemplates', '/setup?tab=onboardingChecklistTemplates'], ['hireTemplates', '/setup?tab=hireTemplates']] },
     { id: 'time', destinations: [
       ['locations', '/setup?tab=locations'], ['attendance', '/attendance'],
       ['shiftDefinitions', '/setup?tab=shiftDefinitions'], ['shiftPolicy', '/setup?tab=shiftPolicy'],
@@ -70,7 +70,7 @@ test('catalogue_keeps_exactly_twelve_areas_and_all_existing_destinations', () =>
       ['gosiFiling', '/gosi-filing'], ['adminAuditLogs', '/setup?tab=adminAuditLogs'],
     ] },
   ]);
-  expect(destinations()).toHaveLength(59);
+  expect(destinations()).toHaveLength(61);
 });
 
 test('every_destination_has_stable_group_and_order', () => {
@@ -134,7 +134,7 @@ test('every_destination_has_stable_group_and_order', () => {
       { id: 'recruitment-operations', label: 'Recruitment operations', order: 0, destinations: ['recruitment'] },
     ] },
     { areaId: 'onboarding', groups: [
-      { id: 'templates-tasks', label: 'Templates and tasks', order: 0, destinations: ['onboardingChecklists'] },
+      { id: 'templates-tasks', label: 'Templates and tasks', order: 0, destinations: ['onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates'] },
     ] },
     { areaId: 'time', groups: [
       { id: 'work-configuration', label: 'Work configuration', order: 0, destinations: ['locations', 'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'overtimePolicies', 'attendanceDevices'] },
@@ -179,7 +179,7 @@ test('setup_owned_destinations_carry_the_section_label_and_route_labels_are_unch
   const expectedLabels: Record<string, string> = {
     companies: 'Companies', branches: 'Branches', departments: 'Departments', designations: 'Designations', grades: 'Grades',
     costCenters: 'Cost centres', establishment: 'Headcount & budget', masterData: 'Drop-down lists', people: 'Employee records and contracts',
-    contractRenewals: 'Contract renewals', recruitment: 'Recruitment and workforce planning', onboardingChecklists: 'Onboarding checklists',
+    contractRenewals: 'Contract renewals', recruitment: 'Recruitment and workforce planning', onboardingChecklists: 'Onboarding checklists', onboardingChecklistTemplates: 'Onboarding checklist templates', hireTemplates: 'Hire templates',
     locations: 'Locations', attendance: 'Attendance operations', shiftDefinitions: 'Shifts', shiftPolicy: 'Shift policy', attendanceRules: 'Attendance rules',
     overtimePolicies: 'Overtime policies', attendanceDevices: 'Attendance devices', shifts: 'Shift rosters',
     overtime: 'Overtime requests', timesheets: 'Project timesheets', leaveTypes: 'Leave types', leavePolicies: 'Leave policies',

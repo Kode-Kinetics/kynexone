@@ -34,7 +34,7 @@ test('the_moved_screens_and_their_groups_are_exactly_these', () => {
     getStarted: ['openingBalances'],
     timeLeave: ['leaveTypes', 'leavePolicies', 'holidayCalendars', 'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'overtimePolicies', 'attendanceDevices'],
     payBenefits: ['benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates'],
-    talentServices: ['onboardingChecklists', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy'],
+    talentServices: ['onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy'],
     payrollCompliance: ['taxPolicies', 'complianceProfiles', 'saudiCompliance', 'countryPayrollKeys'],
     accessSecurity: ['users', 'roles', 'permissionMatrix', 'permissions', 'permissionGrantors', 'approvalAuthorities', 'approvalDelegations', 'signInSecurity', 'accessLog'],
     workspace: ['localization', 'branding', 'helpText', 'modules', 'planBilling'],

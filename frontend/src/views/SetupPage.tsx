@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
-import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail,
+import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, UserPlus, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail,
   AlarmClockCheck, BadgeCheck, Blocks, CalendarClock, CalendarDays, Clock3, CreditCard, DatabaseBackup, FileSignature, Fingerprint, Gift, HeartPulse, HelpCircle, KeyRound, Languages, Lock, Palette, Percent, Scale, ScrollText, Star, Table2, TimerReset, UserCheck, UserCog, Wallet } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
@@ -123,7 +123,7 @@ const moduleIcons: Record<SetupModuleSectionId, React.ElementType> = {
   leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock, attendanceRules: AlarmClockCheck,
   overtimePolicies: TimerReset, attendanceDevices: Fingerprint,
   benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText,
-  onboardingChecklists: ListChecks, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
+  onboardingChecklists: ListChecks, onboardingChecklistTemplates: ClipboardList, hireTemplates: UserPlus, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
   taxPolicies: Percent, complianceProfiles: ShieldCheck, saudiCompliance: BadgeCheck, countryPayrollKeys: Globe,
   users: Users, roles: UserCog, permissionMatrix: Table2, permissions: KeyRound, permissionGrantors: UserCheck,
   approvalAuthorities: Award, approvalDelegations: GitBranch, signInSecurity: Lock, accessLog: ClipboardList,

@@ -15,9 +15,11 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   /** Sent with duplicateOverrideReason when an authorised user confirms "this is a different person"; the server refuses a strong match otherwise. */
   acknowledgeDuplicate?: boolean;
   acknowledgedWarnings?: AcknowledgedWarning[];
+  /** P3: the hire template the wizard applied; the server uses it only to raise the onboarding checklist. */
+  hireTemplateId?: string;
 };
 export interface PayloadContext { companyCountry: string; currency: string; /** The company's email domain; a work-email local part is sent as local@domain. */ emailDomain?: string }
-export interface PayloadExtras { acknowledgedWarnings?: AcknowledgedWarning[]; duplicateOverrideReason?: string }
+export interface PayloadExtras { acknowledgedWarnings?: AcknowledgedWarning[]; duplicateOverrideReason?: string; hireTemplateId?: string }
 
 const ID_FIELD: Record<string, string> = { nationalId: 'id_number', iqama: 'iqama_number', border: 'border_number', passport: 'passport_number', gccId: 'civil_id' };
 
@@ -95,6 +97,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     complianceRecords: records.length ? records : undefined,
     acknowledgedWarnings: extras.acknowledgedWarnings?.length ? extras.acknowledgedWarnings : undefined,
     duplicateOverrideReason: extras.duplicateOverrideReason,
+    hireTemplateId: extras.hireTemplateId,
     acknowledgeDuplicate: extras.duplicateOverrideReason?.trim() ? true : undefined,
   };
   if (form.idChecksumOverrideReason.trim() && body.acknowledgedWarnings === undefined && !blank(form.idNumber)) {
