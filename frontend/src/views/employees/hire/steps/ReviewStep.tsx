@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { formatAmount } from '@/src/lib/hire/money';
 import { composeWorkEmail, parseAmount } from '@/src/lib/hire/payload';
@@ -15,6 +15,7 @@ import type { ReferenceValue } from '@/src/lib/referenceLists';
 import type { StepProps } from '../types';
 import { CONTRACT_FALLBACK, EMPLOYMENT_FALLBACK } from './JobPayDocsStep';
 import { GENDER_FALLBACK, MARITAL_FALLBACK } from './PersonContactStep';
+import { onboardingTemplatesApi, type HireTemplate, type PreviewTask } from '@/src/api/onboardingTemplates';
 
 function Row({ label, value, ltr, children }: { label: string; value?: string; ltr?: boolean; children?: ReactNode }) {
   const { t } = useLocale();
@@ -42,7 +43,7 @@ function Block({ name, onEdit, children }: { name: string; onEdit: () => void; c
   );
 }
 
-export function ReviewStep({ form, lookups, currency, companyCountry, company, today, banks, onEdit }: StepProps & { onEdit: (step: 1 | 2 | 3) => void }) {
+export function ReviewStep({ form, lookups, currency, companyCountry, company, today, banks, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
   const { t, locale } = useLocale();
   const ar = locale === 'ar';
   const nat = buildCountryOptions().find(o => o.code === form.nationalityCode);
@@ -64,6 +65,16 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
   const ID_TYPES: Record<string, string> = { nationalId: 'National ID', iqama: 'Iqama', border: 'Border Number', gccId: 'GCC national ID', passport: 'Passport' };
   const grade = lookups.grades.find(g => g.id === form.gradeId);
   const basic = parseAmount(form.basic);
+  const [checklist, setChecklist] = useState<{ templateId: string; tasks: PreviewTask[] } | null>(null);
+  const templateId = hireTemplate?.id;
+  useEffect(() => {
+    if (!templateId) return;
+    let live = true;
+    onboardingTemplatesApi.hire.checklistPreview(templateId, form.nationalityCode, form.startDate || undefined)
+      .then(r => { if (live) setChecklist({ templateId, tasks: r.tasks }); }).catch(() => { if (live) setChecklist(null); });
+    return () => { live = false; };
+  }, [templateId, form.nationalityCode, form.startDate]);
+  const raised = checklist && checklist.templateId === templateId ? checklist.tasks : null;
   const warnings = reviewWarnings(form, { today });
   if (grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary)) warnings.push('grade_band_out_of_range');
   const bank = companyCountry === 'SA' ? bankNameFor(form.iban, banks, locale) : '';
@@ -89,6 +100,14 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
         <Row label={t('Branch')} value={name(lookups.branches, form.branchId, b => (ar && b.nameAr ? b.nameAr : b.nameEn))} />
         <Row label={t('Department')} value={name(lookups.departments, form.departmentId, d => (ar && d.nameAr ? d.nameAr : d.nameEn))} />
         <Row label={t('Work email')} value={workEmail} ltr />
+        {hireTemplate && <Row label={t('Hire template')} value={ar && hireTemplate.nameAr ? hireTemplate.nameAr : hireTemplate.name} />}
+        {raised && (
+          <Row label={t('Onboarding checklist')} value={t('{tasks, plural, one {# task} other {# tasks}}, {blocking, plural, one {# blocks activation} other {# block activation}}', { tasks: Number(raised.length), blocking: Number(raised.filter(x => x.blocksActivation).length) })}>
+            <ul data-testid="review-checklist" className="mt-1 list-disc ps-5 text-xs font-normal text-slate-600 dark:text-slate-300">
+              {raised.map(x => <li key={x.templateTaskId}>{ar && x.titleAr ? x.titleAr : x.title}</li>)}
+            </ul>
+          </Row>
+        )}
       </Block>
       <Block name={t('Person and contact')} onEdit={() => onEdit(2)}>
         <Row label={t('Arabic full name')} value={form.arabicName.trim()} />

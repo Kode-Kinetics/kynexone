@@ -26,6 +26,18 @@ public class EmployeeProfileChangeRequest : ITenantOwned
     public Guid? CreatedBy { get; set; }
     public DateTime? DecidedAtUtc { get; set; }
     public Guid? DecidedBy { get; set; }
+
+    // P2 (ESS completion): per-section requests. NULL section = a legacy request (the 2026-10 blob, or any other ESS change).
+    /// <summary>One of <c>ProfileSectionRegistry</c> keys; NULL for a legacy request.</summary>
+    public string? Section { get; set; }
+    /// <summary>The privacy-notice version the employee saw when submitting.</summary>
+    public string? NoticeVersion { get; set; }
+    /// <summary>When the employee re-proved their identity for a sensitive section.</summary>
+    public DateTime? StepUpAtUtc { get; set; }
+    /// <summary>The id of the step-up token that opened this submission: a token opens one submission only (unique where set).</summary>
+    public Guid? StepUpJti { get; set; }
+    /// <summary>HR's note when a section was sent back (replaces the notification smuggle for new rows).</summary>
+    public string? ReviewNote { get; set; }
 }
 
 /// <summary>
@@ -170,6 +182,26 @@ public class EmployeePolicyAcknowledgement : ITenantOwned
     public Guid PolicyId { get; set; }
     public DateTime AcknowledgedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UserId { get; set; }
+    // P4 (click-to-sign): all NULL / legacy_click for rows written before the migration. Server-derived only; the row is append-only (trigger).
+    public string Method { get; set; } = "legacy_click";
+    public string? DocumentSha256 { get; set; }
+    public int? DocumentVersion { get; set; }
+    public string? ConsentVersion { get; set; }
+    public string? ConsentTextSha256 { get; set; }
+    public string? TypedName { get; set; }
+    public string? IpAddress { get; set; }
+    public string? UserAgent { get; set; }
+    public string? DeviceId { get; set; }
+    public string? Language { get; set; }
+    public string? AuthMethod { get; set; }
+    public DateTime? StepUpAtUtc { get; set; }
+    public Guid? StepUpJti { get; set; }
+    /// <summary>The HR user who held the device when the employee signed on it; null for a self-service signature.</summary>
+    public Guid? WitnessUserId { get; set; }
+    public Guid? CertificateDocumentId { get; set; }
+    public long? ChainSeq { get; set; }
+    public string? PrevHash { get; set; }
+    public string? RecordHash { get; set; }
 }
 
 public class EmployeeAnnouncement : ITenantOwned
@@ -252,6 +284,8 @@ public class EmployeeActionItem : ITenantOwned
     public string Status { get; set; } = "Open";
     public DateTime? DueAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    /// <summary>P2: comma list of profile-section keys HR (or a hire template) asked for. NULL = every missing section.</summary>
+    public string? RequestedSections { get; set; }
 }
 
 public class EmployeeSentimentPulse : ITenantOwned

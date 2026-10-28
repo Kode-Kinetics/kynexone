@@ -30,6 +30,9 @@ import { DiscardDialog, WarningAckDialog } from './fields/Dialogs';
 import { DuplicatePanel, type MatchCard } from './fields/DuplicatePanel';
 import { fieldId } from './fields/FieldShell';
 import { HireBasicsStep } from './steps/HireBasicsStep';
+import type { AppliedTemplate } from './TemplatePicker';
+import { planTemplate, planUndo } from '@/src/lib/hire/hireTemplate';
+import type { HireTemplate } from '@/src/api/onboardingTemplates';
 import { JobPayDocsStep } from './steps/JobPayDocsStep';
 import { PersonContactStep } from './steps/PersonContactStep';
 import { ReviewStep } from './steps/ReviewStep';
@@ -91,6 +94,9 @@ export function HireWizard() {
   const [discardOpen, setDiscardOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [, setTick] = useState(0);
+  // P3: the hire template applied on step 1, and the fields the person has filled themselves (a template never overwrites those).
+  const [applied, setApplied] = useState<AppliedTemplate | null>(null);
+  const editedRef = useRef<Set<keyof HireForm>>(new Set());
 
   const busyRef = useRef(false);
   const keyRef = useRef(newIdempotencyKey());
@@ -168,9 +174,23 @@ export function HireWizard() {
 
   const blur = useCallback((field: keyof HireForm) => setTouched(prev => (prev.has(field) ? prev : new Set(prev).add(field))), []);
   const set = useCallback(<K extends keyof HireForm>(key: K, value: HireForm[K]) => {
+    editedRef.current.add(key);
     setForm(f => ({ ...f, [key]: value }));
     setServerIssues(s => (s.some(i => i.field === key) ? s.filter(i => i.field !== key) : s));
   }, []);
+
+  const onApplyTemplate = useCallback((template: HireTemplate) => {
+    const department = lookups.departments.find(d => d.id === (form.departmentId || template.defaults.departmentId));
+    const plan = planTemplate(form, editedRef.current, template.defaults, department?.managerEmployeeId ?? null);
+    setForm(f => ({ ...f, ...plan.patch }));
+    setApplied({ template, applied: plan.patch, prior: plan.prior, kept: plan.kept });
+  }, [form, lookups.departments]);
+  const onUndoTemplate = useCallback(() => {
+    if (!applied) return;
+    const restore = planUndo(form, applied.applied, applied.prior);
+    setForm(f => ({ ...f, ...restore }));
+    setApplied(null);
+  }, [applied, form]);
 
   const shownSummary = issues.filter(i => summaryFields.includes(i.field));
 
@@ -197,8 +217,8 @@ export function HireWizard() {
   }, [step]);
 
   // ── autosave ────────────────────────────────────────────────────────────
-  const latest = useRef({ ctx, companyCountry, currency, emailDomain: undefined as string | undefined, acks, draft });
-  latest.current = { ctx, companyCountry, currency, emailDomain: company?.emailDomain || undefined, acks, draft };
+  const latest = useRef({ ctx, companyCountry, currency, emailDomain: undefined as string | undefined, acks, draft, hireTemplateId: undefined as string | undefined });
+  latest.current = { ctx, companyCountry, currency, emailDomain: company?.emailDomain || undefined, acks, draft, hireTemplateId: applied?.template.id };
   const problemHandler = useRef<(p: HireProblem) => void>(() => {});
   const autosave = useRef<ReturnType<typeof createAutosave<{ form: HireForm }>> | null>(null);
   if (!autosave.current) {
@@ -206,7 +226,7 @@ export function HireWizard() {
       delayMs: 1200,
       save: async ({ form: f }, base) => {
         const l = latest.current;
-        const res = await employeeHireApi.saveDraft(l.draft!.id, base, buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency, emailDomain: l.emailDomain }, { acknowledgedWarnings: l.acks }));
+        const res = await employeeHireApi.saveDraft(l.draft!.id, base, buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency, emailDomain: l.emailDomain }, { acknowledgedWarnings: l.acks, hireTemplateId: l.hireTemplateId }));
         setSavedForm(f);
         return res;
       },
@@ -287,7 +307,7 @@ export function HireWizard() {
     try {
       if (draft) return (await autosave.current!.flush()) ? draft.id : null;
       const all = extraAcks ?? acks;
-      const body = buildCreateRequest(form, { companyCountry, currency, emailDomain: company?.emailDomain || undefined }, { acknowledgedWarnings: all, duplicateOverrideReason: differentReason ?? undefined });
+      const body = buildCreateRequest(form, { companyCountry, currency, emailDomain: company?.emailDomain || undefined }, { acknowledgedWarnings: all, duplicateOverrideReason: differentReason ?? undefined, hireTemplateId: applied?.template.id });
       const res = await employeeHireApi.create(body, keyRef.current);
       const version = res.updatedAtUtc ?? (res as { createdAtUtc?: string }).createdAtUtc ?? '';
       flushSync(() => { setDraft({ id: res.id, name: res.englishName || res.fullName || form.englishName.trim() }); setSavedForm(form); setAcks(all); });
@@ -299,7 +319,7 @@ export function HireWizard() {
       handleFailure(e);
       return null;
     } finally { busyRef.current = false; setBusy(false); }
-  }, [draft, form, companyCountry, currency, company, acks, differentReason, handleFailure]);
+  }, [draft, form, companyCountry, currency, company, acks, differentReason, handleFailure, applied]);
 
   const onSaveDraft = useCallback(async () => {
     const list = validateHire(form, ctx, 'draft');
@@ -406,11 +426,11 @@ export function HireWizard() {
         <h2 ref={headingRef} tabIndex={-1} className="mb-4 text-lg font-semibold text-slate-900 outline-none dark:text-white">{label(step)}</h2>
         {!loaded ? <p className="text-sm text-slate-500">{t('Loading…')}</p> : (
           <>
-            {step === 1 && <HireBasicsStep {...stepProps} onNameBlur={runDuplicateCheck} />}
+            {step === 1 && <HireBasicsStep {...stepProps} onNameBlur={runDuplicateCheck} applied={applied} onApplyTemplate={onApplyTemplate} onUndoTemplate={onUndoTemplate} />}
             {step === 2 && <PersonContactStep {...stepProps} countryOptions={countryOptions} onNationality={onNationality} onDobBlur={runDuplicateCheck} />}
             {step === 3 && <JobPayDocsStep {...stepProps} canOverrideChecksum={canOverride} resident={resident}
               onResident={v => { setResident(v); setForm(f => ({ ...f, idType: defaultIdType(f.nationalityCode, v) ?? f.idType })); }} onIdBlur={runDuplicateCheck} />}
-            {step === 4 && <ReviewStep {...stepProps} onEdit={s => goTo(s)} />}
+            {step === 4 && <ReviewStep {...stepProps} onEdit={s => goTo(s)} hireTemplate={applied?.template ?? null} />}
           </>
         )}
       </div>

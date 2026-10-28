@@ -1,5 +1,6 @@
 'use client';
 
+import { isolateLtr, isolateName } from '../lib/bidi';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -98,7 +99,7 @@ export function PayApprovalDetailPage() {
       )}
 
       {detail.lastRejection && (
-        <p className="rounded-lg border border-slate-200 p-3 text-sm dark:border-white/10">{t('Sent back on {when} by {name}: {reason}', { when: when(detail.lastRejection.atUtc), name: detail.lastRejection.byName, reason: detail.lastRejection.reason })}</p>
+        <p className="rounded-lg border border-slate-200 p-3 text-sm dark:border-white/10">{t('Sent back on {when} by {name}: {reason}', { when: isolateLtr(when(detail.lastRejection.atUtc)), name: isolateName(detail.lastRejection.byName), reason: detail.lastRejection.reason })}</p>
       )}
 
       <section aria-labelledby="pa-salary" className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
@@ -124,8 +125,8 @@ export function PayApprovalDetailPage() {
       <section aria-labelledby="pa-trail" className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
         <h2 id="pa-trail" className="text-sm font-semibold">{t('Entered')}</h2>
         <dl className="mt-2 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-          <div><dt className={label}>{t('Entered by')}</dt><dd className="font-medium">{detail.enteredBy ? t('{name} on {when}', { name: detail.enteredBy.name, when: when(detail.enteredBy.atUtc) }) : '—'}</dd></div>
-          <div><dt className={label}>{t('Last changed by')}</dt><dd className="font-medium">{detail.lastChangedBy ? t('{name} on {when}', { name: detail.lastChangedBy.name, when: when(detail.lastChangedBy.atUtc) }) : '—'}</dd></div>
+          <div><dt className={label}>{t('Entered by')}</dt><dd className="font-medium">{detail.enteredBy ? t('{name} on {when}', { name: isolateName(detail.enteredBy.name), when: isolateLtr(when(detail.enteredBy.atUtc)) }) : '—'}</dd></div>
+          <div><dt className={label}>{t('Last changed by')}</dt><dd className="font-medium">{detail.lastChangedBy ? t('{name} on {when}', { name: isolateName(detail.lastChangedBy.name), when: isolateLtr(when(detail.lastChangedBy.atUtc)) }) : '—'}</dd></div>
           <div className="sm:col-span-2"><dt className={label}>{t('Package fingerprint')}</dt><dd className="break-all font-mono text-xs" dir="ltr" data-testid="pa-fingerprint">{detail.fingerprint.slice(0, 16)}</dd></div>
         </dl>
         <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Your decision applies to exactly this package. If it changes before you decide, you will be asked to review it again.')}</p>

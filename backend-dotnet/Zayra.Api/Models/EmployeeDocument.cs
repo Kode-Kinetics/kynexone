@@ -30,4 +30,13 @@ public class EmployeeDocument : ITenantOwned, ICompanyScopedOperational
     public bool IsDeleted { get; set; }
     public DateTime? DeletedAtUtc { get; set; }
     public Guid? DeletedBy { get; set; }
+    /// <summary>P2: Clean | PendingScan | Quarantined. Only Clean is downloadable. Default Clean keeps every existing row readable.</summary>
+    public string ScanStatus { get; set; } = "clean";
+    /// <summary>P2: the ESS completion section an upload was made for (NULL for every other document).</summary>
+    public string? SourceSection { get; set; }
+    /// <summary>P4: set when HR asks the employee to sign (acknowledge) this document. NULL for every other document.</summary>
+    public DateTime? SignatureRequiredAtUtc { get; set; }
+    public Guid? SignatureRequestedBy { get; set; }
+    /// <summary>P4: set when a verification found the stored bytes no longer match what was signed. Signing is then disabled.</summary>
+    public DateTime? IntegrityFlaggedAtUtc { get; set; }
 }

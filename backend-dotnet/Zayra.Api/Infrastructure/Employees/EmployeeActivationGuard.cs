@@ -75,7 +75,10 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         Guid tenantId, Guid? companyId, EmployeeReadinessSnapshot snapshot, RequestContext ctx, CancellationToken ct)
     {
         var policy = await _resolver.ResolveAsync(tenantId, companyId, snapshot.CountryCode, snapshot.Nationality, ct);
-        return await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.EnsureActivatableAsync(_db, tenantId, _evaluator, snapshot, policy, ct);
+        EmployeeReadiness readiness;
+        try { readiness = await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.EnsureActivatableAsync(_db, tenantId, _evaluator, snapshot, policy, ct); }
+        catch (EmployeeActivationBlockedException blocked) { throw await Zayra.Api.Application.Onboarding.OnboardingTaskBlockers.MergeAsync(_db, tenantId, blocked, ct); }   // P3 (AC67): list open blocking tasks beside the other blockers
+        return await Zayra.Api.Application.Onboarding.OnboardingTaskBlockers.EnsureNoneOpenAsync(_db, tenantId, snapshot.EmployeeId, readiness, policy, ct);
     }
 
     public async Task<EmployeeReadinessSnapshot?> BuildSnapshotAsync(Guid tenantId, int employeeId, CancellationToken ct)

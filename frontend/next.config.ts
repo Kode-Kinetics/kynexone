@@ -61,6 +61,26 @@ const nextConfig: NextConfig = {
         headers: SECURITY_HEADERS,
       },
       {
+        // P2: the page that collects identity and bank details is never framed, not even by this origin. Listed after the baseline
+        // rule so its values win (a later rule overrides an earlier key).
+        source: '/ess/onboarding',
+        headers: [
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+          { key: 'Cache-Control', value: 'no-store' },
+        ],
+      },
+      {
+        // P4: the pages where an employee confirms with their password and signs are never framed, not even by this origin.
+        // (The PDF preview on them is a blob: frame INSIDE the page; this only stops the page itself being embedded.)
+        source: '/ess/sign/:path*',
+        headers: [
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+          { key: 'Cache-Control', value: 'no-store' },
+        ],
+      },
+      {
         // Hashed JS/CSS bundles are content-addressed — safe to cache forever in browser + CDN.
         source: '/_next/static/:path*',
         headers: [{ key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }],

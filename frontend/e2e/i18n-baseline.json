@@ -1,6 +1,6 @@
 {
   "_readme": "Pinned by e2e/i18n-coverage.spec.ts. Counts may not go up. Each Wave PR repins (`npm run i18n:repin`) and commits this file, so the baseline never lags more than one PR. Repin refuses increases unless I18N_ALLOW_INCREASE=1 and allowIncreaseReason is set here. Never hand-edit a number upward.",
-  "pinnedAt": "2026-10-25",
+  "pinnedAt": "2026-10-27",
   "increaseLog": [
     {
       "pinnedAt": "2026-10-06",
@@ -86,11 +86,11 @@
     }
   ],
   "totals": {
-    "hardcoded": 5191,
+    "hardcoded": 5116,
     "rawStatus": 59,
     "locale": 211,
     "icons": 0,
-    "files": 135
+    "files": 134
   },
   "fragmentKeys": [
     "These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:",
@@ -257,9 +257,6 @@
     },
     "app/terms/page.tsx": {
       "hardcoded": 46
-    },
-    "src/components/CompanySwitcher.tsx": {
-      "hardcoded": 3
     },
     "src/components/CountrySelect.tsx": {
       "hardcoded": 2
@@ -456,7 +453,7 @@
       "hardcoded": 2
     },
     "src/views/EmployeesPage.tsx": {
-      "hardcoded": 134,
+      "hardcoded": 132,
       "locale": 5
     },
     "src/views/ExEmployeesTable.tsx": {
@@ -520,7 +517,7 @@
       "locale": 2
     },
     "src/views/PayrollPage.tsx": {
-      "hardcoded": 386,
+      "hardcoded": 328,
       "rawStatus": 10,
       "locale": 32
     },
@@ -554,7 +551,7 @@
       "locale": 2
     },
     "src/views/SetupPage.tsx": {
-      "hardcoded": 79,
+      "hardcoded": 77,
       "rawStatus": 1,
       "locale": 3
     },
@@ -577,7 +574,7 @@
       "locale": 5
     },
     "src/views/UserManagementPage.tsx": {
-      "hardcoded": 195,
+      "hardcoded": 193,
       "locale": 3
     },
     "src/views/employees/EmployeeAccessOnboardingSection.tsx": {
@@ -587,11 +584,11 @@
       "hardcoded": 7
     },
     "src/views/employees/EmployeeComplianceDocumentsSection.tsx": {
-      "hardcoded": 10,
+      "hardcoded": 3,
       "rawStatus": 1
     },
     "src/views/employees/EmployeeEmploymentSection.tsx": {
-      "hardcoded": 21,
+      "hardcoded": 20,
       "rawStatus": 1
     },
     "src/views/employees/EmployeeOverview.tsx": {
