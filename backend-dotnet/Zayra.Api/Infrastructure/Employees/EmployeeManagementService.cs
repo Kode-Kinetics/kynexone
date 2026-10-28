@@ -306,8 +306,14 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         if (request.AcknowledgedWarnings is not { Count: > 0 } acks) return;
         foreach (var ack in acks.Where(a => !string.IsNullOrWhiteSpace(a.Code)))
-            await _audit.WriteAsync("employee.warning_overridden", "Employee", employeeId.ToString(), context,
-                System.Text.Json.JsonSerializer.Serialize(new { code = ack.Code, reason = ack.Reason?.Trim() }), ct);
+        {
+            // The grade exception is recorded against the exact designation/grade pair it was given for, so activation can tell
+            // whether a reason already exists for the CURRENT pair.
+            var pair = ack.Code == Onboarding.EmployeeInputGuard.GradeCode
+                ? System.Text.Json.JsonSerializer.Serialize(new { code = ack.Code, reason = ack.Reason?.Trim(), designationId = request.DesignationId, gradeId = request.GradeId })
+                : System.Text.Json.JsonSerializer.Serialize(new { code = ack.Code, reason = ack.Reason?.Trim() });
+            await _audit.WriteAsync("employee.warning_overridden", "Employee", employeeId.ToString(), context, pair, ct);
+        }
     }
 
     public async Task<EmployeeDetailDto?> UpdateAsync(Guid tenantId, int id, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)

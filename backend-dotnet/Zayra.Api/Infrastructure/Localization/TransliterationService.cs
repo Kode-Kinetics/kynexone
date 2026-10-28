@@ -266,7 +266,8 @@ public sealed class TransliterationService : ITransliterationService
         AddNew("جنيد", "junaid", "junayd");
         AddNew("آصف", "asif");
         AddNew("عثمان", "usman", "uthman", "othman", "osman");
-        AddNew("بكر", "bakr", "bakar", "abubakr");
+        AddNew("بكر", "bakr", "bakar");
+        AddNew("أبو بكر", "abubakr", "abu bakr", "abu bakar", "abubakar");
         AddNew("محمود", "mahmood");
         AddNew("نورة", "noura", "nora", "norah", "nourah");
         AddNew("سارة", "sara", "sarah");

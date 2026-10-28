@@ -206,4 +206,95 @@ public class HireWizardOwnerFeedbackTests : IClassFixture<HireIntegrityHttpFixtu
         NationalityCatalog.TryResolve("الفلبين")!.Iso2.Should().Be("PH");
         NationalityCatalog.TryResolve("سريلانكا")!.Iso2.Should().Be("LK");
     }
+
+    // ── review fixes: the grade reason is collected at activation, per designation/grade pair ──
+    private async Task<int> DraftWithDifferentGradeAsync(string token)
+    {
+        var (designation, _, other) = await SeedGradesAsync();
+        using var created = await _fx.SendAsync(HttpMethod.Post, "/api/employees", new { englishName = "Activation Grade", companyId = _fx.CompanyId }, token);
+        var id = (await Json(created)).GetProperty("id").GetInt32();
+        await SetPairAsync(id, designation, other);
+        return id;
+    }
+
+    private async Task SetPairAsync(int id, Guid designation, Guid grade)
+    {
+        using var s = _fx.Host.Services.CreateScope();
+        var db = s.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var e = await db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == id);
+        e.DesignationId = designation; e.GradeId = grade;
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Activation_OfADraftGivenADifferentGradeByAutosave_AsksForTheReason()
+    {
+        var token = await _fx.NewUserAsync($"hr-{Guid.NewGuid():N}", "employees.write", "employees.read");
+        var id = await DraftWithDifferentGradeAsync(token);
+        using var r = await _fx.SendAsync(HttpMethod.Patch, $"/api/employees/{id}/status",
+            new { status = "Active", effectiveDate = "2026-01-01", reason = "Hire complete" }, token);
+        r.StatusCode.Should().Be(HttpStatusCode.Conflict, await r.Content.ReadAsStringAsync());
+        (await Json(r)).GetProperty("warnings").EnumerateArray().Should().Contain(w => w.GetProperty("code").GetString() == "grade_differs_from_designation");
+    }
+
+    private static Zayra.Api.Infrastructure.Employees.Onboarding.EmployeeInputGuard GuardFor(ZayraDbContext db) => new(db);
+    private static Zayra.Api.Application.Auth.RequestContext Ctx(Guid tenant) => new("127.0.0.1", "test", Guid.NewGuid(), tenant, ["HR Manager"], []);
+
+    private static async Task<(ZayraDbContext Db, Guid Tenant, int Id, Guid Desig, Guid G1, Guid G2)> GuardWorldAsync()
+    {
+        var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var t = Guid.NewGuid();
+        var g1 = new Grade { TenantId = t, Code = "A", Name = "A", IsActive = true };
+        var g2 = new Grade { TenantId = t, Code = "B", Name = "B", IsActive = true };
+        var g3 = new Grade { TenantId = t, Code = "C", Name = "C", IsActive = true };
+        var d = new Designation { TenantId = t, Code = "D", TitleEn = "D", GradeId = g1.Id, IsActive = true };
+        var c = new Company { TenantId = t, LegalNameEn = "C", TradeName = "C", CountryCode = "SA", Jurisdiction = "t", RegistrationNumber = "RC-1", DefaultCurrency = "SAR", IsActive = true };
+        var e = new Employee { TenantId = t, CompanyId = c.Id, EmployeeCode = "E1", FullName = "X Person", EnglishName = "X Person", Status = "Draft", JoiningDate = DateTime.UtcNow.Date, DesignationId = d.Id, GradeId = g2.Id };
+        db.AddRange(g1, g2, g3, d, c, e);
+        await db.SaveChangesAsync();
+        return (db, t, e.Id, d.Id, g2.Id, g3.Id);
+    }
+
+    [Fact]
+    public async Task ActivationGuard_AcceptsAnAcknowledgement_AuditsThePair_AndDoesNotAskAgainForTheSamePair()
+    {
+        var (db, t, id, desig, g2, g3) = await GuardWorldAsync();
+        await using var _ = db;
+        var guard = GuardFor(db);
+        await Assert.ThrowsAsync<Zayra.Api.Application.Employees.Onboarding.EmployeeWarningsRequireAckException>(() => guard.EnforceActivationAsync(t, id, Ctx(t), default));
+        var ack = new[] { new AcknowledgedWarning("grade_differs_from_designation", "Seconded at a higher grade") };
+        await guard.EnforceActivationAsync(t, id, Ctx(t), default, ack);
+        await db.SaveChangesAsync();
+        (await db.AuditLogs.IgnoreQueryFilters().Where(a => a.Action == "employee.warning_overridden").ToListAsync())
+            .Should().ContainSingle(a => a.Metadata!.Contains(g2.ToString()) && a.Metadata.Contains(desig.ToString()));
+        await guard.EnforceActivationAsync(t, id, Ctx(t), default);     // same pair, recorded reason: no second prompt
+        // a changed pair asks again
+        (await db.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == id)).GradeId = g3;
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<Zayra.Api.Application.Employees.Onboarding.EmployeeWarningsRequireAckException>(() => guard.EnforceActivationAsync(t, id, Ctx(t), default));
+    }
+
+    [Fact]
+    public async Task ActivationGuard_AShortReasonIsRefused_AndTheDesignationsOwnGradeNeedsNothing()
+    {
+        var (db, t, id, _, _, _) = await GuardWorldAsync();
+        await using var _ = db;
+        var short1 = new[] { new AcknowledgedWarning("grade_differs_from_designation", "short") };
+        (await Assert.ThrowsAsync<EmployeeValidationException>(() => GuardFor(db).EnforceActivationAsync(t, id, Ctx(t), default, short1)))
+            .Code.Should().Be("override_reason_required");
+        var e = await db.Employees.IgnoreQueryFilters().SingleAsync(x => x.Id == id);
+        e.GradeId = (await db.Designations.IgnoreQueryFilters().SingleAsync()).GradeId;
+        await db.SaveChangesAsync();
+        await GuardFor(db).EnforceActivationAsync(t, id, Ctx(t), default);
+    }
+
+    [Theory]
+    [InlineData("Abubakr Ahmed", "أبو بكر أحمد")]
+    [InlineData("Abu Bakr Ahmed", "أبو بكر أحمد")]
+    [InlineData("Abdulrahman Ali", "عبد الرحمن علي")]
+    [InlineData("Abdurrahman Ali", "عبد الرحمن علي")]
+    [InlineData("Abdullah Ali", "عبد الله علي")]
+    [InlineData("Bakr Ali", "بكر علي")]
+    public void JoinedAbuAndAbdForms_KeepTheirFullReading(string name, string expected) =>
+        new TransliterationService().ToArabicPersonName(name).Should().Be(expected);
 }
