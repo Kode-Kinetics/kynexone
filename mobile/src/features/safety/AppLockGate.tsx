@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { LiquidButton } from '@/components/ui';
 import { useAuthStore } from '@/auth/authStore';
 import { useAppLockStore } from '@/safety/appLockStore';
-import { shouldLockOnColdStart, shouldLockOnResume } from '@/safety/appLockPolicy';
+import { coldStartDecisionReady, shouldLockOnColdStart, shouldLockOnResume } from '@/safety/appLockPolicy';
 import { useTheme } from '@/theme/ThemeProvider';
 
 /**
@@ -17,6 +17,8 @@ export function AppLockGate() {
   const { theme } = useTheme();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
+  const isLoading = useAuthStore((s) => s.isLoading);
+  const connectionIssue = useAuthStore((s) => s.connectionIssue);
   const { prefs, hydrated, canAuthenticate, locked, failed, hydrate, lock, unlock } = useAppLockStore();
   const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
   const backgroundedAt = useRef<number | null>(null);
@@ -29,10 +31,10 @@ export function AppLockGate() {
 
   // Cold start: if the session was restored from the device (not typed in), ask before showing it.
   useEffect(() => {
-    if (!hydrated || !isInitialized || coldStartHandled.current) return;
+    if (!coldStartDecisionReady({ hydrated, initialized: isInitialized, loading: isLoading, connectionIssue }) || coldStartHandled.current) return;
     coldStartHandled.current = true;
     if (shouldLockOnColdStart(prefs, canAuthenticate, isAuthenticated)) lock();
-  }, [hydrated, isInitialized, isAuthenticated, prefs, canAuthenticate, lock]);
+  }, [hydrated, isInitialized, isLoading, connectionIssue, isAuthenticated, prefs, canAuthenticate, lock]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {

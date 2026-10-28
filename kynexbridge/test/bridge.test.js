@@ -215,6 +215,28 @@ test('maxChunksPerPoll bounds one poll and reports the remaining backlog', async
   s.close();
 });
 
+test('a file connector backlog keeps its full progress until every deferred row is forwarded', async () => {
+  const { s, url, calls } = await server((c, res) => json(res, 200, { accepted: c.body?.punches?.length ?? 0 }));
+  const cfg = cfgFor(url, { chunkSize: 2, maxChunksPerPoll: 1, overlapSeconds: 300 });
+  const hourly = (hour) => ({
+    employeeCode: 'E1',
+    punchTimestampUtc: new Date(Date.UTC(2026, 0, 1, hour)).toISOString(),
+    punchDirection: 'In',
+  });
+  // The CSV connector deliberately ignores `since` and rereads an unarchived file until commit().
+  fakePunches = [0, 1, 2, 3, 4, 5].map(hourly);
+  const cursors = {};
+
+  for (let poll = 0; poll < 3; poll++) await pollDevice(cfg, cursors, dev(), noSleep, quiet);
+
+  const sent = calls
+    .filter((c) => c.url.endsWith('/ingest'))
+    .flatMap((c) => c.body.punches.map((p) => p.punchTimestampUtc));
+  assert.deepEqual(sent, [0, 1, 2, 3, 4, 5].map((hour) => hourly(hour).punchTimestampUtc));
+  assert.equal(cursorOf(cursors, 'D1'), hourly(5).punchTimestampUtc);
+  s.close();
+});
+
 test('a poison punch is isolated by bisection, dead-lettered and skipped — the backlog is not wedged', async () => {
   const bad = punch(3).punchTimestampUtc;
   const { s, url } = await server((c, res) => {

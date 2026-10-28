@@ -52,6 +52,17 @@ test('the lists ask for the caller\'s own records, so a manager sees theirs, not
   expect(api).toMatch(/'\/api\/ess\/leave\/request'/);
 });
 
+test('ESS resource ids are encoded before they become request path segments', () => {
+  const api = read('src/api/ess.ts');
+  for (const suffix of [
+    'hr-requests/${encodeURIComponent(id)}',
+    'hr-requests/${encodeURIComponent(id)}/comments',
+    'notifications/${encodeURIComponent(id)}/read',
+    'payslips/${encodeURIComponent(id)}',
+    'payslips/${encodeURIComponent(id)}/download',
+  ]) expect(api, suffix).toContain(suffix);
+});
+
 test('an overnight overtime block ends the next day instead of going negative', () => {
   const w = overtimeWindow('2026-10-05', '22:00', '02:00')!;
   expect(new Date(w.endTimeUtc).getTime() - new Date(w.startTimeUtc).getTime()).toBe(4 * 60 * 60 * 1000);

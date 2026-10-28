@@ -56,6 +56,17 @@ public class PayrollRuleApprovalTests
     private static CompanyPayrollRulesController.SaveRulesRequest Lowering(Guid company, DateOnly? from = null) => new(company,
         [new PayrollRuleChange(PayrollRuleKeys.AbsenceDeductionBase, "Gross")], false, "Agreed with finance", from);
 
+    [Fact]
+    public void DecisionStatus_IsAnAtomicConcurrencyBoundary()
+    {
+        using var db = CreateDb();
+        var status = db.Model.FindEntityType(typeof(PayrollRuleChangeRequest))!
+            .FindProperty(nameof(PayrollRuleChangeRequest.Status));
+
+        status.Should().NotBeNull();
+        status!.IsConcurrencyToken.Should().BeTrue("only one pending-to-decided transition may win");
+    }
+
     // ── Which changes need a second person ──────────────────────────────────────────────────────────
 
     [Theory]

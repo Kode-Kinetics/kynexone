@@ -3601,7 +3601,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 t.HasCheckConstraint("ck_payroll_rule_change_requests__decider_not_maker", "decided_by IS NULL OR requested_by IS NULL OR decided_by <> requested_by");
             });
             entity.HasKey(x => x.Id);
-            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            // The pending-to-decided transition is compare-and-swap: concurrent approvers cannot both win and leave
+            // applied rules whose request row was later overwritten by the other decision.
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired().IsConcurrencyToken();
             entity.Property(x => x.Reason).HasMaxLength(500);
             entity.Property(x => x.DecisionNote).HasMaxLength(500);
             entity.Property(x => x.ChangesJson).HasColumnType("text").IsRequired();

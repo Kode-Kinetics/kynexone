@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_APP_LOCK,
+  coldStartDecisionReady,
   normalizeLockPrefs,
   shouldLockOnColdStart,
   shouldLockOnResume,
@@ -39,4 +40,13 @@ test('cold start locks a restored session but not a fresh sign-in', () => {
   assert.equal(shouldLockOnColdStart(DEFAULT_APP_LOCK, true, false), false);
   assert.equal(shouldLockOnColdStart({ enabled: false, timeoutMinutes: 1 }, true, true), false);
   assert.equal(shouldLockOnColdStart(DEFAULT_APP_LOCK, false, true), false);
+});
+
+test('an offline restore keeps the cold-start lock decision pending until session restoration finishes', () => {
+  assert.equal(coldStartDecisionReady({ hydrated: true, initialized: true, loading: false, connectionIssue: true }), false);
+  assert.equal(coldStartDecisionReady({ hydrated: true, initialized: true, loading: true, connectionIssue: false }), false,
+    'retry clears the connection flag before the authoritative restore has finished');
+  assert.equal(coldStartDecisionReady({ hydrated: true, initialized: true, loading: false, connectionIssue: false }), true);
+  assert.equal(coldStartDecisionReady({ hydrated: false, initialized: true, loading: false, connectionIssue: false }), false);
+  assert.equal(coldStartDecisionReady({ hydrated: true, initialized: false, loading: false, connectionIssue: false }), false);
 });

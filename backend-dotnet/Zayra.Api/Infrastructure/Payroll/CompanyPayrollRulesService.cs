@@ -197,7 +197,18 @@ public sealed class CompanyPayrollRulesService(ZayraDbContext _db, IAuditService
                     approvedBy = userId, warnedKeys = JsonSerializer.Deserialize<List<string>>(request.WarningCodesJson), acknowledgedNote = request.Reason,
                     changes = stored,
                 });
-            await _db.SaveChangesAsync(ct);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return Fail(409, new
+                {
+                    code = "ERR_PAYROLL_RULE_NOT_PENDING",
+                    message = "Another person already decided this change. Reload to see the decision.",
+                });
+            }
             return Done(200, await ViewAsync(tenantId, request.CompanyId, ct));
         }, ct);
     }

@@ -12,6 +12,19 @@ export interface AppLockPrefs {
   timeoutMinutes: LockTimeoutMinutes;
 }
 
+export interface ColdStartDecisionState {
+  hydrated: boolean;
+  initialized: boolean;
+  loading: boolean;
+  /** Stored credentials exist, but the authoritative session restore is still waiting on connectivity. */
+  connectionIssue: boolean;
+}
+
+/** The one-time cold-start choice must not be consumed while an offline session restore is unresolved. */
+export function coldStartDecisionReady(state: ColdStartDecisionState): boolean {
+  return state.hydrated && state.initialized && !state.loading && !state.connectionIssue;
+}
+
 /** On by default: payslips, loans and the profile show salary, IBAN and ID numbers. */
 export const DEFAULT_APP_LOCK: AppLockPrefs = { enabled: true, timeoutMinutes: 1 };
 

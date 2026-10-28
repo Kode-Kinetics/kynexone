@@ -125,15 +125,21 @@ export async function pollDevice(cfg, cursors, device, http = {}, log = console)
     last = chunk[chunk.length - 1].punchTimestampUtc;
     // The cursor moves per chunk, so an interrupted run resumes where it stopped instead of re-sending everything.
     for (const p of chunk) recent.add(keyOf(p));
-    const floor = ts(last) - cfg.overlapSeconds * 1000;
-    const keep = [...recent].filter((k) => ts(k.split('|')[1]) >= floor);
-    recent.clear(); keep.forEach((k) => recent.add(k));
-    cursors[device.name] = { lastPunchUtc: last, recent: keep, updatedAtUtc: new Date().toISOString() };
+    // File connectors reread an unarchived file and may ignore `since`. Keep every forwarded key while a bounded
+    // backlog is still in flight; pruning to the overlap window here would make old rows reappear ahead of the
+    // unforwarded tail on the next poll and the cursor would oscillate forever.
+    cursors[device.name] = { lastPunchUtc: last, recent: [...recent], updatedAtUtc: new Date().toISOString() };
     saveCursors(cfg.cursorFile, cursors);
   }
   const backlog = all.length - sent;
   // Files a connector deferred archiving for are archived only now that every chunk was forwarded (L4).
-  if (!backlog) await connector.commit?.(device);
+  if (!backlog) {
+    await connector.commit?.(device);
+    const floor = ts(last) - cfg.overlapSeconds * 1000;
+    const keep = [...recent].filter((k) => ts(k.split('|')[1]) >= floor);
+    cursors[device.name] = { lastPunchUtc: last, recent: keep, updatedAtUtc: new Date().toISOString() };
+    saveCursors(cfg.cursorFile, cursors);
+  }
   log.log(`${tag} forwarded ${sent}/${all.length} → accepted=${totals.accepted} dup=${totals.duplicates} unmatched=${totals.unmatched} rejected=${totals.rejected} skipped=${totals.skipped} processed=${totals.processed}${backlog ? ` · ${backlog} left for the next poll` : ''}`);
   await sendHeartbeat(cfg, device, { backlog, lastPunchUtc: last }, http);
   return { status: backlog ? 'partial' : 'ok', sent, backlog, totals };

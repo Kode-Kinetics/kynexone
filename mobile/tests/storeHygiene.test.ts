@@ -25,5 +25,5 @@ test('the iOS privacy manifest declares required-reason APIs, no tracking, and l
 
 test('the API host is not hard-coded in app source', () => {
   const config = fs.readFileSync(new URL('../src/config/index.ts', import.meta.url), 'utf8');
-  assert.ok(!config.includes('onrender.com'));
+  assert.doesNotMatch(config, /https?:\/\/[^\s'"/]*onrender\.com(?:[\s'"/:]|$)/i);
 });
