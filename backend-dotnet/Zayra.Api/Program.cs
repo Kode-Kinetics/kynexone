@@ -522,7 +522,7 @@ builder.Services.AddDataProtection()
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
 // RemoveAllLoggers: the status lookup puts the employee's national ID / iqama number in the URL path, and
 // IHttpClientFactory's default handler logs every request URI at Information. Failures are logged by the adapter.
-builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech")).RemoveAllLoggers();
+builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech")).ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30)).RemoveAllLoggers();
 switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
 {
     case QiwaLiveAdapterPolicy.Mode.Live:
