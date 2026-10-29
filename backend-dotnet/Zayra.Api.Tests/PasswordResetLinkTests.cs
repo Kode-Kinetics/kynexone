@@ -52,7 +52,7 @@ public sealed class PasswordResetLinkTests
         // The whole point: a live link the administrator can pass on by hand.
         var resetUrl = body.GetProperty("resetUrl").GetString();
         resetUrl.Should().NotBeNullOrWhiteSpace();
-        resetUrl.Should().Contain("/reset-password").And.Contain($"workspace={tenant.Slug}");
+        resetUrl.Should().Contain("/reset-password#token=").And.NotContain("workspace=");
 
         // And the message must say plainly that nothing was emailed.
         body.GetProperty("message").GetString().Should().Contain("No email delivery is configured");

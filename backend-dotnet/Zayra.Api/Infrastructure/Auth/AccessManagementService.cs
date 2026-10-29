@@ -411,7 +411,7 @@ public class AccessManagementService : IAccessManagementService
                 committed.InvitationExpiresAtUtc,
                 string.IsNullOrEmpty(invitationToken)
                     ? string.Empty
-                    : AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant.Slug, invitationToken)) with
+                    : AuthLinkBuilder.AcceptInvitation(_appUrl, invitationToken)) with
             {
                 HandOverInPerson = handOverInPerson,
             };
@@ -1025,7 +1025,7 @@ public class AccessManagementService : IAccessManagementService
                     {
                         CredentialReset = true,
                         InvitationExpiresAtUtc = rotationExpiresAtUtc,
-                        InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant!.Slug, rotationToken),
+                        InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, rotationToken),
                         HandOverInPerson = reissuedBySetter,
                     };
                 }
@@ -1229,7 +1229,7 @@ public class AccessManagementService : IAccessManagementService
                     HandOverInPerson = callerIsSetter,
                     InvitationExpiresAtUtc = rotationExpiresAtUtc,
                     // The controller emails it, or hands it back (and records that) when no email went out.
-                    InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant!.Slug, rotationToken),
+                    InvitationUrl = AuthLinkBuilder.AcceptInvitation(_appUrl, rotationToken),
                 };
             return true;
         }
@@ -2170,7 +2170,7 @@ public class AccessManagementService : IAccessManagementService
             user.Email,
             user.FullName,
             resetToken,
-            AuthLinkBuilder.ResetPassword(_appUrl, tenant.Slug, resetToken),
+            AuthLinkBuilder.ResetPassword(_appUrl, resetToken),
             expiresAtUtc)
         {
             HandOverInPerson = handOverInPerson,

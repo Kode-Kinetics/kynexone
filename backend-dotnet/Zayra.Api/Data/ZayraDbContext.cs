@@ -67,9 +67,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     }
 
     /// <summary>
-    /// True when the request carries a concrete tenant_id claim. Used to guard the tenant-equality
-    /// sub-clause of every query filter so a tenantless (but authenticated, non-system) principal
-    /// matches zero rows instead of leaking null-TenantId or Guid.Empty rows.
+    /// True when the request carries the organisation claim (tenant_id). An installation holds one
+    /// organisation (WP4.2), so the filters no longer compare a row's TenantId with the caller's: any
+    /// member of the organisation reads the organisation's rows, subject to the company tiers and soft
+    /// delete. A tenantless (but authenticated, non-system) principal still matches zero rows.
     /// </summary>
     private bool _hasRequestTenant => _tenantId.HasValue;
 
@@ -5602,33 +5603,33 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         if (hasSoftDelete && isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else if (hasSoftDelete)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && !EF.Property<bool>(e, "IsDeleted"));
         else if (isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => _isSystemScope || (_hasRequestTenant && EF.Property<Guid>(e, "TenantId") == _tenantId));
+                e => _isSystemScope || _hasRequestTenant);
     }
 
     private void SetTenantFilterNullable<TEntity>(ModelBuilder modelBuilder) where TEntity : class
@@ -5639,33 +5640,33 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         if (hasSoftDelete && isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (hasSoftDelete && isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && !EF.Property<bool>(e, "IsDeleted")
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else if (hasSoftDelete)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && !EF.Property<bool>(e, "IsDeleted"));
         else if (isOperationalScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && (_isGroupScope || (EF.Property<Guid?>(e, "CompanyId") != null
                          && _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value))));
         else if (isConfigScope)
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => (_isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId))
+                e => (_isSystemScope || _hasRequestTenant)
                      && (_isGroupScope || EF.Property<Guid?>(e, "CompanyId") == null
                          || _companyScopeIds.Contains(EF.Property<Guid?>(e, "CompanyId")!.Value)));
         else
             modelBuilder.Entity<TEntity>().HasQueryFilter(
-                e => _isSystemScope || (_hasRequestTenant && EF.Property<Guid?>(e, "TenantId") == _tenantId));
+                e => _isSystemScope || _hasRequestTenant);
     }
 
     private static void ApplySnakeCaseColumns(ModelBuilder modelBuilder)

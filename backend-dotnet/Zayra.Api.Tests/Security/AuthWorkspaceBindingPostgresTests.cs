@@ -98,7 +98,7 @@ public sealed class AuthWorkspaceBindingPostgresTests : PlatformTestBase
             && x.EntityId == seed.UserAId.ToString()).ToListAsync());
         var sent = Assert.Single(email.Messages);
         Assert.Equal(seed.Email, sent.To);
-        Assert.Contains($"https://app.example.test/reset-password?workspace={seed.SlugA}#token=", sent.Html);
+        Assert.Contains("https://app.example.test/reset-password#token=", sent.Html);
         Assert.DoesNotContain(seed.Email, sent.Html.Split("#token=", StringSplitOptions.None)[0]);
     }
 

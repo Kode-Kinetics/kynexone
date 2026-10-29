@@ -769,7 +769,7 @@ public class AuthService : IAuthService
         await _auditService.WriteAsync("auth.password_reset_requested", "User", user.Id.ToString(), context with { UserId = user.Id, TenantId = user.TenantId }, null, cancellationToken);
 
         // Build reset URL — falls back to a relative path fragment if APP_URL is not set.
-        var resetUrl = AuthLinkBuilder.ResetPassword(_appUrl, user.Tenant.Slug, resetToken);
+        var resetUrl = AuthLinkBuilder.ResetPassword(_appUrl, resetToken);
 
         var html = $"""
             <p>Hi {System.Web.HttpUtility.HtmlEncode(user.FullName)},</p>

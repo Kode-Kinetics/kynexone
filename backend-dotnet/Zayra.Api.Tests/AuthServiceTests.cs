@@ -139,11 +139,11 @@ public class AuthServiceTests
     {
         const string token = "A+B/C=&secret#tail";
         Assert.Equal(
-            "https://app.example.test/reset-password?workspace=acme%2Fhq#token=A%2BB%2FC%3D%26secret%23tail",
-            AuthLinkBuilder.ResetPassword("https://app.example.test///", " ACME/HQ ", token));
+            "https://app.example.test/reset-password#token=A%2BB%2FC%3D%26secret%23tail",
+            AuthLinkBuilder.ResetPassword("https://app.example.test///", token));
         Assert.Equal(
-            "http://localhost:3000/accept-invitation?workspace=acme%2Fhq#token=A%2BB%2FC%3D%26secret%23tail",
-            AuthLinkBuilder.AcceptInvitation(null, " ACME/HQ ", token));
+            "http://localhost:3000/accept-invitation#token=A%2BB%2FC%3D%26secret%23tail",
+            AuthLinkBuilder.AcceptInvitation(null, token));
         Assert.Throws<InvalidOperationException>(() =>
             AuthLinkBuilder.RequireHttpsPublicAppUrl("http://app.example.test"));
         Assert.Throws<InvalidOperationException>(() =>

@@ -2,15 +2,16 @@ namespace Zayra.Api.Infrastructure.Auth;
 
 /// <summary>
 /// Canonical browser credential links. Secrets always live in the fragment so
-/// they are not sent in the initial HTTP request, proxy logs, or referrers.
+/// they are not sent in the initial HTTP request, proxy logs, or referrers. The link names no
+/// workspace: an installation holds one organisation and the token identifies the account.
 /// </summary>
 public static class AuthLinkBuilder
 {
-    public static string ResetPassword(string? appUrl, string workspace, string token) =>
-        Build(appUrl, "/reset-password", workspace, token);
+    public static string ResetPassword(string? appUrl, string token) =>
+        Build(appUrl, "/reset-password", token);
 
-    public static string AcceptInvitation(string? appUrl, string workspace, string token) =>
-        Build(appUrl, "/accept-invitation", workspace, token);
+    public static string AcceptInvitation(string? appUrl, string token) =>
+        Build(appUrl, "/accept-invitation", token);
 
     public static string RequireHttpsPublicAppUrl(string? appUrl)
     {
@@ -52,14 +53,12 @@ public static class AuthLinkBuilder
         return uri.GetLeftPart(UriPartial.Authority);
     }
 
-    private static string Build(string? appUrl, string path, string workspace, string token)
+    private static string Build(string? appUrl, string path, string token)
     {
         // Unit/local-development callers have a deterministic browser-resolvable
         // default. Every non-Development host validates an explicit HTTPS value
         // during startup (Program.cs) before it can issue credentials.
         var baseUrl = ResolvePublicAppUrl(appUrl);
-        var encodedWorkspace = Uri.EscapeDataString(AuthService.RequireWorkspace(workspace));
-        var encodedToken = Uri.EscapeDataString(token);
-        return $"{baseUrl}{path}?workspace={encodedWorkspace}#token={encodedToken}";
+        return $"{baseUrl}{path}#token={Uri.EscapeDataString(token)}";
     }
 }
