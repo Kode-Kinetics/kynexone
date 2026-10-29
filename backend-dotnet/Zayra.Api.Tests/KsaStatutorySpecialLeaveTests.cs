@@ -401,6 +401,45 @@ public class KsaStatutorySpecialLeaveTests
     }
 
     [Fact]
+    public async Task WorkingDayAcknowledgementFingerprint_ChangesWithTheClassifiedStatutoryKind()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
+        var maternity = new LeaveType
+        {
+            TenantId = tenantId, Code = "MAT", NameEn = "Maternity Leave", Category = "Maternity", IsPaid = true, IsActive = true,
+        };
+        var iddah = new LeaveType
+        {
+            TenantId = tenantId, Code = "IDDAH", NameEn = "Iddah Leave", Category = "Iddah", IsPaid = true, IsActive = true,
+        };
+        db.LeaveTypes.AddRange(maternity, iddah);
+        foreach (var key in new[] { KsaSpecialLeaveRuleKeys.MaternityDays, KsaSpecialLeaveRuleKeys.IddahMuslimDays })
+            db.StatutoryRules.Add(new StatutoryRule
+            {
+                Id = Guid.NewGuid(), TenantId = null, CountryCode = CountryCodes.Saudi, Jurisdiction = Jurisdictions.KsaMainland,
+                RuleKey = key, RuleValue = "5", DataType = "decimal", EffectiveFrom = DateTime.UtcNow.AddDays(-1), Description = "test",
+            });
+        await db.SaveChangesAsync();
+        LeavePolicy PolicyFor(LeaveType type) => new()
+        {
+            TenantId = tenantId, LeaveTypeId = type.Id, CountryCode = CountryCodes.Saudi, Name = type.NameEn,
+            AnnualEntitlementDays = 2m, MaximumDaysPerRequest = 2m, WeekendsIncluded = false,
+            PublicHolidaysIncluded = false, PayrollImpact = "Paid", Status = "Active",
+        };
+        async Task<FloorWarning> WarningFor(LeaveType type) => (await KsaLeaveFloorChecks.ChecksAsync(
+            db, tenantId, type, PolicyFor(type), default)).Single(c => c.Warning.Code == KsaLeaveFloorChecks.SpecialWorkingDays).Warning;
+
+        var maternityWarning = await WarningFor(maternity);
+        var iddahWarning = await WarningFor(iddah);
+
+        maternityWarning.StatutoryValue.Should().Be(iddahWarning.StatutoryValue);
+        maternityWarning.ConfigurationFingerprint.Should().NotBe(iddahWarning.ConfigurationFingerprint,
+            "an acknowledgement must not transfer to a different statutory leave kind with the same floor");
+    }
+
+    [Fact]
     public async Task SaudiMaternityPolicy_OnWorkingDays_AtEightyFourOrMore_IsSaved_WithAReviewPrompt()
     {
         // At or above the figure a working-day policy grants at least the statute in its own unit, so

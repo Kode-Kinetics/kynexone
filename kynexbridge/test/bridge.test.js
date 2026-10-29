@@ -320,6 +320,9 @@ for (const [name, acknowledgement] of [
   ['missing rejection detail', ingestAck(2, { accepted: 1, rejected: 1, rejections: [] })],
   ['duplicate rejection indexes', ingestAck(2, { accepted: 0, rejected: 2, rejections: [{ index: 0 }, { index: 0 }] })],
   ['out-of-range rejection index', ingestAck(2, { accepted: 1, rejected: 1, rejections: [{ index: 2 }] })],
+  ['missing rejection reason', ingestAck(2, { accepted: 1, rejected: 1, rejections: [{ index: 1 }] })],
+  ['blank rejection reason', ingestAck(2, { accepted: 1, rejected: 1, rejections: [{ index: 1, reason: '   ' }] })],
+  ['processed count exceeds matched accepted punches', ingestAck(2, { unmatched: 1, processed: 2 })],
   ['invalid sync log id', ingestAck(2, { syncLogId: 'not-a-uuid' })],
 ]) {
   test(`a contradictory ingest acknowledgement (${name}) does not advance the cursor`, async (t) => {

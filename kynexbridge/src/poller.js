@@ -54,11 +54,14 @@ function validateIngestAcknowledgement(result, expectedReceived) {
     && result.received === expectedReceived
     && result.accepted + result.duplicates + result.rejected === result.received
     && result.unmatched <= result.accepted
+    && result.processed <= result.accepted - result.unmatched
     && typeof result.syncLogId === 'string'
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.syncLogId)
     && Array.isArray(result.rejections)
     && result.rejections.length === result.rejected
     && rejectionIndexes.every((index) => Number.isInteger(index) && index >= 0 && index < result.received)
+    && result.rejections.every((rejection) => typeof rejection?.reason === 'string'
+      && rejection.reason.trim().length > 0 && rejection.reason.length <= 200)
     && new Set(rejectionIndexes).size === rejectionIndexes.length;
   if (!valid)
     throw new Error('server returned an invalid ingest acknowledgement; nothing was marked delivered and the cursor did not move.');

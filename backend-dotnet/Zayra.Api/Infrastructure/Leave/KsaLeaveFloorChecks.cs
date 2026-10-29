@@ -61,7 +61,7 @@ public static class KsaLeaveFloorChecks
                         + (cap > 0m ? $" (cap {cap:0.##})" : string.Empty) + $", below the legal minimum ({cite}). To meet it, count weekends and public holidays and set at least {f:0.##} days.",
                         $"{whatAr} مدتها {f:0.##} يومًا تقويميًا بحكم النظام، وهذه السياسة تحتسب أيام العمل بواقع {days:0.##} يومًا، وهو أقل من الحد الأدنى النظامي ({citeAr}).",
                         "Working-day count vs the legal calendar minimum", "احتساب أيام العمل مقابل الحد الأدنى النظامي بالتقويم", citeAr,
-                        SpecialWorkingDaysFingerprint(policy, reach, f)));
+                        SpecialWorkingDaysFingerprint(policy, reach, k, f)));
                 }
                 else
                 {
@@ -141,7 +141,8 @@ public static class KsaLeaveFloorChecks
         string messageEn, string messageAr, string label, string labelAr, string? citationAr = null, string? fingerprint = null)
         => new(new FloorWarning(code, field, messageEn, false, statutory, configured, citation, messageAr, citationAr, fingerprint), below, label, labelAr);
 
-    private static string SpecialWorkingDaysFingerprint(LeavePolicy policy, KsaPolicyReach reach, decimal statutory)
+    private static string SpecialWorkingDaysFingerprint(
+        LeavePolicy policy, KsaPolicyReach reach, KsaStatutoryLeaveKind kind, decimal statutory)
     {
         var payload = string.Join("|",
             policy.AnnualEntitlementDays.ToString("G29", CultureInfo.InvariantCulture),
@@ -150,6 +151,7 @@ public static class KsaLeaveFloorChecks
             policy.PublicHolidaysIncluded.ToString(CultureInfo.InvariantCulture),
             policy.PayrollImpact?.Trim().ToUpperInvariant() ?? string.Empty,
             reach.ToString(),
+            kind.ToString(),
             statutory.ToString("G29", CultureInfo.InvariantCulture),
             policy.CountryCode?.Trim().ToUpperInvariant() ?? string.Empty,
             policy.CompanyId?.ToString("D") ?? string.Empty);
