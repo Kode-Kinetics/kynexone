@@ -7,6 +7,13 @@
 // waiting for "next launch" and pulls whatever the server serves now (a fix, or the rollback-to-
 // embedded directive from `eas update:rollback`) and reloads straight into it.
 
+/** A render failure is terminal for this JS launch, even when startup I/O began later. */
+export class LaunchFailureLatch {
+  private failed = false;
+  noteFailure(): void { this.failed = true; }
+  get hasFailed(): boolean { return this.failed; }
+}
+
 export const EMBEDDED = 'embedded';
 /** Failed launches of the same update before the app acts. Two: one crash can be a fluke. */
 export const CRASH_LOOP_THRESHOLD = 2;

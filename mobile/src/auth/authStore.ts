@@ -7,6 +7,7 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { setErrorTrackingTenant } from '@/observability/reportError';
+import { useCompatibilityStore } from '@/safety/compatibilityStore';
 import { tokenStorage, userStorage, clearAllAuthData, appStorage } from '@/storage';
 import { STORAGE_KEYS } from '@/config';
 import { authApi, deviceApi, type LoginOutcome } from '@/api/services';
@@ -68,7 +69,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   mfaEnrolledNotice: null,
 
   initialize: async () => {
-    set({ isLoading: true, connectionIssue: false });
+    // Keep the recovery view mounted throughout session retry; only terminal outcomes clear it.
+    set({ isLoading: true });
     try {
       const [storedUser, tenantId] = await Promise.all([
         userStorage.getUser(),
@@ -78,7 +80,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const normalizedTenant = normalizeWorkspace(tenantId);
       if (!storedUser || !normalizedTenant) {
         await clearAllAuthData();
-        set({ isInitialized: true, isLoading: false });
+        set({ isInitialized: true, isLoading: false, connectionIssue: false });
         return;
       }
 
@@ -86,7 +88,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const refreshToken = await tokenStorage.getRefreshToken();
         if (!refreshToken) {
           await clearAllAuthData();
-          set({ isInitialized: true, isLoading: false });
+          set({ isInitialized: true, isLoading: false, connectionIssue: false });
           return;
         }
       }
@@ -132,11 +134,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isInitialized: true,
           isLoading: false,
           sessionExpired: true,
+          connectionIssue: false,
         });
       }
     } catch {
       await clearAllAuthData();
-      set({ isInitialized: true, isLoading: false, isAuthenticated: false });
+      set({ isInitialized: true, isLoading: false, isAuthenticated: false, connectionIssue: false });
     }
   },
 
@@ -237,11 +240,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // session's tokens are already dead; calling /auth/logout would only 401.
     const { user, tenantId } = get();
     await clearAllAuthData();
+    useCompatibilityStore.getState().reset();
     set({
       user: null,
       tenantId: null,
       isAuthenticated: false,
       isLoading: false,
+      connectionIssue: false,
       sessionExpired: false,
       mfaPrompt: null,
       mfaPromptDismissed: false,
@@ -262,11 +267,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       ]);
     } finally {
       await clearAllAuthData();
+      // After a response-shape error, sign-out must restore the normal auth navigator.
+      useCompatibilityStore.getState().reset();
       set({
         user: null,
         tenantId: null,
         isAuthenticated: false,
         isLoading: false,
+        connectionIssue: false,
         sessionExpired: false,
         mfaPrompt: null,
         mfaPromptDismissed: false,
@@ -288,6 +296,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   handleSessionExpired: () => {
     void clearAllAuthData();
+    useCompatibilityStore.getState().reset();
     set({
       connectionIssue: false,
       user: null,

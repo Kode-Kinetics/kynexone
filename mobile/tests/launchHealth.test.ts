@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { beginLaunch, markHealthy, parseLaunchRecord, CRASH_LOOP_THRESHOLD } from '../src/updates/launchHealth.ts';
+import { beginLaunch, markHealthy, parseLaunchRecord, LaunchFailureLatch, CRASH_LOOP_THRESHOLD } from '../src/updates/launchHealth.ts';
 
 test('a first launch of an update is clean', () => {
   const { record, crashLoop } = beginLaunch(null, 'u1');
@@ -37,4 +37,21 @@ test('junk in storage reads as no record', () => {
   assert.equal(parseLaunchRecord('x'), null);
   assert.equal(parseLaunchRecord({ updateId: 1 }), null);
   assert.deepEqual(parseLaunchRecord({ updateId: 'a', failedLaunches: -3, healthy: false }), { updateId: 'a', failedLaunches: 0, healthy: false });
+});
+
+
+test('a render failure before or during startup bookkeeping remains latched', async () => {
+  const beforeStartup = new LaunchFailureLatch();
+  beforeStartup.noteFailure();
+  await Promise.resolve(); // startup's asynchronous storage read must not clear this flag
+  assert.equal(beforeStartup.hasFailed, true);
+  const duringStartup = new LaunchFailureLatch();
+  await Promise.resolve();
+  duringStartup.noteFailure();
+  assert.equal(duringStartup.hasFailed, true);
+  // Failed OTA launches must stay unhealthy and count against the next launch.
+  const pending = beginLaunch(null, 'u1').record;
+  const stillPending = duringStartup.hasFailed ? pending : markHealthy(pending);
+  assert.equal(stillPending.healthy, false);
+  assert.equal(beginLaunch(stillPending, 'u1').record.failedLaunches, 1);
 });
