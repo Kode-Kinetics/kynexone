@@ -183,6 +183,22 @@ Any older version upgrades straight to the newest; versions never move backwards
 **Maintenance mode** can also be switched by an administrator in **Organisation Admin → Licence**, or with
 `docker compose run --rm --no-deps backend --maintenance on|off`.
 
+## 12a. Moving from the hosted KynexOne service
+
+An organisation that used the hosted service moves its data with the supplier:
+
+1. The supplier exports the organisation (`tools/TenantExporter`) and hands the export folder over encrypted.
+2. Install with the export instead of the setup questions:
+   `scripts/install.sh --domain hr.example.com --import-legacy /path/to/export` (Windows: `-ImportLegacy`).
+   On an installation that has no organisation yet, the same step is
+   `docker compose run --rm -v /path/to/export:/import backend --import-legacy /import`.
+3. The import checks every file, loads everything in one transaction and keeps it only if payroll net per run, leave
+   balances, loan balances and GL totals match the hosted figures exactly. The report is written to
+   `import-report.json` in the export folder.
+4. Import the licence (§4, or `--licence` above) and sign in with the existing accounts. Users who had two-step sign-in set it up again
+   (its secrets cannot leave the hosted service).
+5. Delete the export folder once the business has signed off the report.
+
 ## 13. Firewall
 
 Inbound:

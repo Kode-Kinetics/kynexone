@@ -1168,6 +1168,11 @@ using (var scope = app.Services.CreateScope())
 if (Zayra.Api.Infrastructure.Licensing.LicenceCommands.ShouldHandle(args))
     return await Zayra.Api.Infrastructure.Licensing.LicenceCommands.RunAsync(app.Services, args, Console.Out, Console.Error);
 
+// `--import-legacy <dir>`: load a customer exported from the retired hosted service (tools/TenantExporter) into this
+// empty installation, instead of --setup-organisation. See LegacyImportCommand.
+if (Zayra.Api.Infrastructure.Provisioning.LegacyImportCommand.ShouldHandle(args))
+    return await Zayra.Api.Infrastructure.Provisioning.LegacyImportCommand.RunAsync(app.Services, args, Console.Out, Console.Error);
+
 if (Zayra.Api.Infrastructure.Provisioning.OrganisationSetupCommand.ShouldHandle(args))
     return await Zayra.Api.Infrastructure.Provisioning.OrganisationSetupCommand.RunAsync(
         app.Services, args, Console.Out, Console.Error);

@@ -27,6 +27,14 @@ companies). There is no platform console, platform account or vendor-side tenant
 
 Until the database restructure the organisation is stored as the single row of `tenants`.
 
+### 1a. Moving a customer off the retired hosted service (instead of 1)
+`dotnet Zayra.Api.dll --import-legacy <dir>` (`Infrastructure/Provisioning/LegacyImportCommand.cs`) loads one
+customer exported by the vendor's `tools/TenantExporter`. It is the only other way the organisation row comes
+to exist, and it keeps the same invariant: it refuses unless the installation has no organisation, runs in
+one transaction, and commits only when the exported payroll, leave, loan and GL totals match exactly. It is
+raw SQL, so `OrganisationCreationDoorTests` (which scans for EF inserts) does not see it; this entry is its
+registration.
+
 ## 2. The organisation's own administrators
 Once the organisation exists, its authenticated administrators add users and business data through
 the product: access management, employee portal access, migration import, the create-company wizard,

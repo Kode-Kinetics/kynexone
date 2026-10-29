@@ -2,6 +2,7 @@
 # First installation of KynexOne on this server.
 #
 #   scripts/install.sh [--domain hr.example.local] [--licence organisation.licence] [--force-reconfigure]
+#                      [--import-legacy <export folder>]   (moving from the hosted service: imports instead of setup)
 #
 # Run from an extracted offline bundle (kynexone-<version>/deploy/client), it loads the bundle's images after
 # verifying CHECKSUMS.sha256; otherwise it pulls them from KYNEXONE_REGISTRY.
@@ -19,12 +20,13 @@
 # KYNEXONE_REGISTRY in the environment are written to .env; images already on this server are used as they are.
 source "$(dirname "$0")/_common.sh"
 
-DOMAIN="${KYNEXONE_DOMAIN:-}"; LICENCE=""; FORCE=""
+DOMAIN="${KYNEXONE_DOMAIN:-}"; LICENCE=""; FORCE=""; IMPORT_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain)  DOMAIN="${2:?--domain needs a value}"; shift 2 ;;
     --licence) LICENCE="${2:?--licence needs a file}"; shift 2 ;;
     --force-reconfigure) FORCE=1; shift ;;
+    --import-legacy) IMPORT_DIR="${2:?--import-legacy needs the export folder}"; shift 2 ;;
     -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
@@ -110,6 +112,11 @@ for var in OrganisationName LegalName HomeCountry AdminEmail AdminFullName Admin
 done
 if [ "${ORGANISATIONS:-0}" != "0" ]; then
   say "The organisation is already set up; keeping it"
+elif [ -n "$IMPORT_DIR" ]; then
+  [ -f "$IMPORT_DIR/manifest.json" ] || die "Not an export folder (no manifest.json): $IMPORT_DIR"
+  IMPORT_ABS="$(cd "$IMPORT_DIR" && pwd)"
+  say "Importing the organisation from the hosted service export"
+  compose run --rm --no-deps -T -v "$IMPORT_ABS:/import" backend --import-legacy /import
 elif [ -n "$INTERACTIVE" ]; then
   say "Creating the organisation and its first administrator"
   compose run --rm --no-deps "${SETUP_ARGS[@]}" backend --setup-organisation

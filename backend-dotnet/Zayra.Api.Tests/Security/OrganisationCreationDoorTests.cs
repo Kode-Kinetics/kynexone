@@ -8,6 +8,8 @@ namespace Zayra.Api.Tests.Security;
 /// <c>--setup-organisation</c> (docs/DATA_ENTRY_PATHS.md). A second place that inserts the organisation
 /// row would be a second way for an installation to hold two organisations — the invariant client
 /// isolation rests on — so the source is scanned for every way EF can insert one.
+/// <c>--import-legacy</c> (LegacyImportCommand) also creates it, by raw SQL and only on an installation with no
+/// organisation; it is registered in docs/DATA_ENTRY_PATHS.md §1a rather than matched here.
 /// </summary>
 public class OrganisationCreationDoorTests
 {

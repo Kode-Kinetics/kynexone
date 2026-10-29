@@ -1,10 +1,11 @@
 # First installation of KynexOne on this server (Windows Server). Same steps as install.sh.
 #
 #   .\scripts\install.ps1 [-Domain hr.example.local] [-Licence organisation.licence] [-ForceReconfigure]
+#                          [-ImportLegacy <export folder>]   (moving from the hosted service: imports instead of setup)
 #
 # Run from an extracted offline bundle it loads the bundle's images after verifying CHECKSUMS.sha256; otherwise it
 # pulls them. Unattended: set the OrganisationSetup__* environment variables and nothing is asked.
-param([string]$Domain, [string]$Licence, [switch]$ForceReconfigure)
+param([string]$Domain, [string]$Licence, [switch]$ForceReconfigure, [string]$ImportLegacy)
 . "$PSScriptRoot\_common.ps1"
 
 # 1. Prerequisites
@@ -63,6 +64,11 @@ Invoke-Compose up migrate --exit-code-from migrate
 $organisations = (& docker compose --env-file .env -f docker-compose.yml exec -T postgres psql -U kynexone -d kynexone -tAc 'SELECT count(*) FROM tenants').Trim()
 if ($organisations -ne '0') {
     Say 'The organisation is already set up; keeping it'
+} elseif ($ImportLegacy) {
+    if (-not (Test-Path (Join-Path $ImportLegacy 'manifest.json'))) { Die "Not an export folder (no manifest.json): $ImportLegacy" }
+    $importAbs = (Resolve-Path $ImportLegacy).Path
+    Say 'Importing the organisation from the hosted service export'
+    Invoke-Compose run --rm --no-deps -T -v "${importAbs}:/import" backend --import-legacy /import
 } else {
     Say 'Creating the organisation and its first administrator'
     $setupArgs = @()
