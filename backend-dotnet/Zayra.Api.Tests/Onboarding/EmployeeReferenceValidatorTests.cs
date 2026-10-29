@@ -181,14 +181,19 @@ public class EmployeeReferenceValidatorTests
     }
 
     [Fact]
-    public async Task Create_DesignationGradeMismatch_422()   // G02
+    public async Task Create_DesignationGradeMismatch_IsAWarning_NotAnyPermissionGated()   // G02, reversed by OD8
     {
         await using var db = CreateDb(); var fx = await Seed(db);
         var other = new Grade { TenantId = fx.Tenant, CompanyId = fx.Company.Id, Name = "G9", MinSalary = 1, MaxSalary = 2, IsActive = true };
         db.Grades.Add(other); await db.SaveChangesAsync();
-        var ex = await Refused(() => new EmployeeReferenceValidator(db).ValidateAsync(fx.Tenant,
-            Req(fx) with { DesignationId = fx.Desig.Id, GradeId = other.Id }, Group, null, default));
-        ex.Field.Should().Be("gradeId");
+        var res = await new EmployeeReferenceValidator(db).ValidateAsync(fx.Tenant,
+            Req(fx) with { DesignationId = fx.Desig.Id, GradeId = other.Id }, Group, null, default);
+        var warning = res.Warnings.Should().ContainSingle(w => w.Code == "grade_differs_from_designation").Subject;
+        warning.Field.Should().Be("gradeId");
+        warning.RequiresPermission.Should().BeFalse();
+        (await new EmployeeReferenceValidator(db).ValidateAsync(fx.Tenant,
+            Req(fx) with { DesignationId = fx.Desig.Id, GradeId = fx.Grade.Id }, Group, null, default))
+            .Warnings.Should().NotContain(w => w.Code == "grade_differs_from_designation");
     }
 
     [Fact]

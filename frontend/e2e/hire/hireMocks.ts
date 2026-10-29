@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test';
 import realEmployeeDraft from '../../unit/fixtures/hire-real/employee-draft.json';
+import nationalitiesFixture from '../../unit/fixtures/reference-nationalities.json';
 
 /**
  * GET /api/employees/{id} for a draft, exactly as the API sends it (captured by the backend test HireDraftResumeContractTests;
@@ -46,10 +47,23 @@ export interface HireMockOptions {
   /** Hold the create response until released (double-click test). */
   holdCreate?: Promise<void>;
   permissions?: string[];
+  /** Arabic name suggestions the transliterate endpoint knows, by the English text sent. Any other name answers requiresManualEntry. */
+  transliterations?: Record<string, string>;
   /** P3: the company's hire templates. Omitted = the picker is not shown (the endpoint answers an empty list). */
   hireTemplates?: Array<Record<string, any>>;
   /** The template the server suggests for the chosen designation. */
   suggestedTemplateId?: string;
+  /** Exact organisation rows for company-boundary browser tests. Omitted rows keep the normal fixture. */
+  org?: {
+    companies?: Array<Record<string, any>>;
+    branches?: Array<Record<string, any>>;
+    departments?: Array<Record<string, any>>;
+    designations?: Array<Record<string, any>>;
+    grades?: Array<Record<string, any>>;
+    managers?: Array<Record<string, any>>;
+  };
+  /** Hold a company's hire-template list response so stale choices can be tested deterministically. */
+  holdHireTemplatesForCompany?: Record<string, Promise<void>>;
 }
 
 export const hireTemplateFixture = {
@@ -77,9 +91,18 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
   const discards: string[] = [];
   const gets: string[] = [];
   const errors: string[] = [];
+  const translits: Array<Record<string, any>> = [];
   let seq = 0;
   const co = options.companyCountry ? { ...company, countryCode: options.companyCountry, jurisdiction: options.companyCountry } : company;
-  const companies = options.multipleCompanies ? [co, { ...co, id: 'company-other', legalNameEn: 'Other Test Company' }] : [co];
+  const companies = options.org?.companies ?? (options.multipleCompanies ? [co, { ...co, id: 'company-other', legalNameEn: 'Other Test Company' }] : [co]);
+  const branches = options.org?.branches ?? [{ id: 'branch-1', companyId: company.id, code: 'RYD', nameEn: 'Riyadh', isActive: true }];
+  const departments = options.org?.departments ?? [{ id: 'dept-1', branchId: 'branch-1', code: 'OPS', nameEn: 'Operations', isActive: true }, { id: 'dept-2', branchId: 'branch-1', code: 'FIN', nameEn: 'Finance', isActive: true }];
+  const designations = options.org?.designations ?? [
+    { id: 'desig-1', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true, companyId: company.id },
+    { id: 'desig-2', code: 'FREE', titleEn: 'Associate', isActive: true, companyId: company.id },
+  ];
+  const grades = options.org?.grades ?? [grade, grade2];
+  const managers = options.org?.managers ?? [{ id: 17, employeeCode: 'TEST-017', fullName: 'Morgan Reviewer', status: 'Active', companyId: company.id }];
   const saBanks = [{ code: '80', nameEn: 'Al Rajhi Bank', nameAr: 'مصرف الراجحي' }, { code: '10', nameEn: 'The National Commercial Bank', nameAr: 'البنك الأهلي التجاري' }];
   page.on('pageerror', e => errors.push(e.message));
   await page.addInitScript(([locale]) => {
@@ -107,16 +130,14 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/features/modules') return reply([]);
     if (p === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (p === '/api/companies') return reply(paged(companies));
-    if (p === '/api/branches') return reply(paged([{ id: 'branch-1', companyId: company.id, code: 'RYD', nameEn: 'Riyadh', isActive: true }]));
-    if (p === '/api/departments') return reply(paged([{ id: 'dept-1', branchId: 'branch-1', code: 'OPS', nameEn: 'Operations', isActive: true }, { id: 'dept-2', branchId: 'branch-1', code: 'FIN', nameEn: 'Finance', isActive: true }]));
-    if (p === '/api/designations') return reply(paged([
-      { id: 'desig-1', code: 'SPEC', titleEn: 'Specialist', gradeId: grade.id, isActive: true, companyId: company.id },
-      { id: 'desig-2', code: 'FREE', titleEn: 'Associate', isActive: true, companyId: company.id },
-    ]));
-    if (p === '/api/grades') return reply(paged([grade, grade2]));
+    if (p === '/api/branches') return reply(paged(branches));
+    if (p === '/api/departments') return reply(paged(departments));
+    if (p === '/api/designations') return reply(paged(designations));
+    if (p === '/api/grades') return reply(paged(grades));
     if (p === '/api/organization/cost-centers') return reply(paged([]));
     if (p === '/api/admin/master-data/values') return reply([]);
-    if (p === '/api/reference/nationalities') return reply({}, 404);
+    // The real endpoint's rows ({ iso2, nameEn, nameAr, class }), not a shape invented for the mock.
+    if (p === '/api/reference/nationalities') return reply(nationalitiesFixture);
     if (p === '/api/reference/sa-banks') return reply(saBanks);
     if (p === '/api/employees/field-catalog') { catalogCalls.push(url.search); return reply({ countryCode: 'SA', fields: [] }); }
     if (p === '/api/employees/derive-work-email') return reply({ domain: 'example.test', pattern: 'first.last', localPart: 'alex.morgan', workEmail: 'alex.morgan@example.test', unique: true, suggestion: 'alex.morgan', status: 'derived' });
@@ -143,7 +164,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       if (options.draftDetail) return reply(options.draftDetail);
       return reply({ title: 'Not found', status: 404 }, 404);
     }
-    if (p === '/api/employees' && method === 'GET') return reply(paged(url.searchParams.get('status') === 'Active' ? [{ id: 17, employeeCode: 'TEST-017', fullName: 'Morgan Reviewer', status: 'Active', companyId: company.id }] : []));
+    if (p === '/api/employees' && method === 'GET') return reply(paged(url.searchParams.get('status') === 'Active' ? managers : []));
     if (/^\/api\/employees\/\d+\/hire-draft$/.test(p) && method === 'PUT') {
       puts.push(body);
       if (options.conflictOnPut) return reply({ title: 'Draft changed elsewhere.', status: 409, code: 'draft_changed_elsewhere', traceId: 't2' }, 409);
@@ -155,15 +176,29 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (/^\/api\/employees\/\d+\/rehire$/.test(p)) { rehires.push(body); return reply({ id: 44, status: 'Draft', fullName: 'Alex Morgan', updatedAtUtc: '2026-10-27T09:00:00Z' }); }
     if (/^\/api\/employees\/\d+\/draft$/.test(p) && method === 'DELETE') { discards.push(p); return route.fulfill({ status: 204 }); }
     if (p.endsWith('/pay-scale')) return reply([]);
-    if (p === '/api/onboarding/hire-templates') return reply(options.hireTemplates ?? []);
-    if (p === '/api/onboarding/hire-templates/resolve') return reply({ candidates: options.hireTemplates ?? [], suggestedId: options.suggestedTemplateId ?? null });
+    if (p === '/api/onboarding/hire-templates') {
+      const companyId = url.searchParams.get('companyId') ?? '';
+      await options.holdHireTemplatesForCompany?.[companyId];
+      return reply((options.hireTemplates ?? []).filter(x => !companyId || x.companyId === companyId));
+    }
+    if (p === '/api/onboarding/hire-templates/resolve') {
+      const companyId = url.searchParams.get('companyId') ?? '';
+      const candidates = (options.hireTemplates ?? []).filter(x => !companyId || x.companyId === companyId);
+      return reply({ candidates, suggestedId: candidates.some(x => x.id === options.suggestedTemplateId) ? options.suggestedTemplateId : null });
+    }
     if (/^\/api\/onboarding\/hire-templates\/[^/]+\/checklist-preview$/.test(p)) return reply(checklistPreviewFor(url.searchParams.get('nationality')));
     if (p === '/api/compensation/benefits/grade-defaults') return reply([]);
-    if (p === '/api/localization/transliterate') return reply({ suggestion: 'أليكس مورغان', requiresManualEntry: false });
+    if (p === '/api/localization/transliterate') {
+      translits.push(body);
+      const known = options.transliterations?.[String(body?.text)];
+      if (known) return reply({ suggestion: known, requiresManualEntry: false });
+      if (options.transliterations) return reply({ suggestion: '', requiresManualEntry: true });
+      return reply({ suggestion: 'أليكس مورغان', requiresManualEntry: false });
+    }
     return reply(p.includes('/features/') || p === '/api/notifications' ? [] : paged([]));
   });
   await page.goto(path);
-  return { calls, gets, creates, puts, dupChecks, catalogCalls, rehires, discards, errors, apiCount: () => calls.filter(c => !/auth|features|localization|notifications/.test(c)).length };
+  return { calls, gets, translits, creates, puts, dupChecks, catalogCalls, rehires, discards, errors, apiCount: () => calls.filter(c => !/auth|features|localization|notifications/.test(c)).length };
 }
 
 export async function expectNoHorizontalScroll(page: Page) {

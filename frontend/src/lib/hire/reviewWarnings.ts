@@ -5,8 +5,10 @@ import { addDays, ageOn, isRealDate } from './dates';
  * The statutory checks (CD6 warnings) the Review step can already foresee from what was typed, as server warning codes.
  * The server stays the authority: it asks for the reason with the same codes when the draft is saved. Nothing here blocks.
  */
-export function reviewWarnings(form: HireForm, ctx: { today: string }): string[] {
+export function reviewWarnings(form: HireForm, ctx: { today: string; designationGrade?: { gradeId: string; gradeCode: string } }): string[] {
   const out: string[] = [];
+  // OD8: a grade other than the designation's is allowed; the server asks for a reason.
+  if (ctx.designationGrade && form.designationId && form.gradeId && form.gradeId !== ctx.designationGrade.gradeId) out.push('grade_differs_from_designation');
   const start = isRealDate(form.startDate) ? form.startDate : '';
   if (start) {
     if (start < addDays(ctx.today, -30)) out.push('joining_backdated_over_30d');

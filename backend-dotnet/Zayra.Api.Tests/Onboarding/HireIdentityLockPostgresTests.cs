@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
+using Zayra.Api.Application.Employees.Onboarding;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
 using Zayra.Api.Application.Auth;
@@ -15,6 +16,7 @@ using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Employees.Onboarding;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Models;
 
@@ -84,6 +86,44 @@ public sealed class HireIdentityLockPostgresTests
             .Should().BeTrue("create opens the approval gap in the same transaction");
     }
 
+    [Theory]
+    [InlineData(EmployeeStatuses.Draft)]
+    [InlineData(EmployeeStatuses.Invited)]
+    public async Task Activation_GradeExceptionAuditLookup_WorksOnPostgres_ForPreEmploymentStatuses(string status)
+    {
+        var seed = await SeedAsync();
+        await using var db = _fx.CreateDb();
+        var designationGrade = new Grade { TenantId = seed.TenantId, CompanyId = seed.CompanyId, Code = $"DG-{Guid.NewGuid():N}", Name = "Designation grade", IsActive = true };
+        var exceptionGrade = new Grade { TenantId = seed.TenantId, CompanyId = seed.CompanyId, Code = $"EG-{Guid.NewGuid():N}", Name = "Exception grade", IsActive = true };
+        var designation = new Designation { TenantId = seed.TenantId, CompanyId = seed.CompanyId, Code = $"D-{Guid.NewGuid():N}", TitleEn = "Postgres grade guard", GradeId = designationGrade.Id, IsActive = true };
+        var employee = new Employee
+        {
+            TenantId = seed.TenantId, CompanyId = seed.CompanyId, EmployeeCode = $"E-{Guid.NewGuid():N}",
+            FullName = "Postgres Grade Guard", EnglishName = "Postgres Grade Guard", Status = status,
+            JoiningDate = DateTime.UtcNow.Date, DesignationId = designation.Id, GradeId = exceptionGrade.Id,
+        };
+        db.AddRange(designationGrade, exceptionGrade, designation, employee);
+        await db.SaveChangesAsync();
+
+        var context = new RequestContext("127.0.0.1", "test", Guid.NewGuid(), seed.TenantId, ["HR Manager"], []);
+        var guard = new EmployeeInputGuard(db);
+        await Assert.ThrowsAsync<EmployeeWarningsRequireAckException>(() =>
+            guard.EnforceActivationAsync(seed.TenantId, employee.Id, context, default));
+
+        db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, EmployeeStoredDataCheck.WaiverAction,
+            "Employee", employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), context,
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                code = EmployeeInputGuard.GradeCode,
+                reason = "Approved as a documented grade exception",
+                designationId = designation.Id,
+                gradeId = exceptionGrade.Id,
+            })));
+        await db.SaveChangesAsync();
+
+        await guard.EnforceActivationAsync(seed.TenantId, employee.Id, context, default);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
     private sealed record Seed(Guid TenantId, Guid CompanyId);
 
@@ -101,13 +141,18 @@ public sealed class HireIdentityLockPostgresTests
 
     private async Task<IActionResult?[]> RaceAsync(Seed seed, EmployeeCreateRequest a, EmployeeCreateRequest b)
     {
-        var barrier = new TaskCompletionSource();
+        var barrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Both requests must finish the *pre-transaction* duplicate lookup before either may create.
+        // A start barrier alone does not guarantee this: if one create commits first, the second
+        // pre-check can see a PROBABLE name+DOB match, which is intentionally advisory. That is
+        // sequential behavior, not the check-then-insert race this test is meant to exercise.
+        var prechecks = new DuplicatePrecheckGate();
         async Task<IActionResult?> One(EmployeeCreateRequest request)
         {
             await using var db = _fx.CreateDb();
             await db.Database.OpenConnectionAsync();      // warm the connection before the race
             var controller = Controller(db, seed);
-            var service = Service(db);
+            var service = Service(db, new GatedDuplicateDetector(db, prechecks));
             await barrier.Task;
             var result = await controller.CreateEmployee(request, service, default);
             return result.Result;
@@ -119,8 +164,41 @@ public sealed class HireIdentityLockPostgresTests
         return await Task.WhenAll(t1, t2);
     }
 
-    private static EmployeeManagementService Service(ZayraDbContext db) =>
-        new(db, new AuditService(db), new LockDocs(), TestNotifications.For(db));
+    private sealed class DuplicatePrecheckGate
+    {
+        private readonly TaskCompletionSource _bothFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _arrivals;
+
+        public async Task WaitAsync(CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _arrivals) == 2) _bothFinished.TrySetResult();
+            // Fail a broken setup instead of hanging an entire integration shard indefinitely.
+            await _bothFinished.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        }
+    }
+
+    private sealed class GatedDuplicateDetector : IEmployeeDuplicateDetector
+    {
+        private readonly EmployeeDuplicateDetector _inner;
+        private readonly DuplicatePrecheckGate _gate;
+        private int _calls;
+
+        public GatedDuplicateDetector(ZayraDbContext db, DuplicatePrecheckGate gate)
+        {
+            _inner = new EmployeeDuplicateDetector(db);
+            _gate = gate;
+        }
+
+        public async Task<IReadOnlyList<DuplicateMatch>> FindAsync(Guid tenantId, DuplicateProbe probe, CancellationToken ct)
+        {
+            var matches = await _inner.FindAsync(tenantId, probe, ct);
+            if (Interlocked.Increment(ref _calls) == 1) await _gate.WaitAsync(ct);
+            return matches;
+        }
+    }
+
+    private static EmployeeManagementService Service(ZayraDbContext db, IEmployeeDuplicateDetector? detector = null) =>
+        new(db, new AuditService(db), new LockDocs(), TestNotifications.For(db), duplicateDetector: detector);
 
     private static EmployeesController Controller(ZayraDbContext db, Seed seed)
     {

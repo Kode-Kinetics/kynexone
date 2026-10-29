@@ -8,7 +8,7 @@ import { normaliseReviewItems, type ReviewItem } from '../lib/hire/reviewLabels'
 
 /** Items are { key, label } (English-only label); render them with reviewItemLabel so Arabic works. */
 export interface HireReview { blockers: ReviewItem[]; warnings: ReviewItem[]; notProvided: ReviewItem[]; essSections: string[] }
-export interface ApiNationality { code: string; nameEn: string; nameAr: string; class?: string }
+export interface ApiNationality { iso2: string; nameEn: string; nameAr: string; class?: string }
 
 /** 40-ARCHITECTURE section 3.2 / 3.4. One Idempotency-Key per wizard session; the server replays instead of creating twice. */
 export const employeeHireApi = {

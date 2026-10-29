@@ -152,7 +152,7 @@ public class HireValidationApiTests : IClassFixture<EmployeeDraftCreateHttpFixtu
     }
 
     [Fact]
-    public async Task Create_DesignationGradeMismatch_422()   // G02
+    public async Task Create_DesignationGradeMismatch_Is409Warning_NotA422()   // G02, reversed by OD8
     {
         Guid desig, otherGrade;
         using (var scope = _fx.Host.Services.CreateScope())
@@ -164,8 +164,10 @@ public class HireValidationApiTests : IClassFixture<EmployeeDraftCreateHttpFixtu
             db.AddRange(g1, g2, d); await db.SaveChangesAsync(); desig = d.Id; otherGrade = g2.Id;
         }
         var (status, json) = await Post(Body(new() { ["companyId"] = _fx.CompanyId, ["designationId"] = desig, ["gradeId"] = otherGrade }));
-        status.Should().Be(HttpStatusCode.UnprocessableEntity, json.ToString());
-        json.GetProperty("field").GetString().Should().Be("gradeId");
+        status.Should().Be(HttpStatusCode.Conflict, json.ToString());
+        json.GetProperty("code").GetString().Should().Be("warnings_require_acknowledgement");
+        json.GetProperty("warnings").EnumerateArray().Should().Contain(w => w.GetProperty("code").GetString() == "grade_differs_from_designation"
+            && w.GetProperty("field").GetString() == "gradeId");
     }
 
     public static IEnumerable<object[]> DraftStringProperties() =>

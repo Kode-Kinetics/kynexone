@@ -5,6 +5,7 @@ using Zayra.Api.Application.Employees.Onboarding;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Scope;
+using Zayra.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace Zayra.Api.Infrastructure.Employees.Onboarding;
@@ -14,6 +15,7 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
 {
     public const string OverridePermission = "employees.override_validation";
     private const int ReasonMin = 10, ReasonMax = 500;
+    public const string GradeCode = EmployeeWarningCodes.GradeDiffersFromDesignation;
 
     private readonly ZayraDbContext _db;
     private readonly IRequestEntityScopeResolver? _scope;
@@ -62,6 +64,63 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
             throw new EmployeeValidationException(400, EmployeeProblemCodes.ValidationFailed,
                 errors.ToDictionary(k => k.Key, k => k.Value.ToArray()),
                 "Some fields need attention before activation: " + string.Join(", ", errors.Keys) + ".");
+        await EnforceGradeExceptionAsync(tenantId, employeeId, context, ct, acknowledged);
+    }
+
+    /// <summary>
+    /// OD8: a draft autosave never asks for the grade reason, so before a person becomes Active the STORED designation/grade
+    /// pair is re-checked. A recorded reason for that exact pair (employee.warning_overridden) counts; otherwise the caller must
+    /// acknowledge it now (409), and the reason is audited with the pair.
+    /// </summary>
+    private async Task EnforceGradeExceptionAsync(Guid tenantId, int employeeId, RequestContext context, CancellationToken ct,
+        IReadOnlyCollection<AcknowledgedWarning>? acknowledged)
+    {
+        var e = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Stored designation/grade pair for the activation check; tenant re-applied.")
+            .AsNoTracking().Where(x => x.Id == employeeId).Select(x => new { x.Status, x.DesignationId, x.GradeId }).FirstOrDefaultAsync(ct);
+        // First activation only (Draft/Invited to Active). Someone previously employed who is reinstated or rehired keeps the
+        // pair they already had; legacy data commonly has such pairs and the offboarding flow has no way to acknowledge one.
+        if (e is null || (!string.Equals(e.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(e.Status, EmployeeStatuses.Invited, StringComparison.OrdinalIgnoreCase))) return;
+        if (e.DesignationId is not Guid designationId || e.GradeId is not Guid gradeId) return;
+        var designationGrade = await ScopedBypass.TenantWide(_db.Designations, tenantId, "Designation's grade for the activation check; tenant re-applied.")
+            .AsNoTracking().Where(d => d.Id == designationId).Select(d => d.GradeId).FirstOrDefaultAsync(ct);
+        if (designationGrade is null || designationGrade == gradeId) return;
+
+        var id = employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // Metadata is a PostgreSQL json column. Keep only relational predicates in SQL (json LIKE is invalid), then
+        // parse the small employee-specific candidate set structurally so substrings and malformed legacy rows fail closed.
+        var recorded = (await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, "Recorded grade-exception reasons of this employee for the activation check; tenant re-applied.").AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Action == EmployeeStoredDataCheck.WaiverAction
+                && a.EntityName == "Employee" && a.EntityId == id && a.Metadata != null)
+            .Select(a => a.Metadata!).ToListAsync(ct))
+            .Any(m => IsRecordedGradeException(m, designationId, gradeId));
+        if (recorded) return;
+
+        if (acknowledged?.FirstOrDefault(a => a.Code == GradeCode) is not { } ack)
+            throw new EmployeeWarningsRequireAckException([new EmployeeWarning(GradeCode, "gradeId", "The selected grade is not the grade of this designation.")]);
+        RequireReason(ack);
+        _db.AuditLogs.Add(Zayra.Api.Infrastructure.Auth.AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, EmployeeStoredDataCheck.WaiverAction,
+            "Employee", id, context with { TenantId = tenantId },
+            System.Text.Json.JsonSerializer.Serialize(new { code = GradeCode, reason = ack.Reason?.Trim(), designationId, gradeId })));
+    }
+
+    private static bool IsRecordedGradeException(string metadata, Guid designationId, Guid gradeId)
+    {
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(metadata);
+            var root = json.RootElement;
+            return root.ValueKind == System.Text.Json.JsonValueKind.Object
+                && root.TryGetProperty("code", out var code) && code.ValueKind == System.Text.Json.JsonValueKind.String && code.GetString() == GradeCode
+                && root.TryGetProperty("designationId", out var designation) && designation.ValueKind == System.Text.Json.JsonValueKind.String
+                && Guid.TryParse(designation.GetString(), out var recordedDesignation) && recordedDesignation == designationId
+                && root.TryGetProperty("gradeId", out var grade) && grade.ValueKind == System.Text.Json.JsonValueKind.String
+                && Guid.TryParse(grade.GetString(), out var recordedGrade) && recordedGrade == gradeId;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
     }
 
     private async Task<EmployeeCreateRequest> RunAsync(

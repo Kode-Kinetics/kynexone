@@ -12,16 +12,16 @@ import { useTenantSettings } from '@/src/contexts/TenantSettingsContext';
 import { branchesApi, companiesApi, departmentsApi, designationsApi, gradesApi } from '@/src/api/organization';
 import { employeesApi } from '@/src/api/employees';
 import { employeeFieldCatalogApi } from '@/src/api/employeeFieldCatalog';
-import { employeeHireApi, type ApiNationality } from '@/src/api/employeeHire';
+import { employeeHireApi } from '@/src/api/employeeHire';
 import { EMPTY_EMPLOYEE_REFERENCE_LISTS, loadEmployeeReferenceLists } from '@/src/hooks/useReferenceLists';
 import { createAutosave, type AutosaveState } from '@/src/lib/hire/autosave';
 import { dateLocale } from '@/src/lib/format';
 import { DEFAULT_ZONE, todayInZone } from '@/src/lib/hire/dates';
-import { emptyHireForm, hasContent, type HireForm } from '@/src/lib/hire/hireForm';
+import { emptyHireForm, hasContent, rebaseHireCompany, type HireForm } from '@/src/lib/hire/hireForm';
 import { stepOf, validateHire, type FieldIssue } from '@/src/lib/hire/hireValidation';
 import { draftLoadProblem, formFromEmployee, isResumable } from '@/src/lib/hire/draftHydrate';
 import type { SaBank } from '@/src/lib/hire/iban';
-import { defaultIdType, type CountryOption } from '@/src/lib/hire/nationality';
+import { countryOptionsFromApi, defaultIdType, type CountryOption } from '@/src/lib/hire/nationality';
 import { buildCreateRequest, newIdempotencyKey, type AcknowledgedWarning } from '@/src/lib/hire/payload';
 import { parseHireProblem, serverFieldIssue, type HireProblem, type ServerWarning } from '@/src/lib/hire/problem';
 import { serverFieldToForm } from '@/src/lib/hire/serverFields';
@@ -148,7 +148,8 @@ export function HireWizard() {
     }).catch(() => { if (!cancelled) { setLoadFailed(true); setLoaded(true); } });
     employeeHireApi.saBanks().then(list => { if (!cancelled && list) setBanks(list); });
     employeeHireApi.nationalities().then(list => {
-      if (!cancelled && list?.length) { const opts = list.map((n: ApiNationality) => ({ code: n.code, nameEn: n.nameEn, nameAr: n.nameAr })); nationalityOptions.current = opts; setCountryOptions(opts); }
+      const opts = countryOptionsFromApi(list as unknown as Array<Record<string, unknown>> | null);
+      if (!cancelled && opts.length) { nationalityOptions.current = opts; setCountryOptions(opts); }
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,6 +179,29 @@ export function HireWizard() {
     setForm(f => ({ ...f, [key]: value }));
     setServerIssues(s => (s.some(i => i.field === key) ? s.filter(i => i.field !== key) : s));
   }, []);
+
+  const onCompanyChange = useCallback((companyId: string) => {
+    if (companyId === form.companyId) return;
+    const withoutTemplate = applied ? { ...form, ...planUndo(form, applied.applied, applied.prior) } : form;
+    const next = rebaseHireCompany(withoutTemplate, companyId, lookups);
+    const dependent: Array<keyof HireForm> = ['designationId', 'gradeId', 'branchId', 'departmentId', 'managerId'];
+    const changed = dependent.filter(key => next[key] !== form[key]);
+
+    editedRef.current.add('companyId');
+    for (const key of changed) editedRef.current.delete(key);
+    setForm(next);
+    setApplied(null);
+    setWarnings(null);
+    setNotice(null);
+    setServerIssues(rows => rows.filter(row => row.field !== 'companyId' && !changed.includes(row.field)));
+    setSummaryFields(rows => rows.filter(field => field !== 'companyId' && !changed.includes(field)));
+    // Both warnings are company-sensitive: a shared grade can resolve to a different company pay package even when
+    // its id survives the switch. Never carry a reason accepted for the old employer into the new one.
+    setAcks(rows => rows.filter(row => row.code !== 'grade_differs_from_designation' && row.code !== 'grade_band_out_of_range'));
+    setMatches([]);
+    setDifferentReason(null);
+    lastProbe.current = '';
+  }, [applied, form, lookups]);
 
   const onApplyTemplate = useCallback((template: HireTemplate) => {
     const department = lookups.departments.find(d => d.id === (form.departmentId || template.defaults.departmentId));
@@ -426,7 +450,7 @@ export function HireWizard() {
         <h2 ref={headingRef} tabIndex={-1} className="mb-4 text-lg font-semibold text-slate-900 outline-none dark:text-white">{label(step)}</h2>
         {!loaded ? <p className="text-sm text-slate-500">{t('Loading…')}</p> : (
           <>
-            {step === 1 && <HireBasicsStep {...stepProps} onNameBlur={runDuplicateCheck} applied={applied} onApplyTemplate={onApplyTemplate} onUndoTemplate={onUndoTemplate} />}
+            {step === 1 && <HireBasicsStep {...stepProps} onNameBlur={runDuplicateCheck} onCompanyChange={onCompanyChange} applied={applied} onApplyTemplate={onApplyTemplate} onUndoTemplate={onUndoTemplate} />}
             {step === 2 && <PersonContactStep {...stepProps} countryOptions={countryOptions} onNationality={onNationality} onDobBlur={runDuplicateCheck} />}
             {step === 3 && <JobPayDocsStep {...stepProps} canOverrideChecksum={canOverride} resident={resident}
               onResident={v => { setResident(v); setForm(f => ({ ...f, idType: defaultIdType(f.nationalityCode, v) ?? f.idType })); }} onIdBlur={runDuplicateCheck} />}

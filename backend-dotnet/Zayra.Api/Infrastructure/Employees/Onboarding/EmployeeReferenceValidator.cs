@@ -72,8 +72,13 @@ public sealed class EmployeeReferenceValidator
             var row = await ScopedBypass.TenantWide(_db.Grades, tenantId, Why).AsNoTracking()
                 .Where(x => x.Id == gradeId && !x.IsDeleted && x.IsActive).Select(x => new { x.CompanyId, x.MinSalary, x.MaxSalary }).FirstOrDefaultAsync(ct);
             if (row is null || !SameCompanyOrShared(row.CompanyId)) throw Invalid("gradeId", "grade");
-            // The designation carries its grade: a different explicit grade is a contradictory request.
-            if (designationGrade is Guid dg && dg != gradeId) throw Invalid("gradeId", "grade");
+            // OD8: any active grade of the company may be chosen. When it is not the designation's own grade, that is an
+            // exception the caller confirms with a reason (any HR user, not permission-gated), never a refusal. A draft
+            // autosave is never stopped by it (the guard raises warnings only on create, update and activation). An
+            // existing, non-draft employee whose placement is unchanged is not asked again on every save.
+            if (designationGrade is Guid dg && dg != gradeId && !await PlacementUnchangedAsync(tenantId, selfEmployeeId, r.DesignationId, gradeId, ct))
+                warnings.Add(new EmployeeWarning(EmployeeWarningCodes.GradeDiffersFromDesignation, "gradeId",
+                    "The selected grade is not the grade of this designation."));
             if (r.SalaryBreakdown is { } sb)
             {
                 var total = (sb.BasicSalary ?? 0) + (sb.HousingAllowance ?? 0) + (sb.TransportAllowance ?? 0) + (sb.FoodAllowance ?? 0)
@@ -92,6 +97,15 @@ public sealed class EmployeeReferenceValidator
             await CheckManagerAsync(tenantId, sm, "secondLevelManagerEmployeeId", "second-level manager", company, scope, selfEmployeeId, canAccessEmployee, cycleCheck: false, ct);
 
         return new ReferenceValidationResult(company, warnings);
+    }
+
+    private async Task<bool> PlacementUnchangedAsync(Guid tenantId, int? employeeId, Guid? designationId, Guid gradeId, CancellationToken ct)
+    {
+        if (employeeId is not int id) return false;
+        var stored = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, Why).AsNoTracking()
+            .Where(e => e.Id == id && !e.IsDeleted).Select(e => new { e.Status, e.DesignationId, e.GradeId }).FirstOrDefaultAsync(ct);
+        return stored is not null && !string.Equals(stored.Status, "Draft", StringComparison.OrdinalIgnoreCase)
+            && stored.DesignationId == designationId && stored.GradeId == gradeId;
     }
 
     /// <summary>Resolves the employing company (an id, or the only reachable one when none is named); 422 invalid_company otherwise.</summary>
