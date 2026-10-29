@@ -253,13 +253,13 @@ public sealed class PayApprovalsController : ControllerBase
         var shared = 0;
         if (iban.Length > 0)
         {
-            // Count only: the other employee's identity is never read into the response, so company scope cannot leak through it.
+            // The warning is useful only inside the approver's company scope. A tenant-wide count would reveal that
+            // an otherwise invisible sibling company has an employee using the same bank account.
             var sharing = await _db.EmployeePayrollProfiles.AsNoTracking()
                 .Where(p => p.TenantId == tenantId && !p.IsDeleted && p.EmployeeId != employee.Id && p.Iban != "" && p.Iban.Replace(" ", "").ToUpper() == iban)
                 .Select(p => p.EmployeeId).Distinct().ToListAsync(ct);
-            shared = sharing.Count == 0 ? 0 : await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
-                    "Shared-account warning: how many other employees in the tenant hold this account; only the count leaves the server.")
-                .AsNoTracking().CountAsync(e => sharing.Contains(e.Id) && !e.IsDeleted, ct);
+            shared = sharing.Count == 0 ? 0 : await _db.Employees.AsNoTracking()
+                .CountAsync(e => e.TenantId == tenantId && sharing.Contains(e.Id) && !e.IsDeleted, ct);
         }
         return new View(package, gross, profile?.BankName ?? "", iban.Length >= 4 ? iban[^4..] : null, account.Length >= 4 ? account[^4..] : null,
             companyName, designation, entered is null ? null : ToActor(entered.UserId, entered.CreatedAtUtc),

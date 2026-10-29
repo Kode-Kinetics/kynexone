@@ -371,12 +371,12 @@ function AutoPlanModal({ definitions, onClose, onDone }: AutoPlanModalProps) {
           <div className="flex gap-6">
             <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={skipWeekend} onChange={e => setSkipWeekend(e.target.checked)} />
-              
+
               {t('Skip weekends')}
             </label>
             <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={overwriteExisting} onChange={e => setOverwriteExisting(e.target.checked)} />
-              
+
               {t('Overwrite existing')}
             </label>
           </div>
@@ -571,7 +571,7 @@ function AiPlanModal({ onClose, onDone }: AiPlanModalProps) {
 
                 <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                   <input type="checkbox" className="h-4 w-4 rounded border-slate-300" checked={overwriteExisting} onChange={e => setOverwriteExisting(e.target.checked)} />
-                  
+
                   {t('Overwrite existing assignments on these dates')}
                 </label>
               </div>
@@ -650,7 +650,7 @@ function RosterTab({ definitions }: RosterTabProps) {
             onClick={() => setWeekStart(getWeekStart(new Date()))}
             className="rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-500 hover:bg-slate-50 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/10"
           >
-            
+
             {t('This week')}
           </button>
         </div>
@@ -825,7 +825,7 @@ function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
         <button type="button"
           onClick={() => setWeekStart(getWeekStart(new Date()))}
           className="rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-500 hover:bg-slate-50 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/10">
-          
+
           {t('This week')}
         </button>
       </div>
@@ -899,7 +899,7 @@ function MyScheduleTab({ definitions }: { definitions: ShiftDefinition[] }) {
       <div>
         <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
           <CalendarDays className="h-3.5 w-3.5" />
-          
+
           {t('Upcoming — next 4 weeks')}
         </h3>
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -1099,7 +1099,7 @@ export function PolicyTab({ definitions, onDirtyChange }: { definitions: ShiftDe
   return (
     <div className="max-w-3xl space-y-6">
       <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
-        
+
         {t('These rules drive the AI Roster Planner. Defaults are inferred from your shift names (morning / evening / night / afternoon); adjust them to fit your operation.')}
       </p>
 
@@ -1109,7 +1109,7 @@ export function PolicyTab({ definitions, onDirtyChange }: { definitions: ShiftDe
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Gender shift rules')}</h3>
           <button type="button" className="btn-secondary text-xs"
             onClick={() => setPolicy(p => p ? { ...p, genderRules: [...p.genderRules, { gender: 'Female', shiftCodes: [], mode: 'required' }] } : p)}>
-            
+
             {t('+ Add rule')}
           </button>
         </div>
@@ -1285,13 +1285,13 @@ export function ShiftsPage() {
             <button type="button" onClick={() => setAutoPlanOpen(true)}
               className="btn-secondary flex items-center gap-1.5 text-sm">
               <Wand2 className="h-3.5 w-3.5" />
-              
+
               {t('Auto Plan')}
             </button>
             <button type="button" onClick={() => setAiPlanOpen(true)}
               className="btn-primary flex items-center gap-1.5 text-sm">
               <Wand2 className="h-3.5 w-3.5" />
-              
+
               {t('AI Plan')}
             </button>
           </div>
@@ -1303,7 +1303,7 @@ export function ShiftsPage() {
         <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
           <button type="button"
             className="rounded-lg px-4 py-1.5 text-sm font-medium bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">
-            
+
             {t('My Schedule')}
           </button>
         </div>

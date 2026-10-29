@@ -24,7 +24,7 @@ public sealed record FloorAcknowledgement(string Code, string? Reason);
 public sealed record FloorWarning(
     string Code, string Field, string Message, bool RequiresPermission = false,
     decimal? StatutoryValue = null, decimal? ConfiguredValue = null, string? Citation = null, string? MessageAr = null,
-    string? CitationAr = null)
+    string? CitationAr = null, string? ConfigurationFingerprint = null)
 {
     /// <summary>Alias of <see cref="Message"/> for clients that name the English text explicitly.</summary>
     public string MessageEn => Message;
@@ -36,7 +36,8 @@ public sealed record FloorCheck(FloorWarning Warning, bool Below, string Label, 
 /// <summary>An acknowledgement as kept on the configured thing (policy, country rule): who, when, value, statutory value, citation, note.</summary>
 public sealed record StoredFloorAck(
     string Code, string Field, decimal? ConfiguredValue, decimal? StatutoryValue, string? Citation,
-    string Reason, string AcknowledgedBy, Guid? AcknowledgedById, DateTime AcknowledgedAtUtc);
+    string Reason, string AcknowledgedBy, Guid? AcknowledgedById, DateTime AcknowledgedAtUtc,
+    string? ConfigurationFingerprint = null);
 
 public static class FloorWarningGate
 {
@@ -130,10 +131,12 @@ public static class FloorAckStore
     public static string? Serialize(IReadOnlyCollection<StoredFloorAck> acks)
         => acks.Count == 0 ? null : JsonSerializer.Serialize(acks, Json);
 
-    /// <summary>The stored answer to <paramref name="warning"/>: same code AND same configured value, else null.
-    /// Changing the value again asks again.</summary>
+    /// <summary>The stored answer to <paramref name="warning"/>: same code, configured value and complete
+    /// configuration fingerprint, else null. Changing any warning determinant asks again.</summary>
     public static StoredFloorAck? Covering(IEnumerable<StoredFloorAck> stored, FloorWarning warning)
-        => stored.FirstOrDefault(a => a.Code == warning.Code && a.ConfiguredValue == warning.ConfiguredValue);
+        => stored.FirstOrDefault(a => a.Code == warning.Code
+            && a.ConfiguredValue == warning.ConfiguredValue
+            && string.Equals(a.ConfigurationFingerprint, warning.ConfigurationFingerprint, StringComparison.Ordinal));
 
     /// <summary>
     /// The acknowledgements to keep after a save: those from earlier that still answer a live warning, plus
@@ -150,7 +153,7 @@ public static class FloorAckStore
             var made = fresh.FirstOrDefault(c => c.Warning.Code == w.Code);
             if (made.Warning is not null)
                 result.Add(new StoredFloorAck(w.Code, w.Field, w.ConfiguredValue, w.StatutoryValue, w.Citation,
-                    made.Ack.Reason!.Trim(), byName, byId, nowUtc));
+                    made.Ack.Reason!.Trim(), byName, byId, nowUtc, w.ConfigurationFingerprint));
             else if (Covering(previous, w) is { } kept)
                 result.Add(kept);
         }

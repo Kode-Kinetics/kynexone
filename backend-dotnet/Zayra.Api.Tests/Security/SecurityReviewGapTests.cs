@@ -272,6 +272,18 @@ public class SecurityReviewGapTests
     }
 
     [Theory]
+    [InlineData("RestDayWork")]
+    [InlineData("made-up-client-value")]
+    public async Task CompOff_ManualCreate_RejectsSystemReservedOrUnknownWorkTypes(string workType)
+    {
+        var w = await World.CreateAsync();
+        var c = w.CompOffController(w.Principal("HR Manager", w.ColleagueUserId, w.ColleagueHr.Id, await SeededAsync("HR Manager")));
+
+        Assert.IsType<BadRequestObjectResult>(await c.Create(CompOff(w.Stranger.Id) with { WorkType = workType }, default));
+        Assert.Empty(w.Db.CompOffCredits);
+    }
+
+    [Theory]
     [InlineData("Manager")]
     [InlineData("Admin")]
     public async Task CompOff_ApproveYourOwnCredit_IsRefused(string role)
@@ -354,7 +366,7 @@ public class SecurityReviewGapTests
             $"{e.EmployeeCode},{DateTime.UtcNow.Date.AddDays(-1).AddHours(8 + i):yyyy-MM-ddTHH:mm:ssZ},In"));
 
     private static CreateCompOffRequest CompOff(int employeeId) =>
-        new(employeeId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7)), "Weekend work", 8m, 1m, null);
+        new(employeeId, DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-7)), "WeekendWork", 8m, 1m, null);
 
     // The permissions each seeded role really holds, read once from AuthSeeder.
     private static readonly Lazy<Task<IReadOnlyDictionary<string, string[]>>> SeededRoles = new(async () =>

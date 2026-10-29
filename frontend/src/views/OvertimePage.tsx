@@ -513,7 +513,7 @@ function TeamOTTab() {
                 ))}
               </ul>
               <p className="text-xs text-slate-400">
-                
+
                 {t('These are saved as attendance exceptions so they can be resolved rather than lost.')}
               </p>
             </div>
@@ -688,7 +688,7 @@ function ApprovalsTab({ isAdmin, isHRManager, isManager }: { isAdmin: boolean; i
                 </p>
                 {isAdmin && approveModal.status === 'PendingManager' && (
                   <div className="rounded-lg bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:bg-blue-500/10 dark:text-blue-400">
-                    
+
                     {t('Admin override — this will skip the manager→HR chain and approve immediately.')}
                   </div>
                 )}
@@ -808,12 +808,12 @@ function CreatePolicyModal({ existing, onClose, onSaved }: { existing?: Overtime
           <div className="mt-3 grid grid-cols-2 gap-2">
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.requiresApproval} onChange={e => set('requiresApproval', e.target.checked)} className="rounded" />
-              
+
               {t('Requires Manager Approval')}
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.allowCompOffConversion} onChange={e => set('allowCompOffConversion', e.target.checked)} className="rounded" />
-              
+
               {t('Allow Comp-Off Conversion')}
             </label>
           </div>
@@ -995,7 +995,7 @@ function CalcPreviewTab() {
           than restated as hard-coded numbers, which is what made them drift in the first place.
         */}
         <div className="rounded-lg bg-slate-50 p-4 font-mono text-sm text-slate-700 dark:bg-white/5 dark:text-slate-300">
-          
+
           {t('OT Pay = Approved Hours × (Base Hourly + Basic Hourly × (Multiplier − 1))')}
           <br /><br />
           <span className="text-xs text-slate-400">
@@ -1147,7 +1147,7 @@ function ReportsTab() {
           <div>
             <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('OT Anomaly Alerts')}</p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              
+
               {t('If approved overtime payout exceeds 35% of regular gross earnings for any employee, the payroll engine flags this as a warning. Review the Payroll Validation tab after processing.')}
             </p>
           </div>

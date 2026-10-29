@@ -375,6 +375,32 @@ public class KsaStatutorySpecialLeaveTests
     }
 
     [Fact]
+    public async Task LoweringOnlyTheWorkingDayCap_RequiresAFreshAcknowledgement()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var controller = PoliciesController(db, tenantId);
+        var created = (CreatedResult)await controller.Create(
+            Policy(mat.Id, days: 70m, maxPerRequest: 70m, calendar: false) with
+            { AcknowledgedWarnings = Ack(KsaLeaveFloorChecks.SpecialWorkingDays) }, default);
+        var id = ((LeavePolicy)created.Value!).Id;
+
+        var changedCap = new UpdateLeavePolicyRequest(
+            Name: null, CountryCode: null, CompanyId: null, BranchId: null, DepartmentName: null, Grade: null,
+            EmploymentType: null, ContractType: null, Gender: null, AppliesOnProbation: null,
+            AnnualEntitlementDays: null, AccrualMethod: null, CarryForwardMax: null, CarryForwardExpiry: null,
+            EncashmentAllowed: null, EncashmentMaxDays: null, MinimumDaysPerRequest: null,
+            MaximumDaysPerRequest: 60m, NoticeRequiredDays: null, WeekendsIncluded: null,
+            PublicHolidaysIncluded: null, PayrollImpact: null, ApprovalWorkflowId: null, Status: null);
+
+        var warning = AssertAckRequired(await controller.Update(id, changedCap, default));
+        warning.GetProperty("warnings").EnumerateArray().Should()
+            .Contain(w => w.GetProperty("code").GetString() == KsaLeaveFloorChecks.SpecialWorkingDays);
+    }
+
+    [Fact]
     public async Task SaudiMaternityPolicy_OnWorkingDays_AtEightyFourOrMore_IsSaved_WithAReviewPrompt()
     {
         // At or above the figure a working-day policy grants at least the statute in its own unit, so

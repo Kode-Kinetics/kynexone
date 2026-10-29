@@ -19,6 +19,22 @@ public class AuditTrailIntegrityTests
     private static ZayraDbContext CreateDb() =>
         new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
+    private sealed class TamperThirteenthAuditRowInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            var row = eventData.Context!.ChangeTracker.Entries<AuditLog>()
+                .Where(e => e.State == EntityState.Added)
+                .Select(e => e.Entity)
+                .OrderBy(e => e.CreatedAtUtc).ThenBy(e => e.Id)
+                .Skip(12).First();
+            row.Action = "tampered after sealing";
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
     private static RequestContext Ctx(Guid tenant) => new("10.0.0.1", "agent", Guid.NewGuid(), tenant);
 
     [Fact]
@@ -168,6 +184,34 @@ public class AuditTrailIntegrityTests
         await db.SaveChangesAsync();
         var report = (AuditIntegrityReport)((OkObjectResult)await Controller(db, tenant).Integrity(maxRows: 12)).Value!;
         report.CheckedEntries.Should().Be(12);
+        report.IsComplete.Should().BeFalse();
+        report.Truncated.Should().BeTrue();
+        report.IsValid.Should().BeFalse("a verified prefix must not claim the unvisited suffix is valid");
+        report.ContinuationBoundary.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task Integrity_CorruptionImmediatelyAfterTheCap_IsReportedAsUnverifiedUntilACompleteWalkFindsIt()
+    {
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .AddInterceptors(new TamperThirteenthAuditRowInterceptor()).Options);
+        var tenant = Guid.NewGuid();
+        var svc = new AuditService(db);
+        for (var i = 0; i < 15; i++) svc.Stage("a." + i, "Thing", i.ToString(), Ctx(tenant), null);
+        await db.SaveChangesAsync();
+        var rows = await db.AuditLogs.Where(x => x.TenantId == tenant).OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).ToListAsync();
+
+        var capped = (AuditIntegrityReport)((OkObjectResult)await Controller(db, tenant).Integrity(maxRows: 12)).Value!;
+        capped.Failures.Should().BeEmpty("the corrupt row was deliberately just beyond the visited prefix");
+        capped.IsComplete.Should().BeFalse();
+        capped.IsValid.Should().BeFalse();
+
+        AuditIntegrityGate.ResetForTests();
+        var complete = (AuditIntegrityReport)((OkObjectResult)await Controller(db, tenant).Integrity(maxRows: 30)).Value!;
+        complete.IsComplete.Should().BeTrue();
+        complete.IsValid.Should().BeFalse();
+        complete.FirstBreak!.AuditLogId.Should().Be(rows[12].Id);
     }
 
     [Fact]

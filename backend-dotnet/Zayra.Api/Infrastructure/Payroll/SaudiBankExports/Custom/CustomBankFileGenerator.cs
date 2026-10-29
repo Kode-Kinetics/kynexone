@@ -426,8 +426,7 @@ public static class CustomBankFileGenerator
                             return Fail("field_empty", "is empty. A blank value is never written.");
                         s = string.Empty;
                     }
-                        if (s.Any(char.IsControl)) return Fail("value_control_character", "contains a tab, line break or other control character.");
-                    if (s.Any(CustomBankTemplates.IsHiddenChar)) return Fail("value_hidden_character", "contains an invisible or direction-control character.");
+                    if (s.Any(char.IsControl)) return Fail("value_control_character", "contains a tab, line break or other control character.");
                     if (s.Any(CustomBankTemplates.IsHiddenChar)) return Fail("value_hidden_character", "contains an invisible or direction-control character.");
                     if (c.UpperCase) s = s.ToUpperInvariant();
                     text = Csv.Guard(s);

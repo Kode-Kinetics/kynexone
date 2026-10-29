@@ -234,7 +234,7 @@ public class LeaveBalancesController : ControllerBase
     public sealed record AdjustmentDecisionRequest(string? Note);
 
     [HttpGet("adjustments")]
-    [HasPermission("leave.policy_manage")]
+    [HasPermission("leave.write")]
     public async Task<IActionResult> ListAdjustments([FromQuery] string? status, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
@@ -247,18 +247,18 @@ public class LeaveBalancesController : ControllerBase
     }
 
     [HttpPost("adjustments/{id:guid}/approve")]
-    [HasPermission("leave.policy_manage")]
+    [HasPermission("leave.write")]
     public Task<IActionResult> ApproveAdjustment(Guid id, [FromBody] AdjustmentDecisionRequest? req, CancellationToken ct) =>
         DecideAdjustmentAsync(id, LeaveBalanceAdjustmentRequest.Approved, req?.Note, ct);
 
     [HttpPost("adjustments/{id:guid}/reject")]
-    [HasPermission("leave.policy_manage")]
+    [HasPermission("leave.write")]
     public Task<IActionResult> RejectAdjustment(Guid id, [FromBody] AdjustmentDecisionRequest? req, CancellationToken ct) =>
         DecideAdjustmentAsync(id, LeaveBalanceAdjustmentRequest.Rejected, req?.Note, ct);
 
     /// <summary>The proposer withdraws their own pending adjustment.</summary>
     [HttpPost("adjustments/{id:guid}/cancel")]
-    [HasPermission("leave.policy_manage")]
+    [HasPermission("leave.write")]
     public Task<IActionResult> CancelAdjustment(Guid id, CancellationToken ct) =>
         DecideAdjustmentAsync(id, LeaveBalanceAdjustmentRequest.Cancelled, null, ct);
 

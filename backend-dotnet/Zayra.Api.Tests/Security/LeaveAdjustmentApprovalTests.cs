@@ -1,10 +1,12 @@
 using System.Security.Claims;
+using System.Reflection;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 using Zayra.Api.Controllers.Leave;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
@@ -16,6 +18,19 @@ namespace Zayra.Api.Tests.Security;
 /// </summary>
 public class LeaveAdjustmentApprovalTests
 {
+    [Fact]
+    public void ProposalQueueDecisionAndMakerCancellation_UseTheSameLeaveWritePermission()
+    {
+        foreach (var action in new[]
+        {
+            nameof(LeaveBalancesController.ListAdjustments), nameof(LeaveBalancesController.ApproveAdjustment),
+            nameof(LeaveBalancesController.RejectAdjustment), nameof(LeaveBalancesController.CancelAdjustment),
+        })
+            typeof(LeaveBalancesController).GetMethod(action)!.GetCustomAttribute<HasPermissionAttribute>()!
+                .Permissions.Should().ContainSingle().Which.Should().Be("leave.write",
+                    $"{action} must be reachable by the people admitted as second approvers");
+    }
+
     private static async Task<(ScopeSodWorld W, Guid LeaveType)> SeedAsync(bool withApprovers = true)
     {
         var w = await ScopeSodWorld.CreateAsync(withApprovers);

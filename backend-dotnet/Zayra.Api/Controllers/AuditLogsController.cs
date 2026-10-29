@@ -81,20 +81,32 @@ public class AuditLogsController : ControllerBase
             DateTime? lastCreated = null;
             Guid lastId = Guid.Empty;
             var seen = 0;
+            var truncated = false;
             while (seen < cap)
             {
                 var page = q;
                 if (lastCreated is { } lc)
                     page = page.Where(x => x.CreatedAtUtc > lc || (x.CreatedAtUtc == lc && x.Id.CompareTo(lastId) > 0));
-                var rows = await page.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
-                    .Take(Math.Min(VerifyPageSize, cap - seen)).ToListAsync(cancellationToken);
+                var take = Math.Min(VerifyPageSize, cap - seen);
+                var candidates = await page.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
+                    .Take(take + 1).ToListAsync(cancellationToken);
+                var hasMore = candidates.Count > take;
+                var rows = candidates.Take(take).ToList();
                 if (rows.Count == 0) break;
                 foreach (var row in rows) walker.Add(row);
                 seen += rows.Count;
                 lastCreated = rows[^1].CreatedAtUtc;
                 lastId = rows[^1].Id;
+                if (seen >= cap) { truncated = hasMore; break; }
+                if (!hasMore) break;
             }
-            return Ok(walker.Report());
+            var report = walker.Report();
+            return Ok(report with
+            {
+                IsComplete = !truncated,
+                IsValid = report.IsValid && !truncated,
+                ContinuationBoundary = truncated ? $"{lastCreated:O}/{lastId:D}" : null
+            });
         }
         finally { AuditIntegrityGate.End(tenantId.Value, "central", DateTime.UtcNow); }
     }
@@ -122,20 +134,32 @@ public class AuditLogsController : ControllerBase
             long? lastSeq = null;
             Guid lastId = Guid.Empty;
             var seen = 0;
+            var truncated = false;
             while (seen < cap)
             {
                 var page = q;
                 if (lastSeq is { } ls)
                     page = page.Where(x => x.Seq > ls || (x.Seq == ls && x.Id.CompareTo(lastId) > 0));
-                var rows = await page.OrderBy(x => x.Seq).ThenBy(x => x.Id)
-                    .Take(Math.Min(VerifyPageSize, cap - seen)).ToListAsync(cancellationToken);
+                var take = Math.Min(VerifyPageSize, cap - seen);
+                var candidates = await page.OrderBy(x => x.Seq).ThenBy(x => x.Id)
+                    .Take(take + 1).ToListAsync(cancellationToken);
+                var hasMore = candidates.Count > take;
+                var rows = candidates.Take(take).ToList();
                 if (rows.Count == 0) break;
                 foreach (var row in rows) walker.Add(row);
                 seen += rows.Count;
                 lastSeq = rows[^1].Seq;
                 lastId = rows[^1].Id;
+                if (seen >= cap) { truncated = hasMore; break; }
+                if (!hasMore) break;
             }
-            return Ok(walker.Report());
+            var report = walker.Report();
+            return Ok(report with
+            {
+                IsComplete = !truncated,
+                IsValid = report.IsValid && !truncated,
+                ContinuationBoundary = truncated ? $"{lastSeq}/{lastId:D}" : null
+            });
         }
         finally { AuditIntegrityGate.End(tenantId.Value, "payroll", DateTime.UtcNow); }
     }

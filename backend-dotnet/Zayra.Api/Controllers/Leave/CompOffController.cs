@@ -14,6 +14,13 @@ namespace Zayra.Api.Controllers.Leave;
 [Authorize]
 public class CompOffController : ControllerBase
 {
+    private static readonly HashSet<string> ManualWorkTypes = new(StringComparer.Ordinal)
+    {
+        "Overtime",
+        "HolidayWork",
+        "WeekendWork"
+    };
+
     private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
 
@@ -67,6 +74,13 @@ public class CompOffController : ControllerBase
 
         if (req.HoursWorked <= 0 || req.DaysEarned <= 0)
             return BadRequest(new { message = "Hours worked and days earned must be positive." });
+        var workType = string.IsNullOrWhiteSpace(req.WorkType) ? "Overtime" : req.WorkType.Trim();
+        if (!ManualWorkTypes.Contains(workType))
+            return BadRequest(new
+            {
+                error = "comp_off_work_type_invalid",
+                message = "Work type must be Overtime, HolidayWork, or WeekendWork. RestDayWork is reserved for attendance-generated credits."
+            });
 
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
@@ -85,7 +99,7 @@ public class CompOffController : ControllerBase
             EmployeeId = req.EmployeeId,
             EmployeeName = employee.FullName,
             WorkedDate = req.WorkedDate,
-            WorkType = req.WorkType ?? "Overtime",
+            WorkType = workType,
             HoursWorked = req.HoursWorked,
             DaysEarned = req.DaysEarned,
             ExpiryDate = req.ExpiryDate,

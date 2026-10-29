@@ -46,11 +46,20 @@ const MAX_CONSECUTIVE_SINGLE_REFUSALS = 5;
 
 function validateIngestAcknowledgement(result, expectedReceived) {
   const counts = ['received', 'accepted', 'duplicates', 'unmatched', 'processed', 'rejected'];
+  const rejectionIndexes = Array.isArray(result?.rejections)
+    ? result.rejections.map((rejection) => rejection?.index)
+    : [];
   const valid = result && typeof result === 'object' && !Array.isArray(result)
     && counts.every((field) => Number.isInteger(result[field]) && result[field] >= 0)
     && result.received === expectedReceived
-    && typeof result.syncLogId === 'string' && result.syncLogId.length > 0
-    && Array.isArray(result.rejections);
+    && result.accepted + result.duplicates + result.rejected === result.received
+    && result.unmatched <= result.accepted
+    && typeof result.syncLogId === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.syncLogId)
+    && Array.isArray(result.rejections)
+    && result.rejections.length === result.rejected
+    && rejectionIndexes.every((index) => Number.isInteger(index) && index >= 0 && index < result.received)
+    && new Set(rejectionIndexes).size === rejectionIndexes.length;
   if (!valid)
     throw new Error('server returned an invalid ingest acknowledgement; nothing was marked delivered and the cursor did not move.');
   return result;

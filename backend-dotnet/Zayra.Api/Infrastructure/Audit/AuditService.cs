@@ -307,6 +307,15 @@ public sealed record AuditIntegrityReport(
 {
     /// <summary>The first break in chain order, or null when the chain is intact.</summary>
     public AuditIntegrityFailure? FirstBreak => Failures.Count == 0 ? null : Failures[0];
+
+    /// <summary>True only when the requested chain/window was visited through its final row.</summary>
+    public bool IsComplete { get; init; } = true;
+
+    /// <summary>True when maxRows stopped the walk before the requested chain/window ended.</summary>
+    public bool Truncated => !IsComplete;
+
+    /// <summary>Opaque boundary of the last verified row, present when another walk is required.</summary>
+    public string? ContinuationBoundary { get; init; }
 }
 
 public sealed record AuditIntegrityFailure(

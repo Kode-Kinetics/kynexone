@@ -336,14 +336,14 @@ function MyWeekTab() {
             <ChevronRight className="h-4 w-4" />
           </button>
           <button type="button" className={btn.sm} onClick={() => setAnchor(weekStart(new Date()))}>
-            
+
             {t('This week')}
           </button>
         </div>
         <div className="flex items-center gap-3">
           {sheet && <StatusBadge status={sheet.status} />}
           <span className="text-sm text-slate-500 dark:text-slate-400">
-            
+
             {t('Week total')} <strong className="text-slate-900 dark:text-white">{fmtHours(t, weekTotal)}</strong>
           </span>
         </div>
@@ -395,7 +395,7 @@ function MyWeekTab() {
                       className="mt-2 text-xs font-medium text-sapphire hover:underline dark:text-cyanAccent"
                       onClick={() => addRow(iso)}
                     >
-                      
+
                       {t('+ Add')}
                     </button>
                   )}
@@ -491,7 +491,7 @@ function MyWeekTab() {
                               aria-label={t('Remove entry for {date}', { date: fx.date(row.workDate, 'medium') })}
                               onClick={() => removeRow(row.key)}
                             >
-                              
+
                               {t('Remove')}
                             </button>
                           )}
@@ -511,7 +511,7 @@ function MyWeekTab() {
               </button>
               <button type="button" className={btn.primary} disabled={saving || invalidRow || weekTotal === 0} onClick={() => void submit()}>
                 <Send className="h-4 w-4" aria-hidden="true" />
-                
+
                 {t('Submit for approval')}
               </button>
             </div>
@@ -633,7 +633,7 @@ function ApprovalsTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <label className="text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="ts-queue">
-          
+
           {t('Queue')}
         </label>
         <select
@@ -685,7 +685,7 @@ function ApprovalsTab() {
                       setReason('');
                     }}
                   >
-                    
+
                     {t('Reject')}
                   </button>
                   <button
@@ -735,7 +735,7 @@ function ApprovalsTab() {
         footer={
           <div className="flex justify-end gap-2">
             <button type="button" className={btn.ghost} onClick={() => setRejecting(null)}>
-              
+
               {t('Cancel')}
             </button>
             <button
@@ -744,14 +744,14 @@ function ApprovalsTab() {
               disabled={reason.trim().length === 0}
               onClick={() => rejecting && void decide(rejecting, 'Reject', reason.trim())}
             >
-              
+
               {t('Send back')}
             </button>
           </div>
         }
       >
         <label className="block text-sm font-medium text-slate-700 dark:text-slate-300" htmlFor="ts-reject-reason">
-          
+
           {t('Why? The employee sees this.')}
         </label>
         <textarea
@@ -876,7 +876,7 @@ function VarianceTab() {
   return (
     <div className="space-y-4">
       <p className="max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-        
+
         {t('What approved timesheets say, against what attendance recorded. Rows are written when a week is approved, so this is the picture as it stood at the decision — not a figure recomputed today.')}
       </p>
 
@@ -891,7 +891,7 @@ function VarianceTab() {
         </div>
         <label className="flex items-center gap-2 pb-2 text-sm text-slate-600 dark:text-slate-300">
           <input type="checkbox" checked={flaggedOnly} onChange={(e) => setFlaggedOnly(e.target.checked)} />
-          
+
           {t('Only days above attendance')}
         </label>
       </div>
@@ -996,7 +996,7 @@ export function TimesheetsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Timesheets')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            
+
             {t('Record the week, send it for approval, and see it against the attendance on record.')}
           </p>
         </div>

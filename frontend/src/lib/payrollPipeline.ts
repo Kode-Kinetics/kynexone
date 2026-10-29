@@ -366,4 +366,3 @@ export function employeesWithIssues(results: Array<{ employeeId: number | null; 
   }
   return [...by.values()].sort((a, b) => b.errors - a.errors || b.warnings - a.warnings || a.employeeId - b.employeeId);
 }
-

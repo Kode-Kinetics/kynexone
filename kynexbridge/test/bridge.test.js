@@ -315,6 +315,27 @@ test('an incomplete ingest acknowledgement does not advance the cursor', async (
   assert.equal(existsSync(cfg.rejectedFile), false);
 });
 
+for (const [name, acknowledgement] of [
+  ['unaccounted punches', ingestAck(2, { accepted: 0 })],
+  ['missing rejection detail', ingestAck(2, { accepted: 1, rejected: 1, rejections: [] })],
+  ['duplicate rejection indexes', ingestAck(2, { accepted: 0, rejected: 2, rejections: [{ index: 0 }, { index: 0 }] })],
+  ['out-of-range rejection index', ingestAck(2, { accepted: 1, rejected: 1, rejections: [{ index: 2 }] })],
+  ['invalid sync log id', ingestAck(2, { syncLogId: 'not-a-uuid' })],
+]) {
+  test(`a contradictory ingest acknowledgement (${name}) does not advance the cursor`, async (t) => {
+    const { s, url } = await server((_c, res) => json(res, 200, acknowledgement));
+    t.after(() => { s.closeAllConnections(); s.close(); });
+    const cfg = cfgFor(url, { chunkSize: 2, maxRetries: 0 });
+    fakePunches = [1, 2].map(punch);
+    const cursors = {};
+
+    await assert.rejects(pollDevice(cfg, cursors, dev(), noSleep, quiet), /ingest acknowledgement/);
+
+    assert.equal(cursorOf(cursors, 'D1'), null);
+    assert.equal(existsSync(cfg.rejectedFile), false);
+  });
+}
+
 test('a run of single-punch refusals stops instead of draining the backlog', async () => {
   const { s, url } = await server((c, res) => (c.url.endsWith('/heartbeat') ? json(res, 200, {}) : json(res, 400, { message: 'nope' })));
   const cfg = cfgFor(url, { chunkSize: 8 });

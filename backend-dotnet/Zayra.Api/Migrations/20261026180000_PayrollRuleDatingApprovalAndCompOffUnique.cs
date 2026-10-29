@@ -60,6 +60,14 @@ namespace Zayra.Api.Migrations
                 table: "payroll_rule_change_requests",
                 columns: new[] { "tenant_id", "company_id", "status" });
 
+            // RestDayWork is reserved for attendance-generated credits. Before enforcing their uniqueness, preserve
+            // legacy manually entered rows under a non-reserved label so attendance cannot adopt or collide with them.
+            migrationBuilder.Sql("""
+                UPDATE comp_off_credits
+                SET work_type = 'LegacyManualRestDayWork'
+                WHERE work_type = 'RestDayWork';
+                """);
+
             // One compensatory-day credit per employee per worked rest day/holiday (other credit types may repeat on a date).
             migrationBuilder.CreateIndex(
                 name: "ux_comp_off_credits__rest_day_work",

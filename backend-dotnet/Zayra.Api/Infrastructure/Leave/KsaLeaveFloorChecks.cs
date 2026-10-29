@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using Zayra.Api.Application.Compliance;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
@@ -57,7 +60,8 @@ public static class KsaLeaveFloorChecks
                         $"{what} is {f:0.##} calendar days by law, and this policy counts working days at {days:0.##}"
                         + (cap > 0m ? $" (cap {cap:0.##})" : string.Empty) + $", below the legal minimum ({cite}). To meet it, count weekends and public holidays and set at least {f:0.##} days.",
                         $"{whatAr} مدتها {f:0.##} يومًا تقويميًا بحكم النظام، وهذه السياسة تحتسب أيام العمل بواقع {days:0.##} يومًا، وهو أقل من الحد الأدنى النظامي ({citeAr}).",
-                        "Working-day count vs the legal calendar minimum", "احتساب أيام العمل مقابل الحد الأدنى النظامي بالتقويم", citeAr));
+                        "Working-day count vs the legal calendar minimum", "احتساب أيام العمل مقابل الحد الأدنى النظامي بالتقويم", citeAr,
+                        SpecialWorkingDaysFingerprint(policy, reach, f)));
                 }
                 else
                 {
@@ -134,8 +138,23 @@ public static class KsaLeaveFloorChecks
         => checks.Where(c => c.Below).Select(c => c.Warning).ToList();
 
     private static FloorCheck Make(string code, string field, bool below, decimal? configured, decimal? statutory, string citation,
-        string messageEn, string messageAr, string label, string labelAr, string? citationAr = null)
-        => new(new FloorWarning(code, field, messageEn, false, statutory, configured, citation, messageAr, citationAr), below, label, labelAr);
+        string messageEn, string messageAr, string label, string labelAr, string? citationAr = null, string? fingerprint = null)
+        => new(new FloorWarning(code, field, messageEn, false, statutory, configured, citation, messageAr, citationAr, fingerprint), below, label, labelAr);
+
+    private static string SpecialWorkingDaysFingerprint(LeavePolicy policy, KsaPolicyReach reach, decimal statutory)
+    {
+        var payload = string.Join("|",
+            policy.AnnualEntitlementDays.ToString("G29", CultureInfo.InvariantCulture),
+            policy.MaximumDaysPerRequest.ToString("G29", CultureInfo.InvariantCulture),
+            policy.WeekendsIncluded.ToString(CultureInfo.InvariantCulture),
+            policy.PublicHolidaysIncluded.ToString(CultureInfo.InvariantCulture),
+            policy.PayrollImpact?.Trim().ToUpperInvariant() ?? string.Empty,
+            reach.ToString(),
+            statutory.ToString("G29", CultureInfo.InvariantCulture),
+            policy.CountryCode?.Trim().ToUpperInvariant() ?? string.Empty,
+            policy.CompanyId?.ToString("D") ?? string.Empty);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+    }
 
     private static (string En, string Ar) Cite(KsaStatutoryLeaveKind kind) => kind switch
     {
