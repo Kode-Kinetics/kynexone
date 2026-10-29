@@ -40,3 +40,11 @@ test('server exception text from a 5xx is never shown; the fallback is', () => {
   expect(apiErrorReason(http(503, 'Service temporarily overloaded at node 7'), FALLBACK)).toBe(FALLBACK);
   expect(apiErrorReason(http(502, { detail: 'upstream connect error' }), FALLBACK)).toBe(FALLBACK);
 });
+
+test('a refusal that ships both languages is shown in the reader\'s own', () => {
+  const refusal = http(422, { code: 'no_eligible_approver', message: 'Add a second person with Finance approval rights (payroll.approve) before proposing salary changes.', messageAr: 'أضف شخصاً ثانياً يملك صلاحية الموافقة المالية (payroll.approve) قبل اقتراح تغييرات الرواتب.' });
+  expect(apiErrorReason(refusal, FALLBACK, 'en')).toContain('Add a second person with Finance approval rights');
+  expect(apiErrorReason(refusal, FALLBACK, 'ar')).toContain('أضف شخصاً ثانياً');
+  // Without Arabic text the English sentence is used rather than the fallback.
+  expect(apiErrorReason(http(422, { message: 'English only.' }), FALLBACK, 'ar')).toBe('English only.');
+});
