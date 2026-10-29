@@ -23,10 +23,121 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ── Backend: build + security regression gate ──────────────────────────────────
-  backend-tests:
-    name: Backend Tests (security gate)
+  # ── Change detection: docs-only PRs skip the heavy lanes ───────────────────────
+  # A workflow-level `paths-ignore` would leave the REQUIRED checks pending forever on a docs-only PR
+  # (the main ruleset requires them by name), so the workflow always starts and the heavy jobs are
+  # skipped instead: a skipped job counts as passing for a required check. Pushes to main always run
+  # everything. `docs_only` is true only for explicitly allowlisted top-level prose.
+  changes:
+    name: Detect docs-only change
     runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then echo "docs_only=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          echo "$files"
+          # Docs and fixtures are real test inputs. Only known top-level prose may skip tests.
+          code=$(echo "$files" | grep -v -E '^(README\.md|LICENSE)$' || true)
+          if [ -z "$files" ] || [ -n "$code" ]; then echo "docs_only=false" >> "$GITHUB_OUTPUT"; else echo "docs_only=true" >> "$GITHUB_OUTPUT"; fi
+
+  # Build the Release test graph once. Debug EF visibility, revision-marked Chrome and CodeQL
+  # retain their independent builds. An attempt-scoped artifact never falls back to a prior retry;
+  # rerun ALL jobs after a partial retry fails to find this attempt's build artifact.
+  backend-build:
+    name: Backend Release build
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: backend-dotnet/**/*.csproj
+      - name: Restore dependencies
+        run: dotnet restore backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj
+      - name: Build with periodic resource evidence
+        run: python3 scripts/ci/run-with-resource-snapshots.py dotnet build backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore -c Release
+      - name: Package exact-checkout Release outputs
+        run: python3 scripts/ci/backend-build-artifact.py pack "$RUNNER_TEMP/backend-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backend-release
+          if-no-files-found: error
+          retention-days: 3
+
+  # ── Backend: fast unit lane (no Docker image pulls) ────────────────────────────
+  backend-unit:
+    name: Backend Unit + ratchets
+    runs-on: ubuntu-latest
+    needs: [changes, backend-build]
+    if: needs.changes.outputs.docs_only != 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: backend-dotnet/**/*.csproj
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backend-release
+
+      - name: Verify and restore exact-checkout Release outputs
+        run: python3 scripts/ci/backend-build-artifact.py restore "$RUNNER_TEMP/backend-release"
+
+      - name: Restore dependencies
+        run: dotnet restore backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj
+
+      # Everything that does NOT start a container (incl. the architecture ratchets), with line coverage.
+      - name: Run unit + ratchet tests (coverage)
+        run: |
+          set -euo pipefail
+          dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj \
+            --no-build --no-restore -c Release --filter "Category!=Integration" \
+            --settings backend-dotnet/coverage.runsettings \
+            --collect:"XPlat Code Coverage" --results-directory backend-dotnet/Zayra.Api.Tests/TestResults/unit \
+            --logger "trx;LogFileName=unit.trx"
+          python3 scripts/ci/verify-test-results.py backend-dotnet/Zayra.Api.Tests/TestResults/unit/unit.trx
+
+      - name: Upload unit results + coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-results-unit-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend-dotnet/Zayra.Api.Tests/TestResults/unit
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── Backend: integration lane (Testcontainers), sharded 4 ways ─────────────────
+  # Shards are balanced by test count over test CLASSES (scripts/ci/shard-tests.sh), so a class never
+  # straddles two shards (the Postgres collection fixtures are per class).
+  backend-integration:
+    name: Backend Integration (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    needs: [changes, backend-build]
+    if: needs.changes.outputs.docs_only != 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
@@ -47,26 +158,80 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+          cache: true
+          cache-dependency-path: backend-dotnet/**/*.csproj
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backend-release
+
+      - name: Verify and restore exact-checkout Release outputs
+        run: python3 scripts/ci/backend-build-artifact.py restore "$RUNNER_TEMP/backend-release"
 
       - name: Restore dependencies
         run: dotnet restore backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj
 
-      - name: Build
-        run: dotnet build backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore -c Release
-
-      - name: Run security + regression tests
+      - name: Run integration shard
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
+          set -euo pipefail
+          filter=$(./scripts/ci/shard-tests.sh backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj "$SHARD" 4)
           dotnet test backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj \
-            --no-build -c Release \
-            --logger "console;verbosity=normal" \
-            --logger "trx;LogFileName=test-results.trx"
+            --no-build --no-restore -c Release --filter "Category=Integration&($filter)" \
+            --settings backend-dotnet/coverage.runsettings \
+            --collect:"XPlat Code Coverage" --results-directory backend-dotnet/Zayra.Api.Tests/TestResults/shard-$SHARD \
+            --logger "trx;LogFileName=shard-$SHARD.trx"
+          python3 scripts/ci/verify-test-results.py "backend-dotnet/Zayra.Api.Tests/TestResults/shard-$SHARD/shard-$SHARD.trx"
 
-      - name: Upload test results
+      - name: Upload integration results + coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-test-results
-          path: backend-dotnet/Zayra.Api.Tests/TestResults/test-results.trx
+          name: backend-results-shard-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend-dotnet/Zayra.Api.Tests/TestResults/shard-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── Aggregator: keeps the required check name "Backend Tests (security gate)" ──
+  # The branch ruleset and every downstream `needs: backend-tests` still point at this name. It passes
+  # only when the unit lane and all four integration shards passed (or were skipped on a docs-only PR).
+  backend-tests:
+    name: Backend Tests (security gate)
+    runs-on: ubuntu-latest
+    needs: [changes, backend-build, backend-unit, backend-integration]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every backend lane
+        env:
+          BUILD: ${{ needs.backend-build.result }}
+          CHANGES: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          UNIT: ${{ needs.backend-unit.result }}
+          INTEGRATION: ${{ needs.backend-integration.result }}
+        run: |
+          set -euo pipefail
+          echo "changes=$CHANGES docs_only=$DOCS_ONLY unit=$UNIT integration=$INTEGRATION"
+          if [ "$CHANGES" != "success" ] || [[ "$DOCS_ONLY" != "true" && "$DOCS_ONLY" != "false" ]]; then
+            echo "::error::change classification did not succeed"; exit 1
+          fi
+          if [ "$DOCS_ONLY" = "true" ] && [ "$BUILD" = "skipped" ] && [ "$UNIT" = "skipped" ] && [ "$INTEGRATION" = "skipped" ]; then exit 0; fi
+          if [ "$DOCS_ONLY" != "false" ] || [ "$BUILD" != "success" ] || [ "$UNIT" != "success" ] || [ "$INTEGRATION" != "success" ]; then
+            echo "::error::backend lanes did not all pass (unit=$UNIT integration=$INTEGRATION)"; exit 1
+          fi
+
+      - name: Download this attempt's backend test evidence
+        if: needs.changes.outputs.docs_only == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backend-results-*-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backend-results
+
+      - name: Require unit and all four populated shard results
+        if: needs.changes.outputs.docs_only == 'false'
+        run: python3 scripts/ci/verify-backend-results.py "$RUNNER_TEMP/backend-results"
 
   # ── Deploy preflight: the env-var gate's own tests ────────────────────────────
   # Runs on every push and PR, needs no secret and no network. It proves the gate still CATCHES
@@ -82,6 +247,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Regress backend CI guards
+        run: python3 -m unittest discover -s tests/ci -v
+
       - name: Self-test the required-env-var gate
         run: ./scripts/check_render_env.py --self-test
 
@@ -306,7 +474,7 @@ jobs:
       # SourceRevisionId is baked into the assembly and reported by /health/live as `commit`, so the
       # preflight can prove the API under test is this build and not a leftover one.
       - name: Build backend
-        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release -p:SourceRevisionId=${{ github.sha }}
+        run: python3 scripts/ci/run-with-resource-snapshots.py dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release -p:SourceRevisionId=${{ github.sha }}
 
       # ── Fixture credentials ────────────────────────────────────────────────────────────────────
       # GENERATED PER RUN, never committed. The database is ephemeral and dies with the runner, so
