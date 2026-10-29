@@ -12,10 +12,12 @@ import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
 import { ResetCodeBanner } from '@/features/auth/ResetCodeBanner';
 import { ConnectionIssueScreen } from '@/features/safety/ConnectionIssueScreen';
 import { UpdateRequiredBanner, UpdateRequiredScreen } from '@/features/safety/UpdateRequired';
+import { useAppLockStore } from '@/safety/appLockStore';
 import { useCompatibilityStore } from '@/safety/compatibilityStore';
 
 export function RootNavigator() {
   const { isAuthenticated, isInitialized, initialize, connectionIssue } = useAuthStore();
+  const locked = useAppLockStore((s) => s.locked);
   const blocking = useCompatibilityStore((s) => s.blocking);
   const { theme } = useTheme();
   const { t } = useTranslation();
@@ -58,6 +60,11 @@ export function RootNavigator() {
       </View>
     );
   }
+
+  // A sibling View cannot cover native Modal windows. Unmount authenticated screens
+  // (and their sheets) while locked; AppLockGate stays mounted beside this navigator.
+  // Unlocking intentionally starts a fresh protected navigation tree, not an open financial sheet.
+  if (isAuthenticated && locked) return <View testID="app-lock-content-hidden" style={{ flex: 1, backgroundColor: theme.colors.canvas }} />;
 
   if (blocking) return <UpdateRequiredScreen />;
   if (connectionIssue) return <ConnectionIssueScreen />;
