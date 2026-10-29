@@ -141,14 +141,18 @@ public sealed class HireIdentityLockPostgresTests
 
     private async Task<IActionResult?[]> RaceAsync(Seed seed, EmployeeCreateRequest a, EmployeeCreateRequest b)
     {
-        var barrier = new TaskCompletionSource();
-        var precheckBarrier = new FirstFindBarrier(parties: 2);
+        var barrier = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Both requests must finish the *pre-transaction* duplicate lookup before either may create.
+        // A start barrier alone does not guarantee this: if one create commits first, the second
+        // pre-check can see a PROBABLE name+DOB match, which is intentionally advisory. That is
+        // sequential behavior, not the check-then-insert race this test is meant to exercise.
+        var prechecks = new DuplicatePrecheckGate();
         async Task<IActionResult?> One(EmployeeCreateRequest request)
         {
             await using var db = _fx.CreateDb();
             await db.Database.OpenConnectionAsync();      // warm the connection before the race
             var controller = Controller(db, seed);
-            var service = Service(db, new FirstFindBarrierDetector(new EmployeeDuplicateDetector(db), precheckBarrier));
+            var service = Service(db, new GatedDuplicateDetector(db, prechecks));
             await barrier.Task;
             var result = await controller.CreateEmployee(request, service, default);
             return result.Result;
@@ -160,40 +164,41 @@ public sealed class HireIdentityLockPostgresTests
         return await Task.WhenAll(t1, t2);
     }
 
-    private static EmployeeManagementService Service(ZayraDbContext db, IEmployeeDuplicateDetector? duplicateDetector = null) =>
-        new(db, new AuditService(db), new LockDocs(), TestNotifications.For(db), duplicateDetector: duplicateDetector);
-
-    /// <summary>
-    /// Makes the race deterministic: both requests must finish their initial, empty duplicate read before either
-    /// can enter the create transaction. Without this test-only coordination, a heavily loaded runner can let the
-    /// first hire commit before the second request even performs its pre-check. That is a sequential probable match,
-    /// which is intentionally advisory and therefore allowed; it does not exercise the lock's check-then-insert race.
-    /// </summary>
-    private sealed class FirstFindBarrier(int parties)
+    private sealed class DuplicatePrecheckGate
     {
-        private int _remaining = parties;
-        private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _bothFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _arrivals;
 
-        public async Task SignalAndWaitAsync(CancellationToken ct)
+        public async Task WaitAsync(CancellationToken ct)
         {
-            if (Interlocked.Decrement(ref _remaining) == 0) _ready.TrySetResult();
-            await _ready.Task.WaitAsync(ct);
+            if (Interlocked.Increment(ref _arrivals) == 2) _bothFinished.TrySetResult();
+            // Fail a broken setup instead of hanging an entire integration shard indefinitely.
+            await _bothFinished.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
         }
     }
 
-    private sealed class FirstFindBarrierDetector(IEmployeeDuplicateDetector inner, FirstFindBarrier barrier)
-        : IEmployeeDuplicateDetector
+    private sealed class GatedDuplicateDetector : IEmployeeDuplicateDetector
     {
+        private readonly EmployeeDuplicateDetector _inner;
+        private readonly DuplicatePrecheckGate _gate;
         private int _calls;
+
+        public GatedDuplicateDetector(ZayraDbContext db, DuplicatePrecheckGate gate)
+        {
+            _inner = new EmployeeDuplicateDetector(db);
+            _gate = gate;
+        }
 
         public async Task<IReadOnlyList<DuplicateMatch>> FindAsync(Guid tenantId, DuplicateProbe probe, CancellationToken ct)
         {
-            var matches = await inner.FindAsync(tenantId, probe, ct);
-            if (Interlocked.Increment(ref _calls) == 1)
-                await barrier.SignalAndWaitAsync(ct);
+            var matches = await _inner.FindAsync(tenantId, probe, ct);
+            if (Interlocked.Increment(ref _calls) == 1) await _gate.WaitAsync(ct);
             return matches;
         }
     }
+
+    private static EmployeeManagementService Service(ZayraDbContext db, IEmployeeDuplicateDetector? detector = null) =>
+        new(db, new AuditService(db), new LockDocs(), TestNotifications.For(db), duplicateDetector: detector);
 
     private static EmployeesController Controller(ZayraDbContext db, Seed seed)
     {
