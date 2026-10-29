@@ -1,4 +1,4 @@
-import { getCountries } from 'libphonenumber-js/min';
+import { NATIONALITY_CATALOG } from './nationalityCatalog';
 
 export type IdType = 'nationalId' | 'iqama' | 'border' | 'gccId' | 'passport';
 export type NationalityClass = 'saudi' | 'gcc' | 'expat' | 'unknown';
@@ -7,17 +7,31 @@ export interface CountryOption { code: string; nameEn: string; nameAr: string }
 
 export const SAUDI = 'SA';
 export const GCC_CODES = ['AE', 'BH', 'KW', 'OM', 'QA'] as const;
-/** Regions the phone library lists that are not nationalities. */
-const NOT_NATIONALITIES = new Set(['AC', 'TA']);
-
-/** The ISO 3166 alpha-2 list with EN and AR names from the browser's own display names. Offline, no request. */
+/**
+ * The country list the picker falls back to: the backend catalog's own ISO 3166-1 rows, offline, no request. A code list
+ * narrows it (used by tests).
+ */
 export function buildCountryOptions(codes?: readonly string[]): CountryOption[] {
-  const en = new Intl.DisplayNames(['en'], { type: 'region' });
-  const ar = new Intl.DisplayNames(['ar'], { type: 'region' });
-  const list = (codes ?? getCountries()).filter(c => /^[A-Z]{2}$/.test(c) && !NOT_NATIONALITIES.has(c));
-  return list
-    .map(code => ({ code, nameEn: en.of(code) ?? code, nameAr: ar.of(code) ?? code }))
-    .filter(o => o.nameEn !== o.code);
+  const keep = codes ? new Set(codes) : null;
+  return NATIONALITY_CATALOG.filter(o => !keep || keep.has(o.code)).map(o => ({ ...o }));
+}
+
+/**
+ * GET /api/reference/nationalities rows are { iso2, nameEn, nameAr, class }. A row without a two-letter code or a name is
+ * dropped, never turned into an option whose code is undefined. An empty result means "use the built-in list".
+ */
+export function countryOptionsFromApi(rows: ReadonlyArray<Record<string, unknown>> | null | undefined): CountryOption[] {
+  const seen = new Set<string>();
+  const out: CountryOption[] = [];
+  for (const r of rows ?? []) {
+    const code = String(r.iso2 ?? r.code ?? '').toUpperCase();
+    const nameEn = String(r.nameEn ?? '').trim();
+    const nameAr = String(r.nameAr ?? '').trim();
+    if (!/^[A-Z]{2}$/.test(code) || !nameEn || seen.has(code)) continue;
+    seen.add(code);
+    out.push({ code, nameEn, nameAr: nameAr || nameEn });
+  }
+  return out;
 }
 
 /** Case, diacritics, tatweel and alef/ya/ta-marbuta variants folded so any spelling of an Arabic name matches. */

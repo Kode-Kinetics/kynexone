@@ -75,10 +75,12 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
     return () => { live = false; };
   }, [templateId, form.nationalityCode, form.startDate]);
   const raised = checklist && checklist.templateId === templateId ? checklist.tasks : null;
-  const warnings = reviewWarnings(form, { today });
+  const designationGradeId = lookups.designations.find(d => d.id === form.designationId)?.gradeId;
+  const designationGrade = designationGradeId ? { gradeId: designationGradeId, gradeCode: lookups.grades.find(g => g.id === designationGradeId)?.code ?? '' } : undefined;
+  const warnings = reviewWarnings(form, { today, designationGrade });
   if (grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary)) warnings.push('grade_band_out_of_range');
   const bank = companyCountry === 'SA' ? bankNameFor(form.iban, banks, locale) : '';
-  const workEmail = composeWorkEmail(form.workEmailLocal, company?.emailDomain || undefined) ?? '';
+  const workEmail = composeWorkEmail(form.workEmail) ?? '';
   const missing = [
     ...activationNeeds(form).map(n => t(n.key === 'startDate' ? 'Start date' : 'Designation or grade')),
     !form.nationalityCode && t('Nationality'), !form.idNumber.trim() && t('ID number'), !form.iban.trim() && t('IBAN'), !form.arabicName.trim() && t('Arabic full name'), !form.dob && t('Date of birth'),
@@ -96,7 +98,7 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
         <Row label={t('Company')} value={name(lookups.companies, form.companyId, c => (ar && c.legalNameAr ? c.legalNameAr : c.legalNameEn))} />
         {dateRow('startDate', t('Start date'), form.startDate)}
         <Row label={t('Designation')} value={name(lookups.designations, form.designationId, d => (ar && d.titleAr ? d.titleAr : d.titleEn))} />
-        <Row label={t('Grade')} value={name(lookups.grades, form.gradeId, g => `${g.code} - ${g.name}`)} />
+        <Row label={t('Grade')} value={name(lookups.grades, form.gradeId, g => `${g.code} - ${ar && g.nameAr ? g.nameAr : g.name}`)} />
         <Row label={t('Branch')} value={name(lookups.branches, form.branchId, b => (ar && b.nameAr ? b.nameAr : b.nameEn))} />
         <Row label={t('Department')} value={name(lookups.departments, form.departmentId, d => (ar && d.nameAr ? d.nameAr : d.nameEn))} />
         <Row label={t('Work email')} value={workEmail} ltr />

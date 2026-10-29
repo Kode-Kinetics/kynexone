@@ -118,7 +118,19 @@ export async function tenantLogin(
   password: string,
   slug: string
 ): Promise<void> {
-  const session = await tenantSetupSession(email, slug);
+  let session = await tenantSetupSession(email, slug);
+  // The setup session was minted at the start of the run; a full run outlasts its 30-minute access token, and a
+  // browser handed the spent pair lands on /login (Browser Pilot main, 2026-10-28: payroll-run-to-wps, saudi-compliance
+  // UI). Past the margin, sign the SAME persona in again, once per persona per token life.
+  if (secondsUntilExpiry(session.accessToken) <= TOKEN_MARGIN_SECONDS) {
+    const key = tenantSessionKey(email, slug);
+    let live = liveTenantSessions.get(key);
+    if (!live || secondsUntilExpiry(live.accessToken) <= TOKEN_MARGIN_SECONDS) {
+      live = await apiLoginSessionLive(page.request, email, password, slug);
+      liveTenantSessions.set(key, live);
+    }
+    session = live;
+  }
   await page.goto('/login');
   await page.evaluate(({ accessToken, refreshToken }) => {
     localStorage.setItem('zayra_access_token', accessToken);
@@ -150,6 +162,16 @@ export async function apiLoginLive(
   password: string,
   slug: string
 ): Promise<string> {
+  return (await apiLoginSessionLive(request, email, password, slug)).accessToken;
+}
+
+/** Login via API and return the whole session (access + refresh token). */
+export async function apiLoginSessionLive(
+  request: import('@playwright/test').APIRequestContext,
+  email: string,
+  password: string,
+  slug: string
+): Promise<TenantSession> {
   stampActor({ email, tenantSlug: slug, via: 'tenant login API' });
   const resp = await request.post('/api/auth/login', {
     data: { email, password, tenantSlug: slug },
@@ -160,7 +182,7 @@ export async function apiLoginLive(
   // A 200 with no token is a two-step challenge, not a session: say so rather than send "Bearer undefined" and
   // surface as an unexplained 401 several specs later.
   if (!token) throw new Error(`Login for ${email} / ${slug} returned no access token (two-step challenge?): ${JSON.stringify(data).slice(0, 200)}`);
-  return token;
+  return { accessToken: token, refreshToken: data.refreshToken ?? data.refresh_token ?? '' };
 }
 
 /** Seconds left before a JWT's `exp`; Infinity when it carries none or cannot be read. */
@@ -175,6 +197,7 @@ function secondsUntilExpiry(token: string): number {
 
 /** A persona's fresh token once its setup token has run out, so each persona signs in at most once per token life. */
 const liveTenantTokens = new Map<string, string>();
+const liveTenantSessions = new Map<string, TenantSession>();
 const TOKEN_MARGIN_SECONDS = 5 * 60;
 
 /**

@@ -18,7 +18,7 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   /** P3: the hire template the wizard applied; the server uses it only to raise the onboarding checklist. */
   hireTemplateId?: string;
 };
-export interface PayloadContext { companyCountry: string; currency: string; /** The company's email domain; a work-email local part is sent as local@domain. */ emailDomain?: string }
+export interface PayloadContext { companyCountry: string; currency: string; /** Unused for the work email since OD7 (any domain is allowed); kept so existing callers still compile. */ emailDomain?: string }
 export interface PayloadExtras { acknowledgedWarnings?: AcknowledgedWarning[]; duplicateOverrideReason?: string; hireTemplateId?: string }
 
 const ID_FIELD: Record<string, string> = { nationalId: 'id_number', iqama: 'iqama_number', border: 'border_number', passport: 'passport_number', gccId: 'civil_id' };
@@ -26,13 +26,10 @@ const ID_FIELD: Record<string, string> = { nationalId: 'id_number', iqama: 'iqam
 /** True for a fixed-term contract type, however the reference value is spelled ("Fixed term", "FixedTerm", "Fixed"). */
 export const isFixedTerm = (contractType: string) => /fixed/i.test(contractType ?? '');
 
-/** CD26: the work email is the local part plus the company domain; a typed address on that domain is kept as typed. */
-export function composeWorkEmail(local: string, domain?: string): string | undefined {
-  const t = (local ?? '').trim();
-  if (!t) return undefined;
-  if (t.includes('@')) return t;
-  const d = (domain ?? '').trim().replace(/^@/, '');
-  return d ? `${t}@${d}` : undefined;
+/** OD7: the work email is the full address IT issued, sent exactly as typed (trimmed). The company domain never completes or restricts it. */
+export function composeWorkEmail(typed: string): string | undefined {
+  const t = (typed ?? '').trim();
+  return t || undefined;
 }
 
 const blank = (v: string) => (v ?? '').trim() === '';
@@ -89,7 +86,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     contractType: opt(form.contractType),
     contractEndDate: isFixedTerm(form.contractType) ? opt(form.contractEndDate) : undefined,
     probationEndDate: opt(form.probationEndDate),
-    workEmail: composeWorkEmail(form.workEmailLocal, ctx.emailDomain),
+    workEmail: composeWorkEmail(form.workEmail),
     joiningDate: opt(form.startDate),
     workLocation: opt(form.workLocation),
     payrollProfile: hasPayroll ? { iban, molId: opt(form.molId), salaryCurrency: ctx.currency } : undefined,
