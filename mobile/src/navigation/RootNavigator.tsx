@@ -10,9 +10,16 @@ import { LiquidBackdrop, Surface } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
 import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
 import { ResetCodeBanner } from '@/features/auth/ResetCodeBanner';
+import { ConnectionIssueScreen } from '@/features/safety/ConnectionIssueScreen';
+import { UpdateRequiredBanner, UpdateRequiredScreen } from '@/features/safety/UpdateRequired';
+import { useAppLockStore } from '@/safety/appLockStore';
+import { useCompatibilityStore } from '@/safety/compatibilityStore';
 
 export function RootNavigator() {
-  const { isAuthenticated, isInitialized, initialize } = useAuthStore();
+  const { isAuthenticated, isInitialized, initialize, connectionIssue } = useAuthStore();
+  const locked = useAppLockStore((s) => s.locked);
+  const initialLockEvaluated = useAppLockStore((s) => s.initialLockEvaluated);
+  const blocking = useCompatibilityStore((s) => s.blocking);
   const { theme } = useTheme();
   const { t } = useTranslation();
 
@@ -55,11 +62,22 @@ export function RootNavigator() {
     );
   }
 
+  // AppLockGate hydrates saved preferences and the device authentication level
+  // asynchronously. A restored authenticated session must NEVER be shown before
+  // its one-time cold-start decision has been applied; unmount native Modal owners
+  // while locked. Login/auth screens remain accessible when signed out.
+  if (isAuthenticated && (!initialLockEvaluated || locked))
+    return <View testID="app-lock-content-hidden" style={{ flex: 1, backgroundColor: theme.colors.canvas }} />;
+
+  if (blocking) return <UpdateRequiredScreen />;
+  if (connectionIssue) return <ConnectionIssueScreen />;
+
   return (
     <NavigationContainer ref={navigationRef} theme={navigationTheme}>
       {isAuthenticated ? <MainTabs /> : <AuthStack />}
       {isAuthenticated ? <MfaSetupBanner /> : null}
       {isAuthenticated ? <ResetCodeBanner /> : null}
+      <UpdateRequiredBanner />
     </NavigationContainer>
   );
 }

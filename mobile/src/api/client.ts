@@ -8,9 +8,22 @@ import axios, {
   AxiosResponse,
   InternalAxiosRequestConfig,
 } from 'axios';
-import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
+import { APP_CONFIG, APP_VERSION, APP_VERSION_HEADER, API_TIMEOUT_MS } from '@/config';
 import { tokenStorage, clearAllAuthData } from '@/storage';
+import i18n from '@/config/i18n';
 import { createIsolatedPublicAuthClient } from './publicAuthClient';
+import { ResponseShapeError, validateRefreshResponse, validateResponse } from './schemas';
+import { useCompatibilityStore } from '@/safety/compatibilityStore';
+import { reportError } from '@/observability/reportError';
+import { currentSessionGeneration, isCurrentSession, requireCurrentSession, writeSession } from '@/auth/sessionGeneration';
+import {
+  NoRefreshTokenError,
+  isDefinitiveAuthRefusal,
+  localizedErrorKey,
+  retryTransient,
+  shouldRetryGet,
+  backoffDelayMs,
+} from './sessionErrors';
 
 // We lazily import authStore to avoid circular deps
 let _onSessionExpired: (() => void) | null = null;
@@ -20,6 +33,8 @@ export function setSessionExpiredHandler(handler: () => void) {
 }
 
 let refreshPromise: Promise<string> | null = null;
+let refreshGeneration = -1;
+type SessionRequestConfig = InternalAxiosRequestConfig & { _sessionGeneration?: number };
 
 /**
  * Anonymous auth traffic must never inherit an old mobile session. This client
@@ -31,6 +46,7 @@ export function createPublicAuthClient(): AxiosInstance {
     baseURL: APP_CONFIG.API_BASE_URL,
     timeout: API_TIMEOUT_MS,
     tenantHeader: APP_CONFIG.TENANT_HEADER,
+    extraHeaders: { [APP_VERSION_HEADER]: APP_VERSION },
   });
 
   client.interceptors.response.use(
@@ -41,6 +57,41 @@ export function createPublicAuthClient(): AxiosInstance {
     },
   );
   return client;
+}
+
+function guardRefresh(data: unknown) {
+  try {
+    return validateRefreshResponse(data);
+  } catch (error) {
+    noteShapeMismatch(error, true);
+    throw error;
+  }
+}
+
+/**
+ * A reply that no longer matches this app version: say so plainly (never a crash or NaN), tell the
+ * UI to offer the update, and report the route (never the values) to crash reporting.
+ */
+function noteShapeMismatch(error: unknown, blocking = false): void {
+  if (!(error instanceof ResponseShapeError)) return;
+  error.message = i18n.t('safety.update.degraded');
+  useCompatibilityStore.getState().flag(blocking);
+  reportError(error, { source: 'api.schema', tags: { route: error.route, issues: error.issues.join(',') } });
+}
+
+function guard<T>(method: string, url: string, data: T): T {
+  try {
+    return validateResponse(method, url, data);
+  } catch (error) {
+    noteShapeMismatch(error, url.split('?')[0] === '/auth/me');
+    throw error;
+  }
+}
+
+/** Words the errors the app itself owns (permission, lock, connectivity) in the user's language. */
+function localizeError(error: any): void {
+  const key = localizedErrorKey(error);
+  if (key) error.message = i18n.t(key);
 }
 
 function applyServerMessage(error: any): void {
@@ -58,32 +109,43 @@ function applyServerMessage(error: any): void {
  * refresh operation. A failed refresh rejects every waiter; no request is left
  * hanging in a subscriber queue.
  */
-function getOrStartRefresh(): Promise<string> {
-  if (!refreshPromise) {
-    refreshPromise = refreshAccessToken().finally(() => {
-      refreshPromise = null;
+function getOrStartRefresh(generation: number): Promise<string> {
+  requireCurrentSession(generation);
+  if (!refreshPromise || refreshGeneration !== generation) {
+    refreshGeneration = generation;
+    const pending = refreshAccessToken(generation).finally(() => {
+      if (refreshPromise === pending) refreshPromise = null;
     });
+    refreshPromise = pending;
   }
   return refreshPromise;
 }
 
-async function refreshAccessToken(): Promise<string> {
+async function refreshAccessToken(generation: number): Promise<string> {
   const refreshToken = await tokenStorage.getRefreshToken();
-  if (!refreshToken) throw new Error('No refresh token');
+  requireCurrentSession(generation);
+  if (!refreshToken) throw new NoRefreshTokenError();
 
-  const response = await createPublicAuthClient().post<{
-    accessToken: string;
-    refreshToken: string;
-    expiresAtUtc: string;
-  }>(
-    '/auth/refresh',
-    { refreshToken },
-    { timeout: 10_000 },
+  // A weak signal is not a sign-out: transient failures are retried with backoff
+  // here, and the caller keeps the session if they still fail.
+  const response = await retryTransient(
+    () => {
+      requireCurrentSession(generation);
+      return createPublicAuthClient().post<{
+        accessToken: string;
+        refreshToken: string;
+        expiresAtUtc: string;
+      }>('/auth/refresh', { refreshToken }, { timeout: 10_000 });
+    },
+    { retries: 2, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), jitter: Math.random },
   );
 
-  const { accessToken, refreshToken: newRefreshToken, expiresAtUtc } = response.data;
+  requireCurrentSession(generation);
+  // A refresh reply without real tokens must not be saved over the working ones.
+  const { accessToken, refreshToken: newRefreshToken, expiresAtUtc } = guardRefresh(response.data);
   const expiresAt = new Date(expiresAtUtc).getTime();
-  await tokenStorage.saveTokens({ accessToken, refreshToken: newRefreshToken, expiresAt });
+  await writeSession(generation, () => tokenStorage.saveTokens({ accessToken, refreshToken: newRefreshToken, expiresAt }));
+  requireCurrentSession(generation);
   return accessToken;
 }
 
@@ -93,6 +155,7 @@ export function createApiClient(tenantId: string): AxiosInstance {
     timeout: API_TIMEOUT_MS,
     headers: {
       'Content-Type': 'application/json',
+      [APP_VERSION_HEADER]: APP_VERSION,
       [APP_CONFIG.TENANT_HEADER]: tenantId,
     },
   });
@@ -100,7 +163,12 @@ export function createApiClient(tenantId: string): AxiosInstance {
   // Request interceptor: attach Bearer token
   client.interceptors.request.use(
     async (config: InternalAxiosRequestConfig) => {
+      const request = config as SessionRequestConfig;
+      const generation = request._sessionGeneration ?? currentSessionGeneration();
+      request._sessionGeneration = generation;
+      requireCurrentSession(generation);
       const token = await tokenStorage.getAccessToken();
+      requireCurrentSession(generation);
       if (token) {
         config.headers['Authorization'] = `Bearer ${token}`;
       }
@@ -116,6 +184,8 @@ export function createApiClient(tenantId: string): AxiosInstance {
   // Response interceptor: handle 401 → refresh
   client.interceptors.response.use(
     (response: AxiosResponse) => {
+      const generation = (response.config as SessionRequestConfig)._sessionGeneration;
+      if (generation !== undefined) requireCurrentSession(generation);
       if (__DEV__) {
         const method = response.config.method?.toUpperCase() ?? 'GET';
         console.log(`[API] ${response.status} ${method} ${response.config.url ?? ''}`);
@@ -123,15 +193,26 @@ export function createApiClient(tenantId: string): AxiosInstance {
       return response;
     },
     async (error) => {
-      const originalRequest = error.config as InternalAxiosRequestConfig & {
+      const originalRequest = error.config as SessionRequestConfig & {
         _retry?: boolean;
+        _getRetries?: number;
       };
+      const generation = originalRequest?._sessionGeneration ?? currentSessionGeneration();
+      requireCurrentSession(generation);
       if (__DEV__) {
         const method = originalRequest?.method?.toUpperCase() ?? 'GET';
         console.log(
           `[API] ERROR ${error.response?.status ?? 'NETWORK'} ${method} ${originalRequest?.url ?? ''}`,
           error.response?.data ?? error.message
         );
+      }
+
+      // Reads on a weak connection are replayed (twice, with backoff) before the screen sees an error.
+      const attempt = originalRequest?._getRetries ?? 0;
+      if (originalRequest && shouldRetryGet(originalRequest.method, error, attempt)) {
+        originalRequest._getRetries = attempt + 1;
+        await new Promise((resolve) => setTimeout(resolve, backoffDelayMs(attempt, Math.random(), 800, 4000)));
+        return client(originalRequest);
       }
 
       // Only attempt token refresh for requests that were already authenticated.
@@ -142,12 +223,20 @@ export function createApiClient(tenantId: string): AxiosInstance {
       if (error.response?.status === 401 && !originalRequest._retry && hadAuthorization) {
         originalRequest._retry = true;
         try {
-          const newToken = await getOrStartRefresh();
+          const newToken = await getOrStartRefresh(generation);
+          requireCurrentSession(generation);
           originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
           return client(originalRequest);
         } catch (refreshError) {
-          await clearAllAuthData();
-          _onSessionExpired?.();
+          if (!isCurrentSession(generation)) return Promise.reject(refreshError);
+          // Only a definitive refusal (401/403/423, revoked grant, no token) ends the
+          // session. Timeouts, offline and 5xx keep the tokens so the next request
+          // or the retry screen can recover without a fresh password + 2FA.
+          if (isDefinitiveAuthRefusal(refreshError)) {
+            if (await writeSession(generation, clearAllAuthData) && isCurrentSession(generation)) _onSessionExpired?.();
+          } else {
+            localizeError(refreshError);
+          }
           return Promise.reject(refreshError);
         }
       }
@@ -157,15 +246,8 @@ export function createApiClient(tenantId: string): AxiosInstance {
       // instead of "Request failed with status code 400".
       applyServerMessage(error);
 
-      // 403: permission denied
-      if (error.response?.status === 403) {
-        error.message = 'You do not have permission to perform this action.';
-      }
-
-      // 423: account locked
-      if (error.response?.status === 423) {
-        error.message = 'Your account is locked. Please contact HR.';
-      }
+      if (error.response?.status === 426) useCompatibilityStore.getState().flag(false);
+      localizeError(error);
 
       return Promise.reject(error);
     }
@@ -203,8 +285,10 @@ export function unwrapApiData<T>(payload: unknown): T {
 }
 
 export async function apiGet<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  const generation = currentSessionGeneration();
   const response = await getApiClient().get(url, config);
-  return unwrapApiData<T>(response.data);
+  requireCurrentSession(generation);
+  return guard('GET', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiPost<T>(
@@ -212,8 +296,10 @@ export async function apiPost<T>(
   data?: unknown,
   config?: AxiosRequestConfig
 ): Promise<T> {
+  const generation = currentSessionGeneration();
   const response = await getApiClient().post(url, data, config);
-  return unwrapApiData<T>(response.data);
+  requireCurrentSession(generation);
+  return guard('POST', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiPatch<T>(
@@ -221,8 +307,10 @@ export async function apiPatch<T>(
   data?: unknown,
   config?: AxiosRequestConfig
 ): Promise<T> {
+  const generation = currentSessionGeneration();
   const response = await getApiClient().patch(url, data, config);
-  return unwrapApiData<T>(response.data);
+  requireCurrentSession(generation);
+  return guard('PATCH', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiPut<T>(
@@ -230,13 +318,17 @@ export async function apiPut<T>(
   data?: unknown,
   config?: AxiosRequestConfig
 ): Promise<T> {
+  const generation = currentSessionGeneration();
   const response = await getApiClient().put(url, data, config);
-  return unwrapApiData<T>(response.data);
+  requireCurrentSession(generation);
+  return guard('PUT', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiDelete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  const generation = currentSessionGeneration();
   const response = await getApiClient().delete(url, config);
-  return unwrapApiData<T>(response.data);
+  requireCurrentSession(generation);
+  return guard('DELETE', url, unwrapApiData<T>(response.data));
 }
 
 export function extractErrorMessage(error: unknown): string {

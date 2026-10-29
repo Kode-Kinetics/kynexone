@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -37,6 +37,8 @@ import {
   type LetterServerError,
   type LetterType,
 } from './letterRequest';
+import { useSensitiveScreen } from '@/safety/useSensitiveScreen';
+import { canShareProtectedDocument, currentShareGeneration, shareProtectedDocument } from '@/safety/documentShareGate';
 
 type LoadState =
   | { kind: 'loading' }
@@ -58,6 +60,12 @@ function failure(error: unknown): { status?: number; code?: string; message?: st
 }
 
 export default function LettersScreen() {
+  useSensitiveScreen('letters');
+  const shareFocused = useRef(false);
+  useFocusEffect(useCallback(() => {
+    shareFocused.current = true;
+    return () => { shareFocused.current = false; };
+  }, []));
   const { t, i18n } = useTranslation();
   const { theme } = useTheme();
   const f = useFormat();
@@ -144,30 +152,33 @@ export default function LettersScreen() {
     }
   };
 
-  const download = async (request: LetterRequest, retried = false): Promise<void> => {
-    if (downloadingId && !retried) return;
+  const download = async (request: LetterRequest, retried = false, generation = currentShareGeneration()): Promise<void> => {
+    const allowed = () => canShareProtectedDocument(generation, () => shareFocused.current);
+    if (!allowed() || (downloadingId && !retried)) return;
     setDownloadingId(request.id);
     setRowError(null);
     let uri: string | null = null;
     try {
       uri = await lettersApi.downloadPdf(request);
+      if (!allowed()) return;
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
+        await shareProtectedDocument(uri, {
           mimeType: 'application/pdf',
           UTI: 'com.adobe.pdf',
           dialogTitle: nameOf(request.letterType),
-        });
-      } else {
+        }, generation, () => shareFocused.current);
+      } else if (allowed()) {
         setRowError({ id: request.id, key: 'generic' });
       }
     } catch (error) {
       const fail = failure(error);
-      if (fail.status === 401 && !retried) {
+      if (fail.status === 401 && !retried && allowed()) {
         // The download bypasses the API client; one ordinary request refreshes an expired token.
         await lettersApi.getRequests().catch(() => undefined);
         await lettersApi.deleteLocalCopy(uri);
         uri = null;
-        return await download(request, true);
+        if (!allowed()) return;
+        return await download(request, true, generation);
       }
       haptics.error();
       setRowError({ id: request.id, key: fail.status === 409 ? 'reprintUnavailable' : letterServerError(fail.status, fail.code) });
