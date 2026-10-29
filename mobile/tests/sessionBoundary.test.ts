@@ -230,13 +230,14 @@ test('an ordinary transient recovery failure retains credentials and the recover
 
 function navigatorWorld() {
   let locked = false;
+  let initialLockEvaluated = true;
   let signedIn = true;
   const auth = () => ({ isAuthenticated: signedIn, isInitialized: true, initialize: () => {}, connectionIssue: false });
   const React = { createElement: (type: any, props: any, ...children: any[]) => ({ type, props, children }), useEffect: () => {}, useMemo: (fn: any) => fn() };
   const stubs: Record<string, unknown> = { react: React,
     'react-native': { View: 'View', Text: 'Text', ActivityIndicator: 'ActivityIndicator', StyleSheet: { create: (value: any) => value } },
     '@react-navigation/native': { NavigationContainer: 'NavigationContainer' }, 'react-i18next': { useTranslation: () => ({ t: (s: string) => s }) },
-    '@/auth/authStore': { useAuthStore: auth }, '@/safety/appLockStore': { useAppLockStore: (select: any) => select({ locked }) },
+    '@/auth/authStore': { useAuthStore: auth }, '@/safety/appLockStore': { useAppLockStore: (select: any) => select({ locked, initialLockEvaluated }) },
     '@/safety/compatibilityStore': { useCompatibilityStore: (select: any) => select({ blocking: false }) },
     '@/theme/ThemeProvider': { useTheme: () => ({ theme: { isDark: false, colors: {}, radius: {}, typography: {} } }) },
     './AuthStack': { AuthStack: 'AuthStack' }, './MainTabs': { MainTabs: 'MainTabs' }, './routes': { navigationRef: {} },
@@ -245,7 +246,7 @@ function navigatorWorld() {
   for (const [path, names] of [['auth/MfaSetupBanner', ['MfaSetupBanner']], ['auth/ResetCodeBanner', ['ResetCodeBanner']], ['safety/ConnectionIssueScreen', ['ConnectionIssueScreen']], ['safety/UpdateRequired', ['UpdateRequiredBanner', 'UpdateRequiredScreen']]] as const)
     stubs['@/features/' + path] = Object.fromEntries(names.map(name => [name, name]));
   const root = sourceLoader(stubs)('navigation/RootNavigator.tsx').RootNavigator;
-  return { render: root, lock: (value: boolean) => { locked = value; }, signOut: () => { signedIn = false; } };
+  return { render: root, lock: (value: boolean) => { locked = value; }, evaluated: (value: boolean) => { initialLockEvaluated = value; }, signOut: () => { signedIn = false; } };
 }
 function contains(node: any, type: string): boolean {
   return !!node && (node.type === type || (node.children ?? []).some((child: any) => contains(child, type)));
@@ -263,9 +264,24 @@ test('locking removes the authenticated navigation tree, including its native mo
   w.lock(false);
   assert.equal(contains(w.render(), 'MainTabs'), true);
 });
+test('restored private content stays hidden until initial lock hydration and decision finish', () => {
+  const w = navigatorWorld();
+  w.evaluated(false); // auth restored before slow device biometrics/preferences hydration
+  assert.equal(contains(w.render(), 'MainTabs'), false);
+  assert.equal(contains(w.render(), 'NavigationContainer'), false);
+  // Once hydration completes, AppLockGate applies the lock BEFORE publishing a decision.
+  w.lock(true);
+  w.evaluated(true);
+  assert.equal(contains(w.render(), 'MainTabs'), false);
+  // Canceling biometric prompt must never open the private tree.
+  assert.equal(contains(w.render(), 'MainTabs'), false);
+  w.lock(false);
+  assert.equal(contains(w.render(), 'MainTabs'), true);
+});
+
 test('a lock from an earlier session does not suppress the sign-in navigator', () => {
   const w = navigatorWorld();
-  w.lock(true); w.signOut();
+  w.lock(true); w.evaluated(false); w.signOut();
   assert.equal(contains(w.render(), 'AuthStack'), true);
 });
 

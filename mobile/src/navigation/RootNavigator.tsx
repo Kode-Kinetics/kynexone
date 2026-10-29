@@ -18,6 +18,7 @@ import { useCompatibilityStore } from '@/safety/compatibilityStore';
 export function RootNavigator() {
   const { isAuthenticated, isInitialized, initialize, connectionIssue } = useAuthStore();
   const locked = useAppLockStore((s) => s.locked);
+  const initialLockEvaluated = useAppLockStore((s) => s.initialLockEvaluated);
   const blocking = useCompatibilityStore((s) => s.blocking);
   const { theme } = useTheme();
   const { t } = useTranslation();
@@ -61,10 +62,12 @@ export function RootNavigator() {
     );
   }
 
-  // A sibling View cannot cover native Modal windows. Unmount authenticated screens
-  // (and their sheets) while locked; AppLockGate stays mounted beside this navigator.
-  // Unlocking intentionally starts a fresh protected navigation tree, not an open financial sheet.
-  if (isAuthenticated && locked) return <View testID="app-lock-content-hidden" style={{ flex: 1, backgroundColor: theme.colors.canvas }} />;
+  // AppLockGate hydrates saved preferences and the device authentication level
+  // asynchronously. A restored authenticated session must NEVER be shown before
+  // its one-time cold-start decision has been applied; unmount native Modal owners
+  // while locked. Login/auth screens remain accessible when signed out.
+  if (isAuthenticated && (!initialLockEvaluated || locked))
+    return <View testID="app-lock-content-hidden" style={{ flex: 1, backgroundColor: theme.colors.canvas }} />;
 
   if (blocking) return <UpdateRequiredScreen />;
   if (connectionIssue) return <ConnectionIssueScreen />;

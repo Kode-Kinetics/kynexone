@@ -46,7 +46,6 @@ export default function PayslipDetailScreen() {
   useSensitiveScreen('payslip-detail');
   const focused = useIsFocused();
   const shareFocused = useRef(focused);
-  shareFocused.current = focused;
   useEffect(() => { shareFocused.current = focused; return () => { shareFocused.current = false; }; }, [focused]);
   const route = useRoute<any>();
   const navigation = useNavigation<any>();

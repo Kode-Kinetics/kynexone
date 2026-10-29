@@ -19,7 +19,7 @@ export function AppLockGate() {
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const isLoading = useAuthStore((s) => s.isLoading);
   const connectionIssue = useAuthStore((s) => s.connectionIssue);
-  const { prefs, hydrated, canAuthenticate, locked, failed, hydrate, lock, unlock } = useAppLockStore();
+  const { prefs, hydrated, canAuthenticate, locked, failed, hydrate, lock, unlock, markInitialLockEvaluated } = useAppLockStore();
   const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
   const backgroundedAt = useRef<number | null>(null);
   const coldStartHandled = useRef(false);
@@ -33,8 +33,11 @@ export function AppLockGate() {
   useEffect(() => {
     if (!coldStartDecisionReady({ hydrated, initialized: isInitialized, loading: isLoading, connectionIssue }) || coldStartHandled.current) return;
     coldStartHandled.current = true;
+    // Mark complete only AFTER the lock has been applied. RootNavigator otherwise
+    // briefly renders MainTabs while async lock hydration is still in progress.
     if (shouldLockOnColdStart(prefs, canAuthenticate, isAuthenticated)) lock();
-  }, [hydrated, isInitialized, isLoading, connectionIssue, isAuthenticated, prefs, canAuthenticate, lock]);
+    markInitialLockEvaluated();
+  }, [hydrated, isInitialized, isLoading, connectionIssue, isAuthenticated, prefs, canAuthenticate, lock, markInitialLockEvaluated]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
