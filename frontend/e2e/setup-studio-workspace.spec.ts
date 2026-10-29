@@ -231,7 +231,8 @@ test('manual_leave_edit_uses_existing_put', async ({ page }, info) => {
   const request = page.waitForRequest(request => request.method() === 'PUT' && new URL(request.url()).pathname === '/api/leave/policies/existing-policy');
   await dialog.getByRole('button', { name: 'Save Changes' }).click();
   expect((await request).postDataJSON()).toMatchObject({ name: 'Saved annual policy', annualEntitlementDays: 30, leaveTypeId: 'annual-type' });
-  expect(writes).toEqual(['/api/leave/policies/existing-policy']);
+  // The statutory floor-check is a non-mutating POST preflight; the existing policy still saves through its PUT endpoint.
+  expect(writes).toEqual(['/api/leave/policies/floor-check', '/api/leave/policies/existing-policy']);
 });
 
 // These fixtures intercept every API call. Saved/read-back assertions prove the
