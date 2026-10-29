@@ -14,7 +14,7 @@ const WRITER_SECTIONS = {
   'Company structure': ['Companies', 'Branches', 'Locations', 'Cost centres', 'Departments'],
   'Jobs & headcount': ['Grades', 'Designations', 'Headcount & budget'],
   'Payroll & compliance': ['Country rules', 'Statutory rules', 'Fiscal years', 'Payroll accounting'],
-  Workspace: ['Drop-down lists', 'Record numbering', 'Notifications', 'Email delivery', 'Workspace settings', 'Audit log'],
+  Organisation: ['Drop-down lists', 'Record numbering', 'Notifications', 'Email delivery', 'Organisation settings', 'Audit log'],
 } as const;
 const ALL_WRITER_SECTIONS = Object.values(WRITER_SECTIONS).flat();
 

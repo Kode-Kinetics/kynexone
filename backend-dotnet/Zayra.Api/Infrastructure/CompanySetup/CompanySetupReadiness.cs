@@ -13,14 +13,25 @@ namespace Zayra.Api.Infrastructure.CompanySetup;
 /// <summary>
 /// The readiness checklist after a company is created (design contract step 7): what is still missing before the
 /// company can run, each item read from the rows that decide it, with a deep link to the screen that fixes it.
-/// Company items are always listed (done / todo / recommended). Workspace-wide items ("Applies to all companies")
+/// Company items are always listed (done / todo / recommended). Organisation-wide items ("Applies to all companies")
 /// appear only while unconfigured.
 /// </summary>
 public static class CompanySetupReadiness
 {
-    private const string Why = "Create-company readiness: what is configured for one company (and the workspace defaults it inherits), read whatever company the caller's switcher selects.";
+    private const string Why = "Create-company readiness: what is configured for one company (and the organisation defaults it inherits), read whatever company the caller's switcher selects.";
 
     public static string SetupHref(string tab, Guid companyId) => $"/setup?tab={tab}&companyId={companyId}";
+
+    /// <summary>The legal entity's own details. The company made by <c>--setup-organisation</c> has only its English
+    /// name, so this is the first thing its administrator is asked to finish (Complete company setup).</summary>
+    public const string LegalEntityKey = "legalEntity";
+
+    /// <summary>What the create-company wizard requires of a new legal entity: the Arabic legal name and the CR number,
+    /// and in Saudi Arabia the MOL establishment ID (stored as the WPS employer id).</summary>
+    public static bool HasLegalDetails(Company company) =>
+        !string.IsNullOrWhiteSpace(company.LegalNameAr)
+        && !string.IsNullOrWhiteSpace(company.RegistrationNumber)
+        && (!string.Equals(company.CountryCode, "SA", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(company.WpsEmployerId));
 
     public static async Task<IReadOnlyList<ReadinessItem>> ComputeAsync(
         ZayraDbContext db, IEmailService email, Guid tenantId, Company company, CancellationToken ct)
@@ -30,6 +41,12 @@ public static class CompanySetupReadiness
         var isSa = string.Equals(company.CountryCode, "SA", StringComparison.OrdinalIgnoreCase);
         void Add(string key, string label, string labelAr, bool done, string missing, string href, string scope = V.ScopeCompany) =>
             items.Add(new ReadinessItem(key, label, labelAr, done ? V.ReadinessDone : missing, scope, href));
+
+        Add(LegalEntityKey,
+            isSa ? "Legal entity details (Arabic legal name, CR number, MOL establishment ID)" : "Legal entity details (Arabic legal name, CR number)",
+            isSa ? "بيانات الكيان القانوني (الاسم القانوني بالعربية، رقم السجل التجاري، رقم المنشأة في وزارة الموارد البشرية)"
+                 : "بيانات الكيان القانوني (الاسم القانوني بالعربية، رقم السجل التجاري)",
+            HasLegalDetails(company), V.ReadinessTodo, $"/setup/company/{id}/complete");
 
         var gl = await ScopedBypass.TenantWide(db.GlAccountMappings, tenantId, Why)
             .AnyAsync(m => m.IsActive && (m.CompanyId == id || m.CompanyId == null), ct);
@@ -98,24 +115,24 @@ public static class CompanySetupReadiness
             items.Add(new ReadinessItem("companyAdmin",
                 seatLimit ? "Company super admin not set up: the licence's user limit is reached. Free a seat or extend the licence, then add them in User Management"
                     : wanted ? "Company super admin could not be set up — retry from User Management" : "Company super admin (recommended)",
-                seatLimit ? "لم يُعَدّ مسؤول الشركة: بلغت حد المستخدمين في اشتراكك. حرّر مقعدًا أو قم بالترقية، ثم أضفه من إدارة المستخدمين"
+                seatLimit ? "لم يُعَدّ مسؤول الشركة: بلغت حد المستخدمين في ترخيصك. حرّر مقعدًا أو قم بالترقية، ثم أضفه من إدارة المستخدمين"
                     : wanted ? "تعذر إعداد مسؤول الشركة — أعد المحاولة من إدارة المستخدمين" : "مسؤول الشركة الأعلى (موصى به)",
                 wanted ? V.ReadinessTodo : V.ReadinessRecommended, V.ScopeCompany, adminHref));
         }
 
-        // ── Workspace-wide: listed only while unconfigured ───────────────────────────────────────────────────
-        void Workspace(string key, string label, string labelAr, bool configured)
+        // ── Organisation-wide: listed only while unconfigured ───────────────────────────────────────────────────
+        void OrganisationWide(string key, string label, string labelAr, bool configured)
         {
             if (configured) return;
-            items.Add(new ReadinessItem(key, $"{label} (applies to all companies)", $"{labelAr} (ينطبق على جميع الشركات)", V.ReadinessTodo, V.ScopeWorkspace,
+            items.Add(new ReadinessItem(key, $"{label} (applies to all companies)", $"{labelAr} (ينطبق على جميع الشركات)", V.ReadinessTodo, V.ScopeOrganisation,
                 SetupHref(key, id)));
         }
-        Workspace("emailConfig", "Email / SMTP", "البريد الإلكتروني", await email.IsConfiguredAsync(tenantId, ct));
-        Workspace("notificationTemplates", "Notification templates", "قوالب الإشعارات", await db.NotificationTemplates.AnyAsync(x => x.TenantId == tenantId, ct));
-        Workspace("systemSettings", "System settings", "إعدادات النظام", await db.SystemSettings.AnyAsync(x => x.TenantId == tenantId, ct));
-        Workspace("masterData", "Employee reference lists", "القوائم المرجعية للموظفين", await db.MasterDataTypes.AnyAsync(x => x.TenantId == tenantId, ct));
-        Workspace("numberingRules", "Numbering", "الترقيم", await db.NumberingRules.AnyAsync(x => x.TenantId == tenantId, ct));
-        Workspace("fiscalYears", "Fiscal years", "السنوات المالية", await db.FiscalYears.AnyAsync(x => x.TenantId == tenantId, ct));
+        OrganisationWide("emailConfig", "Email / SMTP", "البريد الإلكتروني", await email.IsConfiguredAsync(tenantId, ct));
+        OrganisationWide("notificationTemplates", "Notification templates", "قوالب الإشعارات", await db.NotificationTemplates.AnyAsync(x => x.TenantId == tenantId, ct));
+        OrganisationWide("systemSettings", "System settings", "إعدادات النظام", await db.SystemSettings.AnyAsync(x => x.TenantId == tenantId, ct));
+        OrganisationWide("masterData", "Employee reference lists", "القوائم المرجعية للموظفين", await db.MasterDataTypes.AnyAsync(x => x.TenantId == tenantId, ct));
+        OrganisationWide("numberingRules", "Numbering", "الترقيم", await db.NumberingRules.AnyAsync(x => x.TenantId == tenantId, ct));
+        OrganisationWide("fiscalYears", "Fiscal years", "السنوات المالية", await db.FiscalYears.AnyAsync(x => x.TenantId == tenantId, ct));
         return items;
     }
 

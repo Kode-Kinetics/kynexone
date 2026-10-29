@@ -453,7 +453,7 @@ test('offers import separately from the Policy starter and preserves its organiz
   await openSetupSection(page, 'Policy starter');
   await expect(page.getByLabel(/^Industry/)).toBeVisible();
   await expect(page.locator('input[type="file"]:visible')).toHaveCount(0);
-  for (const label of ['Headcount & budget', 'Companies', 'Branches', 'Cost centres', 'Departments', 'Designations', 'Grades', 'Drop-down lists', 'Record numbering', 'Workspace settings', 'Country rules', 'Statutory rules', 'Fiscal years', 'Locations', 'Payroll accounting', 'Notifications', 'Email delivery', 'Audit log']) {
+  for (const label of ['Headcount & budget', 'Companies', 'Branches', 'Cost centres', 'Departments', 'Designations', 'Grades', 'Drop-down lists', 'Record numbering', 'Organisation settings', 'Country rules', 'Statutory rules', 'Fiscal years', 'Locations', 'Payroll accounting', 'Notifications', 'Email delivery', 'Audit log']) {
     await expect(await setupSection(page, label)).toBeVisible();
   }
   await openSetupSection(page, 'Companies');

@@ -14,7 +14,6 @@ export interface CompanySetupContext {
   canCreate: boolean;
   refusalCode?: string | null;
   refusalMessage?: string | null;
-  creationMode: string;
   accountType: string;
   companiesUsed: number;
   companiesAllowed?: number | null;
@@ -43,6 +42,8 @@ export interface ManageableCompany {
   readinessTotal: number;
   /** The one open existing-mode draft for this company (A1), when someone has started one. */
   openDraftId?: string | null;
+  /** The legal entity's own details are still missing (Arabic legal name, CR number, MOL ID in Saudi Arabia). */
+  needsLegalDetails?: boolean;
 }
 
 export type StartFrom = 'defaults' | 'copy';
@@ -183,7 +184,7 @@ export interface ReadinessItem {
   label: string;
   labelAr?: string | null;
   status: 'done' | 'todo' | 'recommended';
-  scope: 'company' | 'workspace';
+  scope: 'company' | 'organisation';
   href: string;
   /** Only on the `companyAdmin` item while that admin has not signed in: the login to send a single-use sign-in link to
    *  (`usersApi.issuePasswordResetLink`). Absent everywhere else. */

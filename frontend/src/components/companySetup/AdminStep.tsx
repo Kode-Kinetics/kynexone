@@ -89,7 +89,7 @@ export function AdminStep() {
               {(users ?? []).map(u => <option key={u.id} value={u.id}>{`${u.fullName} · ${u.email}`}</option>)}
             </select>}
           </WizardField>
-          {users && users.length === 0 && <div className="mt-2" data-testid="no-eligible-admins"><Notice tone="info">{t('No user in this workspace holds the Admin role yet. Invite a new company super admin instead.')}</Notice></div>}
+          {users && users.length === 0 && <div className="mt-2" data-testid="no-eligible-admins"><Notice tone="info">{t('No user in this organisation holds the Admin role yet. Invite a new company super admin instead.')}</Notice></div>}
           {usersError && <div className="mt-2"><Notice tone="error" role="alert">{t('The user list could not be loaded. Check your connection and try again, or invite a new administrator instead.')}<button type="button" className="btn-secondary ms-2" onClick={() => setAttempt(a => a + 1)}>{t('Try again')}</button></Notice></div>}
         </div>
       )}

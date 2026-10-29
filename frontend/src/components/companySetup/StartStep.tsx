@@ -37,7 +37,7 @@ export function StartStep({ context, drafts, currentDraftId, choice, onChoice, o
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]" data-testid="plan-usage">
           <p className="text-sm font-semibold text-slate-900 dark:text-white">
             {usage.allowed === null
-              ? t('{used, plural, one {# company} other {# companies}} in this workspace', { used: usage.used })
+              ? t('{used, plural, one {# company} other {# companies}} in this organisation', { used: usage.used })
               : t('{used} of {allowed} companies on your plan', { used: usage.used, allowed: usage.allowed })}
           </p>
           {usage.allowed !== null && (
@@ -51,7 +51,7 @@ export function StartStep({ context, drafts, currentDraftId, choice, onChoice, o
       {!context.canCreate && (
         <Notice tone="warning" role="alert">
           <p className="font-semibold">{t('A new company cannot be created right now.')}</p>
-          <p className="mt-1">{context.refusalMessage || t('Your workspace does not allow another company.')}</p>
+          <p className="mt-1">{context.refusalMessage || t('Your licence does not allow another company.')}</p>
           <p className="mt-1">{refusalNextStep(context.refusalCode, t)}</p>
         </Notice>
       )}
@@ -126,8 +126,6 @@ function refusalNextStep(code: string | null | undefined, t: (key: string) => st
   switch (code) {
     case 'company_limit_reached': return t('To add another company, ask your account manager to raise the company limit on your plan.');
     case 'account_type_single_company': return t('This is a single-company account. Ask your account manager to switch it to a group account to add companies.');
-    case 'company_creation_platform_controlled': return t('Companies for this account are created by the KynexOne team. Ask your account manager to add it.');
-    case 'company_creation_platform_approval': return t('New companies need platform activation, which is currently switched off. Ask your account manager to enable it; no draft is kept in the meantime.');
     case 'not_group_scope': return t('Only a group administrator can create a company. Ask your group super admin.');
     default: return t('Ask your account manager or group super admin what is needed.');
   }

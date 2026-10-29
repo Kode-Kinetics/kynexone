@@ -253,7 +253,7 @@ export function OrgStructureImportPanel() {
             {t('Upload individual CSV files instead')}
             <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
           </summary>
-          <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-600 dark:text-slate-300">{t('Add only the sections you need. Related records can be in these files or already in your workspace; validation checks the connections.')}</p>
+          <p className="mt-1 max-w-2xl text-sm leading-5 text-slate-600 dark:text-slate-300">{t('Add only the sections you need. Related records can be in these files or already in your organisation; validation checks the connections.')}</p>
           <div className="mt-3 divide-y divide-slate-200 dark:divide-white/10">
             {importKeys.map(item => {
               const rows = countCsvRows(payload[item.key]);
@@ -268,7 +268,7 @@ export function OrgStructureImportPanel() {
                         <summary className="w-fit cursor-pointer rounded py-1 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire">{t('File format')}</summary>
                         <div className="mt-1 space-y-2 leading-5">
                           <p>{t('Required columns: {columns}.', { columns: item.required.join(', ') })}</p>
-                          {item.dependsOn.length > 0 && <p>{t('References {sections} in your files or workspace.', { sections: item.dependsOn.map(section => sectionLabel(section, t)).join(', ') })}</p>}
+                          {item.dependsOn.length > 0 && <p>{t('References {sections} in your files or organisation.', { sections: item.dependsOn.map(section => sectionLabel(section, t)).join(', ') })}</p>}
                           {['companiesCsv', 'gradesCsv'].includes(item.key) && <p>{t('Requires group-level access to import.')}</p>}
                         </div>
                       </details>
@@ -297,7 +297,7 @@ export function OrgStructureImportPanel() {
         <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p id={`${inputId}-validation-help`} className="flex max-w-2xl items-start gap-2 text-sm leading-5 text-slate-600 dark:text-slate-300">
             <ShieldCheck className="mt-1 h-4 w-4 shrink-0" aria-hidden="true" />
-            {hasAny ? t('Validation checks your files against your workspace. Organization records change only when you apply the import.') : t('Choose a package or CSV file to begin. You will review the proposed changes before applying them.')}
+            {hasAny ? t('Validation checks your files against your organisation. Organization records change only when you apply the import.') : t('Choose a package or CSV file to begin. You will review the proposed changes before applying them.')}
           </p>
           <button type="button" className={`${batch ? 'btn-secondary' : 'btn-primary'} shrink-0 self-start disabled:cursor-not-allowed disabled:opacity-50 disabled:transform-none sm:self-auto`} onClick={runValidation} disabled={!hasAny || loading === 'dryrun'} aria-describedby={`${inputId}-validation-help`}>
             <ShieldCheck className="h-4 w-4" aria-hidden="true" />{loading === 'dryrun' ? t('Validating…') : t('Validate files')}
@@ -348,7 +348,7 @@ export function OrgStructureImportPanel() {
                   ? t('Created {createdAt} · Completed {completedAt}', { createdAt: format.dateTime(batch.createdAtUtc), completedAt: format.dateTime(batch.completedAtUtc) })
                   : t('Created {createdAt}', { createdAt: format.dateTime(batch.createdAtUtc) })}</p>
                 <p>{t('{count, plural, one {# row received.} other {# rows received.}}', { count: batch.receivedRows })}</p>
-                <CountStrip label={t('Existing workspace records')} counts={{ ...batch.reconciliation.identityCounts, ...batch.reconciliation.operationalCounts }} muted t={t} format={format} />
+                <CountStrip label={t('Existing organisation records')} counts={{ ...batch.reconciliation.identityCounts, ...batch.reconciliation.operationalCounts }} muted t={t} format={format} />
               </div>
             </details>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 dark:border-white/10">

@@ -562,7 +562,7 @@ test('company_limit_refusal_is_shown_at_the_first_wizard_step_with_the_server_re
     if (request.method() === 'POST' && (path === '/api/companies' || path.startsWith('/api/company-setup'))) { companyPosts.push(path); }
     if (path === '/api/company-setup/context') {
       await route.fulfill({ json: {
-        canCreate: false, refusalCode: 'company_limit_reached', refusalMessage: refusal, creationMode: 'GroupSelfServiceWithinLimit',
+        canCreate: false, refusalCode: 'company_limit_reached', refusalMessage: refusal, 
         accountType: 'Group', companiesUsed: 1, companiesAllowed: 1, isGroupScope: true, sisterCompanies: [],
         sharedCatalog: { departments: [], designations: [], grades: [] },
       } });
@@ -793,8 +793,8 @@ test('history_fallback_decline_retains_actual_editor', async ({ page }) => {
 test('administration_access_and_filters_do_not_create_unsaved_edits', async ({ page }) => {
   await boot(page);
   // The Studio's "Administration settings" button is gone; Workspace settings is a Setup section of its own.
-  await openSetupSection(page, 'Workspace settings');
-  await expect(page.getByRole('heading', { level: 2, name: 'Workspace settings', exact: true })).toBeVisible();
+  await openSetupSection(page, 'Organisation settings');
+  await expect(page.getByRole('heading', { level: 2, name: 'Organisation settings', exact: true })).toBeVisible();
   await openSetupSection(page, 'Branches');
   const guard = trackLeaveGuard(page);
   await openSetupSection(page, 'Audit log');
@@ -854,7 +854,7 @@ for (const action of ['override', 'rejection'] as const) test(`statutory_${actio
 test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ page }) => {
   await boot(page);
   await page.route('**/api/admin/system-settings**', route => route.fulfill({ status: 500, json: { message: 'Fixture settings unavailable' } }));
-  await openSetupSection(page, 'Workspace settings');
+  await openSetupSection(page, 'Organisation settings');
   await openSetupSection(page, 'Email delivery');
   await expect(page).toHaveURL(/[?&]tab=emailConfig(&|$)/);
   await page.getByPlaceholder('smtp.example.com', { exact: true }).fill('smtp.retained.example');

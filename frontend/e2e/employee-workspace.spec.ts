@@ -196,7 +196,7 @@ test('Setup activation adapter resumes keyboard navigation exactly once', async 
       return original(...args);
     };
   });
-  const administration = await setupSection(page, 'Workspace settings');
+  const administration = await setupSection(page, 'Organisation settings');
   await administration.focus();
   await page.keyboard.press('Enter');
   await expect(guardDialog(page)).toBeVisible();
@@ -206,7 +206,7 @@ test('Setup activation adapter resumes keyboard navigation exactly once', async 
   await page.keyboard.press('Enter');
   await expect(guardDialog(page)).toBeVisible();
   await guardDialog(page).getByRole('button', { name: 'Discard and leave', exact: true }).click();
-  await expect(page.getByRole('heading', { level: 2, name: 'Workspace settings', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'Organisation settings', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/tab=systemSettings/);
   await expect(guardDialog(page)).toHaveCount(0);
   expect(await page.evaluate(() => (window as Window & { __setupPushCount?: number }).__setupPushCount)).toBe(1);
@@ -316,7 +316,7 @@ test('Setup activation adapter resumes touch navigation exactly once', async ({ 
       return original(...args);
     };
   });
-  await (await setupSection(page, 'Workspace settings')).tap();
+  await (await setupSection(page, 'Organisation settings')).tap();
   await expect(guardDialog(page)).toBeVisible();
   await guardDialog(page).getByRole('button', { name: 'Discard and leave', exact: true }).tap();
   await expect(page).toHaveURL(/tab=systemSettings/);
@@ -326,7 +326,7 @@ test('Setup activation adapter resumes touch navigation exactly once', async ({ 
 
 test('guard remains topmost over an existing setup dialog and cancel preserves it', async ({ page }) => {
   await bootNavigationFixture(page);
-  await (await setupSection(page, 'Workspace settings')).click();
+  await (await setupSection(page, 'Organisation settings')).click();
   await page.getByRole('button', { name: 'New Setting', exact: true }).click();
   const settingDialog = page.getByRole('dialog', { name: 'New Setting', exact: true });
   await expect(settingDialog).toBeVisible();

@@ -13,7 +13,7 @@ import type { ReleaseADict } from './types';
 const en: Record<string, string> = {
   'Work Email Domain (optional)': 'Work Email Domain (optional)',
   'Work Email Pattern (optional)': 'Work Email Pattern (optional)',
-  'Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.': 'Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.',
+  'Optional preference for email suggestions. It does not restrict IT-issued employee addresses.': 'Optional preference for email suggestions. It does not restrict IT-issued employee addresses.',
   'Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.': 'Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.',
   'Example employee email': 'Example employee email',
   'Add a domain to preview a complete suggested address. Full work email addresses can still be entered manually.': 'Add a domain to preview a complete suggested address. Full work email addresses can still be entered manually.',
@@ -142,7 +142,7 @@ const en: Record<string, string> = {
 const ar: Record<string, string> = {
   'Work Email Domain (optional)': 'نطاق البريد الإلكتروني الوظيفي (اختياري)',
   'Work Email Pattern (optional)': 'نمط البريد الإلكتروني الوظيفي (اختياري)',
-  'Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.': 'تفضيل اختياري لاقتراحات البريد الإلكتروني. لا يقيّد عناوين الموظفين الصادرة من تقنية المعلومات. ويمكنه أيضًا المساعدة في تحديد مساحة العمل عند تسجيل الدخول.',
+  'Optional preference for email suggestions. It does not restrict IT-issued employee addresses.': 'تفضيل اختياري لاقتراحات البريد الإلكتروني. لا يقيّد عناوين الموظفين الصادرة من تقنية المعلومات.',
   'Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.': 'اختر شكل الاسم في الاقتراح الاختياري. هذا لا ينشئ صندوق بريد ولا يعيّن بريدًا للموظف.',
   'Example employee email': 'مثال على البريد الإلكتروني الوظيفي',
   'Add a domain to preview a complete suggested address. Full work email addresses can still be entered manually.': 'أضف نطاقًا لمعاينة عنوان مقترح كامل. يمكن إدخال عناوين البريد الوظيفي الكاملة يدويًا.',

@@ -229,7 +229,7 @@ export const SETUP_CODE_COPY: Record<string, string> = {
   branch_code_taken: msg('This branch code is already used by this company, perhaps by a removed branch. Choose a different code.'),
   sequence_cannot_go_back: msg('The next employee number cannot go back, because a lower one could repeat a number already given. Enter the saved number or a higher one.'),
   work_week_override_kept: msg('This company keeps its own weekend. If it should follow the country weekend, remove it in Setup → GCC settings.'),
-  workspace_defaults_need_group_scope: msg('Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.'),
+  organisation_defaults_need_group_scope: msg('Some country defaults that every company shares are missing, and only a group administrator can add them. Ask your group super admin; nothing else waits on it here.'),
   shared_row_not_edited: msg('This is a shared row: its name is not changed here. A group administrator renames it in its Setup tab.'),
   // A9. changed_since_draft_started has none on purpose: the server's own words carry the value that is there now.
   draft_needs_refresh: msg('This draft was started before KynexOne kept a record of what the company had at the time, so it cannot tell your edits from changes made elsewhere. Reload the company’s current setup, then make your changes again.'),
@@ -535,7 +535,7 @@ export function stepWarnings(step: StepId, input: ValidationInput): FieldError[]
   const { body, context } = input;
   const warnings: FieldError[] = step === 2 ? legacyWarnings(input) : [];
   if (step === 3 && body.branches.length > 0 && body.branches.every(b => b.locations.length === 0))
-    warnings.push({ field: 'locations', message: msg('No locations yet. Until you add one, employees can punch in at any geofenced site in the workspace. Add a location to each branch, or add them later in Setup → Locations.') });
+    warnings.push({ field: 'locations', message: msg('No locations yet. Until you add one, employees can punch in at any geofenced site in the organisation. Add a location to each branch, or add them later in Setup → Locations.') });
   if (step === 4 && context?.gradesCurrency && body.company.currency && context.gradesCurrency !== body.company.currency && body.grades.length > 0)
     warnings.push({ field: 'grades', message: msg('Grade salary bands are kept in {gradeCurrency} for the whole group, but this company pays in {currency}. Enter the bands in {gradeCurrency}, or check them with finance before paying salaries.'), params: { gradeCurrency: context.gradesCurrency, currency: body.company.currency } });
   return warnings;

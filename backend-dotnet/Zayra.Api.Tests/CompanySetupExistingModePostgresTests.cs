@@ -685,7 +685,7 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         var plan = await DryRunAsync(w, body, caller);
         plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
         plan.Items.Should().NotContain(i => (i.Area == V.Areas.LeavePolicy || i.Area == V.Areas.GccSetting) && i.Action == V.ActionCreate);
-        plan.Warnings.Count(x => x.Code == "workspace_defaults_need_group_scope").Should().Be(2);
+        plan.Warnings.Count(x => x.Code == "organisation_defaults_need_group_scope").Should().Be(2);
         var (_, result) = await DraftAndCommitAsync(w, body, caller);
         result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
         await using var verify = fixture.CreateDb();
@@ -714,6 +714,36 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         ErrorCode(outcome.Error).Should().Be("company_not_active");
         var context = await Service(check).GetContextAsync(Caller(w), default);
         context.ManageableCompanies.Select(c => c.Id).Should().NotContain(w.SisterId);
+    }
+
+    [Fact]
+    public async Task A_company_missing_its_legal_entity_details_is_flagged_until_they_are_completed()
+    {
+        // The sister is Saudi with an Arabic legal name and a CR number, but no MOL establishment ID.
+        var w = await SeedAsync();
+        await using (var db = fixture.CreateDb())
+        {
+            var card = (await Service(db).GetContextAsync(Caller(w), default)).ManageableCompanies.Single(c => c.Id == w.SisterId);
+            card.NeedsLegalDetails.Should().BeTrue();
+            var item = (await Service(db).ReadinessAsync(w.TenantId, w.SisterId, default))!.Single(i => i.Key == CompanySetupReadiness.LegalEntityKey);
+            item.Status.Should().Be(V.ReadinessTodo);
+            item.Href.Should().Be($"/setup/company/{w.SisterId}/complete");
+        }
+
+        await using (var db = fixture.CreateDb())
+        {
+            var sister = await db.Companies.IgnoreQueryFilters().SingleAsync(c => c.Id == w.SisterId);
+            sister.WpsEmployerId = "7-1234567";
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = fixture.CreateDb())
+        {
+            (await Service(db).GetContextAsync(Caller(w), default)).ManageableCompanies.Single(c => c.Id == w.SisterId)
+                .NeedsLegalDetails.Should().BeFalse();
+            (await Service(db).ReadinessAsync(w.TenantId, w.SisterId, default))!.Single(i => i.Key == CompanySetupReadiness.LegalEntityKey)
+                .Status.Should().Be(V.ReadinessDone);
+        }
     }
 
     [Fact]

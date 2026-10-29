@@ -399,18 +399,22 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task A_draft_approval_tenant_is_refused_at_context_and_cannot_start_a_draft()
+    public async Task A_single_company_licence_refuses_a_second_company_with_the_licence_message()
     {
-        var w = await SeedAsync(mode: CompanyCreationModes.GroupDraftPlatformApproval);
+        var w = await SeedAsync();
+        // The organisation is stored as a Group, but the licence says SingleCompany: the licence decides.
+        _licence = new FixedLicenceService(LicenceTestKit.Payload(b => b.With(p => p with
+        {
+            AccountType = "SingleCompany", MaxCompanies = 5,
+            Modules = LicenceService.KnownModules.ToList(), OptInFeatures = LicenceService.KnownOptIns.ToList(),
+        })));
         await using var db = fixture.CreateDb();
-        var service = Service(db);
-        var context = await service.GetContextAsync(Caller(w), default);
+        var context = await Service(db).GetContextAsync(Caller(w), default);
         context.CanCreate.Should().BeFalse();
-        context.RefusalCode.Should().Be("company_creation_platform_approval");
-        context.CreationMode.Should().Be(CompanyCreationModes.GroupDraftPlatformApproval);
-        var draft = await service.CreateDraftAsync(Caller(w), Body(), default);
-        draft.Status.Should().Be(409, "no stranded drafts");
-        (await db.CompanySetupDrafts.AnyAsync(d => d.TenantId == w.TenantId)).Should().BeFalse();
+        context.RefusalCode.Should().Be("account_type_single_company");
+        context.RefusalMessage.Should().Contain("licensed as a single company");
+        context.AccountType.Should().Be("SingleCompany");
+        (await Service(db).CreateDraftAsync(Caller(w), Body(), default)).Status.Should().Be(409, "no stranded drafts");
     }
 
     [Fact]

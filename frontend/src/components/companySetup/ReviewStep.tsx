@@ -56,7 +56,7 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
   };
   const stepOf = (p: Problem): StepId => (visibleSteps.includes(p.step as StepId) ? p.step as StepId : 7);
 
-  if (state === 'loading' && !plan) return <p role="status" className="text-sm text-slate-600 dark:text-slate-300">{t('Checking the plan against your workspace…')}</p>;
+  if (state === 'loading' && !plan) return <p role="status" className="text-sm text-slate-600 dark:text-slate-300">{t('Checking the plan against your organisation…')}</p>;
   if (state === 'error' && !plan) return (
     <Notice tone="error" role="alert">
       <p>{t('The plan could not be checked. Nothing has been created. Check your connection and try again.')}</p>

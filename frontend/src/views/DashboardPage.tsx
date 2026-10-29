@@ -31,6 +31,7 @@ import { useT } from '../hooks/useT';
 import { useFormat } from '../hooks/useFormat';
 import { msg } from '../i18n/translations';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
+import { CompanySetupPrompt } from '../components/dashboard/CompanySetupPrompt';
 import { AttentionStrip } from '../components/dashboard/AttentionStrip';
 import { PayrollHero } from '../components/dashboard/PayrollHero';
 import { KpiRow } from '../components/dashboard/KpiRow';
@@ -216,6 +217,7 @@ export function DashboardPage() {
       <div className="mx-auto flex w-full min-w-0 flex-col gap-4" aria-label="HR Command Center">
         {error && <ErrorBanner message={t(error)} onDismiss={() => setError(null)} />}
         {header}
+        <CompanySetupPrompt />
         {!data ? skeleton : (
           <DashboardViews
             today={<div className="flex flex-col gap-4">{attentionEl}{heroEl}{kpiEl}</div>}
@@ -232,6 +234,7 @@ export function DashboardPage() {
     <div className="mx-auto flex w-full min-w-0 max-w-[1680px] flex-col gap-3.5" aria-label="HR Command Center">
       {error && <ErrorBanner message={t(error)} onDismiss={() => setError(null)} />}
       {header}
+      <CompanySetupPrompt />
       {!data ? skeleton : (
         <>
           {attentionEl}

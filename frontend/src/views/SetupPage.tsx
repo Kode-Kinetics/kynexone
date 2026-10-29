@@ -270,7 +270,7 @@ function CompaniesTab() {
     } catch (err: unknown) {
       const resp = (err as { response?: { data?: { error?: string; message?: string; field?: string; errors?: Record<string, unknown> } } })?.response?.data;
       if (resp?.error === 'registration_number_taken' || resp?.field === 'registrationNumber')
-        setFieldErrors({ registrationNumber: resp.message ?? 'Another company in this workspace already uses this registration number.' });
+        setFieldErrors({ registrationNumber: resp.message ?? 'Another company in this organisation already uses this registration number.' });
       else if (resp?.errors && typeof resp.errors === 'object') {
         const mapped = mapCompanyValidationErrors(resp.errors);
         setFieldErrors(mapped.fields);
@@ -503,7 +503,7 @@ function CompaniesTab() {
             <p className="mt-1 text-xs text-slate-400">{t('The code your ERP uses for this legal entity (SAP company code, Oracle balancing segment). Journal exports stamp it on every line.')}</p>
             {!canSetErpCode && <p className="mt-1 text-xs text-slate-500">{t('Only a finance user who manages the general ledger can change this code.')}</p>}
           </FormField>
-          <FormField label={t('Work Email Domain (optional)')} info={t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}>
+          <FormField label={t('Work Email Domain (optional)')} info={t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses.')}>
             <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">
               <span className="grid place-items-center bg-slate-50 px-2.5 text-sm font-medium text-slate-400 dark:bg-white/[0.04] dark:text-slate-500">@</span>
               <input
@@ -521,7 +521,7 @@ function CompaniesTab() {
             <p className={`mt-1 text-xs ${form.emailDomain && !isValidEmailDomain(form.emailDomain) ? 'text-rose-500' : 'text-slate-400'}`}>
               {form.emailDomain && !isValidEmailDomain(form.emailDomain)
                 ? 'Enter a bare domain like "acme.sa" — no "@", scheme, or path.'
-                : t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}
+                : t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses.')}
             </p>
           </FormField>
           <FormField label={t('Work Email Pattern (optional)')} info={t('Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.')}>
@@ -2881,7 +2881,7 @@ export function SetupPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
-            ? t('Company structure, jobs and grades, payroll and country rules, and workspace settings.')
+            ? t('Company structure, jobs and grades, payroll and country rules, and organisation settings.')
             : t('Review the setup areas available to your role.')}
         </p>
       </header>

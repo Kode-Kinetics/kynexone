@@ -82,7 +82,7 @@ const USER = {
   permissions: ['dashboard.read', 'employees.read', 'attendance.read', 'leave.read', 'approvals.read', 'approvals.decide', 'payroll.read', 'compliance.read', 'reports.read', 'ai.query', 'ai.insights_view'],
 };
 
-async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string; user?: typeof USER } = {}) {
+async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string; user?: typeof USER; setupContext?: unknown } = {}) {
   const now = opts.now ?? EARLY;
   await page.clock.setFixedTime(now);
   await page.addInitScript((th) => {
@@ -103,6 +103,7 @@ async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'lig
     if (p === '/api/dashboard/full') return json(dataset(!!opts.rich, now));
     if (p === '/api/payroll/companies') return json([COMPANY]);
     if (p === '/api/ai/status') return json({ enabled: true, provider: 'fixture' });
+    if (p === '/api/company-setup/context' && opts.setupContext) return json(opts.setupContext);
     return json({ items: [], total: 0 });
   });
   await page.goto('/dashboard');
@@ -131,6 +132,34 @@ test.describe('HR Command Center: who sees payroll (F10)', () => {
     await open(page);
     await expect(page.locator('section[aria-labelledby="hero-heading"]').getByText('SAR 194.6K').first()).toBeVisible();
     await expect(page.getByRole('link', { name: 'Open reports' })).toBeVisible();
+  });
+});
+
+// The first company of an installation is created by --setup-organisation with only its English name: the
+// organisation admin is asked to finish it (Module 1, CompanySetupPrompt).
+const SETUP_CONTEXT = {
+  canCreate: true, refusalCode: null, refusalMessage: null, accountType: 'Group', companiesUsed: 2, companiesAllowed: null,
+  isGroupScope: true, sisterCompanies: [], sharedCatalog: { departments: [], designations: [], grades: [] }, gradesCurrency: null,
+  canGrantCompanyAdmin: true,
+  manageableCompanies: [
+    { id: 'c-first', legalNameEn: 'Almarai Dairy', legalNameAr: null, countryCode: 'SA', readinessDone: 2, readinessTotal: 12, openDraftId: null, needsLegalDetails: true },
+    { id: 'c-done', legalNameEn: 'Almarai Logistics LLC', legalNameAr: 'المراعي للخدمات', countryCode: 'SA', readinessDone: 7, readinessTotal: 12, openDraftId: null, needsLegalDetails: false },
+  ],
+};
+
+test.describe('HR Command Center: company setup prompt (Module 1)', () => {
+  test('an organisation admin is asked to finish the company whose legal details are missing', async ({ page }) => {
+    await open(page, { user: { ...USER, permissions: [...USER.permissions, 'organization.setup.apply'] }, setupContext: SETUP_CONTEXT });
+    const prompt = page.getByTestId('company-setup-prompt');
+    await expect(prompt).toContainText('Finish setting up Almarai Dairy.');
+    await expect(prompt).toContainText('Arabic legal name, CR number and MOL establishment ID');
+    await expect(prompt).not.toContainText('Almarai Logistics LLC');
+    await expect(prompt.getByRole('link', { name: 'Complete company setup' })).toHaveAttribute('href', '/setup/company/c-first/complete');
+  });
+
+  test('without the setup permission there is no prompt', async ({ page }) => {
+    await open(page, { setupContext: SETUP_CONTEXT });
+    await expect(page.getByTestId('company-setup-prompt')).toHaveCount(0);
   });
 });
 

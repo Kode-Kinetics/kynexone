@@ -170,9 +170,9 @@ const ar: Record<string, string> = {
   "Open the new company’s setup": "فتح إعداد الشركة الجديدة",
 
   // Step 1
-  "{used, plural, one {# company} other {# companies}} in this workspace": "{used, plural, zero {لا توجد شركات} one {شركة واحدة} two {شركتان} few {# شركات} many {# شركة} other {# شركة}} في مساحة العمل هذه",
+  "{used, plural, one {# company} other {# companies}} in this organisation": "{used, plural, zero {لا توجد شركات} one {شركة واحدة} two {شركتان} few {# شركات} many {# شركة} other {# شركة}} في هذه المؤسسة",
   "{used} of {allowed} companies on your plan": "{used} من {allowed} شركات في باقتك",
-  "Your workspace does not allow another company.": "لا تسمح مساحة العمل الخاصة بك بإضافة شركة أخرى.",
+  "Your licence does not allow another company.": "لا يسمح ترخيصك بإضافة شركة أخرى.",
   "Continue where you left off": "تابع من حيث توقفت",
   "Untitled company": "شركة بلا اسم",
   "Stopped at step {step}: {title}": "توقفت عند الخطوة {step}: {title}",
@@ -354,7 +354,7 @@ const ar: Record<string, string> = {
   "Their existing company email. KynexOne never creates mailboxes.": "بريده الحالي في الشركة. لا ينشئ KynexOne صناديق بريد أبدًا.",
   "User": "المستخدم",
   "Only users who already hold the Admin role are listed, because a role applies to every company a person can access.": "يظهر هنا فقط من يحملون دور المسؤول، لأن الدور ينطبق على كل شركة يصل إليها الشخص.",
-  "No user in this workspace holds the Admin role yet. Invite a new company super admin instead.": "لا يحمل أي مستخدم في مساحة العمل هذه دور المسؤول بعد. ادعُ مسؤولًا أعلى جديدًا للشركة بدلًا من ذلك.",
+  "No user in this organisation holds the Admin role yet. Invite a new company super admin instead.": "لا يحمل أي مستخدم في هذه المؤسسة دور المسؤول بعد. ادعُ مسؤولًا أعلى جديدًا للشركة بدلًا من ذلك.",
   "Choose a user…": "اختر مستخدمًا…",
   "Loading users…": "جارٍ تحميل المستخدمين…",
   "The user list could not be loaded. Check your connection and try again, or invite a new administrator instead.": "تعذر تحميل قائمة المستخدمين. تحقق من الاتصال وأعد المحاولة، أو ادعُ مسؤولًا جديدًا بدلًا من ذلك.",
@@ -364,7 +364,7 @@ const ar: Record<string, string> = {
   "Create": "إنشاء",
   "Reuse": "إعادة استخدام",
   "Conflict": "تعارض",
-  "Checking the plan against your workspace…": "جارٍ التحقق من الخطة مقابل مساحة العمل…",
+  "Checking the plan against your organisation…": "جارٍ التحقق من الخطة مقابل المؤسسة…",
   "The plan could not be checked. Nothing has been created. Check your connection and try again.": "تعذر التحقق من الخطة ولم يُنشأ أي شيء. تحقق من الاتصال وأعد المحاولة.",
   "Check again": "تحقق مرة أخرى",
   "Checking…": "جارٍ التحقق…",
@@ -389,7 +389,7 @@ const ar: Record<string, string> = {
   "This company": "هذه الشركة",
   "Finish these before the first payroll for this company.": "أكمل هذه البنود قبل أول مسير رواتب لهذه الشركة.",
   "Applies to all companies": "ينطبق على جميع الشركات",
-  "Workspace settings that are not configured yet. They apply to every company in the group.": "إعدادات مساحة العمل التي لم تُضبط بعد. وهي تنطبق على كل شركات المجموعة.",
+  "Organisation settings that are not configured yet. They apply to every company in the organisation.": "إعدادات المؤسسة التي لم تُضبط بعد. وهي تنطبق على كل شركات المؤسسة.",
   "Unfinished company setup": "إعداد شركة غير مكتمل",
   "These drafts are saved. Resume one to carry on from the step where it stopped.": "هذه المسودات محفوظة. استأنف إحداها لتكمل من الخطوة التي توقفت عندها.",
   "Unnamed": "بلا اسم",
@@ -438,7 +438,7 @@ const ar: Record<string, string> = {
   "Enter a full email address, such as name@company.sa.": "أدخل عنوان بريد إلكتروني كاملًا، مثل name@company.sa.",
   "Use an address on {domain}. KynexOne never creates mailboxes, so the administrator signs in with their company email.": "استخدم عنوانًا على النطاق {domain}. لا ينشئ KynexOne صناديق بريد أبدًا، لذا يسجّل المسؤول الدخول ببريد شركته.",
   "Choose the user who will be the company super admin.": "اختر المستخدم الذي سيكون المسؤول الأعلى للشركة.",
-  "No locations yet. Until you add one, employees can punch in at any geofenced site in the workspace. Add a location to each branch, or add them later in Setup → Locations.": "لا توجد مواقع بعد. إلى أن تضيف موقعًا، يمكن للموظفين تسجيل الحضور من أي موقع محدد جغرافيًا في مساحة العمل. أضف موقعًا لكل فرع، أو أضفها لاحقًا من الإعداد ← المواقع.",
+  "No locations yet. Until you add one, employees can punch in at any geofenced site in the organisation. Add a location to each branch, or add them later in Setup → Locations.": "لا توجد مواقع بعد. إلى أن تضيف موقعًا، يمكن للموظفين تسجيل الحضور من أي موقع محدد جغرافيًا في المؤسسة. أضف موقعًا لكل فرع، أو أضفها لاحقًا من الإعداد ← المواقع.",
   "Grade salary bands are kept in {gradeCurrency} for the whole group, but this company pays in {currency}. Enter the bands in {gradeCurrency}, or check them with finance before paying salaries.": "تُحفظ نطاقات رواتب الدرجات بعملة {gradeCurrency} للمجموعة كلها، لكن هذه الشركة تدفع بعملة {currency}. أدخل النطاقات بعملة {gradeCurrency}، أو راجعها مع المالية قبل صرف الرواتب.",
   // Use defaults confirm and reused catalog rows
   "Replace the {count} rows in {section} with the defaults? What you entered in this section will be removed.": "هل تريد استبدال الصفوف ({count}) في {section} بالإعدادات الافتراضية؟ ستُزال البيانات التي أدخلتها في هذا القسم.",
@@ -538,7 +538,7 @@ const ar: Record<string, string> = {
   "We could not confirm whether the changes were saved. Try again: retrying never applies them twice.": "تعذّر التأكد من حفظ التغييرات. حاول مرة أخرى: إعادة المحاولة لا تطبّقها مرتين أبدًا.",
   "What this company has today": "ما لدى هذه الشركة حاليًا",
   "What this does": "ما الذي يفعله هذا",
-  "Workspace-wide display and calendar settings, in Organisation Admin": "إعدادات العرض والتقويم لمساحة العمل كلها، في إدارة المؤسسة",
+  "Organisation-wide display and calendar settings, in Organisation Admin": "إعدادات العرض والتقويم للمؤسسة كلها، في إدارة المؤسسة",
   "You are continuing a draft started by {name} on {when}.": "أنت تتابع مسودة بدأها {name} في {when}.",
   "You can add another administrator for {company} only. Group access is given only by a group super admin.": "يمكنك إضافة مسؤول آخر لـ {company} فقط. صلاحية المجموعة يمنحها المسؤول الأعلى للمجموعة وحده.",
   "You cannot complete setup for this company.": "لا يمكنك إكمال إعداد هذه الشركة.",
@@ -570,6 +570,11 @@ const ar: Record<string, string> = {
   "This draft belongs to one company and cannot be moved to another. Discard it and start again from Guided setup.": "هذه المسودة تخص شركة واحدة ولا يمكن نقلها إلى أخرى. تجاهلها وابدأ من جديد من الإعداد الموجّه.",
   "This is a shared row: its name is not changed here. A group administrator renames it in its Setup tab.": "هذا صف مشترك: لا يُغيَّر اسمه هنا. يعيد مسؤول المجموعة تسميته من تبويبه في الإعداد.",
   "You cannot change the setup of this company. Choose one of your companies in Guided setup, or ask your group super admin.": "لا يمكنك تغيير إعداد هذه الشركة. اختر إحدى شركاتك من الإعداد الموجّه، أو راجع المسؤول الأعلى للمجموعة.",
+  // Dashboard prompt for a company whose legal entity details are missing (CompanySetupPrompt).
+  "Finish setting up your company": "أكمل إعداد شركتك",
+  "Finish setting up {company}.": "أكمل إعداد {company}.",
+  "Add its Arabic legal name, CR number and MOL establishment ID before the first payroll.": "أضف اسمها القانوني بالعربية ورقم السجل التجاري ورقم المنشأة في وزارة الموارد البشرية قبل أول مسير رواتب.",
+  "Add its Arabic legal name and CR number before the first payroll.": "أضف اسمها القانوني بالعربية ورقم السجل التجاري قبل أول مسير رواتب.",
 };
 
 export const companyWizard = {

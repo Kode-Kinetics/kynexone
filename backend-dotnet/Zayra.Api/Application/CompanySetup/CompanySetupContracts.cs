@@ -27,7 +27,8 @@ public static class CompanySetupVocabulary
     public const string ReadinessTodo = "todo";
     public const string ReadinessRecommended = "recommended";
     public const string ScopeCompany = "company";
-    public const string ScopeWorkspace = "workspace";
+    /// <summary>Applies to every company of the organisation.</summary>
+    public const string ScopeOrganisation = "organisation";
 
     public static class Areas
     {
@@ -52,7 +53,6 @@ public sealed record CompanySetupContext(
     bool CanCreate,
     string? RefusalCode,
     string? RefusalMessage,
-    string CreationMode,
     string AccountType,
     int CompaniesUsed,
     int? CompaniesAllowed,
@@ -79,7 +79,12 @@ public sealed record CompanySetupManageableCompany(
     string CountryCode,
     int ReadinessDone,
     int ReadinessTotal,
-    Guid? OpenDraftId);
+    Guid? OpenDraftId)
+{
+    /// <summary>The legal entity's own details are still missing (Arabic legal name, CR number, MOL ID in Saudi
+    /// Arabia): the dashboard asks the administrator to complete the company.</summary>
+    public bool NeedsLegalDetails { get; init; }
+}
 
 public sealed record CompanySetupSisterCompany(Guid Id, string LegalNameEn, string CountryCode);
 

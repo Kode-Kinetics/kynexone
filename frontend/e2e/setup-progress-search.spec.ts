@@ -18,7 +18,7 @@ const READINESS = [
   { key: 'bankWps', label: 'Bank and WPS settings (before the first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/payroll?companyId=fixture-company' },
   { key: 'nitaqat', label: 'Nitaqat establishment profile', labelAr: 'ملف المنشأة في نطاقات', status: 'recommended', scope: 'company', href: '/saudi-compliance?companyId=fixture-company' },
   { key: 'companyAdmin', label: 'Company super admin', labelAr: 'مسؤول الشركة الأعلى', status: 'done', scope: 'company', href: '/user-management?companyId=fixture-company' },
-  { key: 'masterData', label: 'Employee reference lists (applies to all companies)', labelAr: 'القوائم المرجعية للموظفين (ينطبق على جميع الشركات)', status: 'todo', scope: 'workspace', href: '/setup?tab=masterData&companyId=fixture-company' },
+  { key: 'masterData', label: 'Employee reference lists (applies to all companies)', labelAr: 'القوائم المرجعية للموظفين (ينطبق على جميع الشركات)', status: 'todo', scope: 'organisation', href: '/setup?tab=masterData&companyId=fixture-company' },
 ] as const;
 const DONE = READINESS.filter(item => item.status === 'done').length;
 const TOTAL = READINESS.length;
@@ -69,7 +69,7 @@ async function boot(page: Page, options: BootOptions = {}) {
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SA', isActive: true })),
     });
     if (path === '/api/company-setup/context') return reply({
-      canCreate: true, creationMode: 'GroupSelfServiceWithinLimit', accountType: 'Group', companiesUsed: 2, companiesAllowed: 5, isGroupScope: true,
+      canCreate: true, accountType: 'Group', companiesUsed: 2, companiesAllowed: 5, isGroupScope: true,
       sisterCompanies: [], sharedCatalog: { departments: [], designations: [], grades: [] },
       manageableCompanies: [
         // Counted from the same checklist, as the server does.
@@ -545,7 +545,7 @@ test('the ⌘K palette lists matching settings under Settings and opens one', as
   const settings = page.getByTestId('command-palette-settings');
   await expect(settings).toBeVisible();
   await expect(settings.getByRole('group', { name: 'Settings' })).toBeVisible();
-  await expect(settings.getByRole('button', { name: /Email delivery/ })).toContainText('Workspace');
+  await expect(settings.getByRole('button', { name: /Email delivery/ })).toContainText('Organisation');
   await input.fill('gosi');
   await expect(settings.getByRole('button', { name: /^Statutory rules/ })).toBeVisible();
   await expect(settings.getByRole('button', { name: /^Payroll accounting/ })).toBeVisible();

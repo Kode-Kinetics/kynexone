@@ -118,7 +118,7 @@ export function GuidedSetupChooser({ showHeading = true, linkedCompanyId = null,
                 <h3 id="gsc-create" className="text-lg font-semibold text-slate-950 dark:text-white">{t('Create a new company')}</h3>
                 <p className="mt-1 max-w-xl text-sm leading-6 text-slate-600 dark:text-slate-300">{t('Legal details, branches, organisation, work rules and its administrator, in seven steps. The company and its setup are created together.')}</p>
                 {usage && <p className="mt-2 text-xs font-medium text-slate-600 dark:text-slate-400" data-testid="chooser-plan-usage">{usage.allowed === null
-                  ? t('{used, plural, one {# company} other {# companies}} in this workspace', { used: usage.used })
+                  ? t('{used, plural, one {# company} other {# companies}} in this organisation', { used: usage.used })
                   : t('{used} of {allowed} companies on your plan', { used: usage.used, allowed: usage.allowed })}</p>}
               </div>
             </div>
@@ -126,7 +126,7 @@ export function GuidedSetupChooser({ showHeading = true, linkedCompanyId = null,
               ? <Link href="/setup/new-company" className="btn-primary">{t('Create a new company')}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" /></Link>
               : <span className="btn-primary cursor-not-allowed opacity-50" aria-disabled="true">{t('Create a new company')}</span>}
           </div>
-          {!context.canCreate && <p className="mt-3 text-sm text-amber-900 dark:text-amber-200" role="status">{context.refusalMessage || t('Your workspace does not allow another company.')}</p>}
+          {!context.canCreate && <p className="mt-3 text-sm text-amber-900 dark:text-amber-200" role="status">{context.refusalMessage || t('Your licence does not allow another company.')}</p>}
           {createDrafts.length > 0 && (
             <ul className="mt-4 space-y-2" aria-label={t('Continue where you left off')} data-testid="chooser-create-drafts">
               {createDrafts.map(d => (

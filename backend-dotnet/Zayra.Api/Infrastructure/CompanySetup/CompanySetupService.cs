@@ -78,7 +78,7 @@ public sealed class CompanySetupService
     {
         var tenantId = caller.TenantId;
         var tenant = await _db.Tenants.AsNoTracking().Where(t => t.Id == tenantId)
-            .Select(t => new { t.AccountType, t.CompanyCreationMode }).FirstOrDefaultAsync(ct);
+            .Select(t => new { t.AccountType }).FirstOrDefaultAsync(ct);
         var maxCompanies = Zayra.Api.Infrastructure.Licensing.LicenceLimits.MaxCompanies(_licence);
         var used = await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).CountAsync(c => !c.IsDeleted, ct);
         var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct, licence: _licence);
@@ -111,7 +111,6 @@ public sealed class CompanySetupService
 
         return new CompanySetupContext(
             canCreate, code, message,
-            tenant?.CompanyCreationMode ?? string.Empty,
             Zayra.Api.Infrastructure.Licensing.LicenceLimits.AccountType(_licence, tenant?.AccountType ?? string.Empty),
             used,
             maxCompanies > 0 ? maxCompanies : null,
@@ -138,7 +137,10 @@ public sealed class CompanySetupService
         {
             var readiness = await CompanySetupReadiness.ComputeAsync(_db, _email, caller.TenantId, company, ct);
             cards.Add(new CompanySetupManageableCompany(company.Id, company.LegalNameEn, string.IsNullOrWhiteSpace(company.LegalNameAr) ? null : company.LegalNameAr,
-                company.CountryCode, readiness.Count(r => r.Status == V.ReadinessDone), readiness.Count, openDrafts.GetValueOrDefault(company.Id)));
+                company.CountryCode, readiness.Count(r => r.Status == V.ReadinessDone), readiness.Count, openDrafts.GetValueOrDefault(company.Id))
+            {
+                NeedsLegalDetails = !CompanySetupReadiness.HasLegalDetails(company),
+            });
         }
         return cards;
     }
@@ -838,8 +840,8 @@ public sealed class CompanySetupService
         var status = first?.Code switch
         {
             "company_limit_reached" => 402,
-            "company_creation_platform_controlled" or CompanySetupGates.GroupScopeRequiredCode => 403,
-            "account_type_single_company" or CompanySetupGates.PlatformActivationDisabledCode or "company_switcher_selected" => 409,
+            CompanySetupGates.GroupScopeRequiredCode => 403,
+            "account_type_single_company" or "company_switcher_selected" => 409,
             _ => plan.Items.Any(i => i.Action == V.ActionConflict) ? 409 : 422,
         };
         var conflict = plan.Items.FirstOrDefault(i => i.Action == V.ActionConflict);

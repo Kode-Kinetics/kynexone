@@ -25,7 +25,7 @@ test('an area counts its record checks and Guided setup items, and nothing else'
 test('Guided setup\'s verdict wins over a record check, so an area never contradicts it', () => {
   // The workspace has a drop-down list type, but Guided setup still lists the item (it counts inactive ones too, or the
   // server knows better): its verdict is used.
-  const items = areaProgressItems('organization', ['masterData'], [readiness('masterData', 'todo', 'workspace')], { masterData: 2 });
+  const items = areaProgressItems('organization', ['masterData'], [readiness('masterData', 'todo', 'organisation')], { masterData: 2 });
   expect(items).toEqual([{ destinationId: 'masterData', done: false, source: 'guided' }]);
   // Once configured the server stops listing a workspace item; the record check answers.
   expect(areaProgressItems('organization', ['masterData'], [], { masterData: 2 })).toEqual([{ destinationId: 'masterData', done: true, source: 'records' }]);
@@ -66,7 +66,7 @@ function readinessItems(): ReadinessItem[] {
   return [
     readiness('glMapping', 'done'), readiness('establishment', 'recommended'), readiness('locations', 'done'), readiness('gccSettings', 'todo'),
     readiness('statutoryRules', 'done'), readiness('bankWps', 'todo'), readiness('nitaqat', 'recommended'), readiness('companyAdmin', 'done'),
-    readiness('emailConfig', 'todo', 'workspace'),
+    readiness('emailConfig', 'todo', 'organisation'),
   ];
 }
 

@@ -390,7 +390,7 @@ test('a CR number that already belongs to a company is blocked at review', async
   for (let i = 0; i < 4; i++) await next(page, t);
   await expectStep(page, t, 'Company super admin');
   await reachReview(page, t);
-  await expect(page.getByTestId('review-plan')).toContainText(`CR number ${EN_CO.cr} already belongs to a company in this workspace.`);
+  await expect(page.getByTestId('review-plan')).toContainText(`CR number ${EN_CO.cr} already belongs to a company in this organisation.`);
   await expect(page.getByRole('button', { name: t('Create company'), exact: true })).toBeDisabled();
   await expect(page.getByText(t('Create is available once every conflict above is resolved.'))).toBeVisible();
   await shot(page, info, 'en-7-review-duplicate-cr');

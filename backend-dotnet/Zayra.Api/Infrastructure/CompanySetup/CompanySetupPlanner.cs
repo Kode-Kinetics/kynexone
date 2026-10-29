@@ -391,14 +391,14 @@ public sealed class CompanySetupPlanner
         {
             companyConflict = true;
             c.Conflict(Areas.Company, legalNameEn, label, 2, "legalNameEn", CompanySetupGates.NameTakenCode,
-                $"A company named '{legalNameEn}' already exists in this workspace. Each legal entity needs its own name.",
-                $"توجد شركة باسم '{legalNameEn}' في مساحة العمل.", co.LegalNameAr);
+                $"A company named '{legalNameEn}' already exists in this organisation. Each legal entity needs its own name.",
+                $"توجد شركة باسم '{legalNameEn}' في المؤسسة.", co.LegalNameAr);
         }
         if (registration.Length > 0 && crChanged && companies.Any(x => string.Equals(x.RegistrationNumber.Trim(), registration, StringComparison.OrdinalIgnoreCase)))
         {
             companyConflict = true;
             c.Conflict(Areas.Company, registration, label, 2, "registrationNumber", CompanySetupGates.CrTakenCode,
-                $"CR number {registration} already belongs to a company in this workspace.",
+                $"CR number {registration} already belongs to a company in this organisation.",
                 $"رقم السجل التجاري {registration} مستخدم لشركة أخرى.", co.LegalNameAr);
         }
         if (erp is not null && erpChanged && companies.Any(x => (x.ErpCompanyCode != null && string.Equals(x.ErpCompanyCode, erp, StringComparison.OrdinalIgnoreCase))
@@ -540,7 +540,7 @@ public sealed class CompanySetupPlanner
                 {
                     if (existingLocationCodes.Contains(lcode))
                         c.Conflict(Areas.Location, lcode, lname, 3, $"{lf}.code", "location_code_taken",
-                            $"Location code {lcode} is already used in this workspace. Location codes are unique across all companies.", labelAr: l.NameAr);
+                            $"Location code {lcode} is already used in this organisation. Location codes are unique across all companies.", labelAr: l.NameAr);
                     else c.Item(Areas.Location, lcode, lname, V.ActionCreate, labelAr: l.NameAr);
                 }
                 else
@@ -566,8 +566,8 @@ public sealed class CompanySetupPlanner
             var locationCount = plannedLocations.Count + (row is null ? 0 : (ex?.Locations ?? []).Count(x => x.BranchId == row.Id && x.IsActive && !seenLocations.Contains(x.Id)));
             if (locationCount == 0)
                 c.Warn(3, $"{f}.locations", "branch_without_location",
-                    $"Branch {code} has no location, so its employees can punch at any geofenced site in the workspace.",
-                    $"لا يوجد موقع للفرع {code}، لذا يمكن لموظفيه تسجيل الحضور في أي موقع ضمن مساحة العمل.");
+                    $"Branch {code} has no location, so its employees can punch at any geofenced site in the organisation.",
+                    $"لا يوجد موقع للفرع {code}، لذا يمكن لموظفيه تسجيل الحضور في أي موقع ضمن المؤسسة.");
             plannedBranches.Add(new PlannedBranch(b with { Code = code, TimeZoneId = tz, Locations = plannedLocations.Select(p => p.Body).ToList() },
                 row, branchChanged, plannedLocations));
         }
@@ -634,7 +634,7 @@ public sealed class CompanySetupPlanner
             // reusing would hand this company another company's cost centre.
             else if (existingCostCentres.Contains(code))
                 c.Conflict(Areas.CostCentre, code, name, 4, $"{f}.code", "cost_centre_code_taken",
-                    $"Cost centre code {code} is already used by another company in this workspace. Choose a different code.",
+                    $"Cost centre code {code} is already used by another company in this organisation. Choose a different code.",
                     $"رمز مركز التكلفة {code} مستخدم لدى شركة أخرى. اختر رمزاً مختلفاً.", cc.NameAr);
             else c.Item(Areas.CostCentre, code, name, V.ActionCreate, labelAr: cc.NameAr);
             costCentres.Add(new PlannedCostCentre(cc with { Code = code }, row, changed));
@@ -688,7 +688,7 @@ public sealed class CompanySetupPlanner
         var gradeCurrency = activeGradeCurrencies.FirstOrDefault() ?? currency;
         if (activeGradeCurrencies.Count > 0 && currency.Length == 3 && !string.Equals(gradeCurrency, currency, StringComparison.Ordinal))
             c.Warn(4, "grades", "grades_currency_differs",
-                $"Grade salary bands in this workspace are in {gradeCurrency}, and this company pays in {currency}. Bands are one currency per workspace; new grades are created in {gradeCurrency}.",
+                $"Grade salary bands in this organisation are in {gradeCurrency}, and this company pays in {currency}. Bands are one currency per organisation; new grades are created in {gradeCurrency}.",
                 $"نطاقات رواتب الدرجات بعملة {gradeCurrency} وهذه الشركة تدفع بعملة {currency}.");
         var newGrades = new List<CompanySetupGrade>();
         var bodyGradeCodes = new HashSet<string>(StringComparer.Ordinal);
@@ -932,21 +932,21 @@ public sealed class CompanySetupPlanner
             {
                 // Workspace-wide rows: like the shared catalog, only group scope adds them (a company super admin's
                 // request may not write a row that is not their company's). Said, not silently skipped.
-                c.Warn(5, "rules.leavePolicies", "workspace_defaults_need_group_scope",
-                    $"The workspace has no statutory default leave policies for {country} ({string.Join(", ", missingLeave.Order(StringComparer.Ordinal))}). They apply to every {country} company, so a group administrator must add them.",
+                c.Warn(5, "rules.leavePolicies", "organisation_defaults_need_group_scope",
+                    $"The organisation has no statutory default leave policies for {country} ({string.Join(", ", missingLeave.Order(StringComparer.Ordinal))}). They apply to every {country} company, so a group administrator must add them.",
                     "سياسات الإجازة الافتراضية للدولة تنطبق على جميع الشركات، ويضيفها مسؤول المجموعة.");
                 var missingTypes = missingLeave;
                 missingLeave = new HashSet<string>();
                 foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes.Where(t => !missingTypes.Contains(t.TypeCode)))
                     c.Item(Areas.LeavePolicy, typeCode, $"Default {typeLabel} — {country}", V.ActionReuse,
-                        $"The workspace's {country} default already applies to this company.", $"سياسة الإجازة النظامية الافتراضية ({typeCode}) — {country}");
+                        $"The organisation's {country} default already applies to this company.", $"سياسة الإجازة النظامية الافتراضية ({typeCode}) — {country}");
             }
             else foreach (var (typeCode, typeLabel) in TenantProvisioningBundle.DefaultLeavePolicyTypes)
                 c.Item(Areas.LeavePolicy, typeCode, $"Default {typeLabel} — {country}",
                     missingLeave.Contains(typeCode) ? V.ActionCreate : V.ActionReuse,
                     missingLeave.Contains(typeCode)
-                        ? $"Workspace-wide statutory default for {country}; applies to every {country} company."
-                        : $"The workspace's {country} default already applies to this company.",
+                        ? $"Organisation-wide statutory default for {country}; applies to every {country} company."
+                        : $"The organisation's {country} default already applies to this company.",
                     labelAr: $"سياسة الإجازة النظامية الافتراضية ({typeCode}) — {country}");
         }
 
@@ -958,8 +958,8 @@ public sealed class CompanySetupPlanner
             tenantDefaultGcc = await ScopedBypass.TenantWide(_db.GCCComplianceSettings, tenantId, Why).AsNoTracking()
                 .Where(x => x.CompanyId == null && x.CountryCode == country).OrderBy(x => x.Id).FirstOrDefaultAsync(ct);
             if (tenantDefaultGcc is null && !caller.IsGroupScope)
-                c.Warn(5, "rules.workWeek", "workspace_defaults_need_group_scope",
-                    $"The workspace has no country settings for {country} (end of service, weekend). They apply to every {country} company, so a group administrator must add them in Setup → Country settings.",
+                c.Warn(5, "rules.workWeek", "organisation_defaults_need_group_scope",
+                    $"The organisation has no country settings for {country} (end of service, weekend). They apply to every {country} company, so a group administrator must add them in Setup → Country settings.",
                     "إعدادات الدولة تنطبق على جميع الشركات، ويضيفها مسؤول المجموعة.");
             else if (tenantDefaultGcc is null)
             {
@@ -968,7 +968,7 @@ public sealed class CompanySetupPlanner
                     "No settings exist for this country yet; the country pack defaults are written once and never overwritten.",
                     labelAr: $"إعدادات الدولة {country} (مكافأة نهاية الخدمة، العطلة الأسبوعية)");
             }
-            else c.Item(Areas.GccSetting, country, $"Country settings for {country}", V.ActionReuse, "Already configured for this workspace.",
+            else c.Item(Areas.GccSetting, country, $"Country settings for {country}", V.ActionReuse, "Already configured for this organisation.",
                 $"إعدادات الدولة {country}");
         }
 
@@ -1005,13 +1005,13 @@ public sealed class CompanySetupPlanner
                     }
                 }
                 else if (parsed.SetEquals(resolvedWeekend))
-                    c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "Same as the workspace setting; no override is written.",
+                    c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "Same as the organisation setting; no override is written.",
                         $"العطلة الأسبوعية {resolvedText}");
                 else
                 {
                     var text = CompanySetupPack.FormatWeekend(parsed);
                     workWeekOverride = CompanySetupPack.CompanyOverrideRow(tenantId, country, tenantDefaultGcc ?? newGccDefault, parsed);
-                    c.Item(Areas.WorkWeek, text, $"Weekend {text} for this company", V.ActionCreate, $"Overrides the workspace weekend ({resolvedText}) for this company only.",
+                    c.Item(Areas.WorkWeek, text, $"Weekend {text} for this company", V.ActionCreate, $"Overrides the organisation weekend ({resolvedText}) for this company only.",
                         $"العطلة الأسبوعية {text} لهذه الشركة");
                 }
             }
@@ -1021,10 +1021,10 @@ public sealed class CompanySetupPlanner
                 c.Item(Areas.WorkWeek, text, $"Weekend {text} for this company", V.ActionUnchanged, "This company's own weekend, kept as it is.",
                     $"العطلة الأسبوعية {text} لهذه الشركة");
                 c.Warn(5, "rules.workWeek", "work_week_override_kept",
-                    $"This company has its own weekend ({text}); it is kept. Remove it in Setup → Country settings if it should follow the workspace.",
+                    $"This company has its own weekend ({text}); it is kept. Remove it in Setup → Country settings if it should follow the organisation.",
                     "لهذه الشركة عطلة أسبوعية خاصة بها وسيتم الإبقاء عليها.");
             }
-            else c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "The workspace working week applies.",
+            else c.Item(Areas.WorkWeek, resolvedText, $"Weekend {resolvedText}", V.ActionReuse, "The organisation's working week applies.",
                 $"العطلة الأسبوعية {resolvedText}");
         }
 
@@ -1328,8 +1328,8 @@ public sealed class CompanySetupPlanner
             if (taken)
             {
                 c.Conflict(Areas.CompanyAdmin, email, admin.FullNameEn?.Trim() ?? email, 6, "companyAdmin.email", "admin_email_exists",
-                    $"{email} already has a login in this workspace. Choose \"Make an existing user the company super admin\" instead.",
-                    "لهذا البريد حساب في مساحة العمل. اختر مستخدماً حالياً بدلاً من ذلك.");
+                    $"{email} already has a login in this organisation. Choose \"Make an existing user the company super admin\" instead.",
+                    "لهذا البريد حساب في المؤسسة. اختر مستخدماً حالياً بدلاً من ذلك.");
                 return V.ActionConflict;
             }
             c.Item(Areas.CompanyAdmin, email, admin.FullNameEn?.Trim() ?? email, V.ActionCreate, "Invited as this company's super admin (Admin, this company only).", admin.FullNameAr);
@@ -1348,7 +1348,7 @@ public sealed class CompanySetupPlanner
             .SingleOrDefaultAsync(u => u.Id == userId, ct);
         if (user is null || user.IsDeleted || !user.IsActive || user.Status != "Active")
         {
-            c.Problem(6, "companyAdmin.existingUserId", "user_not_active", "Choose an active user of this workspace.");
+            c.Problem(6, "companyAdmin.existingUserId", "user_not_active", "Choose an active user of this organisation.");
             return V.ActionConflict;
         }
         var holdsAdmin = user.UserRoles.Any(r => r.Role is { NormalizedName: "ADMIN", IsActive: true, IsDeleted: false });
@@ -1432,14 +1432,8 @@ public static class CompanySetupGates
     public const string CompanyAdminRequiredCode = "company_admin_required";
     /// <summary>Addendum A1: one open draft per existing company; the error carries the open draft's id.</summary>
     public const string ExistingDraftOpenCode = "existing_company_draft_open";
-    // Refusal codes the UI maps (Integration Owner clarification 1). The gate's own three codes pass through as-is:
-    // company_limit_reached, account_type_single_company, company_creation_platform_controlled.
+    // Refusal codes the UI maps. The gate's own codes pass through as-is: company_limit_reached, account_type_single_company.
     public const string GroupScopeRequiredCode = "not_group_scope";
-    public const string PlatformActivationDisabledCode = "company_creation_platform_approval";
     public const string GroupScopeRequiredMessage = "Only a group administrator can create another company.";
     public const string GroupScopeRequiredMessageAr = "يمكن لمسؤول المجموعة فقط إنشاء شركة جديدة.";
-    public const string PlatformActivationDisabledMessage =
-        "New companies in this workspace wait for platform activation, and platform activation is currently disabled. Contact your account manager to create a company.";
-    public const string PlatformActivationDisabledMessageAr =
-        "الشركات الجديدة تنتظر تفعيل المنصة، والتفعيل معطل حالياً. تواصل مع مدير حسابك.";
 }

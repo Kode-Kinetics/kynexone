@@ -238,7 +238,7 @@ public class CompanySetupUnitTests
 
         Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.ActionUpdate.Should().Be("update");
         Zayra.Api.Application.CompanySetup.CompanySetupVocabulary.ActionUnchanged.Should().Be("unchanged");
-        var context = new Zayra.Api.Application.CompanySetup.CompanySetupContext(false, null, null, "", "", 0, null, true, [], new([], [], []), null)
+        var context = new Zayra.Api.Application.CompanySetup.CompanySetupContext(false, null, null, "", 0, null, true, [], new([], [], []), null)
         {
             ManageableCompanies = [new(id, "Co", null, "SA", 3, 9, null)],
         };

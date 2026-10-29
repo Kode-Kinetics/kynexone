@@ -26,7 +26,7 @@ export const SETUP_SECTION_GROUPS: readonly { id: 'getStarted' | SetupSettingGro
   { id: 'companyStructure', label: msg('Company structure') },
   { id: 'jobsHeadcount', label: msg('Jobs & headcount') },
   { id: 'payrollCompliance', label: msg('Payroll & compliance') },
-  { id: 'workspace', label: msg('Workspace') },
+  { id: 'workspace', label: msg('Organisation') },
 ];
 
 export const SETUP_SETTING_SECTIONS: readonly SetupSettingSection[] = [
@@ -46,7 +46,7 @@ export const SETUP_SETTING_SECTIONS: readonly SetupSettingSection[] = [
   { id: 'numberingRules', label: msg('Record numbering'), description: msg('Prefixes and sequences for generated record numbers.'), group: 'workspace' },
   { id: 'notificationTemplates', label: msg('Notifications'), description: msg('Messages sent for employee and payroll events.'), group: 'workspace' },
   { id: 'emailConfig', label: msg('Email delivery'), description: msg('Outbound email delivery and connection testing.'), group: 'workspace' },
-  { id: 'systemSettings', label: msg('Workspace settings'), description: msg('Workspace-wide operational defaults.'), group: 'workspace' },
+  { id: 'systemSettings', label: msg('Organisation settings'), description: msg('Organisation-wide operational defaults.'), group: 'workspace' },
   { id: 'adminAuditLogs', label: msg('Audit log'), description: msg('Review recorded administrative changes and actors.'), group: 'workspace' },
 ];
 

@@ -93,7 +93,7 @@ class ContractServer {
       canCreate: this.scopeGroup,
       refusalCode: this.scopeGroup ? null : 'not_group_scope',
       refusalMessage: this.scopeGroup ? null : 'Only a group administrator can create a company.',
-      creationMode: 'GroupSelfServiceWithinLimit', accountType: 'Group',
+      accountType: 'Group',
       companiesUsed: 2, companiesAllowed: 5, isGroupScope: this.scopeGroup,
       sisterCompanies: [sister],
       sharedCatalog: {
@@ -181,7 +181,7 @@ class ContractServer {
     if (!body.company.molEstablishmentNumber && !before.company.molEstablishmentNumber)
       warnings.push({ step: 2, field: 'company.molEstablishmentNumber', code: 'mol_required', message: 'Enter the MOL establishment number shown in Qiwa. (saved before; not changed here)' });
     if (!this.scopeGroup)
-      warnings.push({ step: 5, field: 'rules.leavePolicies', code: 'workspace_defaults_need_group_scope', message: 'The workspace has no statutory default leave policies for SA (MATERNITY). They apply to every SA company, so a group administrator must add them.' });
+      warnings.push({ step: 5, field: 'rules.leavePolicies', code: 'organisation_defaults_need_group_scope', message: 'The organisation has no statutory default leave policies for SA (MATERNITY). They apply to every SA company, so a group administrator must add them.' });
     const catalog = this.context().sharedCatalog;
     const has = (list: { code: string }[], code: string) => list.some(c => c.code.toUpperCase() === code.toUpperCase());
     const companyChanged = diff(body.company, before.company, ['legalNameEn', 'legalNameAr', 'tradeName', 'registrationNumber', 'molEstablishmentNumber', 'gosiEmployerId', 'taxNumber', 'qiwaEstablishmentId', 'emailDomain', 'workEmailPattern', 'erpCompanyCode', 'firstPayrollMonth']);
@@ -347,7 +347,7 @@ class ContractServer {
             // An invited admin has not signed in yet: the server names the login to send the sign-in link to.
             ? { key: 'companyAdmin', label: `Send ${draft.body.companyAdmin.fullNameEn} their sign-in link`, labelAr: `أرسل رابط تسجيل الدخول إلى ${draft.body.companyAdmin.fullNameEn}`, status: 'todo', scope: 'company', href: '/user-management?companyId=new-company', userId: INVITED_USER_ID }
             : { key: 'companyAdmin', label: 'Company super admin', labelAr: 'المسؤول الأعلى للشركة', status: draft.body.companyAdmin.mode === 'groupOnly' ? 'recommended' : 'done', scope: 'company', href: '/user-management?companyId=new-company' },
-          { key: 'smtp', label: 'Outgoing email (SMTP)', labelAr: 'البريد الصادر (SMTP)', status: 'todo', scope: 'workspace', href: '/setup?tab=emailConfig' },
+          { key: 'smtp', label: 'Outgoing email (SMTP)', labelAr: 'البريد الصادر (SMTP)', status: 'todo', scope: 'organisation', href: '/setup?tab=emailConfig' },
         ],
       };
       if (key) this.results.set(key, result);
@@ -498,7 +498,7 @@ for (const locale of ['en', 'ar'] as const) {
 
     await expectStep(page, t, 'Branches & locations');
     await expect(page.getByTestId('branches-row')).toHaveCount(1);
-    await expect(page.getByText(t('No locations yet. Until you add one, employees can punch in at any geofenced site in the workspace. Add a location to each branch, or add them later in Setup → Locations.'))).toBeVisible();
+    await expect(page.getByText(t('No locations yet. Until you add one, employees can punch in at any geofenced site in the organisation. Add a location to each branch, or add them later in Setup → Locations.'))).toBeVisible();
     const hq = page.getByTestId('branches-row').first();
     await hq.locator('summary').click();
     await hq.getByRole('button', { name: t('Add location'), exact: true }).click();

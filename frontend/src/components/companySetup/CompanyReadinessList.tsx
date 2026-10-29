@@ -13,7 +13,7 @@ const ISSUE_LINK_PERMISSION = 'security.manage';
 
 /**
  * What is still to do for the new company, computed by the server. Each row opens the screen that
- * finishes it. Workspace-wide rows appear only while they are unconfigured.
+ * finishes it. Organisation-wide rows appear only while they are unconfigured.
  *
  * The company super admin row carries `userId` while that person has not signed in. A caller who may
  * issue sign-in links sends it from here in one click; anyone else gets the User Management link.
@@ -60,7 +60,7 @@ export function CompanyReadinessList({ items }: { items: ReadinessItem[] }) {
   return (
     <div className="space-y-5" data-testid="company-readiness">
       {section('company', t('This company'), t('Finish these before the first payroll for this company.'))}
-      {section('workspace', t('Applies to all companies'), t('Workspace settings that are not configured yet. They apply to every company in the group.'))}
+      {section('organisation', t('Applies to all companies'), t('Organisation settings that are not configured yet. They apply to every company in the organisation.'))}
     </div>
   );
 }

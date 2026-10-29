@@ -9,7 +9,7 @@ import {
 } from '../src/lib/companySetupWizard';
 
 const context: CompanySetupContext = {
-  canCreate: true, creationMode: 'GroupSelfServiceWithinLimit', accountType: 'Group', companiesUsed: 2, companiesAllowed: 5,
+  canCreate: true, accountType: 'Group', companiesUsed: 2, companiesAllowed: 5,
   isGroupScope: true, sisterCompanies: [{ id: 'c1', legalNameEn: 'Sister KSA', countryCode: 'SA' }],
   sharedCatalog: { departments: [{ code: 'HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية' }], designations: [], grades: [{ code: 'G1', nameEn: 'Grade 1', currency: 'SAR' }] },
   gradesCurrency: 'SAR',
@@ -390,7 +390,7 @@ test('the planner\'s English change words map to dictionary labels; anything unk
 test('every existing-mode server code has what-to-do-next copy', () => {
   for (const code of ['country_locked', 'currency_locked', 'draft_target_locked', 'existing_code_locked', 'first_payroll_month_locked', 'company_not_manageable',
     'company_admin_required', 'company_not_active', 'existing_company_draft_open', 'existing_row_unknown', 'branch_code_taken', 'sequence_cannot_go_back',
-    'work_week_override_kept', 'workspace_defaults_need_group_scope', 'shared_row_not_edited', 'draft_needs_refresh']) expect(setupCodeCopy(code), code).toBeTruthy();
+    'work_week_override_kept', 'organisation_defaults_need_group_scope', 'shared_row_not_edited', 'draft_needs_refresh']) expect(setupCodeCopy(code), code).toBeTruthy();
   expect(setupCodeCopy('mol_required')).toBeUndefined();
 });
 
