@@ -15,9 +15,7 @@ on:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    # Pin during GitHub's Oct-Nov 2026 ubuntu-latest migration; the moving
-    # pool repeatedly terminated clean .NET builds with runner shutdowns.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       security-events: write
       actions: read
