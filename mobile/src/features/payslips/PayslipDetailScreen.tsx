@@ -37,10 +37,12 @@ import {
   unitemisedAmount,
 } from './payslipLogic';
 import { useHijriPeriod, usePayslipPeriod } from './usePayslipPeriod';
+import { useSensitiveScreen } from '@/safety/useSensitiveScreen';
 
 type DeductionSource = { kind: 'loading' } | { kind: 'statement'; data: DeductionStatement } | { kind: 'basic' };
 
 export default function PayslipDetailScreen() {
+  useSensitiveScreen('payslip-detail');
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
   const { theme } = useTheme();

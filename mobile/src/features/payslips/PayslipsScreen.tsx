@@ -22,8 +22,10 @@ import type { Payslip } from '@/types';
 import { useLeavePayText } from '@/features/leave/useLeavePayText';
 import { payslipStatusKind } from './payslipLogic';
 import { useHijriPeriod, usePayslipPeriod } from './usePayslipPeriod';
+import { useSensitiveScreen } from '@/safety/useSensitiveScreen';
 
 export default function PayslipsScreen() {
+  useSensitiveScreen('payslips');
   const navigation = useNavigation<any>();
   const { theme } = useTheme();
   const { t } = useTranslation();

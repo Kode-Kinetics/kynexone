@@ -4,10 +4,11 @@
 
 import Constants from 'expo-constants';
 
+// The API host comes from app.config.js (extra.apiBaseUrl, set per build profile in eas.json).
+// There is deliberately no hard-coded host here: a build without one fails loudly at the first
+// request instead of silently pointing at a default.
 const configuredApiBaseUrl =
-  process.env.EXPO_PUBLIC_API_BASE_URL ||
-  (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) ||
-  'https://zayra-ai-workforce.onrender.com/api';
+  process.env.EXPO_PUBLIC_API_BASE_URL || (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) || '';
 
 const ENV = {
   development: {
@@ -46,6 +47,9 @@ export const APP_CONFIG = ENV[getEnv()];
 
 export const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
 
+/** Sent on every API request so the server can tell which app builds still read its replies. */
+export const APP_VERSION_HEADER = 'X-KynexOne-App-Version';
+
 // Storage keys
 export const STORAGE_KEYS = {
   ACCESS_TOKEN: 'zayra_access_token',
@@ -57,7 +61,7 @@ export const STORAGE_KEYS = {
   LANGUAGE: 'zayra_language',
   THEME: 'zayra_theme',
   BIOMETRIC_ENABLED: 'zayra_biometric_enabled',
-  OFFLINE_PUNCHES: 'zayra_offline_punches',
+  APP_LOCK: 'kynexone_app_lock',
 } as const;
 
 // Token expiry buffer: refresh 5 minutes before expiry
