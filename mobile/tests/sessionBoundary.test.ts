@@ -349,3 +349,41 @@ test('overlapping sign-out requests both settle without leaving the app busy', a
   assert.equal(w.store.getState().isAuthenticated, false);
   assert.equal(w.store.getState().isLoading, false);
 });
+
+test('sensitive share presenter fences lock, background, sign-out, account switch and screen exit', async () => {
+  let generation = 3;
+  let locked = false;
+  let signedIn = true;
+  let foreground = 'active';
+  let onScreen = true;
+  let launched = 0;
+  const gate = sourceLoader({
+    'react-native': { AppState: { get currentState() { return foreground; } } },
+    'expo-sharing': { shareAsync: async () => { launched++; } },
+    '@/auth/authStore': { useAuthStore: { getState: () => ({ isAuthenticated: signedIn }) } },
+    '@/safety/appLockStore': { useAppLockStore: { getState: () => ({ locked }) } },
+    '@/auth/sessionGeneration': {
+      currentSessionGeneration: () => generation,
+      isCurrentSession: (expected: number) => expected === generation,
+    },
+  })('safety/documentShareGate.ts');
+  const captured = gate.currentShareGeneration();
+  const share = () => gate.shareProtectedDocument('file:///salary.pdf', { mimeType: 'application/pdf' }, captured, () => onScreen);
+  assert.equal(await share(), true);
+  assert.equal(launched, 1);
+  locked = true;
+  assert.equal(await share(), false);
+  locked = false;
+  foreground = 'background';
+  assert.equal(await share(), false);
+  foreground = 'active';
+  onScreen = false;
+  assert.equal(await share(), false);
+  onScreen = true;
+  generation++;
+  assert.equal(await share(), false);
+  generation--;
+  signedIn = false;
+  assert.equal(await share(), false);
+  assert.equal(launched, 1, 'no new native sheet may open after the state changes');
+});

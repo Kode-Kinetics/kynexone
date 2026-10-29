@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useTranslation } from 'react-i18next';
@@ -38,11 +38,16 @@ import {
 } from './payslipLogic';
 import { useHijriPeriod, usePayslipPeriod } from './usePayslipPeriod';
 import { useSensitiveScreen } from '@/safety/useSensitiveScreen';
+import { canShareProtectedDocument, currentShareGeneration, shareProtectedDocument } from '@/safety/documentShareGate';
 
 type DeductionSource = { kind: 'loading' } | { kind: 'statement'; data: DeductionStatement } | { kind: 'basic' };
 
 export default function PayslipDetailScreen() {
   useSensitiveScreen('payslip-detail');
+  const focused = useIsFocused();
+  const shareFocused = useRef(focused);
+  shareFocused.current = focused;
+  useEffect(() => { shareFocused.current = focused; return () => { shareFocused.current = false; }; }, [focused]);
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
   const { theme } = useTheme();
@@ -96,6 +101,9 @@ export default function PayslipDetailScreen() {
   }, []);
 
   const downloadPdf = async () => {
+    const generation = currentShareGeneration();
+    const allowed = () => canShareProtectedDocument(generation, () => shareFocused.current);
+    if (!allowed()) return;
     setDownloading(true);
     setDownloadError(null);
     // Cache, never documents: the payslip is deleted from the device once the share sheet closes.
@@ -106,9 +114,10 @@ export default function PayslipDetailScreen() {
         return;
       }
       const { url, headers } = await payslipApi.download(id);
+      if (!allowed()) return;
       const result = await FileSystem.downloadAsync(url, target, { headers });
       if (result.status !== 200) throw new Error(`HTTP ${result.status}`);
-      await Sharing.shareAsync(result.uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
+      await shareProtectedDocument(result.uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' }, generation, () => shareFocused.current);
     } catch {
       haptics.error();
       setDownloadError(t('leavePay.payslip.downloadFailed'));
