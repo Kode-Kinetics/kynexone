@@ -5,6 +5,7 @@ using Zayra.Api.Application.Employees.Onboarding;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Scope;
+using Zayra.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace Zayra.Api.Infrastructure.Employees.Onboarding;
@@ -76,19 +77,23 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
     {
         var e = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Stored designation/grade pair for the activation check; tenant re-applied.")
             .AsNoTracking().Where(x => x.Id == employeeId).Select(x => new { x.Status, x.DesignationId, x.GradeId }).FirstOrDefaultAsync(ct);
-        // First activation only (Draft to Active). Someone previously employed who is reinstated or rehired keeps the pair they
-        // already had; legacy data commonly has such pairs and the offboarding flow has no way to acknowledge one.
-        if (e is null || !string.Equals(e.Status, "Draft", StringComparison.OrdinalIgnoreCase)) return;
+        // First activation only (Draft/Invited to Active). Someone previously employed who is reinstated or rehired keeps the
+        // pair they already had; legacy data commonly has such pairs and the offboarding flow has no way to acknowledge one.
+        if (e is null || (!string.Equals(e.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(e.Status, EmployeeStatuses.Invited, StringComparison.OrdinalIgnoreCase))) return;
         if (e.DesignationId is not Guid designationId || e.GradeId is not Guid gradeId) return;
         var designationGrade = await ScopedBypass.TenantWide(_db.Designations, tenantId, "Designation's grade for the activation check; tenant re-applied.")
             .AsNoTracking().Where(d => d.Id == designationId).Select(d => d.GradeId).FirstOrDefaultAsync(ct);
         if (designationGrade is null || designationGrade == gradeId) return;
 
         var id = employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // Metadata is a PostgreSQL json column. Keep only relational predicates in SQL (json LIKE is invalid), then
+        // parse the small employee-specific candidate set structurally so substrings and malformed legacy rows fail closed.
         var recorded = (await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId, "Recorded grade-exception reasons of this employee for the activation check; tenant re-applied.").AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Action == EmployeeStoredDataCheck.WaiverAction && a.EntityId == id && a.Metadata != null && a.Metadata.Contains(GradeCode))
+            .Where(a => a.TenantId == tenantId && a.Action == EmployeeStoredDataCheck.WaiverAction
+                && a.EntityName == "Employee" && a.EntityId == id && a.Metadata != null)
             .Select(a => a.Metadata!).ToListAsync(ct))
-            .Any(m => m.Contains($"\"designationId\":\"{designationId}\"") && m.Contains($"\"gradeId\":\"{gradeId}\""));
+            .Any(m => IsRecordedGradeException(m, designationId, gradeId));
         if (recorded) return;
 
         if (acknowledged?.FirstOrDefault(a => a.Code == GradeCode) is not { } ack)
@@ -97,6 +102,25 @@ public sealed class EmployeeInputGuard : IEmployeeInputGuard
         _db.AuditLogs.Add(Zayra.Api.Infrastructure.Auth.AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, EmployeeStoredDataCheck.WaiverAction,
             "Employee", id, context with { TenantId = tenantId },
             System.Text.Json.JsonSerializer.Serialize(new { code = GradeCode, reason = ack.Reason?.Trim(), designationId, gradeId })));
+    }
+
+    private static bool IsRecordedGradeException(string metadata, Guid designationId, Guid gradeId)
+    {
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(metadata);
+            var root = json.RootElement;
+            return root.ValueKind == System.Text.Json.JsonValueKind.Object
+                && root.TryGetProperty("code", out var code) && code.ValueKind == System.Text.Json.JsonValueKind.String && code.GetString() == GradeCode
+                && root.TryGetProperty("designationId", out var designation) && designation.ValueKind == System.Text.Json.JsonValueKind.String
+                && Guid.TryParse(designation.GetString(), out var recordedDesignation) && recordedDesignation == designationId
+                && root.TryGetProperty("gradeId", out var grade) && grade.ValueKind == System.Text.Json.JsonValueKind.String
+                && Guid.TryParse(grade.GetString(), out var recordedGrade) && recordedGrade == gradeId;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
     }
 
     private async Task<EmployeeCreateRequest> RunAsync(

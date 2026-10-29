@@ -126,6 +126,7 @@ const ar: Record<string, string> = {
   'Choose a designation or a grade. A designation brings its own grade.': 'اختر المسمى الوظيفي أو الدرجة. المسمى الوظيفي يحمل درجته.',
   'Not chosen': 'غير محدد',
   'Only active employees of the same company are listed.': 'تظهر هنا فقط الموظفون النشطون في الشركة نفسها.',
+  'Only active employees you can assign are listed.': 'تظهر هنا فقط أسماء الموظفين النشطين الذين يمكنك تعيينهم.',
   'Employee code': 'الرقم الوظيفي',
   'Set manually': 'تعيين يدوي',
   'Assigned automatically': 'يُعيَّن تلقائيًا',

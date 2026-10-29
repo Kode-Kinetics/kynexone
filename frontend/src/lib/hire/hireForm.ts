@@ -56,3 +56,34 @@ export function emptyHireForm(): HireForm {
 export function hasContent(form: HireForm, defaults: HireForm = emptyHireForm()): boolean {
   return (Object.keys(form) as Array<keyof HireForm>).some(k => k !== 'companyId' && form[k] !== defaults[k]);
 }
+
+type CompanyOwnedChoice = { id: string; companyId?: string | null };
+
+export interface HireCompanyChoices {
+  branches: CompanyOwnedChoice[];
+  departments: CompanyOwnedChoice[];
+  designations: CompanyOwnedChoice[];
+  grades: CompanyOwnedChoice[];
+  /** Managers are already scope-filtered by the employee list endpoint; cross-company managers are valid for group scope. */
+  managers: Array<{ id: number }>;
+}
+
+/** Keep only organisation references that remain valid when the employing company changes. */
+export function rebaseHireCompany(form: HireForm, companyId: string, choices: HireCompanyChoices): HireForm {
+  const sharedOrOwnedBy = (id: string, rows: CompanyOwnedChoice[]) => {
+    if (!id) return '';
+    const row = rows.find(x => x.id === id);
+    return row && (!row.companyId || (!!companyId && row.companyId === companyId)) ? id : '';
+  };
+  const branch = form.branchId && companyId && choices.branches.some(x => x.id === form.branchId && x.companyId === companyId) ? form.branchId : '';
+  const manager = form.managerId && choices.managers.some(x => String(x.id) === form.managerId) ? form.managerId : '';
+  return {
+    ...form,
+    companyId,
+    designationId: sharedOrOwnedBy(form.designationId, choices.designations),
+    gradeId: sharedOrOwnedBy(form.gradeId, choices.grades),
+    branchId: branch,
+    departmentId: sharedOrOwnedBy(form.departmentId, choices.departments),
+    managerId: manager,
+  };
+}

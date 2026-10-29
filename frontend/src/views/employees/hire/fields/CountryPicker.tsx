@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
 import { buildCountryOptions, searchCountries, type CountryOption } from '@/src/lib/hire/nationality';
 import { FieldShell, inputClass } from './FieldShell';
@@ -21,12 +21,40 @@ export function CountryPicker({ field, label, value, onSelect, onFreeText, onBlu
   const nameOf = (o: CountryOption) => (locale === 'ar' ? o.nameAr : o.nameEn);
   const [query, setQuery] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
+  const [active, setActive] = useState(-1);
+  const [above, setAbove] = useState(false);
   const text = query ?? (selected ? nameOf(selected) : value.startsWith('~') ? value.slice(1) : '');
   const matches = useMemo(() => searchCountries(options, query ?? '', locale), [options, query, locale]);
   const wrap = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
 
-  const choose = (o: CountryOption) => { setQuery(null); setOpen(false); onSelect(o.code); };
+  const choose = (o: CountryOption) => { setQuery(null); setOpen(false); setActive(-1); onSelect(o.code); };
+
+  useLayoutEffect(() => {
+    if (!open || !wrap.current) return;
+    const place = () => {
+      const box = wrap.current!.getBoundingClientRect();
+      const action = document.querySelector<HTMLElement>('[data-testid="action-bar"]')?.getBoundingClientRect();
+      const lowerEdge = Math.min(window.innerHeight, action?.top ?? window.innerHeight);
+      const below = lowerEdge - box.bottom - 4;
+      const aboveSpace = box.top - 4;
+      setAbove(below < Math.min(240, Math.max(120, aboveSpace)) && aboveSpace > below);
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [open]);
+
+  useEffect(() => {
+    const list = listRef.current;
+    const option = active >= 0 ? document.getElementById(`${listId}-${matches[active]?.code}`) : null;
+    if (!list || !option) return;
+    const top = option.offsetTop;
+    const bottom = top + option.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }, [active, listId, matches]);
 
   return (
     <FieldShell field={field} label={label} error={error} hint={hint}>
@@ -34,8 +62,8 @@ export function CountryPicker({ field, label, value, onSelect, onFreeText, onBlu
         <div ref={wrap} className="relative" onBlur={e => { if (!wrap.current?.contains(e.relatedTarget as Node)) { setOpen(false); setQuery(null); onBlur(); } }}>
           <input {...p} role="combobox" aria-expanded={open} aria-controls={listId} aria-autocomplete="list" aria-activedescendant={open && matches[active] ? `${listId}-${matches[active].code}` : undefined}
             autoComplete="off" value={text} className={inputClass}
-            onChange={e => { setQuery(e.target.value); setOpen(true); setActive(0); onFreeText(e.target.value.trim() ? `~${e.target.value.trim()}` : ''); }}
-            onFocus={() => setOpen(true)}
+            onChange={e => { setQuery(e.target.value); setOpen(true); setActive(-1); onFreeText(e.target.value.trim() ? `~${e.target.value.trim()}` : ''); }}
+            onFocus={() => { setOpen(true); setActive(-1); }}
             onKeyDown={e => {
               if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActive(i => Math.min(i + 1, matches.length - 1)); }
               else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => Math.max(i - 1, 0)); }
@@ -43,7 +71,7 @@ export function CountryPicker({ field, label, value, onSelect, onFreeText, onBlu
               else if (e.key === 'Escape' && open) { e.preventDefault(); setOpen(false); }
             }} />
           {open && matches.length > 0 && (
-            <ul id={listId} role="listbox" aria-label={label} className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 bg-white p-1 text-sm shadow-lg dark:border-white/10 dark:bg-slate-900">
+            <ul ref={listRef} id={listId} role="listbox" aria-label={label} className={`absolute z-20 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 bg-white p-1 text-sm shadow-lg dark:border-white/10 dark:bg-slate-900 ${above ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
               {matches.map((o, i) => (
                 <li key={o.code} id={`${listId}-${o.code}`} role="option" aria-selected={o.code === value} tabIndex={-1}
                   onMouseDown={e => e.preventDefault()} onClick={() => choose(o)}

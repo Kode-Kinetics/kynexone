@@ -8,8 +8,9 @@ import { TemplatePicker, type AppliedTemplate } from '../TemplatePicker';
 import { useHireTemplate } from '../useHireTemplate';
 import type { HireTemplate } from '@/src/api/onboardingTemplates';
 
-export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, singleCompany, onNameBlur, applied, onApplyTemplate, onUndoTemplate }: StepProps & {
+export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, singleCompany, onNameBlur, onCompanyChange, applied, onApplyTemplate, onUndoTemplate }: StepProps & {
   onNameBlur: () => void;
+  onCompanyChange: (companyId: string) => void;
   applied?: AppliedTemplate | null;
   onApplyTemplate?: (template: HireTemplate) => void;
   onUndoTemplate?: () => void;
@@ -17,10 +18,10 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
   const { t, locale } = useLocale();
   const choices = useHireTemplate(form.companyId, form.designationId, form.gradeId, form.branchId);
   const ar = locale === 'ar';
-  const inCompany = <T extends { companyId?: string | null }>(rows: T[]) => rows.filter(r => !r.companyId || !form.companyId || r.companyId === form.companyId);
+  const inCompany = <T extends { companyId?: string | null }>(rows: T[]) => rows.filter(r => !r.companyId || (!!form.companyId && r.companyId === form.companyId));
   const designations = inCompany(lookups.designations.filter(d => d.isActive));
-  const departments = lookups.departments.filter(d => d.isActive && (!d.companyId || !form.companyId || d.companyId === form.companyId));
-  const branches = lookups.branches.filter(b => b.isActive && (!form.companyId || b.companyId === form.companyId));
+  const departments = inCompany(lookups.departments.filter(d => d.isActive));
+  const branches = lookups.branches.filter(b => b.isActive && !!form.companyId && b.companyId === form.companyId);
   // OD8: any active grade of the employing company (or a shared one) can be chosen, whatever the designation's own grade is.
   const grades = inCompany(lookups.grades.filter(g => g.isActive));
   const designationGrade = lookups.designations.find(d => d.id === form.designationId)?.gradeId;
@@ -41,7 +42,7 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
       </FieldShell>
       <FieldShell field="companyId" label={t('Company')} required error={errorFor('companyId')} hint={singleCompany ? t('Your account has one company, so it is already chosen.') : undefined}>
         {p => (
-          <select {...p} value={form.companyId} disabled={singleCompany} onChange={e => set('companyId', e.target.value)} onBlur={() => blur('companyId')} className={select}>
+          <select {...p} value={form.companyId} disabled={singleCompany} onChange={e => onCompanyChange(e.target.value)} onBlur={() => blur('companyId')} className={select}>
             {!singleCompany && <option value="">{t('Choose a company')}</option>}
             {lookups.companies.filter(c => c.isActive).map(c => <option key={c.id} value={c.id}>{ar && c.legalNameAr ? c.legalNameAr : c.legalNameEn}</option>)}
           </select>
@@ -61,7 +62,7 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
         {p => (
           <select {...p} value={form.gradeId} onChange={e => { set('gradeId', e.target.value); blur('gradeId'); }} onBlur={() => blur('gradeId')} className={select}>
             <option value="">{t('Not chosen')}</option>
-            {grades.map(g => <option key={g.id} value={g.id}>{`${g.code} - ${g.name}`}</option>)}
+            {grades.map(g => <option key={g.id} value={g.id}>{`${g.code} - ${ar && g.nameAr ? g.nameAr : g.name}`}</option>)}
           </select>
         )}
       </FieldShell>
@@ -81,11 +82,11 @@ export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, si
           </select>
         )}
       </FieldShell>
-      <FieldShell field="managerId" label={t('Line manager')} hint={t('Only active employees of the same company are listed.')}>
+      <FieldShell field="managerId" label={t('Line manager')} hint={t('Only active employees you can assign are listed.')}>
         {p => (
           <select {...p} value={form.managerId} onChange={e => set('managerId', e.target.value)} className={select}>
             <option value="">{t('Not chosen')}</option>
-            {lookups.managers.filter(m => { const c = (m as { companyId?: string }).companyId; return !c || !form.companyId || c === form.companyId; }).map(m => <option key={m.id} value={String(m.id)}>{`${m.fullName} (${m.employeeCode})`}</option>)}
+            {lookups.managers.map(m => <option key={m.id} value={String(m.id)}>{`${m.fullName} (${m.employeeCode})`}</option>)}
           </select>
         )}
       </FieldShell>

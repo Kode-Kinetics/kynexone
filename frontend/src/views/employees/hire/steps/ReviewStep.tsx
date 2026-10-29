@@ -98,7 +98,7 @@ export function ReviewStep({ form, lookups, currency, companyCountry, company, t
         <Row label={t('Company')} value={name(lookups.companies, form.companyId, c => (ar && c.legalNameAr ? c.legalNameAr : c.legalNameEn))} />
         {dateRow('startDate', t('Start date'), form.startDate)}
         <Row label={t('Designation')} value={name(lookups.designations, form.designationId, d => (ar && d.titleAr ? d.titleAr : d.titleEn))} />
-        <Row label={t('Grade')} value={name(lookups.grades, form.gradeId, g => `${g.code} - ${g.name}`)} />
+        <Row label={t('Grade')} value={name(lookups.grades, form.gradeId, g => `${g.code} - ${ar && g.nameAr ? g.nameAr : g.name}`)} />
         <Row label={t('Branch')} value={name(lookups.branches, form.branchId, b => (ar && b.nameAr ? b.nameAr : b.nameEn))} />
         <Row label={t('Department')} value={name(lookups.departments, form.departmentId, d => (ar && d.nameAr ? d.nameAr : d.nameEn))} />
         <Row label={t('Work email')} value={workEmail} ltr />
