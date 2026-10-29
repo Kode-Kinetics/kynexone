@@ -21,7 +21,7 @@ import { deriveMobileAccess, hasEffectivePermission } from './accessPolicy';
 import { normalizeEmail, normalizeWorkspace, requireWorkspace } from './publicAuthInput';
 import { isWelcomeCode } from './welcomeCode';
 import type { MfaPrompt } from './mfaFlow';
-import { currentSessionGeneration, invalidateSession, isCurrentSession, requireCurrentSession, writeSession } from './sessionGeneration';
+import { currentSessionGeneration, invalidateSession, isCurrentSession, requireCurrentSession, writeSession, currentCredentialVersion, persistNewSession, clearSessionCredentials } from './sessionGeneration';
 
 interface AuthState {
   user: AuthUser | null;
@@ -159,7 +159,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   finishLogin: async (user, tokens, tenantId) => {
     const generation = invalidateSession();
-    if (!await writeSession(generation, async () => {
+    if (!await persistNewSession(generation, async () => {
       await tokenStorage.saveTokens(tokens);
       await userStorage.saveUser(user);
       await appStorage.set('zayra_tenant_id', tenantId);
@@ -266,8 +266,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Turning the factor on rotates the server-side session stamp, so this
     // session's tokens are already dead; calling /auth/logout would only 401.
     const { user, tenantId } = get();
+    const credentials = currentCredentialVersion();
     const generation = invalidateSession();
-    if (!await writeSession(generation, clearAllAuthData) || !isCurrentSession(generation)) return;
+    if (!await clearSessionCredentials(credentials, clearAllAuthData) || !isCurrentSession(generation)) return;
     useCompatibilityStore.getState().reset();
     set({
       user: null,
@@ -286,6 +287,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     // Invalidate before any await: an in-flight retry cannot revive this account.
+    const credentials = currentCredentialVersion();
     const generation = invalidateSession();
     useCompatibilityStore.getState().reset();
     set({ isLoading: true, isInitialized: true, user: null, tenantId: null, isAuthenticated: false, connectionIssue: false });
@@ -298,7 +300,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         deviceId ? deviceApi.unregister(deviceId) : Promise.resolve(),
       ]);
     } finally {
-      if (await writeSession(generation, clearAllAuthData) && isCurrentSession(generation)) {
+      if (await clearSessionCredentials(credentials, clearAllAuthData) && isCurrentSession(generation)) {
         // After a response-shape error, sign-out must restore the normal auth navigator.
         useCompatibilityStore.getState().reset();
         set({
@@ -330,8 +332,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   clearError: () => set({ error: null }),
 
   handleSessionExpired: () => {
-    const generation = invalidateSession();
-    void writeSession(generation, clearAllAuthData);
+    const credentials = currentCredentialVersion();
+    invalidateSession();
+    void clearSessionCredentials(credentials, clearAllAuthData);
     useCompatibilityStore.getState().reset();
     set({
       connectionIssue: false,

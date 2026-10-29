@@ -54,7 +54,7 @@ function createStore(init: any) {
 class ShapeError extends Error { route = '/auth/me'; issues = ['shape']; }
 const oldUser = { id: 'old', email: 'old@example.test', tenantSlug: 'old-company' };
 const newUser = { id: 'new', email: 'new@example.test', tenantSlug: 'new-company' };
-function authWorld(options: { realClient?: boolean; refresh?: boolean; malformed?: boolean; slowSave?: boolean; slowLogout?: boolean } = {}) {
+function authWorld(options: { realClient?: boolean; refresh?: boolean; malformed?: boolean; slowSave?: boolean; slowLogout?: boolean; loginResult?: 'failure' | 'mfa' } = {}) {
   const me = deferred();
   const requested = deferred<void>();
   const saveStarted = deferred<void>();
@@ -96,6 +96,7 @@ function authWorld(options: { realClient?: boolean; refresh?: boolean; malformed
   };
   let api: any;
   const services = { authApi: {
+    login: async () => { if (options.loginResult === 'mfa') return { kind: 'mfa-required' }; throw new Error('bad credentials'); },
     getMe: async () => { meRequests++; if (options.realClient) return api.apiGet('/auth/me'); requested.resolve(); return me.promise; },
     logout: async () => { logoutStarted.resolve(); if (options.slowLogout) await logoutRelease.promise; },
     getMfaStatus: async () => null,
@@ -281,4 +282,70 @@ test('a retry queued during sign-out cannot start another session restoration', 
   await Promise.all([retry, logout]);
   assert.equal(requestsDuringLogout, 0);
   assert.equal(w.store.getState().isAuthenticated, false);
+});
+
+for (const loginResult of ['failure', 'mfa'] as const) {
+  test(`pending sign-out still clears old credentials after a ${loginResult} login attempt`, async () => {
+    const w = authWorld({ slowLogout: true, loginResult });
+    const logout = w.store.getState().logout();
+    await w.logoutStarted.promise;
+    const attempted = w.store.getState().login('new@example.test', 'wrong', 'new-company');
+    if (loginResult === 'failure') await assert.rejects(attempted, /bad credentials/); else await attempted;
+    w.logoutRelease.resolve();
+    await logout;
+    assert.equal(w.inspect().savedUser, null);
+    assert.equal(w.inspect().savedTokens, null);
+    assert.equal(w.inspect().tenant, null);
+    assert.equal(w.store.getState().isAuthenticated, false);
+  });
+}
+
+test('old sign-out does not clear a successfully persisted replacement session', async () => {
+  const w = authWorld({ slowLogout: true });
+  const logout = w.store.getState().logout();
+  await w.logoutStarted.promise;
+  await w.store.getState().finishLogin(newUser, { accessToken: 'new', refreshToken: 'new' }, 'new-company');
+  w.logoutRelease.resolve();
+  await logout;
+  assert.equal(w.inspect().savedUser.id, 'new');
+  assert.equal(w.inspect().savedTokens.accessToken, 'new');
+  assert.equal(w.store.getState().user.id, 'new');
+  assert.equal(w.store.getState().isAuthenticated, true);
+});
+
+test('sign-out clears a replacement write cancelled while its storage operation was in flight', async () => {
+  const w = authWorld({ slowSave: true, slowLogout: true });
+  const login = w.store.getState().finishLogin(newUser, { accessToken: 'new', refreshToken: 'new' }, 'new-company');
+  await w.saveStarted.promise;
+  const logout = w.store.getState().logout();
+  await w.logoutStarted.promise;
+  w.saveRelease.resolve();
+  await login;
+  w.logoutRelease.resolve();
+  await logout;
+  assert.equal(w.inspect().savedUser, null);
+  assert.equal(w.inspect().savedTokens, null);
+  assert.equal(w.store.getState().isAuthenticated, false);
+});
+
+test('an unsuccessful login cannot cancel session-expiry cleanup queued just before it', async () => {
+  const w = authWorld();
+  w.store.getState().handleSessionExpired();
+  await assert.rejects(w.store.getState().login('new@example.test', 'wrong', 'new-company'), /bad credentials/);
+  await tick();
+  assert.equal(w.inspect().savedUser, null);
+  assert.equal(w.inspect().savedTokens, null);
+});
+
+test('overlapping sign-out requests both settle without leaving the app busy', async () => {
+  const w = authWorld({ slowLogout: true });
+  const first = w.store.getState().logout();
+  await w.logoutStarted.promise;
+  const second = w.store.getState().logout();
+  await tick();
+  w.logoutRelease.resolve();
+  await Promise.all([first, second]);
+  assert.equal(w.inspect().savedTokens, null);
+  assert.equal(w.store.getState().isAuthenticated, false);
+  assert.equal(w.store.getState().isLoading, false);
 });
