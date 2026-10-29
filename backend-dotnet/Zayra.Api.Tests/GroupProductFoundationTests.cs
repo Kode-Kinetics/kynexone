@@ -115,6 +115,11 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         (await db.Companies.IgnoreQueryFilters().CountAsync(c => c.TenantId == tenantId)).Should().Be(before);
     }
 
+    /// <summary>
+    /// Org catalogue rows are PER COMPANY (owner, 2026-10-23): a company-scoped administrator who creates a grade without
+    /// naming a company gets it in their own company, never as a tenant-wide shared row. What they must NOT be able to do is
+    /// touch a group-shared (null-company) grade that already exists: it reads as not found and is left unchanged.
+    /// </summary>
     [Fact]
     public async Task CompanyScopedAdministrator_CannotMutateGroupSharedGrades()
     {
@@ -122,6 +127,8 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
         var own = new Company { TenantId = tenantId, LegalNameEn = "OWN", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
         db.Companies.Add(own);
+        var shared = new Grade { TenantId = tenantId, CompanyId = null, Code = "G-SHARED", Name = "Group grade", Band = "Staff", Level = 1, IsActive = true };
+        db.Grades.Add(shared);
         await db.SaveChangesAsync();
         var controller = new GradesController(
             new Zayra.Api.Infrastructure.Organization.OrganizationSetupService(db, new NullAudit()), db)
@@ -129,12 +136,21 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
             ControllerContext = new ControllerContext { HttpContext = HttpCtx(ScopedPrincipal(tenantId, own.Id), null) },
         };
 
-        var result = await controller.Create(
-            new Application.Organization.GradeRequest("G-LOCAL", "Unsafe local grade", "Staff", 1, Currency: "SAR"),
+        var update = await controller.Update(shared.Id,
+            new Application.Organization.GradeRequest("G-SHARED", "Renamed by a company admin", "Staff", 1, Currency: "SAR"),
             CancellationToken.None);
+        update.Result.Should().BeOfType<NotFoundResult>();
+        (await controller.Delete(shared.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+        var untouched = await db.Grades.IgnoreQueryFilters().AsNoTracking().SingleAsync(g => g.Id == shared.Id);
+        untouched.Name.Should().Be("Group grade");
+        untouched.IsDeleted.Should().BeFalse();
 
-        result.Result.Should().BeOfType<ForbidResult>();
-        (await db.Grades.IgnoreQueryFilters().AnyAsync(grade => grade.TenantId == tenantId && grade.Code == "G-LOCAL")).Should().BeFalse();
+        var created = await controller.Create(
+            new Application.Organization.GradeRequest("G-LOCAL", "Own company grade", "Staff", 1, Currency: "SAR"),
+            CancellationToken.None);
+        created.Result.Should().BeOfType<CreatedAtActionResult>();
+        (await db.Grades.IgnoreQueryFilters().AsNoTracking().SingleAsync(g => g.TenantId == tenantId && g.Code == "G-LOCAL"))
+            .CompanyId.Should().Be(own.Id, "a scoped admin's new grade belongs to their company, not to the group");
     }
 
     [Fact]

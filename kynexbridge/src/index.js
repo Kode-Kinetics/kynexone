@@ -8,9 +8,13 @@ const once = process.argv.includes('--once');
 
 console.log(`KynexBridge starting · API ${cfg.apiBaseUrl} · ${cfg.devices.length} device(s) · interval ${cfg.pollIntervalSeconds}s${once ? ' · single run' : ''}`);
 
+// Never overlap two polls: a slow run (retries, big backlog) must not be doubled up by the next timer tick.
+let running = false;
 async function loop() {
-  await pollOnce(cfg, cursors);
-  if (once) { process.exit(0); }
+  if (running) { console.warn('previous poll still running — skipping this tick.'); return; }
+  running = true;
+  try { await pollOnce(cfg, cursors); } finally { running = false; }
+  if (once) process.exit(0);
 }
 
 await loop();

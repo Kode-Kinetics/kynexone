@@ -49,7 +49,7 @@ function AnnouncementModal({ existing, onClose, onSaved }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <h2 className="text-sm font-semibold text-white">{existing ? 'Edit Announcement' : 'New Announcement'}</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="text-slate-500 hover:text-white transition-colors">
@@ -140,7 +140,7 @@ export default function MarketingPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Marketing & Announcements</h1>
+          <h1 className="text-lg font-semibold text-white">Marketing & Announcements</h1>
           <p className="text-xs text-slate-500 mt-0.5">In-app announcements targeted by plan tier</p>
         </div>
         <div className="flex items-center gap-2">
@@ -187,40 +187,40 @@ export default function MarketingPage() {
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${STATUS_CLS[a.status]}`}>
+                      <span className={`text-caption font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${STATUS_CLS[a.status]}`}>
                         {a.status}
                       </span>
                       {a.targetPlan !== 'All' && (
-                        <span className="text-[10px] text-slate-500 bg-white/[0.04] px-1.5 py-0.5 rounded">
+                        <span className="text-caption text-slate-500 bg-white/[0.04] px-1.5 py-0.5 rounded">
                           {a.targetPlan} only
                         </span>
                       )}
                       {a.expiresAtUtc && (
-                        <span className="text-[10px] text-slate-600">
+                        <span className="text-caption text-slate-600">
                           Expires {new Date(a.expiresAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                         </span>
                       )}
                     </div>
                     <h3 className="text-sm font-semibold text-white">{a.title}</h3>
                     <p className="text-xs text-slate-400 mt-1 line-clamp-2">{a.body}</p>
-                    <p className="text-[11px] text-slate-700 mt-1.5">
+                    <p className="text-caption text-slate-700 mt-1.5">
                       Created by {a.createdByEmail} · {new Date(a.createdAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button type="button" onClick={() => setModal(a)}
-                      className="text-[11px] text-slate-400 border border-white/10 hover:border-white/20 px-2 py-1 rounded transition-colors">
+                      className="text-caption text-slate-400 border border-white/10 hover:border-white/20 px-2 py-1 rounded transition-colors">
                       Edit
                     </button>
                     {a.status === 'Draft' && (
                       <button type="button" onClick={() => publish(a)}
-                        className="flex items-center gap-1 text-[11px] text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/40 px-2 py-1 rounded transition-colors">
+                        className="flex items-center gap-1 text-caption text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/40 px-2 py-1 rounded transition-colors">
                         <Send className="h-3 w-3" /> Publish
                       </button>
                     )}
                     {a.status !== 'Archived' && (
                       <button type="button" onClick={() => archive(a)}
-                        className="flex items-center gap-1 text-[11px] text-slate-500 border border-white/10 hover:border-white/20 px-2 py-1 rounded transition-colors">
+                        className="flex items-center gap-1 text-caption text-slate-500 border border-white/10 hover:border-white/20 px-2 py-1 rounded transition-colors">
                         <Archive className="h-3 w-3" /> Archive
                       </button>
                     )}

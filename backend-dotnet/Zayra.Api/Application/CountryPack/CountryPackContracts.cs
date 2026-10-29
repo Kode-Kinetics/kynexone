@@ -170,7 +170,11 @@ public sealed record EndOfServiceInput(
 public sealed record EosbPolicyOverride(
     decimal? Tier1DaysPerYear,
     decimal? Tier2DaysPerYear,
-    int? MinServiceYears);
+    int? MinServiceYears,
+    // Owner decision 2026-10-25: a rate below the Art. 84 floor is honoured only when an admin acknowledged it
+    // (audited, stored beside the setting). Unacknowledged, the floor still applies and the notice says so.
+    bool Tier1BelowFloorAcknowledged = false,
+    bool Tier2BelowFloorAcknowledged = false);
 
 public sealed record EndOfServiceBreakdown(string Label, decimal Amount);
 
@@ -193,6 +197,14 @@ public sealed record EndOfServiceResult(
     /// gratuity computed on?" has one answer and it is the one the money came from.
     /// </summary>
     public decimal AppliedWageBase { get; init; }
+
+    /// <summary>The service the award was measured on (years, after any exclusion), when the pack reports it. The settlement
+    /// screen shows this figure so the years displayed are the years paid. Null: the caller derives a display figure.</summary>
+    public decimal? ServiceYearsAwarded { get; init; }
+
+    /// <summary>What the statute alone would have paid, set only when a configured rate below the legal minimum was
+    /// honoured. The settlement shows it beside the lower figure so the difference an employee may claim is visible.</summary>
+    public decimal? StatutoryTotalGratuity { get; init; }
 }
 
 // ── Wage protection employee row ──────────────────────────────────────────────

@@ -125,13 +125,15 @@ public class EmployeeImportPayrollParityTests
         Assert.Equal(250, commit.GetProperty("created").GetInt32());
         // One shared grade structure, not 250 unsaved duplicates hidden by InMemory.
         Assert.Single(await db.SalaryStructures.Where(x => x.TenantId == tenant).ToListAsync());
-        Assert.Equal(250, await db.EmployeeSalaryStructures.CountAsync(x => x.TenantId == tenant && x.IsActive));
+        // The first packages are STAGED for Finance (one person imports; a different one approves): no salary row yet.
+        Assert.Empty(await db.EmployeeSalaryStructures.Where(x => x.TenantId == tenant).ToListAsync());
+        Assert.Equal(250, await db.SalaryChangeRequests.CountAsync(x => x.TenantId == tenant && x.Status == SalaryChangeRequest.Pending));
         Assert.Equal(249, await db.Employees.CountAsync(x => x.TenantId == tenant && x.ManagerEmployeeId != null));
-        Assert.Equal(Enumerable.Range(1,250).Sum(i => 5000m+i), await db.EmployeeSalaryStructures.Where(x => x.TenantId == tenant).SumAsync(x => x.BasicSalary));
+        Assert.Equal(Enumerable.Range(1,250).Sum(i => 5000m+i), await db.SalaryChangeRequests.Where(x => x.TenantId == tenant).SumAsync(x => x.BasicSalary));
         var retry = JsonPayload(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
         Assert.Equal(0, retry.GetProperty("created").GetInt32());
         Assert.Equal(250, await db.Employees.CountAsync(x => x.TenantId == tenant));
-        Assert.Equal(250, await db.EmployeeSalaryStructures.CountAsync(x => x.TenantId == tenant));
+        Assert.Equal(250, await db.SalaryChangeRequests.CountAsync(x => x.TenantId == tenant));
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════════

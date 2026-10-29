@@ -65,7 +65,7 @@ function PositionBody({ id }: { id: string }) {
       <header className="wg-card space-y-3 rounded-2xl p-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
-            <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{p.positionTitle}</h1>
+            <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{p.positionTitle}</h1>
             <p className="text-xs text-slate-500">{[p.positionCode, p.companyName, p.departmentName].filter(Boolean).join(' · ')}</p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -149,7 +149,7 @@ function CandidatesSection({ positionId, canManage, canAssess, onChanged }: { po
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
             <PersonName person={n.candidate} />
-            <p className="text-[11px] text-slate-500">{n.nominatedBy ? t('suc.candidate.nominatedBy', { name: personName(n.nominatedBy, locale) }) : t('suc.candidate.nominatedBySystem')}</p>
+            <p className="text-caption text-slate-500">{n.nominatedBy ? t('suc.candidate.nominatedBy', { name: personName(n.nominatedBy, locale) }) : t('suc.candidate.nominatedBySystem')}</p>
           </div>
           <span className="flex flex-wrap items-center gap-1">
             <StatusChip label={t(nominationStatusLabel[n.status])} tone={nominationTone(n.status)} />
@@ -288,7 +288,7 @@ function HistoryDrawer({ n, onClose }: { n: Nomination; onClose: () => void }) {
               <li key={`${h.atUtc}-${i}`} className="rounded-lg border border-slate-200 p-2 text-xs dark:border-white/10" data-testid="suc-history-entry">
                 <p className="font-semibold text-slate-800 dark:text-slate-100">{historyActionLabel[h.action] ? t(historyActionLabel[h.action]) : h.action}</p>
                 <p className="text-slate-500">{fx.dateTime(h.atUtc)}</p>
-                {h.metadata && <p className="mt-1 break-all font-mono text-[10px] text-slate-500" dir="ltr">{h.metadata}</p>}
+                {h.metadata && <p className="mt-1 break-all font-mono text-caption text-slate-500" dir="ltr">{h.metadata}</p>}
               </li>
             ))}
           </ol>

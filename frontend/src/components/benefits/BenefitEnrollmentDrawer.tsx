@@ -20,7 +20,7 @@ export function AssignmentLabel({ enrollment }: { enrollment: Pick<BenefitEnroll
   const { t } = useLocale();
   return <span className="flex flex-wrap items-center gap-1.5">
     <span>{t(enrollment.assignmentSource === 'GradeDefault' ? 'Grade default' : ['IndividualException', 'IndividualAdditional'].includes(enrollment.assignmentSource) ? 'Additional benefit' : 'Manual enrolment')}</span>
-    {enrollment.hasException && enrollment.assignmentSource !== 'IndividualAdditional' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">{t("Individual exception")}</span>}
+    {enrollment.hasException && enrollment.assignmentSource !== 'IndividualAdditional' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">{t("Individual exception")}</span>}
   </span>;
 }
 
@@ -112,9 +112,9 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true" aria-label={t("Enrolment detail")}>
-      <div className="h-full w-full max-w-xl overflow-y-auto border-s border-slate-200 bg-white p-5 shadow-2xl dark:border-white/[0.08] dark:bg-[#0c1120]">
+      <div className="h-full w-full max-w-xl overflow-y-auto border-s border-slate-200 bg-white p-5 shadow-e3 dark:border-white/[0.08] dark:bg-surface">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t("Enrolment")}</h2>
+          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t("Enrolment")}</h2>
           <button type="button" onClick={onClose} aria-label={t("Close")} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.06]"><X className="h-4 w-4" /></button>
         </div>
         {error ? (
@@ -124,7 +124,7 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
         ) : (
           <div className="space-y-5">
             <div>
-              <p className="text-base font-bold text-slate-800 dark:text-slate-100">{detail.enrollment.employeeName}</p>
+              <p className="text-base font-semibold text-slate-800 dark:text-slate-100">{detail.enrollment.employeeName}</p>
               <p className="text-xs text-slate-500 dark:text-slate-400">{plan?.name ?? 'Plan'} · {detail.enrollment.coverageTier} · {range(detail.enrollment.effectiveFrom, detail.enrollment.effectiveTo)}</p>
               {canPropose && <div className="mt-3 space-y-2">
                 <button type="button" className={PRIMARY} onClick={() => setAdding(true)}><Plus className="h-3.5 w-3.5" />{t('Manage benefits')}</button>
@@ -166,7 +166,7 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
                 <p className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-xs text-slate-500 dark:border-white/[0.08] dark:text-slate-400">{t("No contributions recorded.")}</p>
               ) : (
                 <table className="w-full text-start text-xs" data-testid="contributions-table">
-                  <thead><tr className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  <thead><tr className="text-caption uppercase tracking-wide text-slate-500 dark:text-slate-400">
                     <th className="py-1 font-semibold">{t("Effective from")}</th><th className="py-1 text-end font-semibold">{t("Employee")}</th><th className="py-1 text-end font-semibold">{t("Employer")}</th><th className="py-1 font-semibold">{t("Frequency")}</th><th className="py-1 font-semibold">{t("Pay code")}</th>
                   </tr></thead>
                   <tbody>{detail.contributions.map((c) => (
@@ -211,16 +211,16 @@ export function EnrollmentDrawer({ enrollmentId, plans, canRecord, canApplyExcep
                         <span className="flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-100"><Link2 className="h-3.5 w-3.5" /> {d.componentName || d.componentCode}</span>
                         <span className="mt-0.5 block">{d.year}-{String(d.month).padStart(2, '0')} · {t(d.runStatus)} · <span className="font-mono">{d.componentCode}</span></span>
                       </span>
-                      <span className="shrink-0 text-end"><span className="block font-mono font-semibold text-slate-800 dark:text-slate-100">{money(d.linkedAmount)} {currency}</span>{d.linkedAmount !== d.deductionAmount && <span className="text-[10px] text-slate-400">{t('Of {amount}', { amount: money(d.deductionAmount) })}</span>}</span>
+                      <span className="shrink-0 text-end"><span className="block font-mono font-semibold text-slate-800 dark:text-slate-100">{money(d.linkedAmount)} {currency}</span>{d.linkedAmount !== d.deductionAmount && <span className="text-caption text-slate-400">{t('Of {amount}', { amount: money(d.deductionAmount) })}</span>}</span>
                     </li>
                   ))}
                 </ul>
               )}
               {canRecord && !superseded && (
                 detail.contributions.length === 0 ? (
-                  <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{t("Record a contribution first; a deduction is linked to a contribution.")}</p>
+                  <p className="mt-2 text-caption text-slate-500 dark:text-slate-400">{t("Record a contribution first; a deduction is linked to a contribution.")}</p>
                 ) : candidates && candidates.length === 0 ? (
-                  <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{t("This employee has no unlinked, non-statutory payroll deductions to link. Deductions appear here once a payroll run includes one.")}</p>
+                  <p className="mt-2 text-caption text-slate-500 dark:text-slate-400">{t("This employee has no unlinked, non-statutory payroll deductions to link. Deductions appear here once a payroll run includes one.")}</p>
                 ) : (
                   <form onSubmit={linkDeduction} aria-label={t("Link payroll deduction")} className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 p-3 dark:border-white/[0.06]">
                     <label className={LABEL}>{t("Contribution")}<select className={INPUT} value={link.contributionId} onChange={(e) => setLink((l) => ({ ...l, contributionId: e.target.value }))}>

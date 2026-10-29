@@ -73,6 +73,20 @@ function ok<T>(res: Res<T>, what: string, accept: number[] = [200, 201, 204]): R
 }
 
 const items = pageItems;
+
+/** Polls the run's processing job until it succeeds; a failure carries the server's code and message. */
+async function awaitRunProcessed(runId: string, token: string, what: string, timeoutMs = 180_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = ok(await call('GET', `/api/payroll/runs/${runId}/processing`, { token }), `${what}: read processing status`);
+    const state = String(res.body?.status);
+    if (state === 'Succeeded') return;
+    if (state === 'Failed') throw new Error(`[demo-masar] ${what} failed: ${res.body?.errorCode} - ${res.body?.errorMessage}`);
+    if (Date.now() > deadline) throw new Error(`[demo-masar] ${what}: still ${state} after ${timeoutMs / 1000}s`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
 const idOf = (x: any): string => x?.id ?? x?.Id;
 
 async function allPages(token: string, path: string, companyId?: string): Promise<any[]> {
@@ -523,7 +537,7 @@ async function activateEmployees(adminToken: string, byCode: Map<string, any>): 
 // ── Salaries ─────────────────────────────────────────────────────────────────────────────────
 
 /** A salary assignment per employee, effective from 1 Jan 2026 or the joining date if later. */
-async function ensureSalaries(adminToken: string, companyIds: Record<CompanyKey, string>, byCode: Map<string, any>): Promise<void> {
+async function ensureSalaries(adminToken: string, companyIds: Record<CompanyKey, string>, byCode: Map<string, any>, creds: Record<string, string>): Promise<void> {
   // No structure is named: structures follow grades now (POST salary-structures answers 409), so each salary goes on
   // the employee's grade package structure, which the server creates from the grade when needed.
   const assigned = new Set((await allPages(adminToken, '/api/payroll/employee-salary-structures'))
@@ -547,7 +561,12 @@ async function ensureSalaries(adminToken: string, companyIds: Record<CompanyKey,
       count++;
     }
   }
-  if (count) log(`assigned ${count} salar${count === 1 ? 'y' : 'ies'}`);
+  // HR proposes, Finance approves: the assignments above are PENDING salary changes (202) until a second person,
+  // who is neither the proposer nor the employee, approves them. The Finance persona is that person.
+  const financeToken = await requireLogin(persona('finance'), creds);
+  const pending = items(ok(await call('GET', '/api/payroll/salary-changes?status=Pending', { token: financeToken }), 'list pending salary changes').body);
+  for (const change of pending) ok(await call('POST', `/api/payroll/salary-changes/${change.id ?? change.Id}/approve`, { token: financeToken, body: { note: 'demo seed' } }), `approve salary change for ${change.employeeCode ?? change.EmployeeCode}`);
+  if (count) log(`assigned ${count} salar${count === 1 ? 'y' : 'ies'} (${pending.length} approved by Finance)`);
 }
 
 // ── Employment contracts (the live employee_contracts register) ──────────────────────────────
@@ -884,12 +903,17 @@ async function ensurePayroll(companyIds: Record<CompanyKey, string>, creds: Cred
       for (let step = 0; step < 6; step++) {
         const status = String(run.status ?? run.Status);
         let res: Res | null = null;
-        if (status === 'Draft') res = await call('POST', `/api/payroll/runs/${id}/process`, { token: payroll });
+        if (status === 'Draft') {
+          // Queued (202); the computation runs on the API's background job queue.
+          res = await call('POST', `/api/payroll/runs/${id}/process`, { token: payroll });
+          ok(res, `${label}: queue processing`, [202]);
+          await awaitRunProcessed(id, payroll, label);
+        }
         else if (status === 'Processed') res = await call('POST', `/api/payroll/runs/${id}/approve`, { token: hr, body: { notes: 'Reviewed by HR', expectedExcludedCount: 0 } });
         else if (status === 'PendingFinanceReview') res = await call('POST', `/api/payroll/runs/${id}/approve`, { token: finance, body: { notes: 'Finance approval', expectedExcludedCount: 0 } });
         else if (status === 'Approved') res = await call('POST', `/api/payroll/runs/${id}/lock`, { token: finance });
         else break;
-        ok(res, `${label}: ${status} -> next`);
+        ok(res, `${label}: ${status} -> next`, status === 'Draft' ? [202] : undefined);
         run = await find();
       }
       const final = String(run.status ?? run.Status);
@@ -1048,7 +1072,7 @@ export async function seedMasarDemo(): Promise<void> {
   const org = await ensureOrg(adminToken, companyIds, branchIds);
   const byCode = await ensureEmployees(adminToken, companyIds, branchIds, gradeIds, org);
   await activateEmployees(adminToken, byCode);
-  await ensureSalaries(adminToken, companyIds, byCode);
+  await ensureSalaries(adminToken, companyIds, byCode, creds);
   await ensureContracts(adminToken, byCode);
   await ensureEmployeeLogins(adminToken, companyIds, byCode, creds);
   await ensureLeave(adminToken);

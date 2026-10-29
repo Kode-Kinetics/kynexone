@@ -109,8 +109,8 @@ export function LearningReports({ onDrill }: { onDrill: (filter: RecordsFilter) 
           <div key={kpi.key} role="listitem" className="wg-card flex flex-col justify-between gap-2 rounded-xl p-4" data-testid={`kpi-${kpi.key}`}>
             <div>
               <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{t(kpiLabel[kpi.key])}</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{fx.integer(kpi.value)}</p>
-              <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{t(kpiDefinition[kpi.key])}</p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{fx.integer(kpi.value)}</p>
+              <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">{t(kpiDefinition[kpi.key])}</p>
             </div>
             <button type="button" className="btn-secondary self-start text-xs" onClick={() => void openDrill(kpi)} disabled={drillLoading !== null}
               aria-label={t('Show the {count} records behind "{kpi}"', { count: kpi.value, kpi: t(kpiLabel[kpi.key]) })}>
@@ -123,7 +123,7 @@ export function LearningReports({ onDrill }: { onDrill: (filter: RecordsFilter) 
       {drill && (
         <section className="wg-card space-y-3 rounded-2xl p-4" aria-labelledby="learning-drill" data-testid="learning-drill">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 id="learning-drill" className="text-sm font-bold text-slate-800 dark:text-slate-100">
+            <h2 id="learning-drill" className="text-sm font-semibold text-slate-800 dark:text-slate-100">
               {t('{kpi}: {count, plural, one {# record} other {# records}}', { kpi: t(kpiLabel[drill.key]), count: drill.rows.length })}
             </h2>
             <div className="flex gap-2">
@@ -142,7 +142,7 @@ export function LearningReports({ onDrill }: { onDrill: (filter: RecordsFilter) 
 
       <section className="wg-card space-y-3 rounded-2xl p-4" aria-labelledby="learning-completion">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="learning-completion" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Completion')}</h2>
+          <h2 id="learning-completion" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Completion')}</h2>
           <div className="flex flex-wrap items-center gap-2">
             <label className="text-xs text-slate-600 dark:text-slate-300">
               {t('Group by')}{' '}
@@ -188,7 +188,7 @@ export function LearningReports({ onDrill }: { onDrill: (filter: RecordsFilter) 
             </table>
           </div>
         )}
-        <p className="text-[11px] text-slate-500 dark:text-slate-400">{t('Assigned = completed + in progress + not started. Cancelled assignments are not counted.')}</p>
+        <p className="text-caption text-slate-500 dark:text-slate-400">{t('Assigned = completed + in progress + not started. Cancelled assignments are not counted.')}</p>
       </section>
     </div>
   );
@@ -216,7 +216,7 @@ export function StatusTable({ rows, onOpen }: { rows: StatusRow[]; onOpen?: (ass
             <tr key={r.assignmentId}>
               <td className="py-2 pe-3">
                 <span className="font-semibold text-slate-800 dark:text-slate-100">{r.employeeName}</span> <span className="text-slate-500" dir="ltr">{r.employeeCode}</span>
-                {r.employeeStatus === 'Suspended' && <span className="ms-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" data-testid="employee-suspended">{t('Suspended')}</span>}
+                {r.employeeStatus === 'Suspended' && <span className="ms-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" data-testid="employee-suspended">{t('Suspended')}</span>}
               </td>
               <td className="py-2 pe-3">{r.department || t('Not recorded')}</td>
               <td className="py-2 pe-3">{r.path}</td>

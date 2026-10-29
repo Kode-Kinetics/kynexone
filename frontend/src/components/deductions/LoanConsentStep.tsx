@@ -76,7 +76,7 @@ export function LoanConsentStep({ art92, self, employeeId, consentDocumentId, on
           </label>
           <input id={inputId} type="file" accept="application/pdf,image/*" className="sr-only" disabled={uploading || employeeId == null}
             onChange={(e) => void upload(e.target.files?.[0])} />
-          <p className="text-[11px] text-amber-800 dark:text-amber-200">{t('It is kept on the employee’s file as HR evidence and is not shown in self-service.')}</p>
+          <p className="text-caption text-amber-800 dark:text-amber-200">{t('It is kept on the employee’s file as HR evidence and is not shown in self-service.')}</p>
         </div>
       )}
       {error && <p role="alert" className="text-xs text-rose-700 dark:text-rose-300">{error}</p>}

@@ -116,7 +116,7 @@ function StatTile({ icon: Icon, tone, label, value, detail, note, note2, href, l
           <p className="text-sm text-slate-400 dark:text-slate-500">{empty}</p>
         ) : (
           <>
-            <p className="text-2xl font-extrabold leading-tight tracking-tight text-slate-900 tabular-nums dark:text-white"><bdi>{value}</bdi></p>
+            <p className="text-2xl font-semibold leading-tight tracking-tight text-slate-900 tabular-nums dark:text-white"><bdi>{value}</bdi></p>
             {detail && <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{detail}</p>}
             {note && <p className="text-xs text-slate-400 dark:text-slate-500">{note}</p>}
             {note2 && <p className="text-xs text-slate-400 dark:text-slate-500">{note2}</p>}
@@ -192,7 +192,7 @@ function MyShiftsCard() {
 
   return (
     <Panel title={t('My Upcoming Shifts')} icon={Calendar} tone="blue"
-      action={<span className="text-[11px] font-medium text-slate-400">{t('Next 2 weeks')}</span>}>
+      action={<span className="text-caption font-medium text-slate-400">{t('Next 2 weeks')}</span>}>
       {shifts === null ? (
         <Quiet>{t('Loading…')}</Quiet>
       ) : shifts.length === 0 ? (
@@ -248,7 +248,7 @@ function AttentionPanel({ items, incomplete, onRetry }: { items: AttentionItem[]
     <section className="wg-card rounded-2xl" data-testid="ess-attention" aria-labelledby="ess-attention-title">
       <div className="flex items-center justify-between gap-3 px-5 pt-4">
         <h2 id="ess-attention-title" className="text-sm font-semibold text-slate-900 dark:text-white">{t('Needs your attention')}</h2>
-        <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${items.some((i) => i.tone === 'rose')
+        <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${items.some((i) => i.tone === 'rose')
           ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
           : 'bg-slate-500/10 text-slate-600 dark:text-slate-300'}`}>
           {t('{count, plural, one {# item} other {# items}}', { count: items.length })}
@@ -329,7 +329,7 @@ function AskKodyCard() {
           className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50/80 px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-sapphire/50 focus:ring-2 focus:ring-sapphire/10 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-white dark:placeholder-slate-600 dark:focus:border-cyanAccent/40"
         />
         <div className="flex items-center justify-end gap-3 sm:justify-between">
-          <p className="hidden text-[11px] text-slate-400 dark:text-slate-500 sm:block">{t('Press Ctrl+Enter or ⌘+Enter to send')}</p>
+          <p className="hidden text-caption text-slate-400 dark:text-slate-500 sm:block">{t('Press Ctrl+Enter or ⌘+Enter to send')}</p>
           <button
             type="button"
             onClick={() => void askAi()}
@@ -525,15 +525,15 @@ export function EmployeeSelfServicePage() {
               )}
             </div>
             <div className="min-w-0">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-sapphire dark:text-cyanAccent">{fx.date(new Date(), 'full')}</p>
-              <h1 className="mt-0.5 text-xl font-extrabold sm:text-2xl tracking-tight text-slate-900 dark:text-white">{greeting(t, firstName)}</h1>
+              <p className="text-caption font-semibold uppercase tracking-widest text-sapphire dark:text-cyanAccent">{fx.date(new Date(), 'full')}</p>
+              <h1 className="mt-0.5 text-xl font-semibold sm:text-2xl tracking-tight text-slate-900 dark:text-white">{greeting(t, firstName)}</h1>
               <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
                 <bdi>{dashboard.profile.jobTitle || t('Employee')}</bdi>
                 {dashboard.profile.department ? <> · <bdi>{dashboard.profile.department}</bdi></> : null}
                 {dashboard.profile.employeeCode ? <> · <bdi className="whitespace-nowrap">{dashboard.profile.employeeCode}</bdi></> : null}
               </p>
               {dashboard.tenureMonths > 0 && (
-                <span className="mt-2.5 hidden items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300 sm:inline-flex">
+                <span className="mt-2.5 hidden items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-caption font-semibold text-blue-700 dark:text-blue-300 sm:inline-flex">
                   <BadgeCheck className="h-3 w-3" aria-hidden="true" /> {tenureLabel(t, dashboard.tenureMonths)}
                 </span>
               )}
@@ -601,7 +601,7 @@ export function EmployeeSelfServicePage() {
           value={loanGroups.length ? loanGroups.map((g) => wholeMoney(g.totalOutstanding, g.currency)).join(' · ') : undefined}
           detail={loanGroups.length ? t('{count, plural, one {Outstanding on # active loan} other {Outstanding on # active loans}}', { count: loanGroups.reduce((sum, g) => sum + g.activeLoanCount, 0) }) : undefined}
           empty={loanGroups.length ? undefined : t('No active loans')}
-          href={mayOpenLoans ? '/loans?mine=true' : undefined} linkLabel={t('Open my loans')}
+          href={hasPermission('loans.self') ? '/ess/loans' : mayOpenLoans ? '/loans?mine=true' : undefined} linkLabel={t('Open my loans')}
         />
       </div>
 

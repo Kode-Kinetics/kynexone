@@ -375,6 +375,10 @@ export const usersApi = {
   delete: (userId: string) =>
     client.delete(`/api/access/users/${userId}`),
 
+  /** Setup's Restore: the account comes back deactivated (409 USER_EMAIL_TAKEN when its email has since been used). */
+  restore: (userId: string) =>
+    client.post<{ outcome: 'restored'; message: string }>(`/api/access/users/${userId}/restore`).then(r => r.data),
+
   inviteEmployee: (body: { employeeId: number; accessMode: string; confirmedWorkEmail?: boolean; roles?: string[]; invitationHours?: number }) =>
     client.post<EmployeeLoginInvitation>('/api/access/employee-logins/invite', body).then(r => r.data),
 
@@ -386,6 +390,9 @@ export const usersApi = {
   linkExistingLogin: (body: { employeeId: number; userId: string; reason: string; confirmedWorkEmail?: boolean }) =>
     client.post<EmployeeLoginLinkResult>('/api/access/employee-logins/link-existing', body).then(r => r.data),
 };
+
+/** What changing a role would touch. */
+export interface RoleImpact { roleId: string; name: string; isSystem: boolean; isActive: boolean; assignedUsers: number }
 
 export const rolesApi = {
   list: () =>
@@ -414,6 +421,14 @@ export const rolesApi = {
 
   deactivate: (roleId: string) =>
     client.patch(`/api/access/roles/${roleId}/deactivate`),
+
+  /** How many people hold a role, and whether it is a locked system role: the numbers the confirm dialogs name. */
+  impact: (roleId: string) =>
+    client.get<RoleImpact>(`/api/access/roles/${roleId}/impact`).then(r => r.data),
+
+  /** Setup's Remove: a custom role nobody holds is deleted; a role people hold is refused (409 ROLE_ASSIGNED, with the count). */
+  remove: (roleId: string) =>
+    client.delete<{ outcome: 'deleted'; message: string }>(`/api/access/roles/${roleId}`).then(r => r.data),
 
   setPermissions: (roleId: string, permissions: string[]) =>
     client.put<RoleItem>(`/api/access/roles/${roleId}/permissions`, { permissions }).then(r => r.data),

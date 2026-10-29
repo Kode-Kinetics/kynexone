@@ -177,9 +177,20 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         var now = DateTime.UtcNow;
+        // COST. Every ChangeTracker.Entries() call re-runs DetectChanges over the WHOLE graph while auto-detect is on, and
+        // this method now runs ~8 hooks that each walk the tracker (audit append-only, welcome codes, trusted browsers,
+        // currency defaults, stamping, company scope x2, tenant scope). Detect ONCE, then let the hooks read the tracker
+        // without re-detecting (they change state only through the entry / Add APIs, never by CLR property sets that
+        // would need detecting); auto-detect is restored before the seal + base save so those still see everything.
+        var autoDetectBefore = ChangeTracker.AutoDetectChangesEnabled;
+        if (autoDetectBefore) ChangeTracker.DetectChanges();
+        ChangeTracker.AutoDetectChangesEnabled = false;
+        try
+        {
         EnforceAuditLogAppendOnly();
         await ClearWelcomeCodesOnAccessChangeAsync(cancellationToken);
         await RevokeTrustedBrowsersOnCredentialChangeAsync(cancellationToken);
+        await Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults.ApplyAsync(this, cancellationToken);
         foreach (var entry in ChangeTracker.Entries())
         {
             if (entry.State == EntityState.Added)
@@ -238,7 +249,10 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 NormalizeDateTimeKinds(entry);
         }
         await EnforceCompanyScopeOnWritesAsync(cancellationToken);
+        await EnforceCompanyScopeOnConfigWritesAsync(cancellationToken);
         EnforceTenantScopeOnWrites();
+        }
+        finally { ChangeTracker.AutoDetectChangesEnabled = autoDetectBefore; }
         // POD-A3: seal any pending payroll-audit rows into the per-tenant hash chain, then persist.
         // MUST run AFTER the stamping loop above so CreatedAtUtc has already been normalized to
         // Kind=Utc (the hash canonicalizes the UTC timestamp); the append-only guard already ran
@@ -341,6 +355,45 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         if (pending.Count == 0 && pendingCentral.Count == 0)
             return await base.SaveChangesAsync(ct);
 
+        try
+        {
+            return await SaveWithSealedAuditRowsAsync(pending, pendingCentral, ct);
+        }
+        catch
+        {
+            // A save that failed must not leave its audit rows staged in the tracker: they would commit,
+            // as a phantom "this happened" record, with whatever the caller saves next on this context.
+            DetachAuditRows(pending, pendingCentral);
+            throw;
+        }
+    }
+
+    private void DetachAuditRows(IEnumerable<PayrollAuditLog> payroll, IEnumerable<AuditLog> central)
+    {
+        foreach (var row in payroll) Entry(row).State = EntityState.Detached;
+        foreach (var row in central) Entry(row).State = EntityState.Detached;
+    }
+
+    private void AttachAuditRows(IEnumerable<PayrollAuditLog> payroll, IEnumerable<AuditLog> central)
+    {
+        foreach (var row in payroll) Entry(row).State = EntityState.Added;
+        foreach (var row in central) Entry(row).State = EntityState.Added;
+    }
+
+    /// <summary>
+    /// Two phases inside ONE transaction so the tenant audit lock is taken LAST: (1) the business changes
+    /// are saved with the audit rows held back, taking whatever row locks they need; (2) only then is the
+    /// per-tenant audit lock taken (try-lock with a bounded wait, never an unbounded queue), the rows are
+    /// chained off the tail and inserted. Lock order is therefore always "business rows, then audit lock",
+    /// which removes the lock-order inversion with row locks and other advisory locks, and the audit lock
+    /// is held only for the final INSERTs rather than across the whole business save.
+    /// A phase-2 failure is wrapped in <see cref="AuditSealFailedException"/>, which the retrying
+    /// execution strategy does not classify as transient: re-running the delegate after phase 1 has
+    /// already accepted the business changes would commit the audit rows without them.
+    /// </summary>
+    private async Task<int> SaveWithSealedAuditRowsAsync(
+        List<PayrollAuditLog> pending, List<AuditLog> pendingCentral, CancellationToken ct)
+    {
         // Non-Npgsql providers (EF InMemory, SQLite test fixtures) have no advisory locks and no
         // real write concurrency: seal in memory and save directly.
         if (!Database.IsNpgsql())
@@ -351,34 +404,65 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         }
 
         var tenantIds = pending.Select(p => p.TenantId).Distinct().OrderBy(x => x).ToList();
+        var centralTenants = pendingCentral.Select(x => x.TenantId).Distinct().ToList();
 
-        // Ambient transaction (a caller composing several writes): join it — the advisory lock is
-        // held until the caller commits, which is exactly the serialization window we need.
-        if (Database.CurrentTransaction is not null)
+        async Task<int> RunAsync()
         {
-            await AcquirePayrollChainLocksAsync(tenantIds, ct);
-            await AcquireCentralAuditChainLocksAsync(pendingCentral.Select(x => x.TenantId).Distinct().ToList(), ct);
-            await SealPayrollRowsAsync(pending, ct);
-            await SealCentralAuditRowsAsync(pendingCentral, ct);
-            return await base.SaveChangesAsync(ct);
+            DetachAuditRows(pending, pendingCentral);
+            var businessRows = await base.SaveChangesAsync(ct);
+            try
+            {
+                AttachAuditRows(pending, pendingCentral);
+                await AcquirePayrollChainLocksAsync(tenantIds, ct);
+                await AcquireCentralAuditChainLocksAsync(centralTenants, ct);
+                await SealPayrollRowsAsync(pending, ct);
+                await SealCentralAuditRowsAsync(pendingCentral, ct);
+                return businessRows + await base.SaveChangesAsync(ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new AuditSealFailedException("The audit trail could not be sealed; the unit of work was not committed.", ex);
+            }
         }
 
-        // EnableRetryOnFailure (Program.cs) forbids a bare BeginTransaction, so the whole unit —
-        // open tx → lock → (re-read tail &) seal → save → commit — lives inside the execution
-        // strategy delegate and must be safe to re-run from scratch. Re-sealing on each attempt is
-        // correct: a retry re-reads a possibly-advanced tail and re-chains off it.
+        // Ambient transaction (a caller composing several writes): join it. The audit lock is taken at
+        // the end of this save and held until the caller commits.
+        if (Database.CurrentTransaction is not null)
+            return await RunAsync();
+
+        // EnableRetryOnFailure (Program.cs) forbids a bare BeginTransaction, so the whole unit lives
+        // inside the execution strategy delegate and must be safe to re-run from scratch while phase 1 is
+        // failing (nothing accepted yet). Phase 2 failures are not retried (see above).
         var strategy = Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
             await using var tx = await Database.BeginTransactionAsync(ct);
-            await AcquirePayrollChainLocksAsync(tenantIds, ct);
-            await AcquireCentralAuditChainLocksAsync(pendingCentral.Select(x => x.TenantId).Distinct().ToList(), ct);
-            await SealPayrollRowsAsync(pending, ct);
-            await SealCentralAuditRowsAsync(pendingCentral, ct);
-            var n = await base.SaveChangesAsync(ct);
+            var n = await RunAsync();
             await tx.CommitAsync(ct);
             return n;
         });
+    }
+
+    private static readonly TimeSpan AuditLockWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Transaction-scoped advisory lock taken with pg_try_advisory_xact_lock and a bounded wait: a stuck
+    /// holder fails this save fast with a clear error instead of queueing every audited write of the tenant
+    /// behind it, and no server setting is changed for the rest of the caller's transaction.
+    /// </summary>
+    private async Task AcquireAdvisoryXactLockAsync(long key, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + AuditLockWait;
+        var delayMs = 5;
+        while (true)
+        {
+            var got = await Database.SqlQuery<bool>($"SELECT pg_try_advisory_xact_lock({key}) AS \"Value\"").SingleAsync(ct);
+            if (got) return;
+            if (DateTime.UtcNow >= deadline)
+                throw new TimeoutException("Another write holds this tenant's audit chain; try again.");
+            await Task.Delay(delayMs, ct);
+            delayMs = Math.Min(delayMs * 2, 100);
+        }
     }
 
     private async Task AcquirePayrollChainLocksAsync(IReadOnlyList<Guid> tenantIds, CancellationToken ct)
@@ -386,19 +470,13 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // Sorted acquisition order (caller passes tenantIds sorted) is deadlock-free across a
         // multi-tenant save. Transaction-scoped: auto-released at commit/rollback.
         foreach (var tenantId in tenantIds)
-        {
-            var key = ComputePayrollChainLockKey(tenantId);
-            await Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
-        }
+            await AcquireAdvisoryXactLockAsync(ComputePayrollChainLockKey(tenantId), ct);
     }
 
     private async Task AcquireCentralAuditChainLocksAsync(IReadOnlyCollection<Guid?> tenantIds, CancellationToken ct)
     {
         foreach (var tenantId in tenantIds.OrderBy(x => x?.ToString() ?? string.Empty, StringComparer.Ordinal))
-        {
-            var key = ComputeCentralAuditChainLockKey(tenantId);
-            await Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
-        }
+            await AcquireAdvisoryXactLockAsync(ComputeCentralAuditChainLockKey(tenantId), ct);
     }
 
     internal static long ComputeCentralAuditChainLockKey(Guid? tenantId)
@@ -720,6 +798,89 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             throw new InvalidOperationException(
                 $"company_scope_required: {entry.Metadata.ClrType.Name} in a multi-company tenant needs an " +
                 "explicit CompanyId (or an employee linkage to derive it from).");
+        }
+    }
+
+    /// <summary>
+    /// Config-tier entities that are ICompanyScoped but are append-only logs or system output, never edited
+    /// by a person: they are written by every role and legitimately carry no company, so the config write
+    /// guard leaves them alone. A new ICompanyScoped type is NOT exempt by default; adding it here is a
+    /// reviewed decision, and the architecture ratchet fails if this list names a type that no longer exists.
+    /// </summary>
+    internal static readonly Type[] ConfigScopeGuardExempt = [typeof(AuditLog), typeof(AdminAuditLog), typeof(AIInsight)];
+
+    /// <summary>Properties whose change alone is bookkeeping done on the user's behalf (a counter or a timestamp),
+    /// not an edit of the configuration, so a company-scoped user may trigger it on a shared row.</summary>
+    private static readonly HashSet<string> ConfigBookkeepingProperties = ["UpdatedAtUtc", "UpdatedBy", "NextSequence"];
+
+    /// <summary>
+    /// Write-side company guard for CONFIGURATION entities (<see cref="ICompanyScoped"/> that are not operational).
+    /// The read filter shows a company-scoped user their own company's rows plus the tenant-wide ones
+    /// (CompanyId == null); without this a forgotten controller check let them write a sister company's row, or
+    /// edit or delete a tenant-wide one. In a user context, in a tenant with more than one active company, for a
+    /// non-group caller:
+    ///   Added, company set   -> the caller must have access to that company.
+    ///   Added, company null  -> stamped to the caller's single accessible company, else refused.
+    ///   Modified/Deleted     -> the row's stored company must be one the caller can access; a tenant-wide row
+    ///                           (null company) can only be changed by a group-level caller; the company cannot
+    ///                           be reassigned. Bookkeeping-only changes are let through.
+    /// Single-company tenants and group-level callers are unaffected, as are system contexts.
+    /// </summary>
+    private async Task EnforceCompanyScopeOnConfigWritesAsync(CancellationToken ct)
+    {
+        var entries = ChangeTracker.Entries()
+            .Where(e => e.Entity is ICompanyScoped and not ICompanyScopedOperational
+                        && Array.IndexOf(ConfigScopeGuardExempt, e.Entity.GetType()) < 0
+                        && e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .ToList();
+        if (entries.Count == 0) return;
+
+        var user = _httpContextAccessor?.HttpContext?.User;
+        if (user is null || _tenantId is null || SystemScopeContext.IsActive) return;
+        var scope = ResolveRequestScope();
+        if (scope.IsGroupLevel) return;
+
+        Dictionary<Guid, List<Guid>> companiesByTenant = new();
+        foreach (var entry in entries)
+        {
+            var name = entry.Metadata.ClrType.Name;
+            var entryTenant = ResolveEntryTenantId(entry) ?? _tenantId.Value;
+            if (!companiesByTenant.TryGetValue(entryTenant, out var active))
+            {
+                // IgnoreQueryFilters is intentional: the tenant's full active company list is needed whatever the actor's scope; the TenantId predicate keeps it tenant-contained.
+                active = await Companies.IgnoreQueryFilters().AsNoTracking()
+                    .Where(c => c.TenantId == entryTenant && c.IsActive && !c.IsDeleted)
+                    .Select(c => c.Id).ToListAsync(ct);
+                companiesByTenant[entryTenant] = active;
+            }
+            if (active.Count <= 1) continue; // one company: the caller's scope IS the tenant
+
+            var scoped = (ICompanyScoped)entry.Entity;
+            if (entry.State == EntityState.Added)
+            {
+                if (scoped.CompanyId is Guid c)
+                {
+                    if (!scope.CanAccessCompany(c))
+                        throw new UnauthorizedAccessException($"company_scope_denied: cannot create {name} in a company outside your access.");
+                    continue;
+                }
+                var accessible = scope.AccessibleCompanyIds.Intersect(active).ToList();
+                if (accessible.Count == 1) { scoped.CompanyId = accessible[0]; continue; }
+                throw new InvalidOperationException($"company_scope_required: {name} in a multi-company tenant needs an explicit company.");
+            }
+
+            var original = (Guid?)entry.Property(nameof(ICompanyScoped.CompanyId)).OriginalValue;
+            if (entry.State == EntityState.Modified)
+            {
+                var changed = entry.Properties.Where(p => p.IsModified).Select(p => p.Metadata.Name).ToList();
+                if (changed.Count > 0 && changed.All(ConfigBookkeepingProperties.Contains)) continue;
+                if (scoped.CompanyId != original)
+                    throw new InvalidOperationException($"company_reassignment_blocked: {name} rows cannot change company outside an explicit transfer workflow.");
+            }
+            if (original is null)
+                throw new UnauthorizedAccessException($"company_scope_denied: this {name} is shared across the whole tenant; only a group-level administrator can change it.");
+            if (!scope.CanAccessCompany(original))
+                throw new UnauthorizedAccessException($"company_scope_denied: no access to the company that owns this {name}.");
         }
     }
 
@@ -1109,6 +1270,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     }
 
     public DbSet<Employee> Employees => Set<Employee>();
+    public DbSet<FieldEncryptionKey> FieldEncryptionKeys => Set<FieldEncryptionKey>();
     public DbSet<Position> Positions => Set<Position>();
     public DbSet<AttendanceRecord> AttendanceRecords => Set<AttendanceRecord>();
     public DbSet<AttendanceDevice> AttendanceDevices => Set<AttendanceDevice>();
@@ -1174,6 +1336,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<SalaryStructure> SalaryStructures => Set<SalaryStructure>();
     public DbSet<SalaryComponent> SalaryComponents => Set<SalaryComponent>();
     public DbSet<EmployeeSalaryStructure> EmployeeSalaryStructures => Set<EmployeeSalaryStructure>();
+    public DbSet<SalaryChangeRequest> SalaryChangeRequests => Set<SalaryChangeRequest>();
+    public DbSet<LeaveBalanceAdjustmentRequest> LeaveBalanceAdjustmentRequests => Set<LeaveBalanceAdjustmentRequest>();
     public DbSet<PayrollGroup> PayrollGroups => Set<PayrollGroup>();
     public DbSet<PayrollCycle> PayrollCycles => Set<PayrollCycle>();
     public DbSet<PayrollRunEmployee> PayrollRunEmployees => Set<PayrollRunEmployee>();
@@ -1512,6 +1676,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<ReportExecutionLog> ReportExecutionLogs => Set<ReportExecutionLog>();
     // ── Identity & Security ────────────────────────────────────────────────────
     public DbSet<SecuritySetting> SecuritySettings => Set<SecuritySetting>();
+    public DbSet<CompanyPayrollRule> CompanyPayrollRules => Set<CompanyPayrollRule>();
+    public DbSet<PayrollRuleChangeRequest> PayrollRuleChangeRequests => Set<PayrollRuleChangeRequest>();
     // Shared cryptographic key ring for MFA, Qiwa, and notification-provider secrets.
     // Persisting this in PostgreSQL keeps protected values decryptable across restarts,
     // redeploys, and multiple API replicas.
@@ -2066,7 +2232,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Branch codes are business identifiers within a legal entity. Group tenants
             // commonly have an HQ in every company, so tenant-wide uniqueness prevents a
             // valid second company from being configured.
-            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().HasFilter("NOT is_deleted");
             entity.HasIndex(x => new { x.TenantId, x.CompanyId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
         });
@@ -2078,7 +2244,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Addendum B: a department belongs to one company (legal entity). Codes are unique per
             // (tenant, company); NULLS NOT DISTINCT so two unassigned legacy rows cannot share a code.
             // Serves: create/update duplicate-code check and the import resolver's code lookup.
-            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false).HasFilter("NOT is_deleted");
             entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
                 .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.BranchId });
@@ -2091,7 +2257,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("designations");
             entity.HasKey(x => x.Id);
             // Addendum B: per company, code unique per (tenant, company) — see departments.
-            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false).HasFilter("NOT is_deleted");
             entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
                 .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId });
@@ -2123,7 +2289,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("grades");
             entity.HasKey(x => x.Id);
             // Addendum B: per company, code unique per (tenant, company) — see departments.
-            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false).HasFilter("NOT is_deleted");
             entity.HasOne<Company>().WithMany().HasForeignKey(x => new { x.TenantId, x.CompanyId })
                 .HasPrincipalKey(c => new { c.TenantId, c.Id }).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
@@ -2298,7 +2464,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // Addendum B (owner decision 2026-10-23): cost centres are per company like departments, designations
             // and grades — the same code may exist in two companies. NULLS NOT DISTINCT so two unassigned rows
             // still cannot share a code. Serves: create/update duplicate-code check and import code lookups.
-            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false);
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false).HasFilter("NOT is_deleted");
             entity.Property(x => x.NameAr).HasMaxLength(160);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
@@ -2408,6 +2574,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("attendance_devices");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.TenantId, x.SerialNumber }).IsUnique();
+            entity.Property(x => x.BridgeVersion).HasMaxLength(40);
             entity.HasIndex(x => new { x.TenantId, x.Vendor, x.DeviceType, x.IsActive });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
         });
@@ -2433,6 +2600,11 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ConfidenceScore).HasPrecision(5, 2);
             entity.Property(x => x.RawPayloadJson).HasColumnType("json");
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.PunchTimestampUtc, x.PunchDirection, x.DeviceId }).IsUnique();
+            // F2 - device-punch idempotency key; partial so the many rows without one (every non-device source, and rows
+            // that pre-date it) cost nothing and never collide.
+            entity.Property(x => x.DedupKey).HasMaxLength(64);
+            entity.HasIndex(x => new { x.TenantId, x.DeviceId, x.DedupKey }).IsUnique()
+                .HasDatabaseName("ux_attendance_raw_events_device_dedup").HasFilter("dedup_key IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.IsProcessed, x.PunchTimestampUtc });
             entity.HasIndex(x => new { x.TenantId, x.SyncBatchReference });
         });
@@ -2639,6 +2811,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.DaysEarned).HasPrecision(5,2);
             entity.Property(x => x.UsageVersion).IsConcurrencyToken();
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
+            // One credit per employee per worked rest day/holiday. Filtered to that work type: other types (manual or
+            // overtime-converted credits) have always allowed several rows on one date, and must stay that way.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.WorkedDate, x.WorkType })
+                .IsUnique()
+                .HasDatabaseName("ux_comp_off_credits__rest_day_work")
+                .HasFilter("\"work_type\" = 'RestDayWork'");
             entity.HasIndex(x => new { x.TenantId, x.OvertimeCompOffConversionId })
                 .IsUnique()
                 .HasFilter("\"overtime_comp_off_conversion_id\" IS NOT NULL");
@@ -2685,6 +2863,40 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<SalaryStructure>(entity => { entity.ToTable("salary_structures"); entity.HasKey(x => x.Id); entity.Property(x => x.MinGrossSalary).HasPrecision(14,2); entity.Property(x => x.MaxGrossSalary).HasPrecision(14,2); entity.Property(x => x.MinBasicSalary).HasPrecision(14,2); entity.Property(x => x.MaxBasicSalary).HasPrecision(14,2); entity.Property(x => x.EligibleGradeIdsJson).HasColumnType("json"); entity.Property(x => x.EligibleDesignationIdsJson).HasColumnType("json"); entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique(); entity.HasIndex(x => new { x.TenantId, x.CompanyId }); });
         modelBuilder.Entity<SalaryComponent>(entity => { entity.ToTable("salary_components"); entity.HasKey(x => x.Id); entity.Property(x => x.Amount).HasPrecision(14,2); entity.Property(x => x.Percentage).HasPrecision(6,3); entity.HasIndex(x => new { x.TenantId, x.SalaryStructureId, x.Code }); });
         modelBuilder.Entity<EmployeeSalaryStructure>(entity => { entity.ToTable("employee_salary_structures"); entity.HasKey(x => x.Id); entity.Property(x => x.BasicSalary).HasPrecision(14,2); entity.Property(x => x.HousingAllowance).HasPrecision(14,2); entity.Property(x => x.TransportAllowance).HasPrecision(14,2); entity.Property(x => x.FoodAllowance).HasPrecision(14,2); entity.Property(x => x.MobileAllowance).HasPrecision(14,2); entity.Property(x => x.OtherAllowance).HasPrecision(14,2); entity.Property(x => x.FixedDeduction).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IsActive }); });
+        modelBuilder.Entity<SalaryChangeRequest>(entity =>
+        {
+            entity.ToTable("salary_change_requests");
+            entity.HasKey(x => x.Id);
+            foreach (var m in new[] { nameof(SalaryChangeRequest.BasicSalary), nameof(SalaryChangeRequest.HousingAllowance), nameof(SalaryChangeRequest.TransportAllowance),
+                nameof(SalaryChangeRequest.FoodAllowance), nameof(SalaryChangeRequest.MobileAllowance), nameof(SalaryChangeRequest.OtherAllowance), nameof(SalaryChangeRequest.FixedDeduction) })
+                entity.Property(m).HasPrecision(14, 2);
+            entity.Property(x => x.PreviousBasicSalary).HasPrecision(14, 2);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.Source).HasMaxLength(20);
+            entity.Property(x => x.EmployeeCode).HasMaxLength(60);
+            entity.Property(x => x.EmployeeName).HasMaxLength(200);
+            entity.Property(x => x.Currency).HasMaxLength(10);
+            entity.Property(x => x.RequestedByName).HasMaxLength(200);
+            entity.Property(x => x.DecidedByName).HasMaxLength(200);
+            entity.Property(x => x.DecisionNote).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.RequestedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.EffectiveDate });
+            entity.HasIndex(x => new { x.TenantId, x.BatchId });
+        });
+        modelBuilder.Entity<LeaveBalanceAdjustmentRequest>(entity =>
+        {
+            entity.ToTable("leave_balance_adjustment_requests");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Amount).HasPrecision(8, 2);
+            entity.Property(x => x.Status).HasMaxLength(20);
+            entity.Property(x => x.Reason).HasMaxLength(1000);
+            entity.Property(x => x.RequestedByName).HasMaxLength(200);
+            entity.Property(x => x.DecidedByName).HasMaxLength(200);
+            entity.Property(x => x.DecisionNote).HasMaxLength(1000);
+            entity.HasIndex(x => new { x.TenantId, x.Status, x.RequestedAtUtc });
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId });
+        });
         modelBuilder.Entity<PayrollGroup>(entity => { entity.ToTable("payroll_groups"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique(); });
         modelBuilder.Entity<PayrollCycle>(entity => { entity.ToTable("payroll_cycles"); entity.HasKey(x => x.Id); entity.HasIndex(x => new { x.TenantId, x.Year, x.Month }); });
         modelBuilder.Entity<PayrollRunEmployee>(entity => { entity.ToTable("payroll_run_employees"); entity.HasKey(x => x.Id); entity.Property(x => x.GrossEarnings).HasPrecision(14,2); entity.Property(x => x.TotalDeductions).HasPrecision(14,2); entity.Property(x => x.NetPay).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.EmployeeId }).IsUnique(); });
@@ -3360,6 +3572,43 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasOne(x => x.Tenant).WithMany(x => x.Users).HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // Per-company payroll rules (Setup -> Payroll rules). Tenant-owned (RLS shape a). One row per (company, rule);
+        // no row means the platform default. A value below a statutory minimum carries who acknowledged it and when.
+        modelBuilder.Entity<CompanyPayrollRule>(entity =>
+        {
+            entity.ToTable("company_payroll_rules", t =>
+            {
+                t.HasCheckConstraint("ck_company_payroll_rules__ack_pair", "(acknowledged_by IS NULL) = (acknowledged_at_utc IS NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.RuleKey).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.RuleValue).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.AcknowledgementNote).HasMaxLength(500);
+            entity.Property(x => x.EffectiveFrom).HasDefaultValue(DateOnly.MinValue);
+            // One value per rule per start date: a later change adds a dated row, it never rewrites the history.
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.RuleKey, x.EffectiveFrom }).IsUnique()
+                .HasDatabaseName("ux_company_payroll_rules__company_rule_from");
+        });
+
+        modelBuilder.Entity<PayrollRuleChangeRequest>(entity =>
+        {
+            entity.ToTable("payroll_rule_change_requests", t =>
+            {
+                t.HasCheckConstraint("ck_payroll_rule_change_requests__status", "status IN ('Pending','Approved','Rejected')");
+                // Maker-checker, enforced at the database too: nobody decides their own request.
+                t.HasCheckConstraint("ck_payroll_rule_change_requests__decider_not_maker", "decided_by IS NULL OR requested_by IS NULL OR decided_by <> requested_by");
+            });
+            entity.HasKey(x => x.Id);
+            // The pending-to-decided transition is compare-and-swap: concurrent approvers cannot both win and leave
+            // applied rules whose request row was later overwritten by the other decision.
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired().IsConcurrencyToken();
+            entity.Property(x => x.Reason).HasMaxLength(500);
+            entity.Property(x => x.DecisionNote).HasMaxLength(500);
+            entity.Property(x => x.ChangesJson).HasColumnType("text").IsRequired();
+            entity.Property(x => x.WarningCodesJson).HasColumnType("text").IsRequired();
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status }).HasDatabaseName("ix_payroll_rule_change_requests__company_status");
         });
 
         modelBuilder.Entity<SecuritySetting>(entity =>
@@ -4529,6 +4778,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // uniqueness is DB-enforced; the null-default row's single-row invariant is held
             // in-app by the provisioning bundle (insert-if-absent).
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.CountryCode }).IsUnique();
+            // Existing rows are on; Setup's Remove turns a rule off rather than erasing it.
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
         });
 
         modelBuilder.Entity<Location>(entity =>
@@ -4667,6 +4918,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.CompliancePack).HasMaxLength(60);
             entity.Property(x => x.Status).HasMaxLength(20);
             entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.Property(x => x.PreRemovalStatus).HasMaxLength(20);
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Status, x.EffectiveFrom });
         });
 
@@ -5647,6 +5899,30 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         // P4 — click-to-sign acknowledgement (migration OnboardingP4Acknowledgements; trigger SQL in Data/Esign/AckAppendOnlySql.cs).
         Zayra.Api.Data.Esign.OnboardingP4EsignModel.Configure(modelBuilder);
 
+        // Field-level encryption: key table + the *_enc / *_bidx shadow columns (Infrastructure/FieldEncryption).
+        modelBuilder.Entity<FieldEncryptionKey>(entity =>
+        {
+            entity.ToTable("field_encryption_keys", t =>
+            {
+                t.HasCheckConstraint("ck_field_encryption_keys_status", "status IN ('Active','Retired','Revoked')");
+                t.HasCheckConstraint("ck_field_encryption_keys_material",
+                    "(status = 'Revoked' AND wrapped_dek IS NULL AND wrapped_blind_index_root IS NULL) " +
+                    "OR (status <> 'Revoked' AND wrapped_dek IS NOT NULL AND wrapped_blind_index_root IS NOT NULL)");
+                t.HasCheckConstraint("ck_field_encryption_keys_version", "key_version BETWEEN 1 AND 250");
+                t.HasCheckConstraint("ck_field_encryption_keys_revoke_pending", "(revoke_requested_at_utc IS NULL) = (revoke_effective_at_utc IS NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Status).HasMaxLength(16).IsRequired();
+            entity.Property(x => x.RecoveryFingerprint).HasMaxLength(64);
+            entity.Property(x => x.RowVersion).IsConcurrencyToken();
+            entity.Property(x => x.CanaryEnc).HasColumnType("bytea");
+            entity.Property(x => x.RootCheck).HasColumnType("bytea");
+            entity.HasIndex(x => new { x.TenantId, x.KeyVersion }).IsUnique().HasDatabaseName("ux_field_encryption_keys_tenant_version");
+            // At most one live DEK version per tenant: the writer always has exactly one answer to "which key now".
+            entity.HasIndex(x => x.TenantId).IsUnique().HasFilter("status = 'Active'").HasDatabaseName("ux_field_encryption_keys_one_active");
+        });
+        Infrastructure.FieldEncryption.FieldEncryptionModel.Apply(modelBuilder, withChecks: Database.IsNpgsql());
+
         ApplyTenantQueryFilters(modelBuilder);
         ApplyCompanyScopeIndexes(modelBuilder);
     }
@@ -5820,4 +6096,14 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         }
         return builder.ToString();
     }
+}
+
+/// <summary>
+/// The audit chain could not be sealed or inserted after the business changes were written inside the same
+/// transaction. Deliberately NOT a transient exception type: the retrying execution strategy must not
+/// re-run the delegate (the business changes were already accepted by the first phase).
+/// </summary>
+public sealed class AuditSealFailedException : Exception
+{
+    public AuditSealFailedException(string message, Exception inner) : base(message, inner) { }
 }

@@ -32,7 +32,7 @@ namespace Zayra.Api.Controllers;
 [ApiController]
 [Route("api/jobs")]
 [Authorize]
-[HasPermission(BackgroundJobPermissions.AttendanceRead, BackgroundJobPermissions.AuditRead)]
+[HasPermission(BackgroundJobPermissions.AttendanceRead, BackgroundJobPermissions.AuditRead, BackgroundJobPermissions.PayrollRead)]
 public sealed class JobsController : ControllerBase
 {
     private readonly BackgroundJobStore _store;
@@ -56,7 +56,7 @@ public sealed class JobsController : ControllerBase
         if (onlyMine && this.GetUserId() is null) return Forbid();
         var (items, total) = await _store.ListAsync(tenantId, visible, onlyMine ? this.GetUserId() : null,
             status, type, page, pageSize, ct);
-        return Ok(new PagedResult<BackgroundJobDto>(items.Select(BackgroundJobDto.From).ToList(), total,
+        return Ok(new PagedResult<BackgroundJobDto>(items.Select(j => BackgroundJobDto.From(j, _registry.Find(j.JobType))).ToList(), total,
             Math.Max(1, page), Math.Clamp(pageSize, 1, 100)));
     }
 
@@ -64,7 +64,7 @@ public sealed class JobsController : ControllerBase
     public async Task<ActionResult<BackgroundJobDto>> Get(Guid id, CancellationToken ct)
     {
         var job = await FindVisibleAsync(id, ct);
-        return job is null ? NotFound() : Ok(BackgroundJobDto.From(job));
+        return job is null ? NotFound() : Ok(BackgroundJobDto.From(job, _registry.Find(job.JobType)));
     }
 
     /// <summary>
@@ -84,9 +84,9 @@ public sealed class JobsController : ControllerBase
         var current = await _store.GetAsync(job.TenantId, id, ct);
         return outcome switch
         {
-            BackgroundJobCancelOutcome.Cancelled => Ok(BackgroundJobDto.From(current!)),
-            BackgroundJobCancelOutcome.CancelRequested => Accepted(BackgroundJobDto.From(current!)),
-            BackgroundJobCancelOutcome.AlreadyFinished => Conflict(new { message = "The job has already finished.", job = BackgroundJobDto.From(current!) }),
+            BackgroundJobCancelOutcome.Cancelled => Ok(BackgroundJobDto.From(current!, descriptor)),
+            BackgroundJobCancelOutcome.CancelRequested => Accepted(BackgroundJobDto.From(current!, descriptor)),
+            BackgroundJobCancelOutcome.AlreadyFinished => Conflict(new { message = "The job has already finished.", job = BackgroundJobDto.From(current!, descriptor) }),
             _ => NotFound(),
         };
     }
@@ -114,6 +114,9 @@ public static class BackgroundJobPermissions
 {
     public const string AttendanceRead = "attendance.read";
 
+    /// <summary>The payroll run-processing job (<c>payroll.run.process</c>): seen by whoever may read payroll.</summary>
+    public const string PayrollRead = "payroll.read";
+
     /// <summary>
     /// D3 — the data-retention sweep's view key. Reading a retention run means reading who was erased,
     /// what was kept and on what statutory basis, so it is gated on the audit permission rather than on
@@ -122,7 +125,7 @@ public static class BackgroundJobPermissions
     public const string AuditRead = "audit.read";
 
     /// <summary>Everything the controller-level <c>[HasPermission]</c> admits.</summary>
-    public static readonly IReadOnlyList<string> AnyView = [AttendanceRead, AuditRead];
+    public static readonly IReadOnlyList<string> AnyView = [AttendanceRead, AuditRead, PayrollRead];
 }
 
 /// <summary>Public shape of a job. Lease internals and the raw payload are deliberately not exposed.</summary>
@@ -144,11 +147,15 @@ public sealed record BackgroundJobDto(
     DateTime? StartedAtUtc,
     DateTime? CompletedAtUtc)
 {
-    public static BackgroundJobDto From(BackgroundJob j) => new(
+    /// <summary>Shown in place of any error text the job type has not vouched for.</summary>
+    public const string GenericError = "The job did not complete. An administrator can find the details in the server log.";
+
+    public static BackgroundJobDto From(BackgroundJob j, BackgroundJobTypeDescriptor? type) => new(
         j.Id, j.JobType, j.Status, j.ProgressTotal, j.ProgressCompleted,
         j.ProgressTotal is > 0 ? Math.Round(100m * Math.Min(j.ProgressCompleted, j.ProgressTotal.Value) / j.ProgressTotal.Value, 1)
             : j.Status == BackgroundJobStatuses.Succeeded ? 100m : null,
-        j.ProgressMessage, j.AttemptCount, j.MaxAttempts, j.CancelRequestedAtUtc is not null, j.LastError,
+        j.ProgressMessage, j.AttemptCount, j.MaxAttempts, j.CancelRequestedAtUtc is not null,
+        string.IsNullOrEmpty(j.LastError) ? null : type?.ErrorRedactor?.Invoke(j.LastError) ?? GenericError,
         string.IsNullOrWhiteSpace(j.ResultJson) ? null : JsonSerializer.Deserialize<JsonElement>(j.ResultJson),
         j.CreatedByUserId, j.CreatedAtUtc, j.StartedAtUtc, j.CompletedAtUtc);
 }

@@ -59,11 +59,17 @@ public class StepUpService
         var result = await RunLockedAsync(ct => ConfirmLockedAsync(userId, tenantId, route.PasswordHash, passwordOk, totpCode, ct), cancellationToken);
 
         var auditContext = context with { UserId = userId, TenantId = tenantId };
+        // Staged and saved in one call: the counters and the code step were committed by the locked section above, so the audit row is the
+        // only pending change here and cannot be left behind a business save.
+        var staged = true;
         if (result.Outcome == StepUpOutcome.Confirmed)
-            await _audit.WriteAsync("auth.step_up_confirmed", "User", userId.ToString(), auditContext, null, cancellationToken);
+            _audit.Stage("auth.step_up_confirmed", "User", userId.ToString(), auditContext, null, null);
         else if (result.Outcome is StepUpOutcome.WrongPassword or StepUpOutcome.WrongCode or StepUpOutcome.LockedOut)
-            await _audit.WriteAsync("auth.step_up_failed", "User", userId.ToString(), auditContext,
-                System.Text.Json.JsonSerializer.Serialize(new { outcome = result.Outcome.ToString() }), cancellationToken);
+            _audit.Stage("auth.step_up_failed", "User", userId.ToString(), auditContext,
+                System.Text.Json.JsonSerializer.Serialize(new { outcome = result.Outcome.ToString() }), null);
+        else staged = false;
+        if (staged)
+            await _db.SaveChangesAsync(cancellationToken);
         return result;
     }
 

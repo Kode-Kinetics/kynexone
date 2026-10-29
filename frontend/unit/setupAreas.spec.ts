@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { SETUP_MODULE_SECTIONS } from '../src/lib/setupModuleSections';
-import { COMPANY_OWNED_SETTING_IDS, SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, destinationAvailability, resolveSetupArea, type SetupAccessContext, type SetupDestination } from '../src/lib/setupAreas';
+import { COMPANY_OWNED_SETTING_IDS, SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, destinationAvailability, inSetupOrder, resolveSetupArea, type SetupAccessContext, type SetupDestination } from '../src/lib/setupAreas';
 
 const context: SetupAccessContext = {
   hasPermission: () => true,
@@ -17,60 +17,31 @@ const destination = (id: string): SetupDestination => {
   return found!;
 };
 
-test('catalogue_keeps_exactly_twelve_areas_and_all_existing_destinations', () => {
-  expect(SETUP_AREAS.map(area => ({
-    id: area.id,
-    destinations: area.destinations.map(item => [item.id, item.path]),
-  }))).toEqual([
-    { id: 'organization', destinations: [
-      ['companies', '/setup?tab=companies'], ['branches', '/setup?tab=branches'],
-      ['departments', '/setup?tab=departments'], ['designations', '/setup?tab=designations'],
-      ['grades', '/setup?tab=grades'], ['costCenters', '/setup?tab=costCenters'],
-      ['establishment', '/setup?tab=establishment'], ['masterData', '/setup?tab=masterData'],
-      ['people', '/people'], ['contractRenewals', '/contract-renewals'],
-    ] },
-    { id: 'recruitment', destinations: [['recruitment', '/recruitment']] },
-    { id: 'onboarding', destinations: [['onboardingChecklists', '/setup?tab=onboardingChecklists'], ['onboardingChecklistTemplates', '/setup?tab=onboardingChecklistTemplates'], ['hireTemplates', '/setup?tab=hireTemplates']] },
-    { id: 'time', destinations: [
-      ['locations', '/setup?tab=locations'], ['attendance', '/attendance'],
-      ['shiftDefinitions', '/setup?tab=shiftDefinitions'], ['shiftPolicy', '/setup?tab=shiftPolicy'],
-      ['attendanceRules', '/setup?tab=attendanceRules'], ['overtimePolicies', '/setup?tab=overtimePolicies'], ['attendanceDevices', '/setup?tab=attendanceDevices'],
-      ['shifts', '/shifts'], ['overtime', '/overtime'], ['timesheets', '/timesheets'],
-    ] },
-    { id: 'leave', destinations: [
-      ['leaveTypes', '/setup?tab=leaveTypes'], ['leavePolicies', '/setup?tab=leavePolicies'],
-      ['holidayCalendars', '/setup?tab=holidayCalendars'], ['leave', '/leave'],
-    ] },
-    { id: 'compensation', destinations: [
-      ['benefitPlans', '/setup?tab=benefitPlans'], ['gradeBenefits', '/benefits/by-grade'],
-      ['loanTypes', '/setup?tab=loanTypes'], ['loanPolicies', '/setup?tab=loanPolicies'],
-      ['advancePolicy', '/setup?tab=advancePolicy'], ['bonusTypes', '/setup?tab=bonusTypes'],
-      ['merit', '/compensation'], ['benefits', '/benefits'], ['loans', '/loans'],
-    ] },
-    { id: 'payroll', destinations: [
-      ['glMapping', '/setup?tab=glMapping'], ['fiscalYears', '/setup?tab=fiscalYears'],
-      ['payroll', '/payroll'], ['payslipTemplates', '/setup?tab=payslipTemplates'],
-    ] },
-    { id: 'performance', destinations: [
-      ['performanceScorecards', '/setup?tab=performanceScorecards'],
-      ['performance', '/performance'], ['succession', '/performance/succession'],
-    ] },
-    { id: 'learning', destinations: [['learning', '/learning']] },
-    { id: 'services', destinations: [
-      ['hrRequests', '/hr-requests'], ['hrLetters', '/hr-letters'],
-      ['letterTemplates', '/setup?tab=letterTemplates'], ['engagement', '/engagement'],
-      ['engagementPrivacy', '/setup?tab=engagementPrivacy'], ['notificationTemplates', '/setup?tab=notificationTemplates'],
-    ] },
-    { id: 'offboarding', destinations: [['offboarding', '/offboarding']] },
-    { id: 'compliance', destinations: [
-      ['gccSettings', '/setup?tab=gccSettings'], ['statutoryRules', '/setup?tab=statutoryRules'],
-      ['complianceProfiles', '/setup?tab=complianceProfiles'], ['taxPolicies', '/setup?tab=taxPolicies'],
-      ['saudiCompliance', '/setup?tab=saudiCompliance'],
-      ['compliance', '/compliance'], ['saudiComplianceDashboard', '/saudi-compliance'],
-      ['gosiFiling', '/gosi-filing'], ['adminAuditLogs', '/setup?tab=adminAuditLogs'],
-    ] },
-  ]);
-  expect(destinations()).toHaveLength(61);
+const NAV_GROUP_IDS = SETUP_SECTION_GROUPS.filter(group => group.id !== 'getStarted').map(group => group.id);
+
+test('areas_are_the_navigation_groups_and_hold_exactly_the_sections_the_navigation_shows_there', () => {
+  // One taxonomy: All setup areas is derived from the navigation groups, so a section has one home.
+  expect(SETUP_AREAS.map(area => area.id)).toEqual(NAV_GROUP_IDS);
+  const sections = [...SETUP_SETTING_SECTIONS, ...SETUP_MODULE_SECTIONS];
+  for (const area of SETUP_AREAS) {
+    const embedded = area.destinations.filter(item => item.path.startsWith('/setup?tab=')).map(item => item.id);
+    const expected = inSetupOrder(sections.filter(section => section.group === area.id)).map(section => section.id);
+    expect(embedded, area.id).toEqual(expected);
+  }
+  // Every navigation section (except the Get started tools) appears exactly once, in the area of its group.
+  const placed = destinations().filter(item => item.path.startsWith('/setup?tab='));
+  expect(new Set(placed.map(item => item.id)).size).toBe(placed.length);
+  expect(placed.map(item => item.id).sort()).toEqual(sections.filter(section => section.group !== 'getStarted').map(section => section.id).sort());
+  // The placements the old 12-area list got wrong now follow the navigation.
+  expect(destination('locations').areaId).toBe('companyStructure');
+  expect(destination('departments').areaId).toBe('companyStructure');
+  expect(destination('notificationTemplates').areaId).toBe('talentServices');
+  expect(destination('adminAuditLogs').areaId).toBe('workspace');
+  expect(destination('accessLog').areaId).toBe('accessSecurity');
+  expect(destination('gccSettings').areaId).toBe('payrollCompliance');
+  // The hire presets and onboarding checklists sit with the other talent services (one taxonomy, no separate onboarding area).
+  for (const id of ['onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates']) expect(destination(id).areaId, id).toBe('talentServices');
+  expect(destinations().some(item => item.id === 'countryPayrollKeys')).toBe(false);
 });
 
 test('every_destination_has_stable_group_and_order', () => {
@@ -103,99 +74,25 @@ test('every_destination_has_stable_group_and_order', () => {
       );
     }
   }
-  expect(SETUP_AREAS.map(area => {
-    const groups = new Map<string, { label: string; order: number; destinations: { id: string; order: number }[] }>();
-    for (const item of area.destinations) {
-      const group = groups.get(item.businessGroup.id) ?? {
-        label: item.businessGroup.label,
-        order: item.groupOrder,
-        destinations: [],
-      };
-      group.destinations.push({ id: item.id, order: item.destinationOrder });
-      groups.set(item.businessGroup.id, group);
-    }
-    return {
-      areaId: area.id,
-      groups: [...groups].map(([id, group]) => ({
-        id,
-        label: group.label,
-        order: group.order,
-        destinations: group.destinations.sort((a, b) => a.order - b.order).map(item => item.id),
-      })).sort((a, b) => a.order - b.order),
-    };
-  })).toEqual([
-    { areaId: 'organization', groups: [
-      { id: 'legal-entities-structure', label: 'Legal entities and structure', order: 0, destinations: ['companies', 'branches', 'departments', 'designations', 'grades'] },
-      { id: 'financial-structure', label: 'Financial structure', order: 1, destinations: ['costCenters', 'establishment'] },
-      { id: 'employee-data-definitions', label: 'Employee data definitions', order: 2, destinations: ['masterData'] },
-      { id: 'related-operations', label: 'Related operations', order: 3, destinations: ['people', 'contractRenewals'] },
-    ] },
-    { areaId: 'recruitment', groups: [
-      { id: 'recruitment-operations', label: 'Recruitment operations', order: 0, destinations: ['recruitment'] },
-    ] },
-    { areaId: 'onboarding', groups: [
-      { id: 'templates-tasks', label: 'Templates and tasks', order: 0, destinations: ['onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates'] },
-    ] },
-    { areaId: 'time', groups: [
-      { id: 'work-configuration', label: 'Work configuration', order: 0, destinations: ['locations', 'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'overtimePolicies', 'attendanceDevices'] },
-      { id: 'related-operations', label: 'Related operations', order: 1, destinations: ['attendance', 'overtime', 'timesheets', 'shifts'] },
-    ] },
-    { areaId: 'leave', groups: [
-      { id: 'policy-definitions', label: 'Policy definitions', order: 0, destinations: ['leaveTypes', 'leavePolicies', 'holidayCalendars'] },
-      { id: 'related-workspace', label: 'Related workspace', order: 1, destinations: ['leave'] },
-    ] },
-    { areaId: 'compensation', groups: [
-      { id: 'plans-entitlements', label: 'Plans and entitlements', order: 0, destinations: ['benefitPlans', 'gradeBenefits', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'merit'] },
-      { id: 'related-operations', label: 'Related operations', order: 1, destinations: ['benefits', 'loans'] },
-    ] },
-    { areaId: 'payroll', groups: [
-      { id: 'posting-calendars', label: 'Posting and calendars', order: 0, destinations: ['glMapping', 'fiscalYears'] },
-      { id: 'payroll-configuration', label: 'Payroll configuration', order: 1, destinations: ['payroll', 'payslipTemplates'] },
-    ] },
-    { areaId: 'performance', groups: [
-      { id: 'cycles-templates', label: 'Cycles and templates', order: 0, destinations: ['performanceScorecards'] },
-      { id: 'related-operations', label: 'Related operations', order: 1, destinations: ['succession', 'performance'] },
-    ] },
-    { areaId: 'learning', groups: [
-      { id: 'catalogue-rules', label: 'Catalogue and rules', order: 0, destinations: ['learning'] },
-    ] },
-    { areaId: 'services', groups: [
-      { id: 'templates-communication', label: 'Templates and communication', order: 0, destinations: ['letterTemplates', 'engagement', 'engagementPrivacy', 'notificationTemplates'] },
-      { id: 'related-operations', label: 'Related operations', order: 1, destinations: ['hrRequests', 'hrLetters'] },
-    ] },
-    { areaId: 'offboarding', groups: [
-      { id: 'exit-operations', label: 'Exit operations', order: 0, destinations: ['offboarding'] },
-    ] },
-    { areaId: 'compliance', groups: [
-      { id: 'rules-profiles', label: 'Rules and profiles', order: 0, destinations: ['gccSettings', 'statutoryRules', 'complianceProfiles', 'taxPolicies', 'saudiCompliance'] },
-      { id: 'filings-evidence', label: 'Filings and evidence', order: 1, destinations: ['compliance', 'saudiComplianceDashboard', 'gosiFiling', 'adminAuditLogs'] },
-    ] },
-  ]);
 });
 
 test('setup_owned_destinations_carry_the_section_label_and_route_labels_are_unchanged', () => {
   // Wave 1 (2026-10-22): a Setup-owned destination is named exactly as its section is in the navigation and its
   // section header, so the same screen never has two names. Route destinations keep their own labels.
   const expectedLabels: Record<string, string> = {
-    companies: 'Companies', branches: 'Branches', departments: 'Departments', designations: 'Designations', grades: 'Grades',
-    costCenters: 'Cost centres', establishment: 'Headcount & budget', masterData: 'Drop-down lists', people: 'Employee records and contracts',
-    contractRenewals: 'Contract renewals', recruitment: 'Recruitment and workforce planning', onboardingChecklists: 'Onboarding checklists', onboardingChecklistTemplates: 'Onboarding checklist templates', hireTemplates: 'Hire templates',
-    locations: 'Locations', attendance: 'Attendance operations', shiftDefinitions: 'Shifts', shiftPolicy: 'Shift policy', attendanceRules: 'Attendance rules',
-    overtimePolicies: 'Overtime policies', attendanceDevices: 'Attendance devices', shifts: 'Shift rosters',
-    overtime: 'Overtime requests', timesheets: 'Project timesheets', leaveTypes: 'Leave types', leavePolicies: 'Leave policies',
-    holidayCalendars: 'Holiday calendars', leave: 'Leave requests and balances', benefitPlans: 'Benefit plans',
-    gradeBenefits: 'Benefits by grade', loanTypes: 'Loan types', loanPolicies: 'Loan policies', advancePolicy: 'Salary advance policy',
-    bonusTypes: 'Bonus types', merit: 'Merit planning and benchmarks', benefits: 'Benefit enrolments', loans: 'Loans and advances',
-    glMapping: 'Payroll accounting', fiscalYears: 'Fiscal years', payroll: 'Payroll and salary structures',
-    payslipTemplates: 'Payslip templates', performanceScorecards: 'Review scorecards', performance: 'Performance cycles',
-    succession: 'Succession and development',
-    learning: 'Learning catalogue and rules', hrRequests: 'Request center', hrLetters: 'HR letters', letterTemplates: 'Letter templates',
-    engagement: 'Engagement survey templates', engagementPrivacy: 'Survey privacy', notificationTemplates: 'Notifications',
-    offboarding: 'Offboarding and settlement', gccSettings: 'Country rules', statutoryRules: 'Statutory rules',
-    complianceProfiles: 'Compliance profiles', taxPolicies: 'Tax policies', saudiCompliance: 'Saudi compliance',
-    compliance: 'Documents and renewals', saudiComplianceDashboard: 'Saudization and Qiwa status', gosiFiling: 'GOSI filing', adminAuditLogs: 'Audit log',
+    people: 'Employee records and contracts', contractRenewals: 'Contract renewals', recruitment: 'Recruitment and workforce planning',
+    attendance: 'Attendance operations', shifts: 'Shift rosters', overtime: 'Overtime requests', timesheets: 'Project timesheets',
+    leave: 'Leave requests and balances', gradeBenefits: 'Benefits by grade', merit: 'Merit planning and benchmarks',
+    payroll: 'Payroll and salary structures', benefits: 'Benefit enrolments', loans: 'Loans and advances',
+    learning: 'Learning catalogue and rules', engagement: 'Engagement survey templates', performance: 'Performance cycles',
+    succession: 'Succession and development', hrRequests: 'Request center', hrLetters: 'HR letters', offboarding: 'Offboarding and settlement',
+    compliance: 'Documents and renewals', saudiComplianceDashboard: 'Saudization and Qiwa status', gosiFiling: 'GOSI filing',
   };
-  expect(Object.fromEntries(destinations().map(item => [item.id, item.label]))).toEqual(expectedLabels);
+  const sectionIds = new Set([...SETUP_SETTING_SECTIONS, ...SETUP_MODULE_SECTIONS].map(section => section.id as string));
+  expect(Object.fromEntries(destinations().filter(item => !sectionIds.has(item.id)).map(item => [item.id, item.label]))).toEqual(expectedLabels);
+  expect(destination('gccSettings').label).toBe('Country rules');
+  expect(destination('notificationTemplates').label).toBe('Notifications');
+  expect(destination('adminAuditLogs').label).toBe('Audit log');
 });
 
 test('every_navigation_label_matches_its_studio_destination_label', () => {
@@ -245,15 +142,11 @@ test('operations_remain_external_routes', () => {
   ];
   expect(destinations().filter(item => item.kind === 'operations' && item.presentation === 'route').map(item => item.id)).toEqual(externalOperationIds);
   for (const id of externalOperationIds) expect(destination(id).presentation).toBe('route');
-  // Preserve the existing Setup-owned audit-log surface rather than reclassifying it as a route.
+  // The audit log is a Setup section (Workspace), not a route.
   expect(destination('adminAuditLogs').presentation).toBe('embedded');
 });
 
-test('catalogue_has_twelve_unique_areas', () => {
-  expect(SETUP_AREAS.map(area => area.id)).toEqual([
-    'organization', 'recruitment', 'onboarding', 'time', 'leave', 'compensation',
-    'payroll', 'performance', 'learning', 'services', 'offboarding', 'compliance',
-  ]);
+test('catalogue_has_unique_destinations_and_known_paths', () => {
   expect(new Set(destinations().map(item => item.id)).size).toBe(destinations().length);
   const allowedPaths = new Set([
     '/setup', '/people', '/contract-renewals', '/recruitment', '/recruitment/onboarding',
@@ -279,7 +172,9 @@ test('unknown_area_resolves_to_overview', () => {
   for (const input of [null, '', 'unknown', '/leave', '//example.com', 'https://example.com', 'Organization']) {
     expect(resolveSetupArea(input)).toBe('overview');
   }
-  expect(resolveSetupArea('leave')).toBe('leave');
+  // A saved link naming a former area lands on the navigation group that now holds it.
+  expect(resolveSetupArea('leave')).toBe('timeLeave');
+  expect(resolveSetupArea('timeLeave')).toBe('timeLeave');
   expect(resolveSetupArea('overview')).toBe('overview');
 });
 
@@ -326,10 +221,10 @@ test('establishment_writer_can_open_existing_setup_tabs', () => {
 
 test('establishment_writer_still_obeys_company_scoped_setup_allowlist', () => {
   const writer = { ...context, isCompanyScopedGroup: true, hasPermission: (key: string) => key === 'organization.establishment.write' };
-  for (const id of ['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']) {
+  for (const id of ['companies', 'branches', 'departments', 'designations', 'grades', 'costCenters', 'glMapping', 'adminAuditLogs']) {
     expect(destinationAvailability(destination(id), writer), id).toBe('available');
   }
-  for (const id of ['establishment', 'departments', 'grades', 'statutoryRules']) {
+  for (const id of ['establishment', 'locations', 'statutoryRules']) {
     expect(destinationAvailability(destination(id), writer), id).toBe('restricted');
   }
 });
@@ -376,10 +271,11 @@ test('shift_definitions_and_policy_are_setup_sections_and_rosters_stay_in_shifts
 
 test('company_scoped_group_preserves_existing_setup_restrictions', () => {
   const companyContext = { ...context, isCompanyScopedGroup: true };
-  for (const id of ['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']) {
+  // Departments, designations and grades are per company (2026-10-23), so a company super admin manages their own.
+  for (const id of ['companies', 'branches', 'departments', 'designations', 'grades', 'costCenters', 'glMapping', 'adminAuditLogs']) {
     expect(destinationAvailability(destination(id), companyContext), id).toBe('available');
   }
-  for (const id of ['departments', 'grades', 'locations', 'establishment', 'statutoryRules']) {
+  for (const id of ['locations', 'establishment', 'statutoryRules']) {
     expect(destinationAvailability(destination(id), companyContext), id).toBe('restricted');
   }
   // Modules' configuration keeps its module page's rule, which never narrowed by company scope.

@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Zayra.Api.Infrastructure.Approvals;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Performance;
@@ -135,6 +136,8 @@ public class RecommendationsController : ControllerBase
         var rec = await _scopeService.FindInScopeAsync(User, tenantId,
             _db.IncrementRecommendations.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (rec is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, rec.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("This recommendation is about you, so you cannot decide it. Ask another HR administrator."));
         var decisionError = ValidateDecision(rec.Status, rec.RecommendedByUserId, userId, req.Decision);
         if (decisionError is not null) return decisionError;
 
@@ -203,6 +206,8 @@ public class RecommendationsController : ControllerBase
         var rec = await _scopeService.FindInScopeAsync(User, tenantId,
             _db.PromotionRecommendations.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (rec is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, rec.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("This recommendation is about you, so you cannot decide it. Ask another HR administrator."));
         var decisionError = ValidateDecision(rec.Status, rec.RecommendedByUserId, userId, req.Decision);
         if (decisionError is not null) return decisionError;
         rec.Status = req.Decision == "Approved" ? "PendingImplementation" : "Rejected";
@@ -263,6 +268,8 @@ public class RecommendationsController : ControllerBase
         var rec = await _scopeService.FindInScopeAsync(User, tenantId,
             _db.BonusRecommendations.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (rec is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, rec.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("This recommendation is about you, so you cannot decide it. Ask another HR administrator."));
         var decisionError = ValidateDecision(rec.Status, rec.RecommendedByUserId, userId, req.Decision);
         if (decisionError is not null) return decisionError;
         rec.Status = req.Decision == "Approved" ? "PendingImplementation" : "Rejected";
@@ -282,6 +289,8 @@ public class RecommendationsController : ControllerBase
             return (null, null, BadRequest(new { error = "employee_not_found", message = "Employee was not found in this tenant." }));
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return (null, null, Forbid());
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, this.GetUserId(), employee.Id, ct))
+            return (null, null, BadRequest(SubjectDecisionBar.Refusal("You cannot make a pay or promotion recommendation about yourself.")));
         var review = await _db.AppraisalReviews.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == reviewId && r.TenantId == tenantId && r.EmployeeId == employee.Id, ct);
         if (review is null)

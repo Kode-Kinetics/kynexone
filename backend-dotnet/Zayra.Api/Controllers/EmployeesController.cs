@@ -27,6 +27,7 @@ using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Localization;
@@ -322,7 +323,7 @@ public class EmployeesController : ControllerBase
                 exportType = "employees_csv",
                 includesSensitive,
             }), ct);
-        return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(csv, $"employees_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     /// <summary>
@@ -506,7 +507,7 @@ public class EmployeesController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [HasPermission("employees.bulk_import")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(EmployeeCsvHeaders, EmployeeCsvExampleRow)), "text/csv", "employees_import_template.csv");
+        CsvDownload.Result(Csv.Template(EmployeeCsvHeaders, EmployeeCsvExampleRow), "employees_import_template.csv");
 
     /// <summary>
     /// The Employee Field RESOLVER (§3.1/§3.3) — the ONE backend source of truth for the create/edit modal
@@ -675,6 +676,12 @@ public class EmployeesController : ControllerBase
         // shift every later value into the wrong column. Every such row is named; nothing is read from the file.
         if (ParseImportRows(req.CsvContent, out var rows) is IActionResult shapeRejection) return shapeRejection;
         if (TooManyRows(rows.Count) is IActionResult tooMany) return tooMany;
+        // A file that carries salaries stages each new hire's first package for Finance. With nobody else able to approve it the
+        // queue could never drain, so the importer is told BEFORE anything is read or written (the preview says it too).
+        if (rows.Any(r => !string.IsNullOrWhiteSpace(r.GetValueOrDefault("BasicSalary", string.Empty)))
+            && await Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.RefuseIfNoneAsync(_db, tenantId, "payroll.approve", GetUserId(), null, null,
+                "importing employees with salaries", "استيراد موظفين برواتبهم", ct) is { } noApprover)
+            return noApprover;
         // A cost-centre cell is a re-point of where the person's pay posts (contract 2.9, S-027): the cost-centre permission, not just bulk import.
         // Checked for the preview and the commit alike, before anything is read or written. (An import only ever creates people or fills gaps on an
         // existing one, so there is no run to guard and no existing attribution to clear.)
@@ -1032,6 +1039,7 @@ public class EmployeesController : ControllerBase
                 {
                     EmployeePayrollProfile p => batchCodes.Values.FirstOrDefault(x => x.Id == p.EmployeeId),
                     EmployeeSalaryStructure s => batchCodes.Values.FirstOrDefault(x => x.Id == s.EmployeeId),
+                    SalaryChangeRequest c => batchCodes.Values.FirstOrDefault(x => x.Id == c.EmployeeId),
                     ReportingLine l => batchCodes.Values.FirstOrDefault(x => x.Id == l.EmployeeId),
                     EmployeeImportGap g => batchCodes.Values.FirstOrDefault(x => x.Id == g.EmployeeId),
                     _ => null,
@@ -1307,6 +1315,15 @@ public class EmployeesController : ControllerBase
 
                 // SHARED with ImportPreview: the same builder records the same data:unparsed* gaps in both.
                 var employee = BuildImportedEmployee(tenantId, row, resolved, name, finalCode, workEmail, rowStatus, jd, resolved.Gaps, importReferenceLists);
+                // The company's own probation maximum (Setup > Payroll rules): a longer probation is kept and flagged per row.
+                if (employee.CompanyId is { } probationCompany
+                    && Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationDatesOverLimit(
+                        await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(_db, tenantId, probationCompany, ct),
+                        employee.ProbationStartDate ?? DateOnly.FromDateTime(employee.JoiningDate), employee.ProbationEndDate) is { } probationWarning)
+                {
+                    RowWarn(rowNum, probationWarning);
+                    resolved.Gaps.Add(new ImportGap("data:probation_over_limit", "data", probationWarning, employee.ProbationEndDate?.ToString("yyyy-MM-dd")));
+                }
                 employee.ReadinessState = rowReadiness.State;
                 employee.ActivationBlockersCount = rowReadiness.Blocking.Count;
                 employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
@@ -1447,6 +1464,7 @@ public class EmployeesController : ControllerBase
             int payrollProfilesCreated = 0, payrollProfilesRepaired = 0, hierarchyLinksRecovered = 0;
             var payrollArtifactsChanged = false;
             var stagedPayrollEntities = new List<object>();
+            var firstPackageBatchId = Guid.NewGuid();
             // EF queries cannot see Added entities until SaveChanges: reuse each structure staged in this import so
             // a 250-row file does not stage 250 identical (TenantId, CompanyId, Code) rows. Company is part of the
             // key, so one company's structure is never shared with another's employees.
@@ -1595,19 +1613,23 @@ public class EmployeesController : ControllerBase
                 var grade = emp.GradeId is not null ? lookups.GradeById.GetValueOrDefault(emp.GradeId.Value) : null;
                 var structure = await ResolveImportSalaryStructureAsync(tenantId, emp.CompanyId, grade, structureCodeRaw, currency, importStructures, ct,
                     DateOnly.FromDateTime(emp.JoiningDate), warnings);
-                var assignment = new EmployeeSalaryStructure
+                // A NEW employee's first package is STAGED, not written: an importer is one person, and a package only they have seen
+                // must not reach payroll. Finance approves the file (one batch) afterwards; until then the employee has no salary row
+                // and cannot be activated. Changing an existing salary goes through the same SalaryChangeRequest queue.
+                var firstPackage = new SalaryChangeRequest
                 {
-                    TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = structure.Id,
+                    TenantId = tenantId, CompanyId = emp.CompanyId, BatchId = firstPackageBatchId, Source = SalaryChangeSources.EmployeeImport,
+                    EmployeeId = emp.Id, EmployeeCode = emp.EmployeeCode, EmployeeName = emp.FullName, SalaryStructureId = structure.Id,
                     BasicSalary = salary.BasicSalary, HousingAllowance = salary.Housing, TransportAllowance = salary.Transport,
-                    FoodAllowance = salary.Food, MobileAllowance = salary.Mobile, OtherAllowance = salary.Other,
-                    FixedDeduction = salary.FixedDeduction, Currency = currency,
+                    FoodAllowance = salary.Food, MobileAllowance = salary.Mobile, OtherAllowance = salary.Other, FixedDeduction = salary.FixedDeduction,
+                    Currency = currency,
                     // Known joining date only — SalaryStructureGap above refuses a structure without one.
-                    EffectiveDate = DateOnly.FromDateTime(emp.JoiningDate), IsActive = true, CreatedBy = GetUserId()
+                    EffectiveDate = DateOnly.FromDateTime(emp.JoiningDate),
+                    RequestedByUserId = GetUserId(), RequestedByName = User.FindFirstValue(ClaimTypes.Name) ?? User.FindFirstValue("name") ?? "import",
                 };
-                _db.EmployeeSalaryStructures.Add(assignment);
-                stagedPayrollEntities.Add(assignment);
+                _db.SalaryChangeRequests.Add(firstPackage);
+                stagedPayrollEntities.Add(firstPackage);
                 payrollArtifactsChanged = true;
-                if (emp.Salary is null or 0m) emp.Salary = salary.Gross;
                 if (string.IsNullOrWhiteSpace(emp.PayrollProfileCode) && !string.IsNullOrWhiteSpace(payrollGroupRaw)) emp.PayrollProfileCode = payrollGroupRaw;
             }
             if (RejectUnstorable(stagedPayrollEntities, "payroll") is { } unstorablePayroll) return unstorablePayroll;
@@ -2965,6 +2987,8 @@ public class EmployeesController : ControllerBase
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        // Probation longer than the company's own maximum: advisory 409, repeated with acknowledgeProbationOverLimit to keep it.
+        catch (ProbationOverLimitException ex) { return ProbationConflict(ex.Message, ex.Days, ex.MaxDays); }
         catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
         // HOME JURISDICTION: the employing company has no country, so nothing can be required and nothing
@@ -2996,9 +3020,13 @@ public class EmployeesController : ControllerBase
         catch (WorkEmailFormatException) { return UnprocessableEntity(new { error = WorkEmailFormatException.Code, code = WorkEmailFormatException.Code, message = WorkEmailFormatException.Text }); }
         catch (WorkEmailPlusAddressException) { return UnprocessableEntity(new { error = WorkEmailPlusAddressException.Code, code = WorkEmailPlusAddressException.Code, message = WorkEmailPlusAddressException.Text }); }
         catch (WorkEmailInvalidCharactersException) { return UnprocessableEntity(new { error = WorkEmailInvalidCharactersException.Code, code = WorkEmailInvalidCharactersException.Code, message = WorkEmailInvalidCharactersException.Text }); }
+        catch (Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.NoEligibleApproverException ex) { return UnprocessableEntity(ex.Body); }
         catch (SalaryStructureRefusedException ex) { return SalaryStructureRefused(ex); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    private ConflictObjectResult ProbationConflict(string message, int days, int maxDays) =>
+        Conflict(new { error = "probation_over_limit", code = "ERR_PROBATION_OVER_LIMIT", message, days, maxDays, acknowledgeField = "acknowledgeProbationOverLimit" });
 
     /// <summary>422 for a refused work email: <c>work_email_wrong_domain</c> ("Work email must end in @{domain}.") or
     /// <c>work_email_plus_address</c>, with the address on the company domain the modal may offer instead.</summary>
@@ -3543,7 +3571,7 @@ public class EmployeesController : ControllerBase
 
     [HttpPost("drafts/{draftId:guid}/submit")]
     [HasPermission("employees.write")]
-    public async Task<IActionResult> SubmitDraft(Guid draftId, CancellationToken cancellationToken)
+    public async Task<IActionResult> SubmitDraft(Guid draftId, CancellationToken cancellationToken, [FromQuery] bool acknowledgeProbationOverLimit = false)
     {
         // Submission only ever moves an open draft forward. It used to write PendingHrApproval
         // unconditionally, so an Activated draft could be reopened and approved into a second
@@ -3555,6 +3583,18 @@ public class EmployeesController : ControllerBase
         if (status is null) return NotFound();
         if (status == EmployeeDraftStatuses.PendingHrApproval) return NoContent();
         if (!EmployeeDraftStatuses.IsOpen(status)) return await DraftClosedConflictAsync(tenantId, draftId, status, cancellationToken);
+
+        // Probation vs the employing company's own maximum. The company is the one the draft's placement resolves to;
+        // a draft with no resolvable company is checked when it is approved into one.
+        var probationDraft = await VisibleDrafts(tenantId).AsNoTracking().SingleOrDefaultAsync(x => x.Id == draftId, cancellationToken);
+        ProbationFinding? probation = null;
+        if (probationDraft is not null)
+        {
+            var placement = await ResolveDraftPlacementAsync(tenantId, probationDraft, new List<EmployeeDraftActivationProblem>(), cancellationToken);
+            probation = await ProbationRuleGate.CheckAsync(_db, tenantId, placement.CompanyId,
+                DateOnly.FromDateTime(probationDraft.JoiningDate ?? DateTime.UtcNow.Date), probationDraft.ProbationEndDate, cancellationToken);
+            if (probation is not null && !acknowledgeProbationOverLimit) return ProbationConflict(probation.Message, probation.Days, probation.MaxDays);
+        }
 
         var submittedAtUtc = DateTime.UtcNow;
         var moved = await TransitionDraftAsync(tenantId, draftId, EmployeeDraftStatuses.Submittable,
@@ -3578,6 +3618,8 @@ public class EmployeesController : ControllerBase
                 : await DraftClosedConflictAsync(tenantId, draftId, now, cancellationToken);
         }
 
+        if (probation is not null)
+            await Audit("employee.probation_over_limit_acknowledged", "EmployeeDraft", draftId.ToString(), cancellationToken);
         // The HR approval queue (a draft carries no company yet, so group-scope HR Managers).
         await NotifyBestEffortAsync([.. await NotificationAudience.QueueHoldersAsync(_db, tenantId, null, null, cancellationToken)],
             "Employee draft submitted", "A draft is waiting for HR approval.", draftId, cancellationToken);
@@ -4011,6 +4053,12 @@ public class EmployeesController : ControllerBase
         }
         catch (SalaryStructureRefusedException ex) { return SalaryStructureRefused(ex, " No change was applied."); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
+        // A package change is applied only on the word of a payroll.approve holder who is neither the maker nor this employee (the Approvals
+        // decision enforces it): with nobody else able to give it, the request could never be decided, so it is refused now.
+        if (request.Changes.ContainsKey(EmployeeSalaryBreakdownChanges.Key)
+            && await Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.RefuseIfNoneAsync(_db, tenantId, "payroll.approve", GetUserId(), [employee.Id], employee.CompanyId,
+                "proposing a salary change", "اقتراح تغيير الراتب", cancellationToken) is { } noSalaryApprover)
+            return noSalaryApprover;
         // F02 — refused up front, not at approval: ReadDateOnly turns an unparseable value into NULL, so a
         // bad string would be approved as "a date" and then silently clear the person's GOSI cohort.
         if (request.Changes.TryGetValue("gosiFirstRegisteredOn", out var gosiFirstRegisteredOn)
@@ -4608,7 +4656,7 @@ public class EmployeesController : ControllerBase
                 companyIds = entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds,
                 includesSensitive,
             }), cancellationToken);
-            return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"employees_selected_{DateTime.UtcNow:yyyyMMdd}.csv");
+            return CsvDownload.Result(csv, $"employees_selected_{DateTime.UtcNow:yyyyMMdd}.csv");
         }
 
         int succeeded = 0, failed = 0;

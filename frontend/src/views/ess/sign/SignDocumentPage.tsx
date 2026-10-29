@@ -76,7 +76,7 @@ export function SignDocumentPage({ documentId }: { documentId: string }) {
         <EssCard title={consent?.title ?? t('Document')}>
           <div className="space-y-3 text-sm">
             <p className="flex items-center gap-2 font-semibold text-emerald-700 dark:text-emerald-300" role="status"><CheckCircle2 className="h-5 w-5" aria-hidden="true" />{t('Acknowledged')}</p>
-            <p>{t('Verification code')}: <bdi dir="ltr" data-testid="verification-code" className="font-mono font-bold">{receipt.verificationCode}</bdi></p>
+            <p>{t('Verification code')}: <bdi dir="ltr" data-testid="verification-code" className="font-mono font-semibold">{receipt.verificationCode}</bdi></p>
             <NotQualifiedBadge />
             <div className="flex flex-wrap gap-2">
               <button type="button" className={essPrimaryButton}

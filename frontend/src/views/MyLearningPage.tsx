@@ -51,7 +51,7 @@ function MyLearningBody() {
   return (
     <div className="space-y-5" data-testid="my-learning">
       <header>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('My learning')}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('My learning')}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('The training assigned to you, what to do next, and the certificates you have earned.')}</p>
       </header>
 
@@ -67,7 +67,7 @@ function MyLearningBody() {
           </p>
 
           <section aria-labelledby="learning-todo" className="space-y-3">
-            <h2 id="learning-todo" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('To do')}</h2>
+            <h2 id="learning-todo" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('To do')}</h2>
             {open.length === 0
               ? <EmptyBlock title={t('Nothing to do right now')} body={t('When HR assigns you training it appears here, with its due date.')} />
               : open.map((a) => <AssignmentCard key={a.id} assignment={a} today={today} name={name} />)}
@@ -75,13 +75,13 @@ function MyLearningBody() {
 
           {finished.length > 0 && (
             <section aria-labelledby="learning-done" className="space-y-3">
-              <h2 id="learning-done" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Completed paths')}</h2>
+              <h2 id="learning-done" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Completed paths')}</h2>
               {finished.map((a) => <AssignmentCard key={a.id} assignment={a} today={today} name={name} />)}
             </section>
           )}
 
           <section aria-labelledby="learning-certs" className="wg-card space-y-3 rounded-2xl p-4">
-            <h2 id="learning-certs" className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
+            <h2 id="learning-certs" className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
               <Award className="h-4 w-4 text-amber-500" aria-hidden="true" />{t('My certificates')}
             </h2>
             {data.credentials.length === 0 ? (
@@ -109,7 +109,7 @@ function MyLearningBody() {
           </section>
 
           <section aria-labelledby="learning-transcript" className="wg-card space-y-3 rounded-2xl p-4">
-            <h2 id="learning-transcript" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Transcript')}</h2>
+            <h2 id="learning-transcript" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Transcript')}</h2>
             {data.transcript.length === 0 ? (
               <p className="text-xs text-slate-500 dark:text-slate-400">{t('Every course you complete is recorded here, with how it was completed.')}</p>
             ) : (
@@ -161,7 +161,7 @@ function AssignmentCard({ assignment: a, today, name }: { assignment: Assignment
     <article className="wg-card rounded-2xl p-4" data-testid="learning-assignment" aria-label={name(a.pathName, a.pathNameAr)}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
             <GraduationCap className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" aria-hidden="true" />
             {name(a.pathName, a.pathNameAr)}
           </h3>
@@ -183,7 +183,7 @@ function AssignmentCard({ assignment: a, today, name }: { assignment: Assignment
       </div>
       <div className="mt-3">
         <ProgressBar percent={a.progressPercent} label={t('{done} of {total} required courses completed', { done: a.requiredCompleted, total: a.requiredCount })} />
-        <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{t('{done} of {total} required courses completed', { done: a.requiredCompleted, total: a.requiredCount })}</p>
+        <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">{t('{done} of {total} required courses completed', { done: a.requiredCompleted, total: a.requiredCount })}</p>
       </div>
       <ol className="mt-3 divide-y divide-slate-100 dark:divide-white/5">
         {a.items.map((item) => (
@@ -191,9 +191,9 @@ function AssignmentCard({ assignment: a, today, name }: { assignment: Assignment
             <div className="min-w-0">
               <p className="text-sm font-medium text-slate-800 dark:text-slate-100">
                 {name(item.title, item.titleAr)}
-                {!item.isRequired && <span className="ms-2 text-[11px] font-normal text-slate-500">{t('Optional')}</span>}
+                {!item.isRequired && <span className="ms-2 text-caption font-normal text-slate-500">{t('Optional')}</span>}
               </p>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              <p className="text-caption text-slate-500 dark:text-slate-400">
                 {t(contentKindLabel[item.contentKind])}
                 {item.estimatedMinutes ? ` · ${t('About {count, plural, one {# minute} other {# minutes}}', { count: item.estimatedMinutes })}` : ''}
                 {item.isBlocked && item.blockedByTitle ? ` · ${t('After {course}', { course: name(item.blockedByTitle, item.blockedByTitleAr) })}` : ''}

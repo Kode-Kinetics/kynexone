@@ -34,7 +34,7 @@ const ar: Record<string, string> = {
   'Remove task {n}': 'حذف المهمة {n}',
   'Remove this checklist?': 'هل تريد إزالة هذه القائمة؟',
   'Hires who already have its tasks keep them. If any hire used it, it is turned off instead of deleted, and you can restore it.': 'يحتفظ الموظفون الذين لديهم مهامها بها. إذا استخدمها أي موظف يتم إيقافها بدل حذفها ويمكنك استعادتها.',
-  'Removed': 'محذوفة',
+  'Removed': 'تمت الإزالة',
   'Removed.': 'تمت الإزالة.',
   'Required by law or regulation': 'مطلوبة بموجب نظام أو لائحة',
   'Restore': 'استعادة',

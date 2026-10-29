@@ -132,9 +132,9 @@ public sealed class LearningAssignmentService(ZayraDbContext db, IAuditService a
             enrollment.Status = LearningEnrollmentStatuses.Cancelled;
             enrollment.Version++;
         }
+        audit.Stage("learning.assignment.cancelled", nameof(LearningAssignment), assignment.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { assignment.EmployeeId, assignment.PathId, reason = assignment.CancelReason }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("learning.assignment.cancelled", nameof(LearningAssignment), assignment.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { assignment.EmployeeId, assignment.PathId, reason = assignment.CancelReason }), ct);
     }
 
     // ── Core ────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ function Asset({ label, value, onChange, onError }: { label: string; value: stri
   };
   return <div className="space-y-2"><label htmlFor={id} className="block text-sm font-medium">{t(label)}</label>
     {value && <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3">{src && <img src={src} alt={t('{name} preview', { name: t(label) })} className="h-14 max-w-48 object-contain" />}<button type="button" className={button} onClick={() => onChange(null)}>{t("Remove")}</button></div>}
-    <input id={id} className="block w-full text-xs file:me-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-slate-800" type="file" accept="image/png,image/jpeg" onChange={e => { void upload(e.target.files?.[0]); e.target.value = ''; }} />
+    <input id={id} className="block w-full text-xs file:me-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-slate-800" type="file" accept="image/png,image/jpeg" onChange={e => { void upload(e.target.files?.[0]); e.target.value = ''; }} />
     <p className="text-xs text-slate-500">{t("PNG or JPEG · max 500 KB · max 4000 px / 8 MP. Use transparent PNG for logos.")}</p>
   </div>;
 }

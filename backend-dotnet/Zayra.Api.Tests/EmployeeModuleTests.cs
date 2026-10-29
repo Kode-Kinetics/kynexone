@@ -465,6 +465,7 @@ public class EmployeeModuleTests
         var result = await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the import staged the first packages; a different Finance login applies them
 
         var employee = await db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-PAY-001");
         Assert.NotNull(employee);
@@ -572,6 +573,7 @@ public class EmployeeModuleTests
             "EMP-CUR-001,Test Employee,2024-01-15,G3,5000,\n";
 
         await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None);
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId); // the import staged the first packages; a different Finance login applies them
 
         var employee = await db.Employees.FirstOrDefaultAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-CUR-001");
         Assert.NotNull(employee);
@@ -635,9 +637,9 @@ public class EmployeeModuleTests
         // All 15 should have payroll profiles (salary provided)
         var profileCount = await db.EmployeePayrollProfiles.CountAsync(p => p.TenantId == tenantId);
         Assert.Equal(15, profileCount);
-        // All 15 should have salary structures
-        var salaryCount = await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenantId);
-        Assert.Equal(15, salaryCount);
+        // All 15 first packages are staged for Finance; the salary rows exist only once a different login approves them.
+        Assert.Equal(0, await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenantId));
+        Assert.Equal(15, await db.SalaryChangeRequests.CountAsync(s => s.TenantId == tenantId && s.Status == SalaryChangeRequest.Pending));
     }
 
     [Fact]
@@ -691,8 +693,25 @@ public class EmployeeModuleTests
         Assert.Contains("marked for review", json);
 
         var emp = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-RANGE-001");
-        Assert.Equal(5000m, emp.Salary); // salary kept, flagged
+        // The out-of-band package is STAGED (pending), not applied: no salary on the employee, no structure, until Finance approves.
+        Assert.Null(emp.Salary);
+        Assert.False(await db.EmployeeSalaryStructures.AnyAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id));
+        var staged = await db.SalaryChangeRequests.SingleAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id);
+        Assert.Equal((SalaryChangeRequest.Pending, 5000m), (staged.Status, staged.BasicSalary)); // salary kept as typed, flagged
         Assert.True(await db.EmployeeImportGaps.AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == emp.Id && g.GapType == "pay:salaryReview"));
+
+        // Without the explicit override the out-of-range package cannot be approved: 409 with a clear code, nothing applied.
+        var finance = SalaryApprovalKit.FinanceController(db, tenantId);
+        var refused = Assert.IsType<ConflictObjectResult>(await finance.ApproveSalaryChange(staged.Id, null, CancellationToken.None));
+        Assert.Contains("salary_outside_grade_range", System.Text.Json.JsonSerializer.Serialize(refused.Value));
+        // An override without a reason is refused too.
+        Assert.IsType<BadRequestObjectResult>(await finance.ApproveSalaryChange(staged.Id, new PayrollController.SalaryChangeDecisionRequest(" ", true), CancellationToken.None));
+        Assert.Null((await db.Employees.AsNoTracking().SingleAsync(e => e.Id == emp.Id)).Salary);
+        Assert.False(await db.EmployeeSalaryStructures.AnyAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id));
+
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId, overrideGradeRange: true, reason: "Approved exception for a specialist hire");
+        Assert.True(await db.PayrollAuditLogs.AnyAsync(a => a.TenantId == tenantId && a.Action == "payroll.employee_salary.grade_range_override" && a.EntityId == staged.Id.ToString()));
+        Assert.Equal(5000m, (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == emp.Id)).Salary); // approved as typed
     }
 
     // ── Regression: an OPTIONAL org reference (CostCenter/Branch) that doesn't resolve must
@@ -843,6 +862,7 @@ public class EmployeeModuleTests
     {
         // A sensitive change needs someone besides the caller who can decide it (routing refuses otherwise).
         TestApprovalConfig.EnsureDeciderAsync(db, tenantId).GetAwaiter().GetResult();
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // a file/hire that carries salaries needs someone else who could approve them
         var audit = new AuditService(db);
         var controller = new EmployeesController(
             db,

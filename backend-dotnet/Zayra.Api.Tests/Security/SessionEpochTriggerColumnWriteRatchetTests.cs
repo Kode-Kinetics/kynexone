@@ -23,6 +23,10 @@ public sealed partial class SessionEpochTriggerColumnWriteRatchetTests
         // factor with a compare-and-set (WHERE password_hash = the verified hash). The credential does not change, so
         // it must not end the user's other sessions or rotate their stamp; that is why it bypasses SaveChanges.
         ["Infrastructure/Auth/AuthService.cs"] = 1,
+        // DataProtectionSecretReprotector: re-protects the SAME TOTP secret under the newest DataProtection key with a
+        // compare-and-set (WHERE mfa_secret_encrypted = the value read). The factor does not change, so it must neither end
+        // the user's sessions nor overwrite a secret the user re-enrolled while the job ran.
+        ["Infrastructure/FieldEncryption/DataProtectionSecretReprotector.cs"] = 1,
     };
 
     private const string TriggerProperties = "PasswordHash|MfaSecretEncrypted|MFAEnabled|Status|IsActive|IsDeleted|AccessMode";

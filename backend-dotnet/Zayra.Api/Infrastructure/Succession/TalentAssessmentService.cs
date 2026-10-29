@@ -111,8 +111,8 @@ public sealed partial class TalentAssessmentService(ZayraDbContext db, IAuditSer
         row.Status = TalentAssessmentStatuses.Submitted;
         row.UpdatedAtUtc = clock.GetUtcNow().UtcDateTime;
         row.Version++;
+        audit.Stage("succession.assessment.submitted", nameof(TalentAssessment), id.ToString(), actor.Request, null);
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.assessment.submitted", nameof(TalentAssessment), id.ToString(), actor.Request, null, ct);
         return await GetAsync(actor, id, ct);
     }
 
@@ -145,9 +145,9 @@ public sealed partial class TalentAssessmentService(ZayraDbContext db, IAuditSer
         row.Status = TalentAssessmentStatuses.Calibrated;
         row.UpdatedAtUtc = now;
         row.Version++;
+        audit.Stage("succession.assessment.calibrated", nameof(TalentAssessment), id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { assessmentId = row.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.assessment.calibrated", nameof(TalentAssessment), id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { assessmentId = row.Id }), ct);
         return await GetAsync(actor, id, ct);
     }
 

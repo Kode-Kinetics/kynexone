@@ -25,7 +25,10 @@ jobs:
       matrix:
         include:
           - language: csharp
-            build-mode: autobuild
+            # Keep extraction deterministic: autobuild can select the much larger test
+            # project, which is not the shipped application and has repeatedly lost its
+            # hosted runner before extraction completes.
+            build-mode: manual
           - language: javascript-typescript
             build-mode: none
     steps:
@@ -36,14 +39,19 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
           # security-extended adds higher-signal security queries beyond the default set.
           queries: security-extended
 
-      - name: Setup .NET (csharp autobuild)
+      - name: Setup .NET (csharp manual build)
         if: matrix.language == 'csharp'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      - name: Build shipped backend for CodeQL
+        if: matrix.language == 'csharp'
+        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj --configuration Release
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

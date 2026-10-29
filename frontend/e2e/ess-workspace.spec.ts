@@ -136,7 +136,7 @@ test('the sidebar offers one Self-Service entry; its pages are tabs inside the w
   // Every headline number links to the records behind it.
   await expect(page.getByTestId('ess-tile-leave')).toHaveAttribute('href', '/ess/leave');
   await expect(page.getByTestId('ess-tile-payslip')).toHaveAttribute('href', '/ess/payslips');
-  await expect(page.getByTestId('ess-tile-loans')).toHaveAttribute('href', '/loans?mine=true');
+  await expect(page.getByTestId('ess-tile-loans')).toHaveAttribute('href', '/ess/loans');
   await expect(page.getByTestId('ess-tile-payslip')).toContainText('Net pay for September 2026');
   await expect(page.getByTestId('ess-tile-loans')).toContainText('Outstanding on 1 active loan');
   await expect(page.getByTestId('ess-tile-attendance')).toContainText('6 h of approved overtime this month');
@@ -166,10 +166,10 @@ test('the sidebar offers one Self-Service entry; its pages are tabs inside the w
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await shot(page, 'ess-documents', info.project.name);
 
-  // A one-page section has no tab row; Pay has only Payslips while Release A is off.
+  // Pay has Payslips and, for an employee who may borrow, Loans; Package and Deductions wait for Release A.
   await sections.getByRole('link', { name: 'Pay' }).click();
   await expect(page).toHaveURL(/\/ess\/payslips$/, { timeout: 60_000 }); // a dev server compiles each page on first visit
-  await expect(page.getByRole('navigation', { name: /^Pages in / })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Pages in Pay' }).getByRole('link')).toHaveText(['Payslips', 'Loans']);
 
   expect(errors, errors.join('\n')).toEqual([]);
 });
@@ -177,8 +177,16 @@ test('the sidebar offers one Self-Service entry; its pages are tabs inside the w
 test('Release A adds Package and Deductions as tabs under Pay', async ({ page }) => {
   await boot(page, '/ess/payslips', { disabledKeys: [] });
   const tabs = page.getByRole('navigation', { name: 'Pages in Pay' });
-  await expect(tabs.getByRole('link')).toHaveText(['Payslips', 'Package', 'Deductions'], { timeout: 60_000 });
+  await expect(tabs.getByRole('link')).toHaveText(['Payslips', 'Package', 'Deductions', 'Loans'], { timeout: 60_000 });
   await expect(tabs.getByRole('link', { name: 'Payslips' })).toHaveAttribute('aria-current', 'page');
+});
+
+test('My loans opens inside Self-Service as a Pay tab, not on the admin Loans page', async ({ page }) => {
+  await boot(page, '/ess/loans');
+  await expect(page.getByTestId('my-loans').getByRole('heading', { level: 1, name: 'My loans' })).toBeVisible({ timeout: 60_000 });
+  const tabs = page.getByRole('navigation', { name: 'Pages in Pay' });
+  await expect(tabs.getByRole('link', { name: 'Loans' })).toHaveAttribute('aria-current', 'page');
+  await expect(page).toHaveURL(/\/ess\/loans$/);
 });
 
 test('the workspace reads right to left in Arabic without overflowing', async ({ page }, info) => {

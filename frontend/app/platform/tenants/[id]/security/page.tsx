@@ -58,8 +58,8 @@ function LoginActivityPanel({ tenantId }: { tenantId: string }) {
       <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Activity className="h-3.5 w-3.5 text-slate-500" />
-          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">Login Activity</p>
-          {total > 0 && <span className="text-[10px] text-slate-600">({total} total)</span>}
+          <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Login Activity</p>
+          {total > 0 && <span className="text-caption text-slate-600">({total} total)</span>}
         </div>
         <div className="flex items-center gap-2">
           <select
@@ -94,7 +94,7 @@ function LoginActivityPanel({ tenantId }: { tenantId: string }) {
             <thead>
               <tr className="border-b border-white/[0.06]">
                 {['Time', 'Event', 'Email', 'IP', 'Reason'].map(h => (
-                  <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                  <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -105,7 +105,7 @@ function LoginActivityPanel({ tenantId }: { tenantId: string }) {
                     {new Date(a.occurredAtUtc).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                   </td>
                   <td className="px-4 py-2 whitespace-nowrap">
-                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${EVENT_BADGE[a.eventType] ?? 'text-slate-400 border-slate-700/30 bg-slate-800/30'}`}>
+                    <span className={`text-caption font-semibold px-1.5 py-0.5 rounded border ${EVENT_BADGE[a.eventType] ?? 'text-slate-400 border-slate-700/30 bg-slate-800/30'}`}>
                       {a.eventType.replace(/_/g, ' ')}
                     </span>
                   </td>
@@ -123,7 +123,7 @@ function LoginActivityPanel({ tenantId }: { tenantId: string }) {
         <div className="flex items-center justify-between px-5 py-3 border-t border-white/[0.06]">
           <button type="button" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
             className="text-xs text-slate-400 hover:text-white disabled:opacity-30 transition-colors">← Prev</button>
-          <span className="text-[11px] text-slate-600">Page {page} of {Math.ceil(total / PAGE_SIZE)}</span>
+          <span className="text-caption text-slate-600">Page {page} of {Math.ceil(total / PAGE_SIZE)}</span>
           <button type="button" onClick={() => setPage(p => p + 1)} disabled={page * PAGE_SIZE >= total}
             className="text-xs text-slate-400 hover:text-white disabled:opacity-30 transition-colors">Next →</button>
         </div>
@@ -241,17 +241,17 @@ export default function TenantSecurityPage() {
           <ArrowLeft className="h-4 w-4" />
         </Link>
         <div>
-          <h1 className="text-lg font-bold text-white">Security Policy</h1>
+          <h1 className="text-lg font-semibold text-white">Security Policy</h1>
           {policy && <p className="text-xs text-slate-500">{policy.tenantName}</p>}
         </div>
         <div className="ms-auto flex items-center gap-2">
           {policy?.isCustomPolicy && (
-            <span className="text-[10px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
+            <span className="text-caption font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
               Custom Policy
             </span>
           )}
           {!policy?.isCustomPolicy && (
-            <span className="text-[10px] font-semibold text-slate-500 bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded">
+            <span className="text-caption font-semibold text-slate-500 bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded">
               Platform Defaults
             </span>
           )}
@@ -281,7 +281,7 @@ export default function TenantSecurityPage() {
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
             <Shield className="h-3.5 w-3.5 text-slate-500" />
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">Password Policy</p>
+            <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Password Policy</p>
           </div>
           <div className="px-5 py-4 space-y-2 divide-y divide-white/[0.04]">
             <NumInput label="Minimum length" value={form.passwordMinLength ?? 10}
@@ -309,7 +309,7 @@ export default function TenantSecurityPage() {
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
             <Shield className="h-3.5 w-3.5 text-slate-500" />
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">Lockout Policy</p>
+            <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Lockout Policy</p>
           </div>
           <div className="px-5 py-4 space-y-2">
             <NumInput label="Max failed login attempts" value={form.maxFailedLoginAttempts ?? 5}
@@ -323,7 +323,7 @@ export default function TenantSecurityPage() {
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
             <Shield className="h-3.5 w-3.5 text-slate-500" />
-            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">Session Policy</p>
+            <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Session Policy</p>
           </div>
           <div className="px-5 py-4 space-y-2">
             <NumInput label="Session timeout (inactivity)" value={form.sessionTimeoutMinutes ?? 480}
@@ -336,7 +336,7 @@ export default function TenantSecurityPage() {
         </div>
 
         {policy?.updatedAtUtc && (
-          <p className="text-[11px] text-slate-700">
+          <p className="text-caption text-slate-700">
             Last updated {new Date(policy.updatedAtUtc).toLocaleString('en-GB')}
           </p>
         )}

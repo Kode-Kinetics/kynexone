@@ -18,33 +18,33 @@ export function SubscriptionGate({ featureName, requiredPlan, reason, children, 
   if (!isBlocked) return <>{children}</>;
 
   return (
-    <div className="relative rounded-2xl border border-white/[0.07] bg-[#161b22] overflow-hidden">
+    <div className="relative overflow-hidden rounded-2xl border border-line bg-surface">
       {/* Blurred preview */}
       <div className="pointer-events-none select-none blur-sm opacity-30 p-6">
         {children}
       </div>
 
       {/* Overlay */}
-      <div className="absolute inset-0 flex items-center justify-center bg-[#0d1117]/70 backdrop-blur-sm">
+      <div className="absolute inset-0 flex items-center justify-center bg-canvas/80">
         <div className="max-w-sm mx-auto text-center px-6 py-8 space-y-4">
           <div className="h-14 w-14 mx-auto rounded-full bg-sapphire/10 border border-sapphire/20 flex items-center justify-center">
-            <Lock className="h-6 w-6 text-sapphire" />
+            <Lock className="h-6 w-6 text-primary-fg" />
           </div>
-          <h3 className="text-lg font-semibold text-white">{featureName} is not included in your plan</h3>
-          {reason && <p className="text-sm text-slate-400">{reason}</p>}
+          <h3 className="text-h3 font-semibold text-fg">{featureName} is not included in your plan</h3>
+          {reason && <p className="text-body text-fg-muted">{reason}</p>}
           {requiredPlan && (
-            <p className="text-xs text-slate-500">
-              Available from <span className="text-white font-medium">{requiredPlan}</span> plan and above.
+            <p className="text-meta text-fg-subtle">
+              Available from <span className="font-medium text-fg">{requiredPlan}</span> plan and above.
             </p>
           )}
           <a
             href="mailto:info@kodekinetics.com?subject=Upgrade Inquiry"
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sapphire hover:bg-sapphire/90 text-white text-sm font-medium transition-colors"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-body font-semibold text-on-primary transition-colors hover:bg-primary-hover"
           >
             Contact Sales to Upgrade
             <ArrowUpRight className="h-3.5 w-3.5" />
           </a>
-          <p className="text-xs text-slate-600">Or contact your platform administrator.</p>
+          <p className="text-meta text-fg-subtle">Or contact your platform administrator.</p>
         </div>
       </div>
     </div>

@@ -40,14 +40,14 @@ export function CompanySwitcher() {
         onClick={() => setOpen((o) => !o)}
         aria-label={t('Switch company')}
         aria-expanded={open}
-        className="flex h-8 max-w-[220px] items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/60 px-2.5 text-xs font-semibold text-slate-600 backdrop-blur-sm transition hover:border-slate-300 hover:bg-white/90 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-slate-300 dark:hover:bg-white/[0.10]"
+        className="flex h-control-md max-w-[220px] items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-xs font-semibold text-slate-600 transition hover:border-line-strong hover:bg-surface-sunken dark:text-slate-300"
       >
         <Building2 className="h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-slate-500" />
         <span className="truncate">{label}</span>
       </button>
 
       {open && (
-        <div role="menu" aria-label={t('Select company')} className="absolute start-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-slate-200/80 bg-white/[0.92] shadow-2xl backdrop-blur-xl dark:border-white/[0.08] dark:bg-[#0c1120]/[0.92]">
+        <div role="menu" aria-label={t('Select company')} className="absolute start-0 top-full z-50 mt-2 max-h-80 w-64 overflow-y-auto rounded-xl border border-line bg-surface-overlay shadow-e2">
           {isGroupScope && (
             <button
               type="button"

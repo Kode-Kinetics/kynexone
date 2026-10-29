@@ -94,13 +94,15 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
-import { SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
+import { SETUP_RELATED_SECTIONS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, unavailableSectionRedirect, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
 import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionId } from '../lib/setupModuleSections';
 import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
 import { useConfirm } from '../components/gl/glUi';
+import { CountryPayrollKeys } from '../components/setup/accessWorkspaceSetupPanels';
+import { OrgRowActions, ReadOnlyStatus, ShowTurnedOffToggle, useOrgRowRemoval, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { useReleaseA } from '../lib/releaseA';
 import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
@@ -122,9 +124,9 @@ const moduleIcons: Record<SetupModuleSectionId, React.ElementType> = {
   openingBalances: DatabaseBackup,
   leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock, attendanceRules: AlarmClockCheck,
   overtimePolicies: TimerReset, attendanceDevices: Fingerprint,
-  benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText,
+  benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText, payrollRules: Scale,
   onboardingChecklists: ListChecks, onboardingChecklistTemplates: ClipboardList, hireTemplates: UserPlus, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
-  taxPolicies: Percent, complianceProfiles: ShieldCheck, saudiCompliance: BadgeCheck, countryPayrollKeys: Globe,
+  taxPolicies: Percent, complianceProfiles: ShieldCheck, saudiCompliance: BadgeCheck,
   users: Users, roles: UserCog, permissionMatrix: Table2, permissions: KeyRound, permissionGrantors: UserCheck,
   approvalAuthorities: Award, approvalDelegations: GitBranch, signInSecurity: Lock, accessLog: ClipboardList,
   localization: Languages, branding: Palette, helpText: HelpCircle, modules: Blocks, planBilling: CreditCard,
@@ -309,7 +311,6 @@ function CompaniesTab() {
   // Suspend / reactivate — merged from the standalone /companies page so no capability
   // is lost when that route folds into Setup. Reproduces the last-active-company guard.
   const toggleStatus = async (c: CompanyDto) => {
-    const action = c.isActive ? 'Suspend' : 'Reactivate';
     const name = c.tradeName || c.legalNameEn;
     if (!(await confirm({
       title: c.isActive ? t('Suspend company') : t('Reactivate company'),
@@ -373,7 +374,7 @@ function CompaniesTab() {
               {/* "—" read as "nothing to show". It is not: a blank country blocks every employee of
                   this entity, so it is labelled as the problem it is. */}
               {c.countryCode?.trim() || (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-500/[0.12] dark:text-amber-300">Not set</span>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-500/[0.12] dark:text-amber-300">Not set</span>
               )}
               {c.jurisdiction && <span className="ms-1 text-xs text-slate-400">({c.jurisdiction})</span>}
             </td>
@@ -382,11 +383,11 @@ function CompaniesTab() {
               {/* Preserve the standalone page's Draft-awareness and "Suspended" wording,
                   which the plain ActiveBadge (Active/Inactive) did not convey. */}
               {c.approvalStatus === 'Draft' ? (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">Draft — awaiting platform approval</span>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">Draft — awaiting platform approval</span>
               ) : c.isActive ? (
                 <ActiveBadge active />
               ) : (
-                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>
+                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>
               )}
             </td>
             <td className="sticky end-0 bg-white px-4 py-3 dark:bg-slate-900">
@@ -564,7 +565,9 @@ function CompaniesTab() {
 
 function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const t = useT();
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const removal = useOrgRowRemoval({ kind: 'branch', onDone: () => { void load(); } });
+  const writeAccess = useOrgWriteAccess();
+  const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<BranchDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterCompany, setFilterCompany] = useState('');
@@ -574,7 +577,6 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const [form, setForm] = useState<BranchRequest>(emptyBranch(companies[0]?.id ?? ''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -603,12 +605,6 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   };
 
   const f = (key: keyof BranchRequest, v: string | boolean) => setForm((x) => ({ ...x, [key]: v }));
-  const deleteBranch = async (id: string) => {
-    if (!(await confirm({ title: t('Delete branch'), message: t('Delete this branch?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
-    setDeleting(id);
-    try { await branchesApi.remove(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setDeleting(null); }
-  };
 
   // The server names each branch's company; the loaded company list is the fallback. Never the raw id.
   const companyName = (b: BranchDto) =>
@@ -616,20 +612,24 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
   return (
     <>
+      {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('City'), msg('Head Office'), msg('Status')]}
         onAdd={openNew}
         addLabel={msg('Add Branch')}
         loading={loading}
-        empty={items.length === 0}
+        empty={items.filter((x) => showOff || x.isActive).length === 0}
         emptyLabel={msg('No branches yet')} emptyHint={msg('Add your first branch, or import a CSV.')}
         filter={
-          companies.length > 0 ? (
+          <>
+            {companies.length > 0 && (
             <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="select" title={t('Filter by company')}>
               <option value="">{t('All Group Companies')}</option>
               {companies.map((c) => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}
             </select>
-          ) : undefined
+            )}
+            <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />
+          </>
         }
         actions={
           <ImportExportToolbar
@@ -640,7 +640,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           />
         }
       >
-        {items.map((b) => (
+        {items.filter((b) => showOff || b.isActive).map((b) => (
           <tr key={b.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{b.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{b.nameEn}</td>
@@ -649,12 +649,8 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={() => openEdit(b)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                <button type="button" onClick={() => deleteBranch(b.id)} disabled={deleting === b.id} aria-label={t('Delete branch')} className={DELETE_ROW_BUTTON}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
-                </button>
-              </div>
+              <OrgRowActions name={b.nameEn} isActive={b.isActive} busy={removal.busyId === b.id} blockedReason={writeAccess(b.companyId).reason}
+                  onEdit={() => openEdit(b)} onRemove={() => void removal.remove({ id: b.id, name: b.nameEn })} onRestore={() => void removal.restore({ id: b.id, name: b.nameEn })} />
             </td>
           </tr>
         ))}
@@ -701,19 +697,14 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
           <FormField label={t('Time Zone')} required>
             <input type="text" value={form.timeZoneId} onChange={(e) => f('timeZoneId', e.target.value)} className="input w-full" placeholder="America/New_York" />
           </FormField>
-          <FormField label={t('Status')}>
-            <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">{t('Active')}</option>
-              <option value="false">{t('Inactive')}</option>
-            </select>
-          </FormField>
+          <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
           <div className="col-span-2 flex items-center gap-2">
             <input type="checkbox" id="isHQ" checked={form.isHeadOffice} onChange={(e) => f('isHeadOffice', e.target.checked)} className="h-4 w-4 accent-sapphire" />
             <label htmlFor="isHQ" className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('This is the head office')}</label>
           </div>
         </div>
       </Modal>
-      {confirmDialog}
+      {removal.confirmDialog}
     </>
   );
 }
@@ -723,7 +714,9 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const t = useT();
   const { locale } = useLocale();
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const removal = useOrgRowRemoval({ kind: 'department', onDone: () => { void load(); } });
+  const writeAccess = useOrgWriteAccess();
+  const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<DepartmentDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -734,11 +727,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const org = useOrgCompanies();
   const [companyFilter, setCompanyFilter] = useState('');
   const unassignedCount = items.filter((d) => !d.companyId).length;
-  const shown = filterByCompany(items, companyFilter);
+  const shown = filterByCompany(items, companyFilter).filter((x) => showOff || x.isActive);
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -768,16 +760,11 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   };
 
   const f = (key: keyof DepartmentRequest, v: string | boolean | number | undefined) => setForm((x) => ({ ...x, [key]: v }));
-  const deleteDept = async (id: string) => {
-    if (!(await confirm({ title: t('Delete department'), message: t('Delete this department?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
-    setDeleting(id);
-    try { await departmentsApi.remove(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setDeleting(null); }
-  };
 
   return (
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
+      {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]}
         onAdd={openNew}
@@ -785,7 +772,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         loading={loading}
         empty={shown.length === 0}
         emptyLabel={msg('No departments yet')} emptyHint={msg('Add your first department, or import a CSV.')}
-        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
+        filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={
           <ImportExportToolbar
             entityName="Departments"
@@ -804,12 +791,8 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <td className="px-4 py-3"><CompanyCell name={org.nameOf(d.companyId)} /></td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={() => openEdit(d)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                <button type="button" onClick={() => deleteDept(d.id)} disabled={deleting === d.id} aria-label={t('Delete department')} className={DELETE_ROW_BUTTON}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
-                </button>
-              </div>
+              <OrgRowActions name={d.nameEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason}
+                  onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.nameEn })} onRestore={() => void removal.restore({ id: d.id, name: d.nameEn })} />
             </td>
           </tr>
         ))}
@@ -850,15 +833,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
               {costCenters.filter((c) => !form.companyId || c.companyId === form.companyId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </FormField>
-          <FormField label={t('Status')}>
-            <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">{t('Active')}</option>
-              <option value="false">{t('Inactive')}</option>
-            </select>
-          </FormField>
+          <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
         </div>
       </Modal>
-      {confirmDialog}
+      {removal.confirmDialog}
     </>
   );
 }
@@ -867,7 +845,9 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
 function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   const t = useT();
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const removal = useOrgRowRemoval({ kind: 'designation', onDone: () => { void load(); } });
+  const writeAccess = useOrgWriteAccess();
+  const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<DesignationDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -878,11 +858,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   const org = useOrgCompanies();
   const [companyFilter, setCompanyFilter] = useState('');
   const unassignedCount = items.filter((d) => !d.companyId).length;
-  const shown = filterByCompany(items, companyFilter);
+  const shown = filterByCompany(items, companyFilter).filter((x) => showOff || x.isActive);
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -912,23 +891,18 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   };
 
   const f = (key: keyof DesignationRequest, v: string | boolean | undefined) => setForm((x) => ({ ...x, [key]: v }));
-  const deleteDesig = async (id: string) => {
-    if (!(await confirm({ title: t('Delete designation'), message: t('Delete this designation?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
-    setDeleting(id);
-    try { await designationsApi.remove(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setDeleting(null); }
-  };
 
   return (
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
+      {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Title'), msg('Company'), msg('Job Grade'), msg('Manager Role'), msg('Status')]}
         onAdd={openNew}
         addLabel={msg('Add Designation')}
         loading={loading}
         empty={shown.length === 0}
-        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
+        filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         emptyLabel={msg('No designations yet')} emptyHint={msg('Add your first designation, or import a CSV.')}
         actions={
           <ImportExportToolbar
@@ -948,12 +922,8 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <td className="px-4 py-3">{d.isManagerRole ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-400">{t('Manager')}</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={() => openEdit(d)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                <button type="button" onClick={() => deleteDesig(d.id)} disabled={deleting === d.id} aria-label={t('Delete designation')} className={DELETE_ROW_BUTTON}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
-                </button>
-              </div>
+              <OrgRowActions name={d.titleEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason}
+                  onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.titleEn })} onRestore={() => void removal.restore({ id: d.id, name: d.titleEn })} />
             </td>
           </tr>
         ))}
@@ -1007,15 +977,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <input type="checkbox" id="isMgr" checked={form.isManagerRole} onChange={(e) => f('isManagerRole', e.target.checked)} className="h-4 w-4 accent-sapphire" />
             <label htmlFor="isMgr" className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Manager role')}</label>
           </div>
-          <FormField label={t('Status')}>
-            <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">{t('Active')}</option>
-              <option value="false">{t('Inactive')}</option>
-            </select>
-          </FormField>
+          <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
         </div>
       </Modal>
-      {confirmDialog}
+      {removal.confirmDialog}
     </>
   );
 }
@@ -1027,7 +992,9 @@ function GradesTab() {
   // not shown for editing and never written (the API refuses them with 409); the rows are kept and importable there.
   const benefitsByGrade = useReleaseA();
   const t = useT();
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const removal = useOrgRowRemoval({ kind: 'grade', onDone: () => { void load(); } });
+  const writeAccess = useOrgWriteAccess();
+  const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<GradeDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1045,11 +1012,10 @@ function GradesTab() {
   const org = useOrgCompanies();
   const [companyFilter, setCompanyFilter] = useState('');
   const unassignedCount = items.filter((g) => !g.companyId).length;
-  const shown = filterByCompany(items, companyFilter);
+  const shown = filterByCompany(items, companyFilter).filter((x) => showOff || x.isActive);
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1068,7 +1034,7 @@ function GradesTab() {
     setModalOpen(true);
     try {
       const comps = await gradesApi.getPayScale(g.id);
-      setPayScale(comps.map(({ id, ...rest }: GradePayScaleComponentDto) => rest));
+      setPayScale(comps.map((c: GradePayScaleComponentDto) => { const rest = { ...c } as Partial<GradePayScaleComponentDto>; delete rest.id; return rest as Omit<GradePayScaleComponentDto, 'id'>; }));
     } catch { /* empty pay scale */ }
   };
   useEffect(() => {
@@ -1101,12 +1067,6 @@ function GradesTab() {
     finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
   };
   const f = (key: keyof GradeRequest, v: string | boolean | number) => setForm((x) => ({ ...x, [key]: v }));
-  const deleteGrade = async (id: string) => {
-    if (!(await confirm({ title: t('Delete grade'), message: t('Delete this grade?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
-    setDeleting(id);
-    try { await gradesApi.remove(id); load(); notifyGradesChanged(); } catch (e) { notifyApiError(e); }
-    finally { setDeleting(null); }
-  };
 
   const payRange = (g: GradeDto) =>
     g.maxSalary > 0 ? `${g.currency} ${g.minSalary.toLocaleString()}–${g.maxSalary.toLocaleString()}` : '—';
@@ -1114,8 +1074,9 @@ function GradesTab() {
   return (
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
+      {removal.notice}
       <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
-        filter={<CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
+        filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={
           <ImportExportToolbar
             entityName="Grades"
@@ -1135,12 +1096,8 @@ function GradesTab() {
             <td className="px-4 py-3 tabular-nums text-slate-600 dark:text-slate-300">{payRange(g)}</td>
             <td className="px-4 py-3"><ActiveBadge active={g.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={() => openEdit(g)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                <button type="button" onClick={() => deleteGrade(g.id)} disabled={deleting === g.id} aria-label={t('Delete grade')} className={DELETE_ROW_BUTTON}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
-                </button>
-              </div>
+              <OrgRowActions name={g.name} isActive={g.isActive} busy={removal.busyId === g.id} blockedReason={writeAccess(g.companyId).reason}
+                  onEdit={() => openEdit(g)} onRemove={() => void removal.remove({ id: g.id, name: g.name })} onRestore={() => void removal.restore({ id: g.id, name: g.name })} />
             </td>
           </tr>
         ))}
@@ -1162,7 +1119,7 @@ function GradesTab() {
 
           {/* Pay scale band */}
           <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
-            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{t('Pay Scale')}</p>
+            <p className="mb-2 text-caption font-semibold uppercase tracking-[0.16em] text-slate-400 dark:text-slate-500">{t('Pay Scale')}</p>
             <div className="grid grid-cols-4 gap-2">
               <FormField label={t('Min')}><input type="number" value={form.minSalary ?? 0} onChange={(e) => f('minSalary', Number(e.target.value))} className="input w-full" /></FormField>
               <FormField label={t('Mid')}><input type="number" value={form.midSalary ?? 0} onChange={(e) => f('midSalary', Number(e.target.value))} className="input w-full" /></FormField>
@@ -1176,10 +1133,10 @@ function GradesTab() {
                   minSalary={form.minSalary} maxSalary={form.maxSalary} currency={form.currency || undefined} onCatalogue={setCatalogue} />}
           </div>
 
-          <FormField label={t('Status')}><select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>
+          <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
         </div>
       </Modal>
-      {confirmDialog}
+      {removal.confirmDialog}
     </>
   );
 }
@@ -1188,7 +1145,7 @@ function GradesTab() {
 
 function MasterDataTab() {
   const t = useT();
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const { dialog: confirmDialog } = useConfirm();
   const [types, setTypes] = useState<MasterDataType[]>([]);
   const [values, setValues] = useState<MasterDataValue[]>([]);
   const [selectedType, setSelectedType] = useState<MasterDataType | null>(null);
@@ -1212,11 +1169,16 @@ function MasterDataTab() {
     finally { setLoading(false); }
   }, []);
 
+  const loadValuesRef = useRef<(typeId: string) => void>(() => {});
+  const valueRemoval = useOrgRowRemoval({ kind: 'masterDataValue', onDone: () => { if (selectedType) loadValuesRef.current(selectedType.id); } });
+  const writeAccess = useOrgWriteAccess();
+  const [showOffValues, setShowOffValues] = useState(false);
   const loadValues = useCallback(async (typeId: string) => {
     setValuesLoading(true);
     try { setValues(await masterDataApi.listValues(typeId, false)); } catch { /**/ }
     finally { setValuesLoading(false); }
   }, []);
+  loadValuesRef.current = loadValues;
 
   useEffect(() => { loadTypes(); }, [loadTypes]);
 
@@ -1267,17 +1229,6 @@ function MasterDataTab() {
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
-  const deleteValue = async (v: MasterDataValue) => {
-    if (v.isSystemDefined) return;
-    const ok = await confirm({
-      title: t('Delete value'),
-      message: t('Delete "{value}"? Employees who already hold this value keep it, but it can no longer be chosen.', { value: v.valueEn }),
-      confirmLabel: t('Delete'),
-      tone: 'danger',
-    });
-    if (!ok) return;
-    try { await masterDataApi.deleteValue(v.id); if (selectedType) loadValues(selectedType.id); } catch (e) { notifyApiError(e); }
-  };
 
   return (
     <div className="flex min-h-[400px] min-w-0 flex-col gap-4 md:flex-row">
@@ -1295,7 +1246,7 @@ function MasterDataTab() {
       <div className="w-full shrink-0 md:w-72">
         <div className="surface p-3">
           <div className="mb-3 flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wide text-slate-400">{t('Types')}</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Types')}</span>
             <button type="button" onClick={openNewType} className="btn-primary h-7 px-2 text-xs"><Plus className="h-3 w-3" /> {t('New type')}</button>
           </div>
           {loading ? (
@@ -1315,7 +1266,7 @@ function MasterDataTab() {
                   >
                     <span className={`truncate ${type.isActive ? '' : 'text-slate-400 line-through'}`}>{type.nameEn}</span>
                     <div className="flex items-center gap-1">
-                      {!type.isActive && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{t('Inactive')}</span>}
+                      {!type.isActive && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-caption font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{t('Inactive')}</span>}
                       {!type.isSystemDefined && (
                         <button type="button" aria-label={t('Edit {name}', { name: type.nameEn })} onClick={(e) => { e.stopPropagation(); openEditType(type); }} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 dark:text-slate-300 dark:hover:bg-white/10">
                           <Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}
@@ -1344,23 +1295,27 @@ function MasterDataTab() {
                 <h3 className="font-semibold text-slate-900 dark:text-white">{selectedType.nameEn}</h3>
                 <p className="text-xs text-slate-400">{selectedType.description || selectedType.code}</p>
               </div>
-              <button type="button" onClick={openNewValue} className="btn-primary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> {t('Add value')}</button>
+              <div className="flex items-center gap-3">
+                <ShowTurnedOffToggle checked={showOffValues} onChange={setShowOffValues} count={values.filter((v) => !v.isActive).length} />
+                <button type="button" onClick={openNewValue} className="btn-primary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> {t('Add value')}</button>
+              </div>
             </div>
+            {valueRemoval.notice}
             <div className="surface overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {[msg('Code'), msg('Value (English)'), msg('Value (Arabic)'), msg('Sort order'), msg('Default'), msg('Status'), msg('Actions')].map((h) => (
-                      <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{t(h)}</th>
+                      <th key={h} className="px-4 py-2.5 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{t(h)}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                   {valuesLoading ? (
                     <tr><td colSpan={7} className="py-8 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
-                  ) : values.length === 0 ? (
+                  ) : values.filter((v) => showOffValues || v.isActive).length === 0 ? (
                     <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-500 dark:text-slate-400">{t('No values yet')}</td></tr>
-                  ) : values.map((v) => (
+                  ) : values.filter((v) => showOffValues || v.isActive).map((v) => (
                     <tr key={v.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2.5 font-mono text-xs text-slate-500">{v.code}</td>
                       <td className="px-4 py-2.5 font-medium text-slate-900 dark:text-white">{v.valueEn}</td>
@@ -1370,8 +1325,10 @@ function MasterDataTab() {
                       <td className="px-4 py-2.5"><ActiveBadge active={v.isActive} /></td>
                       <td className="px-4 py-2.5">
                         <div className="flex gap-1">
-                          <button type="button" onClick={() => openEditValue(v)} aria-label={t('Edit {name}', { name: v.valueEn })} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                          {!v.isSystemDefined && <button type="button" onClick={() => deleteValue(v)} aria-label={t('Delete {name}', { name: v.valueEn })} className={DELETE_ROW_BUTTON}><Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}</button>}
+                          <OrgRowActions name={v.valueEn} isActive={v.isActive} busy={valueRemoval.busyId === v.id}
+                            blockedReason={writeAccess(undefined).reason}
+                            removeBlockedReason={v.isSystemDefined ? t('Built-in value: it supports system screens, so it cannot be removed.') : undefined}
+                            onEdit={() => openEditValue(v)} onRemove={() => void valueRemoval.remove({ id: v.id, name: v.valueEn })} onRestore={() => void valueRemoval.restore({ id: v.id, name: v.valueEn })} />
                         </div>
                       </td>
                     </tr>
@@ -1434,7 +1391,7 @@ function MasterDataTab() {
           {editingValue && <FormField label={t('Status')}><select aria-label={t('Status')} value={valueForm.isActive ? 'true' : 'false'} onChange={(e) => setValueForm(x => ({ ...x, isActive: e.target.value === 'true' }))} className="select w-full"><option value="true">{t('Active')}</option><option value="false">{t('Inactive')}</option></select></FormField>}
         </div>
       </Modal>
-      {confirmDialog}
+      {confirmDialog}{valueRemoval.confirmDialog}
     </div>
   );
 }
@@ -1479,6 +1436,20 @@ function NumberingRulesTab() {
     finally { setSaving(false); }
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
+  const toggleRule = async (r: NumberingRule) => {
+    const turnOff = r.isActive;
+    if (!(await confirm({
+      title: turnOff ? t('Turn off numbering rule') : t('Turn on numbering rule'),
+      message: turnOff
+        ? t('Turn off this numbering rule? Numbers already issued stay as they are, and the rule can be turned back on later.')
+        : t('Turn this numbering rule back on?'),
+      confirmLabel: turnOff ? t('Turn off') : t('Turn on'),
+      tone: turnOff ? 'danger' : undefined,
+    }))) return;
+    setDeleting(r.id);
+    try { await numberingRulesApi.setActive(r.id, !turnOff); load(); } catch (e) { notifyApiError(e); }
+    finally { setDeleting(null); }
+  };
   const deleteRule = async (id: string) => {
     if (!(await confirm({ title: t('Delete numbering rule'), message: t('Delete this numbering rule?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
@@ -1501,7 +1472,7 @@ function NumberingRulesTab() {
         onAdd={openNew} addLabel={msg('New Rule')} loading={loading} empty={items.length === 0} emptyLabel={msg('No rules defined')}>
         {items.map((r) => (
           <tr key={r.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-            <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{r.entityType}</td>
+            <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{r.entityType}{!r.isActive && <span className="ms-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-400">{t('Off')}</span>}</td>
             <td className="px-4 py-3 font-mono text-xs text-slate-500">{r.prefix}</td>
             <td className="px-4 py-3 font-mono text-xs text-sapphire">{preview(r)}</td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.paddingLength}</td>
@@ -1509,6 +1480,9 @@ function NumberingRulesTab() {
             <td className="px-4 py-3">
               <div className="flex items-center gap-1">
                 <button type="button" onClick={() => openEdit(r)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <button type="button" onClick={() => toggleRule(r)} disabled={deleting === r.id} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
+                  {r.isActive ? t('Turn off') : t('Turn on')}
+                </button>
                 <button type="button" onClick={() => deleteRule(r.id)} disabled={deleting === r.id} aria-label={t('Delete rule')} className={DELETE_ROW_BUTTON}>
                   <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                 </button>
@@ -1649,6 +1623,8 @@ export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string;
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [showOff, setShowOff] = useState(false);
+  const removal = useOrgRowRemoval({ api: gccSettingsApi.removal, noun: msg('country rule'), onDone: () => load() });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1675,11 +1651,16 @@ export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string;
   };
   const f = (key: string, v: string | boolean | number) => setForm(x => ({ ...x, [key]: v }));
   // Rows were saved as ISO-2 or ISO-3 over time (SA / SAU); compare both as ISO-2.
-  const shown = countryCode ? items.filter(s => setupCountryCode(s.countryCode) === setupCountryCode(countryCode)) : items;
+  const inCountry = countryCode ? items.filter(s => setupCountryCode(s.countryCode) === setupCountryCode(countryCode)) : items;
+  // A turned-off rule is hidden until asked for, and payroll ignores it either way.
+  const shown = inCountry.filter(s => showOff || s.isActive !== false);
 
   return (
     <>
       <div className="space-y-4">
+        {removal.notice}
+        {removal.confirmDialog}
+        <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={inCountry.filter(s => s.isActive === false).length} />
         {!(countryCode && (loading || shown.length > 0)) && <div className="flex justify-end">
           <button type="button" onClick={openNew} className={countryCode ? 'btn-secondary' : 'btn-primary'}><Plus className="h-4 w-4" /> {t('Add Country Config')}</button>
         </div>}
@@ -1688,10 +1669,12 @@ export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string;
           : (
             <div className={countryCode ? 'grid gap-4' : 'grid gap-4 sm:grid-cols-2'}>
               {shown.map((s) => (
-                <div key={s.id} className="surface p-4 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900 dark:text-white text-lg">{s.countryCode}</span>
-                    <button type="button" onClick={() => openEdit(s)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
+                <div key={s.id} className={`surface p-4 space-y-2 ${s.isActive === false ? 'opacity-70' : ''}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-900 dark:text-white text-lg">{s.countryCode}{s.isActive === false && <span className="ms-2 rounded-full bg-slate-100 px-2 py-0.5 align-middle text-caption font-medium text-slate-600 dark:bg-white/10 dark:text-slate-300">{t('Off')}</span>}</span>
+                    <OrgRowActions name={s.countryCode} isActive={s.isActive !== false} busy={removal.busyId === s.id}
+                      onEdit={() => openEdit(s)}
+                      onRemove={() => removal.remove({ id: s.id, name: s.countryCode })} onRestore={() => removal.restore({ id: s.id, name: s.countryCode })} />
                   </div>
                   <div className="grid grid-cols-2 gap-1 text-xs">
                     <span className="text-slate-400">EOSB</span><span className="font-medium text-slate-700 dark:text-slate-300">{s.eosbEnabled ? `${s.eosbYears1To5Rate}× / ${s.eosbYearsAbove5Rate}×` : 'Disabled'}</span>
@@ -1715,19 +1698,19 @@ export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string;
           <FormField label={t('Weekend Days')}><input value={form.weekendDays ?? ''} onChange={(e) => f('weekendDays', e.target.value)} className="input w-full" placeholder="Fri,Sat" /></FormField>
           <div />
 
-          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">EOSB</div>
+          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">EOSB</div>
           <label className="col-span-2 flex items-center gap-2"><input type="checkbox" checked={form.eosbEnabled ?? false} onChange={(e) => f('eosbEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Enable EOSB')}</label>
           <FormField label={t('Years 1-5 Rate')}><input type="number" step="0.1" value={form.eosbYears1To5Rate ?? 0.5} onChange={(e) => f('eosbYears1To5Rate', Number(e.target.value))} className="input w-full" /></FormField>
           <FormField label={t('Years 5+ Rate')}><input type="number" step="0.1" value={form.eosbYearsAbove5Rate ?? 1} onChange={(e) => f('eosbYearsAbove5Rate', Number(e.target.value))} className="input w-full" /></FormField>
           <FormField label={t('Min Years')}><input type="number" value={form.eosbMinYears ?? 1} onChange={(e) => f('eosbMinYears', Number(e.target.value))} className="input w-full" /></FormField>
 
-          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">{t('WPS / SIF')}</div>
+          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('WPS / SIF')}</div>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.wpsEnabled ?? false} onChange={(e) => f('wpsEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Enable WPS')}</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.sifEnabled ?? false} onChange={(e) => f('sifEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Enable SIF')}</label>
           <FormField label={t('WPS Agent ID')}><input value={form.wpsAgentId ?? ''} onChange={(e) => f('wpsAgentId', e.target.value)} className="input w-full" /></FormField>
           <FormField label={t('MOL Code')}><input value={form.wpsMolCode ?? ''} onChange={(e) => f('wpsMolCode', e.target.value)} className="input w-full" /></FormField>
 
-          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-bold uppercase tracking-wide text-slate-400">{t('Documents & Compliance')}</div>
+          <div className="col-span-2 border-t border-slate-100 dark:border-white/10 pt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Documents & Compliance')}</div>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.visaTrackingEnabled ?? false} onChange={(e) => f('visaTrackingEnabled', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Visa Tracking')}</label>
           <FormField label={t('Visa Alert Days')}><input type="number" value={form.visaAlertDays ?? 30} onChange={(e) => f('visaAlertDays', Number(e.target.value))} className="input w-full" /></FormField>
           <label className="flex items-center gap-2"><input type="checkbox" checked={form.iqamaRequired ?? false} onChange={(e) => f('iqamaRequired', e.target.checked)} className="h-4 w-4 accent-sapphire" /> {t('Iqama Required')}</label>
@@ -1738,6 +1721,27 @@ export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string;
         </div>
       </Modal>
     </>
+  );
+}
+
+/** The one "Country rules" section: the statutory settings and the payroll keys are two tabs of it (both APIs kept). */
+function CountryRulesSection({ view, onView }: { view: 'statutory' | 'payrollKeys'; onView: (view: 'statutory' | 'payrollKeys') => void }) {
+  const t = useT();
+  const tabs = [{ id: 'statutory' as const, label: t('Statutory settings') }, { id: 'payrollKeys' as const, label: t('Payroll keys') }];
+  return (
+    <div className="space-y-4">
+      <div role="tablist" aria-label={t('Country rules')} className="flex gap-1 border-b border-slate-200 dark:border-white/10">
+        {tabs.map(tab => (
+          <button key={tab.id} type="button" role="tab" id={`country-rules-tab-${tab.id}`} aria-selected={view === tab.id} aria-controls="country-rules-panel" onClick={() => onView(tab.id)}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${view === tab.id ? 'border-sapphire text-sapphire' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'}`}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" id="country-rules-panel" aria-labelledby={`country-rules-tab-${view}`}>
+        {view === 'payrollKeys' ? <CountryPayrollKeys /> : <GCCSettingsTab />}
+      </div>
+    </div>
   );
 }
 
@@ -1767,19 +1771,19 @@ function FiscalYearsTab() {
     if (!form.startDate || !form.endDate) { setError(t('Start and end dates are required')); return; }
     setSaving(true); setError('');
     try { await fiscalYearsApi.create(form); setModalOpen(false); load(); }
-    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? 'Failed to create fiscal year.'); }
+    catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to create fiscal year.')); }
     finally { setSaving(false); }
   };
   const closeFY = async (id: string) => {
     if (!(await confirm({ title: t('Close fiscal year'), message: t('Close this fiscal year? This cannot be undone.'), confirmLabel: t('Close year'), tone: 'danger' }))) return;
     setClosing(id);
-    try { await fiscalYearsApi.close(id); load(); } catch { /**/ }
+    try { await fiscalYearsApi.close(id); load(); } catch (e) { notifyApiError(e); load(); }
     finally { setClosing(null); }
   };
   const deleteFY = async (id: string) => {
-    if (!(await confirm({ title: t('Delete fiscal year'), message: t('Delete this fiscal year?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
+    if (!(await confirm({ title: t('Delete fiscal year'), message: t('Delete this fiscal year? Only a year with no accounting periods or payroll can be deleted.'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
     setDeleting(id);
-    try { await fiscalYearsApi.delete(id); load(); } catch (e) { notifyApiError(e); }
+    try { await fiscalYearsApi.delete(id); load(); } catch (e) { notifyApiError(e); load(); }
     finally { setDeleting(null); }
   };
 
@@ -1799,22 +1803,25 @@ function FiscalYearsTab() {
             <td className="px-4 py-3">
               <div className="flex items-center gap-1">
                 {fy.status === 'Open' && (
-                  <button type="button" onClick={() => closeFY(fy.id)} disabled={closing === fy.id} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
+                  <button type="button" onClick={() => closeFY(fy.id)} disabled={closing === fy.id || fy.canClose === false}
+                    title={fy.closeBlockedReason ? t(fy.closeBlockedReason) : undefined} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
                     {closing === fy.id ? '…' : t('Close year')}
                   </button>
                 )}
-                {!fy.isCurrent && (
+                {fy.canDelete !== false ? (
                   <button type="button" onClick={() => deleteFY(fy.id)} disabled={deleting === fy.id} aria-label={t('Delete fiscal year')} className={DELETE_ROW_BUTTON}>
                     <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
                   </button>
-                )}
+                ) : fy.deleteBlockedReason ? (
+                  <span className="max-w-[18rem] text-xs text-slate-500 dark:text-slate-400">{t(fy.deleteBlockedReason)}</span>
+                ) : null}
               </div>
             </td>
           </tr>
         ))}
       </TableShell>
       <Modal isOpen={modalOpen} title={t('New Fiscal Year')} onClose={() => setModalOpen(false)}
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Create'}</button></>}>
+        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Create')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
           <FormField label={t('Year')} required><input type="number" value={form.year} onChange={(e) => setForm(x => ({ ...x, year: Number(e.target.value) }))} className="input w-full" /></FormField>
@@ -1831,7 +1838,9 @@ function FiscalYearsTab() {
 
 function LocationsTab() {
   const t = useT();
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const removal = useOrgRowRemoval({ kind: 'location', onDone: () => { void load(); } });
+  const writeAccess = useOrgWriteAccess();
+  const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<AdminLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1840,7 +1849,6 @@ function LocationsTab() {
   const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1868,17 +1876,13 @@ function LocationsTab() {
     finally { setSaving(false); }
   };
   const f = (key: string, v: string) => setForm(x => ({ ...x, [key]: v }));
-  const deleteLocation = async (id: string) => {
-    if (!(await confirm({ title: t('Delete location'), message: t('Delete this location?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
-    setDeleting(id);
-    try { await locationsApi.delete(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setDeleting(null); }
-  };
 
   return (
     <>
+      {removal.notice}
       <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={openNew} addLabel={msg('Add Location')}
-        loading={loading} empty={items.length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
+        loading={loading} empty={items.filter((x) => showOff || x.isActive).length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
+        filter={<ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />}
         actions={
           <ImportExportToolbar
             entityName="Locations"
@@ -1888,7 +1892,7 @@ function LocationsTab() {
           />
         }
       >
-        {items.map((l) => (
+        {items.filter((l) => showOff || l.isActive).map((l) => (
           <tr key={l.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500">{l.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{l.nameEn}</td>
@@ -1897,12 +1901,8 @@ function LocationsTab() {
             <td className="px-4 py-3 text-slate-500 text-xs">{l.geofenceRadiusMeters ? `${l.geofenceRadiusMeters}m` : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={l.isActive} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={() => openEdit(l)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                <button type="button" onClick={() => deleteLocation(l.id)} disabled={deleting === l.id} aria-label={t('Delete location')} className={DELETE_ROW_BUTTON}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
-                </button>
-              </div>
+              <OrgRowActions name={l.nameEn} isActive={l.isActive} busy={removal.busyId === l.id} blockedReason={writeAccess(undefined).reason}
+                  onEdit={() => openEdit(l)} onRemove={() => void removal.remove({ id: l.id, name: l.nameEn })} onRestore={() => void removal.restore({ id: l.id, name: l.nameEn })} />
             </td>
           </tr>
         ))}
@@ -1924,7 +1924,7 @@ function LocationsTab() {
           <FormField label={t('Geofence Radius (m)')}><input type="number" value={form.geofenceRadiusMeters} onChange={(e) => f('geofenceRadiusMeters', e.target.value)} className="input w-full" placeholder="100" /></FormField>
         </div>
       </Modal>
-      {confirmDialog}
+      {removal.confirmDialog}
     </>
   );
 }
@@ -1933,7 +1933,7 @@ function LocationsTab() {
 
 function NotificationTemplatesTab() {
   const t = useT();
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const writeAccess = useOrgWriteAccess('notifications.manage');
   const [items, setItems] = useState<NotificationTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterChannel, setFilterChannel] = useState('');
@@ -1943,11 +1943,12 @@ function NotificationTemplatesTab() {
   const [form, setForm] = useState({ code: '', eventType: '', channel: 'Email', subjectEn: '', subjectAr: '', bodyEn: '', bodyAr: '', variables: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [showOff, setShowOff] = useState(false);
+  const removal = useOrgRowRemoval({ api: notificationTemplatesApi.removal, noun: msg('notification template'), onDone: () => { void load(); } });
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems(await notificationTemplatesApi.list(filterChannel || undefined)); } catch { /**/ }
+    try { setItems(await notificationTemplatesApi.list(filterChannel || undefined, true)); } catch (e) { notifyApiError(e); }
     finally { setLoading(false); }
   }, [filterChannel]);
   useEffect(() => { load(); }, [load]);
@@ -1972,37 +1973,35 @@ function NotificationTemplatesTab() {
     } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
     finally { setSaving(false); }
   };
-  const deleteTemplate = async (id: string) => {
-    if (!(await confirm({ title: t('Delete notification template'), message: t('Delete this notification template?'), confirmLabel: t('Delete'), tone: 'danger' }))) return;
-    setDeleting(id);
-    try { await notificationTemplatesApi.delete(id); load(); } catch (e) { notifyApiError(e); }
-    finally { setDeleting(null); }
-  };
+  const isOff = (tpl: NotificationTemplate) => !tpl.isActive || !!tpl.isDeleted;
+  const shown = items.filter((tpl) => showOff || !isOff(tpl));
 
   return (
     <>
+      {removal.notice}
+      {removal.confirmDialog}
       <TableShell columns={[msg('Code'), msg('Event Type'), msg('Channel'), msg('Subject (EN)'), msg('Status'), '']} onAdd={openNew} addLabel={msg('New Template')}
-        loading={loading} empty={items.length === 0} emptyLabel={msg('No templates')}
+        loading={loading} empty={shown.length === 0} emptyLabel={msg('No templates')}
         filter={
+          <div className="flex items-center gap-3">
+          <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter(isOff).length} />
           <select value={filterChannel} onChange={(e) => setFilterChannel(e.target.value)} className="select">
             <option value="">{t('All Channels')}</option>
             {['Email', 'SMS', 'InApp', 'WhatsApp'].map((c) => <option key={c}>{c}</option>)}
           </select>
+          </div>
         }>
-        {items.map((tpl) => (
+        {shown.map((tpl) => (
           <tr key={tpl.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
             <td className="px-4 py-3 font-mono text-xs text-slate-500">{tpl.code}</td>
             <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{tpl.eventType}</td>
             <td className="px-4 py-3"><span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire">{tpl.channel}</span></td>
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300 max-w-xs truncate">{tpl.subjectEn || '—'}</td>
-            <td className="px-4 py-3"><ActiveBadge active={tpl.isActive} /></td>
+            <td className="px-4 py-3"><ActiveBadge active={!isOff(tpl)} /></td>
             <td className="px-4 py-3">
-              <div className="flex items-center gap-1">
-                <button type="button" onClick={() => openEdit(tpl)} className="btn-secondary h-7 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}</button>
-                <button type="button" onClick={() => deleteTemplate(tpl.id)} disabled={deleting === tpl.id} aria-label={t('Delete template')} className={DELETE_ROW_BUTTON}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Delete')}
-                </button>
-              </div>
+              <OrgRowActions name={tpl.code} isActive={!isOff(tpl)} busy={removal.busyId === tpl.id} editable={!tpl.isDeleted}
+                blockedReason={writeAccess(null).allowed ? undefined : writeAccess(null).reason}
+                onEdit={() => openEdit(tpl)} onRemove={() => removal.remove({ id: tpl.id, name: tpl.code })} onRestore={() => removal.restore({ id: tpl.id, name: tpl.code })} />
             </td>
           </tr>
         ))}
@@ -2025,7 +2024,6 @@ function NotificationTemplatesTab() {
           <FormField label={t('Body (AR)')}><textarea value={form.bodyAr} onChange={(e) => setForm(x => ({ ...x, bodyAr: e.target.value }))} className="input w-full min-h-28" dir="rtl" /></FormField>
         </div>
       </Modal>
-      {confirmDialog}
     </>
   );
 }
@@ -2076,7 +2074,7 @@ function AdminAuditLogsTab() {
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
               {['Time', 'Entity', 'Action', 'By', 'Details'].map((h) => (
-                <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -2269,7 +2267,7 @@ function EmailConfigTab() {
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
 /** Row actions are always visible and always say what they do (never an icon alone, never hover-only). */
-const DELETE_ROW_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
+const DELETE_ROW_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
 
 function TableShell({
   columns, onAdd, addLabel, loading, empty, emptyLabel, emptyHint, filter, actions, children,
@@ -2311,7 +2309,7 @@ function TableShell({
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {columns.map((col, index) => (
-                  <th key={col || index} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                  <th key={col || index} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                     {col ? t(col) : <span className="sr-only">{t('Actions')}</span>}
                   </th>
                 ))}
@@ -2509,6 +2507,24 @@ export function SetupPage() {
     setActiveTab(requestedTab);
   }, [requestedTab]);
 
+  // A link to a section this person cannot open lands on their first available section, with a note saying so, instead of
+  // a dead end. Only once the module switches have loaded, so a section that is merely still loading is not bounced.
+  const unavailableNotice = searchParams?.get('unavailable') ?? null;
+  // The old "Country payroll keys" section is a tab of Country rules now; its address keeps working.
+  useEffect(() => {
+    if (tabParam !== 'countryPayrollKeys') return;
+    const params = new URLSearchParams(searchParams?.toString());
+    params.set('tab', 'gccSettings'); params.set('view', 'payrollKeys');
+    router.replace(`/setup?${params.toString()}`, { scroll: false });
+  }, [tabParam, router, searchParams]);
+  const bounceTo = flags.status === 'ready' && tabParam !== 'countryPayrollKeys' ? unavailableSectionRedirect(tabParam, navigationModel.settings, isSettingsTab) : null;
+  useEffect(() => {
+    if (!bounceTo || !tabParam) return;
+    const params = new URLSearchParams(searchParams?.toString());
+    params.set('tab', bounceTo); params.set('unavailable', tabParam);
+    router.replace(`/setup?${params.toString()}`, { scroll: false });
+  }, [bounceTo, tabParam, router, searchParams]);
+
   useEffect(() => {
     if (configurationScopeUnavailable) {
       setCompanies([]);
@@ -2694,7 +2710,7 @@ export function SetupPage() {
       case 'masterData': return <MasterDataTab />;
       case 'numberingRules': return <NumberingRulesTab />;
       case 'systemSettings': return <SystemSettingsTab />;
-      case 'gccSettings': return <GCCSettingsTab />;
+      case 'gccSettings': return <CountryRulesSection view={searchParams?.get('view') === 'payrollKeys' ? 'payrollKeys' : 'statutory'} onView={view => { const params = new URLSearchParams(searchParams?.toString()); params.set('tab', 'gccSettings'); if (view === 'payrollKeys') params.set('view', view); else params.delete('view'); router.replace(`/setup?${params.toString()}`, { scroll: false }); }} />;
       case 'statutoryRules': return <StatutoryRulesPanel />;
       case 'fiscalYears': return <FiscalYearsTab />;
       case 'locations': return <LocationsTab />;
@@ -2754,7 +2770,7 @@ export function SetupPage() {
     return (
       <div className="setup-page space-y-4">
         <header className="setup-page-header min-w-0">
-          <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         </header>
         {/* A module's settings are known only once its switch is (moduleSectionAvailable): wait for it, never deny early. */}
         {flags.status === 'loading'
@@ -2808,7 +2824,7 @@ export function SetupPage() {
       >
       <div className="setup-page space-y-4">
       <header className="setup-page-header min-w-0">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('Setup & Administration')}</h1>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
           {canWrite
             ? t('Every setting in one place: company structure, leave, pay, users and access, and the workspace.')
@@ -2864,7 +2880,7 @@ export function SetupPage() {
                 {isGroupScope && <button type="button" className="btn-secondary" onClick={() => recoverConfigurationScope(null)}>{t('Use all authorized companies')}</button>}
               </div>
             </section>}
-            {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-[#0d1225] dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
+            {configurationScopePending && !configurationScopeBlocked && <p role="status" className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 dark:border-white/10 dark:bg-surface dark:text-slate-300">{t('Opening the selected company scope…')}</p>}
             {isGuided && <GuidedSetupChooser showHeading={false} linkedCompanyId={landingCompanyLink.current} onLinkedCompanyUsed={() => { landingCompanyLink.current = null; }} />}
             {isWorkspace && <SetupStudioWorkspace
               companies={companies}
@@ -2889,6 +2905,19 @@ export function SetupPage() {
 
       {isSettings && (
         <section id="setup-setting-content" aria-label={t(selectedSetting.label)} className="min-w-0 space-y-4">
+          {unavailableNotice && isSettingsTab(unavailableNotice) && (
+            <p role="status" data-testid="setup-section-redirected" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">
+              {t('You cannot open {section}, so this is the first section available to you.', { section: t(tabs.find(tab => tab.id === unavailableNotice)?.label ?? unavailableNotice) })}
+            </p>
+          )}
+          {(() => {
+            const related = SETUP_RELATED_SECTIONS[selectedTab as SetupSectionId];
+            return related && visibleTabs.some(tab => tab.id === related.id) ? (
+              <p className="text-xs text-slate-600 dark:text-slate-400" data-testid="setup-related-section">
+                {t(related.why)} <a className="font-semibold text-blue-700 hover:underline dark:text-sky-300" href={tabHref(related.id as Tab)}>{t(related.label)}</a>
+              </p>
+            ) : null;
+          })()}
           <div className="min-w-0" key={companyVersion}>
             {isSettingsTab(selectedTab) && (visibleTabs.some(tab => tab.id === selectedTab)
               ? renderExistingSettings(selectedTab)

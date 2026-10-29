@@ -146,9 +146,9 @@ public class HrmHierarchyService : IHrmHierarchyService
             });
         }
 
+        _audit.Stage("employee.manager_changed", nameof(Employee), employeeId.ToString(), context,
+            System.Text.Json.JsonSerializer.Serialize(new { previousManagerId, newManagerId = managerEmployeeId }));
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("employee.manager_changed", nameof(Employee), employeeId.ToString(), context,
-            System.Text.Json.JsonSerializer.Serialize(new { previousManagerId, newManagerId = managerEmployeeId }), ct);
     }
 
     public async Task<ReportingLineDto> AddReportingLineAsync(
@@ -178,8 +178,8 @@ public class HrmHierarchyService : IHrmHierarchyService
             CreatedBy = context.UserId
         };
         _db.ReportingLines.Add(line);
+        _audit.Stage("employee.reporting_line_added", nameof(ReportingLine), line.Id.ToString(), context, null);
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("employee.reporting_line_added", nameof(ReportingLine), line.Id.ToString(), context, null, ct);
 
         var names = await _db.Employees
             .AsNoTracking()
@@ -203,8 +203,8 @@ public class HrmHierarchyService : IHrmHierarchyService
         line.EffectiveTo = DateTime.UtcNow;
         line.UpdatedAtUtc = DateTime.UtcNow;
         line.UpdatedBy = context.UserId;
+        _audit.Stage("employee.reporting_line_removed", nameof(ReportingLine), reportingLineId.ToString(), context, null);
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("employee.reporting_line_removed", nameof(ReportingLine), reportingLineId.ToString(), context, null, ct);
         return true;
     }
 

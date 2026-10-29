@@ -199,14 +199,14 @@ public class OpeningsController : ControllerBase
         });
         var csv = Csv.Build(JobOpeningCsvHeaders, rows);
         Response.Headers["Content-Disposition"] = "attachment; filename=job_openings_export.csv";
-        return Content(csv, "text/csv");
+        return CsvDownload.Result(csv);
     }
 
     [HttpGet("import-template")]
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=job_openings_import_template.csv";
-        return Content(Csv.Template(JobOpeningCsvHeaders, JobOpeningCsvExampleRow), "text/csv");
+        return CsvDownload.Result(Csv.Template(JobOpeningCsvHeaders, JobOpeningCsvExampleRow));
     }
 
     [HttpPost("import")]

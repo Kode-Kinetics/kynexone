@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Zayra.Api.Infrastructure.Approvals;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
@@ -115,6 +116,8 @@ public class ProbationController : ControllerBase
         if (req.Recommendation is not ("Confirm" or "Extend" or "Terminate"))
             return BadRequest(new { error = "invalid_recommendation", message = "Recommendation must be Confirm, Extend, or Terminate." });
         if (!await _scopeService.InScopeAsync(User, tenantId, r.EmployeeId, ct)) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, r.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot review your own probation. Ask another manager."));
 
         r.PerformanceSummary           = req.PerformanceSummary;
         r.OverallRating                = req.OverallRating;
@@ -178,6 +181,8 @@ public class ProbationController : ControllerBase
             .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId, ct);
         if (r is null) return NotFound();
         if (!await _scopeService.InScopeAsync(User, tenantId, r.EmployeeId, ct)) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, r.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot decide your own probation. Ask another HR administrator."));
         if (r.Status == "HRApproved" || r.Status == "Closed")
             return Conflict(new { error = "already_decided", message = $"This probation review is already '{r.Status}' with decision '{r.HrDecision}'." });
 

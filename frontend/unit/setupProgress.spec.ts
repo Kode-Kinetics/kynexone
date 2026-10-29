@@ -7,39 +7,39 @@ import { activeCount, areaProgressItems, areaStatus, firstIncomplete, missingRea
 // (at least one active record). Anything that cannot be read is left out, never guessed.
 
 const readiness = (key: string, status: ReadinessItem['status'], scope: ReadinessItem['scope'] = 'company'): ReadinessItem => ({ key, label: key, status, scope, href: `/setup?tab=${key}` });
-const ORGANIZATION = ['companies', 'branches', 'departments', 'designations', 'grades', 'costCenters', 'establishment', 'masterData', 'people', 'contractRenewals'];
+const ORGANIZATION = ['companies', 'branches', 'locations', 'costCenters', 'departments', 'people', 'contractRenewals'];
 
 test('an area counts its record checks and Guided setup items, and nothing else', () => {
-  const items = areaProgressItems('organization', ORGANIZATION, [readiness('establishment', 'recommended')], {
-    companies: 1, branches: 2, departments: 0, designations: 0, grades: 0, costCenters: 1, masterData: 3,
+  const items = areaProgressItems('companyStructure', ORGANIZATION, [readiness('locations', 'recommended')], {
+    companies: 1, branches: 2, departments: 0, costCenters: 1,
   });
   // People and contract renewals are workspaces with no check: they are not counted.
   expect(items.map(item => [item.destinationId, item.done, item.source])).toEqual([
-    ['companies', true, 'records'], ['branches', true, 'records'], ['departments', false, 'records'], ['designations', false, 'records'],
-    ['grades', false, 'records'], ['costCenters', true, 'records'], ['establishment', false, 'guided'], ['masterData', true, 'records'],
+    ['companies', true, 'records'], ['branches', true, 'records'], ['locations', false, 'guided'], ['costCenters', true, 'records'],
+    ['departments', false, 'records'],
   ]);
-  expect(areaStatus(items)).toEqual({ done: 4, total: 8, state: 'partial' });
-  expect(firstIncomplete(items)?.destinationId).toBe('departments');
+  expect(areaStatus(items)).toEqual({ done: 3, total: 5, state: 'partial' });
+  expect(firstIncomplete(items)?.destinationId).toBe('locations');
 });
 
 test('Guided setup\'s verdict wins over a record check, so an area never contradicts it', () => {
   // The workspace has a drop-down list type, but Guided setup still lists the item (it counts inactive ones too, or the
   // server knows better): its verdict is used.
-  const items = areaProgressItems('organization', ['masterData'], [readiness('masterData', 'todo', 'workspace')], { masterData: 2 });
+  const items = areaProgressItems('workspace', ['masterData'], [readiness('masterData', 'todo', 'workspace')], { masterData: 2 });
   expect(items).toEqual([{ destinationId: 'masterData', done: false, source: 'guided' }]);
   // Once configured the server stops listing a workspace item; the record check answers.
-  expect(areaProgressItems('organization', ['masterData'], [], { masterData: 2 })).toEqual([{ destinationId: 'masterData', done: true, source: 'records' }]);
+  expect(areaProgressItems('workspace', ['masterData'], [], { masterData: 2 })).toEqual([{ destinationId: 'masterData', done: true, source: 'records' }]);
 });
 
 test('an unreadable source leaves its item out: an area with nothing measurable has no status', () => {
-  expect(areaProgressItems('organization', ['grades', 'departments'], null, { grades: null })).toEqual([]);
+  expect(areaProgressItems('companyStructure', ['branches', 'departments'], null, { branches: null })).toEqual([]);
   expect(areaStatus([])).toBeNull();
   // Leave and absence has no check at all.
-  expect(areaStatus(areaProgressItems('leave', ['leaveTypes', 'leavePolicies', 'holidayCalendars', 'leave'], null, {}))).toBeNull();
+  expect(areaStatus(areaProgressItems('timeLeave', ['leaveTypes', 'leavePolicies', 'holidayCalendars', 'leave'], null, {}))).toBeNull();
   // A readiness-only item (Payroll accounting) is not measurable without a company's checklist.
-  expect(areaProgressItems('payroll', ['glMapping', 'fiscalYears', 'payroll'], null, { fiscalYears: 1 })).toEqual([{ destinationId: 'fiscalYears', done: true, source: 'records' }]);
+  expect(areaProgressItems('payrollCompliance', ['glMapping', 'fiscalYears'], null, { fiscalYears: 1 })).toEqual([{ destinationId: 'fiscalYears', done: true, source: 'records' }]);
   // An item the user cannot open is not in destinationIds, so it is never counted.
-  expect(areaProgressItems('payroll', ['fiscalYears'], [readiness('glMapping', 'todo')], { fiscalYears: 0 })).toEqual([{ destinationId: 'fiscalYears', done: false, source: 'records' }]);
+  expect(areaProgressItems('payrollCompliance', ['fiscalYears'], [readiness('glMapping', 'todo')], { fiscalYears: 0 })).toEqual([{ destinationId: 'fiscalYears', done: false, source: 'records' }]);
 });
 
 test('statuses: Not started, x of y, Done', () => {
@@ -51,11 +51,13 @@ test('statuses: Not started, x of y, Done', () => {
 
 test('payroll and compliance map their Guided setup items to their destinations', () => {
   const items = readinessItems();
-  expect(areaProgressItems('payroll', ['glMapping', 'fiscalYears', 'payroll', 'payslipTemplates'], items, {})).toEqual([
+  expect(areaProgressItems('payrollCompliance', ['glMapping', 'fiscalYears'], items, {})).toEqual([
     { destinationId: 'glMapping', done: true, source: 'guided' },
+  ]);
+  expect(areaProgressItems('payBenefits', ['payroll', 'payslipTemplates'], items, {})).toEqual([
     { destinationId: 'payroll', done: false, source: 'guided' },
   ]);
-  expect(areaProgressItems('compliance', ['gccSettings', 'statutoryRules', 'saudiCompliance', 'saudiComplianceDashboard', 'gosiFiling'], items, { gccSettings: 0 })).toEqual([
+  expect(areaProgressItems('payrollCompliance', ['gccSettings', 'statutoryRules', 'saudiCompliance', 'saudiComplianceDashboard', 'gosiFiling'], items, { gccSettings: 0 })).toEqual([
     { destinationId: 'gccSettings', done: false, source: 'guided' },
     { destinationId: 'statutoryRules', done: true, source: 'guided' },
     { destinationId: 'saudiComplianceDashboard', done: false, source: 'guided' },

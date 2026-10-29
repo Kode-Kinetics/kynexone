@@ -99,7 +99,7 @@ public class KsaPackTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(8_000m, 0m, 0m, 0m),
-            new DateOnly(2020, 1, 1), new DateOnly(2023, 1, 1),
+            new DateOnly(2020, 1, 1), new DateOnly(2022, 12, 31),
             "Termination", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);
@@ -119,7 +119,7 @@ public class KsaPackTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2018, 1, 1), new DateOnly(2025, 7, 1),
+            new DateOnly(2018, 1, 1), new DateOnly(2025, 6, 30),
             "Termination", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);
@@ -137,7 +137,7 @@ public class KsaPackTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2024, 1, 1), new DateOnly(2025, 6, 1),
+            new DateOnly(2024, 1, 1), new DateOnly(2025, 5, 31),
             "Resignation", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);
@@ -154,7 +154,7 @@ public class KsaPackTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(8_000m, 0m, 0m, 0m),
-            new DateOnly(2020, 1, 1), new DateOnly(2023, 1, 1),
+            new DateOnly(2020, 1, 1), new DateOnly(2022, 12, 31),
             "Resignation", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);
@@ -170,7 +170,7 @@ public class KsaPackTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2018, 1, 1), new DateOnly(2025, 7, 1),
+            new DateOnly(2018, 1, 1), new DateOnly(2025, 6, 30),
             "Resignation", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);

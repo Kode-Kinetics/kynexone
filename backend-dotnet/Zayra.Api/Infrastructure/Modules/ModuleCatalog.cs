@@ -182,7 +182,7 @@ public static class ModuleCatalog
             Description = "Sign-in, multi-factor authentication, users, roles and permissions.",
             Lock = ModuleLock.Core,
             LockReason = AccessReason,
-            RoutePrefixes = ["/api/auth", "/api/access", "/api/enterprise-identity", "/api/platform"],
+            RoutePrefixes = ["/api/auth", "/api/access", "/api/enterprise-identity", "/api/platform", "/api/security/field-encryption"],
             NavPaths = ["/user-management"],
             NotificationCategories = [NotificationCategories.Security],
         },
@@ -322,7 +322,7 @@ public static class ModuleCatalog
             RoutePrefixes =
             [
                 "/api/tenant-admin", "/api/tenant-hr-config", "/api/tenant-modules", "/api/setup",
-                "/api/setup-assistant", "/api/company-setup", "/api/localization", "/api/geo", "/api/help-text", "/api/help-texts",
+                "/api/setup-assistant", "/api/company-setup", "/api/localization", "/api/geo", "/api/capabilities", "/api/help-text", "/api/help-texts",
                 "/api/country-packs", "/api/statutory-rules", "/api/migrations", "/api/pricing",
                 "/api/features", "/api/admin", "/api/company-tax-policies",
                 "/api/company-compliance-profiles", "/api/finance/gl", "/api/finance/rates",

@@ -220,7 +220,7 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") ||
             x.Key is "onboarding.templates.manage" or "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
-            "payroll.read" or "payroll.write" or "payroll.approve" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
+            "payroll.read" or "payroll.write" or "payroll.approve" or "payroll.rules.manage" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
             // CMP: runs merit cycles and is the default first approval step (never on a worksheet carrying their own pay).
             x.Key is "compensation.read" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
@@ -440,6 +440,7 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.approve", "Payroll", "Approve payroll runs"),
             ("payroll.export", "Payroll", "Export payroll and WPS files"),
             ("payroll.structure_manage", "Payroll", "Manage salary structures and components"),
+            ("payroll.rules.manage", "Payroll", "Propose changes to a company's payroll rules (rest-day pay, leave payout, probation, absence base); a change that lowers pay is approved by a different payroll approver"),
             // Payroll run state-machine (financial-controller tier) — added for the [HasPermission]
             // conversion of the run lifecycle. Seeded into bundles below so today's role-name reach
             // is preserved (Admin via backfill; payroll.lock→Finance Approver; run_delete→Payroll Manager).

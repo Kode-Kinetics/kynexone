@@ -163,7 +163,7 @@ public class LeaveTypesController : ControllerBase
         if (req.MaxConsecutiveDays.HasValue) leaveType.MaxConsecutiveDays = req.MaxConsecutiveDays.Value;
         if (!string.IsNullOrWhiteSpace(req.ColorCode)) leaveType.ColorCode = req.ColorCode;
         if (req.SortOrder.HasValue) leaveType.SortOrder = req.SortOrder.Value;
-        if (req.IsActive.HasValue) leaveType.IsActive = req.IsActive.Value;
+        // On or off is changed only by Remove / Restore (permissioned, audited, usage-checked), never by an edit.
 
         await _db.SaveChangesAsync(ct);
 
@@ -174,21 +174,82 @@ public class LeaveTypesController : ControllerBase
         return Ok(leaveType);
     }
 
+    /// <summary>The code a statutory acknowledgement must echo: <c>acknowledgeStatutory=LEAVE_TYPE_STATUTORY</c>. A bare "true" is not
+    /// accepted, so the confirmation proves the caller was shown this warning.</summary>
+    public const string StatutoryWarningCode = "LEAVE_TYPE_STATUTORY";
+
+    /// <summary>Setup's Remove: a type nothing references is deleted (its code is freed); a type any balance, request, policy
+    /// or encashment references (in any company, found from the data model) is turned off, so history still resolves, and can
+    /// be restored. Turning off or deleting a statutory leave type (special leaves, annual, sick) needs the acknowledgement
+    /// to echo <see cref="StatutoryWarningCode"/>: the statutory floors still apply to the people who hold it. The decision and
+    /// who acknowledged it are always audited.</summary>
     [HttpDelete("{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    [HasPermission("leave.policy_manage")]
+    public async Task<IActionResult> Delete(Guid id, [FromQuery] string? acknowledgeStatutory, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var leaveType = await _db.LeaveTypes
-            .FirstOrDefaultAsync(t => t.Id == id && t.TenantId == tenantId, ct);
-        if (leaveType is null) return NotFound();
+        var leaveType = await _db.LeaveTypes.FirstOrDefaultAsync(t => t.Id == id && t.TenantId == tenantId, ct);
+        if (leaveType is null || !OrgWriteRules.MayWriteCompany(this, leaveType.CompanyId)) return NotFound();
 
-        leaveType.IsActive = false;
+        var statutory = Infrastructure.CountryPack.Ksa.KsaStatutorySpecialLeave.ProtectedKind(leaveType.Code, leaveType.NameEn, leaveType.Category);
+        var acknowledged = string.Equals(acknowledgeStatutory, StatutoryWarningCode, StringComparison.Ordinal);
+        if (statutory is not null && !acknowledged)
+        {
+            await _leaveService.LogAuditAsync(tenantId.Value, "LeaveType", id.ToString(), "RemoveRefused", "active", "active",
+                $"Removal of statutory leave type {leaveType.Code} ({statutory}) refused: not acknowledged", User.Identity?.Name ?? "Admin", ct);
+            return SetupRemoval.Blocked(this, StatutoryWarningCode,
+                $"{leaveType.NameEn} is a statutory leave type. Turning it off does not change what the law requires: statutory floors still apply to everyone who holds it. Confirm to continue.");
+        }
+
+        var usage = await SetupRemoval.MeasureAsync(this, UsageProbes(tenantId.Value, id), ct);
+        var ackNote = statutory is not null ? $"; statutory type ({statutory}), acknowledged by the caller, floors still apply" : string.Empty;
+        if (usage.InUse)
+        {
+            leaveType.IsActive = false;
+            await _db.SaveChangesAsync(ct);
+            await _leaveService.LogAuditAsync(tenantId.Value, "LeaveType", leaveType.Id.ToString(),
+                "TurnedOff", "active", "off", $"Leave type turned off; in use ({usage.WideTotal} references across the tenant){ackNote}",
+                User.Identity?.Name ?? "Admin", ct);
+            return SetupRemoval.TurnedOff(this, usage);
+        }
+
+        _db.LeaveTypes.Remove(leaveType);
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        await _leaveService.LogAuditAsync(tenantId.Value, "LeaveType", id.ToString(),
+            "Deleted", leaveType.Code, string.Empty, "Leave type deleted; nothing used it" + ackNote, User.Identity?.Name ?? "Admin", ct);
+        return SetupRemoval.Deleted(this);
     }
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("leave.policy_manage")]
+    public async Task<IActionResult> Restore(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var leaveType = await _db.LeaveTypes.FirstOrDefaultAsync(t => t.Id == id && t.TenantId == tenantId, ct);
+        if (leaveType is null || !OrgWriteRules.MayWriteCompany(this, leaveType.CompanyId)) return NotFound();
+        if (!leaveType.IsActive)
+        {
+            leaveType.IsActive = true;
+            await _db.SaveChangesAsync(ct);
+            await _leaveService.LogAuditAsync(tenantId.Value, "LeaveType", id.ToString(), "Restored", "off", "active",
+                "Leave type turned back on", User.Identity?.Name ?? "Admin", ct);
+        }
+        return SetupRemoval.Restored(this);
+    }
+
+    private static readonly IReadOnlyDictionary<string, (string Kind, string Label)> UsageNames = new Dictionary<string, (string, string)>
+    {
+        ["EmployeeLeaveBalance"] = ("leaveBalance", "balances"), ["LeaveRequest"] = ("leaveRequest", "leave requests"),
+        ["LeavePolicy"] = ("leavePolicy", "policies"), ["LeaveBalanceTransaction"] = ("leaveTransaction", "balance entries"),
+        ["LeaveEncashmentRequest"] = ("leaveEncashment", "encashment requests"),
+    };
+
+    /// <summary>Everything in the data model that points at a leave type, found from the model, not listed by hand.</summary>
+    private IReadOnlyList<SetupRemoval.Probe> UsageProbes(Guid tenantId, Guid id) =>
+        SetupRowUsage.Probes(_db, tenantId, id, typeof(LeaveType), "LeaveType", UsageNames);
 
     /// <summary>Leave administrators see every company's types they can reach; everyone else is narrowed to their own.</summary>
     private bool IsLeaveAdministrator() =>
@@ -232,7 +293,7 @@ public class LeaveTypesController : ControllerBase
         });
         var csv = Csv.Build(LeaveTypeCsvHeaders, rows);
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_types_export.csv";
-        return Content(csv, "text/csv");
+        return CsvDownload.Result(csv);
     }
 
     [HttpGet("import-template")]
@@ -240,7 +301,7 @@ public class LeaveTypesController : ControllerBase
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_types_import_template.csv";
-        return Content(Csv.Template(LeaveTypeCsvHeaders, LeaveTypeCsvExampleRow), "text/csv");
+        return CsvDownload.Result(Csv.Template(LeaveTypeCsvHeaders, LeaveTypeCsvExampleRow));
     }
 
     [HttpPost("import")]

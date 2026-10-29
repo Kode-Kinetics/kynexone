@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -42,7 +42,7 @@ public sealed class EosbCostedLockPostgresTests
         foreach (var (code, dept) in new[] { ("E1", "D-SAL"), ("E2", "D-FIN") })
         {
             var e = await k.AddEmployee(code, dept);
-            e.JoiningDate = new DateTime(2023, 6, 30, 0, 0, 0, DateTimeKind.Utc); e.Nationality = "SAU"; e.ContractType = "Indefinite"; e.WorkEmail = $"{code.ToLowerInvariant()}@test.com";
+            e.JoiningDate = new DateTime(2023, 7, 1, 0, 0, 0, DateTimeKind.Utc); // service counts its last day: 1 Jul 2023 to 30 Jun 2026 is exactly three years e.Nationality = "SAU"; e.ContractType = "Indefinite"; e.WorkEmail = $"{code.ToLowerInvariant()}@test.com";
         }
         var company = await k.Db.Companies.SingleAsync(c => c.Id == k.CompanyId);
         company.CountryCode = "SAU"; company.Jurisdiction = "KSA-mainland"; company.CostCentreSmallCellMin = smallCell;

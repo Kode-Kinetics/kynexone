@@ -80,7 +80,7 @@ public class RawSqlExecutionRatchetTests
         // no table row; StatutoryRuleSafeguardPostgresTests.ConcurrentOverlappingCreatesProduceOneVersionAndOneConflict
         // proves the serialization and StatutoryRulesIsolationTests proves tenant isolation.
         ["Controllers/StatutoryRulesController.cs"] = 1,
-        ["Data/ZayraDbContext.cs"] = 2,
+        // Data/ZayraDbContext.cs held 2 pg_advisory_xact_lock executes; the audit locks now use SqlQuery<bool> try-locks (0).
         // Admin-seat pg_advisory_xact_lock (was a session lock + unlock pair, 2 -> 1).
         ["Infrastructure/Auth/AccessManagementService.cs"] = 1,
         // The SAME admin-seat pg_advisory_xact_lock (AccessManagementService.AdminSeatLockKey(tenant)), taken by the
@@ -249,5 +249,106 @@ public class RawSqlExecutionRatchetTests
             "AuthSeeder may READ is_group_scope to report a stranded administrator, but it must never " +
             "write it: scope is an authorisation decision that belongs to an authenticated admin behind " +
             "AccessController's audit trail, not to an unattended boot path that runs on every deploy.");
+    }
+
+    // ── Session-verdict cache bypass ratchet ──────────────────────────────────────────────────────
+    // The cached "is this token still current" verdict reads these tables. EF saves evict it through
+    // SessionVerdictInvalidationInterceptor; set-based writes (ExecuteUpdate / ExecuteDelete / raw SQL) do not pass
+    // through it, so each must either call SessionVerdictInvalidation.* or be reviewed and listed here.
+    private static readonly string[] VerdictDbSets =
+    [
+        "Users", "UserRoles", "Roles", "RolePermissions", "Permissions", "UserPermissionOverrides",
+        "UserEntityAccesses", "EmployeeUserAccounts", "SecuritySettings", "TenantIdentityProviderSettings",
+        "Tenants", "Companies", "PlatformUsers",
+    ];
+
+    private static readonly string[] VerdictTables =
+    [
+        "users", "user_roles", "roles", "role_permissions", "permissions", "user_permission_overrides",
+        "user_entity_accesses", "employee_user_accounts", "security_settings", "tenant_identity_provider_settings",
+        "tenants", "companies", "platform_users",
+    ];
+
+    // file -> approved number of set-based writes WITHOUT an explicit invalidation call, and why that is safe.
+    private static readonly Dictionary<string, int> ApprovedUninvalidatedVerdictWrites = new()
+    {
+        // Boot-time backfill of tenants.account_type; runs before the first request, so the verdict cache is empty.
+        ["Infrastructure/Boot/CompanyScopeBackfill.cs"] = 1,
+        // users.password_hash transparent re-hash on login. The hash is not an input to the verdict (stamp, roles,
+        // permissions, scope, policy and company set are).
+        ["Infrastructure/Auth/AuthService.cs"] = 1,
+        // platform_users.password_hash re-hash, same reasoning.
+        ["Controllers/PlatformController.cs"] = 1,
+        // Boot-time INSERT of role_permissions for the Admin role; the cache is empty at boot.
+        ["Infrastructure/Seed/AuthSeeder.cs"] = 1,
+        // Field-encryption re-protection of users/platform_users.mfa_secret_encrypted: the ciphertext of the TOTP secret is
+        // not a verdict input (stamp, roles, permissions, scope, policy and company set are).
+        ["Infrastructure/FieldEncryption/DataProtectionSecretReprotector.cs"] = 2,
+        // users/platform_users.mfa_last_totp_step replay counter: not a verdict input either.
+        ["Infrastructure/FieldEncryption/FieldEncryptionCustodySupport.cs"] = 2,
+    };
+
+    [Fact]
+    public void SetBasedWritesOnSessionVerdictTables_MustInvalidateTheVerdictCache()
+    {
+        var setPattern = new System.Text.RegularExpressions.Regex(
+            @"\b(?:_?db|ctx|context|dbContext)\.(" + string.Join("|", VerdictDbSets) + @")\b");
+        var sqlPattern = new System.Text.RegularExpressions.Regex(
+            @"(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+""?(" + string.Join("|", VerdictTables) + @")\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var setBased = new System.Text.RegularExpressions.Regex(@"Execute(Update|Delete)(Async)?\(");
+        var apiRoot = ResolveApiRoot();
+        var uninvalidated = new Dictionary<string, int>();
+
+        foreach (var file in Directory.EnumerateFiles(apiRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(apiRoot, file).Replace(Path.DirectorySeparatorChar, '/');
+            if (relative.StartsWith("Migrations/", StringComparison.Ordinal) || relative.StartsWith("obj/", StringComparison.Ordinal)
+                || relative.StartsWith("bin/", StringComparison.Ordinal)) continue;
+            var lines = File.ReadAllLines(file);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                if (line.TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+                var hit = false;
+                if (setBased.IsMatch(line))
+                {
+                    var start = i;
+                    while (start > 0 && !(lines[start - 1].TrimEnd().EndsWith(';') || lines[start - 1].TrimEnd().EndsWith('{')
+                                          || lines[start - 1].TrimEnd().EndsWith('}'))) start--;
+                    hit = setPattern.IsMatch(string.Join(' ', lines[start..(i + 1)]));
+                }
+                else if (WriteApis.Any(api => line.Contains(api, StringComparison.Ordinal)))
+                {
+                    hit = sqlPattern.IsMatch(string.Join(' ', lines[i..Math.Min(lines.Length, i + 14)]));
+                }
+                if (!hit) continue;
+
+                var window = string.Join('\n', lines[Math.Max(0, i - 10)..Math.Min(lines.Length, i + 26)]);
+                if (window.Contains("SessionVerdictInvalidation.", StringComparison.Ordinal)) continue;
+                uninvalidated[relative] = uninvalidated.GetValueOrDefault(relative) + 1;
+            }
+        }
+
+        var offenders = uninvalidated
+            .Where(kv => !ApprovedUninvalidatedVerdictWrites.TryGetValue(kv.Key, out var ok) || kv.Value > ok)
+            .Select(kv => $"{kv.Key}: {kv.Value} set-based write(s) on a session-verdict table without SessionVerdictInvalidation.*")
+            .OrderBy(x => x, StringComparer.Ordinal).ToList();
+
+        offenders.Should().BeEmpty(
+            "ExecuteUpdate/ExecuteDelete/raw SQL bypass the save interceptor, so a revocation done this way would stay " +
+            "cached for up to the verdict TTL. Call SessionVerdictInvalidation.User/Tenant/All after the write, or list " +
+            "the site in ApprovedUninvalidatedVerdictWrites with the reason it cannot affect a verdict.\n  " +
+            string.Join("\n  ", offenders));
+    }
+
+    [Fact]
+    public void SessionVerdictRatchet_DetectsAnUnguardedUsersExecuteUpdate()
+    {
+        // Negative control: the pattern used above really matches the shape a future offender would take.
+        var set = new System.Text.RegularExpressions.Regex(@"\b(?:_?db|ctx|context|dbContext)\.(" + string.Join("|", VerdictDbSets) + @")\b");
+        set.IsMatch("await _db.Users.Where(x => x.Id == id).ExecuteUpdateAsync(s => s.SetProperty(x => x.IsActive, false), ct);")
+            .Should().BeTrue();
+        set.IsMatch("await _db.RefreshTokens.Where(x => x.UserId == id).ExecuteUpdateAsync(s => s, ct);").Should().BeFalse();
     }
 }

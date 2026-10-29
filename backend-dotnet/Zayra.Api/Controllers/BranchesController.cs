@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -116,15 +117,15 @@ public class BranchesController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [HasPermission("organization.delete")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        var currentCompany = await BranchCompanyAsync(tenantId.Value, id, cancellationToken);
-        if (currentCompany is null || !MayWriteCompany(currentCompany.Value)) return NotFound();
-        return await _organization.DeleteBranchAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
-    }
+    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RemoveAsync(this, _organization, OrgRowKind.Branch, id, Context(), cancellationToken);
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> Restore(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RestoreAsync(this, _organization, OrgRowKind.Branch, id, Context(), cancellationToken);
 
     // ── Export ────────────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ public class BranchesController : ControllerBase
             x.b.TimeZoneId, x.b.LaborOfficeCode, x.b.IsHeadOffice ? "true" : "false",
             x.b.IsActive ? "true" : "false"
         });
-        return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"branches_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"branches_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     // ── Import Template ───────────────────────────────────────────────────────
@@ -156,7 +157,7 @@ public class BranchesController : ControllerBase
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "branches_import_template.csv");
+        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "branches_import_template.csv");
 
     // ── Import Preview ────────────────────────────────────────────────────────
 

@@ -143,7 +143,7 @@ public class CompaniesController : ControllerBase
             c.WpsEmployerId, c.GosiEmployerId, c.QiwaEstablishmentId, c.DefaultCurrency,
             c.IsActive ? "true" : "false"
         });
-        return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"companies_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"companies_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     // ── Import Template ───────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ public class CompaniesController : ControllerBase
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "companies_import_template.csv");
+        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "companies_import_template.csv");
 
     // ── Import Preview ────────────────────────────────────────────────────────
 

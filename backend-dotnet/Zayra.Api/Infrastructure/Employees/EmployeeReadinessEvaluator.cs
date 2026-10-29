@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -136,8 +137,17 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             var req = new ReadinessRequirement("JoiningDate", "contract", FailClosed: true, Gate: "activate", Source: "integrity");
             items.Add(ToItem(req, FieldPresence.Missing));
         }
+        if (emp.SalaryPackagePendingApproval)
+            items.Add(new ReadinessItem(
+                Key: SalaryPackageKey,
+                Label: "Salary package waiting for Finance approval — it must be approved by a different person before this employee can be activated",
+                Category: "payroll", Reason: "approval", Jurisdiction: null, Gate: "activate",
+                FixKind: "approval", FixTarget: "salary-changes", DocumentType: null));
         return items.Count == 0 ? System.Array.Empty<ReadinessItem>() : items;
     }
+
+    /// <summary>The synthetic, evaluator-owned key of the "first salary package not yet approved" activation blocker.</summary>
+    public const string SalaryPackageKey = "SalaryPackageApproval";
 
     /// <summary>
     /// FAIL CLOSED ON AN UNKNOWN JURISDICTION. Every statutory requirement is keyed on the employee's
@@ -385,6 +395,10 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             .Where(x => x.TenantId == tenantId && ids.Contains(x.EmployeeId)
                         && x.EventType == Zayra.Api.Application.Employees.EmployeeBankProfileSync.RoutingCodeClearedEventType)
             .Select(x => x.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+        var pendingPackageIds = (await _db.SalaryChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == SalaryChangeRequest.Pending && ids.Contains(x.EmployeeId)
+                        && (x.Source == SalaryChangeSources.NewHire || x.Source == SalaryChangeSources.EmployeeImport))
+            .Select(x => x.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
         var salaryEmpIds = (await _db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && ids.Contains(x.EmployeeId))
             .Select(x => x.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
@@ -413,7 +427,7 @@ public sealed class EmployeeReadinessEvaluator : IEmployeeReadinessEvaluator
             result[e.Id] = BuildFromEmployee(e, pf, docList, expiries,
                 hasSalary: salaryEmpIds.Contains(e.Id) || (e.Salary ?? 0m) > 0m,
                 bankRoutingCodeRequired: routingClearedIds.Contains(e.Id))
-                with { BorderNumberGraceDays = e.CompanyId is { } cid && graceByCompany.TryGetValue(cid, out var g) ? g : BorderNumberRule.DefaultGraceDays };
+                with { SalaryPackagePendingApproval = pendingPackageIds.Contains(e.Id) && !EstablishmentOccupancy.IsOccupyingStatus(e.Status), BorderNumberGraceDays = e.CompanyId is { } cid && graceByCompany.TryGetValue(cid, out var g) ? g : BorderNumberRule.DefaultGraceDays };
         }
         return result;
     }

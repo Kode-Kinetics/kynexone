@@ -17,9 +17,9 @@ import { GL_AND_RATES_PERMISSIONS } from './setupAccess';
 export type SetupModuleSectionId =
   | 'openingBalances'
   | 'leaveTypes' | 'leavePolicies' | 'holidayCalendars' | 'shiftDefinitions' | 'shiftPolicy' | 'attendanceRules' | 'overtimePolicies' | 'attendanceDevices'
-  | 'benefitPlans' | 'loanTypes' | 'loanPolicies' | 'advancePolicy' | 'bonusTypes' | 'payslipTemplates'
+  | 'benefitPlans' | 'loanTypes' | 'loanPolicies' | 'advancePolicy' | 'bonusTypes' | 'payslipTemplates' | 'payrollRules'
   | 'onboardingChecklists' | 'onboardingChecklistTemplates' | 'hireTemplates' | 'performanceScorecards' | 'letterTemplates' | 'engagementPrivacy'
-  | 'taxPolicies' | 'complianceProfiles' | 'saudiCompliance' | 'countryPayrollKeys'
+  | 'taxPolicies' | 'complianceProfiles' | 'saudiCompliance'
   | 'users' | 'roles' | 'permissionMatrix' | 'permissions' | 'permissionGrantors' | 'approvalAuthorities' | 'approvalDelegations' | 'signInSecurity' | 'accessLog'
   | 'localization' | 'branding' | 'helpText' | 'modules' | 'planBilling';
 
@@ -74,6 +74,7 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   { id: 'loanPolicies', group: 'payBenefits', label: msg('Loan policies'), description: msg('Loan limits by grade, instalments and eligibility.'), permissions: LOANS, roles: ['Admin', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'advancePolicy', group: 'payBenefits', label: msg('Salary advance policy'), description: msg('How much can be advanced, how often, and how it is repaid.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'bonusTypes', group: 'payBenefits', label: msg('Bonus types'), description: msg('The kinds of bonus paid through payroll.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
+  { id: 'payrollRules', group: 'payBenefits', label: msg('Payroll rules'), description: msg('Your company’s own payroll choices: rest-day pay, leave payout, probation, part-month pay and absence deductions.'), permissions: ['payroll.rules.manage', 'payroll.approve'], roles: ['Admin', 'HR Manager', 'Payroll Manager', 'Finance Approver'], modulePath: '/payroll' }, // PUT needs payroll.rules.manage (HR proposes); approve/reject need payroll.approve (a different person decides)
   { id: 'payslipTemplates', group: 'payBenefits', label: msg('Payslip templates'), description: msg('The layout of the payslips employees receive.'), permissions: ['payroll.read'], roles: ['Admin', 'HR Manager', 'Payroll Manager', 'Payroll Officer'], modulePath: '/payroll/templates', featureKey: 'payslip_template_designer' },
 
   // Talent & employee services
@@ -88,7 +89,6 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   { id: 'taxPolicies', group: 'payrollCompliance', label: msg('Tax policies'), description: msg('Tax and contribution rules applied during payroll.'), permissions: ['payroll.read'], roles: ['Admin', 'HR Director', 'Payroll Manager', 'Finance Approver', 'Auditor'], modulePath: '/tax-policies' },
   { id: 'complianceProfiles', group: 'payrollCompliance', label: msg('Compliance profiles'), description: msg('Country and company rules that compliance checks run against.'), permissions: ['compliance.read'], roles: ['Admin', 'HR Director', 'HR Manager', 'Compliance Officer', 'Auditor'], modulePath: '/compliance-profiles' },
   { id: 'saudiCompliance', group: 'payrollCompliance', label: msg('Saudi compliance'), description: msg('Qiwa, GOSI, Mudad and WPS details for Saudi companies.'), permissions: ['qiwa.read'], modulePath: '/saudi-compliance' },
-  { id: 'countryPayrollKeys', group: 'payrollCompliance', label: msg('Country payroll keys'), description: msg('Extra per-country payroll values, such as weekend days.'), permissions: TENANT, modulePath: '/tenant-admin' },
 
   // Users & access
   { id: 'users', group: 'accessSecurity', label: msg('Users'), description: msg('Who can sign in, their roles and companies.'), permissions: SECURITY, modulePath: '/user-management' },

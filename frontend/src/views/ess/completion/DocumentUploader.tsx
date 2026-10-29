@@ -49,7 +49,7 @@ export function DocumentUploader({ section, documents, disabled, getStepUp, onNe
 
   return (
     <div className="space-y-3 rounded-xl border border-slate-200 p-3 dark:border-white/10">
-      <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Attach a copy')}</h3>
+      <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Attach a copy')}</h3>
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('You can attach up to {count} files here.', { count: MAX_ATTACHMENTS })}</p>
       <div className="grid gap-3 sm:grid-cols-2">
         <label htmlFor={kindId} className="block space-y-1">

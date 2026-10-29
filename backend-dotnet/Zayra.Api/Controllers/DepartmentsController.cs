@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -56,7 +57,7 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DepartmentDto>> Create(DepartmentRequest request, CancellationToken cancellationToken)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
+        if (!OrgWriteRules.MayCreateInCompany(this, request.CompanyId)) return Forbid();
         // A cost centre or a parent department decides where the department's people cost to: that is the cost-centre permission, not plain org write.
         if ((request.CostCenterId is not null || request.ParentDepartmentId is not null) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         try
@@ -73,7 +74,8 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DepartmentDto>> Update(Guid id, DepartmentRequest request, CancellationToken cancellationToken)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
+        var denied = await OrgWriteRules.GuardEditAsync(this, _organization, OrgRowKind.Department, id, request.CompanyId, cancellationToken);
+        if (denied is not null) return denied;
         try
         {
             var tenantId = this.GetTenantId();
@@ -90,14 +92,15 @@ public class DepartmentsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [HasPermission("organization.delete")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-    {
-        if (!this.HasGroupEntityScope()) return Forbid();
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        return await _organization.DeleteDepartmentAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
-    }
+    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RemoveAsync(this, _organization, OrgRowKind.Department, id, Context(), cancellationToken);
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> Restore(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RestoreAsync(this, _organization, OrgRowKind.Department, id, Context(), cancellationToken);
 
     // ── Export ────────────────────────────────────────────────────────────────
 
@@ -138,7 +141,7 @@ public class DepartmentsController : ControllerBase
         });
 
         var csv = Csv.Build(CsvHeaders, rows);
-        return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"departments_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(csv, $"departments_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     // ── Import Template ───────────────────────────────────────────────────────
@@ -146,7 +149,7 @@ public class DepartmentsController : ControllerBase
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "departments_import_template.csv");
+        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "departments_import_template.csv");
 
     /// <summary>A department file that names a cost centre or a parent department on any row re-points cost: it needs the cost-centre permission.</summary>
     private static bool CsvSetsCostAttribution(string csv) => Csv.Parse(csv).Any(r =>

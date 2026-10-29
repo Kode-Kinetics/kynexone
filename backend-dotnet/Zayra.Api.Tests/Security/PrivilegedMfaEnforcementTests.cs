@@ -89,6 +89,7 @@ public sealed class PrivilegedMfaEnforcementTests
     [InlineData("payroll.rates.manage")]
     [InlineData("payroll.rates.statutory_override")]
     [InlineData("payroll.structure_manage")]
+    [InlineData("payroll.rules.manage")]
     [InlineData("finance.gl.manage")]
     [InlineData("approvals.override")]
     [InlineData("qiwa.configure")]

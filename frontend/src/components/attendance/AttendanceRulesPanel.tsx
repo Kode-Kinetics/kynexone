@@ -1,5 +1,6 @@
 'use client';
 
+import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { Info, Pencil, Plus, Power, AlarmClockCheck } from 'lucide-react';
 import { attendanceApi, type AttendancePolicy } from '../../api/attendance';
@@ -253,9 +254,9 @@ function RuleEditor({ policy, lookups, onDirty, onCancel, onSaved }: {
         </p>
         {lookups.failed && <p role="status" className="text-xs text-amber-700 dark:text-amber-300">{t('Some branches, departments or grades could not be loaded.')}</p>}
         <div className="grid gap-4 sm:grid-cols-3">
-          {scope('branchId', t('Branch'), t('All branches'), lookups.branches.map(x => ({ id: x.id, name: x.nameEn })))}
-          {scope('departmentId', t('Department'), t('All departments'), lookups.departments.map(x => ({ id: x.id, name: x.nameEn })))}
-          {scope('gradeId', t('Grade'), t('All grades'), lookups.grades.map(x => ({ id: x.id, name: x.name })))}
+          {scope('branchId', t('Branch'), t('All branches'), pickable(lookups.branches, form.branchId).map(x => ({ id: x.id, name: x.nameEn })))}
+          {scope('departmentId', t('Department'), t('All departments'), pickable(lookups.departments, form.departmentId).map(x => ({ id: x.id, name: x.nameEn })))}
+          {scope('gradeId', t('Grade'), t('All grades'), pickable(lookups.grades, form.gradeId).map(x => ({ id: x.id, name: x.name })))}
         </div>
       </fieldset>
 

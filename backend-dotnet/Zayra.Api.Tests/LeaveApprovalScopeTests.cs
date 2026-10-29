@@ -410,7 +410,7 @@ public class LeaveApprovalScopeTests
         var controller = CreateController(db, tenantId, new FixedScopeService(inScope.Id));
         var result = await controller.Export(CancellationToken.None);
 
-        var csv = result.Should().BeOfType<ContentResult>().Subject.Content;
+        var csv = System.Text.Encoding.UTF8.GetString(result.Should().BeOfType<FileContentResult>().Subject.FileContents).TrimStart('\uFEFF');
         csv.Should().Contain("EMP-IN");
         csv.Should().NotContain("EMP-OUT");
         csv.Should().NotContain("Out Scope");

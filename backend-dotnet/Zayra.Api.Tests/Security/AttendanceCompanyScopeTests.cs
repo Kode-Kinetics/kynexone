@@ -84,6 +84,11 @@ public class AttendanceCompanyScopeTests
         return (store, inB.Id);
     }
 
+    // The ingest window is relative to the server clock (default 45 days back); these tests use fixed calendar dates, so the
+    // service is given a fixed clock just after them instead of widening the window.
+    private static AttendanceService IngestService(ZayraDbContext db) =>
+        new(db, new _AttendanceNullNotifications(), new _AttendanceNullHttpClientFactory(), new _FixedIngestClock(new DateTime(2026, 9, 20, 0, 0, 0, DateTimeKind.Utc)));
+
     private static AttendanceService Service(ZayraDbContext db) =>
         new(db, new _AttendanceNullNotifications(), new _AttendanceNullHttpClientFactory());
 
@@ -198,7 +203,7 @@ public class AttendanceCompanyScopeTests
     private static Task<DeviceIngestResult?> IngestADayOfPunchesAsync(ZayraDbContext db)
     {
         var punchIn = PunchDay.ToDateTime(new TimeOnly(6, 0));
-        return Service(db).IngestByDeviceKeyAsync(
+        return IngestService(db).IngestByDeviceKeyAsync(
             DeviceKey,
             new DeviceIngestRequest(
                 Punches: new[]
@@ -339,4 +344,10 @@ file sealed class _AttendanceNullNotifications : Zayra.Api.Infrastructure.Notifi
 file sealed class _AttendanceNullHttpClientFactory : IHttpClientFactory
 {
     public HttpClient CreateClient(string name) => new();
+}
+
+
+internal sealed class _FixedIngestClock(DateTime utcNow) : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow() => new(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));
 }

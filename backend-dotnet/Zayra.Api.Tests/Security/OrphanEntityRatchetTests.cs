@@ -115,15 +115,9 @@ public class OrphanEntityRatchetTests
         // ── Other ────────────────────────────────────────────────────────────────────────────
         "ESSDashboardPreference",
 
-        // ── NOT DEBT — a blind spot in the scanner, and it must never be deleted ─────────────
-        // DataProtectionKey is the ASP.NET Core data-protection entity. ZayraDbContext implements
-        // IDataProtectionKeyContext and Program.cs calls PersistKeysToDbContext<ZayraDbContext>(),
-        // so the framework reaches this DbSet through the interface and application code never
-        // names the type. It is counted here only because this scan measures references by name.
-        // Removing it would silently invalidate every issued auth cookie and antiforgery token.
-        // It is pinned rather than allow-listed away so the number below reconciles, by name, with
-        // the audit that produced it.
-        "DataProtectionKey",
+        // DataProtectionKey left this list when field encryption added DataProtectionKeyRingRewrite, which reads the
+        // key ring rows by name. The framework also reaches it through IDataProtectionKeyContext, so it must never be
+        // deleted; it is simply no longer invisible to this by-name scan.
     };
 
     [Fact]

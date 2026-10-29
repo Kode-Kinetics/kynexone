@@ -18,7 +18,8 @@ export interface SetupSettingSection {
   id: SetupSettingId;
   label: string;
   description: string;
-  group: SetupSettingGroupId;
+  /** The one navigation group the section lives in. Any group, so Notifications can sit with the employee services. */
+  group: SetupSectionGroupId;
 }
 
 /** Any Setup section: Setup's own settings, or a module's configuration shown here (lib/setupModuleSections.ts). */
@@ -51,24 +52,58 @@ export const SETUP_SETTING_SECTIONS: readonly SetupSettingSection[] = [
   { id: 'grades', label: msg('Grades'), description: msg('Career levels and the salary range for each grade.'), group: 'jobsHeadcount' },
   { id: 'designations', label: msg('Designations'), description: msg('Standard job titles and grade eligibility.'), group: 'jobsHeadcount' },
   { id: 'establishment', label: msg('Headcount & budget'), description: msg('Approved headcount and monthly budget for each department and level.'), group: 'jobsHeadcount' },
-  { id: 'gccSettings', label: msg('Country rules'), description: msg('Work week, Ramadan hours, WPS/SIF, end-of-service and document alerts per country.'), group: 'payrollCompliance' },
+  { id: 'gccSettings', label: msg('Country rules'), description: msg('Per country: statutory settings (work week, WPS/SIF, end of service, document alerts) and payroll keys such as weekend days.'), group: 'payrollCompliance' },
   { id: 'statutoryRules', label: msg('Statutory rules'), description: msg('Tenant-wide effective-dated rules used by payroll and compliance.'), group: 'payrollCompliance' },
   { id: 'fiscalYears', label: msg('Fiscal years'), description: msg('Financial-year periods used by budgets and reporting.'), group: 'payrollCompliance' },
   { id: 'glMapping', label: msg('Payroll accounting'), description: msg('GL accounts, posting drivers, company rates, accounting periods and end-of-service provision.'), group: 'payrollCompliance' },
   { id: 'masterData', label: msg('Drop-down lists'), description: msg('The choices people pick in forms, such as contract type or marital status.'), group: 'workspace' },
   { id: 'numberingRules', label: msg('Record numbering'), description: msg('Prefixes and sequences for generated record numbers.'), group: 'workspace' },
-  { id: 'notificationTemplates', label: msg('Notifications'), description: msg('Messages sent for employee and payroll events.'), group: 'workspace' },
+  { id: 'notificationTemplates', label: msg('Notifications'), description: msg('Messages sent for employee and payroll events.'), group: 'talentServices' },
   { id: 'emailConfig', label: msg('Email delivery'), description: msg('Outbound email delivery and connection testing.'), group: 'workspace' },
   { id: 'systemSettings', label: msg('Workspace settings'), description: msg('Workspace-wide operational defaults.'), group: 'workspace' },
   { id: 'adminAuditLogs', label: msg('Audit log'), description: msg('Review recorded administrative changes and actors.'), group: 'workspace' },
 ];
 
+/**
+ * The order of the sections inside the navigation, group by group (placement audit 2026-10-25). Each group's sections
+ * follow this list, not the order the two catalogues happen to be declared in: Workspace opens with Language & region,
+ * Branding, Modules and Plan & billing and ends with the Audit log. A section not listed here keeps its declared
+ * order after the listed ones, so a new section never disappears.
+ */
+export const SETUP_SECTION_ORDER: readonly SetupSectionId[] = [
+  'openingBalances',
+  'companies', 'branches', 'locations', 'costCenters', 'departments',
+  'grades', 'designations', 'establishment',
+  'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'attendanceDevices', 'overtimePolicies', 'leaveTypes', 'leavePolicies', 'holidayCalendars',
+  'benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates', 'payrollRules',
+  'onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy', 'notificationTemplates',
+  'glMapping', 'fiscalYears', 'gccSettings', 'statutoryRules', 'taxPolicies', 'complianceProfiles', 'saudiCompliance',
+  'users', 'roles', 'permissionMatrix', 'permissions', 'permissionGrantors', 'approvalAuthorities', 'approvalDelegations', 'signInSecurity', 'accessLog',
+  'localization', 'branding', 'modules', 'planBilling', 'masterData', 'helpText', 'numberingRules', 'emailConfig', 'systemSettings', 'adminAuditLogs',
+];
+
+/** Sorts sections into {@link SETUP_SECTION_ORDER}; unlisted sections keep their relative order at the end. */
+export function inSetupOrder<T extends { id: string }>(sections: readonly T[]): T[] {
+  const rank = (id: string) => { const i = (SETUP_SECTION_ORDER as readonly string[]).indexOf(id); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
+  return sections.map((section, index) => ({ section, index })).sort((a, b) => rank(a.section.id) - rank(b.section.id) || a.index - b.index).map(x => x.section);
+}
+
 const settingLabel = (id: SetupSettingId) => SETUP_SETTING_SECTIONS.find(section => section.id === id)!.label;
 
-/** The settings a company-scoped group administrator owns: everything else is shared by the whole tenant. */
-export const COMPANY_OWNED_SETTING_IDS: ReadonlySet<string> = new Set<SetupSettingId>(['companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs']);
+/** The settings a company-scoped group administrator owns: everything else is shared by the whole tenant. Departments, designations
+ * and grades are per company since 2026-10-23 (Addendum B), so a company super admin manages their own company's rows. */
+export const COMPANY_OWNED_SETTING_IDS: ReadonlySet<string> = new Set<SetupSettingId>(['companies', 'branches', 'departments', 'designations', 'grades', 'costCenters', 'glMapping', 'adminAuditLogs']);
 
-export type SetupAreaId = 'organization' | 'recruitment' | 'onboarding' | 'time' | 'leave' | 'compensation' | 'payroll' | 'performance' | 'learning' | 'services' | 'offboarding' | 'compliance';
+/** An area of "All setup areas" IS a navigation group (one taxonomy): the settings sections the navigation shows under that
+ *  group, plus the module pages that belong with them. Group ids are the URL contract (`area=`). */
+export type SetupAreaId = Exclude<SetupSectionGroupId, 'getStarted'>;
+
+/** Area ids of the former 12-area taxonomy, so a saved link (`area=leave`) lands on the navigation group that now holds it. */
+export const LEGACY_SETUP_AREA_IDS: Readonly<Record<string, SetupAreaId>> = {
+  organization: 'companyStructure', recruitment: 'jobsHeadcount', onboarding: 'talentServices', time: 'timeLeave', leave: 'timeLeave',
+  compensation: 'payBenefits', payroll: 'payrollCompliance', performance: 'talentServices', learning: 'talentServices',
+  services: 'talentServices', offboarding: 'talentServices', compliance: 'payrollCompliance',
+};
 
 export interface SetupDestination {
   id: string;
@@ -159,136 +194,95 @@ function route(areaId: SetupAreaId, id: string, label: string, path: string, kin
   return destination({ id, areaId, label, path, kind, scope, presentation: 'route', ...nav });
 }
 
-/** Discovery only: available means the destination can be opened, never configured or editable. */
-export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
-  {
-    id: 'organization', label: 'Organization and core HR',
-    description: 'Company structure, shared reference data, employment records and contracts.',
-    destinations: [
-      setting('organization', 'companies', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 0), 'group'),
-      setting('organization', 'branches', 'company', navigation('legal-entities-structure', 'Legal entities and structure', 0, 1)),
-      setting('organization', 'departments', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 2)),
-      setting('organization', 'designations', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 3)),
-      setting('organization', 'grades', 'tenant', navigation('legal-entities-structure', 'Legal entities and structure', 0, 4)),
-      setting('organization', 'costCenters', 'mixed', navigation('financial-structure', 'Financial structure', 1, 0)),
-      setting('organization', 'establishment', 'mixed', navigation('financial-structure', 'Financial structure', 1, 1)),
-      setting('organization', 'masterData', 'tenant', navigation('employee-data-definitions', 'Employee data definitions', 2, 0)),
-      route('organization', 'people', 'Employee records and contracts', '/people', 'operations', 'company', navigation('related-operations', 'Related operations', 3, 0)),
-      route('organization', 'contractRenewals', 'Contract renewals', '/contract-renewals', 'operations', 'company', navigation('related-operations', 'Related operations', 3, 1)),
-    ],
-  },
-  {
-    id: 'recruitment', label: 'Recruitment',
-    description: 'Hiring, assessments, offers and workforce planning in the recruitment workspace.',
-    destinations: [route('recruitment', 'recruitment', 'Recruitment and workforce planning', '/recruitment', 'operations', 'mixed', navigation('recruitment-operations', 'Recruitment operations', 0, 0))],
-  },
-  {
-    id: 'onboarding', label: 'Onboarding and confirmation',
-    description: 'Shared onboarding checklists and tasks; probation and confirmation remain in Performance.',
-    destinations: [
-      moduleSetting('onboarding', 'onboardingChecklists', 'tenant', navigation('templates-tasks', 'Templates and tasks', 0, 0)),
-      moduleSetting('onboarding', 'onboardingChecklistTemplates', 'company', navigation('templates-tasks', 'Templates and tasks', 0, 1)),
-      moduleSetting('onboarding', 'hireTemplates', 'company', navigation('templates-tasks', 'Templates and tasks', 0, 2)),
-    ],
-  },
-  {
-    id: 'time', label: 'Time and attendance',
-    description: 'Work locations, shifts, attendance, overtime and project timesheets.',
-    destinations: [
-      setting('time', 'locations', 'mixed', navigation('work-configuration', 'Work configuration', 0, 0)),
-      route('time', 'attendance', 'Attendance operations', '/attendance', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 0)),
-      moduleSetting('time', 'shiftDefinitions', 'tenant', navigation('work-configuration', 'Work configuration', 0, 1)),
-      moduleSetting('time', 'shiftPolicy', 'tenant', navigation('work-configuration', 'Work configuration', 0, 2)),
-      moduleSetting('time', 'attendanceRules', 'tenant', navigation('work-configuration', 'Work configuration', 0, 3)),
-      moduleSetting('time', 'overtimePolicies', 'tenant', navigation('work-configuration', 'Work configuration', 0, 4)),
-      moduleSetting('time', 'attendanceDevices', 'tenant', navigation('work-configuration', 'Work configuration', 0, 5)),
-      route('time', 'shifts', 'Shift rosters', '/shifts', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 3)),
-      route('time', 'overtime', 'Overtime requests', '/overtime', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 1)),
-      route('time', 'timesheets', 'Project timesheets', '/timesheets', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 2)),
-    ],
-  },
-  {
-    id: 'leave', label: 'Leave and absence',
-    description: 'Leave types, policies and holidays within the existing leave workspace.',
-    destinations: [
-      ...(['leaveTypes', 'leavePolicies', 'holidayCalendars'] as const).map((id, index) => moduleSetting('leave', id, 'mixed', navigation('policy-definitions', 'Policy definitions', 0, index))),
-      route('leave', 'leave', 'Leave requests and balances', '/leave', 'operations', 'mixed', navigation('related-workspace', 'Related workspace', 1, 0)),
-    ],
-  },
-  {
-    id: 'compensation', label: 'Compensation and benefits',
-    description: 'Benefit plans, grade entitlements, loans and merit planning.',
-    destinations: [
-      moduleSetting('compensation', 'benefitPlans', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 0)),
-      route('compensation', 'gradeBenefits', 'Benefits by grade', '/benefits/by-grade', 'settings', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 1)),
-      moduleSetting('compensation', 'loanTypes', 'tenant', navigation('plans-entitlements', 'Plans and entitlements', 0, 2)),
-      moduleSetting('compensation', 'loanPolicies', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 3)),
-      moduleSetting('compensation', 'advancePolicy', 'tenant', navigation('plans-entitlements', 'Plans and entitlements', 0, 4)),
-      moduleSetting('compensation', 'bonusTypes', 'tenant', navigation('plans-entitlements', 'Plans and entitlements', 0, 5)),
-      route('compensation', 'merit', 'Merit planning and benchmarks', '/compensation', 'settings', 'mixed', navigation('plans-entitlements', 'Plans and entitlements', 0, 6)),
-      route('compensation', 'benefits', 'Benefit enrolments', '/benefits', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 0)),
-      route('compensation', 'loans', 'Loans and advances', '/loans', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 1)),
-    ],
-  },
-  {
-    id: 'payroll', label: 'Payroll',
-    description: 'Salary structures, posting accounts, rates, fiscal years and payslip layouts.',
-    destinations: [
-      setting('payroll', 'glMapping', 'mixed', navigation('posting-calendars', 'Posting and calendars', 0, 0)),
-      setting('payroll', 'fiscalYears', 'tenant', navigation('posting-calendars', 'Posting and calendars', 0, 1)),
-      route('payroll', 'payroll', 'Payroll and salary structures', '/payroll', 'settings', 'mixed', navigation('payroll-configuration', 'Payroll configuration', 1, 0)),
-      moduleSetting('payroll', 'payslipTemplates', 'tenant', navigation('payroll-configuration', 'Payroll configuration', 1, 1)),
-    ],
-  },
-  {
-    id: 'performance', label: 'Performance and talent',
-    description: 'Review cycles, templates, probation, calibration and succession development.',
-    destinations: [
-      moduleSetting('performance', 'performanceScorecards', 'tenant', navigation('cycles-templates', 'Cycles and templates', 0, 0)),
-      route('performance', 'performance', 'Performance cycles', '/performance', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 1)),
-      route('performance', 'succession', 'Succession and development', '/performance/succession', 'operations', 'mixed', navigation('related-operations', 'Related operations', 1, 0)),
-    ],
-  },
-  {
-    id: 'learning', label: 'Learning and development',
-    description: 'Course catalogues, learning paths, assignment rules and certification records.',
-    destinations: [route('learning', 'learning', 'Learning catalogue and rules', '/learning', 'settings', 'mixed', navigation('catalogue-rules', 'Catalogue and rules', 0, 0))],
-  },
-  {
-    id: 'services', label: 'Employee services and relations',
-    description: 'Employee requests, letters and engagement; restricted case procedures are not a connected settings form.',
-    destinations: [
-      route('services', 'hrRequests', 'Request center', '/hr-requests', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 0)),
-      route('services', 'hrLetters', 'HR letters', '/hr-letters', 'operations', 'company', navigation('related-operations', 'Related operations', 1, 1)),
-      moduleSetting('services', 'letterTemplates', 'mixed', navigation('templates-communication', 'Templates and communication', 0, 0)),
-      route('services', 'engagement', 'Engagement survey templates', '/engagement', 'templates', 'mixed', navigation('templates-communication', 'Templates and communication', 0, 1)),
-      moduleSetting('services', 'engagementPrivacy', 'tenant', navigation('templates-communication', 'Templates and communication', 0, 2)),
-      setting('services', 'notificationTemplates', 'tenant', navigation('templates-communication', 'Templates and communication', 0, 3)),
-    ],
-  },
-  {
-    id: 'offboarding', label: 'Offboarding and settlement',
-    description: 'Exits, clearance tasks and final settlement in the existing operational workflow.',
-    destinations: [route('offboarding', 'offboarding', 'Offboarding and settlement', '/offboarding', 'operations', 'company', navigation('exit-operations', 'Exit operations', 0, 0))],
-  },
-  {
-    id: 'compliance', label: 'Compliance and statutory administration',
-    description: 'Country rules, compliance profiles, tax policies, documentation and filings.',
-    destinations: [
-      setting('compliance', 'gccSettings', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 0)),
-      setting('compliance', 'statutoryRules', 'tenant', navigation('rules-profiles', 'Rules and profiles', 0, 1)),
-      moduleSetting('compliance', 'complianceProfiles', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 2)),
-      moduleSetting('compliance', 'taxPolicies', 'mixed', navigation('rules-profiles', 'Rules and profiles', 0, 3)),
-      moduleSetting('compliance', 'saudiCompliance', 'company', navigation('rules-profiles', 'Rules and profiles', 0, 4)),
-      route('compliance', 'compliance', 'Documents and renewals', '/compliance', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 0)),
-      route('compliance', 'saudiComplianceDashboard', 'Saudization and Qiwa status', '/saudi-compliance', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 1)),
-      route('compliance', 'gosiFiling', 'GOSI filing', '/gosi-filing', 'operations', 'company', navigation('filings-evidence', 'Filings and evidence', 1, 2)),
-      destination({ id: 'adminAuditLogs', areaId: 'compliance', label: settingLabel('adminAuditLogs'), path: '/setup?tab=adminAuditLogs', kind: 'operations', scope: 'mixed', presentation: 'embedded', ...navigation('filings-evidence', 'Filings and evidence', 1, 3) }),
-    ],
-  },
-];
+/** The scope of a section's data, for the "company or tenant" note in All setup areas. Sections not listed are tenant-wide. */
+const SECTION_SCOPE: Readonly<Record<string, SetupDestination['scope']>> = {
+  companies: 'company', branches: 'company', departments: 'company', designations: 'company', grades: 'company',
+  costCenters: 'mixed', establishment: 'mixed', locations: 'mixed', glMapping: 'mixed',
+  leaveTypes: 'mixed', leavePolicies: 'mixed', holidayCalendars: 'mixed', benefitPlans: 'mixed', loanPolicies: 'mixed',
+  letterTemplates: 'mixed', complianceProfiles: 'mixed', taxPolicies: 'mixed', saudiCompliance: 'company', adminAuditLogs: 'mixed',
+};
+
+/** Module pages that sit beside a group's settings (their daily work, or a configuration that has not moved into Setup). */
+const GROUP_ROUTES: Readonly<Record<SetupAreaId, readonly ((nav: DestinationNavigation) => SetupDestination)[]>> = {
+  companyStructure: [
+    nav => route('companyStructure', 'people', 'Employee records and contracts', '/people', 'operations', 'company', nav),
+    nav => route('companyStructure', 'contractRenewals', 'Contract renewals', '/contract-renewals', 'operations', 'company', nav),
+  ],
+  jobsHeadcount: [nav => route('jobsHeadcount', 'recruitment', 'Recruitment and workforce planning', '/recruitment', 'operations', 'mixed', nav)],
+  timeLeave: [
+    nav => route('timeLeave', 'attendance', 'Attendance operations', '/attendance', 'operations', 'company', nav),
+    nav => route('timeLeave', 'shifts', 'Shift rosters', '/shifts', 'operations', 'mixed', nav),
+    nav => route('timeLeave', 'overtime', 'Overtime requests', '/overtime', 'operations', 'company', nav),
+    nav => route('timeLeave', 'timesheets', 'Project timesheets', '/timesheets', 'operations', 'company', nav),
+    nav => route('timeLeave', 'leave', 'Leave requests and balances', '/leave', 'operations', 'mixed', nav),
+  ],
+  payBenefits: [
+    nav => route('payBenefits', 'gradeBenefits', 'Benefits by grade', '/benefits/by-grade', 'settings', 'mixed', nav),
+    nav => route('payBenefits', 'merit', 'Merit planning and benchmarks', '/compensation', 'settings', 'mixed', nav),
+    nav => route('payBenefits', 'payroll', 'Payroll and salary structures', '/payroll', 'settings', 'mixed', nav),
+    nav => route('payBenefits', 'benefits', 'Benefit enrolments', '/benefits', 'operations', 'mixed', nav),
+    nav => route('payBenefits', 'loans', 'Loans and advances', '/loans', 'operations', 'mixed', nav),
+  ],
+  talentServices: [
+    nav => route('talentServices', 'learning', 'Learning catalogue and rules', '/learning', 'settings', 'mixed', nav),
+    nav => route('talentServices', 'engagement', 'Engagement survey templates', '/engagement', 'templates', 'mixed', nav),
+    nav => route('talentServices', 'performance', 'Performance cycles', '/performance', 'operations', 'mixed', nav),
+    nav => route('talentServices', 'succession', 'Succession and development', '/performance/succession', 'operations', 'mixed', nav),
+    nav => route('talentServices', 'hrRequests', 'Request center', '/hr-requests', 'operations', 'company', nav),
+    nav => route('talentServices', 'hrLetters', 'HR letters', '/hr-letters', 'operations', 'company', nav),
+    nav => route('talentServices', 'offboarding', 'Offboarding and settlement', '/offboarding', 'operations', 'company', nav),
+  ],
+  payrollCompliance: [
+    nav => route('payrollCompliance', 'compliance', 'Documents and renewals', '/compliance', 'operations', 'company', nav),
+    nav => route('payrollCompliance', 'saudiComplianceDashboard', 'Saudization and Qiwa status', '/saudi-compliance', 'operations', 'company', nav),
+    nav => route('payrollCompliance', 'gosiFiling', 'GOSI filing', '/gosi-filing', 'operations', 'company', nav),
+  ],
+  accessSecurity: [],
+  workspace: [],
+};
+
+const AREA_DESCRIPTIONS: Readonly<Record<SetupAreaId, string>> = {
+  companyStructure: 'Legal entities, branches, locations, cost centres and departments.',
+  jobsHeadcount: 'Grades, job titles, approved headcount and budget, and hiring.',
+  timeLeave: 'Shifts, attendance, overtime, leave types, policies and holidays.',
+  payBenefits: 'Benefit plans, loans, advances, bonuses, payslip layouts and payroll.',
+  talentServices: 'Onboarding, reviews, letters, surveys, notifications, learning and exits.',
+  payrollCompliance: 'Accounting, fiscal years, country rules, statutory rules, taxes and compliance profiles.',
+  accessSecurity: 'Users, roles, permissions, approvals and sign-in security.',
+  workspace: 'Language, branding, modules, billing, lists, numbering, email and the audit log.',
+};
+
+/**
+ * All setup areas, DERIVED from the navigation: one area per navigation group, holding exactly the sections the
+ * navigation shows in that group (in SETUP_SECTION_ORDER), then the module pages that belong beside them. There is no
+ * second taxonomy, so a section can never sit in one place in the menu and another in the overview.
+ * Discovery only: available means the destination can be opened, never configured or editable.
+ */
+function buildSetupAreas(): readonly SetupAreaDefinition[] {
+  const sections = inSetupOrder<SetupSection>([...SETUP_SETTING_SECTIONS, ...SETUP_MODULE_SECTIONS]);
+  return SETUP_SECTION_GROUPS.filter(group => group.id !== 'getStarted').map(group => {
+    const areaId = group.id as SetupAreaId;
+    const own = sections.filter(section => section.group === group.id);
+    const routes = GROUP_ROUTES[areaId];
+    const settingsRoutes = routes.map((make, index) => ({ index, make })).filter(item => item.make(navigation('x', 'x', 0, 0)).kind === 'settings');
+    const operationRoutes = routes.map((make, index) => ({ index, make })).filter(item => item.make(navigation('x', 'x', 0, 0)).kind !== 'settings');
+    const configuration = (order: number) => navigation('configuration', 'Settings', 0, order);
+    const destinations: SetupDestination[] = own.map((section, order) => {
+      const scope = SECTION_SCOPE[section.id] ?? 'tenant';
+      const isModule = SETUP_MODULE_SECTIONS.some(item => item.id === section.id);
+      const effective = section.id === 'companies' ? 'group' as const : undefined;
+      return isModule ? moduleSetting(areaId, section.id as SetupModuleSectionId, scope, configuration(order)) : setting(areaId, section.id as SetupSettingId, scope, configuration(order), effective);
+    });
+    settingsRoutes.forEach((item, i) => destinations.push(item.make(configuration(own.length + i))));
+    operationRoutes.forEach((item, i) => destinations.push(item.make(navigation('related-operations', 'Related operations', 1, i))));
+    return { id: areaId, label: group.label, description: AREA_DESCRIPTIONS[areaId], destinations };
+  });
+}
+
+export const SETUP_AREAS: readonly SetupAreaDefinition[] = buildSetupAreas();
 
 export function resolveSetupArea(value: string | null): SetupAreaId | 'overview' {
+  if (value && value in LEGACY_SETUP_AREA_IDS) return LEGACY_SETUP_AREA_IDS[value];
   return SETUP_AREAS.find(area => area.id === value)?.id ?? 'overview';
 }
 
@@ -379,7 +373,7 @@ export function setupNavigationModel(access: SetupNavigationAccess): SetupNaviga
     : SETUP_SETTING_SECTIONS.filter(section => (section.id === 'companies' && canReadCompanies)
       || (section.id === 'statutoryRules' && canReadStatutoryRules) || (section.id === 'glMapping' && canReadGlAndRates));
   // A module's configuration opens for whoever its old tab opened for, whether or not they may edit the organisation.
-  const settings = [...own, ...SETUP_MODULE_SECTIONS.filter(section => moduleSectionAvailable(section, access))];
+  const settings = inSetupOrder([...own, ...SETUP_MODULE_SECTIONS.filter(section => moduleSectionAvailable(section, access))]);
   const tools: SetupToolId[] = canWrite ? [
     'guidedSetup',
     'allSetupAreas',
@@ -396,4 +390,23 @@ export function setupNavigationModel(access: SetupNavigationAccess): SetupNaviga
 export function setupHasEntries(access: SetupNavigationAccess): boolean {
   const model = setupNavigationModel(access);
   return model.tools.length > 0 || model.settings.length > 0;
+}
+
+/**
+ * Sections that answer neighbouring questions and should point at each other: the administrative change log and the
+ * sign-in log are both "who did what", so each links to the other (placement audit 2026-10-25).
+ */
+export const SETUP_RELATED_SECTIONS: Partial<Record<SetupSectionId, { id: SetupSectionId; label: string; why: string }>> = {
+  adminAuditLogs: { id: 'accessLog', label: msg('Sign-in and access log'), why: msg('Looking for sign-ins, failed attempts or access changes?') },
+  accessLog: { id: 'adminAuditLogs', label: msg('Audit log'), why: msg('Looking for who changed a setting?') },
+};
+
+/**
+ * Where a link to a section this person cannot open should go instead: their first available section, never a dead end.
+ * Null when the address is fine (the section is open to them, is not a section address, or there is nowhere else to go).
+ */
+export function unavailableSectionRedirect(requested: string | null | undefined, openable: readonly { id: string }[], isSection: (id: string) => boolean): SetupSectionId | null {
+  if (!requested || !isSection(requested)) return null;
+  if (openable.some(section => section.id === requested)) return null;
+  return (openable[0]?.id as SetupSectionId | undefined) ?? null;
 }

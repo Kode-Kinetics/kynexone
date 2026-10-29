@@ -153,6 +153,8 @@ export interface EmployeeCreateRequest {
    * operator dismissing the duplicate warning (never-silent-dup).
    */
   acknowledgeDuplicate?: boolean;
+  /** "Keep this probation" for a probation longer than the company's own maximum (409 probation_over_limit). */
+  acknowledgeProbationOverLimit?: boolean;
 }
 
 // ── Duplicate-person detection (create pre-check + flagged-row resolution) ─────────────────────
@@ -437,6 +439,8 @@ export interface EmployeeTransferRequest {
 export interface EmployeeDetail extends EmployeeEntity {
   /** Null means no package yet; omission means the API does not support package editing. */
   salaryBreakdown?: EmployeeSalaryBreakdownRequest | null;
+  /** "Pending" while salaryBreakdown is a new hire's first package still waiting for Finance (not approved pay). */
+  salaryApprovalState?: 'Pending' | null;
   payrollProfile?: EmployeePayrollProfileRequest;
   complianceRecords: EmployeeComplianceRecordRequest[];
   documents: EmployeeDocument[];
@@ -490,7 +494,9 @@ export interface EmployeeExpiringDocument {
 // A `fix` hint tells the UI how to close a gap: an inline field edit, or a document upload.
 export type ReadinessFix =
   | { kind: 'field'; target: string }
-  | { kind: 'document'; documentType: string };
+  | { kind: 'document'; documentType: string }
+  /** The new hire's first salary package waits for a Finance approver (Payroll › Employee Salary); nothing to edit on the profile. */
+  | { kind: 'approval'; target: string };
 
 /** One checklist item, identical shape across GET /readiness and the 422 body. */
 export interface ReadinessItem {
@@ -771,6 +777,8 @@ export function possibleDuplicateFromError(err: unknown): PossibleDuplicateError
   }
   return null;
 }
+
+export { probationOverLimitFromError, type ProbationOverLimitError } from '../lib/probationOverLimit';
 
 export const employeesApi = {
   list: (

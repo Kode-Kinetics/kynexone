@@ -80,6 +80,7 @@ CompWorksheets
 Companies
 CompanyComplianceProfiles
 CompanyCutovers
+CompanyPayrollRules
 CompanyRatePolicies
 CompanySetupDrafts
 CompanyStatutoryOverrides
@@ -153,6 +154,7 @@ Employees
 EnterpriseIdentityProvisioningEvents
 ErpApiKeys
 Feedback360
+FieldEncryptionKeys
 FinalSettlementLines
 FinanceGlEntries
 FiscalYears
@@ -203,6 +205,7 @@ LeaveAccrualRules
 LeaveApprovals
 LeaveAttachments
 LeaveAuditLogs
+LeaveBalanceAdjustmentRequests
 LeaveBalanceTransactions
 LeaveBlackoutDates
 LeaveCancellationRequests
@@ -291,6 +294,7 @@ PayrollGroups
 PayrollOpeningBalances
 PayrollPaymentBatches
 PayrollPaymentRecords
+PayrollRuleChangeRequests
 PayrollRunConsumptions
 PayrollRunEmployeeSelections
 PayrollRunEmployees
@@ -342,6 +346,7 @@ Roles
 SIFFileRecords
 SalaryAdvances
 SalaryComponents
+SalaryChangeRequests
 SalaryStructures
 SavedReports
 SecuritySettings

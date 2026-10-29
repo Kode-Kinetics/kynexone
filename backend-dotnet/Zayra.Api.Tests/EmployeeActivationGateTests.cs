@@ -344,7 +344,7 @@ public class EmployeeActivationGateTests
         var fx = Guid.NewGuid();
         var csv = System.Text.Encoding.UTF8.GetString(
             ((FileContentResult)Controller(db, fx).ImportTemplate()).FileContents);
-        var headerLine = csv.Split('\n')[0].Split(',').Select(h => h.Trim('"')).ToList();
+        var headerLine = csv.TrimStart('\uFEFF').Split('\n')[0].Split(',').Select(h => h.Trim('"')).ToList();
 
         // The template column set IS the registry CSV header list — no hand-maintained array to drift.
         headerLine.Should().BeEquivalentTo(EmployeeFieldRegistry.CsvHeaders, o => o.WithStrictOrdering());

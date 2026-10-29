@@ -40,7 +40,7 @@ export default function SecurityCenterPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Security Center</h1>
+          <h1 className="text-lg font-semibold text-white">Security Center</h1>
           <p className="text-xs text-slate-500 mt-0.5">Cross-tenant security posture overview</p>
         </div>
         <button type="button" onClick={load} disabled={loading} aria-label="Refresh"
@@ -91,7 +91,7 @@ export default function SecurityCenterPage() {
                   <thead>
                     <tr className="border-b border-white/[0.06]">
                       {['Tenant', 'MFA', 'Security Policy', 'Risk Level', 'Last Event', ''].map(h => (
-                        <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                        <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -105,7 +105,7 @@ export default function SecurityCenterPage() {
                         <tr key={p.tenantId} className={`border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors ${risk.row}`}>
                           <td className="px-4 py-3">
                             <p className="text-sm text-white font-medium">{p.tenantName}</p>
-                            <p className="text-[11px] text-slate-600 font-mono">/{p.tenantSlug}</p>
+                            <p className="text-caption text-slate-600 font-mono">/{p.tenantSlug}</p>
                           </td>
                           <td className="px-3 py-3">
                             {p.hasMfaEnabled
@@ -123,14 +123,14 @@ export default function SecurityCenterPage() {
                               <span className={`text-xs font-medium ${risk.text}`}>{p.riskLevel}</span>
                             </div>
                           </td>
-                          <td className="px-3 py-3 text-[11px] text-slate-600">
+                          <td className="px-3 py-3 text-caption text-slate-600">
                             {p.lastSecurityEvent
                               ? new Date(p.lastSecurityEvent).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
                               : '—'}
                           </td>
                           <td className="px-3 py-3">
                             <Link href={`/platform/tenants/${p.tenantId}/security`}
-                              className="text-[11px] text-sapphire hover:text-blue-300 transition-colors">
+                              className="text-caption text-sapphire hover:text-blue-300 transition-colors">
                               Policy →
                             </Link>
                           </td>

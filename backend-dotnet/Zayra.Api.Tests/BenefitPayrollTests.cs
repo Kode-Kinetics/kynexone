@@ -84,7 +84,7 @@ public class BenefitPayrollTests
     [InlineData(50)]
     public void SupplementalEngine_EmitsBenefitWithholdingWithoutRecurringSalaryOrDeductions(int tax)
     {
-        var selector = typeof(PayrollController).GetMethod("IsSupplementalPayComponent", BindingFlags.Static | BindingFlags.NonPublic);
+        var selector = typeof(PayrollRunProcessor).GetMethod("IsSupplementalPayComponent", BindingFlags.Static | BindingFlags.NonPublic);
         Assert.NotNull(selector);
         var definitions = PayComponentCatalog.SystemComponentSeeds(Guid.NewGuid())
             .Where(component => Assert.IsType<bool>(selector.Invoke(null, [component]))).ToList();

@@ -113,7 +113,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <h2 className="text-sm font-semibold text-white">Provision New Tenant</h2>
           <button type="button" onClick={onClose} className="text-slate-500 hover:text-white transition-colors">
@@ -128,7 +128,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
 
           {/* Tenant info */}
           <fieldset className="space-y-3">
-            <legend className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest mb-2">Tenant Info</legend>
+            <legend className="text-caption font-semibold text-slate-600 uppercase tracking-widest mb-2">Tenant Info</legend>
             <div>
               <label className="block text-xs text-slate-400 mb-1">Company Name *</label>
               <input required value={form.name} onChange={e => change('name', e.target.value)}
@@ -152,7 +152,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
                 <option value="">— Select country —</option>
                 {countries.map(c => <option key={c.code} value={c.code}>{c.name} ({c.code})</option>)}
               </select>
-              <p className="mt-1 text-[10px] text-slate-500">
+              <p className="mt-1 text-caption text-slate-500">
                 The customer&apos;s statutory jurisdiction. It seeds labour rules and leave entitlements and
                 becomes the first company&apos;s country. Each further legal entity keeps its own country,
                 editable in the tenant&apos;s Setup → Companies.
@@ -162,7 +162,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
 
           {/* Admin user */}
           <fieldset className="space-y-3">
-            <legend className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest mb-2">Admin User</legend>
+            <legend className="text-caption font-semibold text-slate-600 uppercase tracking-widest mb-2">Admin User</legend>
             <div>
               <label className="block text-xs text-slate-400 mb-1">Admin Email *</label>
               <input required type="email" value={form.adminEmail} onChange={e => change('adminEmail', e.target.value)}
@@ -191,7 +191,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
 
           {/* Subscription */}
           <fieldset className="space-y-3">
-            <legend className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest mb-2">Subscription</legend>
+            <legend className="text-caption font-semibold text-slate-600 uppercase tracking-widest mb-2">Subscription</legend>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Plan</label>
@@ -207,7 +207,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
                   <option value="SingleCompany">Single company</option>
                   <option value="Group">Group (multiple legal entities)</option>
                 </select>
-                <p className="mt-1 text-[10px] text-slate-500">Product behavior — distinct from the Max Companies commercial limit.</p>
+                <p className="mt-1 text-caption text-slate-500">Product behavior — distinct from the Max Companies commercial limit.</p>
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Company Creation Mode</label>
@@ -218,7 +218,7 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
                   <option value="GroupDraftPlatformApproval">Group drafts + platform approval</option>
                   <option value="PlatformControlled">Platform controlled</option>
                 </select>
-                <p className="mt-1 text-[10px] text-slate-500">Who creates legal entities and how they activate.</p>
+                <p className="mt-1 text-caption text-slate-500">Who creates legal entities and how they activate.</p>
               </div>
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Billing Cycle</label>
@@ -316,7 +316,7 @@ function ConfirmModal({ title, message, onConfirm, onClose, danger = false, requ
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4">
+      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 p-6 space-y-4">
         <h3 className="text-sm font-semibold text-white">{title}</h3>
         <p className="text-sm text-slate-400">{message}</p>
         {requireReason && (
@@ -375,7 +375,7 @@ function BulkFeatureModal({ selectedCount, totalCount, onClose, onApply }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4">
+      <div className="relative w-full max-w-md bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 p-6 space-y-4">
         <div className="flex items-center gap-2">
           <Zap className="h-4 w-4 text-sapphire" />
           <h3 className="text-sm font-semibold text-white">Apply Feature in Bulk</h3>
@@ -481,13 +481,13 @@ function TenantRow({ t, onAction, selected, onToggle }: {
           <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${STATUS_DOT[status] ?? 'bg-slate-600'}`} />
           <div className="min-w-0">
             <p className="text-sm text-white font-medium truncate">{t.name}</p>
-            <p className="text-[11px] text-slate-600 font-mono">/{t.slug}</p>
+            <p className="text-caption text-slate-600 font-mono">/{t.slug}</p>
           </div>
         </div>
       </td>
       {/* Plan */}
       <td className="px-3 py-3">
-        <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${PLAN_BADGE[plan] ?? PLAN_BADGE.trial}`}>
+        <span className={`text-caption font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${PLAN_BADGE[plan] ?? PLAN_BADGE.trial}`}>
           {t.subscription?.plan ?? 'Trial'}
         </span>
       </td>
@@ -506,7 +506,7 @@ function TenantRow({ t, onAction, selected, onToggle }: {
       {/* Employees */}
       <td className="px-3 py-3">
         <div className="min-w-[80px]">
-          <p className="text-[11px] text-slate-400 tabular-nums">
+          <p className="text-caption text-slate-400 tabular-nums">
             {t.activeEmployeeCount}{maxEmp > 0 ? `/${maxEmp}` : ''}
           </p>
           {maxEmp > 0 && (
@@ -529,13 +529,13 @@ function TenantRow({ t, onAction, selected, onToggle }: {
           {status === 'suspended' ? (
             <button type="button"
               onClick={() => onAction('reactivate', t)}
-              className="text-[11px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-2 py-1 rounded transition-colors">
+              className="text-caption text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-2 py-1 rounded transition-colors">
               Reactivate
             </button>
           ) : status !== 'cancelled' ? (
             <button type="button"
               onClick={() => onAction('suspend', t)}
-              className="text-[11px] text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/40 px-2 py-1 rounded transition-colors">
+              className="text-caption text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/40 px-2 py-1 rounded transition-colors">
               Suspend
             </button>
           ) : null}
@@ -690,7 +690,7 @@ export default function TenantsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">All Tenants</h1>
+          <h1 className="text-lg font-semibold text-white">All Tenants</h1>
           <p className="text-xs text-slate-500 mt-0.5">{counts.total} tenants · {counts.active} active · {counts.trial} trial</p>
         </div>
         <div className="flex items-center gap-2">
@@ -820,7 +820,7 @@ export default function TenantsPage() {
                       className="h-3.5 w-3.5 rounded border-white/20 bg-white/[0.04] accent-sapphire cursor-pointer" />
                   </th>
                   {['Tenant', 'Plan', 'Status', 'MRR', 'Employees', 'Expires', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>

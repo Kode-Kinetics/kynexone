@@ -129,6 +129,38 @@ public class EmployeeImportIntegrityTests
         Assert.Equal(1, rule.NextSequence);
     }
 
+    // H1: the import stages a new hire's first package; Finance (a different login) applies the file.
+    [Fact]
+    public async Task Import_StagesTheFirstPackage_AndOnlyFinanceApprovalCreatesTheSalaryRow()
+    {
+        await using var db = CreateInMemoryDb();
+        var tenantId = await SeedTenant(db);
+        db.Grades.Add(new Grade { TenantId = tenantId, Code = "G1", Name = "Grade 1", MinSalary = 0, MaxSalary = 100000, Currency = "SAR", IsActive = true });
+        await db.SaveChangesAsync();
+        var csv =
+            "EmployeeCode,FullName,CountryCode,JoiningDate,Status,Grade,BasicSalary\n" +
+            $"S1,Staged One,{ImportCountry},2024-02-01,Draft,G1,7000\n" +
+            $"S2,Staged Two,{ImportCountry},2024-02-01,Draft,G1,8000\n";
+
+        Assert.IsType<OkObjectResult>(await Import(Controller(db, tenantId), csv));
+
+        Assert.Empty(await db.EmployeeSalaryStructures.Where(s => s.TenantId == tenantId).ToListAsync());
+        var staged = await db.SalaryChangeRequests.AsNoTracking().Where(s => s.TenantId == tenantId).ToListAsync();
+        Assert.Equal(2, staged.Count);
+        Assert.All(staged, s =>
+        {
+            Assert.Equal(SalaryChangeRequest.Pending, s.Status);
+            Assert.Equal(Zayra.Api.Infrastructure.Employees.SalaryChangeSources.EmployeeImport, s.Source);
+            Assert.NotNull(s.BatchId);
+        });
+        Assert.Single(staged.Select(s => s.BatchId).Distinct());
+        Assert.All(await db.Employees.Where(e => e.TenantId == tenantId).ToListAsync(), e => Assert.Equal(0m, e.Salary.GetValueOrDefault()));
+
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId);
+
+        Assert.Equal(new[] { 7000m, 8000m }, (await db.EmployeeSalaryStructures.Where(s => s.TenantId == tenantId && s.IsActive).Select(s => s.BasicSalary).ToListAsync()).OrderBy(x => x).ToArray());
+    }
+
     // ── (a2) GENERATED CODES SKIP EVERY TAKEN CODE ──────────────────────────────────────────────────
     // The sequence is at 1, but EMP-0002 is taken by an existing employee, EMP-0003 by an explicit code in
     // the SAME file, and EMP-0004 by a soft-deleted employee (the unique index still holds it). On main the
@@ -242,8 +274,9 @@ public class EmployeeImportIntegrityTests
         // The known row is untouched by any of this.
         var manager = await db.Employees.SingleAsync(e => e.TenantId == tenantId && e.EmployeeCode == "M1");
         Assert.Equal(EmployeeStatuses.Active, manager.Status);
+        // The known row's first package is STAGED for Finance (an importer is one person), dated on the joining date.
         Assert.Equal(new DateOnly(2023, 5, 1),
-            (await db.EmployeeSalaryStructures.SingleAsync(s => s.EmployeeId == manager.Id)).EffectiveDate);
+            (await db.SalaryChangeRequests.SingleAsync(s => s.EmployeeId == manager.Id)).EffectiveDate);
 
         // And the activation gate refuses it until someone states the real date.
         var activate = await new Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard(db)

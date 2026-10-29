@@ -164,6 +164,76 @@ public sealed class JobExecutionContext
         return true;
     }
 
+    /// <summary>
+    /// For a handler that owns ONE transaction for its whole unit of work (so it cannot use
+    /// <see cref="RunItemAsync"/>, which opens the transaction itself). Call it INSIDE that open transaction,
+    /// after the last write and just before COMMIT. It fences the lease — renewing it only if this worker still
+    /// holds it and no cancel is pending, which also row-locks the job until the transaction ends — and writes
+    /// the item's checkpoint row in the same transaction. If the fence fails it throws
+    /// (<see cref="BackgroundJobLeaseLostException"/> / <see cref="BackgroundJobCancelledException"/>), so the
+    /// caller's transaction is abandoned; if it succeeds, the work and the checkpoint commit together.
+    /// </summary>
+    public async Task CommitFenceAsync(string itemKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(itemKey);
+        var now = DateTime.UtcNow;
+        var fenced = await BackgroundJobStore.Leased(Db, _job)
+            .Where(j => j.CancelRequestedAtUtc == null)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(j => j.ProgressCompleted, j => j.ProgressTotal ?? j.ProgressCompleted)
+                .SetProperty(j => j.LeaseExpiresAtUtc, now + _leaseDuration)
+                .SetProperty(j => j.HeartbeatAtUtc, now)
+                .SetProperty(j => j.UpdatedAtUtc, now), AbortToken);
+        if (fenced != 1) await ThrowForFailedFenceAsync();
+
+        var checkpoint = new BackgroundJobItem
+        {
+            TenantId = _job.TenantId,
+            JobId = _job.Id,
+            ItemKey = itemKey,
+            Attempt = _job.Attempt,
+        };
+        Db.BackgroundJobItems.Add(checkpoint);
+        try
+        {
+            await Db.SaveChangesAsync(AbortToken);
+        }
+        catch (DbUpdateException ex) when (BackgroundJobStore.IsUniqueViolation(ex, "ux_background_job_items_"))
+        {
+            // Another attempt already committed this item: this one must not also commit its work.
+            Db.Entry(checkpoint).State = EntityState.Detached;
+            throw new BackgroundJobLeaseLostException(_job.Id);
+        }
+    }
+
+    /// <summary>True when the item's checkpoint is committed. Reads on a fresh connection, so it is correct even when this context is mid-failure.</summary>
+    public async Task<bool> IsCheckpointCommittedAsync(string itemKey, CancellationToken ct)
+    {
+        await using var scope = Services.GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        return await ScopedBypass.TenantWide(db.BackgroundJobItems, _job.TenantId,
+                "Job worker checks whether the item checkpoint of a job it holds is committed; tenant from the claimed row.")
+            .AnyAsync(i => i.JobId == _job.Id && i.ItemKey == itemKey, ct);
+    }
+
+    /// <summary>
+    /// Sets the job's progress to (<paramref name="completed"/> of <paramref name="total"/>) from a SEPARATE
+    /// connection, so it is visible to pollers while the handler's own transaction is still open. Fenced by
+    /// the lease: it throws <see cref="BackgroundJobLeaseLostException"/> if the lease is gone and
+    /// <see cref="BackgroundJobCancelledException"/> if a cancel is pending, which lets a long single
+    /// transaction stop early. Call it at coarse intervals, never per row.
+    /// </summary>
+    public async Task ReportProgressAsync(int completed, int total, string? message = null)
+    {
+        bool ok;
+        await using (var scope = Services.GetRequiredService<IServiceScopeFactory>().CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            ok = await BackgroundJobStore.SetProgressAsync(db, _job, completed, total, message, AbortToken);
+        }
+        if (!ok) await ThrowForFailedFenceAsync();
+    }
+
     /// <summary>The fence matched no row. Work out why — cancel, or lease lost — and throw accordingly.</summary>
     private async Task ThrowForFailedFenceAsync()
     {

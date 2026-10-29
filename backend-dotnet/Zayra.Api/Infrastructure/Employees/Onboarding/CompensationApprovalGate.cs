@@ -21,6 +21,15 @@ namespace Zayra.Api.Infrastructure.Employees.Onboarding;
 ///   <item>the gap never self-heals: it is cleared only by <c>POST /api/employees/{id}/compensation/approve</c>.</item>
 /// </list>
 /// A later change to an Active employee's pay goes through the salary-change approval, not this gate.
+///
+/// ONE APPROVAL, ONE RECORD. The figures of a hire's first package are a pending <see cref="SalaryChangeRequest"/>
+/// (Source NewHire / EmployeeImport): that row is the only record of "these figures are proposed", it is what payroll
+/// applies on approval, and it is what <see cref="LivePackageAsync"/> fingerprints while it waits. The gap above is the
+/// ledger for the whole package (figures AND bank details) and is closed by exactly one thing: a decision on that
+/// package, from any of the three doors (Payroll salary-changes, the scoped /api/pay-approvals view, or
+/// /api/employees/{id}/compensation/approve). The two Finance doors on this side delegate to the Payroll decision
+/// (<see cref="FirstPackageDecision"/>), which applies the SalaryChangeRequest and closes the gap in the same transaction
+/// (<see cref="CloseAfterPackageApprovalAsync"/>), so the two records cannot disagree.
 /// Audit rows carry hashes and the last four characters only, never a figure or a full account number.
 /// </summary>
 public static class CompensationApprovalGate
@@ -64,6 +73,16 @@ public static class CompensationApprovalGate
                 .FirstOrDefault(p => p.TenantId == tenantId && p.EmployeeId == employeeId && !p.IsDeleted)
             ?? await db.EmployeePayrollProfiles.AsNoTracking()
                 .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == employeeId && !p.IsDeleted, ct);
+        // A first package that is still PENDING is the figures under review: it wins over any saved row (there is none for a
+        // hire; a rehire's older package is superseded by the new proposal) and carries no salary row until it is approved.
+        var pending = await PendingFirstPackageAsync(db, tenantId, employeeId, ct);
+        if (pending is not null)
+        {
+            var gross = pending.BasicSalary + pending.HousingAllowance + pending.TransportAllowance + pending.FoodAllowance + pending.MobileAllowance + pending.OtherAllowance;
+            return new PayPackage(salary is > 0m ? salary : gross, pending.BasicSalary, pending.HousingAllowance, pending.TransportAllowance, pending.FoodAllowance,
+                pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction,
+                string.IsNullOrWhiteSpace(pending.Currency) ? profile?.SalaryCurrency : pending.Currency, profile?.Iban, profile?.AccountNumber);
+        }
         var staged = db.EmployeeSalaryStructures.Local.Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive).ToList();
         var saved = await db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.IsActive).ToListAsync(ct);
@@ -72,6 +91,20 @@ public static class CompensationApprovalGate
         return new PayPackage(salary, structure?.BasicSalary ?? 0m, structure?.HousingAllowance ?? 0m, structure?.TransportAllowance ?? 0m,
             structure?.FoodAllowance ?? 0m, structure?.MobileAllowance ?? 0m, structure?.OtherAllowance ?? 0m, structure?.FixedDeduction ?? 0m,
             structure?.Currency ?? profile?.SalaryCurrency, profile?.Iban, profile?.AccountNumber);
+    }
+
+    /// <summary>The newest pending first-package <see cref="SalaryChangeRequest"/> of the employee (staged or saved), or null.</summary>
+    public static async Task<SalaryChangeRequest?> PendingFirstPackageAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var local = db.SalaryChangeRequests.Local
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Status == SalaryChangeRequest.Pending && SalaryChangeSources.IsFirstPackage(x.Source))
+            .OrderByDescending(x => x.RequestedAtUtc).FirstOrDefault();
+        if (local is not null) return local;
+        return await ScopedBypass.TenantWide(db.SalaryChangeRequests, tenantId,
+                "Pay approval: the pending first salary package of the employee being approved; tenant pinned, employee pinned, company scope is applied by the caller.")
+            .AsNoTracking()
+            .Where(x => x.EmployeeId == employeeId && x.Status == SalaryChangeRequest.Pending && (x.Source == SalaryChangeSources.NewHire || x.Source == SalaryChangeSources.EmployeeImport))
+            .OrderByDescending(x => x.RequestedAtUtc).FirstOrDefaultAsync(ct);
     }
 
     public static async Task<string> LiveFingerprintAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>
@@ -197,6 +230,8 @@ public static class CompensationApprovalGate
     /// </summary>
     public static async Task<bool> CarriesUnapprovedPayAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
     {
+        // Figures still waiting as a SalaryChangeRequest are, by definition, not approved.
+        if (await PendingFirstPackageAsync(db, tenantId, employeeId, ct) is not null) return true;
         if (await ApprovedFingerprintAsync(db, tenantId, employeeId, ct) != NoApproval) return false;
         var p = await LivePackageAsync(db, tenantId, employeeId, ct);
         return CarriesCompensation(p.Salary, p.Iban, p.AccountNumber)
@@ -209,6 +244,38 @@ public static class CompensationApprovalGate
         var approved = await ApprovedFingerprintAsync(db, tenantId, employeeId, ct);
         if (approved is NoApproval or LegacyApproval) return false;
         return !string.Equals(approved, await LiveFingerprintAsync(db, tenantId, employeeId, ct), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Runs inside the Payroll decision that applied a first-package <see cref="SalaryChangeRequest"/> (after it is saved, same
+    /// transaction): the package is now an assignment, so the ledger is closed on the figures AND bank details as they stand,
+    /// bound to their fingerprint. The decider was already checked against <see cref="IsBarredAsync"/> by that decision.
+    /// Idempotent: a ledger already closed on this fingerprint is left alone.
+    /// </summary>
+    public static async Task CloseAfterPackageApprovalAsync(ZayraDbContext db, Employee employee, CancellationToken ct)
+    {
+        if (employee.TenantId is not Guid tenantId) return;
+        var live = await LiveFingerprintAsync(db, tenantId, employee.Id, ct);
+        var open = await db.EmployeeImportGaps
+            .Where(g => g.TenantId == tenantId && g.EmployeeId == employee.Id && g.GapType == GapType && g.ResolvedAtUtc == null).ToListAsync(ct);
+        if (open.Count == 0 && string.Equals(await ApprovedFingerprintAsync(db, tenantId, employee.Id, ct), live, StringComparison.Ordinal)) return;
+        if (open.Count == 0)
+        {
+            var gap = new EmployeeImportGap
+            {
+                TenantId = tenantId, CompanyId = employee.CompanyId, ImportBatchId = Guid.Empty, EmployeeId = employee.Id, RowNumber = 0,
+                GapType = GapType, GapCategory = "pay", Detail = "Pay package and bank details approved by Finance.",
+            };
+            db.EmployeeImportGaps.Add(gap);
+            open.Add(gap);
+        }
+        var now = DateTime.UtcNow;
+        foreach (var g in open)
+        {
+            g.ResolvedAtUtc = now;
+            g.RawValue = ApprovedMarker + live;
+        }
+        await db.SaveChangesAsync(ct);
     }
 
     public static Task<bool> IsOpenAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>

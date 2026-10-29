@@ -61,7 +61,7 @@ function KpiCard({
           <Icon className={`h-4 w-4 ${a.icon}`} />
         </div>
         {trend && !loading && (
-          <div className={`flex items-center gap-0.5 text-[11px] font-medium ${
+          <div className={`flex items-center gap-0.5 text-caption font-medium ${
             trend.dir === 'up' ? 'text-emerald-400' : trend.dir === 'down' ? 'text-rose-400' : 'text-slate-500'
           }`}>
             {trend.dir === 'up' && <ArrowUpRight className="h-3 w-3" />}
@@ -78,12 +78,12 @@ function KpiCard({
         </div>
       ) : (
         <>
-          <p className="text-2xl font-bold text-white tabular-nums leading-none mb-1">{value}</p>
-          {sub && <p className="text-[12px] text-slate-500 leading-tight">{sub}</p>}
+          <p className="text-2xl font-semibold text-white tabular-nums leading-none mb-1">{value}</p>
+          {sub && <p className="text-meta text-slate-500 leading-tight">{sub}</p>}
         </>
       )}
 
-      <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest mt-3">{label}</p>
+      <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest mt-3">{label}</p>
     </div>
   );
 }
@@ -192,7 +192,7 @@ function HealthRow({ label, status, loading }: {
           ? <XCircle className="h-3.5 w-3.5 text-rose-400" />
           : <AlertTriangle className="h-3.5 w-3.5 text-slate-600" />
         }
-        <span className={`text-[11px] font-medium ${isOk ? 'text-emerald-400' : isError ? 'text-rose-400' : 'text-amber-400'}`}>
+        <span className={`text-caption font-medium ${isOk ? 'text-emerald-400' : isError ? 'text-rose-400' : 'text-amber-400'}`}>
           {label2Map[status] ?? status}
         </span>
       </div>
@@ -223,12 +223,12 @@ function RiskRow({ t }: { t: PlatformTenantSummary }) {
       <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${dotCls}`} />
       <div className="flex-1 min-w-0">
         <p className="text-sm text-white font-medium truncate group-hover:text-blue-300 transition-colors">{t.name}</p>
-        <p className="text-[11px] text-slate-600 font-mono">/{t.slug}</p>
+        <p className="text-caption text-slate-600 font-mono">/{t.slug}</p>
       </div>
       <div className="text-end shrink-0">
         <p className={`text-xs font-semibold ${riskCls}`}>{riskLabel}</p>
         {t.subscription?.plan && (
-          <p className="text-[11px] text-slate-600 capitalize">{t.subscription.plan}</p>
+          <p className="text-caption text-slate-600 capitalize">{t.subscription.plan}</p>
         )}
       </div>
       <ChevronRight className="h-3 w-3 text-slate-700 group-hover:text-slate-400 transition-colors" />
@@ -294,11 +294,11 @@ function AuditRow({ log }: { log: PlatformAuditLog }) {
 
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors">
-      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border shrink-0 whitespace-nowrap ${cls}`}>
+      <span className={`text-caption font-semibold px-1.5 py-0.5 rounded border shrink-0 whitespace-nowrap ${cls}`}>
         {label}
       </span>
       <p className="flex-1 text-xs text-slate-400 truncate min-w-0">{actor}</p>
-      <span className="text-[11px] text-slate-600 shrink-0 tabular-nums">{relative(log.createdAtUtc)}</span>
+      <span className="text-caption text-slate-600 shrink-0 tabular-nums">{relative(log.createdAtUtc)}</span>
     </div>
   );
 }
@@ -383,7 +383,7 @@ export default function CommandCenter() {
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white tracking-tight">Command Center</h1>
+          <h1 className="text-lg font-semibold text-white tracking-tight">Command Center</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {refreshed
               ? <>Last updated <span className="text-slate-400">{refreshed.toLocaleTimeString()}</span></>
@@ -438,8 +438,8 @@ export default function CommandCenter() {
         {/* Plan Distribution */}
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
-            <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Plan Distribution</p>
-            <Link href="/platform/plans" className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">Plans →</Link>
+            <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Plan Distribution</p>
+            <Link href="/platform/plans" className="text-caption text-blue-400 hover:text-blue-300 transition-colors">Plans →</Link>
           </div>
           <div className="px-5 py-4">
             <PlanBar plans={stats?.tenantsByPlan} total={stats?.totalTenants ?? 0} loading={loading} />
@@ -450,14 +450,14 @@ export default function CommandCenter() {
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
             <div className="flex items-center gap-2">
-              <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">At Risk</p>
+              <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">At Risk</p>
               {!loading && atRisk.length > 0 && (
-                <span className="text-[10px] font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded-full">
+                <span className="text-caption font-semibold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded-full">
                   {atRisk.length}
                 </span>
               )}
             </div>
-            <Link href="/platform/tenants" className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">All →</Link>
+            <Link href="/platform/tenants" className="text-caption text-blue-400 hover:text-blue-300 transition-colors">All →</Link>
           </div>
           {loading ? (
             <div className="px-4 py-3 space-y-3">
@@ -485,8 +485,8 @@ export default function CommandCenter() {
         {/* System Health */}
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
-            <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">System Health</p>
-            <Link href="/platform/system-health" className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">Details →</Link>
+            <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">System Health</p>
+            <Link href="/platform/system-health" className="text-caption text-blue-400 hover:text-blue-300 transition-colors">Details →</Link>
           </div>
           <div className="px-4 py-1">
             <HealthRow label="Database" status={health?.components.database.status ?? 'unknown'} loading={loading} />
@@ -502,10 +502,10 @@ export default function CommandCenter() {
                   <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-50 ${health.status === 'healthy' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
                   <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${health.status === 'healthy' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                 </span>
-                <span className={`text-[11px] font-medium ${health.status === 'healthy' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                <span className={`text-caption font-medium ${health.status === 'healthy' ? 'text-emerald-400' : 'text-amber-400'}`}>
                   {health.status === 'healthy' ? 'All systems operational' : 'Degraded'}
                 </span>
-                <span className="ms-auto text-[10px] text-slate-700 font-mono">{health.version}</span>
+                <span className="ms-auto text-caption text-slate-700 font-mono">{health.version}</span>
               </div>
             </div>
           )}
@@ -518,7 +518,7 @@ export default function CommandCenter() {
         {/* Quick Actions */}
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-white/[0.06]">
-            <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Quick Actions</p>
+            <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Quick Actions</p>
           </div>
           <div className="p-4 grid grid-cols-2 gap-2">
             <QuickAction icon={Building2} label="New Tenant"       href="/platform/tenants"        accent="blue" />
@@ -531,8 +531,8 @@ export default function CommandCenter() {
         {/* Recent Activity */}
         <div className="lg:col-span-2 bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
-            <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Recent Activity</p>
-            <Link href="/platform/audit-logs" className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors">Full log →</Link>
+            <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Recent Activity</p>
+            <Link href="/platform/audit-logs" className="text-caption text-blue-400 hover:text-blue-300 transition-colors">Full log →</Link>
           </div>
           {loading ? (
             <div className="px-4 py-3 space-y-3">

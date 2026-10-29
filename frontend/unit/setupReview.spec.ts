@@ -54,7 +54,7 @@ test.describe('Step 7 review model', () => {
       warnings: [],
     };
     const counts = reviewCounts(plan, new Set(['department:FIN']));
-    expect(counts).toEqual({ add: 1, update: 1, saved: 1, kept: 1, fix: 2 });
+    expect(counts).toEqual({ add: 1, update: 1, saved: 1, kept: 1, fix: 2, remove: 0 });
     expect(counts.add + counts.update + counts.saved + counts.kept + (counts.fix - plan.problems.length)).toBe(plan.items.length);
   });
 

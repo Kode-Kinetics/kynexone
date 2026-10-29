@@ -23,6 +23,7 @@ test('the active section and tab follow the URL, including deeper paths', () => 
   expect(activeEssSection('/ess')?.id).toBe('overview');
   expect(activeEssSection('/ess/payslips')?.id).toBe('pay');
   expect(activeEssSection('/ess/deductions')?.id).toBe('pay');
+  expect(activeEssSection('/ess/loans')?.id).toBe('pay');
   expect(activeEssSection('/ess/overtime')?.id).toBe('time');
   expect(activeEssSection('/ess/documents')?.id).toBe('requests');
   expect(activeEssSection('/ess/jawazat')?.id).toBe('requests');
@@ -34,8 +35,8 @@ test('the active section and tab follow the URL, including deeper paths', () => 
 test('a feature-flagged tab shows only while its flag is on, and a section never goes empty', () => {
   const pay = ESS_SECTIONS.find((s) => s.id === 'pay')!;
   const time = ESS_SECTIONS.find((s) => s.id === 'time')!;
-  expect(visibleEssPages(pay, () => false).map((p) => p.path)).toEqual(['/ess/payslips']);
-  expect(visibleEssPages(pay, (k) => k === 'release_a').map((p) => p.path)).toEqual(['/ess/payslips', '/ess/package', '/ess/deductions']);
+  expect(visibleEssPages(pay, () => false).map((p) => p.path)).toEqual(['/ess/payslips', '/ess/loans']);
+  expect(visibleEssPages(pay, (k) => k === 'release_a').map((p) => p.path)).toEqual(['/ess/payslips', '/ess/package', '/ess/deductions', '/ess/loans']);
   expect(visibleEssPages(time, () => false).map((p) => p.path)).toEqual(['/ess/leave']);
   // A section of ordinary pages never goes empty. A section that exists only for an opt-in feature (Surveys, the
   // engagement flag) has no page while the flag is off, and EssWorkspaceNav drops a section with no visible page.

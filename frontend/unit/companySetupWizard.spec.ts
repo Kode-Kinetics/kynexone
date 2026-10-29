@@ -360,7 +360,7 @@ test('the review opens only what changes in existing mode; unchanged and reused 
     { area: 'branch', code: 'JED', label: 'Jeddah', action: 'create' },
     { area: 'department', code: 'HR', label: 'Human Resources', action: 'reuse' },
   ] };
-  expect(planCounts(plan)).toEqual({ create: 1, update: 1, unchanged: 1, reuse: 1, conflict: 0 });
+  expect(planCounts(plan)).toEqual({ create: 1, update: 1, unchanged: 1, reuse: 1, conflict: 0, remove: 0 });
   expect(planIsNoChange(plan)).toBe(false);
   expect(canCommit(plan)).toBe(true);
   const untouched = { ...plan, items: plan.items.map(i => ({ ...i, action: i.action === 'reuse' ? 'reuse' as const : 'unchanged' as const })) };
@@ -525,9 +525,9 @@ test('a section has changes when it adds a row or edits one the company has', ()
   const baseline = saudiBody();
   baseline.costCentres = [{ existingId: 'c1', code: 'ADM', nameEn: 'Administration' }];
   const body = structuredClone(baseline);
-  expect(sectionChanges(body, baseline, 'costCentres')).toEqual({ added: 0, changed: 0 });
+  expect(sectionChanges(body, baseline, 'costCentres')).toEqual({ added: 0, changed: 0, removed: 0 });
   body.costCentres = [{ ...body.costCentres[0], nameEn: 'Admin' }, { code: 'OPS', nameEn: 'Operations' }];
-  expect(sectionChanges(body, baseline, 'costCentres')).toEqual({ added: 1, changed: 1 });
+  expect(sectionChanges(body, baseline, 'costCentres')).toEqual({ added: 1, changed: 1, removed: 0 });
 });
 
 test('Arabic-Indic and Persian digits are checked as the digits they are; a Saudi VAT number is 15 digits starting and ending with 3', () => {

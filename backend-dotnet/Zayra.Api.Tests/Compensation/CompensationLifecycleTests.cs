@@ -295,7 +295,7 @@ public sealed class CompensationLifecycleTests(PostgresFixture fx)
         }
         await FluentActions.Invoking(() => DecideAsync(fx, w, reversalApproval, w.UserHr, ["HR Manager"], "Approve", "self"))
             .Should().ThrowAsync<InvalidOperationException>("the requester of the reversal cannot approve it");
-        await DecideAsync(fx, w, reversalApproval, w.UserHr2, ["HR Manager"], "Approve", "Confirmed with payroll");
+        await DecideAsync(fx, w, reversalApproval, w.UserHr2, ["HR Manager"], "Approve", "Confirmed with payroll", ["approvals.decide", CompPermissions.Approve, "payroll.approve"]); // a pay change is decided by a Finance (payroll.approve) holder
         (await RunJobAsync(fx, w.Tenant, reversal.ReversalChangeRequestId!.Value, new DateOnly(2027, 1, 1))).Outcome.Should().Be(EffectiveChangeOutcome.Applied);
         await using (var db = fx.CreateDb()) { (await db.PayrollRuns.SingleAsync(r => r.Id == dec)).Status = "Locked"; await db.SaveChangesAsync(); }
         var jan = await ProcessRunAsync(w, 2027, 1);

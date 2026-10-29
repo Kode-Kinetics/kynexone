@@ -229,7 +229,7 @@ test('Back from another screen to Guided setup shows the chooser, not a company 
 });
 
 test('a record saved in an embedded setting is counted by the headline, its checklist and the navigation together', async ({ page }) => {
-  const { writes } = await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=organization&setting=masterData' });
+  const { writes } = await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=workspace&setting=masterData' });
   const summary = page.getByTestId('setup-progress-summary');
   await expect(summary).toHaveText(`Workspace Fixture LLC · ${DONE} of ${TOTAL} setup items done`);
   // Save the workspace's first drop-down list in the embedded setting.
@@ -241,8 +241,8 @@ test('a record saved in an embedded setting is counted by the headline, its chec
   await expect(dialog).toBeHidden();
   expect(writes).toContain('/api/admin/master-data/types');
   // Back to the area: Guided setup no longer lists the workspace item, and every number says so.
-  await page.getByTestId('setup-studio-workspace').getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Organization and core HR', exact: true }).click();
-  await expect(page.getByRole('heading', { level: 2, name: 'Organization and core HR', exact: true })).toBeVisible();
+  await page.getByTestId('setup-studio-workspace').getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Workspace', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Workspace', exact: true })).toBeVisible();
   await expect(summary).toHaveText(`Workspace Fixture LLC · ${DONE} of ${TOTAL - 1} setup items done`);
   await summary.click();
   const missing = page.getByRole('list', { name: 'Still to do', exact: true });
@@ -311,34 +311,35 @@ test('area statuses count only what can be checked, and an area with nothing to 
   await boot(page);
   await expect(page.getByTestId('setup-area-status-definition')).toContainText('Done means at least one active record is saved');
   const status = (label: string) => areaRow(page, label).getByTestId('setup-area-status');
-  // Organization: companies and branches have active records (the inactive branch does not count); departments,
-  // designations, grades and cost centres have none; headcount and drop-down lists are Guided setup items not done.
-  await expect(status('Organization and core HR')).toContainText('2 of 8');
-  await expect(status('Organization and core HR')).toHaveAttribute('data-state', 'partial');
-  // Time: Guided setup's locations item is done.
-  await expect(status('Time and attendance')).toHaveAttribute('data-state', 'done');
-  await expect(status('Time and attendance')).toContainText('Done');
-  // Payroll: GL done (Guided setup), fiscal years none, bank and WPS not done.
-  await expect(status('Payroll')).toContainText('1 of 3');
-  // Notifications have no record and no Guided setup item: not started.
-  await expect(status('Employee services and relations')).toHaveAttribute('data-state', 'notStarted');
-  await expect(status('Employee services and relations')).toContainText('Not started');
-  // Compliance: country rules to do, statutory rules done (Saudi compliance is not open to this role, so not counted).
-  await expect(status('Compliance and statutory administration')).toContainText('1 of 2');
+  // Company structure: companies and branches have active records (the inactive branch does not count), Guided setup's
+  // locations item is done; cost centres and departments have none.
+  await expect(status('Company structure')).toContainText('3 of 5');
+  await expect(status('Company structure')).toHaveAttribute('data-state', 'partial');
+  // Jobs & headcount: grades and designations have none; headcount & budget is a Guided setup item not done.
+  await expect(status('Jobs & headcount')).toContainText('Not started');
+  // Pay & benefits: bank and WPS is not done.
+  await expect(status('Pay & benefits')).toHaveAttribute('data-state', 'notStarted');
+  // Payroll & compliance: GL and statutory rules done (Guided setup); fiscal years and country rules not (Saudi compliance
+  // is not open to this role, so not counted).
+  await expect(status('Payroll & compliance')).toContainText('2 of 4');
+  // Notifications have no record and no Guided setup item: not started. Workspace: the drop-down lists item is not done.
+  await expect(status('Talent & employee services')).toHaveAttribute('data-state', 'notStarted');
+  await expect(status('Talent & employee services')).toContainText('Not started');
+  await expect(status('Workspace')).toContainText('Not started');
   // Nothing measurable: no status, not a made-up one.
-  for (const label of ['Recruitment', 'Onboarding and confirmation', 'Leave and absence', 'Compensation and benefits', 'Performance and talent', 'Learning and development', 'Offboarding and settlement']) {
+  for (const label of ['Time & leave', 'Users & access']) {
     await expect(status(label), label).toHaveCount(0);
   }
   // Every status has words for assistive tech, not just a colour.
-  await expect(areaRow(page, 'Payroll')).toHaveAccessibleName(/1 of 3 checked items set up/);
-  await expect(areaRow(page, 'Time and attendance')).toHaveAccessibleName(/Done: all 1 checked items are set up/);
+  await expect(areaRow(page, 'Payroll & compliance')).toHaveAccessibleName(/2 of 4 checked items set up/);
+  await expect(areaRow(page, 'Jobs & headcount')).toHaveAccessibleName(/none of 3 checked items/);
   expect(await noPageOverflow(page)).toBe(true);
   // The area status drills down: each measurable row of the area says Done or Not started.
-  await areaRow(page, 'Organization and core HR').click();
+  await areaRow(page, 'Company structure').click();
   const blueprint = page.getByTestId('setup-area-blueprint');
-  await expect(blueprint.getByTestId('setup-destination-status')).toHaveCount(8);
+  await expect(blueprint.getByTestId('setup-destination-status')).toHaveCount(5);
   await expect(blueprint.locator('[data-setup-destination="branches"]')).toHaveAccessibleDescription('Done');
-  await expect(blueprint.locator('[data-setup-destination="grades"]')).toHaveAccessibleDescription('Not started');
+  await expect(blueprint.locator('[data-setup-destination="costCenters"]')).toHaveAccessibleDescription('Not started');
   await expect(blueprint.locator('[data-setup-destination="people"]')).toHaveCount(0);
 });
 
@@ -348,38 +349,34 @@ test('a checklist that cannot be read is never guessed', async ({ page }) => {
   await page.getByTestId('setup-progress-summary').click();
   await expect(page.getByTestId('setup-progress-items')).toContainText('The checklist could not be loaded here.');
   // Items only Guided setup can answer drop out; a section with its own record check falls back to it. Payroll keeps
-  // only fiscal years (none saved); Time falls back to the locations list (none saved).
-  await expect(areaRow(page, 'Payroll').getByTestId('setup-area-status')).toContainText('Not started');
-  await expect(areaRow(page, 'Payroll')).toHaveAccessibleName(/none of 1 checked items/);
-  await expect(areaRow(page, 'Time and attendance').getByTestId('setup-area-status')).toHaveAttribute('data-state', 'notStarted');
-  // Compliance keeps only country rules' record check (none saved): statutory rules are Guided setup's alone.
-  await expect(areaRow(page, 'Compliance and statutory administration')).toHaveAccessibleName(/none of 1 checked items/);
+  // only fiscal years and country rules' record checks (none saved); Company structure falls back to the locations list.
+  await expect(areaRow(page, 'Payroll & compliance').getByTestId('setup-area-status')).toContainText('Not started');
+  await expect(areaRow(page, 'Payroll & compliance')).toHaveAccessibleName(/none of 2 checked items/);
+  await expect(areaRow(page, 'Company structure').getByTestId('setup-area-status')).toBeVisible();
+  // Time & leave has nothing measurable, readable or not: it shows no status.
+  await expect(areaRow(page, 'Time & leave').getByTestId('setup-area-status')).toHaveCount(0);
 });
 
 test('the rail starts with the area’s next step as its one primary action', async ({ page }) => {
   test.skip(!isWide(page), 'The "In this area" rail is shown from 1280px.');
-  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=organization' });
+  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=companyStructure' });
   const rail = page.getByRole('complementary', { name: 'In this area' });
   const next = rail.getByTestId('setup-next-action');
-  await expect(next).toContainText('Departments');
+  await expect(next).toContainText('Cost centres');
   await expect(rail.locator('.btn-primary')).toHaveCount(1);
-  const action = rail.getByRole('button', { name: 'Add your first department', exact: true });
+  const action = rail.getByRole('button', { name: 'Add your first cost centre', exact: true });
   await expect(action).toHaveClass(/btn-primary/);
   // First in the rail.
   const [nextBox, otherBox] = await Promise.all([next.boundingBox(), rail.getByRole('button', { name: /^Companies/ }).boundingBox()]);
   expect(nextBox!.y).toBeLessThan(otherBox!.y);
   await shot(page, `${viewportName(page)}-en-rail-next-step`);
   await action.click();
-  await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeVisible();
-  await expect(page).toHaveURL(/[?&]setting=departments(&|$)/);
+  await expect(page.getByRole('heading', { level: 2, name: 'Cost centres', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/[?&]setting=costCenters(&|$)/);
   // On the setting itself, the next step is the following incomplete one.
-  await expect(rail.getByRole('button', { name: 'Add your first designation', exact: true })).toBeVisible();
-  // An area whose every check passes says so, with no primary action.
-  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=time');
-  await expect(rail.getByTestId('setup-area-all-done')).toHaveText('Everything here is set up');
-  await expect(rail.locator('.btn-primary')).toHaveCount(0);
+  await expect(rail.getByRole('button', { name: 'Add your first department', exact: true })).toBeVisible();
   // An area with nothing measurable claims neither.
-  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=leave');
+  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=timeLeave');
   await expect(rail.getByRole('button', { name: /^Leave types/ })).toBeVisible();
   await expect(rail.getByTestId('setup-next-action')).toHaveCount(0);
   await expect(rail.getByTestId('setup-area-all-done')).toHaveCount(0);
@@ -479,7 +476,7 @@ test('no match says so and offers All setup areas', async ({ page }) => {
 });
 
 test('opening a result with unsaved work asks first, and Cancel keeps the work', async ({ page }) => {
-  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboardingChecklists' });
+  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=talentServices&setting=onboardingChecklists' });
   const draft = page.getByPlaceholder('Task title', { exact: true });
   await draft.fill('Keep this task');
   const box = await searchBox(page);
@@ -500,7 +497,7 @@ test('Arabic: the progress line, statuses and search read in Arabic, and English
   await boot(page, { arabic: true });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
   await expect(page.getByTestId('setup-progress-summary')).toHaveText(`Workspace Fixture LLC · اكتمل ${DONE} من ${TOTAL} من بنود الإعداد`);
-  await expect(areaRow(page, 'الرواتب').getByTestId('setup-area-status')).toContainText('1 من 3');
+  await expect(areaRow(page, 'الرواتب والامتثال').getByTestId('setup-area-status')).toContainText('2 من 4');
   await expect(areaRow(page, 'التوظيف').getByTestId('setup-area-status')).toHaveCount(0);
   expect(await noPageOverflow(page)).toBe(true);
   await shot(page, `${viewportName(page)}-ar-all-setup-areas`);

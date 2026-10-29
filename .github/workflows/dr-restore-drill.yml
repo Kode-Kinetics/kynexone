@@ -1,0 +1,75 @@
+name: DR restore drill
+
+# ON DEMAND ONLY. No schedule on purpose: the owner decides when a drill runs (target: monthly,
+# and after any change to the database platform). See docs/runbooks/disaster-recovery.md.
+#
+# What it does: creates a throwaway Neon branch from the primary at a past timestamp, runs the
+# READ-ONLY checks in scripts/dr/verify.sql on it, uploads the markdown evidence report, and
+# deletes the branch. It never connects to the primary branch.
+#
+# One-time owner setup (this workflow does nothing useful until it is done):
+#   GitHub > Settings > Environments > production > add ENVIRONMENT SECRET  NEON_API_KEY
+#   GitHub > Settings > Environments > production > add ENVIRONMENT VARIABLE NEON_PROJECT_ID
+# (Environment scope, not repository scope: repository-scope secrets are readable by every
+# workflow on a public repo. The production environment's required-reviewer rule is the approval.)
+#
+# Kept out of ci.yml so it is not mistaken for a required check and cannot cancel a deploy run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_timestamp:
+        description: 'Restore point, RFC 3339 UTC, in the past (e.g. 2026-10-26T09:00:00Z)'
+        required: true
+        type: string
+      operator:
+        description: 'Your name, written into the evidence sign-off block'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dr-restore-drill
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    name: Restore drill (evidence artifact)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preflight (fail fast with a clear message)
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+        run: |
+          [ -n "$NEON_API_KEY" ] || { echo "::error::Environment secret NEON_API_KEY is not set on the production environment."; exit 1; }
+          [ -n "$NEON_PROJECT_ID" ] || { echo "::error::Environment variable NEON_PROJECT_ID is not set on the production environment."; exit 1; }
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client jq
+      - name: Run drill
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          TARGET_TIMESTAMP: ${{ inputs.target_timestamp }}
+          DR_OPERATOR: ${{ inputs.operator }}
+          DR_OUT: ${{ runner.temp }}/dr-evidence.md
+        run: bash scripts/dr/restore-drill.sh --yes
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/dr-evidence.md" ]; then cat "$RUNNER_TEMP/dr-evidence.md" >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dr-restore-drill-evidence
+          path: ${{ runner.temp }}/dr-evidence.md
+          if-no-files-found: warn
+          retention-days: 400

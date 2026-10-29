@@ -71,7 +71,7 @@ export function ProposalCard({ employeeId, contractId, contractFileUrl, proposal
               <option value="">{t('Choose the signed contract')}</option>
               {documents.map((d) => <option key={d.id} value={d.id}>{d.documentType} · {d.fileName}</option>)}
             </select>
-            {documents.length === 0 && <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-300">{t('No signed contract is on file. Upload it to the employee’s documents first.')}</span>}
+            {documents.length === 0 && <span className="mt-0.5 block text-caption text-amber-700 dark:text-amber-300">{t('No signed contract is on file. Upload it to the employee’s documents first.')}</span>}
           </label>
           <button type="button" disabled={busy || !documentId} onClick={() => void decide('confirm')}
             className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">{t('Confirm it matches the signed contract')}</button>

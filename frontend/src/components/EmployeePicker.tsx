@@ -127,7 +127,7 @@ export function EmployeePicker({ value, onChange, readOnly = false, placeholder 
               onMouseDown={e => { e.preventDefault(); select(emp); }}
               className="flex w-full items-center gap-3 px-3 py-2.5 text-start transition-colors hover:bg-slate-50 dark:hover:bg-white/[0.05]"
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sapphire/20 to-sapphire/5 text-xs font-semibold text-sapphire dark:text-cyanAccent">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-soft text-xs font-semibold text-primary-fg">
                 {emp.fullName.charAt(0).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">

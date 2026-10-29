@@ -31,7 +31,7 @@ function NewLeadModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <h2 className="text-sm font-semibold text-white">New Lead</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="text-slate-500 hover:text-white transition-colors"><X className="h-4 w-4" /></button>
@@ -110,7 +110,7 @@ function ConvertLeadModal({ lead, onClose, onConverted }: ConvertLeadModalProps)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-md bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <div>
             <h2 className="text-sm font-semibold text-white">Convert to Tenant</h2>
@@ -248,7 +248,7 @@ export default function LeadsPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Leads & Demo Requests</h1>
+          <h1 className="text-lg font-semibold text-white">Leads & Demo Requests</h1>
           <p className="text-xs text-slate-500 mt-0.5">{leads.length} total leads</p>
         </div>
         <div className="flex items-center gap-2">
@@ -290,7 +290,7 @@ export default function LeadsPage() {
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium whitespace-nowrap transition-colors
               ${filter === s ? 'border-sapphire/50 bg-sapphire/10 text-blue-300' : 'border-white/[0.08] text-slate-500 hover:text-slate-300 hover:border-white/20'}`}>
             <span>{s}</span>
-            <span className="text-[10px] tabular-nums opacity-70">{counts[s] ?? 0}</span>
+            <span className="text-caption tabular-nums opacity-70">{counts[s] ?? 0}</span>
           </button>
         ))}
       </div>
@@ -311,7 +311,7 @@ export default function LeadsPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Company', 'Contact', 'Status', 'Source', 'Created', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -325,19 +325,19 @@ export default function LeadsPage() {
                     <tr key={l.id} className={`border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors ${!isActive ? 'opacity-50' : ''}`}>
                       <td className="px-4 py-3">
                         <p className="text-sm text-white font-medium">{l.companyName}</p>
-                        {l.notes && <p className="text-[11px] text-slate-600 truncate max-w-[180px]">{l.notes}</p>}
+                        {l.notes && <p className="text-caption text-slate-600 truncate max-w-[180px]">{l.notes}</p>}
                       </td>
                       <td className="px-3 py-3">
                         <p className="text-xs text-slate-300">{l.contactName}</p>
-                        <p className="text-[11px] text-slate-600">{l.contactEmail}</p>
+                        <p className="text-caption text-slate-600">{l.contactEmail}</p>
                       </td>
                       <td className="px-3 py-3">
-                        <span className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border ${STATUS_CLS[l.status]}`}>
+                        <span className={`text-caption font-semibold uppercase px-1.5 py-0.5 rounded border ${STATUS_CLS[l.status]}`}>
                           {l.status}
                         </span>
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-500">{l.source}</td>
-                      <td className="px-3 py-3 text-[11px] text-slate-600 whitespace-nowrap">
+                      <td className="px-3 py-3 text-caption text-slate-600 whitespace-nowrap">
                         {new Date(l.createdAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </td>
                       <td className="px-3 py-3">
@@ -346,7 +346,7 @@ export default function LeadsPage() {
                             <button type="button"
                               onClick={() => setConvertingLead(l)}
                               disabled={updating === l.id}
-                              className="flex items-center gap-1 text-[11px] text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 px-2 py-1 rounded transition-colors disabled:opacity-40 whitespace-nowrap">
+                              className="flex items-center gap-1 text-caption text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-500/10 px-2 py-1 rounded transition-colors disabled:opacity-40 whitespace-nowrap">
                               <ArrowRight className="h-3 w-3" />
                               Convert
                             </button>
@@ -355,7 +355,7 @@ export default function LeadsPage() {
                             <button type="button"
                               onClick={() => advance(l)}
                               disabled={updating === l.id}
-                              className="flex items-center gap-1 text-[11px] text-blue-400 border border-blue-500/20 hover:border-blue-500/40 px-2 py-1 rounded transition-colors disabled:opacity-40">
+                              className="flex items-center gap-1 text-caption text-blue-400 border border-blue-500/20 hover:border-blue-500/40 px-2 py-1 rounded transition-colors disabled:opacity-40">
                               <ChevronRight className="h-3 w-3" />
                               {PIPELINE[PIPELINE.indexOf(l.status) + 1]}
                             </button>
@@ -364,7 +364,7 @@ export default function LeadsPage() {
                             <button type="button"
                               onClick={() => markLost(l)}
                               disabled={updating === l.id}
-                              className="text-[11px] text-rose-400 border border-rose-500/20 hover:border-rose-500/40 px-2 py-1 rounded transition-colors disabled:opacity-40">
+                              className="text-caption text-rose-400 border border-rose-500/20 hover:border-rose-500/40 px-2 py-1 rounded transition-colors disabled:opacity-40">
                               Lost
                             </button>
                           )}

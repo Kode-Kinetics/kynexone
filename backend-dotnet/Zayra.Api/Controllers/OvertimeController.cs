@@ -7,6 +7,8 @@ using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Setup;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
@@ -48,10 +50,11 @@ public class OvertimeController : ControllerBase
     }
 
     [HttpPost("policies")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Officer")]
+    [HasPermission("overtime.policy_manage")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, HourlyRateBasis, FixedHourlyRate, scheduling caps, RoundingRule, flags. No employee salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<OvertimePolicy>> CreatePolicy(OvertimePolicyRequest req, CancellationToken ct)
     {
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = RequireTenant();
         if (await _db.OvertimePolicies.AnyAsync(x => x.TenantId == tenantId && x.Code == req.Code && !x.IsDeleted, ct))
             return Conflict(new { message = "Overtime policy code already exists." });
@@ -81,19 +84,196 @@ public class OvertimeController : ControllerBase
         return Created($"/api/overtime/policies/{policy.Id}", policy);
     }
 
-    [HttpGet("types")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, Category, IsActive. No employee data, salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<ActionResult<IReadOnlyCollection<OvertimeType>>> Types(CancellationToken ct)
+    [HttpGet("policies/{id:guid}")]
+    public async Task<IActionResult> GetPolicy(Guid id, CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        return Ok(await _db.OvertimeTypes.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive).OrderBy(x => x.Name).ToListAsync(ct));
+        var p = await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (p is null) return NotFound();
+        var m = await _db.OvertimeMultipliers.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.OvertimePolicyId == id && x.OvertimeTypeId == null).ToListAsync(ct);
+        decimal Of(string c) => m.FirstOrDefault(x => x.DayCategory == c)?.Multiplier ?? 0m;
+        return Ok(new
+        {
+            p.Id, p.Code, p.Name, p.HourlyRateBasis, p.FixedHourlyRate, p.StandardMonthlyHours, p.MinimumMinutes,
+            p.MaximumMinutesPerDay, p.MonthlyCapMinutes, p.RoundingRule, p.RequiresApproval, p.AllowCompOffConversion, p.IsActive,
+            regularDayMultiplier = Of("RegularDay"), weekendMultiplier = Of("Weekend"), holidayMultiplier = Of("PublicHoliday"),
+        });
+    }
+
+    [HttpPut("policies/{id:guid}")]
+    [HasPermission("overtime.policy_manage")]
+    [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, HourlyRateBasis, FixedHourlyRate, scheduling caps, RoundingRule, flags. No employee salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    public Task<ActionResult<OvertimePolicy>> UpdatePolicy(Guid id, OvertimePolicyRequest req, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, RequireTenant(), () => UpdatePolicyCore(id, req, ct), ct);
+
+    private Task<bool> OtherActivePolicyExistsAsync(Guid tenantId, Guid id, CancellationToken ct) =>
+        _db.OvertimePolicies.AnyAsync(x => x.TenantId == tenantId && x.Id != id && x.IsActive && !x.IsDeleted, ct);
+
+    private static readonly string[] RateBases = { "BasicSalary", "GrossSalary", "FixedHourlyRate" };
+    private static readonly string[] RoundingRules = { "None", "Nearest15", "Up15", "Down15", "Nearest30" };
+
+    private static string? ValidatePolicyFigures(OvertimePolicyRequest r)
+    {
+        if (string.IsNullOrWhiteSpace(r.Name)) return "A name is required.";
+        foreach (var m in new[] { r.RegularDayMultiplier, r.WeekendMultiplier, r.HolidayMultiplier })
+            if (m <= 0 || m > 5) return "Every overtime multiplier must be greater than 0 and at most 5.";
+        if (r.FixedHourlyRate < 0 || r.FixedHourlyRate > 10000) return "The fixed hourly rate must be between 0 and 10,000.";
+        if (r.StandardMonthlyHours < 160 || r.StandardMonthlyHours > 260) return "Standard monthly hours must be between 160 and 260.";
+        if (r.HourlyRateBasis is not null && !RateBases.Contains(r.HourlyRateBasis)) return "Hourly rate basis must be BasicSalary, GrossSalary or FixedHourlyRate.";
+        if (r.RoundingRule is not null && !RoundingRules.Contains(r.RoundingRule)) return "Unknown rounding rule.";
+        if (r.MinimumMinutes <= 0 || r.MaximumMinutesPerDay <= 0 || r.MonthlyCapMinutes <= 0) return "Minimum, daily maximum and monthly cap must be positive.";
+        return null;
+    }
+
+    private async Task<ActionResult<OvertimePolicy>> UpdatePolicyCore(Guid id, OvertimePolicyRequest req, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tenantId = RequireTenant();
+        var policy = await _db.OvertimePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (policy is null) return NotFound();
+        if (ValidatePolicyFigures(req) is { } invalid) return BadRequest(new { message = invalid });
+        var multipliers = await _db.OvertimeMultipliers.Where(x => x.TenantId == tenantId && x.OvertimePolicyId == id && x.OvertimeTypeId == null).ToListAsync(ct);
+        decimal Current(string c) => multipliers.FirstOrDefault(m => m.DayCategory == c)?.Multiplier ?? 0m;
+        var rateChanged = (req.HourlyRateBasis ?? policy.HourlyRateBasis) != policy.HourlyRateBasis
+            || req.FixedHourlyRate != policy.FixedHourlyRate || req.StandardMonthlyHours != policy.StandardMonthlyHours
+            || req.RegularDayMultiplier != Current("RegularDay") || req.WeekendMultiplier != Current("Weekend") || req.HolidayMultiplier != Current("PublicHoliday");
+        if (rateChanged)
+        {
+            var requestIds = await ScopedBypass.TenantWide(_db.OvertimeRequests, tenantId, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.")
+                .Where(x => x.OvertimePolicyId == id).Select(x => x.Id).ToListAsync(ct);
+            if (requestIds.Count > 0 && await _db.OvertimeCalculations.AnyAsync(c => c.TenantId == tenantId && requestIds.Contains(c.OvertimeRequestId), ct))
+                return Conflict(new { code = "OVERTIME_POLICY_USED_BY_PAYROLL", message = "Overtime has already been calculated under this policy, so its rate basis, hours and multipliers are fixed. Turn it off and add a new policy for the new rates; the limits and name can still be edited." });
+        }
+        object View() => new
+        {
+            policy.Name, policy.HourlyRateBasis, policy.FixedHourlyRate, policy.StandardMonthlyHours, policy.MinimumMinutes,
+            policy.MaximumMinutesPerDay, policy.MonthlyCapMinutes, policy.RoundingRule, policy.RequiresApproval, policy.AllowCompOffConversion,
+            multipliers = multipliers.ToDictionary(m => m.DayCategory, m => m.Multiplier),
+        };
+        var before = View();
+        // The code is the policy's identity (other records and reports name it): it is not editable.
+        policy.Name = req.Name.Trim();
+        policy.HourlyRateBasis = req.HourlyRateBasis ?? policy.HourlyRateBasis;
+        policy.FixedHourlyRate = req.FixedHourlyRate;
+        if (req.StandardMonthlyHours > 0) policy.StandardMonthlyHours = req.StandardMonthlyHours;
+        if (req.MinimumMinutes > 0) policy.MinimumMinutes = req.MinimumMinutes;
+        if (req.MaximumMinutesPerDay > 0) policy.MaximumMinutesPerDay = req.MaximumMinutesPerDay;
+        if (req.MonthlyCapMinutes > 0) policy.MonthlyCapMinutes = req.MonthlyCapMinutes;
+        policy.RoundingRule = req.RoundingRule ?? policy.RoundingRule;
+        policy.RequiresApproval = req.RequiresApproval;
+        policy.AllowCompOffConversion = req.AllowCompOffConversion;
+        void SetMultiplier(string category, decimal value)
+        {
+            var row = multipliers.FirstOrDefault(m => m.DayCategory == category);
+            if (row is null)
+            {
+                row = new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = id, DayCategory = category, Multiplier = value };
+                _db.OvertimeMultipliers.Add(row); multipliers.Add(row);
+            }
+            else row.Multiplier = value;
+        }
+        SetMultiplier("RegularDay", req.RegularDayMultiplier);
+        SetMultiplier("Weekend", req.WeekendMultiplier);
+        SetMultiplier("PublicHoliday", req.HolidayMultiplier);
+        await SaveAudit("overtime.policy.updated", "OvertimePolicy", policy.Id.ToString(), ct, new { policy.Code, before, after = View() });
+        await _db.SaveChangesAsync(ct);
+        return Ok(policy);
+    }
+
+    [HttpPost("policies/{id:guid}/active")]
+    [HasPermission("overtime.policy_manage")]
+    [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, HourlyRateBasis, FixedHourlyRate, scheduling caps, RoundingRule, flags. No employee salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    public Task<ActionResult<OvertimePolicy>> SetPolicyActive(Guid id, [FromQuery] bool active, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, RequireTenant(), () => SetPolicyActiveCore(id, active, ct), ct);
+
+    private async Task<ActionResult<OvertimePolicy>> SetPolicyActiveCore(Guid id, [FromQuery] bool active, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tenantId = RequireTenant();
+        var policy = await _db.OvertimePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (policy is null) return NotFound();
+        if (policy.IsActive == active) return Ok(policy);
+        // With no active policy left, payroll falls back to built-in defaults (basic salary, 240 h) and new
+        // requests fail, so the last active policy can never be turned off.
+        if (!active && !await OtherActivePolicyExistsAsync(tenantId, id, ct))
+            return Conflict(new { code = "OVERTIME_POLICY_LAST_ACTIVE", message = "This is the only active overtime policy. Payroll would fall back to built-in defaults without it. Add and turn on another policy first." });
+        policy.IsActive = active;
+        await SaveAudit(active ? "overtime.policy.activated" : "overtime.policy.deactivated", "OvertimePolicy", policy.Id.ToString(), ct, new { policy.Code, policy.IsActive });
+        await _db.SaveChangesAsync(ct);
+        return Ok(policy);
+    }
+
+    // ManagedLifecycle: soft delete (IsDeleted/DeletedAtUtc/DeletedBy), refused while a request uses the policy or it is the last active one, audited.
+    [HttpDelete("policies/{id:guid}")]
+    [HasPermission("overtime.policy_manage")]
+    public Task<IActionResult> DeletePolicy(Guid id, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, RequireTenant(), () => DeletePolicyCore(id, ct), ct);
+
+    private async Task<IActionResult> DeletePolicyCore(Guid id, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tenantId = RequireTenant();
+        var policy = await _db.OvertimePolicies.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (policy is null) return NotFound();
+        if (policy.IsActive && !await OtherActivePolicyExistsAsync(tenantId, id, ct))
+            return Conflict(new { code = "OVERTIME_POLICY_LAST_ACTIVE", message = "This is the only active overtime policy. Payroll would fall back to built-in defaults without it. Add and turn on another policy first." });
+        var used = await ScopedBypass.TenantWide(_db.OvertimeRequests, tenantId, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.").CountAsync(x => x.TenantId == tenantId && x.OvertimePolicyId == id, ct);
+        if (used > 0)
+            return Conflict(new { code = "OVERTIME_POLICY_IN_USE", message = $"{used} overtime request(s) were filed under this policy, so it cannot be deleted. Turn it off instead; it can be turned back on later." });
+        policy.IsDeleted = true; policy.IsActive = false; policy.DeletedAtUtc = DateTime.UtcNow; policy.DeletedBy = GetUserId();
+        await SaveAudit("overtime.policy.deleted", "OvertimePolicy", policy.Id.ToString(), ct, new { policy.Code, policy.Name });
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpGet("types")]
+    [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, Category, IsActive. No employee data, salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    public async Task<ActionResult<IReadOnlyCollection<OvertimeType>>> Types([FromQuery] bool includeInactive = false, CancellationToken ct = default)
+    {
+        var tenantId = RequireTenant();
+        return Ok(await _db.OvertimeTypes.AsNoTracking().Where(x => x.TenantId == tenantId && (includeInactive || x.IsActive)).OrderBy(x => x.Name).ToListAsync(ct));
+    }
+
+    [HttpPut("types/{id:guid}")]
+    [HasPermission("overtime.policy_manage")]
+    [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, Category, IsActive. No employee data, salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    public async Task<ActionResult<OvertimeType>> UpdateType(Guid id, OvertimeTypeRequest req, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tenantId = RequireTenant();
+        var type = await _db.OvertimeTypes.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        if (type is null) return NotFound();
+        if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest(new { message = "A name is required." });
+        var before = new { type.Name, type.Category };
+        type.Name = req.Name.Trim(); type.Category = req.Category ?? type.Category;
+        await SaveAudit("overtime.type.updated", "OvertimeType", type.Id.ToString(), ct, new { before, after = new { type.Name, type.Category } });
+        await _db.SaveChangesAsync(ct);
+        return Ok(type);
+    }
+
+    [HttpPost("types/{id:guid}/active")]
+    [HasPermission("overtime.policy_manage")]
+    [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, Category, IsActive. No employee data, salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
+    public async Task<ActionResult<OvertimeType>> SetTypeActive(Guid id, [FromQuery] bool active, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tenantId = RequireTenant();
+        var type = await _db.OvertimeTypes.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        if (type is null) return NotFound();
+        if (type.IsActive == active) return Ok(type);
+        type.IsActive = active;
+        await SaveAudit(active ? "overtime.type.activated" : "overtime.type.deactivated", "OvertimeType", type.Id.ToString(), ct, new { type.Code, type.IsActive });
+        await _db.SaveChangesAsync(ct);
+        return Ok(type);
     }
 
     [HttpPost("types")]
-    [Authorize(Roles = "Admin,HR Manager,Payroll Officer")]
+    [HasPermission("overtime.policy_manage")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, Category, IsActive. No employee data, salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
     public async Task<ActionResult<OvertimeType>> CreateType(OvertimeTypeRequest req, CancellationToken ct)
     {
+        if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = RequireTenant();
         var type = new OvertimeType { TenantId = tenantId, Code = req.Code.Trim(), Name = req.Name.Trim(), Category = req.Category ?? "Regular" };
         _db.OvertimeTypes.Add(type);
@@ -137,7 +317,7 @@ public class OvertimeController : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Reason)) return BadRequest(new { message = "A reason is required." });
         var policy = req.OvertimePolicyId.HasValue
             ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimePolicyId && x.IsActive && !x.IsDeleted, ct)
-            : await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
+            : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
         if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
         if (req.OvertimeTypeId.HasValue && !await _db.OvertimeTypes.AnyAsync(x => x.TenantId == tenantId && x.Id == req.OvertimeTypeId && x.IsActive, ct))
             return BadRequest(new { message = "Overtime type not found or inactive." });
@@ -205,7 +385,7 @@ public class OvertimeController : ControllerBase
         // would have nothing to apply, and the id on the request was never checked at all.
         var policy = req.OvertimePolicyId.HasValue
             ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimePolicyId && x.IsActive && !x.IsDeleted, ct)
-            : await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
+            : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
         if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var dailyQuery = _db.AttendanceDailyRecords.AsNoTracking()
@@ -545,7 +725,7 @@ public class OvertimeController : ControllerBase
         var tenantId = request.TenantId;
         var policy = request.OvertimePolicyId.HasValue
             ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.OvertimePolicyId && !x.IsDeleted, ct)
-            : await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
+            : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
         policy ??= new OvertimePolicy { TenantId = tenantId, HourlyRateBasis = "BasicSalary", StandardMonthlyHours = 240 };
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && x.IsActive && x.EffectiveDate <= request.WorkDate).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId, ct);
@@ -700,9 +880,13 @@ public class OvertimeController : ControllerBase
             ? 1.5m
             : 1.25m;
 
-    private async Task SaveAudit(string action, string entity, string entityId, CancellationToken ct)
+    private async Task SaveAudit(string action, string entity, string entityId, CancellationToken ct, object? metadata = null)
     {
-        _db.OvertimeAuditLogs.Add(new OvertimeAuditLog { TenantId = RequireTenant(), Action = action, EntityName = entity, EntityId = entityId, UserId = GetUserId() });
+        _db.OvertimeAuditLogs.Add(new OvertimeAuditLog
+        {
+            TenantId = RequireTenant(), Action = action, EntityName = entity, EntityId = entityId, UserId = GetUserId(),
+            MetadataJson = metadata is null ? "{}" : System.Text.Json.JsonSerializer.Serialize(metadata),
+        });
         await Task.CompletedTask;
     }
 

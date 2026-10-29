@@ -9,7 +9,7 @@ import {
   ComplianceProfiles, EngagementPrivacy, LetterTemplates, PerformanceScorecards, SaudiCompliance, TaxPolicies,
 } from './talentComplianceSetupPanels';
 import {
-  AccessLog, ApprovalAuthorities, ApprovalDelegations, Branding, CountryPayrollKeys, HelpText, Localization, Modules, OpeningBalances,
+  AccessLog, ApprovalAuthorities, ApprovalDelegations, Branding, HelpText, Localization, Modules, OpeningBalances,
   PermissionGrantors, PermissionMatrix, Permissions, PlanBilling, Roles, SignInSecurity, Users,
 } from './accessWorkspaceSetupPanels';
 
@@ -48,6 +48,10 @@ const ShiftDefinitions = dynamic(() => import('../../views/ShiftsPage').then(mod
 }));
 const ShiftPolicy = dynamic(() => import('../../views/ShiftsPage').then(module => {
   const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.ShiftSetupPanel section="policy" onDirtyChange={onDirtyChange} />;
+  return Panel;
+}));
+const PayrollRules = dynamic(() => import('../payroll/PayrollRulesPanel').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.PayrollRulesPanel onDirtyChange={onDirtyChange} />;
   return Panel;
 }));
 const AttendanceRules = dynamic(() => import('../attendance/AttendanceRulesPanel').then(module => {
@@ -115,6 +119,7 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   shiftDefinitions: ShiftDefinitions,
   shiftPolicy: ShiftPolicy,
   attendanceRules: AttendanceRules,
+  payrollRules: PayrollRules,
   overtimePolicies: OvertimePolicies,
   attendanceDevices: AttendanceDevices,
   benefitPlans: BenefitPlans,
@@ -132,7 +137,6 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   taxPolicies: TaxPolicies,
   complianceProfiles: ComplianceProfiles,
   saudiCompliance: SaudiCompliance,
-  countryPayrollKeys: CountryPayrollKeys,
   users: Users,
   roles: Roles,
   permissionMatrix: PermissionMatrix,

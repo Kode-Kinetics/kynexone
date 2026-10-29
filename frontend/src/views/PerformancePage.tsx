@@ -2,6 +2,12 @@
 
 import { InfoTip } from '../components/InfoTip';
 import { msg } from '../i18n/translations';
+import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
+import { enumLabel } from '../i18n/enumLabel';
+import { Modal as BaseModal } from '../components/Modal';
+import { ConfirmDialog, type ConfirmState } from '../components/ui/ConfirmDialog';
+import { useAppToast } from '../components/ui/AppToast';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { EmployeeSearchSelect } from '../components/EmployeeSearchSelect';
 import type { EmployeeSelection } from '../components/EmployeeSearchSelect';
@@ -18,7 +24,7 @@ import { requestFailureReason } from '../lib/requestFailure';
 import {
   Activity, AlertTriangle, BarChart2, CheckCircle, ChevronRight,
   ClipboardList, Clock, FileText, Plus, Settings, Star,
-  Target, TrendingUp, Users, X, Zap,
+  Target, TrendingUp, Users, Zap,
 } from 'lucide-react';
 import {
   analyticsApi, calibrationApi, cyclesApi, feedbackApi, goalsApi,
@@ -32,12 +38,32 @@ import type {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function fmtDate(s: string | null | undefined) {
-  return formatCalendarDate(s, 'en-US');
+function fmtDate(s: string | null | undefined, locale: string) {
+  return formatCalendarDate(s, locale);
 }
 
-function fmtCurrency(n: number) {
-  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+type Tr = (key: string, params?: Record<string, string | number | null | undefined>) => string;
+
+/** The viewer-language text for a domain value the API sends as an English word (status, type, category, decision). */
+function valueText(t: Tr, v: string): string {
+  const known: Record<string, string> = {
+    Draft: t('Draft'), Active: t('Active'), InReview: t('In Review'), Calibration: t('Calibration'),
+    FinalApproval: t('Final Approval'), Published: t('Published'), Closed: t('Closed'), Pending: t('Pending'),
+    Approved: t('Approved'), Rejected: t('Rejected'), SelfAssessmentDue: t('Self-Assessment Due'),
+    SelfAssessmentSubmitted: t('Self-Assessment Submitted'), ManagerReview: t('Manager Review'),
+    ManagerReviewed: t('Manager Reviewed'), Acknowledged: t('Acknowledged'), Appealed: t('Appealed'),
+    Completed: t('Completed'), OnHold: t('On Hold'), Cancelled: t('Cancelled'), Improved: t('Improved'),
+    Extended: t('Extended'), Failed: t('Failed'), TerminationRecommended: t('Termination Recommended'),
+    Confirmed: t('Confirmed'), Terminated: t('Terminated'), Upheld: t('Upheld'),
+    Annual: t('Annual'), 'Semi-Annual': t('Semi-Annual'), Quarterly: t('Quarterly'), Monthly: t('Monthly'),
+    Probation: t('Probation'), Project: t('Project'),
+    KPI: t('KPI'), Learning: t('Learning'), Behavioral: t('Behavioral'), Strategic: t('Strategic'),
+    High: t('High'), Medium: t('Medium'), Low: t('Low'),
+    Numeric: t('Numeric'), Percentage: t('Percentage'), Boolean: t('Boolean'), Currency: t('Currency'), Rating: t('Rating'),
+    Commendation: t('Commendation'), Concern: t('Concern'), Coaching: t('Coaching'),
+    Developmental: t('Developmental'), Recognition: t('Recognition'),
+  };
+  return known[v] ?? enumLabel(t, 'Status', v);
 }
 
 function scoreColor(score: number) {
@@ -47,7 +73,8 @@ function scoreColor(score: number) {
   return 'text-slate-400';
 }
 
-function statusBadge(status: string) {
+function StatusBadge({ status }: { status: string }) {
+  const { t } = useLocale();
   const map: Record<string, string> = {
     Draft: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
     Active: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
@@ -65,33 +92,25 @@ function statusBadge(status: string) {
     Acknowledged: 'bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-400',
     Appealed: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
   };
-  const labels: Record<string, string> = {
-    SelfAssessmentDue: 'Self-Assessment Due',
-    SelfAssessmentSubmitted: 'Self-Assessment Submitted',
-    ManagerReview: 'Manager Review',
-    FinalApproval: 'Final Approval',
-    InReview: 'In Review',
-    OnHold: 'On Hold',
-  };
   const cls = map[status] ?? 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}>{labels[status] ?? status}</span>;
+  return <span className={`inline-flex rounded-lg px-2 py-0.5 text-xs font-medium ${cls}`}>{valueText(t, status)}</span>;
 }
 
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 
 function KpiCard({ label, value, sub, icon: Icon, color }: {
   label: string; value: string | number; sub?: string;
-  icon: React.ComponentType<{ className?: string }>; color: string;
+  icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>; color: string;
 }) {
   return (
     <div className="surface flex items-center gap-4 p-4">
       <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${color}`}>
-        <Icon className="h-5 w-5" />
+        <Icon className="h-5 w-5" aria-hidden="true" />
       </div>
       <div className="min-w-0">
-        <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{value}</p>
+        <p className="text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{value}</p>
         <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{label}</p>
-        {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500">{sub}</p>}
+        {sub && <p className="text-caption text-slate-400 dark:text-slate-500">{sub}</p>}
       </div>
     </div>
   );
@@ -100,17 +119,8 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
 // ── Modal shell ───────────────────────────────────────────────────────────────
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className={`relative w-full rounded-2xl bg-white shadow-2xl dark:bg-slate-800 ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[90vh] overflow-y-auto`}>
-        <div className="sticky top-0 flex items-center justify-between border-b border-slate-100 bg-white px-6 py-4 dark:border-white/10 dark:bg-slate-800">
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
-          <button type="button" onClick={onClose} className="rounded-lg p-1 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4 text-slate-500" /></button>
-        </div>
-        <div className="p-6">{children}</div>
-      </div>
-    </div>
-  );
+  const { t } = useLocale();
+  return <BaseModal isOpen title={title} onClose={onClose} closeLabel={t('Close')} size={wide ? 'lg' : 'md'}>{children}</BaseModal>;
 }
 
 function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
@@ -131,8 +141,9 @@ const btn = {
 };
 
 /** A list that failed to load says so, instead of rendering as "No … found". */
-function LoadFailure({ what, error }: { what: string; error: unknown }) {
-  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what} could not be loaded. {requestFailureReason(error)}</p>;
+function LoadFailure({ what, error }: { what: 'reviews' | 'goals'; error: unknown }) {
+  const { t } = useLocale();
+  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what === 'goals' ? t('Goals could not be loaded.') : t('Reviews could not be loaded.')} {requestFailureReason(error)}</p>;
 }
 
 // ── Overview Tab ──────────────────────────────────────────────────────────────
@@ -144,6 +155,7 @@ function usePerformanceCapabilities() {
 }
 
 function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
+  const { t, locale } = useLocale();
   const [dash, setDash] = useState<Awaited<ReturnType<typeof analyticsApi.dashboard>> | null>(null);
   const [goals, setGoals] = useState<{ total: number; completed: number; onTrack: number; atRisk: number; avgAchievement: number } | null>(null);
 
@@ -158,28 +170,28 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Active Cycles" value={dash?.activeCycles?.length ?? '—'} icon={Activity} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-        <KpiCard label="Self-Assessment Due" value={pa?.selfAssessmentDue ?? '—'} icon={ClipboardList} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-        <KpiCard label="Manager Reviews Pending" value={pa?.managerReviewPending ?? '—'} icon={Users} color="bg-blue-100 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400" />
-        <KpiCard label="Active PIPs" value={dash?.activePips ?? '—'} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
+        <KpiCard label={t('Active Cycles')} value={dash?.activeCycles?.length ?? '—'} icon={Activity} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+        <KpiCard label={t('Self-Assessment Due')} value={pa?.selfAssessmentDue ?? '—'} icon={ClipboardList} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+        <KpiCard label={t('Manager Reviews Pending')} value={pa?.managerReviewPending ?? '—'} icon={Users} color="bg-blue-100 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400" />
+        <KpiCard label={t('Active PIPs')} value={dash?.activePips ?? '—'} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
         {/* Pending actions */}
         <div className="surface p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Pending Actions</h3>
+          <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Pending Actions')}</h3>
           <div className="space-y-3">
             {[
-              { label: 'Self-Assessment Due', val: pa?.selfAssessmentDue ?? 0, color: 'bg-amber-400', tab: 'my-reviews' as Tab },
-              { label: 'Manager Reviews', val: pa?.managerReviewPending ?? 0, color: 'bg-sapphire', tab: 'team-reviews' as Tab },
-              { label: 'Calibration Pending', val: pa?.calibrationPending ?? 0, color: 'bg-purple-500', tab: 'calibration' as Tab },
-              { label: 'Appeals Pending', val: pa?.appealsPending ?? 0, color: 'bg-rose-500', tab: 'team-reviews' as Tab },
+              { label: t('Self-Assessment Due'), val: pa?.selfAssessmentDue ?? 0, color: 'bg-amber-400', tab: 'my-reviews' as Tab },
+              { label: t('Manager Reviews'), val: pa?.managerReviewPending ?? 0, color: 'bg-sapphire', tab: 'team-reviews' as Tab },
+              { label: t('Calibration Pending'), val: pa?.calibrationPending ?? 0, color: 'bg-purple-500', tab: 'calibration' as Tab },
+              { label: t('Appeals Pending'), val: pa?.appealsPending ?? 0, color: 'bg-rose-500', tab: 'team-reviews' as Tab },
             ].map(row => (
               <button key={row.label} type="button" onClick={() => onNavigate(row.tab)} className="flex w-full items-center gap-3 rounded-lg p-1 text-start hover:bg-slate-50 dark:hover:bg-white/5">
                 <div className={`h-2 w-2 shrink-0 rounded-full ${row.color}`} />
                 <span className="flex-1 text-sm text-slate-700 dark:text-slate-300">{row.label}</span>
                 <span className="text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{row.val}</span>
-                <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                <ChevronRight className="h-3.5 w-3.5 text-slate-400 rtl:rotate-180" aria-hidden="true" />
               </button>
             ))}
           </div>
@@ -188,54 +200,54 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
         {/* Recommendations */}
         <div className="surface p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Pending Recommendations</h3>
-            <button type="button" onClick={() => onNavigate('recommendations')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">View all</button>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Pending Recommendations')}</h3>
+            <button type="button" onClick={() => onNavigate('recommendations')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">{t('View all')}</button>
           </div>
           <div className="space-y-3">
             {[
-              { label: 'Salary Increments', val: rec?.incrementPending ?? 0, icon: TrendingUp },
-              { label: 'Promotions', val: rec?.promotionPending ?? 0, icon: Star },
-              { label: 'Bonuses', val: rec?.bonusPending ?? 0, icon: Zap },
+              { label: t('Salary Increments'), val: rec?.incrementPending ?? 0, icon: TrendingUp },
+              { label: t('Promotions'), val: rec?.promotionPending ?? 0, icon: Star },
+              { label: t('Bonuses'), val: rec?.bonusPending ?? 0, icon: Zap },
             ].map(row => (
               <div key={row.label} className="flex items-center gap-3">
-                <row.icon className="h-4 w-4 shrink-0 text-slate-400" />
+                <row.icon className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
                 <span className="flex-1 text-sm text-slate-700 dark:text-slate-300">{row.label}</span>
                 <span className={`text-sm font-semibold tabular-nums ${row.val > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'}`}>{row.val}</span>
               </div>
             ))}
           </div>
           <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-            Approved recommendations are sent to Payroll as pending actions — not applied automatically.
+            {t('Approved recommendations are sent to Payroll as pending actions — not applied automatically.')}
           </p>
         </div>
 
         {/* Goals summary */}
         <div className="surface p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Goal Progress</h3>
-            <button type="button" onClick={() => onNavigate('goals')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">Manage</button>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Goal Progress')}</h3>
+            <button type="button" onClick={() => onNavigate('goals')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">{t('Manage')}</button>
           </div>
           {goals ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-slate-600 dark:text-slate-400">Avg Achievement</span>
-                <span className="text-lg font-bold text-sapphire dark:text-cyanAccent">{goals.avgAchievement}%</span>
+                <span className="text-sm text-slate-600 dark:text-slate-400">{t('Avg Achievement')}</span>
+                <span className="text-lg font-semibold text-sapphire dark:text-cyanAccent">{goals.avgAchievement}%</span>
               </div>
               <div className="h-2 rounded-full bg-slate-100 dark:bg-white/10">
                 <div className="h-2 rounded-full bg-sapphire" style={{ width: `${Math.min(goals.avgAchievement, 100)}%` }} />
               </div>
               <div className="grid grid-cols-3 gap-2 pt-1">
-                {[{ label: 'Completed', val: goals.completed, c: 'text-emerald-600 dark:text-emerald-400' },
-                  { label: 'On Track', val: goals.onTrack, c: 'text-sapphire dark:text-cyanAccent' },
-                  { label: 'At Risk', val: goals.atRisk, c: 'text-rose-600 dark:text-rose-400' }].map(g => (
+                {[{ label: t('Completed'), val: goals.completed, c: 'text-emerald-600 dark:text-emerald-400' },
+                  { label: t('On Track'), val: goals.onTrack, c: 'text-sapphire dark:text-cyanAccent' },
+                  { label: t('At Risk'), val: goals.atRisk, c: 'text-rose-600 dark:text-rose-400' }].map(g => (
                   <div key={g.label} className="text-center">
-                    <p className={`text-xl font-bold tabular-nums ${g.c}`}>{g.val}</p>
-                    <p className="text-[10px] text-slate-400">{g.label}</p>
+                    <p className={`text-xl font-semibold tabular-nums ${g.c}`}>{g.val}</p>
+                    <p className="text-caption text-slate-400">{g.label}</p>
                   </div>
                 ))}
               </div>
             </div>
-          ) : <p className="text-sm text-slate-400">Loading…</p>}
+          ) : <p className="text-sm text-slate-400">{t('Loading…')}</p>}
         </div>
       </div>
 
@@ -243,17 +255,17 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
       {dash?.activeCycles && dash.activeCycles.length > 0 && (
         <div className="surface p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Active Cycles</h3>
-            <button type="button" onClick={() => onNavigate('cycles')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">Manage cycles</button>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Active Cycles')}</h3>
+            <button type="button" onClick={() => onNavigate('cycles')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">{t('Manage cycles')}</button>
           </div>
           <div className="divide-y divide-slate-100 dark:divide-white/5">
             {(dash.activeCycles as PerformanceCycle[]).map((c) => (
               <div key={c.id} className="flex items-center justify-between py-3">
                 <div>
                   <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{c.name}</p>
-                  <p className="text-xs text-slate-400">{c.cycleType} · ends {fmtDate(c.reviewPeriodEnd)}</p>
+                  <p className="text-xs text-slate-400">{t('{type} · ends {date}', { type: valueText(t, c.cycleType), date: fmtDate(c.reviewPeriodEnd, locale) })}</p>
                 </div>
-                {statusBadge(c.status)}
+                <StatusBadge status={c.status} />
               </div>
             ))}
           </div>
@@ -266,6 +278,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 // ── Create Cycle Modal ────────────────────────────────────────────────────────
 
 function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { t } = useLocale();
   const [form, setForm] = useState({
     name: '', cycleType: 'Annual', reviewPeriodStart: '', reviewPeriodEnd: '',
     selfAssessmentDeadline: '', managerReviewDeadline: '', calibrationDeadline: '',
@@ -278,7 +291,7 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
 
   const save = async () => {
     if (!form.name || !form.reviewPeriodStart || !form.reviewPeriodEnd) {
-      setError('Name and review period dates are required.'); return;
+      setError(t('Name and review period dates are required.')); return;
     }
     setSaving(true); setError('');
     try {
@@ -293,40 +306,40 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
         notes: form.notes || undefined,
       });
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Failed to create cycle.')); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, t('Failed to create cycle.'))); setSaving(false); }
   };
 
   return (
-    <Modal title="New Performance Cycle" onClose={onClose}>
+    <Modal title={t('New Performance Cycle')} onClose={onClose}>
       <div className="space-y-4">
-        <Field label="Cycle Name *"><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Annual Appraisal 2026" /></Field>
-        <Field label="Cycle Type">
+        <Field label={t('Cycle Name *')}><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder={t('Example: Annual Appraisal 2026')} /></Field>
+        <Field label={t('Cycle Type')}>
           <select className={sel} value={form.cycleType} onChange={e => set('cycleType', e.target.value)}>
-            {['Annual', 'Semi-Annual', 'Quarterly', 'Monthly', 'Probation', 'Project'].map(t => <option key={t}>{t}</option>)}
+            {['Annual', 'Semi-Annual', 'Quarterly', 'Monthly', 'Probation', 'Project'].map(ct => <option key={ct} value={ct}>{valueText(t, ct)}</option>)}
           </select>
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Period Start *"><input type="date" className={inp} value={form.reviewPeriodStart} onChange={e => set('reviewPeriodStart', e.target.value)} /></Field>
-          <Field label="Period End *"><input type="date" className={inp} value={form.reviewPeriodEnd} onChange={e => set('reviewPeriodEnd', e.target.value)} /></Field>
+          <Field label={t('Period Start *')}><input type="date" className={inp} value={form.reviewPeriodStart} onChange={e => set('reviewPeriodStart', e.target.value)} /></Field>
+          <Field label={t('Period End *')}><input type="date" className={inp} value={form.reviewPeriodEnd} onChange={e => set('reviewPeriodEnd', e.target.value)} /></Field>
         </div>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Self-Assessment Deadline"><input type="date" className={inp} value={form.selfAssessmentDeadline} onChange={e => set('selfAssessmentDeadline', e.target.value)} /></Field>
-          <Field label="Manager Review Deadline"><input type="date" className={inp} value={form.managerReviewDeadline} onChange={e => set('managerReviewDeadline', e.target.value)} /></Field>
-          <Field label="Calibration Deadline"><input type="date" className={inp} value={form.calibrationDeadline} onChange={e => set('calibrationDeadline', e.target.value)} /></Field>
+          <Field label={t('Self-Assessment Deadline')}><input type="date" className={inp} value={form.selfAssessmentDeadline} onChange={e => set('selfAssessmentDeadline', e.target.value)} /></Field>
+          <Field label={t('Manager Review Deadline')}><input type="date" className={inp} value={form.managerReviewDeadline} onChange={e => set('managerReviewDeadline', e.target.value)} /></Field>
+          <Field label={t('Calibration Deadline')}><input type="date" className={inp} value={form.calibrationDeadline} onChange={e => set('calibrationDeadline', e.target.value)} /></Field>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          {([['enableSelfAssessment', 'Self-Assessment'], ['enableCalibration', 'Calibration'], ['enable360Feedback', '360° Feedback'], ['enableForcedDistribution', 'Forced Distribution']] as [keyof typeof form, string][]).map(([k, l]) => (
+          {([['enableSelfAssessment', t('Self-Assessment')], ['enableCalibration', t('Calibration')], ['enable360Feedback', t('360° Feedback')], ['enableForcedDistribution', t('Forced Distribution')]] as [keyof typeof form, string][]).map(([k, l]) => (
             <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />
               {l}
             </label>
           ))}
         </div>
-        <Field label="Notes"><textarea className={inp} rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} /></Field>
+        <Field label={t('Notes')}><textarea className={inp} rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} /></Field>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Creating…' : 'Create Cycle'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Creating…') : t('Create Cycle')}</button>
         </div>
       </div>
     </Modal>
@@ -336,6 +349,7 @@ function CreateCycleModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
 // ── Cycles Tab ────────────────────────────────────────────────────────────────
 
 function CyclesTab() {
+  const { t, locale } = useLocale();
   const can = usePerformanceCapabilities();
   const [cycles, setCycles] = useState<PerformanceCycle[]>([]);
   const [loading, setLoading] = useState(true);
@@ -347,28 +361,28 @@ function CyclesTab() {
 
   const launch = async (id: string) => {
     setLaunching(id);
-    try { await cyclesApi.launch(id); load(); } catch (e) { notifyApiError(e, 'Launch failed. Ensure a default scorecard template is assigned.'); }
+    try { await cyclesApi.launch(id); load(); } catch (e) { notifyApiError(e, t('Launch failed. Ensure a default scorecard template is assigned.')); }
     setLaunching(null);
   };
 
   const advance = async (id: string) => {
-    try { await cyclesApi.advance(id); load(); } catch (e) { notifyApiError(e, 'Could not advance cycle.'); }
+    try { await cyclesApi.advance(id); load(); } catch (e) { notifyApiError(e, t('Could not advance cycle.')); }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-500 dark:text-slate-400">{cycles.length} cycle{cycles.length !== 1 ? 's' : ''}</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# cycle} other {# cycles}}', { count: cycles.length })}</p>
         {can.setUpCycles && (
-          <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Cycle</button>
+          <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" aria-hidden="true" /> {t('New Cycle')}</button>
         )}
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : cycles.length === 0 ? (
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : cycles.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Activity className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No performance cycles yet</p>
-          <p className="text-xs text-slate-400 dark:text-slate-500">Create the first cycle to begin the appraisal process.</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No performance cycles yet')}</p>
+          <p className="text-xs text-slate-400 dark:text-slate-500">{t('Create the first cycle to begin the appraisal process.')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -376,17 +390,17 @@ function CyclesTab() {
             <div key={c.id} className="flex items-center justify-between px-5 py-4">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{c.name}</p>
-                <p className="mt-0.5 text-xs text-slate-400">{c.cycleType} · {fmtDate(c.reviewPeriodStart)} – {fmtDate(c.reviewPeriodEnd)} · {c.enrolledCount ?? 0} enrolled</p>
+                <p className="mt-0.5 text-xs text-slate-400">{t('{type} · {start} – {end} · {count} enrolled', { type: valueText(t, c.cycleType), start: fmtDate(c.reviewPeriodStart, locale), end: fmtDate(c.reviewPeriodEnd, locale), count: c.enrolledCount ?? 0 })}</p>
               </div>
               <div className="ms-4 flex shrink-0 items-center gap-3">
-                {statusBadge(c.status)}
+                <StatusBadge status={c.status} />
                 {c.status === 'Draft' && can.setUpCycles && (
                   <button type="button" onClick={() => launch(c.id)} disabled={launching === c.id} className={btn.primary}>
-                    {launching === c.id ? 'Launching…' : 'Launch'}
+                    {launching === c.id ? t('Launching…') : t('Launch')}
                   </button>
                 )}
                 {['Active', 'InReview', 'Calibration', 'FinalApproval'].includes(c.status) && can.setUpCycles && (
-                  <button type="button" onClick={() => advance(c.id)} className={btn.ghost}>Advance</button>
+                  <button type="button" onClick={() => advance(c.id)} className={btn.ghost}>{t('Advance')}</button>
                 )}
               </div>
             </div>
@@ -402,6 +416,7 @@ function CyclesTab() {
 // ── My Reviews Tab (Self-Assessment) ──────────────────────────────────────────
 
 function SelfAssessmentModal({ review, onClose, onSaved }: { review: AppraisalReview; onClose: () => void; onSaved: () => void }) {
+  const { t } = useLocale();
   const [form, setForm] = useState({ kpiScore: '', competencyScore: '', productivityScore: '', notes: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -409,28 +424,28 @@ function SelfAssessmentModal({ review, onClose, onSaved }: { review: AppraisalRe
 
   const save = async () => {
     const kpi = Number(form.kpiScore); const comp = Number(form.competencyScore); const prod = Number(form.productivityScore);
-    if (!kpi || !comp || !prod) { setError('Enter scores for KPI, Competency, and Productivity (0–100).'); return; }
+    if (!kpi || !comp || !prod) { setError(t('Enter scores for KPI, Competency, and Productivity (0–100).')); return; }
     setSaving(true); setError('');
     try {
       await reviewsApi.submitSelfAssessment(review.id, { notes: form.notes, kpiScore: kpi, competencyScore: comp, productivityScore: prod });
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Submission failed.')); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, t('Submission failed.'))); setSaving(false); }
   };
 
   return (
-    <Modal title={`Self-Assessment — ${review.employeeName}`} onClose={onClose}>
+    <Modal title={t('Self-Assessment — {name}', { name: review.employeeName })} onClose={onClose}>
       <div className="space-y-4">
-        <p className="text-xs text-slate-500 dark:text-slate-400">Cycle: <strong className="text-slate-700 dark:text-slate-200">{review.cycleName}</strong></p>
+        <p className="text-xs text-slate-500 dark:text-slate-400">{t('Cycle: {name}', { name: review.cycleName })}</p>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="KPI Score (0–100)"><input type="number" min={0} max={100} className={inp} value={form.kpiScore} onChange={e => set('kpiScore', e.target.value)} /></Field>
-          <Field label="Competency Score"><input type="number" min={0} max={100} className={inp} value={form.competencyScore} onChange={e => set('competencyScore', e.target.value)} /></Field>
-          <Field label="Productivity Score"><input type="number" min={0} max={100} className={inp} value={form.productivityScore} onChange={e => set('productivityScore', e.target.value)} /></Field>
+          <Field label={t('KPI Score (0–100)')}><input type="number" min={0} max={100} className={inp} value={form.kpiScore} onChange={e => set('kpiScore', e.target.value)} /></Field>
+          <Field label={t('Competency Score')}><input type="number" min={0} max={100} className={inp} value={form.competencyScore} onChange={e => set('competencyScore', e.target.value)} /></Field>
+          <Field label={t('Productivity Score')}><input type="number" min={0} max={100} className={inp} value={form.productivityScore} onChange={e => set('productivityScore', e.target.value)} /></Field>
         </div>
-        <Field label="Self-Assessment Notes"><textarea className={inp} rows={4} placeholder="Describe your achievements, contributions, and areas for growth…" value={form.notes} onChange={e => set('notes', e.target.value)} /></Field>
+        <Field label={t('Self-Assessment Notes')}><textarea className={inp} rows={4} placeholder={t('Describe your achievements, contributions, and areas for growth…')} value={form.notes} onChange={e => set('notes', e.target.value)} /></Field>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Submitting…' : 'Submit Assessment'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Submitting…') : t('Submit Assessment')}</button>
         </div>
       </div>
     </Modal>
@@ -438,6 +453,7 @@ function SelfAssessmentModal({ review, onClose, onSaved }: { review: AppraisalRe
 }
 
 function MyReviewsTab() {
+  const { t } = useLocale();
   const [selected, setSelected] = useState<AppraisalReview | null>(null);
 
   // One page at a time with the server's total: this used to show the first 50 as every review.
@@ -449,17 +465,17 @@ function MyReviewsTab() {
   const reviewCount = list.total ?? reviews.length;
 
   const acknowledge = async (id: string) => {
-    try { await reviewsApi.acknowledge(id); load(); } catch (e) { notifyApiError(e, 'Failed to acknowledge.'); }
+    try { await reviewsApi.acknowledge(id); load(); } catch (e) { notifyApiError(e, t('Failed to acknowledge.')); }
   };
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500 dark:text-slate-400">{reviewCount} review record{reviewCount !== 1 ? 's' : ''}</p>
-      {list.error != null && <LoadFailure what="Reviews" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
+      <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# review record} other {# review records}}', { count: reviewCount })}</p>
+      {list.error != null && <LoadFailure what="reviews" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <ClipboardList className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No reviews assigned</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No reviews assigned')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -469,23 +485,23 @@ function MyReviewsTab() {
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.cycleName}</p>
                 <p className="mt-0.5 text-xs text-slate-400">{r.departmentName} · {r.designationTitle}</p>
                 {r.finalScore > 0 && (
-                  <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>Score: {r.finalScore} — {r.finalRating}</p>
+                  <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>{t('Score: {score} — {rating}', { score: r.finalScore, rating: r.finalRating })}</p>
                 )}
               </div>
               <div className="ms-4 flex shrink-0 items-center gap-3">
-                {statusBadge(r.status)}
+                <StatusBadge status={r.status} />
                 {r.status === 'SelfAssessmentDue' && (
-                  <button type="button" className={btn.primary} onClick={() => setSelected(r)}>Start Assessment</button>
+                  <button type="button" className={btn.primary} onClick={() => setSelected(r)}>{t('Start Assessment')}</button>
                 )}
                 {r.status === 'Published' && (
-                  <button type="button" className={btn.ghost} onClick={() => acknowledge(r.id)}>Acknowledge</button>
+                  <button type="button" className={btn.ghost} onClick={() => acknowledge(r.id)}>{t('Acknowledge')}</button>
                 )}
               </div>
             </div>
           ))}
         </div>
       )}
-      <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} reviews', { shown: reviews.length, total: list.total ?? 0 }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {selected && <SelfAssessmentModal review={selected} onClose={() => setSelected(null)} onSaved={() => { setSelected(null); load(); }} />}
     </div>
   );
@@ -494,6 +510,7 @@ function MyReviewsTab() {
 // ── Manager Review Modal ──────────────────────────────────────────────────────
 
 function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalReview; onClose: () => void; onSaved: () => void }) {
+  const { t } = useLocale();
   const can = usePerformanceCapabilities();
   const [form, setForm] = useState({
     kpiScore: String(review.kpiScore || ''), competencyScore: String(review.competencyScore || ''),
@@ -515,37 +532,37 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
         managerNotes: form.managerNotes,
       });
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Review submission failed.')); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, t('Review submission failed.'))); setSaving(false); }
   };
 
   const autoAttendance = async () => {
     try { const r = await reviewsApi.computeAttendance(review.id); set('attendanceScore', String(r.attendanceScore)); }
-    catch (e) { notifyApiError(e, 'Could not compute attendance — check attendance records.'); }
+    catch (e) { notifyApiError(e, t('Could not compute attendance — check attendance records.')); }
   };
 
   return (
-    <Modal title={`Manager Review — ${review.employeeName}`} onClose={onClose} wide>
+    <Modal title={t('Manager Review — {name}', { name: review.employeeName })} onClose={onClose} wide>
       <div className="space-y-4">
-        <p className="text-xs text-slate-500 dark:text-slate-400">Cycle: <strong className="text-slate-700 dark:text-slate-200">{review.cycleName}</strong> · Self-assessment: {review.selfAssessmentNotes || '(none)'}</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400">{t('Cycle: {name} · Self-assessment: {notes}', { name: review.cycleName, notes: review.selfAssessmentNotes || t('(none)') })}</p>
         <div className="grid grid-cols-3 gap-3">
-          {[['kpiScore', 'KPI Score'], ['competencyScore', 'Competency Score'], ['productivityScore', 'Productivity Score'],
-            ['feedbackScore', 'Feedback Score'], ['disciplineScore', 'Discipline Score']] .map(([k, l]) => (
-            <Field key={k} label={`${l} (0–100)`}><input type="number" min={0} max={100} className={inp} value={form[k as keyof typeof form]} onChange={e => set(k as keyof typeof form, e.target.value)} /></Field>
+          {[['kpiScore', t('KPI Score (0–100)')], ['competencyScore', t('Competency Score (0–100)')], ['productivityScore', t('Productivity Score (0–100)')],
+            ['feedbackScore', t('Feedback Score (0–100)')], ['disciplineScore', t('Discipline Score (0–100)')]] .map(([k, l]) => (
+            <Field key={k} label={l}><input type="number" min={0} max={100} className={inp} value={form[k as keyof typeof form]} onChange={e => set(k as keyof typeof form, e.target.value)} /></Field>
           ))}
-          <Field label="Attendance Score (0–100)">
+          <Field label={t('Attendance Score (0–100)')}>
             <div className="flex gap-2">
               <input type="number" min={0} max={100} className={inp} value={form.attendanceScore} onChange={e => set('attendanceScore', e.target.value)} />
               {can.decideRatings && (
-                <button type="button" onClick={autoAttendance} className={btn.ghost} title="Auto-compute from attendance records"><Zap className="h-4 w-4" /></button>
+                <button type="button" onClick={autoAttendance} className={btn.ghost} title={t('Auto-compute from attendance records')} aria-label={t('Auto-compute from attendance records')}><Zap className="h-4 w-4" aria-hidden="true" /></button>
               )}
             </div>
           </Field>
         </div>
-        <Field label="Manager Notes"><textarea className={inp} rows={3} placeholder="Performance observations, achievements, areas for development…" value={form.managerNotes} onChange={e => set('managerNotes', e.target.value)} /></Field>
+        <Field label={t('Manager Notes')}><textarea className={inp} rows={3} placeholder={t('Performance observations, achievements, areas for development…')} value={form.managerNotes} onChange={e => set('managerNotes', e.target.value)} /></Field>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Submitting…' : 'Submit Review'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Submitting…') : t('Submit Review')}</button>
         </div>
       </div>
     </Modal>
@@ -563,6 +580,8 @@ function ManagerReviewModal({ review, onClose, onSaved }: { review: AppraisalRev
  * permanently. This panel is the missing entry point.
  */
 function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
+  const { t, locale } = useLocale();
+  const toast = useAppToast();
   const [appeals, setAppeals] = useState<AppraisalAppeal[]>([]);
   const [deciding, setDeciding] = useState<{ appeal: AppraisalAppeal; decision: string } | null>(null);
   const [response, setResponse] = useState('');
@@ -574,13 +593,16 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
 
   const decide = async () => {
     if (!deciding) return;
-    if (!response.trim()) { setError('Record the reasoning given to the employee.'); return; }
+    if (!response.trim()) { setError(t('Record the reasoning given to the employee.')); return; }
     setSaving(true); setError('');
     try {
       const r = await reviewsApi.respondToAppeal(deciding.appeal.id, deciding.decision, response.trim());
       setDeciding(null); setResponse(''); load(); onResolved();
-      alert(`Appeal ${deciding.decision.toLowerCase()}. Review is now ${r.reviewStatus}. ${r.nextStep}`);
-    } catch (e) { setError(apiErrorReason(e, 'The decision could not be recorded.')); }
+      const status = valueText(t, r.reviewStatus);
+      toast.success(deciding.decision === 'Upheld'
+        ? t('Appeal upheld. Review is now {status}. {nextStep}', { status, nextStep: r.nextStep })
+        : t('Appeal rejected. Review is now {status}. {nextStep}', { status, nextStep: r.nextStep }));
+    } catch (e) { setError(apiErrorReason(e, t('The decision could not be recorded.'))); }
     finally { setSaving(false); }
   };
 
@@ -589,14 +611,13 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
   return (
     <div className="surface border-s-4 border-s-rose-500 p-5">
       <div className="flex items-center gap-2">
-        <AlertTriangle className="h-4 w-4 text-rose-500" />
+        <AlertTriangle className="h-4 w-4 text-rose-500" aria-hidden="true" />
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-          Open appeals ({appeals.length})
+          {t('Open appeals ({count})', { count: appeals.length })}
         </h3>
       </div>
       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-        While an appeal is open, no increment, promotion or bonus can be raised for that employee. Decide it
-        to release them.
+        {t('While an appeal is open, no increment, promotion or bonus can be raised for that employee. Decide it to release them.')}
       </p>
       <div className="mt-3 divide-y divide-slate-100 dark:divide-white/5">
         {appeals.map(a => (
@@ -607,16 +628,16 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
               {a.employeeJustification && (
                 <p className="mt-1 text-xs text-slate-400">{a.employeeJustification}</p>
               )}
-              <p className="mt-1 text-xs text-slate-400">Submitted {fmtDate(a.submittedAt)}</p>
+              <p className="mt-1 text-xs text-slate-400">{t('Submitted {date}', { date: fmtDate(a.submittedAt, locale) })}</p>
             </div>
             <div className="flex shrink-0 gap-1">
               <button type="button" className={btn.ghost}
                 onClick={() => { setDeciding({ appeal: a, decision: 'Rejected' }); setResponse(''); setError(''); }}>
-                Reject appeal
+                {t('Reject appeal')}
               </button>
               <button type="button" className={btn.primary}
                 onClick={() => { setDeciding({ appeal: a, decision: 'Upheld' }); setResponse(''); setError(''); }}>
-                Uphold appeal
+                {t('Uphold appeal')}
               </button>
             </div>
           </div>
@@ -624,26 +645,26 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
       </div>
 
       {deciding && (
-        <Modal title={`${deciding.decision === 'Upheld' ? 'Uphold' : 'Reject'} appeal — ${deciding.appeal.employeeName}`}
+        <Modal title={deciding.decision === 'Upheld' ? t('Uphold appeal — {name}', { name: deciding.appeal.employeeName }) : t('Reject appeal — {name}', { name: deciding.appeal.employeeName })}
           onClose={() => setDeciding(null)}>
           <div className="space-y-4">
             <div className={`rounded-lg border p-3 text-xs ${deciding.decision === 'Upheld'
               ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
               : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300'}`}>
               {deciding.decision === 'Upheld'
-                ? 'Upholding withdraws the published result for revision. The review returns to Final Approval; revise the scores (a written reason is required) and publish again to re-issue it. Compensation stays paused until you do.'
-                : 'Rejecting confirms the published result. The employee returns to where they were and becomes eligible for increment, promotion and bonus recommendations again.'}
+                ? t('Upholding withdraws the published result for revision. The review returns to Final Approval; revise the scores (a written reason is required) and publish again to re-issue it. Compensation stays paused until you do.')
+                : t('Rejecting confirms the published result. The employee returns to where they were and becomes eligible for increment, promotion and bonus recommendations again.')}
             </div>
-            <Field label="Response to the employee *">
-              <textarea title="Appeal response" className={inp} rows={4} value={response}
+            <Field label={t('Response to the employee *')}>
+              <textarea title={t('Appeal response')} className={inp} rows={4} value={response}
                 onChange={e => setResponse(e.target.value)}
-                placeholder="What was considered, and why this outcome…" />
+                placeholder={t('What was considered, and why this outcome…')} />
             </Field>
             {error && <p className="text-xs text-rose-500">{error}</p>}
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setDeciding(null)}>Cancel</button>
+              <button type="button" className={btn.ghost} onClick={() => setDeciding(null)}>{t('Cancel')}</button>
               <button type="button" className={btn.primary} onClick={decide} disabled={saving}>
-                {saving ? 'Recording…' : `Record ${deciding.decision.toLowerCase()}`}
+                {saving ? t('Recording…') : deciding.decision === 'Upheld' ? t('Record upheld') : t('Record rejected')}
               </button>
             </div>
           </div>
@@ -654,6 +675,7 @@ function OpenAppealsPanel({ onResolved }: { onResolved: () => void }) {
 }
 
 function TeamReviewsTab() {
+  const { t } = useLocale();
   const can = usePerformanceCapabilities();
   const [statusFilter, setStatusFilter] = useState('');
   const [selected, setSelected] = useState<AppraisalReview | null>(null);
@@ -667,27 +689,27 @@ function TeamReviewsTab() {
   const reviewCount = list.total ?? reviews.length;
 
   const publish = async (id: string) => {
-    try { await reviewsApi.publish(id); load(); } catch (e) { notifyApiError(e, 'Publish failed.'); }
+    try { await reviewsApi.publish(id); load(); } catch (e) { notifyApiError(e, t('Publish failed.')); }
   };
 
   return (
     <div className="space-y-4">
       {can.decideRatings && <OpenAppealsPanel onResolved={load} />}
       <div className="flex items-center gap-3">
-        <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-          <option value="">All Statuses</option>
+        <select aria-label={t('Status')} className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <option value="">{t('All Statuses')}</option>
           {['SelfAssessmentDue', 'SelfAssessmentSubmitted', 'ManagerReview', 'Calibration', 'FinalApproval', 'Published', 'Acknowledged', 'Appealed'].map(s => (
-            <option key={s} value={s}>{s}</option>
+            <option key={s} value={s}>{valueText(t, s)}</option>
           ))}
         </select>
-        <p className="text-sm text-slate-500 dark:text-slate-400">{reviewCount} review{reviewCount !== 1 ? 's' : ''}</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# review} other {# reviews}}', { count: reviewCount })}</p>
       </div>
 
-      {list.error != null && <LoadFailure what="Reviews" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
+      {list.error != null && <LoadFailure what="reviews" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && reviews.length === 0 ? null : reviews.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Users className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No reviews match the filter</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No reviews match the filter')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -696,22 +718,22 @@ function TeamReviewsTab() {
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
                 <p className="mt-0.5 text-xs text-slate-400">{r.departmentName} · {r.designationTitle} · {r.cycleName}</p>
-                {r.finalScore > 0 && <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>Score: {r.finalScore} — {r.finalRating}</p>}
+                {r.finalScore > 0 && <p className={`mt-1 text-xs font-semibold ${scoreColor(r.finalScore)}`}>{t('Score: {score} — {rating}', { score: r.finalScore, rating: r.finalRating })}</p>}
               </div>
               <div className="ms-4 flex shrink-0 items-center gap-3">
-                {statusBadge(r.status)}
+                <StatusBadge status={r.status} />
                 {['SelfAssessmentSubmitted', 'ManagerReview'].includes(r.status) && can.writeReviews && (
-                  <button type="button" className={btn.primary} onClick={() => setSelected(r)}>Review</button>
+                  <button type="button" className={btn.primary} onClick={() => setSelected(r)}>{t('Review')}</button>
                 )}
                 {r.status === 'FinalApproval' && can.decideRatings && (
-                  <button type="button" className={btn.primary} onClick={() => publish(r.id)}>Publish</button>
+                  <button type="button" className={btn.primary} onClick={() => publish(r.id)}>{t('Publish')}</button>
                 )}
               </div>
             </div>
           ))}
         </div>
       )}
-      <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={reviews.length} total={list.total} noun="reviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} reviews', { shown: reviews.length, total: list.total ?? 0 }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {selected && <ManagerReviewModal review={selected} onClose={() => setSelected(null)} onSaved={() => { setSelected(null); load(); }} />}
     </div>
   );
@@ -720,6 +742,7 @@ function TeamReviewsTab() {
 // ── Goals Tab ─────────────────────────────────────────────────────────────────
 
 function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { t } = useLocale();
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeSelection | null>(null);
   const [form, setForm] = useState({
     title: '', description: '', category: 'KPI',
@@ -731,10 +754,10 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
-    if (!selectedEmployee) { setError('Please select an employee.'); return; }
-    if (!form.title || !form.targetValue) { setError('Title and Target Value are required.'); return; }
+    if (!selectedEmployee) { setError(t('Please select an employee.')); return; }
+    if (!form.title || !form.targetValue) { setError(t('Title and Target Value are required.')); return; }
     const weight = Number(form.weight);
-    if (!(weight > 0 && weight <= 100)) { setError('Weight is this goal\'s share of the scorecard: enter a percentage above 0 and up to 100.'); return; }
+    if (!(weight > 0 && weight <= 100)) { setError(t('Weight is this goal\'s share of the scorecard: enter a percentage above 0 and up to 100.')); return; }
     setSaving(true); setError('');
     try {
       await goalsApi.create({
@@ -747,49 +770,49 @@ function CreateGoalModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
         startDate: form.startDate || undefined, dueDate: form.dueDate || undefined,
       });
       onSaved();
-    } catch (e) { setError(goalApiMessage(e, 'Failed to create goal.')); setSaving(false); }
+    } catch (e) { setError(goalApiMessage(e, t('Failed to create goal.'))); setSaving(false); }
   };
 
   return (
-    <Modal title="Add Goal / KPI" onClose={onClose} wide>
+    <Modal title={t('Add Goal / KPI')} onClose={onClose} wide>
       <div className="space-y-4">
-        <Field label="Employee *">
+        <Field label={t('Employee *')}>
           <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
         </Field>
-        <Field label="Goal Title *"><input className={inp} value={form.title} onChange={e => set('title', e.target.value)} placeholder="e.g. Achieve 95% customer satisfaction score" /></Field>
-        <Field label="Description"><textarea className={inp} rows={2} value={form.description} onChange={e => set('description', e.target.value)} /></Field>
+        <Field label={t('Goal Title *')}><input className={inp} value={form.title} onChange={e => set('title', e.target.value)} placeholder={t('Example: Achieve 95% customer satisfaction score')} /></Field>
+        <Field label={t('Description')}><textarea className={inp} rows={2} value={form.description} onChange={e => set('description', e.target.value)} /></Field>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Category">
+          <Field label={t('Category')}>
             <select className={sel} value={form.category} onChange={e => set('category', e.target.value)}>
-              {['KPI', 'Learning', 'Behavioral', 'Project', 'Strategic'].map(c => <option key={c}>{c}</option>)}
+              {['KPI', 'Learning', 'Behavioral', 'Project', 'Strategic'].map(c => <option key={c} value={c}>{valueText(t, c)}</option>)}
             </select>
           </Field>
-          <Field label="Priority">
+          <Field label={t('Priority')}>
             <select className={sel} value={form.priority} onChange={e => set('priority', e.target.value)}>
-              {['High', 'Medium', 'Low'].map(p => <option key={p}>{p}</option>)}
+              {['High', 'Medium', 'Low'].map(p => <option key={p} value={p}>{valueText(t, p)}</option>)}
             </select>
           </Field>
-          <Field label="Measurement">
+          <Field label={t('Measurement')}>
             <select className={sel} value={form.kpiType} onChange={e => set('kpiType', e.target.value)}>
-              {['Numeric', 'Percentage', 'Boolean', 'Currency', 'Rating'].map(t => <option key={t}>{t}</option>)}
+              {['Numeric', 'Percentage', 'Boolean', 'Currency', 'Rating'].map(k => <option key={k} value={k}>{valueText(t, k)}</option>)}
             </select>
           </Field>
         </div>
         <div className="grid grid-cols-4 gap-3">
-          <Field label="Baseline"><input type="number" className={inp} value={form.baselineValue} onChange={e => set('baselineValue', e.target.value)} /></Field>
-          <Field label="Target *"><input type="number" className={inp} value={form.targetValue} onChange={e => set('targetValue', e.target.value)} /></Field>
-          <Field label="Actual"><input type="number" className={inp} value={form.actualValue} onChange={e => set('actualValue', e.target.value)} /></Field>
-          <Field label="Unit"><input className={inp} value={form.measurementUnit} onChange={e => set('measurementUnit', e.target.value)} placeholder="e.g. %" /></Field>
+          <Field label={t('Baseline')}><input type="number" className={inp} value={form.baselineValue} onChange={e => set('baselineValue', e.target.value)} /></Field>
+          <Field label={t('Target *')}><input type="number" className={inp} value={form.targetValue} onChange={e => set('targetValue', e.target.value)} /></Field>
+          <Field label={t('Actual')}><input type="number" className={inp} value={form.actualValue} onChange={e => set('actualValue', e.target.value)} /></Field>
+          <Field label={t('Unit')}><input className={inp} value={form.measurementUnit} onChange={e => set('measurementUnit', e.target.value)} placeholder={t('Example: %')} /></Field>
         </div>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Weight (%)"><input type="number" min={1} max={100} className={inp} value={form.weight} onChange={e => set('weight', e.target.value)} /></Field>
-          <Field label="Start Date"><input type="date" title="Start Date" className={inp} value={form.startDate} onChange={e => set('startDate', e.target.value)} /></Field>
-          <Field label="Due Date"><input type="date" title="Due Date" className={inp} value={form.dueDate} onChange={e => set('dueDate', e.target.value)} /></Field>
+          <Field label={t('Weight (%)')}><input type="number" min={1} max={100} className={inp} value={form.weight} onChange={e => set('weight', e.target.value)} /></Field>
+          <Field label={t('Start Date')}><input type="date" title={t('Start Date')} className={inp} value={form.startDate} onChange={e => set('startDate', e.target.value)} /></Field>
+          <Field label={t('Due Date')}><input type="date" title={t('Due Date')} className={inp} value={form.dueDate} onChange={e => set('dueDate', e.target.value)} /></Field>
         </div>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Add Goal'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Saving…') : t('Add Goal')}</button>
         </div>
       </div>
     </Modal>
@@ -808,6 +831,7 @@ const PRIORITY_BADGE: Record<string, string> = {
 };
 
 function GoalsTab() {
+  const { t, locale } = useLocale();
   // Setting and approving goals is the reviewer tier (performance.write): the line manager for their own
   // reports, or HR. The server also checks the reporting line, and a refusal is shown with its reason.
   // An employee sees their own goals and records progress on the active ones.
@@ -837,7 +861,7 @@ function GoalsTab() {
   const approveGoal = async (id: string) => {
     setApprovingId(id); setGoalActionError('');
     try { await goalsApi.approve(id); load(); }
-    catch (e) { setGoalActionError(goalApiMessage(e, 'The goal could not be approved. Check that you approve for this employee.')); }
+    catch (e) { setGoalActionError(goalApiMessage(e, t('The goal could not be approved. Check that you approve for this employee.'))); }
     finally { setApprovingId(null); }
   };
 
@@ -845,36 +869,36 @@ function GoalsTab() {
     if (!progressGoal || !progressVal) return;
     setProgressError('');
     try { await goalsApi.updateProgress(progressGoal.id, Number(progressVal), progressNotes); setProgressGoal(null); load(); }
-    catch (e) { setProgressError(goalApiMessage(e, 'Progress could not be saved.')); }
+    catch (e) { setProgressError(goalApiMessage(e, t('Progress could not be saved.'))); }
   };
 
   const confirmDelete = async () => {
     if (!deleteId) return;
     setDeleting(true);
     try { await goalsApi.delete(deleteId); setDeleteId(null); load(); }
-    catch (e) { notifyApiError(e, 'Delete failed. Goal may be approved.'); }
+    catch (e) { notifyApiError(e, t('Delete failed. Goal may be approved.')); }
     setDeleting(false);
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <select className={`${sel} w-48`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-          <option value="">All Statuses</option>
-          {['Draft', 'Active', 'Completed', 'OnHold', 'Cancelled'].map(s => <option key={s}>{s}</option>)}
+        <select aria-label={t('Status')} className={`${sel} w-48`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <option value="">{t('All Statuses')}</option>
+          {['Draft', 'Active', 'Completed', 'OnHold', 'Cancelled'].map(s => <option key={s} value={s}>{valueText(t, s)}</option>)}
         </select>
-        <p className="flex-1 text-sm text-slate-500 dark:text-slate-400">{goalCount} goal{goalCount !== 1 ? 's' : ''}</p>
+        <p className="flex-1 text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# goal} other {# goals}}', { count: goalCount })}</p>
         {can.writeReviews && (
-          <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Goal</button>
+          <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" aria-hidden="true" /> {t('Add Goal')}</button>
         )}
       </div>
       {goalActionError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{goalActionError}</p>}
 
-      {list.error != null && <LoadFailure what="Goals" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && goals.length === 0 ? null : goals.length === 0 ? (
+      {list.error != null && <LoadFailure what="goals" error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && goals.length === 0 ? null : goals.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Target className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No goals found</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No goals found')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -883,7 +907,9 @@ function GoalsTab() {
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-slate-900 dark:text-white">{g.title}</p>
-                  <p className="mt-0.5 text-xs text-slate-400">{g.employeeName} · {g.category} · {g.kpiType} · Weight: {g.weight}%{g.dueDate ? ` · Due ${fmtDate(g.dueDate)}` : ''}</p>
+                  <p className="mt-0.5 text-xs text-slate-400">{g.dueDate
+                    ? t('{employee} · {category} · {type} · Weight: {weight}% · Due {date}', { employee: g.employeeName, category: valueText(t, g.category), type: valueText(t, g.kpiType), weight: g.weight, date: fmtDate(g.dueDate, locale) })
+                    : t('{employee} · {category} · {type} · Weight: {weight}%', { employee: g.employeeName, category: valueText(t, g.category), type: valueText(t, g.kpiType), weight: g.weight })}</p>
                   <div className="mt-2 flex items-center gap-4">
                     <div className="flex-1">
                       <div className="h-1.5 w-48 rounded-full bg-slate-100 dark:bg-white/10">
@@ -895,55 +921,57 @@ function GoalsTab() {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${PRIORITY_BADGE[g.priority] ?? PRIORITY_BADGE.Medium}`}>{g.priority}</span>
-                  {statusBadge(g.status)}
+                  <span className={`inline-flex rounded-lg px-2 py-0.5 text-xs font-medium ${PRIORITY_BADGE[g.priority] ?? PRIORITY_BADGE.Medium}`}>{valueText(t, g.priority)}</span>
+                  <StatusBadge status={g.status} />
                   {g.status === 'Draft' && canApproveGoals && (
                     <button type="button" className={btn.primary} disabled={approvingId !== null} onClick={() => approveGoal(g.id)}>
-                      {approvingId === g.id ? 'Approving…' : 'Approve goal'}
+                      {approvingId === g.id ? t('Approving…') : t('Approve goal')}
                     </button>
                   )}
                   {g.status === 'Active' && (
-                    <button type="button" className={btn.ghost} onClick={() => { setProgressGoal(g); setProgressVal(String(g.actualValue)); setProgressNotes(''); setProgressError(''); }}>Update progress</button>
+                    <button type="button" className={btn.ghost} onClick={() => { setProgressGoal(g); setProgressVal(String(g.actualValue)); setProgressNotes(''); setProgressError(''); }}>{t('Update progress')}</button>
                   )}
                   {!g.managerApproved && can.writeReviews && (
-                    <button type="button" className="rounded px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20" onClick={() => setDeleteId(g.id)}>Delete</button>
+                    <button type="button" className="rounded px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20" onClick={() => setDeleteId(g.id)}>{t('Delete')}</button>
                   )}
                 </div>
               </div>
               {g.status === 'Draft' && (
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  Next step: {canApproveGoals ? 'approve this goal to make it active' : 'the employee\'s manager or HR approves this goal'} — progress can be recorded once it is active.
+                  {canApproveGoals
+                    ? t('Next step: approve this goal to make it active — progress can be recorded once it is active.')
+                    : t('Next step: the employee\'s manager or HR approves this goal — progress can be recorded once it is active.')}
                 </p>
               )}
             </div>
           ))}
         </div>
       )}
-      <ListWindowFooter shown={goals.length} total={list.total} noun="goals" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={goals.length} total={list.total} noun="goals" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} goals', { shown: goals.length, total: list.total ?? 0 }), loadMore: t('Load more'), loading: t('Loading…') }} />
 
       {showCreate && <CreateGoalModal onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
       {progressGoal && (
-        <Modal title={`Update Progress — ${progressGoal.title}`} onClose={() => setProgressGoal(null)}>
+        <Modal title={t('Update Progress — {title}', { title: progressGoal.title })} onClose={() => setProgressGoal(null)}>
           <div className="space-y-4">
-            <Field label={`New Actual Value (target: ${progressGoal.targetValue} ${progressGoal.measurementUnit})`}>
-              <input type="number" title="New Actual Value" className={inp} value={progressVal} onChange={e => setProgressVal(e.target.value)} />
+            <Field label={t('New Actual Value (target: {target} {unit})', { target: progressGoal.targetValue, unit: progressGoal.measurementUnit })}>
+              <input type="number" title={t('New Actual Value')} className={inp} value={progressVal} onChange={e => setProgressVal(e.target.value)} />
             </Field>
-            <Field label="Notes"><textarea className={inp} value={progressNotes} onChange={e => setProgressNotes(e.target.value)} /></Field>
+            <Field label={t('Notes')}><textarea className={inp} value={progressNotes} onChange={e => setProgressNotes(e.target.value)} /></Field>
             {progressError && <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">{progressError}</p>}
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setProgressGoal(null)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={updateProgress}>Save Progress</button>
+              <button type="button" className={btn.ghost} onClick={() => setProgressGoal(null)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={updateProgress}>{t('Save Progress')}</button>
             </div>
           </div>
         </Modal>
       )}
       {deleteId && (
-        <Modal title="Delete Goal" onClose={() => setDeleteId(null)}>
+        <Modal title={t('Delete Goal')} onClose={() => setDeleteId(null)}>
           <div className="space-y-4">
-            <p className="text-sm text-slate-700 dark:text-slate-300">This will permanently remove the goal and its progress history. Approved goals cannot be deleted.</p>
+            <p className="text-sm text-slate-700 dark:text-slate-300">{t('This will permanently remove the goal and its progress history. Approved goals cannot be deleted.')}</p>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setDeleteId(null)}>Cancel</button>
-              <button type="button" className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50" onClick={confirmDelete} disabled={deleting}>{deleting ? 'Deleting…' : 'Delete Goal'}</button>
+              <button type="button" className={btn.ghost} onClick={() => setDeleteId(null)}>{t('Cancel')}</button>
+              <button type="button" className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50" onClick={confirmDelete} disabled={deleting}>{deleting ? t('Deleting…') : t('Delete Goal')}</button>
             </div>
           </div>
         </Modal>
@@ -955,6 +983,7 @@ function GoalsTab() {
 // ── Scorecard Templates Tab ───────────────────────────────────────────────────
 
 function TemplateFormModal({ tpl, onClose, onSaved }: { tpl?: ScorecardTemplate; onClose: () => void; onSaved: () => void }) {
+  const { t } = useLocale();
   const [form, setForm] = useState({
     name: tpl?.name ?? '', departmentName: tpl?.departmentName ?? '', designationTitle: tpl?.designationTitle ?? '',
     grade: tpl?.grade ?? '', kpiWeight: tpl?.kpiWeight ?? 40, competencyWeight: tpl?.competencyWeight ?? 20,
@@ -970,39 +999,39 @@ function TemplateFormModal({ tpl, onClose, onSaved }: { tpl?: ScorecardTemplate;
   const totalWeight = form.kpiWeight + form.competencyWeight + form.attendanceWeight + form.productivityWeight + form.feedbackWeight + form.disciplineWeight;
 
   const save = async () => {
-    if (!form.name) { setError('Name is required.'); return; }
-    if (totalWeight !== 100) { setError(`Weights must total 100%. Currently: ${totalWeight}%`); return; }
+    if (!form.name) { setError(t('Name is required.')); return; }
+    if (totalWeight !== 100) { setError(t('Weights must total 100%. Currently: {total}%', { total: totalWeight })); return; }
     setSaving(true); setError('');
     try {
       if (tpl) await templatesApi.update(tpl.id, form);
       else await templatesApi.create(form);
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, t('Save failed.'))); setSaving(false); }
   };
 
   const weights: [keyof typeof form, string][] = [
-    ['kpiWeight', 'KPI / Goals'], ['competencyWeight', 'Competencies'], ['attendanceWeight', 'Attendance'],
-    ['productivityWeight', 'Productivity'], ['feedbackWeight', 'Feedback'], ['disciplineWeight', 'Discipline'],
+    ['kpiWeight', t('KPI / Goals (%)')], ['competencyWeight', t('Competencies (%)')], ['attendanceWeight', t('Attendance (%)')],
+    ['productivityWeight', t('Productivity (%)')], ['feedbackWeight', t('Feedback (%)')], ['disciplineWeight', t('Discipline (%)')],
   ];
 
   return (
-    <Modal title={tpl ? 'Edit Template' : 'New Scorecard Template'} onClose={onClose} wide>
+    <Modal title={tpl ? t('Edit Template') : t('New Scorecard Template')} onClose={onClose} wide>
       <div className="space-y-4">
-        <Field label="Template Name *"><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} /></Field>
+        <Field label={t('Template Name *')}><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} /></Field>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Department"><input className={inp} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} placeholder="All departments" /></Field>
-          <Field label="Designation"><input className={inp} value={form.designationTitle} onChange={e => set('designationTitle', e.target.value)} placeholder="All designations" /></Field>
-          <Field label="Grade"><input className={inp} value={form.grade} onChange={e => set('grade', e.target.value)} placeholder="All grades" /></Field>
+          <Field label={t('Department')}><input className={inp} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} placeholder={t('All departments')} /></Field>
+          <Field label={t('Designation')}><input className={inp} value={form.designationTitle} onChange={e => set('designationTitle', e.target.value)} placeholder={t('All designations')} /></Field>
+          <Field label={t('Grade')}><input className={inp} value={form.grade} onChange={e => set('grade', e.target.value)} placeholder={t('All grades')} /></Field>
         </div>
 
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Component Weights</p>
-            <span className={`text-xs font-semibold ${totalWeight === 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>Total: {totalWeight}%</span>
+            <p className="text-xs font-medium text-slate-600 dark:text-slate-300">{t('Component Weights')}</p>
+            <span className={`text-xs font-semibold ${totalWeight === 100 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>{t('Total: {total}%', { total: totalWeight })}</span>
           </div>
           <div className="grid grid-cols-3 gap-3">
             {weights.map(([k, l]) => (
-              <Field key={k} label={`${l} (%)`}>
+              <Field key={k} label={l}>
                 <input type="number" min={0} max={100} className={inp} value={form[k] as number} onChange={e => set(k, Number(e.target.value))} />
               </Field>
             ))}
@@ -1010,10 +1039,10 @@ function TemplateFormModal({ tpl, onClose, onSaved }: { tpl?: ScorecardTemplate;
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Min Passing Score"><input type="number" min={0} max={100} className={inp} value={form.minPassingScore} onChange={e => set('minPassingScore', Number(e.target.value))} /></Field>
+          <Field label={t('Min Passing Score')}><input type="number" min={0} max={100} className={inp} value={form.minPassingScore} onChange={e => set('minPassingScore', Number(e.target.value))} /></Field>
         </div>
         <div className="flex flex-wrap gap-4">
-          {([['requiresCalibration', 'Requires Calibration'], ['requires360Feedback', 'Requires 360° Feedback'], ['isDefault', 'Default Template']] as [keyof typeof form, string][]).map(([k, l]) => (
+          {([['requiresCalibration', t('Requires Calibration')], ['requires360Feedback', t('Requires 360° Feedback')], ['isDefault', t('Default Template')]] as [keyof typeof form, string][]).map(([k, l]) => (
             <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />
               {l}
@@ -1022,8 +1051,8 @@ function TemplateFormModal({ tpl, onClose, onSaved }: { tpl?: ScorecardTemplate;
         </div>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : tpl ? 'Update Template' : 'Create Template'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Saving…') : tpl ? t('Update Template') : t('Create Template')}</button>
         </div>
       </div>
     </Modal>
@@ -1032,6 +1061,8 @@ function TemplateFormModal({ tpl, onClose, onSaved }: { tpl?: ScorecardTemplate;
 
 /** The review scorecards editor: the Setup section Review scorecards shows it. */
 export function TemplatesTab() {
+  const { t } = useLocale();
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [templates, setTemplates] = useState<ScorecardTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<ScorecardTemplate | undefined>(undefined);
@@ -1040,54 +1071,66 @@ export function TemplatesTab() {
   const load = () => { setLoading(true); templatesApi.list().then(setTemplates).catch(() => {}).finally(() => setLoading(false)); };
   useEffect(load, []);
 
-  const del = async (id: string) => {
-    if (!confirm('Deactivate this template?')) return;
-    try { await templatesApi.delete(id); load(); } catch (e) { notifyApiError(e, 'Delete failed.'); }
+  const del = (id: string) => {
+    setConfirm({
+      title: t('Deactivate template'),
+      message: t('Deactivate this template?'),
+      confirmLabel: t('Deactivate'),
+      cancelLabel: t('Cancel'),
+      busyLabel: t('Working…'),
+      closeLabel: t('Close'),
+      fallbackError: t('The action could not be completed.'),
+      onConfirm: async () => {
+        try { await templatesApi.delete(id); } catch (e) { notifyApiError(e, t('Delete failed.')); return; }
+        load();
+      },
+    });
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-500 dark:text-slate-400">{templates.length} template{templates.length !== 1 ? 's' : ''}</p>
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Template</button>
+        <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# template} other {# templates}}', { count: templates.length })}</p>
+        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" aria-hidden="true" /> {t('New Template')}</button>
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : templates.length === 0 ? (
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : templates.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Settings className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No scorecard templates yet</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No scorecard templates yet')}</p>
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {templates.map(t => (
-            <div key={t.id} className="surface p-5">
+          {templates.map(tpl => (
+            <div key={tpl.id} className="surface p-5">
               <div className="mb-3 flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-sm font-semibold text-slate-900 dark:text-white">{t.name}</p>
-                  <p className="text-xs text-slate-400">{t.departmentName || 'All depts'} · {t.designationTitle || 'All designations'} · {t.grade || 'All grades'}</p>
-                  {t.isDefault && <span className="mt-1 inline-flex items-center rounded bg-sapphire/10 px-2 py-0.5 text-[10px] font-semibold text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent">DEFAULT</span>}
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">{tpl.name}</p>
+                  <p className="text-xs text-slate-400">{tpl.departmentName || t('All departments')} · {tpl.designationTitle || t('All designations')} · {tpl.grade || t('All grades')}</p>
+                  {tpl.isDefault && <span className="mt-1 inline-flex items-center rounded bg-sapphire/10 px-2 py-0.5 text-caption font-semibold uppercase text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent">{t('Default')}</span>}
                 </div>
                 <div className="flex gap-1">
-                  <button type="button" className={btn.ghost} onClick={() => setEditing(t)}>Edit</button>
-                  <button type="button" className={btn.ghost} onClick={() => del(t.id)}>Delete</button>
+                  <button type="button" className={btn.ghost} onClick={() => setEditing(tpl)}>{t('Edit')}</button>
+                  <button type="button" className={btn.ghost} onClick={() => del(tpl.id)}>{t('Delete')}</button>
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2">
-                {[['KPI', t.kpiWeight], ['Competency', t.competencyWeight], ['Attendance', t.attendanceWeight],
-                  ['Productivity', t.productivityWeight], ['Feedback', t.feedbackWeight], ['Discipline', t.disciplineWeight]].map(([l, w]) => (
+                {[[t('KPI'), tpl.kpiWeight], [t('Competency'), tpl.competencyWeight], [t('Attendance'), tpl.attendanceWeight],
+                  [t('Productivity'), tpl.productivityWeight], [t('Feedback'), tpl.feedbackWeight], [t('Discipline'), tpl.disciplineWeight]].map(([l, w]) => (
                   <div key={l} className="rounded-lg bg-slate-50 px-3 py-2 text-center dark:bg-white/5">
-                    <p className="text-lg font-bold tabular-nums text-sapphire dark:text-cyanAccent">{w}%</p>
-                    <p className="text-[10px] text-slate-400">{l}</p>
+                    <p className="text-lg font-semibold tabular-nums text-sapphire dark:text-cyanAccent">{w}%</p>
+                    <p className="text-caption text-slate-400">{l}</p>
                   </div>
                 ))}
               </div>
-              <p className="mt-2 text-xs text-slate-400">Pass score: {t.minPassingScore}% · {t.requiresCalibration ? 'Calibration required' : 'No calibration'}</p>
+              <p className="mt-2 text-xs text-slate-400">{tpl.requiresCalibration ? t('Pass score: {score}% · Calibration required', { score: tpl.minPassingScore }) : t('Pass score: {score}% · No calibration', { score: tpl.minPassingScore })}</p>
             </div>
           ))}
         </div>
       )}
       {showCreate && <TemplateFormModal onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
       {editing && <TemplateFormModal tpl={editing} onClose={() => setEditing(undefined)} onSaved={() => { setEditing(undefined); load(); }} />}
+      <ConfirmDialog state={confirm} onCancel={() => setConfirm(null)} />
     </div>
   );
 }
@@ -1095,6 +1138,8 @@ export function TemplatesTab() {
 // ── Calibration Tab ───────────────────────────────────────────────────────────
 
 function CalibrationTab() {
+  const { t } = useLocale();
+  const [adjustError, setAdjustError] = useState('');
   const [cycles, setCycles] = useState<PerformanceCycle[]>([]);
   const [selectedCycle, setSelectedCycle] = useState('');
   const [board, setBoard] = useState<Awaited<ReturnType<typeof calibrationApi.getBoard>> | null>(null);
@@ -1112,12 +1157,14 @@ function CalibrationTab() {
   }, [selectedCycle]);
 
   const doAdjust = async () => {
-    if (!adjustModal || !adjustReason) { alert('Reason is required for calibration adjustments.'); return; }
+    if (!adjustModal) return;
+    if (!adjustReason.trim()) { setAdjustError(t('Reason is required for calibration adjustments.')); return; }
+    setAdjustError('');
     try {
       await calibrationApi.adjust(selectedCycle, adjustModal.reviewId, Number(adjustment), adjustReason);
       setAdjustModal(null); setAdjustment(''); setAdjustReason('');
       calibrationApi.getBoard(selectedCycle).then(setBoard).catch(() => {});
-    } catch (e) { notifyApiError(e, 'Calibration adjustment failed.'); }
+    } catch (e) { notifyApiError(e, t('Calibration adjustment failed.')); }
   };
 
   const reviews = (board?.reviews ?? []) as AppraisalReview[];
@@ -1126,8 +1173,8 @@ function CalibrationTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <select className={`${sel} w-72`} value={selectedCycle} onChange={e => setSelectedCycle(e.target.value)}>
-          <option value="">Select cycle in Calibration status</option>
+        <select aria-label={t('Cycle')} className={`${sel} w-72`} value={selectedCycle} onChange={e => setSelectedCycle(e.target.value)}>
+          <option value="">{t('Select cycle in Calibration status')}</option>
           {cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </div>
@@ -1135,23 +1182,25 @@ function CalibrationTab() {
       {cycles.length === 0 && (
         <div className="surface flex flex-col items-center py-16 text-center">
           <BarChart2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No cycles in Calibration status</p>
-          <p className="text-xs text-slate-400">Advance an Active cycle through InReview to reach Calibration.</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No cycles in Calibration status')}</p>
+          <p className="text-xs text-slate-400">{t('Advance an Active cycle through InReview to reach Calibration.')}</p>
         </div>
       )}
 
-      {loading && <p className="text-sm text-slate-400">Loading board…</p>}
+      {loading && <p className="text-sm text-slate-400">{t('Loading board…')}</p>}
 
       {board && !loading && (
         <div className="space-y-4">
           {/* Manager bias alerts */}
           {managerStats.filter(m => m.possibleLeniency || m.possibleSeverity).length > 0 && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/20 dark:bg-amber-500/10">
-              <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-400"><AlertTriangle className="h-4 w-4" /> Bias Alerts (Human review required)</p>
+              <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-400"><AlertTriangle className="h-4 w-4" aria-hidden="true" /> {t('Bias Alerts (Human review required)')}</p>
               <div className="space-y-1">
                 {managerStats.filter(m => m.possibleLeniency || m.possibleSeverity).map(m => (
                   <p key={m.managerName} className="text-xs text-amber-700 dark:text-amber-400">
-                    {m.managerName}: avg {m.avgScore} — {m.possibleLeniency ? 'Possible leniency (avg > 87)' : 'Possible severity (avg < 48)'}
+                    {m.possibleLeniency
+                      ? t('{manager}: avg {avg} — Possible leniency (avg > 87)', { manager: m.managerName, avg: m.avgScore })
+                      : t('{manager}: avg {avg} — Possible severity (avg < 48)', { manager: m.managerName, avg: m.avgScore })}
                   </p>
                 ))}
               </div>
@@ -1161,7 +1210,7 @@ function CalibrationTab() {
           {/* Reviews list */}
           <div className="surface divide-y divide-slate-100 dark:divide-white/5">
             <div className="grid grid-cols-5 gap-4 px-5 py-3 text-xs font-medium uppercase tracking-wide text-slate-400">
-              <span className="col-span-2">Employee</span><span>Score</span><span>Rating</span><span>Action</span>
+              <span className="col-span-2">{t('Employee')}</span><span>{t('Score')}</span><span>{t('Rating')}</span><span>{t('Action')}</span>
             </div>
             {reviews.map(r => (
               <div key={r.id} className="grid grid-cols-5 items-center gap-4 px-5 py-3">
@@ -1169,9 +1218,9 @@ function CalibrationTab() {
                   <p className="text-sm font-medium text-slate-900 dark:text-white">{r.employeeName}</p>
                   <p className="text-xs text-slate-400">{r.departmentName}</p>
                 </div>
-                <span className={`text-sm font-bold tabular-nums ${scoreColor(r.finalScore)}`}>{r.finalScore}</span>
+                <span className={`text-sm font-semibold tabular-nums ${scoreColor(r.finalScore)}`}>{r.finalScore}</span>
                 <span className="text-sm text-slate-600 dark:text-slate-300">{r.finalRating || '—'}</span>
-                <button type="button" className={btn.ghost} onClick={() => { setAdjustModal({ reviewId: r.id, name: r.employeeName, current: r.finalScore }); setAdjustment('0'); setAdjustReason(''); }}>Adjust</button>
+                <button type="button" className={btn.ghost} onClick={() => { setAdjustModal({ reviewId: r.id, name: r.employeeName, current: r.finalScore }); setAdjustment('0'); setAdjustReason(''); setAdjustError(''); }}>{t('Adjust')}</button>
               </div>
             ))}
           </div>
@@ -1179,17 +1228,18 @@ function CalibrationTab() {
       )}
 
       {adjustModal && (
-        <Modal title={`Calibrate — ${adjustModal.name}`} onClose={() => setAdjustModal(null)}>
+        <Modal title={t('Calibrate — {name}', { name: adjustModal.name })} onClose={() => setAdjustModal(null)}>
           <div className="space-y-4">
-            <p className="text-sm text-slate-600 dark:text-slate-400">Current score: <strong className="text-slate-900 dark:text-white">{adjustModal.current}</strong></p>
+            <p className="text-sm text-slate-600 dark:text-slate-400">{t('Current score: {score}', { score: adjustModal.current })}</p>
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400">
-              AI may surface outliers, but all calibration decisions are made by the calibration committee. A mandatory reason is required for audit purposes.
+              {t('AI may surface outliers, but all calibration decisions are made by the calibration committee. A mandatory reason is required for audit purposes.')}
             </div>
-            <Field label="Score Adjustment (e.g. +5 or -3)"><input type="number" className={inp} value={adjustment} onChange={e => setAdjustment(e.target.value)} /></Field>
-            <Field label="Reason (required) *"><textarea className={inp} rows={3} value={adjustReason} onChange={e => setAdjustReason(e.target.value)} placeholder="Explain the calibration rationale…" /></Field>
+            <Field label={t('Score Adjustment (e.g. +5 or -3)')}><input type="number" className={inp} value={adjustment} onChange={e => setAdjustment(e.target.value)} /></Field>
+            <Field label={t('Reason (required) *')}><textarea className={inp} rows={3} value={adjustReason} onChange={e => setAdjustReason(e.target.value)} placeholder={t('Explain the calibration rationale…')} /></Field>
+            {adjustError && <p role="alert" className="text-xs text-rose-500">{adjustError}</p>}
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setAdjustModal(null)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={doAdjust}>Apply Calibration</button>
+              <button type="button" className={btn.ghost} onClick={() => setAdjustModal(null)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={doAdjust}>{t('Apply Calibration')}</button>
             </div>
           </div>
         </Modal>
@@ -1202,6 +1252,8 @@ function CalibrationTab() {
 
 function RecommendationsTab() {
   const { currencyCode } = useTenantSettings();
+  const { t, locale } = useLocale();
+  const fx = useFormat();
   const [tab, setTab] = useState<'increments' | 'promotions' | 'bonuses'>('increments');
   const [increments, setIncrements] = useState<IncrementRecommendation[]>([]);
   const [promotions, setPromotions] = useState<PromotionRecommendation[]>([]);
@@ -1228,69 +1280,69 @@ function RecommendationsTab() {
       else if (decideModal.type === 'promotion') await recommendationsApi.approvePromotion(decideModal.id, decision, notes);
       else await recommendationsApi.approveBonus(decideModal.id, decision);
       setDecideModal(null); setNotes(''); load();
-    } catch (e) { notifyApiError(e, 'Decision failed.'); }
+    } catch (e) { notifyApiError(e, t('Decision failed.')); }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex w-fit gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
-        {(['increments', 'promotions', 'bonuses'] as const).map(t => (
-          <button key={t} type="button" onClick={() => setTab(t)} className={`rounded-lg px-4 py-1.5 text-sm font-medium capitalize transition ${tab === t ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>{t}</button>
+        {(['increments', 'promotions', 'bonuses'] as const).map(k => (
+          <button key={k} type="button" onClick={() => setTab(k)} className={`rounded-lg px-4 py-1.5 text-sm font-medium capitalize transition ${tab === k ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}>{k === 'increments' ? t('Increments') : k === 'promotions' ? t('Promotions') : t('Bonuses')}</button>
         ))}
       </div>
 
       <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-400">
-        Approved recommendations are sent to Payroll as pending approved actions. They are not applied automatically — a Payroll manager must process them.
+        {t('Approved recommendations are sent to Payroll as pending approved actions. They are not applied automatically — a Payroll manager must process them.')}
       </div>
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : (
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
-          {tab === 'increments' && (increments.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">No pending increments</p> : increments.map(r => (
+          {tab === 'increments' && (increments.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">{t('No pending increments')}</p> : increments.map(r => (
             <div key={r.id} className="flex items-center justify-between px-5 py-4">
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
                 <p className="text-xs text-slate-400">{r.departmentName} · {r.designationTitle}</p>
-                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Current: {currencyCode} {fmtCurrency(r.currentSalary)} → New: {currencyCode} {fmtCurrency(r.newSalary)} (+{r.recommendedIncrementPct}%)</p>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{t('Current: {currency} {current} → New: {currency} {next} (+{pct}%)', { currency: currencyCode, current: fx.integer(r.currentSalary), next: fx.integer(r.newSalary), pct: r.recommendedIncrementPct })}</p>
               </div>
-              <button type="button" className={btn.primary} onClick={() => { setDecideModal({ type: 'increment', id: r.id, name: r.employeeName }); setDecision('Approved'); setNotes(''); }}>Decide</button>
+              <button type="button" className={btn.primary} onClick={() => { setDecideModal({ type: 'increment', id: r.id, name: r.employeeName }); setDecision('Approved'); setNotes(''); }}>{t('Decide')}</button>
             </div>
           )))}
-          {tab === 'promotions' && (promotions.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">No pending promotions</p> : promotions.map(r => (
+          {tab === 'promotions' && (promotions.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">{t('No pending promotions')}</p> : promotions.map(r => (
             <div key={r.id} className="flex items-center justify-between px-5 py-4">
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
                 <p className="text-xs text-slate-400">{r.departmentName}</p>
-                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{r.currentDesignation} → {r.proposedDesignation} · effective {fmtDate(r.effectiveDate)}</p>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{t('{from} → {to} · effective {date}', { from: r.currentDesignation, to: r.proposedDesignation, date: fmtDate(r.effectiveDate, locale) })}</p>
               </div>
-              <button type="button" className={btn.primary} onClick={() => { setDecideModal({ type: 'promotion', id: r.id, name: r.employeeName }); setDecision('Approved'); setNotes(''); }}>Decide</button>
+              <button type="button" className={btn.primary} onClick={() => { setDecideModal({ type: 'promotion', id: r.id, name: r.employeeName }); setDecision('Approved'); setNotes(''); }}>{t('Decide')}</button>
             </div>
           )))}
-          {tab === 'bonuses' && (bonuses.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">No pending bonuses</p> : bonuses.map(r => (
+          {tab === 'bonuses' && (bonuses.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">{t('No pending bonuses')}</p> : bonuses.map(r => (
             <div key={r.id} className="flex items-center justify-between px-5 py-4">
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
                 <p className="text-xs text-slate-400">{r.departmentName} · {r.bonusType}</p>
-                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Amount: {currencyCode} {fmtCurrency(r.bonusAmount)}</p>
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{t('Amount: {currency} {amount}', { currency: currencyCode, amount: fx.integer(r.bonusAmount) })}</p>
               </div>
-              <button type="button" className={btn.primary} onClick={() => { setDecideModal({ type: 'bonus', id: r.id, name: r.employeeName }); setDecision('Approved'); setNotes(''); }}>Decide</button>
+              <button type="button" className={btn.primary} onClick={() => { setDecideModal({ type: 'bonus', id: r.id, name: r.employeeName }); setDecision('Approved'); setNotes(''); }}>{t('Decide')}</button>
             </div>
           )))}
         </div>
       )}
 
       {decideModal && (
-        <Modal title={`Decision — ${decideModal.name}`} onClose={() => setDecideModal(null)}>
+        <Modal title={t('Decision — {name}', { name: decideModal.name })} onClose={() => setDecideModal(null)}>
           <div className="space-y-4">
-            <Field label="Decision">
-              <select title="Decision" className={sel} value={decision} onChange={e => setDecision(e.target.value)}>
-                <option value="Approved">Approve</option>
-                <option value="Rejected">Reject</option>
+            <Field label={t('Decision')}>
+              <select title={t('Decision')} className={sel} value={decision} onChange={e => setDecision(e.target.value)}>
+                <option value="Approved">{t('Approve')}</option>
+                <option value="Rejected">{t('Reject')}</option>
               </select>
             </Field>
-            <Field label="Notes"><textarea title="Notes" className={inp} rows={3} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+            <Field label={t('Notes')}><textarea title={t('Notes')} className={inp} rows={3} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setDecideModal(null)}>Cancel</button>
-              <button type="button" className={decision === 'Approved' ? btn.primary : btn.danger} onClick={decide}>{decision}</button>
+              <button type="button" className={btn.ghost} onClick={() => setDecideModal(null)}>{t('Cancel')}</button>
+              <button type="button" className={decision === 'Approved' ? btn.primary : btn.danger} onClick={decide}>{valueText(t, decision)}</button>
             </div>
           </div>
         </Modal>
@@ -1302,6 +1354,7 @@ function RecommendationsTab() {
 // ── PIP & Probation Tab ───────────────────────────────────────────────────────
 
 function CreatePIPModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { t } = useLocale();
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeSelection | null>(null);
   const [form, setForm] = useState({ performanceGaps: '', improvementGoals: '', supportPlan: '', startDate: '', endDate: '', hrNotes: '' });
   const [saving, setSaving] = useState(false);
@@ -1309,36 +1362,36 @@ function CreatePIPModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
-    if (!selectedEmployee) { setError('Please select an employee.'); return; }
-    if (!form.performanceGaps || !form.improvementGoals || !form.startDate || !form.endDate) { setError('Performance gaps, goals and dates are required.'); return; }
+    if (!selectedEmployee) { setError(t('Please select an employee.')); return; }
+    if (!form.performanceGaps || !form.improvementGoals || !form.startDate || !form.endDate) { setError(t('Performance gaps, goals and dates are required.')); return; }
     setSaving(true); setError('');
     try {
       await pipApi.create({ employeeId: selectedEmployee.intId, employeeName: selectedEmployee.fullName, departmentName: selectedEmployee.department, performanceGaps: form.performanceGaps, improvementGoals: form.improvementGoals, supportPlan: form.supportPlan, startDate: form.startDate, endDate: form.endDate, hrNotes: form.hrNotes });
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Failed to create PIP.')); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, t('Failed to create PIP.'))); setSaving(false); }
   };
 
   return (
-    <Modal title="Create Performance Improvement Plan" onClose={onClose} wide>
+    <Modal title={t('Create Performance Improvement Plan')} onClose={onClose} wide>
       <div className="space-y-4">
-        <Field label="Employee *">
+        <Field label={t('Employee *')}>
           <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
         </Field>
         {selectedEmployee && (
-          <p className="text-xs text-slate-500 dark:text-slate-400">Department: {selectedEmployee.department}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{t('Department: {name}', { name: selectedEmployee.department })}</p>
         )}
-        <Field label="Performance Gaps *"><textarea className={inp} rows={3} value={form.performanceGaps} onChange={e => set('performanceGaps', e.target.value)} placeholder="Describe specific performance deficiencies…" /></Field>
-        <Field label="Improvement Goals *"><textarea className={inp} rows={3} value={form.improvementGoals} onChange={e => set('improvementGoals', e.target.value)} placeholder="Measurable objectives to achieve within the PIP period…" /></Field>
-        <Field label="Support Plan"><textarea className={inp} rows={2} value={form.supportPlan} onChange={e => set('supportPlan', e.target.value)} placeholder="Training, coaching, resources provided…" /></Field>
+        <Field label={t('Performance Gaps *')}><textarea className={inp} rows={3} value={form.performanceGaps} onChange={e => set('performanceGaps', e.target.value)} placeholder={t('Describe specific performance deficiencies…')} /></Field>
+        <Field label={t('Improvement Goals *')}><textarea className={inp} rows={3} value={form.improvementGoals} onChange={e => set('improvementGoals', e.target.value)} placeholder={t('Measurable objectives to achieve within the PIP period…')} /></Field>
+        <Field label={t('Support Plan')}><textarea className={inp} rows={2} value={form.supportPlan} onChange={e => set('supportPlan', e.target.value)} placeholder={t('Training, coaching, resources provided…')} /></Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Start Date *"><input type="date" title="Start Date" className={inp} value={form.startDate} onChange={e => set('startDate', e.target.value)} /></Field>
-          <Field label="End Date *"><input type="date" title="End Date" className={inp} value={form.endDate} onChange={e => set('endDate', e.target.value)} /></Field>
+          <Field label={t('Start Date *')}><input type="date" title={t('Start Date')} className={inp} value={form.startDate} onChange={e => set('startDate', e.target.value)} /></Field>
+          <Field label={t('End Date *')}><input type="date" title={t('End Date')} className={inp} value={form.endDate} onChange={e => set('endDate', e.target.value)} /></Field>
         </div>
-        <Field label="HR Notes"><textarea title="HR Notes" className={inp} rows={2} value={form.hrNotes} onChange={e => set('hrNotes', e.target.value)} /></Field>
+        <Field label={t('HR Notes')}><textarea title={t('HR Notes')} className={inp} rows={2} value={form.hrNotes} onChange={e => set('hrNotes', e.target.value)} /></Field>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Creating…' : 'Create PIP'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Creating…') : t('Create PIP')}</button>
         </div>
       </div>
     </Modal>
@@ -1346,6 +1399,8 @@ function CreatePIPModal({ onClose, onSaved }: { onClose: () => void; onSaved: ()
 }
 
 function PIPProbationTab() {
+  const { t, locale } = useLocale();
+  const toast = useAppToast();
   const can = usePerformanceCapabilities();
   const [subTab, setSubTab] = useState<'pip' | 'probation'>('pip');
   const [pips, setPips] = useState<PerformanceImprovementPlan[]>([]);
@@ -1381,11 +1436,11 @@ function PIPProbationTab() {
     try {
       const r = await pipApi.updateStatus(statusModal.id, newStatus, statusNotes);
       setStatusModal(null); load();
-      if (r.nextStep) alert(r.nextStep);
+      if (r.nextStep) toast.info(r.nextStep);
     } catch (e) {
       // The adverse-close guard answers 409 with a machine-readable code; show what it said.
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setStatusError(msg ?? 'Status update failed.');
+      setStatusError(msg ?? t('Status update failed.'));
     }
   };
 
@@ -1398,20 +1453,22 @@ function PIPProbationTab() {
         ? { newProbationEndDate: probationDate }
         : probationDate ? { effectiveDate: probationDate } : undefined);
       setProbationModal(null); load();
-      alert(r.separationRaised
-        ? `${p.employeeName} is now ${r.employeeStatus}. A '${r.separationType}' separation was raised — complete the offboarding checklist and final settlement in Offboarding.`
-        : `Recorded. Probation now ends ${r.probationEndDate ?? '—'}${r.confirmationDate ? `; confirmed from ${r.confirmationDate}` : ''}.`);
+      toast.success(r.separationRaised
+        ? t('{name} is now {status}. A \'{type}\' separation was raised — complete the offboarding checklist and final settlement in Offboarding.', { name: p.employeeName, status: valueText(t, r.employeeStatus), type: r.separationType })
+        : r.confirmationDate
+          ? t('Recorded. Probation now ends {date}; confirmed from {confirmed}.', { date: r.probationEndDate ?? '—', confirmed: r.confirmationDate })
+          : t('Recorded. Probation now ends {date}.', { date: r.probationEndDate ?? '—' }));
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setProbationError(msg ?? 'The decision could not be recorded.');
+      setProbationError(msg ?? t('The decision could not be recorded.'));
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="flex w-fit gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
-        <button type="button" onClick={() => setSubTab('pip')} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${subTab === 'pip' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>PIPs ({pips.length})</button>
-        <button type="button" onClick={() => setSubTab('probation')} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${subTab === 'probation' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>Probation ({probations.length})</button>
+        <button type="button" onClick={() => setSubTab('pip')} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${subTab === 'pip' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>{t('PIPs ({count})', { count: pips.length })}</button>
+        <button type="button" onClick={() => setSubTab('probation')} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${subTab === 'probation' ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>{t('Probation ({count})', { count: probations.length })}</button>
       </div>
 
       {subTab === 'pip' && (
@@ -1419,21 +1476,19 @@ function PIPProbationTab() {
           {terminationQueue.length > 0 && (
             <div className="surface border-s-4 border-s-rose-500 p-5">
               <div className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-rose-500" />
+                <AlertTriangle className="h-4 w-4 text-rose-500" aria-hidden="true" />
                 <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Awaiting an employment decision ({terminationQueue.length})
+                  {t('Awaiting an employment decision ({count})', { count: terminationQueue.length })}
                 </h3>
               </div>
               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                A PIP was closed with a termination recommendation and no separation has been raised for that
-                person. This is a recommendation, not a termination — HR and leadership decide. Each entry clears
-                once a separation exists in Offboarding.
+                {t('A PIP was closed with a termination recommendation and no separation has been raised for that person. This is a recommendation, not a termination — HR and leadership decide. Each entry clears once a separation exists in Offboarding.')}
               </p>
               <div className="mt-3 divide-y divide-slate-100 dark:divide-white/5">
                 {terminationQueue.map(q => (
                   <div key={q.id} className="py-3">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{q.employeeName}</p>
-                    <p className="mt-0.5 text-xs text-slate-400">{q.departmentName} · recommended {fmtDate(q.closedAtUtc)}</p>
+                    <p className="mt-0.5 text-xs text-slate-400">{t('{department} · recommended {date}', { department: q.departmentName, date: fmtDate(q.closedAtUtc, locale) })}</p>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{q.recommendationReason}</p>
                     <p className="mt-1 text-xs text-slate-400">{q.action}</p>
                   </div>
@@ -1443,13 +1498,13 @@ function PIPProbationTab() {
           )}
           <div className="flex justify-end">
             {can.writeReviews && (
-              <button type="button" className={btn.primary} onClick={() => setShowCreatePIP(true)}><Plus className="h-4 w-4" /> New PIP</button>
+              <button type="button" className={btn.primary} onClick={() => setShowCreatePIP(true)}><Plus className="h-4 w-4" aria-hidden="true" /> {t('New PIP')}</button>
             )}
           </div>
-          {loading ? <p className="text-sm text-slate-400">Loading…</p> : pips.length === 0 ? (
+          {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : pips.length === 0 ? (
             <div className="surface flex flex-col items-center py-16 text-center">
               <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No active PIPs</p>
+              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No active PIPs')}</p>
             </div>
           ) : (
             <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -1457,16 +1512,16 @@ function PIPProbationTab() {
                 <div key={p.id} className="flex items-center justify-between px-5 py-4">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{p.employeeName}</p>
-                    <p className="mt-0.5 text-xs text-slate-400">{p.departmentName} · {fmtDate(p.startDate)} – {fmtDate(p.endDate)}</p>
+                    <p className="mt-0.5 text-xs text-slate-400">{p.departmentName} · {fmtDate(p.startDate, locale)} – {fmtDate(p.endDate, locale)}</p>
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{p.improvementGoals}</p>
                     <p className="mt-1 text-xs text-slate-400">
-                      {p.checkInCount ? `${p.checkInCount} check-in${p.checkInCount === 1 ? '' : 's'} · latest: ${p.latestCheckInOutcome}` : 'No check-ins recorded yet'}
+                      {p.checkInCount ? t('{count, plural, one {# check-in} other {# check-ins}} · latest: {outcome}', { count: p.checkInCount, outcome: p.latestCheckInOutcome }) : t('No check-ins recorded yet')}
                     </p>
                   </div>
                   <div className="ms-4 flex shrink-0 items-center gap-3">
-                    {statusBadge(p.status)}
+                    <StatusBadge status={p.status} />
                     {p.status === 'Active' && can.decideRatings && (
-                      <button type="button" className={btn.ghost} onClick={() => { setStatusModal({ id: p.id, name: p.employeeName }); setNewStatus('Improved'); setStatusNotes(''); }}>Update Status</button>
+                      <button type="button" className={btn.ghost} onClick={() => { setStatusModal({ id: p.id, name: p.employeeName }); setNewStatus('Improved'); setStatusNotes(''); }}>{t('Update Status')}</button>
                     )}
                   </div>
                 </div>
@@ -1478,10 +1533,10 @@ function PIPProbationTab() {
 
       {subTab === 'probation' && (
         <div className="space-y-4">
-          {loading ? <p className="text-sm text-slate-400">Loading…</p> : probations.length === 0 ? (
+          {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : probations.length === 0 ? (
             <div className="surface flex flex-col items-center py-16 text-center">
               <Clock className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No probation reviews</p>
+              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No probation reviews')}</p>
             </div>
           ) : (
             <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -1490,11 +1545,11 @@ function PIPProbationTab() {
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{p.employeeName}</p>
                     <p className="mt-0.5 text-xs text-slate-400">{p.departmentName} · {p.designationTitle}</p>
-                    <p className="text-xs text-slate-400">Probation: {fmtDate(p.probationStartDate)} – {fmtDate(p.probationEndDate)}</p>
-                    {p.managerRecommendation && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Manager: {p.managerRecommendation}</p>}
+                    <p className="text-xs text-slate-400">{t('Probation: {start} – {end}', { start: fmtDate(p.probationStartDate, locale), end: fmtDate(p.probationEndDate, locale) })}</p>
+                    {p.managerRecommendation && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t('Manager: {text}', { text: p.managerRecommendation })}</p>}
                   </div>
                   <div className="ms-4 flex shrink-0 items-center gap-2">
-                    {statusBadge(p.status)}
+                    <StatusBadge status={p.status} />
                     {p.status === 'ManagerReviewed' && can.decideRatings && (
                       <div className="flex gap-1">
                         {['Confirmed', 'Extended', 'Terminated'].map(d => (
@@ -1506,7 +1561,7 @@ function PIPProbationTab() {
                               setProbationDate(d === 'Terminated' ? p.probationEndDate.slice(0, 10) : '');
                               setProbationError('');
                             }}>
-                            {d === 'Confirmed' ? 'Confirm' : d === 'Extended' ? 'Extend' : 'Terminate'}
+                            {d === 'Confirmed' ? t('Confirm') : d === 'Extended' ? t('Extend') : t('Terminate')}
                           </button>
                         ))}
                       </div>
@@ -1521,58 +1576,58 @@ function PIPProbationTab() {
 
       {showCreatePIP && <CreatePIPModal onClose={() => setShowCreatePIP(false)} onSaved={() => { setShowCreatePIP(false); load(); }} />}
       {probationModal && (
-        <Modal title={`${probationModal.decision === 'Confirmed' ? 'Confirm' : probationModal.decision === 'Extended' ? 'Extend' : 'Terminate'} probation — ${probationModal.p.employeeName}`}
+        <Modal title={probationModal.decision === 'Confirmed' ? t('Confirm probation — {name}', { name: probationModal.p.employeeName }) : probationModal.decision === 'Extended' ? t('Extend probation — {name}', { name: probationModal.p.employeeName }) : t('Terminate probation — {name}', { name: probationModal.p.employeeName })}
           onClose={() => setProbationModal(null)}>
           <div className="space-y-4">
             <div className={`rounded-lg border p-3 text-xs ${probationModal.decision === 'Terminated'
               ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-400'
               : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300'}`}>
               {probationModal.decision === 'Terminated'
-                ? 'This ENDS the employment. A separation of type "Probation not passed" is raised, the WPS payroll footprint is deactivated and the offboarding record is created for final settlement. It is not reversible from this screen. A dismissal for cause (Article 80, which forfeits the end-of-service award) must be raised through Offboarding instead.'
+                ? t('This ENDS the employment. A separation of type "Probation not passed" is raised, the WPS payroll footprint is deactivated and the offboarding record is created for final settlement. It is not reversible from this screen. A dismissal for cause (Article 80, which forfeits the end-of-service award) must be raised through Offboarding instead.')
                 : probationModal.decision === 'Confirmed'
-                  ? 'This ends the probation period from the effective date. Leave policies that exclude probationers start applying from that date, and the employee leaves the probation headcount.'
-                  : 'An extension must state the new probation end date. The leave rules and the probation headcount follow that date.'}
+                  ? t('This ends the probation period from the effective date. Leave policies that exclude probationers start applying from that date, and the employee leaves the probation headcount.')
+                  : t('An extension must state the new probation end date. The leave rules and the probation headcount follow that date.')}
             </div>
-            <Field label={probationModal.decision === 'Extended' ? 'New probation end date *'
-              : probationModal.decision === 'Terminated' ? 'Last working day *' : 'Effective date'}>
+            <Field label={probationModal.decision === 'Extended' ? t('New probation end date *')
+              : probationModal.decision === 'Terminated' ? t('Last working day *') : t('Effective date')}>
               <input type="date"
-                title={probationModal.decision === 'Extended' ? 'New probation end date' : 'Effective date'}
+                title={probationModal.decision === 'Extended' ? t('New probation end date') : t('Effective date')}
                 className={inp} value={probationDate} onChange={e => setProbationDate(e.target.value)} />
             </Field>
-            <Field label="HR notes">
-              <textarea title="HR notes" className={inp} rows={3} value={probationNotes}
+            <Field label={t('HR notes')}>
+              <textarea title={t('HR notes')} className={inp} rows={3} value={probationNotes}
                 onChange={e => setProbationNotes(e.target.value)} />
             </Field>
             {probationError && <p className="text-xs text-rose-500">{probationError}</p>}
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setProbationModal(null)}>Cancel</button>
+              <button type="button" className={btn.ghost} onClick={() => setProbationModal(null)}>{t('Cancel')}</button>
               <button type="button"
                 className={probationModal.decision === 'Terminated' ? btn.danger : btn.primary}
                 onClick={submitProbationDecision}>
-                Record decision
+                {t('Record decision')}
               </button>
             </div>
           </div>
         </Modal>
       )}
       {statusModal && (
-        <Modal title={`Update PIP Status — ${statusModal.name}`} onClose={() => setStatusModal(null)}>
+        <Modal title={t('Update PIP Status — {name}', { name: statusModal.name })} onClose={() => setStatusModal(null)}>
           <div className="space-y-4">
-            <Field label="New Status">
-              <select title="New Status" className={sel} value={newStatus} onChange={e => setNewStatus(e.target.value)}>
-                {['Improved', 'Extended', 'Failed', 'TerminationRecommended'].map(s => <option key={s}>{s}</option>)}
+            <Field label={t('New Status')}>
+              <select title={t('New Status')} className={sel} value={newStatus} onChange={e => setNewStatus(e.target.value)}>
+                {['Improved', 'Extended', 'Failed', 'TerminationRecommended'].map(s => <option key={s} value={s}>{valueText(t, s)}</option>)}
               </select>
             </Field>
             {newStatus === 'TerminationRecommended' && (
               <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-400">
-                This is a recommendation only — not an automatic termination. HR and leadership must make the final employment decision.
+                {t('This is a recommendation only — not an automatic termination. HR and leadership must make the final employment decision.')}
               </div>
             )}
-            <Field label="Notes"><textarea title="Status Notes" className={inp} rows={3} value={statusNotes} onChange={e => setStatusNotes(e.target.value)} /></Field>
+            <Field label={t('Notes')}><textarea title={t('Status Notes')} className={inp} rows={3} value={statusNotes} onChange={e => setStatusNotes(e.target.value)} /></Field>
             {statusError && <p className="text-xs text-rose-500">{statusError}</p>}
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setStatusModal(null)}>Cancel</button>
-              <button type="button" className={newStatus === 'TerminationRecommended' || newStatus === 'Failed' ? btn.danger : btn.primary} onClick={updatePIPStatus}>Update</button>
+              <button type="button" className={btn.ghost} onClick={() => setStatusModal(null)}>{t('Cancel')}</button>
+              <button type="button" className={newStatus === 'TerminationRecommended' || newStatus === 'Failed' ? btn.danger : btn.primary} onClick={updatePIPStatus}>{t('Update')}</button>
             </div>
           </div>
         </Modal>
@@ -1584,6 +1639,7 @@ function PIPProbationTab() {
 // ── Analytics Tab ─────────────────────────────────────────────────────────────
 
 function AnalyticsTab() {
+  const { t } = useLocale();
   const [cycles, setCycles] = useState<PerformanceCycle[]>([]);
   const [selectedCycle, setSelectedCycle] = useState('');
   const [analytics, setAnalytics] = useState<CycleAnalytics | null>(null);
@@ -1598,32 +1654,32 @@ function AnalyticsTab() {
 
   return (
     <div className="space-y-4">
-      <select title="Select Cycle" className={`${sel} w-72`} value={selectedCycle} onChange={e => setSelectedCycle(e.target.value)}>
-        <option value="">Select cycle</option>
+      <select title={t('Select Cycle')} aria-label={t('Select Cycle')} className={`${sel} w-72`} value={selectedCycle} onChange={e => setSelectedCycle(e.target.value)}>
+        <option value="">{t('Select cycle')}</option>
         {cycles.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
 
-      {loading && <p className="text-sm text-slate-400">Loading analytics…</p>}
+      {loading && <p className="text-sm text-slate-400">{t('Loading analytics…')}</p>}
 
       {analytics && !loading && (
         <div className="space-y-4">
           {/* Summary */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <KpiCard label="Total Enrolled" value={analytics.summary.totalEnrolled} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-            <KpiCard label="Completion Rate" value={`${analytics.summary.completionRate}%`} icon={CheckCircle} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-            <KpiCard label="Avg Score" value={analytics.summary.overallAvgScore} icon={BarChart2} color="bg-blue-100 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400" />
-            <KpiCard label="High Performers" value={analytics.summary.highPerformers} sub="Score ≥ 85" icon={Star} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+            <KpiCard label={t('Total Enrolled')} value={analytics.summary.totalEnrolled} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+            <KpiCard label={t('Completion Rate')} value={`${analytics.summary.completionRate}%`} icon={CheckCircle} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+            <KpiCard label={t('Avg Score')} value={analytics.summary.overallAvgScore} icon={BarChart2} color="bg-blue-100 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400" />
+            <KpiCard label={t('High Performers')} value={analytics.summary.highPerformers} sub={t('Score ≥ 85')} icon={Star} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
             {/* Rating Distribution */}
             <div className="surface p-5">
-              <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Rating Distribution</h3>
-              {analytics.distribution.length === 0 ? <p className="text-sm text-slate-400">No completed reviews yet.</p> : (
+              <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Rating Distribution')}</h3>
+              {analytics.distribution.length === 0 ? <p className="text-sm text-slate-400">{t('No completed reviews yet.')}</p> : (
                 <div className="space-y-3">
                   {analytics.distribution.map(d => (
                     <div key={d.rating} className="flex items-center gap-3">
-                      <span className="w-28 shrink-0 text-xs text-slate-600 dark:text-slate-400">{d.rating || 'Unrated'}</span>
+                      <span className="w-28 shrink-0 text-xs text-slate-600 dark:text-slate-400">{d.rating || t('Unrated')}</span>
                       <div className="flex-1 rounded-full bg-slate-100 dark:bg-white/10">
                         <div className="h-2 rounded-full bg-sapphire" style={{ width: `${d.pct}%` }} />{/* dynamic — inline required */}
                       </div>
@@ -1636,8 +1692,8 @@ function AnalyticsTab() {
 
             {/* Dept Averages */}
             <div className="surface p-5">
-              <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Department Averages</h3>
-              {analytics.deptAvg.length === 0 ? <p className="text-sm text-slate-400">No data yet.</p> : (
+              <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Department Averages')}</h3>
+              {analytics.deptAvg.length === 0 ? <p className="text-sm text-slate-400">{t('No data yet.')}</p> : (
                 <div className="space-y-3">
                   {analytics.deptAvg.slice(0, 8).map(d => (
                     <div key={d.department} className="flex items-center gap-3">
@@ -1656,19 +1712,19 @@ function AnalyticsTab() {
           {/* Top performers */}
           {analytics.topPerformers.length > 0 && (
             <div className="surface p-5">
-              <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Top Performers (Score ≥ 85)</h3>
+              <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Top Performers (Score ≥ 85)')}</h3>
               <div className="divide-y divide-slate-100 dark:divide-white/5">
                 {analytics.topPerformers.map((p, i) => (
                   <div key={p.employeeId} className="flex items-center justify-between py-2">
                     <div className="flex items-center gap-3">
-                      <span className="w-6 text-center text-xs font-bold text-slate-400">#{i + 1}</span>
+                      <span className="w-6 text-center text-xs font-semibold text-slate-400">#{i + 1}</span>
                       <div>
                         <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{p.employeeName}</p>
                         <p className="text-xs text-slate-400">{p.departmentName}</p>
                       </div>
                     </div>
                     <div className="text-end">
-                      <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">{p.finalScore}</p>
+                      <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">{p.finalScore}</p>
                       <p className="text-xs text-slate-400">{p.finalRating}</p>
                     </div>
                   </div>
@@ -1681,20 +1737,20 @@ function AnalyticsTab() {
           {analytics.managerBias.length > 0 && (
             <div className="surface p-5">
               <div className="mb-3 flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Manager Rating Analysis</h3>
-                <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">Human review required</span>
+                <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Manager Rating Analysis')}</h3>
+                <span className="rounded bg-slate-100 px-2 py-0.5 text-caption font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">{t('Human review required')}</span>
               </div>
               <div className="divide-y divide-slate-100 dark:divide-white/5">
                 {analytics.managerBias.map(m => (
                   <div key={m.managerName} className="flex items-center justify-between py-3">
                     <div>
                       <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{m.managerName}</p>
-                      <p className="text-xs text-slate-400">{m.count} direct reports rated</p>
+                      <p className="text-xs text-slate-400">{t('{count, plural, one {# direct report rated} other {# direct reports rated}}', { count: m.count })}</p>
                     </div>
                     <div className="text-end">
-                      <p className={`text-sm font-bold tabular-nums ${scoreColor(m.avgScore)}`}>{m.avgScore} avg</p>
-                      {m.possibleLeniency && <span className="text-[10px] text-amber-500">Possible leniency</span>}
-                      {m.possibleSeverity && <span className="text-[10px] text-rose-500">Possible severity</span>}
+                      <p className={`text-sm font-semibold tabular-nums ${scoreColor(m.avgScore)}`}>{t('{avg} avg', { avg: m.avgScore })}</p>
+                      {m.possibleLeniency && <span className="text-caption text-amber-500">{t('Possible leniency')}</span>}
+                      {m.possibleSeverity && <span className="text-caption text-rose-500">{t('Possible severity')}</span>}
                     </div>
                   </div>
                 ))}
@@ -1710,6 +1766,7 @@ function AnalyticsTab() {
 // ── Feedback Tab ──────────────────────────────────────────────────────────────
 
 function FeedbackTab() {
+  const { t, locale } = useLocale();
   const [feedbacks, setFeedbacks] = useState<Awaited<ReturnType<typeof feedbackApi.listContinuous>>>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -1730,19 +1787,19 @@ function FeedbackTab() {
       setSelectedEmployee(null);
       load();
     }
-    catch (e) { notifyApiError(e, 'Failed to submit feedback.'); }
+    catch (e) { notifyApiError(e, t('Failed to submit feedback.')); }
     setSaving(false);
   };
 
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Give Feedback</button>
+        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" aria-hidden="true" /> {t('Give Feedback')}</button>
       </div>
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : feedbacks.length === 0 ? (
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : feedbacks.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Star className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No continuous feedback entries yet</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No continuous feedback entries yet')}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -1751,10 +1808,10 @@ function FeedbackTab() {
               <div className="mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{f.employeeName}</span>
-                  <span className="rounded bg-sapphire/10 px-2 py-0.5 text-[10px] font-medium text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent">{f.feedbackType}</span>
-                  {f.isPrivate && <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">Private</span>}
+                  <span className="rounded bg-sapphire/10 px-2 py-0.5 text-caption font-medium text-sapphire dark:bg-sapphire/20 dark:text-cyanAccent">{valueText(t, f.feedbackType)}</span>
+                  {f.isPrivate && <span className="rounded bg-slate-100 px-2 py-0.5 text-caption font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">{t('Private')}</span>}
                 </div>
-                <span className="text-xs text-slate-400">{fmtDate(f.createdAtUtc)} · by {f.givenByName}</span>
+                <span className="text-xs text-slate-400">{t('{date} · by {name}', { date: fmtDate(f.createdAtUtc, locale), name: f.givenByName })}</span>
               </div>
               <p className="text-sm text-slate-700 dark:text-slate-300">{f.content}</p>
             </div>
@@ -1763,24 +1820,24 @@ function FeedbackTab() {
       )}
 
       {showCreate && (
-        <Modal title="Give Continuous Feedback" onClose={() => setShowCreate(false)}>
+        <Modal title={t('Give Continuous Feedback')} onClose={() => setShowCreate(false)}>
           <div className="space-y-4">
-            <Field label="Employee *">
+            <Field label={t('Employee *')}>
               <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
             </Field>
-            <Field label="Feedback Type">
-              <select title="Feedback Type" className={sel} value={form.feedbackType} onChange={e => set('feedbackType', e.target.value)}>
-                {['Commendation', 'Concern', 'Coaching', 'Developmental', 'Recognition'].map(t => <option key={t}>{t}</option>)}
+            <Field label={t('Feedback Type')}>
+              <select title={t('Feedback Type')} className={sel} value={form.feedbackType} onChange={e => set('feedbackType', e.target.value)}>
+                {['Commendation', 'Concern', 'Coaching', 'Developmental', 'Recognition'].map(k => <option key={k} value={k}>{valueText(t, k)}</option>)}
               </select>
             </Field>
-            <Field label="Feedback *"><textarea className={inp} rows={4} value={form.content} onChange={e => set('content', e.target.value)} placeholder="Share specific, constructive observations…" /></Field>
+            <Field label={t('Feedback *')}><textarea className={inp} rows={4} value={form.content} onChange={e => set('content', e.target.value)} placeholder={t('Share specific, constructive observations…')} /></Field>
             <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
               <input type="checkbox" checked={form.isPrivate} onChange={e => set('isPrivate', e.target.checked)} className="rounded" />
-              Private (only visible to you and HR)
+              {t('Private (only visible to you and HR)')}
             </label>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Submitting…' : 'Submit Feedback'}</button>
+              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Submitting…') : t('Submit Feedback')}</button>
             </div>
           </div>
         </Modal>
@@ -1793,20 +1850,21 @@ function FeedbackTab() {
 
 type Tab = PerformanceTab;
 
-const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: 'overview', label: 'Overview', icon: Activity },
-  { id: 'cycles', label: 'Cycles', icon: ClipboardList },
-  { id: 'my-reviews', label: 'My Reviews', icon: Star },
-  { id: 'team-reviews', label: 'Team Reviews', icon: Users },
-  { id: 'goals', label: 'Goals & KPIs', icon: Target },
-  { id: 'calibration', label: 'Calibration', icon: BarChart2 },
-  { id: 'recommendations', label: 'Recommendations', icon: TrendingUp },
-  { id: 'pip', label: 'PIP & Probation', icon: AlertTriangle },
-  { id: 'analytics', label: 'Analytics', icon: Zap },
-  { id: 'feedback', label: 'Feedback', icon: FileText },
+const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }> }[] = [
+  { id: 'overview', label: msg('Overview'), icon: Activity },
+  { id: 'cycles', label: msg('Cycles'), icon: ClipboardList },
+  { id: 'my-reviews', label: msg('My Reviews'), icon: Star },
+  { id: 'team-reviews', label: msg('Team Reviews'), icon: Users },
+  { id: 'goals', label: msg('Goals & KPIs'), icon: Target },
+  { id: 'calibration', label: msg('Calibration'), icon: BarChart2 },
+  { id: 'recommendations', label: msg('Recommendations'), icon: TrendingUp },
+  { id: 'pip', label: msg('PIP & Probation'), icon: AlertTriangle },
+  { id: 'analytics', label: msg('Analytics'), icon: Zap },
+  { id: 'feedback', label: msg('Feedback'), icon: FileText },
 ];
 
 export function PerformancePage({ initialTab }: { initialTab?: Tab } = {}) {
+  const { t: tr } = useLocale();
   const { hasPermission } = useAuth();
   // Each tab shows only for the keys its API calls need (lib/performanceAccess): an employee lands on their own
   // review and a line manager on their team, and neither is shown HR's calibration or tenant-wide analytics.
@@ -1821,9 +1879,9 @@ export function PerformancePage({ initialTab }: { initialTab?: Tab } = {}) {
     <div className="space-y-5 p-4 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Performance & Appraisals</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{tr('Performance & Appraisals')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            Balanced scorecard appraisals, goal management, calibration, recommendations, PIPs, and analytics.
+            {tr('Balanced scorecard appraisals, goal management, calibration, recommendations, PIPs, and analytics.')}
           </p>
         </div>
         <ModuleSettingsLink sections={['performanceScorecards']} label={msg('Performance settings')} />
@@ -1839,8 +1897,8 @@ export function PerformancePage({ initialTab }: { initialTab?: Tab } = {}) {
               onClick={() => setTab(t.id)}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${tab === t.id ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}
             >
-              <t.icon className="h-3.5 w-3.5" />
-              {t.label}
+              <t.icon className="h-3.5 w-3.5" aria-hidden="true" />
+              {tr(t.label)}
             </button>
           ))}
         </div>

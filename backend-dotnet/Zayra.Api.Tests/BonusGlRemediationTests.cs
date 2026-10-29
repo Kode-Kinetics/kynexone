@@ -105,6 +105,7 @@ public class BonusGlRemediationTests
 
     private static BonusesController Bonuses(ZayraDbContext db, Guid tid, HttpContext? http = null)
     {
+        SalaryApprovalKit.EnsureApprover(db, tid); // submitting/approving a batch needs someone else who could approve/release it
         http ??= Ctx(tid);
         return new BonusesController(db, new _FixScope())
         { ControllerContext = new ControllerContext { HttpContext = http } };

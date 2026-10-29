@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
+using Zayra.Api.Infrastructure.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -27,10 +29,11 @@ public class OnboardingController : ControllerBase
 
     [HttpGet("checklists")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Recruiter")]
-    public async Task<IActionResult> ListChecklists([FromQuery] bool activeOnly = true, CancellationToken ct = default)
+    public async Task<IActionResult> ListChecklists([FromQuery] bool activeOnly = true, [FromQuery] bool includeRemoved = false, CancellationToken ct = default)
     {
         var tid = GetTenantId();
-        var q = _db.OnboardingChecklists.Where(x => x.TenantId == tid && !x.IsDeleted);
+        // "Show turned-off" (includeRemoved with activeOnly=false) also lists checklists removed unused, so they can be restored.
+        var q = includeRemoved ? Infrastructure.Data.ScopedBypass.TenantWide(_db.OnboardingChecklists, tid, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.") : _db.OnboardingChecklists.Where(x => x.TenantId == tid);
         if (activeOnly) q = q.Where(x => x.IsActive);
 
         var items = await q.OrderBy(x => x.Name).ToListAsync(ct);
@@ -56,6 +59,46 @@ public class OnboardingController : ControllerBase
         _db.OnboardingChecklists.Add(checklist);
         await _db.SaveChangesAsync(ct);
         return Ok(checklist);
+    }
+
+    /// <summary>Setup's Remove: a checklist no onboarding task came from is deleted; one that onboardings used is turned off
+    /// (retired), so those onboardings keep their checklist, and it can be restored.</summary>
+    [HttpDelete("checklists/{checklistId:guid}")]
+    [HasPermission("recruitment.write")]
+    public async Task<IActionResult> RemoveChecklist(Guid checklistId, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var c = await _db.OnboardingChecklists.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == checklistId && !x.IsDeleted, ct);
+        if (c is null) return NotFound();
+        var usage = await SetupRemoval.MeasureAsync(this, new[] { SetupRemoval.Of<OnboardingTask>(_db, tid, "onboardingTask", "onboarding tasks", x => x.ChecklistId == checklistId) }, ct);
+        var used = usage.WideTotal;
+        if (used > 0)
+        {
+            c.IsActive = false;
+            this.RecordChange(_db, tid, null, "OnboardingChecklist", checklistId.ToString(), "TurnedOff", new { c.Code }, new { used });
+            await _db.SaveChangesAsync(ct);
+            return SetupRemoval.TurnedOff(this, usage);
+        }
+        c.IsDeleted = true; c.IsActive = false;
+        this.RecordChange(_db, tid, null, "OnboardingChecklist", checklistId.ToString(), "Deleted", new { c.Code, c.Name }, null);
+        await _db.SaveChangesAsync(ct);
+        return SetupRemoval.Deleted(this);
+    }
+
+    [HttpPost("checklists/{checklistId:guid}/restore")]
+    [HasPermission("recruitment.write")]
+    public async Task<IActionResult> RestoreChecklist(Guid checklistId, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var c = await Infrastructure.Data.ScopedBypass.TenantWide(_db.OnboardingChecklists, tid, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.").FirstOrDefaultAsync(x => x.Id == checklistId, ct);
+        if (c is null) return NotFound();
+        if (c.IsDeleted || !c.IsActive)
+        {
+            c.IsDeleted = false; c.IsActive = true;
+            this.RecordChange(_db, tid, null, "OnboardingChecklist", checklistId.ToString(), "Restored", null, new { c.Code });
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
     }
 
     [HttpGet("checklists/{checklistId:guid}/template-tasks")]

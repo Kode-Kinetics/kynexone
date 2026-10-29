@@ -1,5 +1,5 @@
 {
-  "apiBaseUrl": "http://localhost:5117",
+  "apiBaseUrl": "https://api.example-tenant.kynexone.com",
   "pollIntervalSeconds": 60,
   "cursorFile": "./.cursor.json",
   "devices": [
@@ -9,10 +9,19 @@
       "deviceKey": "knx_REPLACE_WITH_KEY_FROM_KYNEXONE",
       "mock": {
         "punches": [
-          { "employeeCode": "KNX-0001", "direction": "In",  "offsetMinutes": -480 },
-          { "employeeCode": "KNX-0001", "direction": "Out", "offsetMinutes": -5 }
+          {
+            "employeeCode": "KNX-0001",
+            "direction": "In",
+            "offsetMinutes": -480
+          },
+          {
+            "employeeCode": "KNX-0001",
+            "direction": "Out",
+            "offsetMinutes": -5
+          }
         ]
-      }
+      },
+      "signingSecret": "OPTIONAL_REPLACE_WITH_SIGNING_SECRET"
     },
     {
       "name": "Branch 2 - Turnstile",
@@ -21,7 +30,11 @@
       "csv": {
         "inboxDir": "./inbox",
         "archiveDir": "./archive",
-        "columns": { "employeeCode": 0, "timestamp": 1, "direction": 2 },
+        "columns": {
+          "employeeCode": 0,
+          "timestamp": 1,
+          "direction": 2
+        },
         "timestampFormat": "iso",
         "hasHeader": true
       }
@@ -30,7 +43,14 @@
       "name": "Branch 3 - ZKTeco Face",
       "connector": "zkteco",
       "deviceKey": "knx_REPLACE_WITH_KEY",
-      "zkteco": { "ip": "192.168.1.201", "port": 4370, "timeout": 10000 }
+      "zkteco": {
+        "ip": "192.168.1.201",
+        "port": 4370,
+        "timeout": 10000
+      },
+      "timeZone": "Asia/Riyadh"
     }
-  ]
+  ],
+  "_comment": "apiBaseUrl must be https:// (plain http only with \"allowInsecureHttp\": true on a trusted test network). Keep this file chmod 600, or supply keys via KYNEX_DEVICE_KEY_<DEVICE_NAME> / KYNEX_DEVICE_SECRET_<DEVICE_NAME> env vars.",
+  "chunkSize": 300
 }

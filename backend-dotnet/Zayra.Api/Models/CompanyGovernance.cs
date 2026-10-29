@@ -87,4 +87,7 @@ public class CompanyComplianceProfile : ITenantOwned, ICompanyScoped
     public DateTime? UpdatedAtUtc { get; set; }
     public Guid? UpdatedBy { get; set; }
     public bool IsDeleted { get; set; }
+    // What Setup's Remove changed, so Restore puts it back exactly (never silently activates or widens a profile).
+    public string? PreRemovalStatus { get; set; }
+    public bool RemovalSetEffectiveTo { get; set; }
 }

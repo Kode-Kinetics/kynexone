@@ -126,7 +126,7 @@ export function TemplateBuilder({
 
         <section>
           <div className="mb-2 flex items-center justify-between gap-2">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">{t('Drivers')}</h3>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Drivers')}</h3>
             <button type="button" className="btn-secondary" onClick={() => setDrivers((d) => [...d, { key: `driver${d.length + 1}`, labelEn: '', labelAr: '' }])}>
               <Plus className="h-4 w-4" aria-hidden="true" />{t('Add survey driver')}
             </button>
@@ -149,7 +149,7 @@ export function TemplateBuilder({
 
         <section>
           <div className="mb-2 flex items-center justify-between gap-2">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">{t('Questions')}</h3>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Questions')}</h3>
             <button type="button" className="btn-secondary" onClick={addQuestion} data-testid="template-add-question">
               <Plus className="h-4 w-4" aria-hidden="true" />{t('Add question')}
             </button>

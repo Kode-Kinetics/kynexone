@@ -134,9 +134,9 @@ public sealed class DevelopmentPlanService(ZayraDbContext db, IAuditService audi
             NextReviewOn = review, CreatedByUserId = actor.UserId, CreatedAtUtc = now, UpdatedAtUtc = now,
         };
         db.DevelopmentPlans.Add(plan);
+        audit.Stage("succession.devplan.created", nameof(DevelopmentPlan), plan.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { planId = plan.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.devplan.created", nameof(DevelopmentPlan), plan.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { planId = plan.Id }), ct);
         return await GetAsync(actor, plan.Id, ct);
     }
 
@@ -196,8 +196,8 @@ public sealed class DevelopmentPlanService(ZayraDbContext db, IAuditService audi
             action.UpdatedAtUtc = now;
             action.Version++;
         }
+        audit.Stage("succession.devplan.cancelled", nameof(DevelopmentPlan), id.ToString(), actor.Request, null);
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.devplan.cancelled", nameof(DevelopmentPlan), id.ToString(), actor.Request, null, ct);
         return await GetAsync(actor, id, ct);
     }
 
@@ -219,9 +219,9 @@ public sealed class DevelopmentPlanService(ZayraDbContext db, IAuditService audi
         plan.ReviewReminderSentFor = null;
         plan.UpdatedAtUtc = now;
         plan.Version++;
+        audit.Stage("succession.devplan.reviewed", nameof(DevelopmentPlan), id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { planId = id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.devplan.reviewed", nameof(DevelopmentPlan), id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { planId = id }), ct);
         return await GetAsync(actor, id, ct);
     }
 
@@ -266,9 +266,9 @@ public sealed class DevelopmentPlanService(ZayraDbContext db, IAuditService audi
                 break;
         }
         db.DevelopmentPlanActions.Add(action);
+        audit.Stage("succession.devplan.action_added", nameof(DevelopmentPlanAction), action.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { planId, actionId = action.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.devplan.action_added", nameof(DevelopmentPlanAction), action.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { planId, actionId = action.Id }), ct);
         return await GetAsync(actor, planId, ct);
     }
 
@@ -319,9 +319,9 @@ public sealed class DevelopmentPlanService(ZayraDbContext db, IAuditService audi
         if (input.ProgressNote is not null) action.ProgressNote = input.ProgressNote.Trim().Length <= 2000 ? input.ProgressNote.Trim() : input.ProgressNote.Trim()[..2000];
         action.UpdatedAtUtc = clock.GetUtcNow().UtcDateTime;
         action.Version++;
+        audit.Stage(input.ProposeCompletion == true ? "succession.devplan.completion_proposed" : "succession.devplan.action_updated",
+            nameof(DevelopmentPlanAction), action.Id.ToString(), request, JsonSerializer.Serialize(new { planId = action.PlanId, actionId = action.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync(input.ProposeCompletion == true ? "succession.devplan.completion_proposed" : "succession.devplan.action_updated",
-            nameof(DevelopmentPlanAction), action.Id.ToString(), request, JsonSerializer.Serialize(new { planId = action.PlanId, actionId = action.Id }), ct);
         return await MineAsync(tenantId, employeeId, ct);
     }
 
@@ -374,9 +374,9 @@ public sealed class DevelopmentPlanService(ZayraDbContext db, IAuditService audi
         }
         action.UpdatedAtUtc = clock.GetUtcNow().UtcDateTime;
         action.Version++;
+        audit.Stage("succession.devplan.action_updated", nameof(DevelopmentPlanAction), action.Id.ToString(), request,
+            JsonSerializer.Serialize(new { planId = action.PlanId, actionId = action.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.devplan.action_updated", nameof(DevelopmentPlanAction), action.Id.ToString(), request,
-            JsonSerializer.Serialize(new { planId = action.PlanId, actionId = action.Id }), ct);
     }
 
     // ── Linked completion (SUC-04) ──────────────────────────────────────────────────────────────────────────────

@@ -23,12 +23,12 @@ export function Composition({ data }: { data: DashboardFull }) {
   return (
     <section aria-labelledby="comp-heading" className="wg-card flex min-w-0 flex-col gap-3 p-5">
       <header>
-        <h2 id="comp-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Headcount by department')}</h2>
+        <h2 id="comp-heading" className="text-body font-semibold text-slate-900 dark:text-white">{t('Headcount by department')}</h2>
         <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">{t('{count, plural, one {# active employee} other {# active employees}} across {departments, plural, one {# department} other {# departments}}, now', { count: s.activeEmployees, departments: depts.length })}</p>
       </header>
 
       {depts.length === 0 ? (
-        <p className="text-[13px] text-slate-700 dark:text-slate-300">{t('No active employees yet.')}</p>
+        <p className="text-body-sm text-slate-700 dark:text-slate-300">{t('No active employees yet.')}</p>
       ) : (
         <div className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)_2.25rem] items-start gap-x-3">
           <ul className="flex flex-col">{depts.map((d) => <li key={d.name} className="flex h-[22px] items-center truncate text-xs text-slate-800 dark:text-slate-200">{d.name}</li>)}</ul>
@@ -42,17 +42,17 @@ export function Composition({ data }: { data: DashboardFull }) {
         <div className="mt-auto flex flex-wrap items-center gap-4 rounded-xl border border-[color:var(--wg-line)] bg-[color:var(--wg-surface-2)] p-4">
           <Ring3D a={mix[0].value} b={mixTotal - mix[0].value} center={f.percent((mix[0].value / mixTotal) * 100)} sub={mix[0].name.toLowerCase()}
             label={`${t('Employment type')}: ${mix.map((m) => `${m.name} ${m.value}`).join(', ')}`} />
-          <ul className="flex min-w-[140px] flex-1 flex-col gap-1.5 text-[13px]">
+          <ul className="flex min-w-[140px] flex-1 flex-col gap-1.5 text-body-sm">
             {mix.slice(0, 4).map((m, i) => (
               <li key={m.name} className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
-                <span aria-hidden className={`h-2.5 w-2.5 rounded-sm ${i === 0 ? 'bg-[color:var(--viz-ring-a)]' : 'bg-[color:var(--viz-ring-b-side)]'}`} />
+                <span aria-hidden className={`h-2.5 w-2.5 rounded ${i === 0 ? 'bg-[color:var(--viz-ring-a)]' : 'bg-[color:var(--viz-ring-b-side)]'}`} />
                 {m.name}<b className="ms-auto tabular-nums text-slate-900 dark:text-white">{m.value}</b>
               </li>
             ))}
           </ul>
         </div>
       ) : mix.length === 1 ? (
-        <p className="mt-auto text-[13px] text-slate-700 dark:text-slate-300">{t('All {count} active employees are {type}.', { count: mixTotal, type: mix[0].name.toLowerCase() })}</p>
+        <p className="mt-auto text-body-sm text-slate-700 dark:text-slate-300">{t('All {count} active employees are {type}.', { count: mixTotal, type: mix[0].name.toLowerCase() })}</p>
       ) : null}
     </section>
   );

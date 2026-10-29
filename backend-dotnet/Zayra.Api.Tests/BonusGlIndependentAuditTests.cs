@@ -113,6 +113,7 @@ public class BonusGlIndependentAuditTests
 
     private static BonusesController Bonuses(ZayraDbContext db, Guid tid)
     {
+        SalaryApprovalKit.EnsureApprover(db, tid); // submitting/approving a batch needs someone else who could approve/release it
         var http = Ctx(tid);
         return new BonusesController(db, new _AudScope())
         { ControllerContext = new ControllerContext { HttpContext = http } };

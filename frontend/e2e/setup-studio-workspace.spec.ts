@@ -6,12 +6,10 @@ import { openSetupSection, setupSection } from './setupSections';
 const task5Evidence = (name: string) => path.resolve(__dirname, '../../docs/evidence/setup-studio-task5', name);
 
 const areas = [
-  ['organization', 'Organization and core HR'], ['recruitment', 'Recruitment'],
-  ['onboarding', 'Onboarding and confirmation'], ['time', 'Time and attendance'],
-  ['leave', 'Leave and absence'], ['compensation', 'Compensation and benefits'],
-  ['payroll', 'Payroll'], ['performance', 'Performance and talent'],
-  ['learning', 'Learning and development'], ['services', 'Employee services and relations'],
-  ['offboarding', 'Offboarding and settlement'], ['compliance', 'Compliance and statutory administration'],
+  ['companyStructure', 'Company structure'], ['jobsHeadcount', 'Jobs & headcount'],
+  ['timeLeave', 'Time & leave'], ['payBenefits', 'Pay & benefits'],
+  ['talentServices', 'Talent & employee services'], ['payrollCompliance', 'Payroll & compliance'],
+  ['accessSecurity', 'Users & access'], ['workspace', 'Workspace'],
 ];
 
 const browserErrors = new WeakMap<Page, string[]>();
@@ -51,6 +49,7 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
     if (path === '/api/country-packs/available') return reply([]);
     if (path === '/api/reference/countries') return reply([{ code: 'SA', name: 'Saudi Arabia' }]);
     if (path === '/api/admin/system-settings') return reply([]);
+    if (path === '/api/admin/locations') return reply([]);
     if (path === '/api/admin/master-data/types') return reply([]);
     if (path === '/api/finance/gl/accounts' || path === '/api/finance/gl/mappings') return reply([]);
     if (path === '/api/dashboard/full') return route.fulfill({ status: 503, json: { message: 'Dashboard fixture unavailable' } });
@@ -232,7 +231,8 @@ test('manual_leave_edit_uses_existing_put', async ({ page }, info) => {
   const request = page.waitForRequest(request => request.method() === 'PUT' && new URL(request.url()).pathname === '/api/leave/policies/existing-policy');
   await dialog.getByRole('button', { name: 'Save Changes' }).click();
   expect((await request).postDataJSON()).toMatchObject({ name: 'Saved annual policy', annualEntitlementDays: 30, leaveTypeId: 'annual-type' });
-  expect(writes).toEqual(['/api/leave/policies/existing-policy']);
+  // The statutory floor-check is a non-mutating POST preflight; the existing policy still saves through its PUT endpoint.
+  expect(writes).toEqual(['/api/leave/policies/floor-check', '/api/leave/policies/existing-policy']);
 });
 
 // These fixtures intercept every API call. Saved/read-back assertions prove the
@@ -327,7 +327,7 @@ test('forged_area_or_return_path_is_ignored', async ({ page }) => {
   // The overview is named by the section header; it has no area heading of its own.
   await expect(page.getByRole('heading', { level: 2, name: 'All setup areas', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
-  await selectArea(page, 'Leave and absence');
+  await selectArea(page, 'Time & leave');
   await page.getByTestId('setup-area-content').getByRole('link', { name: 'Leave requests and balances', exact: true }).click();
   await expect(page).toHaveURL(/^https?:\/\/[^/]+\/leave\?/);
   expect(writes).toEqual([]);
@@ -436,12 +436,16 @@ for (const failCurrent of [false, true]) {
     if (!failCurrent) await expect(page.getByRole('dialog').getByRole('option', { name: 'Current scope value', exact: true })).toBeAttached();
     await page.keyboard.press('Escape');
     // Select another existing form without reloading SetupPage or refetching the references.
-    await page.getByRole('button', { name: 'Next: Departments', exact: true }).first().click();
+    // Company structure runs Branches, Locations, Cost centres, Departments: step to Departments without reloading.
+    for (const next of ['Locations', 'Cost centres', 'Departments']) {
+      await page.getByRole('button', { name: `Next: ${next}`, exact: true }).first().click();
+    }
     await page.getByRole('button', { name: 'Add Department', exact: true }).click();
     await expect(page.getByRole('dialog').getByRole('option', { name: 'STALE scope value', exact: true })).toHaveCount(0);
     if (!failCurrent) await expect(page.getByRole('dialog').getByRole('option', { name: 'Current scope value', exact: true })).toBeAttached();
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'Next: Designations', exact: true }).first().click();
+    // Designations is the next area's section (Jobs & headcount), reached through the persistent Setup sections list.
+    await openSetupSection(page, 'Designations');
     await page.getByRole('button', { name: 'Add Designation', exact: true }).click();
     await expect(page.getByRole('dialog').getByRole('option', { name: /STALE scope value/ })).toHaveCount(0);
     if (!failCurrent) await expect(page.getByRole('dialog').getByRole('option', { name: /Current scope value/ })).toBeAttached();
@@ -604,7 +608,7 @@ test('unsaved_template_blocks_area_and_company_switch_when_declined', async ({ p
   await boot(page, { group: true, area: 'onboarding', setting: 'onboardingChecklists' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep this draft');
   const guard = trackLeaveGuard(page);
-  await selectArea(page, 'Payroll');
+  await selectArea(page, 'Payroll & compliance');
   await guard.stay();
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep this draft');
   // Cancelling the guard keeps the user where they were: in the still-open area navigator.
@@ -624,7 +628,7 @@ test('transitional_route_has_supported_return_to_selected_area', async ({ page }
   await boot(page, { area: 'leave' });
   await page.getByTestId('setup-area-content').getByRole('link', { name: 'Leave requests and balances', exact: true }).click();
   await page.getByRole('link', { name: 'Back to All setup areas', exact: true }).click();
-  await expect(page).toHaveURL(/area=leave/);
+  await expect(page).toHaveURL(/area=timeLeave/);
   await expect(page).toHaveURL(/path=configuration/);
   await expect(page).toHaveURL(/companyId=fixture-company/);
 });
@@ -677,7 +681,7 @@ test('setup_studio_canonicalisation_never_rewrites_another_setup_section', async
   // Older section URLs carried the Studio area. That area is not a Studio deep link: canonicalising it must not
   // turn the section back into All setup areas.
   for (const [url, heading] of [
-    ['/setup?tab=policyLibrary&area=leave&companyId=fixture-company', 'Policy library'],
+    ['/setup?tab=policyLibrary&area=timeLeave&companyId=fixture-company', 'Policy library'],
     ['/setup?tab=grades&area=overview&companyId=fixture-company', 'Grades'],
   ] as const) {
     await page.goto(url);
@@ -704,7 +708,7 @@ test('return_from_library_preserves_company_and_opens_the_overview', async ({ pa
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
   await openSetupSection(page, 'All setup areas');
   await expect(page).toHaveURL(/path=configuration/);
-  await expect(page).not.toHaveURL(/area=leave/);
+  await expect(page).not.toHaveURL(/area=timeLeave/);
   await expect(page).toHaveURL(/companyId=second-company/);
   await expect(page.getByTestId('setup-studio-workspace')).toContainText('Second Fixture LLC');
   expect(writes).toEqual([]);
@@ -712,8 +716,8 @@ test('return_from_library_preserves_company_and_opens_the_overview', async ({ pa
 
 test('cancel_return_keeps_dirty_edits_on_back_forward_and_sidebar', async ({ page }) => {
   await boot(page, { area: 'payroll' });
-  await selectArea(page, 'Onboarding and confirmation');
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Onboarding and confirmation', exact: true })).toBeVisible();
+  await selectArea(page, 'Talent & employee services');
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Talent & employee services', exact: true })).toBeVisible();
   await page.getByTestId('setup-area-content').getByRole('button', { name: 'Onboarding checklists', exact: true }).click();
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep history draft');
   const guard = trackLeaveGuard(page);
@@ -739,7 +743,7 @@ test('manual_areas_do_not_claim_document_prefill', async ({ page }) => {
   const { writes } = await boot(page, { area: 'leave' });
   await expect(page.getByTestId('setup-area-content')).toContainText('Enter and maintain this area manually');
   await expect(page.getByRole('button', { name: 'Fill from document', exact: true })).toHaveCount(0);
-  await selectArea(page, 'Onboarding and confirmation');
+  await selectArea(page, 'Talent & employee services');
   await expect(page.getByTestId('setup-area-content')).toContainText('Enter and maintain this area manually');
   expect(writes).toEqual([]);
 });
@@ -747,8 +751,8 @@ test('manual_areas_do_not_claim_document_prefill', async ({ page }) => {
 for (const fallback of [false, true]) test(`${fallback ? 'fallback_' : ''}declined_forward_keeps_editor_and_url`, async ({ page }) => {
   if (fallback) await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined, configurable: true }));
   await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
-  await selectArea(page, 'Payroll');
-  await expect(page).toHaveURL(/area=payroll/);
+  await selectArea(page, 'Payroll & compliance');
+  await expect(page).toHaveURL(/area=payrollCompliance/);
   await page.evaluate(() => history.back());
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep forward draft');
   const originalUrl = page.url();
@@ -763,8 +767,8 @@ for (const fallback of [false, true]) test(`${fallback ? 'fallback_' : ''}declin
 test('history_fallback_decline_retains_actual_editor', async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(window, 'navigation', { value: undefined, configurable: true }));
   await boot(page, { area: 'payroll', authDelay: 150 });
-  await selectArea(page, 'Onboarding and confirmation');
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Onboarding and confirmation', exact: true })).toBeVisible();
+  await selectArea(page, 'Talent & employee services');
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Talent & employee services', exact: true })).toBeVisible();
   await page.getByTestId('setup-area-content').getByRole('button', { name: 'Onboarding checklists', exact: true }).click();
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep fallback draft');
   const originalUrl = page.url();
@@ -880,7 +884,7 @@ test('forged_company_configuration_is_fail_closed_until_explicit_recovery', asyn
   page.on('request', request => {
     if (request.method() === 'GET' && request.frame().url().includes('companyId=forged-company')) forgedReads.push(new URL(request.url()).pathname);
   });
-  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=forged-company&area=leave&setting=leavePolicies');
+  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=forged-company&area=timeLeave&setting=leavePolicies');
   await expect(page.getByRole('alert').getByRole('heading', { name: 'Company access required', exact: true })).toBeVisible();
   await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'New Policy', exact: true })).toHaveCount(0);
@@ -902,8 +906,8 @@ test('canonical_save_clears_dirty_navigation_state', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const guard = trackLeaveGuard(page);
-  await selectArea(page, 'Payroll');
-  await expect(page).toHaveURL(/area=payroll/);
+  await selectArea(page, 'Payroll & compliance');
+  await expect(page).toHaveURL(/area=payrollCompliance/);
   await guard.expectShown(0);
 });
 
@@ -960,13 +964,13 @@ for (const direct of [true] as const) test(`${direct ? 'direct' : 'embedded'}_sa
   await expect(page).toHaveURL(originalUrl);
   await expect(field).toHaveValue('Retain same destination draft');
   await guard.expectShown(0);
-  const depart = () => direct ? openSetupSection(page, 'Policy library') : selectArea(page, 'Payroll');
+  const depart = () => direct ? openSetupSection(page, 'Policy library') : selectArea(page, 'Payroll & compliance');
   await depart();
   await guard.stay();
   await expect(field).toHaveValue('Retain same destination draft');
   await depart();
   await guard.leave();
-  await expect(page).toHaveURL(direct ? /tab=policyLibrary/ : /area=payroll/);
+  await expect(page).toHaveURL(direct ? /tab=policyLibrary/ : /area=payrollCompliance/);
   await guard.expectShown(2);
 });
 
@@ -1083,27 +1087,37 @@ test('gl_group_statutory_country_browsing_is_not_authored_work', async ({ page }
 
 test('url_back_restores_area', async ({ page }) => {
   await boot(page, { area: 'leave' });
-  await selectArea(page, 'Payroll');
-  await expect(page).toHaveURL(/area=payroll/);
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Payroll', exact: true })).toBeVisible();
+  await selectArea(page, 'Payroll & compliance');
+  await expect(page).toHaveURL(/area=payrollCompliance/);
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Payroll & compliance', exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Leave and absence', exact: true })).toBeVisible();
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Time & leave', exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Leave and absence', exact: true })).toBeVisible();
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Time & leave', exact: true })).toBeVisible();
 });
 
 test('feature_unavailable_does_not_mount_editor', async ({ page }) => {
   const { writes, reads } = await boot(page, { disabled: true, area: 'learning' });
   const content = page.getByTestId('setup-area-content');
   await expect(content.getByText('Not enabled for this tenant', { exact: true })).toBeVisible();
-  await expect(page.getByTestId('setup-area-blueprint').getByRole('link')).toHaveCount(0);
+  // Talent & employee services also holds settings that are not behind the Learning switch (Notifications, Performance
+  // cycles), so the guarantee is per destination: the Learning row is explained and is neither a link nor a button.
+  const blueprint = page.getByTestId('setup-area-blueprint');
+  const learning = blueprint.getByRole('listitem').filter({ hasText: 'Learning catalogue and rules' });
+  await expect(learning).toContainText('Not enabled for this tenant');
+  await expect(learning.getByRole('link')).toHaveCount(0);
+  await expect(learning.getByRole('button')).toHaveCount(0);
+  await expect(blueprint.locator('a[href*="/learning"]')).toHaveCount(0);
   expect(reads.filter(path => path.startsWith('/api/learning'))).toEqual([]);
   expect(writes).toEqual([]);
 });
 
 test('restricted_destination_explains_access_without_mounting_editor', async ({ page }) => {
   await boot(page, { restricted: true, area: 'learning' });
-  await expect(page.getByTestId('setup-area-content').getByText('Your role does not have access', { exact: true })).toBeVisible();
+  // Several destinations of the area say so; the Learning one is the row this contract is about.
+  const learning = page.getByTestId('setup-area-blueprint').getByRole('listitem').filter({ hasText: 'Learning catalogue and rules' });
+  await expect(learning).toContainText('Your role does not have access');
+  await expect(learning.getByRole('button')).toHaveCount(0);
   // No destination link (the breadcrumb back to All setup areas is navigation, not a destination).
   await expect(page.getByTestId('setup-area-blueprint').getByRole('link')).toHaveCount(0);
 });
@@ -1156,8 +1170,8 @@ test('desktop_configuration_keeps_one_left_navigation_with_areas_and_in_this_are
   await browse.click();
   const areaList = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true }).getByRole('navigation', { name: 'Setup areas' });
   for (const [, label] of areas) await expect(areaList.getByRole('button', { name: label, exact: true })).toBeVisible();
-  await areaList.getByRole('button', { name: 'Leave and absence', exact: true }).click();
-  await expect(page.getByRole('heading', { level: 2, name: 'Leave and absence', exact: true })).toBeFocused();
+  await areaList.getByRole('button', { name: 'Time & leave', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Time & leave', exact: true })).toBeFocused();
   await expect(nextActions).toContainText('Leave types');
   await nextActions.getByRole('button', { name: /^Leave types/ }).click();
   await expect(page.getByRole('heading', { level: 2, name: 'Leave types', exact: true })).toBeFocused();
@@ -1170,15 +1184,15 @@ test('keyboard_and_mobile_area_navigation', async ({ page }, testInfo) => {
   await boot(page);
   // The overview lists every area as a link; "Browse all areas" is offered only once an area is open.
   await expect(page.getByRole('button', { name: 'Browse all areas', exact: true })).toHaveCount(0);
-  const row = page.getByTestId('setup-area-content').getByRole('link', { name: /^Onboarding and confirmation/ });
+  const row = page.getByTestId('setup-area-content').getByRole('link', { name: /^Talent & employee services/ });
   await row.focus(); await page.keyboard.press('Enter');
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Onboarding and confirmation', exact: true })).toBeFocused();
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Talent & employee services', exact: true })).toBeFocused();
   const disclosure = page.getByRole('button', { name: 'Browse all areas', exact: true });
   await disclosure.focus(); await page.keyboard.press('Enter');
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
-  const target = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true }).getByRole('button', { name: 'Leave and absence', exact: true });
+  const target = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true }).getByRole('button', { name: 'Time & leave', exact: true });
   await target.focus(); await page.keyboard.press('Enter');
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Leave and absence', exact: true })).toBeVisible();
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Time & leave', exact: true })).toBeVisible();
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: `/tmp/setup-studio-${testInfo.project.name}.png`, fullPage: true });
@@ -1187,8 +1201,9 @@ test('keyboard_and_mobile_area_navigation', async ({ page }, testInfo) => {
 test('arabic_rtl_keeps_named_areas_and_scope_readable', async ({ page }, testInfo) => {
   await boot(page, { arabic: true, area: 'onboarding' });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-  await expect(page.getByTestId('setup-area-content').getByRole('heading', { level: 2, name: 'تهيئة الموظفين والتثبيت', exact: true })).toBeVisible();
-  await expect(page.getByTestId('setup-area-content').getByText('ينطبق على جميع الشركات', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('setup-area-content').getByRole('heading', { level: 2, name: 'المواهب وخدمات الموظفين', exact: true })).toBeVisible();
+  // Several settings of the area are tenant-wide, so the scope is read from one named destination (Notifications).
+  await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'الإشعارات' })).toContainText('ينطبق على جميع الشركات');
   await expect(page.getByTestId('setup-area-content').getByRole('navigation', { name: 'مسار التنقل' })).toContainText('كل مجالات الإعداد');
   if (testInfo.project.name === 'desktop') {
     await expect(page.getByRole('complementary', { name: 'في هذا المجال' })).toBeVisible();
@@ -1203,15 +1218,15 @@ test('group_company_switch_updates_scope_and_next_area_without_reset', async ({ 
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
   await expect(page.getByTestId('setup-studio-workspace').getByText('Second Fixture LLC', { exact: true })).toBeVisible();
-  await selectArea(page, 'Leave and absence');
+  await selectArea(page, 'Time & leave');
   await expect(page).toHaveURL(/companyId=second-company/);
   await expect(page.getByTestId('company-switcher').getByRole('button')).toContainText('second-company');
-  await expect(page.getByTestId('setup-area-content').getByRole('link', { name: 'Leave requests and balances', exact: true })).toHaveAttribute('href', '/leave?companyId=second-company&setupArea=leave');
+  await expect(page.getByTestId('setup-area-content').getByRole('link', { name: 'Leave requests and balances', exact: true })).toHaveAttribute('href', '/leave?companyId=second-company&setupArea=timeLeave');
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: 'All companies', exact: true }).click();
   await expect(page.getByTestId('setup-studio-workspace').getByText('All authorized companies', { exact: true })).toBeVisible();
-  await selectArea(page, 'Payroll');
-  await expect(page).toHaveURL(/area=payroll/);
+  await selectArea(page, 'Payroll & compliance');
+  await expect(page).toHaveURL(/area=payrollCompliance/);
   expect(new URL(page.url()).searchParams.has('companyId')).toBe(false);
   expect(writes).toEqual([]);
 });
@@ -1222,19 +1237,19 @@ test('history_back_to_absent_company_restores_all_companies_scope', async ({ pag
   await page.getByRole('menuitem', { name: 'All companies', exact: true }).click();
   await expect(page).not.toHaveURL(/companyId=/);
   await expect(page.getByTestId('setup-studio-workspace').getByText('All authorized companies', { exact: true })).toBeVisible();
-  await selectArea(page, 'Leave and absence');
-  await expect(page).toHaveURL(/area=leave/);
+  await selectArea(page, 'Time & leave');
+  await expect(page).toHaveURL(/area=timeLeave/);
   await page.getByTestId('company-switcher').getByRole('button').click();
   await page.getByRole('menuitem', { name: /Second Fixture LLC/ }).click();
   await expect(page).toHaveURL(/companyId=second-company/);
   await page.goBack();
   await expect(page.locator('#setup-section-heading')).toHaveText('All setup areas');
-  await expect(page.getByTestId('setup-area-content').getByRole('link', { name: /^Leave and absence/ })).toBeVisible();
+  await expect(page.getByTestId('setup-area-content').getByRole('link', { name: /^Time & leave/ })).toBeVisible();
   await expect(page.getByTestId('setup-studio-workspace').getByText('All authorized companies', { exact: true })).toBeVisible();
   await expect(page.getByTestId('company-switcher').getByRole('button')).toContainText('All companies');
   await expect(page).not.toHaveURL(/companyId=/);
-  await selectArea(page, 'Leave and absence');
-  await expect(page.getByTestId('setup-area-content').getByRole('link', { name: 'Leave requests and balances', exact: true })).toHaveAttribute('href', '/leave?setupArea=leave');
+  await selectArea(page, 'Time & leave');
+  await expect(page.getByTestId('setup-area-content').getByRole('link', { name: 'Leave requests and balances', exact: true })).toHaveAttribute('href', '/leave?setupArea=timeLeave');
   expect(writes).toEqual([]);
 });
 
@@ -1274,7 +1289,8 @@ test('whole_destination_row_is_action', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Open settings', exact: true })).toHaveCount(0);
   await destination.click();
 
-  await expect(page).toHaveURL(/area=organization&setting=companies/);
+  await expect(page).toHaveURL(/[?&]area=companyStructure(&|$)/);
+  await expect(page).toHaveURL(/[?&]setting=companies(&|$)/);
   await expect(page.getByRole('heading', { level: 2, name: 'Companies', exact: true })).toBeVisible();
   expect(writes).toEqual([]);
 });
@@ -1309,7 +1325,8 @@ test('focused_form_replaces_area_canvas', async ({ page }) => {
 });
 
 test('focused_form_opens_at_heading_without_manual_scroll', async ({ page }) => {
-  await boot(page, { area: 'organization' });
+  // Drop-down lists belong to the Workspace area (one taxonomy: the area is the navigation group).
+  await boot(page, { area: 'workspace' });
   const destination = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Drop-down lists', exact: true });
   await destination.scrollIntoViewIfNeeded();
   await destination.click();
@@ -1323,7 +1340,7 @@ test('focused_form_opens_at_heading_without_manual_scroll', async ({ page }) => 
 });
 
 test('back_restores_origin_focus_and_scroll', async ({ page }) => {
-  await boot(page, { area: 'organization' });
+  await boot(page, { area: 'workspace' });
   const destination = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Drop-down lists', exact: true });
   await destination.evaluate((element: HTMLButtonElement) => {
     element.focus();
@@ -1332,8 +1349,8 @@ test('back_restores_origin_focus_and_scroll', async ({ page }) => {
   });
 
   await expect(page.getByRole('heading', { level: 2, name: 'Drop-down lists', exact: true })).toBeFocused();
-  await page.getByRole('button', { name: 'Back to Organization and core HR', exact: true }).first().click();
-  await expect(page.getByRole('heading', { level: 2, name: 'Organization and core HR', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to Workspace', exact: true }).first().click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Workspace', exact: true })).toBeVisible();
   await expect(destination).toBeFocused();
   await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBeGreaterThan(300);
 });
@@ -1341,11 +1358,12 @@ test('back_restores_origin_focus_and_scroll', async ({ page }) => {
 test('back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll', async ({ page }) => {
   await boot(page, { area: 'organization' });
   for (const adjacent of [
-    { control: 'Previous: Branches', destination: 'Branches' },
-    { control: 'Next: Designations', destination: 'Designations' },
+    { control: 'Previous: Locations', destination: 'Locations' },
+    { control: 'Next: Departments', destination: 'Departments' },
   ]) {
-    const departments = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Departments', exact: true });
-    const recordedScroll = await departments.evaluate((element: HTMLButtonElement) => {
+    // Cost centres sits between Locations and Departments in Company structure, so it has both neighbours.
+    const costCentres = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Cost centres', exact: true });
+    const recordedScroll = await costCentres.evaluate((element: HTMLButtonElement) => {
       window.scrollTo({ top: 420, behavior: 'auto' });
       const scrollY = window.scrollY;
       element.click();
@@ -1354,9 +1372,9 @@ test('back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll
 
     await page.getByRole('button', { name: adjacent.control, exact: true }).first().click();
     await expect(page.getByRole('heading', { level: 2, name: adjacent.destination, exact: true })).toBeFocused();
-    await page.getByRole('button', { name: 'Back to Organization and core HR', exact: true }).first().click();
+    await page.getByRole('button', { name: 'Back to Company structure', exact: true }).first().click();
 
-    // The persistent Setup sections nav also lists Branches; the restored row is the area blueprint's.
+    // The persistent Setup sections nav also lists these sections; the restored row is the area blueprint's.
     await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: adjacent.destination, exact: true })).toBeFocused();
     await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(recordedScroll);
   }
@@ -1364,35 +1382,37 @@ test('back_after_previous_or_next_restores_current_row_focus_and_recorded_scroll
 
 test('browser_back_forward_restores_matching_row_focus_and_scroll', async ({ page }) => {
   await boot(page, { area: 'organization' });
-  const departments = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Departments', exact: true });
-  const recordedScroll = await departments.evaluate((element: HTMLButtonElement) => {
+  // Cost centres has both neighbours in Company structure; Departments is its Next.
+  const costCentres = page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Cost centres', exact: true });
+  const recordedScroll = await costCentres.evaluate((element: HTMLButtonElement) => {
     window.scrollTo({ top: 420, behavior: 'auto' });
     const scrollY = window.scrollY;
     element.click();
     return scrollY;
   });
-  await page.getByRole('button', { name: 'Next: Designations', exact: true }).first().click();
-  await expect(page.getByRole('heading', { level: 2, name: 'Designations', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Next: Departments', exact: true }).first().click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeFocused();
 
   await page.goBack();
-  await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeFocused();
+  await expect(page.getByRole('heading', { level: 2, name: 'Cost centres', exact: true })).toBeFocused();
   await page.goBack();
-  await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Departments', exact: true })).toBeFocused();
+  await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'Cost centres', exact: true })).toBeFocused();
   await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(recordedScroll);
 
   await page.goForward();
-  await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeFocused();
+  await expect(page.getByRole('heading', { level: 2, name: 'Cost centres', exact: true })).toBeFocused();
   await page.goForward();
-  await expect(page.getByRole('heading', { level: 2, name: 'Designations', exact: true })).toBeFocused();
+  await expect(page.getByRole('heading', { level: 2, name: 'Departments', exact: true })).toBeFocused();
 });
 
 test('previous_next_are_available_above_and_below_long_form', async ({ page }) => {
-  await boot(page, { area: 'organization', setting: 'departments' });
+  // Departments is the last Company structure setting, so a section with both neighbours is Cost centres.
+  await boot(page, { area: 'organization', setting: 'costCenters' });
 
   for (const position of ['top', 'bottom']) {
     const navigation = page.getByTestId(`focused-navigation-${position}`);
-    await expect(navigation.getByRole('button', { name: 'Previous: Branches', exact: true })).toBeVisible();
-    await expect(navigation.getByRole('button', { name: 'Next: Designations', exact: true })).toBeVisible();
+    await expect(navigation.getByRole('button', { name: 'Previous: Locations', exact: true })).toBeVisible();
+    await expect(navigation.getByRole('button', { name: 'Next: Departments', exact: true })).toBeVisible();
   }
 });
 
@@ -1502,8 +1522,9 @@ test('section_view_permission_loss_on_focus_unmounts_the_editor_and_says_why', a
   reads.length = 0;
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(editor).toHaveCount(0);
-  await expect(page.locator('#setup-section-heading')).toHaveText('Leave policies');
-  await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
+  // Setup rollout: a section the person can no longer open lands on their first available section, with a note saying why.
+  await expect(page.locator('#setup-section-heading')).toHaveText('Companies');
+  await expect(page.getByTestId('setup-section-redirected')).toHaveText('You cannot open Leave policies, so this is the first section available to you.');
   await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
 });
@@ -1534,7 +1555,8 @@ test('section_view_protected_403_revalidates_and_unmounts_the_editor', async ({ 
   reads.length = 0;
   await dialog.getByRole('button', { name: 'Save Changes', exact: true }).click();
   await expect(editor).toHaveCount(0);
-  await expect(page.getByRole('status').getByText('Your role does not have access', { exact: true })).toBeVisible();
+  await expect(page.locator('#setup-section-heading')).toHaveText('Companies');
+  await expect(page.getByTestId('setup-section-redirected')).toHaveText('You cannot open Leave policies, so this is the first section available to you.');
   await expect.poll(() => reads.filter(path => path === '/api/auth/me').length).toBe(1);
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
 });
@@ -1814,7 +1836,8 @@ for (const locale of [{ name: 'en', arabic: false }, { name: 'ar', arabic: true 
 }
 
 test('tenant_setting_says_applies_to_all_companies', async ({ page }) => {
-  await boot(page, { area: 'organization', setting: 'departments' });
+  // Departments are company-owned since the org catalog became per company; Drop-down lists stay tenant-wide.
+  await boot(page, { area: 'workspace', setting: 'masterData' });
 
   await expect(page.getByTestId('setup-focused-workspace').getByText('Applies to all companies', { exact: true })).toBeVisible();
   await expect(page.getByTestId('setup-focused-workspace').getByText('Company scope', { exact: true })).toHaveCount(0);
@@ -1862,7 +1885,7 @@ test('mobile_focused_navigation_controls_are_44px_touch_targets', async ({ page 
   await boot(page, { area: 'organization', setting: 'departments' });
 
   const controls = [
-    page.getByRole('button', { name: 'Back to Organization and core HR', exact: true }).first(),
+    page.getByRole('button', { name: 'Back to Company structure', exact: true }).first(),
     page.getByRole('button', { name: 'Previous: Branches', exact: true }).first(),
     page.getByRole('button', { name: 'Next: Designations', exact: true }).first(),
     page.getByRole('button', { name: 'Browse all areas', exact: true }),
@@ -1890,7 +1913,8 @@ test('navigator_contains_focus_closes_with_escape_and_restores_trigger', async (
   await expect(dialog.getByRole('heading', { name: 'Browse all setup areas', exact: true })).toBeFocused();
 
   await page.keyboard.press('Shift+Tab');
-  await expect(dialog.getByRole('button', { name: 'Compliance and statutory administration', exact: true })).toBeFocused();
+  // Workspace is the last area of the one taxonomy, so it is the last tab stop before the dialog wraps.
+  await expect(dialog.getByRole('button', { name: 'Workspace', exact: true })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
   await page.keyboard.press('Escape');
@@ -1902,14 +1926,14 @@ test('area_selection_focuses_area_heading', async ({ page }) => {
   await boot(page, { area: 'organization' });
   await page.getByRole('button', { name: 'Browse all areas', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Browse all setup areas', exact: true });
-  await dialog.getByRole('button', { name: 'Payroll', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Payroll & compliance', exact: true }).click();
 
-  await expect(page).toHaveURL(/area=payroll/);
-  await expect(page.getByRole('heading', { level: 2, name: 'Payroll', exact: true })).toBeFocused();
+  await expect(page).toHaveURL(/area=payrollCompliance/);
+  await expect(page.getByRole('heading', { level: 2, name: 'Payroll & compliance', exact: true })).toBeFocused();
 });
 
 test('arabic_uses_the_drop_down_lists_name', async ({ page }) => {
-  await boot(page, { arabic: true, area: 'organization' });
+  await boot(page, { arabic: true, area: 'workspace' });
 
   // The persistent Setup sections nav also lists this setting; the area row is the destination under test.
   await expect(page.getByTestId('setup-area-blueprint').getByRole('button', { name: 'القوائم المنسدلة', exact: true })).toBeVisible();
@@ -1930,7 +1954,7 @@ test('english_and_arabic_paths_have_no_serious_or_critical_axe_findings', async 
   ] as const;
 
   for (const { locale, target, direction, referenceLists } of locales) {
-    await target.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&source=retained&area=organization');
+    await target.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&source=retained&area=workspace');
     await expect(target.getByTestId('setup-studio-workspace')).toBeVisible();
     await expect(target.locator('html')).toHaveAttribute('dir', direction);
     await expect(target.getByTestId('setup-area-blueprint').getByRole('button', { name: referenceLists, exact: true })).toBeVisible();
@@ -1945,13 +1969,13 @@ test('english_and_arabic_paths_have_no_serious_or_critical_axe_findings', async 
 
 test('mobile_390_and_320_have_no_page_overflow', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const { writes } = await boot(page, { area: 'organization', setting: 'departments' });
+  const { writes } = await boot(page, { area: 'organization', setting: 'costCenters' });
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 720 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
     const navigation = page.getByTestId('focused-navigation-top');
-    await expect(navigation.getByRole('button', { name: 'Back to Organization and core HR', exact: true })).toBeVisible();
-    await expect(navigation.getByRole('button', { name: 'Next: Designations', exact: true })).toBeVisible();
+    await expect(navigation.getByRole('button', { name: 'Back to Company structure', exact: true })).toBeVisible();
+    await expect(navigation.getByRole('button', { name: 'Next: Departments', exact: true })).toBeVisible();
     const browse = page.getByRole('button', { name: 'Browse all areas', exact: true });
     await browse.scrollIntoViewIfNeeded();
     await expect(browse).toBeInViewport();
@@ -1967,7 +1991,7 @@ test('mobile_390_and_320_have_no_page_overflow', async ({ page }, testInfo) => {
 
 test('rtl_long_labels_keep_navigation_reachable', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 720 });
-  const { writes } = await boot(page, { arabic: true, area: 'organization', setting: 'departments' });
+  const { writes } = await boot(page, { arabic: true, area: 'organization', setting: 'costCenters' });
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
 
   const topNavigation = page.getByTestId('focused-navigation-top');
@@ -1980,7 +2004,7 @@ test('rtl_long_labels_keep_navigation_reachable', async ({ page }, testInfo) => 
   await expect(browse).toBeInViewport();
   await browse.click();
   const dialog = page.getByRole('dialog');
-  const longestArea = dialog.getByRole('button', { name: 'الامتثال والإدارة النظامية', exact: true });
+  const longestArea = dialog.getByRole('button', { name: 'المواهب وخدمات الموظفين', exact: true });
   await longestArea.scrollIntoViewIfNeeded();
   await expect(longestArea).toBeInViewport();
   await expect(dialog.getByRole('button', { name: 'إغلاق', exact: true })).toBeVisible();
@@ -1991,14 +2015,14 @@ test('rtl_long_labels_keep_navigation_reachable', async ({ page }, testInfo) => 
 
 test('two_hundred_percent_zoom_keeps_actions_reachable', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 720, height: 900 });
-  const { writes } = await boot(page, { area: 'organization', setting: 'departments' });
+  const { writes } = await boot(page, { area: 'organization', setting: 'costCenters' });
 
   for (const position of ['top', 'bottom']) {
     const navigation = page.getByTestId(`focused-navigation-${position}`);
     await navigation.scrollIntoViewIfNeeded();
-    await expect(navigation.getByRole('button', { name: 'Back to Organization and core HR', exact: true })).toBeInViewport();
-    await expect(navigation.getByRole('button', { name: 'Previous: Branches', exact: true })).toBeInViewport();
-    await expect(navigation.getByRole('button', { name: 'Next: Designations', exact: true })).toBeInViewport();
+    await expect(navigation.getByRole('button', { name: 'Back to Company structure', exact: true })).toBeInViewport();
+    await expect(navigation.getByRole('button', { name: 'Previous: Locations', exact: true })).toBeInViewport();
+    await expect(navigation.getByRole('button', { name: 'Next: Departments', exact: true })).toBeInViewport();
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
   if (process.env.CAPTURE_TASK5_EVIDENCE === '1' && testInfo.project.name === 'desktop') await page.screenshot({ path: task5Evidence('configuration-200-percent.png'), fullPage: true });
@@ -2007,10 +2031,10 @@ test('two_hundred_percent_zoom_keeps_actions_reachable', async ({ page }, testIn
 
 test('four_hundred_percent_reflow_has_no_two_axis_scroll', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 720 });
-  const { writes } = await boot(page, { area: 'organization', setting: 'departments' });
+  const { writes } = await boot(page, { area: 'organization', setting: 'costCenters' });
 
   await page.getByTestId('focused-navigation-bottom').scrollIntoViewIfNeeded();
-  await expect(page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Next: Designations', exact: true })).toBeInViewport();
+  await expect(page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Next: Departments', exact: true })).toBeInViewport();
   const overflow = await page.evaluate(() => ({
     page: document.documentElement.scrollWidth - window.innerWidth,
     twoAxis: [...document.querySelectorAll<HTMLElement>('body *')].filter(element => {
@@ -2030,7 +2054,7 @@ test('dirty_cancel_preserves_url_values_scroll_and_focus', async ({ page }) => {
   const { writes } = await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   const taskTitle = page.getByLabel('Task title', { exact: true });
   await taskTitle.fill('Preserve this authored onboarding task');
-  const back = page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Back to Onboarding and confirmation', exact: true });
+  const back = page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Back to Talent & employee services', exact: true });
   await back.scrollIntoViewIfNeeded();
   const before = { url: page.url(), scrollY: await page.evaluate(() => window.scrollY) };
   await back.click();
@@ -2048,12 +2072,12 @@ test('dirty_confirm_navigates_once', async ({ page }) => {
   const { writes } = await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   await page.getByLabel('Task title', { exact: true }).fill('Discard this onboarding task once');
   const beforeHistory = await page.evaluate(() => history.length);
-  await page.getByTestId('focused-navigation-top').getByRole('button', { name: 'Back to Onboarding and confirmation', exact: true }).click();
+  await page.getByTestId('focused-navigation-top').getByRole('button', { name: 'Back to Talent & employee services', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
   await expect(dialog).toHaveCount(1);
   await dialog.getByRole('button', { name: 'Discard and leave', exact: true }).click();
 
-  await expect(page).toHaveURL(/area=onboarding(?!.*setting=)/);
+  await expect(page).toHaveURL(/area=talentServices(?!.*setting=)/);
   await expect(page.getByTestId('setup-area-blueprint')).toBeVisible();
   await expect(dialog).toHaveCount(0);
   await page.waitForTimeout(250);

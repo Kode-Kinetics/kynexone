@@ -63,6 +63,8 @@ public sealed class DropDeadConfigColumnsMigrationPostgresTests
         thisMigration.Should().NotBeNull("the migration that drops the unread columns exists");
         var previous = all[all.IndexOf(thisMigration!) - 1];
         previous.Should().EndWith("_StopMappingDeadConfigColumns", "release 2 follows release 1 directly");
+        // Later migrations may follow (other releases land after it); the test moves to and from THIS migration explicitly,
+        // so it only needs the drop to come after release 1, which the line above pins.
         // Present and ordered after its release-1 predecessor; later migrations may follow it (I-11).
         all.IndexOf(thisMigration!).Should().BeGreaterThan(all.IndexOf(previous));
 

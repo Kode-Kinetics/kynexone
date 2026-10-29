@@ -33,7 +33,7 @@ export function WhyPopover({ lines, title }: { lines: string[]; title: string })
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-xs font-medium text-sapphire hover:bg-sapphire/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-cyanAccent dark:hover:bg-cyanAccent/10"
+        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-1.5 py-0.5 text-xs font-medium text-sapphire hover:bg-sapphire/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire dark:text-cyanAccent dark:hover:bg-cyanAccent/10"
       >
         <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
         {t('Why this value?')}

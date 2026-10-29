@@ -80,7 +80,7 @@ export function CompletionReviewPage() {
   return (
     <div className="space-y-4" data-testid="completion-review">
       <div>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('Profile completion review')}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Profile completion review')}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('Review the details employees sent after their first day. Accept a section, or send it back with a note.')}</p>
       </div>
       <div className="flex flex-wrap items-end gap-3" role="group" aria-label={t('Profile review')}>
@@ -111,7 +111,7 @@ export function CompletionReviewPage() {
             <li key={item.requestId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.03]" data-testid="inbox-item">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100"><bdi>{item.employee.name}</bdi> <span className="font-normal text-slate-500" dir="ltr">{item.employee.code}</span></p>
+                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-100"><bdi>{item.employee.name}</bdi> <span className="font-normal text-slate-500" dir="ltr">{item.employee.code}</span></p>
                   <p className="text-xs text-slate-600 dark:text-slate-300">{t(`ess.completion.section.${item.section}.title`)} · {t('ess.completion.ui.submitted')} {date(item.submittedAtUtc)}</p>
                 </div>
                 {item.goesToFinance && <span className="rounded-full bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-800 dark:bg-violet-500/10 dark:text-violet-300">{t('Goes to Finance')}</span>}
@@ -130,7 +130,7 @@ export function CompletionReviewPage() {
                           <tr key={d.field} role="row" data-testid="diff-row" className="block space-y-1 rounded-xl border border-slate-200 p-3 sm:table-row sm:space-y-0 sm:rounded-none sm:border-0 sm:border-t sm:border-slate-100 sm:p-0 dark:border-white/10">
                             <th scope="row" role="rowheader" className="block py-1.5 pe-3 text-start font-medium sm:table-cell">{t(d.labelKey)}</th>
                             <td role="cell" className="flex items-start justify-between gap-3 py-1 pe-3 text-start sm:table-cell sm:py-1.5"><span className="shrink-0 text-xs text-slate-500 sm:hidden" aria-hidden="true">{t('Current')}</span><div className="min-w-0 text-end sm:text-start"><span dir="ltr"><bdi>{d.before || '—'}</bdi></span>{hijriLine(d.before, locale) && <span className="block text-xs text-slate-500" data-testid={`hijri-before-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.before, locale) })}</span>}</div></td>
-                            <td role="cell" className={`flex items-start justify-between gap-3 py-1 pe-3 text-start sm:table-cell sm:py-1.5 ${d.changed ? 'font-bold' : ''}`}><span className="shrink-0 text-xs font-normal text-slate-500 sm:hidden" aria-hidden="true">{t('Proposed')}</span><div className="min-w-0 text-end sm:text-start"><span dir="ltr"><bdi>{d.after || '—'}</bdi></span>{hijriLine(d.after, locale) && <span className="block text-xs font-normal text-slate-500" data-testid={`hijri-after-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.after, locale) })}</span>}</div></td>
+                            <td role="cell" className={`flex items-start justify-between gap-3 py-1 pe-3 text-start sm:table-cell sm:py-1.5 ${d.changed ? 'font-semibold' : ''}`}><span className="shrink-0 text-xs font-normal text-slate-500 sm:hidden" aria-hidden="true">{t('Proposed')}</span><div className="min-w-0 text-end sm:text-start"><span dir="ltr"><bdi>{d.after || '—'}</bdi></span>{hijriLine(d.after, locale) && <span className="block text-xs font-normal text-slate-500" data-testid={`hijri-after-${d.field}`} dir="auto">{t('Hijri: {date}', { date: hijriLine(d.after, locale) })}</span>}</div></td>
                             <td role="cell" className="py-1 text-start sm:table-cell sm:py-1.5"><span className={d.changed ? 'rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200' : 'text-xs text-slate-500'}>{d.changed ? t('ess.completion.ui.changed') : t('ess.completion.ui.unchanged')}</span></td>
                           </tr>
                         ))}

@@ -103,8 +103,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var workflow = new ApprovalWorkflow { TenantId = tenantId };
         Apply(workflow, request, tenantId);
         _db.ApprovalWorkflows.Add(workflow);
+        _audit.Stage("approval.workflow_created", nameof(ApprovalWorkflow), workflow.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("approval.workflow_created", nameof(ApprovalWorkflow), workflow.Id.ToString(), context, null, cancellationToken);
         return workflow.ToDto() with { Warnings = await UndecidableStepWarningsAsync(tenantId, workflow, cancellationToken) };
     }
 
@@ -134,8 +134,8 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         await EnsureScopeUnambiguousAsync(tenantId, request, id, cancellationToken);
         _db.ApprovalWorkflowSteps.RemoveRange(workflow.Steps);
         Apply(workflow, request, tenantId);
+        _audit.Stage("approval.workflow_updated", nameof(ApprovalWorkflow), workflow.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("approval.workflow_updated", nameof(ApprovalWorkflow), workflow.Id.ToString(), context, null, cancellationToken);
         return workflow.ToDto() with { Warnings = await UndecidableStepWarningsAsync(tenantId, workflow, cancellationToken) };
     }
 
@@ -492,10 +492,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     {
         var (approval, overrideRouting) = await PrepareRequestAsync(tenantId, request, context, cancellationToken);
         _db.ApprovalRequests.Add(approval);
-        await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("approval.request_started", nameof(ApprovalRequest), approval.Id.ToString(), context, null, cancellationToken);
+        // Staged before the save: the request and its audit rows commit in one transaction.
+        _audit.Stage("approval.request_started", nameof(ApprovalRequest), approval.Id.ToString(), context, null);
         if (overrideRouting is not null)
-            await _audit.WriteAsync(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting, cancellationToken);
+            _audit.Stage(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting);
+        await _db.SaveChangesAsync(cancellationToken);
         return (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;
     }
 
@@ -737,6 +738,13 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             overrideRouting = await EnsureSomeoneCanDecideAsync(approval, nextStep, atCreate: false, context.UserId, cancellationToken);
         }
 
+        // audit_logs.metadata is a `json` column — pass a JSON object, never a bare string.
+        // Staged BEFORE the save so the decision, its side effects and its audit rows are one
+        // transaction: a decision cannot commit without its audit trail.
+        _audit.Stage("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
+            JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }));
+        if (overrideRouting is not null)
+            _audit.Stage(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting);
         try
         {
             // EF wraps this multi-entity batch in one relational transaction. A lost CAS or unique
@@ -745,18 +753,14 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         }
         catch (DbUpdateConcurrencyException ex)
         {
+            _audit.DiscardStaged();
             throw new InvalidOperationException("Current approval step has already been decided.", ex);
         }
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
         {
+            _audit.DiscardStaged();
             throw new InvalidOperationException("Current approval step has already been decided.", ex);
         }
-        // audit_logs.metadata is a `json` column — pass a JSON object, never a bare string (a bare
-        // "Approved" is invalid JSON and would 500 AFTER the decision above already committed).
-        await _audit.WriteAsync("approval.request_decided", nameof(ApprovalRequest), approval.Id.ToString(), context,
-            JsonSerializer.Serialize(new { decision = normalizedDecision, stepOrder = step.StepOrder, comments = Clean(request.Comments) }), cancellationToken);
-        if (overrideRouting is not null)
-            await _audit.WriteAsync(OverrideRoutedAction, nameof(ApprovalRequest), approval.Id.ToString(), context, overrideRouting, cancellationToken);
         // SUC: after the commit, the slate's own audit row and the decision notice to its submitter. No-op for anything else.
         await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.AfterCommitAsync(_db, _audit, _http?.HttpContext?.RequestServices, approval,
             normalizedDecision, context, cancellationToken);
@@ -1229,6 +1233,12 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         var approverId = context.UserId;
         if (approverId is not null && change.RequestedByUserId == approverId)
             throw new InvalidOperationException("Maker-checker violation: requester cannot approve their own sensitive change.");
+
+        // HR makes, Finance approves: a package change is applied only on the word of a payroll.approve holder, whatever role
+        // the workflow routed the step to (the Payroll queue has the same bar). Checked before anything is stamped or written.
+        if ((JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new()).ContainsKey(EmployeeSalaryBreakdownChanges.Key)
+            && !(context.Permissions ?? Array.Empty<string>()).Contains("payroll.approve", StringComparer.OrdinalIgnoreCase))
+            throw new SalaryApprovalAuthorityException(approval.TenantId);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         change.ApprovedByUserId = approverId;

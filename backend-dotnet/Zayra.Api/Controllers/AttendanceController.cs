@@ -12,6 +12,7 @@ using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Http;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -129,8 +130,11 @@ public class AttendanceController : ControllerBase
     [HttpPost("devices/{id:guid}/generate-key")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [HasPermission("attendance.bulk_import")]
-    public async Task<ActionResult<DeviceKeyResult>> GenerateDeviceKey(Guid id, CancellationToken ct) =>
-        await _attendance.GenerateDeviceKeyAsync(RequireTenant(), id, Context(), ct) is { } r ? Ok(r) : NotFound();
+    public async Task<ActionResult<DeviceKeyResult>> GenerateDeviceKey(Guid id, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";   // the plaintext key is shown once; no cache may keep it
+        return await _attendance.GenerateDeviceKeyAsync(RequireTenant(), id, Context(), ct) is { } r ? Ok(r) : NotFound();
+    }
 
     /// <summary>
     /// Generic webhook ingest for attendance devices, cloud platforms, or the local bridge agent.
@@ -139,15 +143,92 @@ public class AttendanceController : ControllerBase
     /// </summary>
     [HttpPost("ingest")]
     [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(DeviceRateLimitPolicy)]
+    [RequestSizeLimit(DeviceBodyLimitBytes)]
+    [CaptureRawBody]
     public async Task<IActionResult> Ingest([FromBody] DeviceIngestRequest request, CancellationToken ct)
     {
         var key = Request.Headers["X-Device-Key"].ToString();
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        if (DeviceAuthBlocked(out var blocked)) return blocked;
         DeviceIngestResult? result;
-        try { result = await _attendance.IngestByDeviceKeyAsync(key, request, ip, ct); }
+        try { result = await _attendance.IngestByDeviceKeyAsync(key, request, ip, ct, DeviceEnvelope()); }
         catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
+        catch (DeviceSignatureException ex) { RecordDeviceAuthFailure(); return Unauthorized(new { code = "invalid_signature", message = ex.Message }); }
+        if (result is null) RecordDeviceAuthFailure();
         return result is null ? Unauthorized(new { message = "Invalid or inactive device key." }) : Ok(result);
     }
+
+    /// <summary>Bridge liveness: version, device time zone, backlog, last error. Same device-key (and optional signature)
+    /// authentication as <c>ingest</c>. Lets the server tell an offline bridge from a quiet device.</summary>
+    [HttpPost("heartbeat")]
+    [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting(DeviceRateLimitPolicy)]
+    [RequestSizeLimit(16_384)]
+    [CaptureRawBody]
+    public async Task<IActionResult> Heartbeat([FromBody] DeviceHeartbeatRequest request, CancellationToken ct)
+    {
+        if (DeviceAuthBlocked(out var blocked)) return blocked;
+        try
+        {
+            var result = await _attendance.HeartbeatByDeviceKeyAsync(Request.Headers["X-Device-Key"].ToString(), request,
+                HttpContext.Connection.RemoteIpAddress?.ToString(), ct, DeviceEnvelope());
+            if (result is null) RecordDeviceAuthFailure();
+            return result is null ? Unauthorized(new { message = "Invalid or inactive device key." }) : Ok(result);
+        }
+        catch (DeviceSignatureException ex) { RecordDeviceAuthFailure(); return Unauthorized(new { code = "invalid_signature", message = ex.Message }); }
+    }
+
+    /// <summary>Generate (or rotate) the device's request-signing secret. Shown ONCE in this response. Until the device
+    /// is switched to "signature required" it keeps working on the static key alone.</summary>
+    [HttpPost("devices/{id:guid}/signing-secret")]
+    [HasPermission("attendance.bulk_import")]
+    public async Task<IActionResult> RotateSigningSecret(Guid id, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";   // the secret is shown once; no cache may keep it
+        try { return await _attendance.RotateDeviceSigningSecretAsync(RequireTenant(), id, Context(), ct) is { } r ? Ok(r) : NotFound(); }
+        catch (InvalidOperationException ex) { return Conflict(new { code = "signing_not_configured", message = ex.Message }); }
+    }
+
+    /// <summary>Enforce (or relax) signed requests for one device. Enforcing needs a signing secret first.</summary>
+    [HttpPost("devices/{id:guid}/signature-required")]
+    [HasPermission("attendance.bulk_import")]
+    public async Task<IActionResult> SetSignatureRequired(Guid id, [FromBody] DeviceSignaturePolicyRequest request, CancellationToken ct)
+    {
+        try { return await _attendance.SetDeviceSignatureRequiredAsync(RequireTenant(), id, request.Required, Context(), ct) is { } v ? Ok(new { signatureRequired = v }) : NotFound(); }
+        catch (InvalidOperationException ex) { return Conflict(new { code = "signing_secret_missing", message = ex.Message }); }
+    }
+
+    public const string DeviceRateLimitPolicy = "device_ingest";
+
+    private string DeviceClientAddress() => HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+    /// <summary>H2 - an address that keeps failing device authentication is refused (429) before any key lookup.</summary>
+    private bool DeviceAuthBlocked(out IActionResult blocked)
+    {
+        // RequestServices is null when an action is invoked directly (unit tests without the pipeline): fall back to the default.
+        var limit = (HttpContext.RequestServices is { } services ? services.GetService<DeviceIngestOptions>() : null)?.FailedAuthPerMinutePerIp
+            ?? new DeviceIngestOptions().FailedAuthPerMinutePerIp;
+        if (DeviceAuthFailureThrottle.Shared.IsBlocked(DeviceClientAddress(), DateTimeOffset.UtcNow, limit))
+        {
+            Response.Headers["Retry-After"] = "60";
+            blocked = StatusCode(StatusCodes.Status429TooManyRequests, new { code = "too_many_failures", message = "Too many failed device authentications. Try again in a minute." });
+            return true;
+        }
+        blocked = null!;
+        return false;
+    }
+
+    private void RecordDeviceAuthFailure() => DeviceAuthFailureThrottle.Shared.RecordFailure(DeviceClientAddress(), DateTimeOffset.UtcNow);
+    private const int DeviceBodyLimitBytes = 2_000_000;
+
+    /// <summary>What a signed device sent, for <c>DeviceSigning.Verify</c>: the headers plus the exact request bytes
+    /// (<see cref="CaptureRawBodyAttribute"/> keeps them; absent only when an action is called without the pipeline).</summary>
+    private DeviceRequestEnvelope DeviceEnvelope() => new(
+        Request.Headers["X-Device-Timestamp"].ToString(), Request.Headers["X-Device-Signature"].ToString(),
+        HttpContext?.Items[CaptureRawBodyAttribute.ItemKey] as string ?? string.Empty,
+        Request.Headers["X-Bridge-Version"].ToString(),
+        Request.Method, Request.Path.Value, Request.Headers["X-Device-Nonce"].ToString());
 
     [HttpPost("events/push")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields include GPS coordinates and IP address (operational punch verification data), PhotoReference (storage reference, not biometric data), and RawPayloadJson (device payload). No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]

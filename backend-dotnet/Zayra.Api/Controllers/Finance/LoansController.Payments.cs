@@ -284,15 +284,12 @@ public partial class LoansController
         }
         if (lines.Any(x => string.IsNullOrWhiteSpace(x.Iban) || string.IsNullOrWhiteSpace(x.BankName)))
             return Conflict("Bank details are missing from the payment instructions. Cancel the unpaid batch, update employee bank details, and recreate it.");
-        static string Csv(string value)
-        {
-            if (value.TrimStart().StartsWith('=') || value.TrimStart().StartsWith('+') || value.TrimStart().StartsWith('-') || value.TrimStart().StartsWith('@')) value = "'" + value;
-            return "\"" + value.Replace("\"", "\"\"") + "\"";
-        }
+        // F9: the shared guard (also covers tab / CR / "@" after spaces) and quoting; every cell is written quoted as before.
+        static string Csv(string value) => Zayra.Api.Application.Common.Csv.Quote(value);
         var csv = new StringBuilder("Batch,Loan ID,Employee Code,Employee,Bank,IBAN,Currency,Amount\r\n");
         foreach (var line in lines)
             csv.AppendLine(string.Join(",", new[] { Csv(batch.BatchNumber), Csv(line.LoanId.ToString()), Csv(line.EmployeeCode), Csv(line.EmployeeName), Csv(line.BankName), Csv(line.Iban), Csv(batch.Currency), line.Amount.ToString("F2", CultureInfo.InvariantCulture) }));
-        return File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv", $"{batch.BatchNumber}-payment-instructions.csv");
+        return CsvDownload.Result(csv.ToString(), $"{batch.BatchNumber}-payment-instructions.csv");
     }
 
     [HttpPost("{id:guid}/repayments")]

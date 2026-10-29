@@ -46,7 +46,7 @@ public static class CompanySetupReadiness
 
         var country = (company.CountryCode ?? string.Empty).Trim().ToUpperInvariant();
         var gcc = await ScopedBypass.TenantWide(db.GCCComplianceSettings, tenantId, Why)
-            .AnyAsync(g => g.CountryCode == country && (g.CompanyId == id || g.CompanyId == null), ct);
+            .AnyAsync(g => g.IsActive && g.CountryCode == country && (g.CompanyId == id || g.CompanyId == null), ct);
         Add("gccSettings", "Country settings (end of service, weekend)", "إعدادات الدولة (نهاية الخدمة، العطلة الأسبوعية)", gcc, V.ReadinessTodo, SetupHref("gccSettings", id));
 
         // Statutory leave is per company (owner decision 2026-10-23): this company's own live policies for its country.

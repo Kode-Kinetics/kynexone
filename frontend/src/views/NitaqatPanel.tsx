@@ -56,9 +56,9 @@ function Stat({
         : 'text-slate-800 dark:text-slate-100';
   return (
     <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2.5 dark:border-white/[0.07] dark:bg-white/[0.03]">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</p>
+      <p className="text-caption font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</p>
       <p className={`mt-0.5 text-lg font-semibold tabular-nums ${valueTone}`}>{value}</p>
-      {sub && <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{sub}</p>}
+      {sub && <p className="mt-0.5 text-caption text-slate-500 dark:text-slate-400">{sub}</p>}
     </div>
   );
 }
@@ -83,7 +83,7 @@ function BandRail({ standing }: { standing: NitaqatStanding }) {
           aria-hidden
         />
       </div>
-      <div className="mt-1 flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+      <div className="mt-1 flex justify-between text-caption text-slate-500 dark:text-slate-400">
         <span>
           {bandLabel(standing.band)} floor {floor.toFixed(2)}%
         </span>
@@ -115,7 +115,7 @@ function Refused({ refusal, coverage, onConfigure }: {
       <div className="flex items-center gap-2">
         <ShieldAlert className="h-5 w-5 text-amber-500" />
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">No Nitaqat band is shown</h3>
-        <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
+        <code className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
           {refusal.reason}
         </code>
       </div>
@@ -155,7 +155,7 @@ function Refused({ refusal, coverage, onConfigure }: {
             <li>
               Ask your administrator or implementation consultant to load them — there is a
               configuration endpoint for exactly this
-              (<code className="rounded bg-amber-100/70 px-1 py-0.5 text-[11px] dark:bg-amber-500/15">
+              (<code className="rounded bg-amber-100/70 px-1 py-0.5 text-caption dark:bg-amber-500/15">
                 PUT /api/saudi-compliance/nitaqat/curve
               </code>), and it requires the compliance-write permission. Every load records where
               the numbers came from, who loaded them, and whether they have been checked. There is
@@ -305,7 +305,7 @@ function SetupForm({
           <select
             value={activityCode}
             onChange={(e) => setActivityCode(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-[#0d1225] dark:text-slate-100"
+            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
           >
             <option value="">Select…</option>
             {grouped.map(([group, items]) => (
@@ -330,7 +330,7 @@ function SetupForm({
             value={mhrsd}
             onChange={(e) => setMhrsd(e.target.value)}
             placeholder="7000123456"
-            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-[#0d1225] dark:text-slate-100"
+            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
           />
         </label>
         <label className="block">
@@ -340,7 +340,7 @@ function SetupForm({
           <select
             value={qiwaBand}
             onChange={(e) => setQiwaBand(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-[#0d1225] dark:text-slate-100"
+            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
           >
             <option value="">Not recorded</option>
             {['Platinum', 'HighGreen', 'MediumGreen', 'LowGreen', 'Red'].map((b) => (
@@ -448,7 +448,7 @@ function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; comp
               value={nationality}
               onChange={(e) => setNationality(e.target.value)}
               placeholder="Nationality"
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-[#0d1225] dark:text-slate-100"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
             />
           </label>
           <label className="w-24">
@@ -458,7 +458,7 @@ function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; comp
               min={1}
               value={count}
               onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-[#0d1225] dark:text-slate-100"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
             />
           </label>
           <button
@@ -522,7 +522,7 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
       <div className="-mx-2 overflow-x-auto">
         <table className="w-full min-w-[34rem] text-start text-sm">
           <thead>
-            <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-500 dark:border-white/[0.07] dark:text-slate-400">
+            <tr className="border-b border-slate-100 text-caption uppercase tracking-wide text-slate-500 dark:border-white/[0.07] dark:text-slate-400">
               <th scope="col" className="px-2 py-1.5 font-medium">Group</th>
               <th scope="col" className="px-2 py-1.5 text-end font-medium">Heads</th>
               <th scope="col" className="px-2 py-1.5 text-end font-medium">Saudi ea.</th>
@@ -537,14 +537,14 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
                 <td className="px-2 py-1.5 text-slate-700 dark:text-slate-200">
                   {b.classification} · {b.countBasis}
                   {b.category !== 'Standard' && (
-                    <span className="ms-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
+                    <span className="ms-1 rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
                       {b.category}
                     </span>
                   )}
                   {!b.isVerified && (
                     <span
                       title={b.sourceNote}
-                      className="ms-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
+                      className="ms-1 rounded bg-amber-100 px-1.5 py-0.5 text-caption text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
                     >
                       unverified
                     </span>
@@ -678,7 +678,7 @@ export function NitaqatPanel() {
       <select
         value={companyId}
         onChange={(e) => setCompanyId(e.target.value)}
-        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-[#0d1225] dark:text-slate-100"
+        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
       >
         {companies.map((c) => (
           <option key={c.id} value={c.id}>
@@ -798,12 +798,12 @@ export function NitaqatPanel() {
                   {standing.unverifiedInputs.length} input
                   {standing.unverifiedInputs.length === 1 ? '' : 's'} not yet verified against MHRSD
                 </summary>
-                <ul className="mt-1.5 list-inside list-disc space-y-0.5 text-[13px]">
+                <ul className="mt-1.5 list-inside list-disc space-y-0.5 text-body-sm">
                   {standing.unverifiedInputs.map((u) => (
                     <li key={u}>{u}</li>
                   ))}
                 </ul>
-                <p className="mt-1.5 text-[13px]">
+                <p className="mt-1.5 text-body-sm">
                   Confirm these against the published MHRSD Nitaqat table or the establishment&apos;s
                   Qiwa record before acting on this band.
                 </p>

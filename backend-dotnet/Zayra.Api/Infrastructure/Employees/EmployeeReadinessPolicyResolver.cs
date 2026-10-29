@@ -222,7 +222,7 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
         // tenant + company/default scope is re-applied in the WHERE.
         var rows = await _db.GCCComplianceSettings
             .IgnoreQueryFilters()
-            .Where(g => g.TenantId == tenantId && (g.CompanyId == null || (companyId != null && g.CompanyId == companyId)))
+            .Where(g => g.TenantId == tenantId && g.IsActive && (g.CompanyId == null || (companyId != null && g.CompanyId == companyId)))
             .ToListAsync(ct);
         // GCCComplianceSetting is keyed by (tenant, company, COUNTRY) — a tenant configuring both a
         // KSA and a UAE entity holds one row per state. Picking the first row regardless of country

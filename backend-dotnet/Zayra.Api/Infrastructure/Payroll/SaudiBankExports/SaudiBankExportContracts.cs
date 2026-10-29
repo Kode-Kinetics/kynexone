@@ -29,6 +29,9 @@ public sealed class SaudiBankExportSettingsDto
     public bool AutoWpsUpload { get; set; }
     /// <summary>Establishment national unified number, exactly 10 digits. [CONFIRM] format with ANB.</summary>
     public string NationalUnifiedNo { get; set; } = string.Empty;
+    /// <summary>Custom-template files only: the company's salary (debit) account as a Saudi IBAN, written where
+    /// a template uses the <c>debitAccountIban</c> field. An employer fact, not a credential. Ignored by the ANB format.</summary>
+    public string DebitAccountIban { get; set; } = string.Empty;
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

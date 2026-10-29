@@ -47,7 +47,7 @@ function MyPlanBody() {
   return (
     <div className="space-y-4" data-testid="suc-my-plan">
       <header>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('suc.ess.title')}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('suc.ess.title')}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('suc.ess.subtitle')}</p>
       </header>
 
@@ -85,7 +85,7 @@ function MyPlanBody() {
 
       {data.candidateVisibility && (
         <section className="wg-card space-y-2 rounded-2xl p-4" data-testid="suc-my-memberships" aria-label={t('suc.ess.memberships')}>
-          <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('suc.ess.memberships')}</h2>
+          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('suc.ess.memberships')}</h2>
           <p className="text-xs text-slate-500">{t('suc.ess.membershipsHint')}</p>
           {data.memberships.length === 0
             ? <p className="text-xs text-slate-500">{t('suc.ess.noMemberships')}</p>
@@ -162,7 +162,7 @@ function MyActionRow({ action, editable, onSaved }: { action: PlanAction; editab
           {action.isOverdue && !closed && <StatusChip label={t('suc.action.overdue')} tone="rose" />}
         </span>
       </div>
-      <p className="text-[11px] text-slate-500">
+      <p className="text-caption text-slate-500">
         {action.completionMethod
           ? t(completionMethodLabel[action.completionMethod])
           : linked ? (action.actionType === 'Learning' ? t('suc.method.willLearning') : t('suc.method.willGoal')) : t('suc.method.willManual')}

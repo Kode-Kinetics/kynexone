@@ -303,6 +303,19 @@ public sealed class BackgroundJobStore
         return n == 1;
     }
 
+    /// <summary>Sets absolute progress. False means the lease is gone or a cancel is pending (the context diagnoses which).</summary>
+    public static async Task<bool> SetProgressAsync(
+        ZayraDbContext db, ClaimedBackgroundJob job, int completed, int total, string? message, CancellationToken ct)
+    {
+        var msg = message is null ? null : Truncate(message, 500);
+        var n = await Leased(db, job).Where(j => j.CancelRequestedAtUtc == null).ExecuteUpdateAsync(s => s
+            .SetProperty(j => j.ProgressCompleted, completed)
+            .SetProperty(j => j.ProgressTotal, total)
+            .SetProperty(j => j.ProgressMessage, j => msg ?? j.ProgressMessage)
+            .SetProperty(j => j.UpdatedAtUtc, DateTime.UtcNow), ct);
+        return n == 1;
+    }
+
     public static Task<bool> CompleteAsync(ZayraDbContext db, ClaimedBackgroundJob job, string? resultJson, CancellationToken ct) =>
         TerminateAsync(db, job, BackgroundJobStatuses.Succeeded, null, resultJson, ct);
 

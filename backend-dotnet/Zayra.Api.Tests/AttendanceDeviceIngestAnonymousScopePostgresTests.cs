@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -211,9 +212,17 @@ internal sealed class DeviceIngestHost : WebApplicationFactory<Program>
         builder.UseSetting("Database:RunMigrationsOnStartup", "false");
         builder.ConfigureTestServices(services =>
         {
+            // The ingest window is relative to the server clock; this suite sends fixed September dates.
+            services.RemoveAll<TimeProvider>();
+            services.AddSingleton<TimeProvider>(new FixedHostClock(new DateTime(2026, 9, 20, 0, 0, 0, DateTimeKind.Utc)));
             var apiAssembly = typeof(ZayraDbContext).Assembly;
             foreach (var worker in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType?.Assembly == apiAssembly).ToList())
                 services.Remove(worker);
         });
     }
+}
+
+internal sealed class FixedHostClock(DateTime utcNow) : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow() => new(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));
 }

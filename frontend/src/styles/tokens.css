@@ -1,0 +1,144 @@
+/*
+ * KynexOne design tokens. Single source of truth for colour roles, type, radius, elevation,
+ * control height and motion. tailwind.config.ts maps these to utilities; unit/designTokens.spec.ts
+ * parses this file and asserts WCAG AA for every text/surface and control/surface pair.
+ *
+ * Colours are space-separated sRGB channels so Tailwind can add alpha: rgb(var(--kx-x) / 0.5).
+ * The hex beside each value is the review aid and is what the contrast test reads.
+ */
+:root {
+  color-scheme: light;
+  --kx-canvas: 246 248 251; /* #F6F8FB */
+  --kx-surface: 255 255 255; /* #FFFFFF */
+  --kx-surface-sunken: 248 250 252; /* #F8FAFC */
+  --kx-overlay: 255 255 255; /* #FFFFFF */
+  --kx-text: 15 23 42; /* #0F172A */
+  --kx-text-muted: 71 85 105; /* #475569 */
+  --kx-text-subtle: 88 101 121; /* #586579 */
+  --kx-text-inverse: 255 255 255; /* #FFFFFF */
+  --kx-border: 226 232 240; /* #E2E8F0 */
+  --kx-border-strong: 118 132 154; /* #76849A */
+  --kx-primary: 37 87 230; /* #2557E6 */
+  --kx-primary-hover: 29 78 216; /* #1D4ED8 */
+  --kx-primary-fg: 37 87 230; /* #2557E6 */
+  --kx-primary-soft: 234 240 255; /* #EAF0FF */
+  --kx-on-primary: 255 255 255; /* #FFFFFF */
+  --kx-success: 4 120 87; /* #047857 */
+  --kx-success-fg: 4 120 87; /* #047857 */
+  --kx-success-soft: 236 253 245; /* #ECFDF5 */
+  --kx-on-success: 255 255 255; /* #FFFFFF */
+  --kx-warning: 180 83 9; /* #B45309 */
+  --kx-warning-fg: 146 64 14; /* #92400E */
+  --kx-warning-soft: 255 251 235; /* #FFFBEB */
+  --kx-on-warning: 255 255 255; /* #FFFFFF */
+  --kx-danger: 190 18 60; /* #BE123C */
+  --kx-danger-fg: 190 18 60; /* #BE123C */
+  --kx-danger-soft: 255 241 242; /* #FFF1F2 */
+  --kx-on-danger: 255 255 255; /* #FFFFFF */
+  --kx-info: 3 105 161; /* #0369A1 */
+  --kx-info-fg: 3 105 161; /* #0369A1 */
+  --kx-info-soft: 224 242 254; /* #E0F2FE */
+  --kx-on-info: 255 255 255; /* #FFFFFF */
+  --kx-focus: 29 78 216; /* #1D4ED8 */
+  --kx-violet-solid: 109 40 217; /* #6D28D9 */
+
+  /* Text-only remaps of palette steps that are decorative at full strength (slate-400 is 2.6:1 on
+     white). Tailwind's textColor / placeholderColor read these, so text-slate-400 is AA in every
+     portal and mode without a selector override. Borders and fills keep the real palette. */
+  --kx-t-slate-400: 71 85 105; /* #475569 */
+  --kx-t-slate-500: 88 101 121; /* #586579 */
+  --kx-t-sapphire: 37 87 230; /* #2557E6 */
+  --kx-t-emerald-600: 4 120 87; /* #047857 */
+  --kx-t-amber-600: 146 64 14; /* #92400E */
+  --kx-t-rose-500: 190 18 60; /* #BE123C */
+  --kx-t-rose-600: 159 18 57; /* #9F1239 */
+
+  /* Control height: sm 28, md 36, lg 40. Coarse pointers get 44 (sm 36) for touch targets. */
+  --kx-control-sm: 1.75rem;
+  --kx-control-md: 2.25rem;
+  --kx-control-lg: 2.5rem;
+
+  /* Elevation. Neutral ink only, never coloured. e0 is a 1px line, not a shadow. */
+  --kx-e1: 0 1px 2px rgb(15 23 42 / 0.06);
+  --kx-e2: 0 4px 12px -2px rgb(15 23 42 / 0.10);
+  --kx-e3: 0 12px 32px -8px rgb(15 23 42 / 0.18);
+  --kx-scrim: rgb(11 16 32 / 0.55);
+
+  /* Spacing is Tailwind's 4px scale (1 = 4px). Named for documentation and non-Tailwind CSS. */
+  --kx-space-1: 0.25rem; --kx-space-2: 0.5rem; --kx-space-3: 0.75rem; --kx-space-4: 1rem;
+  --kx-space-5: 1.25rem; --kx-space-6: 1.5rem; --kx-space-8: 2rem; --kx-space-12: 3rem;
+
+  /* Radius: 4 tag / 8 control / 12 card / 16 overlay; full for pills and avatars. */
+  --kx-radius-xs: 4px; --kx-radius-sm: 8px; --kx-radius-md: 12px; --kx-radius-lg: 16px;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --kx-canvas: 10 15 26; /* #0A0F1A */
+  --kx-surface: 16 23 39; /* #101727 */
+  --kx-surface-sunken: 21 30 46; /* #151E2E */
+  --kx-overlay: 26 36 56; /* #1A2438 */
+  --kx-text: 241 245 249; /* #F1F5F9 */
+  --kx-text-muted: 203 213 225; /* #CBD5E1 */
+  --kx-text-subtle: 148 163 184; /* #94A3B8 */
+  --kx-text-inverse: 15 23 42; /* #0F172A */
+  --kx-border: 36 48 71; /* #243047 */
+  --kx-border-strong: 116 131 154; /* #74839A */
+  --kx-primary: 47 95 232; /* #2F5FE8 */
+  --kx-primary-hover: 37 73 200; /* #2549C8 */
+  --kx-primary-fg: 122 171 255; /* #7AABFF */
+  --kx-primary-soft: 20 34 74; /* #14224A */
+  --kx-on-primary: 255 255 255; /* #FFFFFF */
+  --kx-success: 4 120 87; /* #047857 */
+  --kx-success-fg: 52 211 153; /* #34D399 */
+  --kx-success-soft: 12 42 34; /* #0C2A22 */
+  --kx-on-success: 255 255 255; /* #FFFFFF */
+  --kx-warning: 180 83 9; /* #B45309 */
+  --kx-warning-fg: 251 191 36; /* #FBBF24 */
+  --kx-warning-soft: 46 36 16; /* #2E2410 */
+  --kx-on-warning: 255 255 255; /* #FFFFFF */
+  --kx-danger: 190 18 60; /* #BE123C */
+  --kx-danger-fg: 251 113 133; /* #FB7185 */
+  --kx-danger-soft: 48 21 32; /* #301520 */
+  --kx-on-danger: 255 255 255; /* #FFFFFF */
+  --kx-info: 3 105 161; /* #0369A1 */
+  --kx-info-fg: 125 211 252; /* #7DD3FC */
+  --kx-info-soft: 14 38 53; /* #0E2635 */
+  --kx-on-info: 255 255 255; /* #FFFFFF */
+  --kx-focus: 122 171 255; /* #7AABFF */
+  --kx-violet-solid: 109 40 217; /* #6D28D9 */
+
+  --kx-t-slate-400: 148 163 184; /* #94A3B8 */
+  --kx-t-slate-500: 148 163 184; /* #94A3B8 */
+  --kx-t-sapphire: 122 171 255; /* #7AABFF */
+  --kx-t-emerald-600: 52 211 153; /* #34D399 */
+  --kx-t-amber-600: 251 191 36; /* #FBBF24 */
+  --kx-t-rose-500: 251 113 133; /* #FB7185 */
+  --kx-t-rose-600: 251 113 133; /* #FB7185 */
+
+  --kx-e1: 0 1px 2px rgb(0 0 0 / 0.35);
+  --kx-e2: 0 4px 12px -2px rgb(0 0 0 / 0.45);
+  --kx-e3: 0 12px 32px -8px rgb(0 0 0 / 0.6);
+  --kx-scrim: rgb(0 0 0 / 0.65);
+}
+
+@media (pointer: coarse) {
+  :root {
+    --kx-control-sm: 2.25rem;
+    --kx-control-md: 2.75rem;
+    --kx-control-lg: 2.75rem;
+  }
+}
+
+/* The platform console and the login are permanently dark whatever the tenant theme is, so their palette steps
+   read as on-dark text. */
+.platform-shell,
+.tenant-login-shell {
+  --kx-t-slate-400: 148 163 184; /* #94A3B8 */
+  --kx-t-slate-500: 148 163 184; /* #94A3B8 */
+  --kx-t-sapphire: 122 171 255; /* #7AABFF */
+  --kx-t-emerald-600: 52 211 153; /* #34D399 */
+  --kx-t-amber-600: 251 191 36; /* #FBBF24 */
+  --kx-t-rose-500: 251 113 133; /* #FB7185 */
+  --kx-t-rose-600: 251 113 133; /* #FB7185 */
+}

@@ -122,8 +122,8 @@ export function EmployeeAccessCard({
   return (
     <Shell title={t('Self-service')} pill={<StatusChip label={t(copy.label)} tone={copy.tone} dot />}>
       {detail && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="access-detail">{detail}</p>}
-      {waitingReason && <p className="mt-2 rounded-md bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-700 dark:bg-white/[0.05] dark:text-slate-200" data-testid="access-reason">{say(waitingReason)}</p>}
-      {skipNote && <p role="alert" className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p>}
+      {waitingReason && <p className="mt-2 rounded-lg bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-700 dark:bg-white/[0.05] dark:text-slate-200" data-testid="access-reason">{say(waitingReason)}</p>}
+      {skipNote && <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p>}
       {primary && !confirming && (
         <div className="mt-2.5 flex flex-col gap-1.5">
           <button
@@ -188,7 +188,7 @@ function Shell({ title, pill, children }: { title: string; pill?: React.ReactNod
   return (
     <section className="rounded-lg border border-slate-200 p-3 dark:border-white/10" data-testid="employee-access-card" aria-label={title}>
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-bold uppercase text-slate-400">{title}</p>
+        <p className="text-xs font-semibold uppercase text-slate-400">{title}</p>
         {pill}
       </div>
       {children}

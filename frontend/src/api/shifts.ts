@@ -1,4 +1,5 @@
 import client from './client';
+import { setupRowApi } from './orgRows';
 
 export interface ShiftDefinition {
   id: string;
@@ -86,7 +87,8 @@ export const shiftsApi = {
     body: { code: string; name: string; startTime: string; endTime: string; breakMinutes: number; color: string }
   ) => client.put<ShiftDefinition>(`/api/shifts/definitions/${id}`, body).then((r) => r.data),
 
-  deleteDefinition: (id: string) => client.delete(`/api/shifts/definitions/${id}`),
+  /** Setup's Remove / Restore: no assignments = deleted, any assignment = turned off. */
+  definitionRemoval: setupRowApi('/api/shifts/definitions'),
 
   getRoster: (from: string, to: string) =>
     client.get<RosterResponse>('/api/shifts/roster', { params: { from, to } }).then((r) => r.data),

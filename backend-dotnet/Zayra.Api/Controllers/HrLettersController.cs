@@ -114,13 +114,13 @@ public class HrLettersController : ControllerBase
 
     [HttpGet("templates")]
     [Authorize(Roles = TemplateAdminRoles)]
-    public async Task<IActionResult> Templates(CancellationToken ct)
+    public async Task<IActionResult> Templates([FromQuery] bool includeTurnedOff, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var templates = await _db.HrLetterTemplates.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && !x.IsDeleted)
+        // "Show turned-off" also lists templates removed while nothing used them, so they can be restored.
+        var templates = await (includeTurnedOff ? Infrastructure.Data.ScopedBypass.TenantWide(_db.HrLetterTemplates, tenantId.Value, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.") : _db.HrLetterTemplates.Where(x => x.TenantId == tenantId)).AsNoTracking()
             .OrderBy(x => x.LetterType).ThenBy(x => x.CompanyId)
             .ToListAsync(ct);
 
@@ -195,7 +195,7 @@ public class HrLettersController : ControllerBase
         template.BodyAr = req.BodyAr ?? string.Empty;
         template.ClosingEn = req.ClosingEn ?? string.Empty;
         template.ClosingAr = req.ClosingAr ?? string.Empty;
-        template.IsActive = req.IsActive ?? template.IsActive;
+        // On or off is changed only by Remove / Restore (permissioned, audited, usage-checked), never by an edit.
         template.Version++;
         template.UpdatedAtUtc = DateTime.UtcNow;
         template.UpdatedByUserId = this.GetUserId();
@@ -205,6 +205,54 @@ public class HrLettersController : ControllerBase
             JsonSerializer.Serialize(new { template.LetterType, template.Version, template.Language }), ct);
 
         return Ok(ToTemplateDto(template));
+    }
+
+    /// <summary>Setup's Remove: a template no issued letter used is deleted; one that issued letters name is turned off, so the
+    /// register still resolves it, and can be restored. Built-in defaults are turned off, never deleted.</summary>
+    [HttpDelete("templates/{id:guid}")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> RemoveTemplate(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var template = await _db.HrLetterTemplates.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+        if (template is null || !OrgWriteRules.MayWriteCompany(this, template.CompanyId)) return NotFound();
+
+        var usage = await SetupRemoval.MeasureAsync(this, new[] { SetupRemoval.Of<IssuedLetter>(_db, tenantId.Value, "issuedLetter", "issued letters", x => x.TemplateId == id) }, ct);
+        var issued = usage.WideTotal;
+        template.UpdatedAtUtc = DateTime.UtcNow; template.UpdatedByUserId = this.GetUserId();
+        if (issued > 0 || template.IsSystemDefault)
+        {
+            template.IsActive = false;
+            await _db.SaveChangesAsync(ct);
+            await Audit(tenantId.Value, "hr_letter.template_turned_off", "HrLetterTemplate", id.ToString(),
+                JsonSerializer.Serialize(new { template.LetterType, issued }), ct);
+            return SetupRemoval.TurnedOff(this, usage);
+        }
+        template.IsDeleted = true; template.IsActive = false;
+        await _db.SaveChangesAsync(ct);
+        await Audit(tenantId.Value, "hr_letter.template_deleted", "HrLetterTemplate", id.ToString(),
+            JsonSerializer.Serialize(new { template.LetterType }), ct);
+        return SetupRemoval.Deleted(this);
+    }
+
+    [HttpPost("templates/{id:guid}/restore")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> RestoreTemplate(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var template = await Infrastructure.Data.ScopedBypass.TenantWide(_db.HrLetterTemplates, tenantId.Value, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.").FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (template is null || !OrgWriteRules.MayWriteCompany(this, template.CompanyId)) return NotFound();
+        if (template.IsDeleted || !template.IsActive)
+        {
+            template.IsDeleted = false; template.IsActive = true;
+            template.UpdatedAtUtc = DateTime.UtcNow; template.UpdatedByUserId = this.GetUserId();
+            await _db.SaveChangesAsync(ct);
+            await Audit(tenantId.Value, "hr_letter.template_restored", "HrLetterTemplate", id.ToString(),
+                JsonSerializer.Serialize(new { template.LetterType }), ct);
+        }
+        return SetupRemoval.Restored(this);
     }
 
     // ── Issuance ──────────────────────────────────────────────────────────────────────────

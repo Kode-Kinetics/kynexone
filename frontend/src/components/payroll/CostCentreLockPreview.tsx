@@ -205,19 +205,19 @@ export function CostCentreLockPreview({ journal, run, companyName, mayLock, onRe
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="surface p-4" data-testid="cc-lock-kpi-debits">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total debits')}</p>
-          <p className="text-lg font-bold tabular-nums text-sapphire dark:text-cyanAccent"><bdi dir="ltr">{money(journal.totalDebits)}</bdi></p>
+          <p className="text-lg font-semibold tabular-nums text-sapphire dark:text-cyanAccent"><bdi dir="ltr">{money(journal.totalDebits)}</bdi></p>
         </div>
         <div className="surface p-4" data-testid="cc-lock-kpi-credits">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total credits')}</p>
-          <p className="text-lg font-bold tabular-nums text-sapphire dark:text-cyanAccent"><bdi dir="ltr">{money(journal.totalCredits)}</bdi></p>
+          <p className="text-lg font-semibold tabular-nums text-sapphire dark:text-cyanAccent"><bdi dir="ltr">{money(journal.totalCredits)}</bdi></p>
         </div>
         <div className="surface p-4" data-testid="cc-lock-kpi-blocked">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Blocked: no cost centre')}</p>
-          <p className={`text-lg font-bold tabular-nums ${kpis.blocked > 0 ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}><bdi dir="ltr">{fmt.integer(kpis.blocked)}</bdi></p>
+          <p className={`text-lg font-semibold tabular-nums ${kpis.blocked > 0 ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}><bdi dir="ltr">{fmt.integer(kpis.blocked)}</bdi></p>
         </div>
         <div className="surface p-4" data-testid="cc-lock-kpi-uncosted">
           <p className="text-xs text-slate-500 dark:text-slate-400">{t('Not costed (optional accounts)')}</p>
-          <p className="text-lg font-bold tabular-nums text-slate-900 dark:text-white"><bdi dir="ltr">{fmt.integer(kpis.uncosted)}</bdi></p>
+          <p className="text-lg font-semibold tabular-nums text-slate-900 dark:text-white"><bdi dir="ltr">{fmt.integer(kpis.uncosted)}</bdi></p>
         </div>
       </div>
 
@@ -236,7 +236,7 @@ export function CostCentreLockPreview({ journal, run, companyName, mayLock, onRe
       {!posted && problemCount > 0 && (
         <div data-testid="cc-lock-blockers" role="alert" className="space-y-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 ref={headingRef} tabIndex={-1} className="flex items-center gap-2 text-sm font-bold outline-none focus-visible:ring-2 focus-visible:ring-rose-500">
+            <h3 ref={headingRef} tabIndex={-1} className="flex items-center gap-2 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-rose-500">
               <AlertTriangle className="h-4 w-4" aria-hidden />
               {t('Lock is blocked: {count, plural, one {# problem} other {# problems}}', { count: problemCount })}
             </h3>

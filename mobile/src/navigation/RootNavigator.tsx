@@ -10,9 +10,13 @@ import { LiquidBackdrop, Surface } from '@/components/ui';
 import { useTheme } from '@/theme/ThemeProvider';
 import { MfaSetupBanner } from '@/features/auth/MfaSetupBanner';
 import { ResetCodeBanner } from '@/features/auth/ResetCodeBanner';
+import { ConnectionIssueScreen } from '@/features/safety/ConnectionIssueScreen';
+import { UpdateRequiredBanner, UpdateRequiredScreen } from '@/features/safety/UpdateRequired';
+import { useCompatibilityStore } from '@/safety/compatibilityStore';
 
 export function RootNavigator() {
-  const { isAuthenticated, isInitialized, initialize } = useAuthStore();
+  const { isAuthenticated, isInitialized, initialize, connectionIssue } = useAuthStore();
+  const blocking = useCompatibilityStore((s) => s.blocking);
   const { theme } = useTheme();
   const { t } = useTranslation();
 
@@ -55,11 +59,15 @@ export function RootNavigator() {
     );
   }
 
+  if (blocking) return <UpdateRequiredScreen />;
+  if (connectionIssue) return <ConnectionIssueScreen />;
+
   return (
     <NavigationContainer ref={navigationRef} theme={navigationTheme}>
       {isAuthenticated ? <MainTabs /> : <AuthStack />}
       {isAuthenticated ? <MfaSetupBanner /> : null}
       {isAuthenticated ? <ResetCodeBanner /> : null}
+      <UpdateRequiredBanner />
     </NavigationContainer>
   );
 }

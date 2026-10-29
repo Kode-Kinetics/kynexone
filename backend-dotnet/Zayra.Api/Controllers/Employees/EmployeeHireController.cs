@@ -47,7 +47,7 @@ public sealed class EmployeeHireController : ControllerBase
 
     public sealed record HireDraftRequest(DateTime? BaseUpdatedAtUtc, EmployeeCreateRequest Request);
     public sealed record RehireRequest(DateTime StartDate, Guid? DesignationId, Guid? GradeId, string? Reason);
-    public sealed record ApproveCompensationRequest(string? Note);
+    public sealed record ApproveCompensationRequest(string? Note, bool OverrideGradeRange = false);
 
     // ── Draft autosave ───────────────────────────────────────────────────────────────────────────
     [HttpPut("{id:int}/hire-draft")]
@@ -287,6 +287,17 @@ public sealed class EmployeeHireController : ControllerBase
             return StatusCode(403, new { error = "second_person_required",
                 message = "A pay package must be approved by someone other than the person who entered it, the employee, or the person who issued the employee's sign-in code." });
 
+        // The figures are a pending SalaryChangeRequest when the package is a hire's first: Payroll's decision applies it and closes the
+        // pay ledger in the same transaction. This door only adds the note and the audit row; it never decides the figures a second way.
+        if ((await FirstPackageDecision.PendingIdsAsync(_db, tenantId, id, ct)).Count > 0)
+        {
+            var refusal = await FirstPackageDecision.ApproveAsync(this, tenantId, id, body.Note, body.OverrideGradeRange, ct);
+            if (refusal is not null) return refusal;
+            _audit.Stage(CompensationApprovalGate.ApprovedAction, "Employee", id.ToString(), Context(tenantId),
+                JsonSerializer.Serialize(new { note = body.Note.Trim(), fingerprint = CompensationApprovalGate.FingerprintForApproval(employee.Salary, profile?.Iban) }), employee.CompanyId);
+            await _db.SaveChangesAsync(ct);
+            return Ok(new { approved = true });
+        }
         var now = DateTime.UtcNow;
         if (open.Count == 0)
             open.Add(NewResolvedGap(tenantId, employee));

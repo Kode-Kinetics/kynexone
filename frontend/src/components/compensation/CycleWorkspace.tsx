@@ -1,5 +1,6 @@
 'use client';
 
+import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Plus, Rocket, Undo2 } from 'lucide-react';
 import {
@@ -78,7 +79,7 @@ export function CycleWorkspace() {
                 <button type="button" onClick={() => setSelected(c.id)} aria-current={selected === c.id}
                   className={`w-full rounded-lg px-2 py-2 text-start text-sm ${selected === c.id ? 'bg-sapphire/10 text-sapphire dark:text-cyanAccent' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
                   <span className="block font-medium">{c.name}</span>
-                  <span className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span className="mt-0.5 flex flex-wrap items-center gap-1 text-caption text-slate-500 dark:text-slate-400">
                     <Badge tone={cycleStatusTone(c.status)}>{cycleStatusLabel(t, c.status)}</Badge>
                     {t('Effective {date}', { date: f.date(c.effectiveDate) })}
                   </span>
@@ -192,7 +193,7 @@ function CycleDetail({ cycle, canManage, canApprove, onChange, onOpenSheet, relo
               <button type="button" className="btn-primary" disabled={busy} onClick={runNext} data-testid="cycle-next-action">
                 <Rocket className="h-4 w-4" aria-hidden /> {next.label}
               </button>
-              <p className="text-end text-[11px] text-slate-500 dark:text-slate-400">{next.hint}</p>
+              <p className="text-end text-caption text-slate-500 dark:text-slate-400">{next.hint}</p>
             </>
           )}
           <div className="flex flex-wrap justify-end gap-2">
@@ -250,7 +251,7 @@ function CycleDetail({ cycle, canManage, canApprove, onChange, onOpenSheet, relo
                     <td className="px-3 py-2">
                       <Badge tone={worksheetStatusTone(w.status)}>{worksheetStatusLabel(t, w.status)}</Badge>
                       {w.overspend && <span className="ms-1"><Badge tone="rose">{t('Over budget')}</Badge></span>}
-                      {w.decisionComments && <p className="mt-1 max-w-[16rem] text-[11px] text-slate-500 dark:text-slate-400">{w.decisionComments}</p>}
+                      {w.decisionComments && <p className="mt-1 max-w-[16rem] text-caption text-slate-500 dark:text-slate-400">{w.decisionComments}</p>}
                     </td>
                     <td className="px-3 py-2 tabular-nums">{f.integer(w.lineCount)}</td>
                     <td className="px-3 py-2 tabular-nums">{f.money(w.proposedTotal, cycle.currency)}</td>
@@ -356,7 +357,7 @@ function Totals({ cycle }: { cycle: Cycle }) {
         <div key={x.label} className="surface p-3">
           <dt className="text-xs text-slate-500 dark:text-slate-400">{x.label}</dt>
           <dd className="mt-1 text-lg font-semibold tabular-nums text-slate-900 dark:text-white">{x.value}</dd>
-          <dd className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{x.definition}</dd>
+          <dd className="mt-1 text-caption text-slate-500 dark:text-slate-400">{x.definition}</dd>
         </div>
       ))}
     </dl>
@@ -413,7 +414,7 @@ function BudgetTable({ cycle, editable, onSaved }: { cycle: Cycle; editable: boo
                       </div>
                     ) : null}
                     <div className="tabular-nums">{b.hasBudget ? f.money(b.pool, cycle.currency) : t('No budget set')}</div>
-                    {b.poolType === 'PercentOfEligibleBasic' && b.poolPercent != null && <div className="text-[11px] text-slate-500 dark:text-slate-400">{t('{pct} of eligible basic', { pct: f.percent(b.poolPercent, 2) })}</div>}
+                    {b.poolType === 'PercentOfEligibleBasic' && b.poolPercent != null && <div className="text-caption text-slate-500 dark:text-slate-400">{t('{pct} of eligible basic', { pct: f.percent(b.poolPercent, 2) })}</div>}
                   </td>
                   <td className="px-3 py-2 tabular-nums">{f.money(b.proposed, cycle.currency)}</td>
                   <td className={`px-3 py-2 tabular-nums ${b.remaining < 0 ? 'text-rose-700 dark:text-rose-300' : ''}`}>{f.money(b.remaining, cycle.currency)}</td>
@@ -638,8 +639,8 @@ function ApplyResults({ cycle, canManage, canApprove, onDone }: { cycle: Cycle; 
                 <td className="px-3 py-2 tabular-nums">{f.money(l.newBasic, l.payCurrency)}</td>
                 <td className="px-3 py-2">
                   <Badge tone={changeStatusTone(l.changeStatus)}>{l.changeRequestId ? changeStatusLabel(t, l.changeStatus) : t('Blocked')}</Badge>
-                  {l.blockedReason && !l.changeRequestId && <p className="mt-1 max-w-md text-[11px] text-rose-700 dark:text-rose-300">{l.blockedReason}</p>}
-                  {l.reversalChangeRequestId && <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-300">{t('Reversal: {status}', { status: changeStatusLabel(t, l.reversalStatus) })}</p>}
+                  {l.blockedReason && !l.changeRequestId && <p className="mt-1 max-w-md text-caption text-rose-700 dark:text-rose-300">{l.blockedReason}</p>}
+                  {l.reversalChangeRequestId && <p className="mt-1 text-caption text-slate-600 dark:text-slate-300">{t('Reversal: {status}', { status: changeStatusLabel(t, l.reversalStatus) })}</p>}
                 </td>
                 <td className="px-3 py-2 text-end">
                   {canManage && (l.changeStatus === 'ApprovedPendingEffectiveDate' || l.changeStatus === 'PendingApproval') && (
@@ -757,7 +758,7 @@ function CycleFormModal({ cycle, onClose, onSaved }: { cycle?: Cycle; onClose: (
         {grades.length > 0 && (
           <fieldset className="space-y-1 text-sm">
             <legend className="mb-1 font-medium text-slate-700 dark:text-slate-300">{t('Exclude grades')}</legend>
-            {grades.map((g) => (
+            {pickable(grades, ...excludeGrades).map((g) => (
               <label key={g.id} className="flex items-center gap-2">
                 <input type="checkbox" checked={excludeGrades.includes(g.id)} onChange={(e) => setExcludeGrades((x) => (e.target.checked ? [...x, g.id] : x.filter((y) => y !== g.id)))} /> {g.name}
               </label>

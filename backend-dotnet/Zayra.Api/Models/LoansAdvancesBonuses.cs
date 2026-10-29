@@ -535,7 +535,8 @@ public class FinanceGlEntry : ITenantOwned
     public string DebitAccount { get; set; } = string.Empty;    // e.g. "1400 - Employee Loans Receivable"
     public string CreditAccount { get; set; } = string.Empty;   // e.g. "1000 - Cash/Bank"
     public decimal Amount { get; set; }
-    public string Currency { get; set; } = "USD";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
 
     // Period
     public DateOnly EntryDate { get; set; }

@@ -31,7 +31,7 @@ export function ReleaseAPlaceholder({ title, purpose }: { title: string; purpose
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t(title)}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t(title)}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t(purpose)}</p>
       </div>
       <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-sm text-slate-500 dark:border-white/15 dark:text-slate-400">

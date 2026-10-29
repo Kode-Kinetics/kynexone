@@ -75,7 +75,8 @@ public class EmployeeFinalSettlement : ITenantOwned, ICompanyScopedOperational
     public string? ConfirmedTerminationReason { get; set; }
 
     public decimal ServiceYears { get; set; }
-    public string Currency { get; set; } = "SAR";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
 
     /// <summary>The WHOLE <c>EndOfServiceResult</c> from POD-A2's engine — total, applicable rule, AND the
     /// per-tier breakdown (Art.84 tier-1/tier-2 plus any Art.85/Art.80 adjustment line). The pre-C1

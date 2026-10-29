@@ -56,12 +56,12 @@ async function boot(page: Page, options: { group?: boolean; workspace?: boolean;
     return reply({ items: [], total: 0 });
   });
   if (options.workspace) {
-    await page.goto('/setup?tab=aiSetup&area=onboarding&setting=onboardingChecklists');
+    await page.goto('/setup?tab=aiSetup&area=talentServices&setting=onboardingChecklists');
     // A deep link to one setting opens the focused editor: the area is its context line and the
     // setting itself is the heading.
     const focused = page.getByRole('region', { name: 'Onboarding checklists', exact: true });
     await expect(focused.getByRole('heading', { name: 'Onboarding checklists', exact: true })).toBeVisible();
-    await expect(focused.getByText('Onboarding and confirmation', { exact: true })).toBeVisible();
+    await expect(focused.getByText('Talent & employee services', { exact: true })).toBeVisible();
     return { writes, savedTasks, errors, identity, releaseCompanies, get templateReads() { return templateReads; } };
   }
   return { writes, savedTasks, errors, identity, releaseCompanies, get templateReads() { return templateReads; } };
@@ -144,7 +144,7 @@ test(`workspace policy intake reviews and saves in the existing onboarding form 
   await page.getByRole('checkbox', { name: 'Allow the configured AI service to read this document and propose setup settings.', exact: true }).check();
   await page.getByRole('button', { name: 'Extract from policy', exact: true }).click();
   await page.getByRole('button', { name: 'Review prefilled forms', exact: true }).click();
-  await expect(page).toHaveURL(url => url.pathname === '/setup' && url.searchParams.get('area') === 'onboarding' && url.searchParams.get('setting') === 'onboardingChecklists' && !url.searchParams.has('mode'));
+  await expect(page).toHaveURL(url => url.pathname === '/setup' && url.searchParams.get('area') === 'talentServices' && url.searchParams.get('setting') === 'onboardingChecklists' && !url.searchParams.has('mode'));
   await page.getByTitle('Onboarding checklist', { exact: true }).selectOption(checklistId);
   await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Arrange contract signing');

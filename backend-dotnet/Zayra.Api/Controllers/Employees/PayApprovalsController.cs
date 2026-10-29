@@ -43,7 +43,7 @@ public sealed class PayApprovalsController : ControllerBase
         _audit = audit;
     }
 
-    public sealed record DecisionRequest(string? Fingerprint, string? Decision, string? Reason);
+    public sealed record DecisionRequest(string? Fingerprint, string? Decision, string? Reason, bool OverrideGradeRange = false);
 
     // ── Queue ────────────────────────────────────────────────────────────────────────────────────
     [HttpGet]
@@ -150,6 +150,22 @@ public sealed class PayApprovalsController : ControllerBase
             return Problem(400, "reason_contains_account_number", "Do not write the account number in the reason.");
 
         var context = Context(tenantId);
+        // The figures are a pending SalaryChangeRequest when the package is a hire's first: ONE decision path, Payroll's, applies or
+        // rejects it (and closes the pay ledger with an approval). This view only adds the scoped read, the fingerprint and the reason.
+        if ((await FirstPackageDecision.PendingIdsAsync(_db, tenantId, employee.Id, ct)).Count > 0)
+        {
+            var packageMeta = new { via = "pay-approval-view", reason, ibanLast4 = Last4(compactIban), packageHash = token, hashes = CompensationApprovalGate.FingerprintForApproval(package.Salary, package.Iban) };
+            if (decision == "approve")
+            {
+                var refusal = await FirstPackageDecision.ApproveAsync(this, tenantId, employee.Id, reason, body.OverrideGradeRange, ct);
+                if (refusal is not null) return refusal;
+                _audit.Stage(CompensationApprovalGate.ApprovedAction, "Employee", employee.Id.ToString(CultureInfo.InvariantCulture), context, JsonSerializer.Serialize(packageMeta), employee.CompanyId);
+                await _db.SaveChangesAsync(ct);
+                return Ok(new { decision = "approved" });
+            }
+            var rejectRefusal = await FirstPackageDecision.RejectAsync(this, tenantId, employee.Id, reason, ct);
+            if (rejectRefusal is not null) return rejectRefusal;
+        }
         var open = await _db.EmployeeImportGaps
             .Where(g => g.TenantId == tenantId && g.EmployeeId == employee.Id && g.GapType == CompensationApprovalGate.GapType && g.ResolvedAtUtc == null)
             .ToListAsync(ct);
@@ -237,13 +253,13 @@ public sealed class PayApprovalsController : ControllerBase
         var shared = 0;
         if (iban.Length > 0)
         {
-            // Count only: the other employee's identity is never read into the response, so company scope cannot leak through it.
+            // The warning is useful only inside the approver's company scope. A tenant-wide count would reveal that
+            // an otherwise invisible sibling company has an employee using the same bank account.
             var sharing = await _db.EmployeePayrollProfiles.AsNoTracking()
                 .Where(p => p.TenantId == tenantId && !p.IsDeleted && p.EmployeeId != employee.Id && p.Iban != "" && p.Iban.Replace(" ", "").ToUpper() == iban)
                 .Select(p => p.EmployeeId).Distinct().ToListAsync(ct);
-            shared = sharing.Count == 0 ? 0 : await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
-                    "Shared-account warning: how many other employees in the tenant hold this account; only the count leaves the server.")
-                .AsNoTracking().CountAsync(e => sharing.Contains(e.Id) && !e.IsDeleted, ct);
+            shared = sharing.Count == 0 ? 0 : await _db.Employees.AsNoTracking()
+                .CountAsync(e => e.TenantId == tenantId && sharing.Contains(e.Id) && !e.IsDeleted, ct);
         }
         return new View(package, gross, profile?.BankName ?? "", iban.Length >= 4 ? iban[^4..] : null, account.Length >= 4 ? account[^4..] : null,
             companyName, designation, entered is null ? null : ToActor(entered.UserId, entered.CreatedAtUtc),

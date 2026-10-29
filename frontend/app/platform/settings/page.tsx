@@ -192,7 +192,7 @@ export default function PlatformSettingsPage() {
   if (loadErr) {
     return (
       <div className="space-y-5">
-        <h1 className="text-lg font-bold text-white">Platform Settings</h1>
+        <h1 className="text-lg font-semibold text-white">Platform Settings</h1>
         <div className="px-5 py-6 bg-amber-500/5 border border-amber-500/20 rounded-xl">
           <p className="text-sm text-amber-400">{loadErr}</p>
           <p className="text-xs text-slate-500 mt-2">SMTP and maintenance settings can still be configured below.</p>
@@ -206,7 +206,7 @@ export default function PlatformSettingsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-bold text-white">Platform Settings</h1>
+        <h1 className="text-lg font-semibold text-white">Platform Settings</h1>
         <button type="button" onClick={load} disabled={loading} aria-label="Refresh"
           className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors">
           <RefreshCw className="h-3.5 w-3.5" />
@@ -250,7 +250,7 @@ export default function PlatformSettingsPage() {
       {/* AI Provider status */}
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">AI Provider</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">AI Provider</p>
           <Activity className="h-3.5 w-3.5 text-slate-600" />
         </div>
         <div className="px-5 py-4 flex items-center gap-3">
@@ -273,7 +273,7 @@ export default function PlatformSettingsPage() {
       {/* Environment diagnostics */}
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Environment Diagnostics</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Environment Diagnostics</p>
           <button
             type="button"
             onClick={loadDiagnostics}
@@ -307,7 +307,7 @@ export default function PlatformSettingsPage() {
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         <div className="flex items-center gap-2 px-5 py-3 border-b border-white/[0.06]">
           <Wrench className="h-3.5 w-3.5 text-slate-600" />
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Maintenance Mode</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Maintenance Mode</p>
         </div>
         <div className="px-5 py-5 space-y-4">
           {maintenance && (
@@ -399,7 +399,7 @@ function SmtpForm({
   return (
     <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
       <div className="px-5 py-3 border-b border-white/[0.06]">
-        <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Email / SMTP Configuration</p>
+        <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Email / SMTP Configuration</p>
       </div>
       <form onSubmit={onSave} className="px-5 py-5 space-y-4">
         {/* Provider auto-configuration */}
@@ -422,7 +422,7 @@ function SmtpForm({
               </optgroup>
             ))}
           </select>
-          <p className="mt-1 text-[11px] text-slate-500">
+          <p className="mt-1 text-caption text-slate-500">
             Picking a provider fills in the host, port and encryption. Your username and password are never changed by it.
           </p>
         </div>
@@ -434,7 +434,7 @@ function SmtpForm({
               <p className="text-xs text-sky-200 leading-relaxed">{preset.guidance}</p>
               {preset.docsUrl && (
                 <a href={preset.docsUrl} target="_blank" rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] text-sky-400 hover:text-sky-300">
+                  className="inline-flex items-center gap-1 text-caption text-sky-400 hover:text-sky-300">
                   {preset.label} SMTP documentation <ExternalLink className="h-3 w-3" />
                 </a>
               )}
@@ -469,14 +469,14 @@ function SmtpForm({
             <input id="smtp-username" value={smtp.username}
               onChange={e => setSmtp(f => ({ ...f, username: e.target.value }))}
               className={INPUT} placeholder={hint.placeholder} />
-            <p className="mt-1 text-[11px] text-slate-500">{hint.label}</p>
+            <p className="mt-1 text-caption text-slate-500">{hint.label}</p>
           </div>
           <div>
             <label htmlFor="smtp-password" className="block text-xs text-slate-400 mb-1">Password</label>
             <input id="smtp-password" type="password" value={smtp.password}
               onChange={e => setSmtp(f => ({ ...f, password: e.target.value }))}
               className={INPUT} placeholder="Leave blank to keep the current password" autoComplete="new-password" />
-            <p className="mt-1 text-[11px] text-slate-500">{hint.passwordPlaceholder}. Stored encrypted; never shown again.</p>
+            <p className="mt-1 text-caption text-slate-500">{hint.passwordPlaceholder}. Stored encrypted; never shown again.</p>
           </div>
         </div>
 
@@ -486,7 +486,7 @@ function SmtpForm({
             <input id="smtp-from-email" type="email" value={smtp.fromEmail}
               onChange={e => setSmtp(f => ({ ...f, fromEmail: e.target.value }))}
               className={INPUT} placeholder="noreply@yourdomain.com" required />
-            <p className="mt-1 text-[11px] text-slate-500">The address recipients see. Most providers require it to match the mailbox.</p>
+            <p className="mt-1 text-caption text-slate-500">The address recipients see. Most providers require it to match the mailbox.</p>
           </div>
           <div>
             <label htmlFor="smtp-from-name" className="block text-xs text-slate-400 mb-1">From Name</label>
@@ -518,7 +518,7 @@ function SmtpForm({
       <div className="border-t border-white/[0.06] px-5 py-5 space-y-3">
         <div className="flex items-center gap-2">
           <Mail className="h-3.5 w-3.5 text-slate-600" />
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Send a test email</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Send a test email</p>
         </div>
         <p className="text-xs text-slate-500">
           Sends a real message through the <strong className="text-slate-400">saved</strong> settings above. Save first if you just changed something.
@@ -534,7 +534,7 @@ function SmtpForm({
               className={INPUT}
               placeholder="you@yourdomain.com"
             />
-            <p className="mt-1 text-[11px] text-slate-500">
+            <p className="mt-1 text-caption text-slate-500">
               Use an inbox you can open right now. Leave blank to send to your own platform-admin address.
             </p>
           </div>
@@ -554,14 +554,14 @@ function SmtpForm({
               <div className="space-y-1">
                 <p className={`text-sm ${testResult.sent ? 'text-emerald-300' : 'text-rose-300'}`}>{testResult.message}</p>
                 {testResult.sent && testResult.host && (
-                  <p className="text-[11px] text-slate-500">
+                  <p className="text-caption text-slate-500">
                     Relayed by {testResult.host}:{testResult.port}
                     {testResult.sentAtUtc ? ` at ${new Date(testResult.sentAtUtc).toLocaleTimeString()}` : ''}.
                     Delivery to the inbox is the provider&apos;s job from here — check the spam folder if it does not arrive.
                   </p>
                 )}
                 {!testResult.sent && testResult.error && (
-                  <p className="text-[11px] text-slate-500 font-mono break-all">{testResult.error}</p>
+                  <p className="text-caption text-slate-500 font-mono break-all">{testResult.error}</p>
                 )}
               </div>
             </div>

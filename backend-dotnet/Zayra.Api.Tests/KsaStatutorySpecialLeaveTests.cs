@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Compliance;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Setup;
 using Zayra.Api.Controllers;
@@ -174,15 +175,26 @@ public class KsaStatutorySpecialLeaveTests
         return t;
     }
 
-    private static void AssertFloorRefusal(IActionResult result)
+    /// <summary>A below-the-law policy is no longer refused (owner decision 2026-10-25): the save answers 409
+    /// <c>warnings_require_acknowledgement</c> with the warning, its citation and the statutory value, and stores nothing.</summary>
+    private static System.Text.Json.JsonElement AssertAckRequired(IActionResult result, string? citation = "Art. 151")
     {
-        var bad = result.Should().BeOfType<BadRequestObjectResult>().Subject;
-        bad.Value!.GetType().GetProperty("error")!.GetValue(bad.Value).Should().Be("statutory_leave_floor");
-        ((string)bad.Value.GetType().GetProperty("message")!.GetValue(bad.Value)!).Should().Contain("Art. 151");
+        var obj = result.Should().BeOfType<ObjectResult>().Subject;
+        obj.StatusCode.Should().Be(409);
+        var json = System.Text.Json.JsonSerializer.SerializeToElement(obj.Value, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        json.GetProperty("code").GetString().Should().Be("warnings_require_acknowledgement");
+        var warnings = json.GetProperty("warnings");
+        warnings.GetArrayLength().Should().BeGreaterThan(0);
+        if (citation is not null) warnings.EnumerateArray().Should().Contain(w => w.GetProperty("citation").GetString()!.Contains(citation));
+        warnings.EnumerateArray().Should().OnlyContain(w => w.GetProperty("messageAr").GetString()!.Length > 0 && w.GetProperty("message").GetString()!.Length > 0);
+        return json;
     }
 
+    private static FloorAcknowledgement[] Ack(params string[] codes)
+        => codes.Select(c => new FloorAcknowledgement(c, "Board approved a shorter policy for this entity")).ToArray();
+
     [Fact]
-    public async Task SaudiMaternityPolicy_BelowTwelveWeeks_IsRefused_AndNothingIsStored()
+    public async Task SaudiMaternityPolicy_BelowTwelveWeeks_NeedsAcknowledgement_AndNothingIsStoredWithoutIt()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
@@ -190,10 +202,12 @@ public class KsaStatutorySpecialLeaveTests
         var mat = await AddMaternityTypeAsync(db, tenantId);
         var controller = PoliciesController(db, tenantId);
 
-        AssertFloorRefusal(await controller.Create(Policy(mat.Id, days: 70m), default));
-        AssertFloorRefusal(await controller.Create(Policy(mat.Id, days: 84m, maxPerRequest: 70m), default));
-        AssertFloorRefusal(await controller.Create(Policy(mat.Id, days: 84m, payrollImpact: "Unpaid"), default));
-        (await db.LeavePolicies.AnyAsync()).Should().BeFalse("a refused statutory floor is not stored");
+        var low = AssertAckRequired(await controller.Create(Policy(mat.Id, days: 70m), default));
+        low.GetProperty("warnings")[0].GetProperty("statutoryValue").GetDecimal().Should().Be(84m);
+        low.GetProperty("warnings")[0].GetProperty("configuredValue").GetDecimal().Should().Be(70m);
+        AssertAckRequired(await controller.Create(Policy(mat.Id, days: 84m, maxPerRequest: 70m), default));
+        AssertAckRequired(await controller.Create(Policy(mat.Id, days: 84m, payrollImpact: "Unpaid"), default));
+        (await db.LeavePolicies.AnyAsync()).Should().BeFalse("nothing is stored until the warning is acknowledged");
 
         (await controller.Create(Policy(mat.Id, days: 84m), default)).Should().BeOfType<CreatedResult>();
         (await controller.Create(Policy(mat.Id, days: 98m, maxPerRequest: 98m), default))
@@ -201,7 +215,76 @@ public class KsaStatutorySpecialLeaveTests
     }
 
     [Fact]
-    public async Task SaudiMaternityPolicy_CannotBeEditedDownBelowTwelveWeeks()
+    public async Task SaudiMaternityPolicy_BelowTwelveWeeks_IsSavedWithAnAcknowledgement_AndAuditedWithWhoWhenAndWhy()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var controller = PoliciesController(db, tenantId);
+
+        var created = await controller.Create(Policy(mat.Id, days: 70m) with { AcknowledgedWarnings = Ack("leave_special_entitlement_below_minimum") }, default);
+
+        var policy = (LeavePolicy)created.Should().BeOfType<CreatedResult>().Subject.Value!;
+        policy.AnnualEntitlementDays.Should().Be(70m, "the configured value is honoured, never silently raised");
+        var stored = FloorAckStore.Parse(policy.BelowMinimumAcksJson).Should().ContainSingle().Subject;
+        stored.StatutoryValue.Should().Be(84m);
+        stored.ConfiguredValue.Should().Be(70m);
+        stored.Citation.Should().Contain("Art. 151");
+        stored.Reason.Should().Contain("Board approved");
+        var audit = await db.LeaveAuditLogs.SingleAsync(a => a.EntityId == policy.Id.ToString() && a.Action == "BelowStatutoryMinimumAcknowledged");
+        audit.OldValue.Should().Contain("statutory_value=84");
+        audit.NewValue.Should().Contain("configured_value=70");
+        audit.Reason.Should().Contain("Art. 151").And.Contain("Board approved");
+        audit.PerformedByName.Should().NotBeNullOrEmpty();
+        audit.CreatedAtUtc.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromMinutes(1));
+    }
+
+    [Fact]
+    public async Task AnAcknowledgement_NeedsARealReason_AndMustNameTheExactWarning()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var controller = PoliciesController(db, tenantId);
+
+        var shortReason = await controller.Create(Policy(mat.Id, days: 70m) with
+        { AcknowledgedWarnings = [new FloorAcknowledgement("leave_special_entitlement_below_minimum", "ok")] }, default);
+        var refused = shortReason.Should().BeOfType<ObjectResult>().Subject;
+        refused.StatusCode.Should().Be(422);
+        System.Text.Json.JsonSerializer.SerializeToElement(refused.Value, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))
+            .GetProperty("code").GetString().Should().Be("override_reason_required");
+
+        AssertAckRequired(await controller.Create(Policy(mat.Id, days: 70m) with { AcknowledgedWarnings = Ack("some_other_code") }, default));
+        (await db.LeavePolicies.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AnAcknowledgedPolicy_IsNotAskedAgainForTheSameValue_ButIsAskedWhenTheValueChanges()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var controller = PoliciesController(db, tenantId);
+        var id = ((LeavePolicy)((CreatedResult)await controller.Create(
+            Policy(mat.Id, days: 70m) with { AcknowledgedWarnings = Ack("leave_special_entitlement_below_minimum") }, default)).Value!).Id;
+        UpdateLeavePolicyRequest Edit(string? name = null, decimal? days = null) => new(
+            Name: name, CountryCode: null, CompanyId: null, BranchId: null, DepartmentName: null, Grade: null,
+            EmploymentType: null, ContractType: null, Gender: null, AppliesOnProbation: null,
+            AnnualEntitlementDays: days, AccrualMethod: null, CarryForwardMax: null, CarryForwardExpiry: null,
+            EncashmentAllowed: null, EncashmentMaxDays: null, MinimumDaysPerRequest: null,
+            MaximumDaysPerRequest: null, NoticeRequiredDays: null, WeekendsIncluded: null,
+            PublicHolidaysIncluded: null, PayrollImpact: null, ApprovalWorkflowId: null, Status: null);
+
+        (await controller.Update(id, Edit(name: "Renamed"), default)).Should().BeOfType<OkObjectResult>("the same value was already acknowledged");
+        AssertAckRequired(await controller.Update(id, Edit(days: 60m), default));
+        (await db.LeavePolicies.AsNoTracking().SingleAsync(p => p.Id == id)).AnnualEntitlementDays.Should().Be(70m);
+    }
+
+    [Fact]
+    public async Task SaudiMaternityPolicy_EditedDownBelowTwelveWeeks_NeedsAcknowledgement_AndIsNotChangedWithoutIt()
     {
         var dbName = Guid.NewGuid().ToString();
         ZayraDbContext Open() => new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(dbName).Options);
@@ -224,7 +307,7 @@ public class KsaStatutorySpecialLeaveTests
                 EncashmentAllowed: null, EncashmentMaxDays: null, MinimumDaysPerRequest: null,
                 MaximumDaysPerRequest: null, NoticeRequiredDays: null, WeekendsIncluded: null,
                 PublicHolidaysIncluded: null, PayrollImpact: null, ApprovalWorkflowId: null, Status: null), default);
-            AssertFloorRefusal(lowered);
+            AssertAckRequired(lowered);
         }
 
         await using (var db = Open())
@@ -232,14 +315,14 @@ public class KsaStatutorySpecialLeaveTests
     }
 
     [Fact]
-    public async Task CountryNeutralMaternityPolicy_InATenantWithASaudiCompany_IsFloored()
+    public async Task CountryNeutralMaternityPolicy_InATenantWithASaudiCompany_IsWarned()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         db.Companies.Add(new Company { TenantId = tenantId, LegalNameEn = "KSA Co", CountryCode = "SA" });
         var mat = await AddMaternityTypeAsync(db, tenantId);
 
-        AssertFloorRefusal(await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 70m, country: null), default));
+        AssertAckRequired(await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 70m, country: null), default));
     }
 
     [Fact]
@@ -272,24 +355,88 @@ public class KsaStatutorySpecialLeaveTests
         await AddCompanyAsync(db, tenantId);
         var mat = await AddMaternityTypeAsync(db, tenantId);
 
-        AssertFloorRefusal(await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m), default));
+        AssertAckRequired(await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 84m), default));
     }
 
     [Fact]
-    public async Task SaudiMaternityPolicy_OnWorkingDays_BelowEightyFour_IsRefusedWithTheFix()
+    public async Task SaudiMaternityPolicy_OnWorkingDays_BelowEightyFour_IsWarnedWithTheFix()
     {
-        // 70 working days cannot be judged against the law's 12 weeks; the refusal spells out the fix.
+        // 70 working days cannot be judged against the law's 12 weeks; the warning spells out the fix.
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         await AddCompanyAsync(db, tenantId);
         var mat = await AddMaternityTypeAsync(db, tenantId);
 
-        var refused = await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 70m, calendar: false), default);
+        var warned = AssertAckRequired(await PoliciesController(db, tenantId).Create(Policy(mat.Id, days: 70m, calendar: false), default));
 
-        AssertFloorRefusal(refused);
-        var message = (string)((BadRequestObjectResult)refused).Value!.GetType().GetProperty("message")!
-            .GetValue(((BadRequestObjectResult)refused).Value)!;
-        message.Should().Contain("84 calendar days by law").And.Contain("tick Count Weekends and Count Public Holidays");
+        var message = warned.GetProperty("warnings")[0].GetProperty("message").GetString()!;
+        message.Should().Contain("84 calendar days by law").And.Contain("count weekends and public holidays");
+        warned.GetProperty("warnings")[0].GetProperty("code").GetString().Should().Be("leave_special_working_days_below_minimum");
+    }
+
+    [Fact]
+    public async Task LoweringOnlyTheWorkingDayCap_RequiresAFreshAcknowledgement()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
+        var mat = await AddMaternityTypeAsync(db, tenantId);
+        var controller = PoliciesController(db, tenantId);
+        var created = (CreatedResult)await controller.Create(
+            Policy(mat.Id, days: 70m, maxPerRequest: 70m, calendar: false) with
+            { AcknowledgedWarnings = Ack(KsaLeaveFloorChecks.SpecialWorkingDays) }, default);
+        var id = ((LeavePolicy)created.Value!).Id;
+
+        var changedCap = new UpdateLeavePolicyRequest(
+            Name: null, CountryCode: null, CompanyId: null, BranchId: null, DepartmentName: null, Grade: null,
+            EmploymentType: null, ContractType: null, Gender: null, AppliesOnProbation: null,
+            AnnualEntitlementDays: null, AccrualMethod: null, CarryForwardMax: null, CarryForwardExpiry: null,
+            EncashmentAllowed: null, EncashmentMaxDays: null, MinimumDaysPerRequest: null,
+            MaximumDaysPerRequest: 60m, NoticeRequiredDays: null, WeekendsIncluded: null,
+            PublicHolidaysIncluded: null, PayrollImpact: null, ApprovalWorkflowId: null, Status: null);
+
+        var warning = AssertAckRequired(await controller.Update(id, changedCap, default));
+        warning.GetProperty("warnings").EnumerateArray().Should()
+            .Contain(w => w.GetProperty("code").GetString() == KsaLeaveFloorChecks.SpecialWorkingDays);
+    }
+
+    [Fact]
+    public async Task WorkingDayAcknowledgementFingerprint_ChangesWithTheClassifiedStatutoryKind()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        await AddCompanyAsync(db, tenantId);
+        var maternity = new LeaveType
+        {
+            TenantId = tenantId, Code = "MAT", NameEn = "Maternity Leave", Category = "Maternity", IsPaid = true, IsActive = true,
+        };
+        var iddah = new LeaveType
+        {
+            TenantId = tenantId, Code = "IDDAH", NameEn = "Iddah Leave", Category = "Iddah", IsPaid = true, IsActive = true,
+        };
+        db.LeaveTypes.AddRange(maternity, iddah);
+        foreach (var key in new[] { KsaSpecialLeaveRuleKeys.MaternityDays, KsaSpecialLeaveRuleKeys.IddahMuslimDays })
+            db.StatutoryRules.Add(new StatutoryRule
+            {
+                Id = Guid.NewGuid(), TenantId = null, CountryCode = CountryCodes.Saudi, Jurisdiction = Jurisdictions.KsaMainland,
+                RuleKey = key, RuleValue = "5", DataType = "decimal", EffectiveFrom = DateTime.UtcNow.AddDays(-1), Description = "test",
+            });
+        await db.SaveChangesAsync();
+        LeavePolicy PolicyFor(LeaveType type) => new()
+        {
+            TenantId = tenantId, LeaveTypeId = type.Id, CountryCode = CountryCodes.Saudi, Name = type.NameEn,
+            AnnualEntitlementDays = 2m, MaximumDaysPerRequest = 2m, WeekendsIncluded = false,
+            PublicHolidaysIncluded = false, PayrollImpact = "Paid", Status = "Active",
+        };
+        async Task<FloorWarning> WarningFor(LeaveType type) => (await KsaLeaveFloorChecks.ChecksAsync(
+            db, tenantId, type, PolicyFor(type), default)).Single(c => c.Warning.Code == KsaLeaveFloorChecks.SpecialWorkingDays).Warning;
+
+        var maternityWarning = await WarningFor(maternity);
+        var iddahWarning = await WarningFor(iddah);
+
+        maternityWarning.StatutoryValue.Should().Be(iddahWarning.StatutoryValue);
+        maternityWarning.ConfigurationFingerprint.Should().NotBe(iddahWarning.ConfigurationFingerprint,
+            "an acknowledgement must not transfer to a different statutory leave kind with the same floor");
     }
 
     [Fact]
@@ -399,7 +546,7 @@ public class KsaStatutorySpecialLeaveTests
         var mat = await AddMaternityTypeAsync(db, tenantId);
         var controller = PoliciesController(db, tenantId);
 
-        AssertFloorRefusal(await controller.Create(
+        AssertAckRequired(await controller.Create(
             Policy(mat.Id, days: 60m, country: null, companyId: ksa.Id, calendar: false), default));
 
         (await controller.Create(Policy(mat.Id, days: 60m, country: null, companyId: uae.Id, calendar: false), default))

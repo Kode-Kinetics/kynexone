@@ -28,7 +28,8 @@ public class Position : ITenantOwned, ICompanyScoped
     public string Title { get; set; } = string.Empty;
     public decimal Fte { get; set; } = 1m;
     public decimal BudgetedMonthlyCost { get; set; }
-    public string Currency { get; set; } = "SAR";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     public string Status { get; set; } = PositionStatuses.Open;
     public int? IncumbentEmployeeId { get; set; }
     public DateOnly EffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);

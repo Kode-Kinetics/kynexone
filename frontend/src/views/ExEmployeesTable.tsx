@@ -81,7 +81,7 @@ export function ExEmployeesTable({ search, page, onSearchChange, onPageChange }:
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Former Employee', 'Department', 'Last Status', 'Exit Date', 'Retention Until'].map((head) => (
-                  <th key={head} className="px-4 py-3 text-start text-xs font-bold uppercase text-slate-400">{head}</th>
+                  <th key={head} className="px-4 py-3 text-start text-xs font-semibold uppercase text-slate-400">{head}</th>
                 ))}
               </tr>
             </thead>

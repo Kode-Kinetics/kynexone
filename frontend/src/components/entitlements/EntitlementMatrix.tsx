@@ -165,7 +165,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   return <section className="space-y-4" aria-labelledby="benefits-matrix-heading">
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 id="benefits-matrix-heading" className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('Benefits by grade')}</h1>
+        <h1 id="benefits-matrix-heading" className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Benefits by grade')}</h1>
         <p className="max-w-3xl text-xs text-slate-500 dark:text-slate-400">{t('Set every benefit by grade in one place: housing, transport, tickets, medical cover, education and per diem.')}</p>
       </div>
       <label className="text-sm text-slate-700 dark:text-slate-200">{t('Applies to')}
@@ -181,7 +181,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
 
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
-    {asOf && <p role="status" className="rounded-md border border-sapphire/30 bg-sapphire/5 p-2 text-sm">
+    {asOf && <p role="status" className="rounded-lg border border-sapphire/30 bg-sapphire/5 p-2 text-sm">
       {fillTemplate(t('Showing the values that apply from {date}. Until then the current values stay in force.'), { date: asOf })}
       {' '}<button type="button" className="text-sapphire underline" onClick={() => { setAsOf(null); void load(); }}>{t('Show current values')}</button>
     </p>}
@@ -217,7 +217,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
               const rows = group === 'Loans' ? components.filter(c => c.isLoanFacility) : components.filter(c => c.group === group && !c.isLoanFacility);
               if (rows.length === 0) return null;
               return <tbody key={group}>
-                <tr><th colSpan={grades.length + 1} scope="colgroup" className="bg-slate-50 px-3 py-2 text-start text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+                <tr><th colSpan={grades.length + 1} scope="colgroup" className="bg-slate-50 px-3 py-2 text-start text-caption font-semibold uppercase tracking-wide text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
                   {t(group === 'Loans' ? 'Loan facilities — set in Loans' : groupKeys[group])}
                 </th></tr>
                 {rows.map(c => <MatrixRow key={c.code} component={c} grades={grades} drafts={drafts} original={original} gapKeys={gapKeys}
@@ -286,17 +286,17 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
         <p className="mt-1 font-semibold text-slate-600 dark:text-slate-300">{reasonText(c.floorReason, 'title')}</p>
         <p className="text-slate-500 dark:text-slate-400">{reasonText(c.floorReason, 'why')}</p>
       </details>}
-      {companyView && offering && offering.mode !== 'Group' && !c.isLoanFacility && <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+      {companyView && offering && offering.mode !== 'Group' && !c.isLoanFacility && <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-caption font-semibold ${
         offering.mode === 'Skipped' ? 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200'
           : offering.mode === 'Tailored' ? 'bg-sapphire/10 text-sapphire' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
         {t(modeKeys[offering.mode])}
       </span>}
-      {companyView && offering?.changesOn && <span className="mt-1 block text-[11px] font-normal text-slate-500">{fillTemplate(t(offering.offered ? 'Not offered from {date}' : 'Offered again from {date}'), { date: offering.changesOn })}</span>}
+      {companyView && offering?.changesOn && <span className="mt-1 block text-caption font-normal text-slate-500">{fillTemplate(t(offering.offered ? 'Not offered from {date}' : 'Offered again from {date}'), { date: offering.changesOn })}</span>}
       {canManage && companyView && offering?.canBeSkipped && <OfferingSwitch code={c.code} name={componentName(c)} companyId={companyId} offering={offering} today={today} onChanged={onOfferingChanged} />}
-      {canManage && !c.isFloor && !c.isLoanFacility && !skipped && anyUnset && <button type="button" className="mt-1 block text-[11px] font-normal text-sapphire underline" onClick={onMarkRest}>
+      {canManage && !c.isFloor && !c.isLoanFacility && !skipped && anyUnset && <button type="button" className="mt-1 block text-caption font-normal text-sapphire underline" onClick={onMarkRest}>
         {t('Mark the rest Not offered')}
       </button>}
-      {c.isLoanFacility && <Link href="/loans" className="mt-1 block text-[11px] font-normal text-sapphire underline">{t('Edit in Loans → Loan policies → Limits by grade')}</Link>}
+      {c.isLoanFacility && <Link href="/loans" className="mt-1 block text-caption font-normal text-sapphire underline">{t('Edit in Loans → Loan policies → Limits by grade')}</Link>}
     </th>
     {grades.map(g => {
       const key = cellKey(g.id, c.code);
@@ -319,9 +319,9 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
           onClick={() => onEdit(key)}
           className={`w-full min-w-[120px] rounded-lg border px-2 py-1.5 text-start text-xs transition hover:border-sapphire disabled:cursor-default disabled:hover:border-slate-200 ${tone}`}>
           <span className={d.state === 'notOffered' || d.state === 'unset' ? 'text-slate-500' : 'text-slate-800 dark:text-slate-100'}>{summary}</span>
-          {companyView && !dirty && cellByKey.get(key) && <span className="mt-0.5 block text-[10px] text-slate-400">{t(cellByKey.get(key)!.isCompanyOverride ? 'This company' : 'Group default')}</span>}
-          {dirty && <span className="mt-0.5 block text-[10px] font-semibold text-sapphire">{t('Changed — not published yet')}</span>}
-          {problem && <span className="mt-0.5 block text-[10px] text-red-600">{problem === FLOOR_PROBLEM ? reasonText(c.floorReason, 'title') : t(problem)}</span>}
+          {companyView && !dirty && cellByKey.get(key) && <span className="mt-0.5 block text-caption text-slate-400">{t(cellByKey.get(key)!.isCompanyOverride ? 'This company' : 'Group default')}</span>}
+          {dirty && <span className="mt-0.5 block text-caption font-semibold text-sapphire">{t('Changed — not published yet')}</span>}
+          {problem && <span className="mt-0.5 block text-caption text-red-600">{problem === FLOOR_PROBLEM ? reasonText(c.floorReason, 'title') : t(problem)}</span>}
         </button>
       </td>;
     })}
@@ -358,7 +358,7 @@ function OfferingSwitch({ code, name, companyId, offering, today, onChanged }: {
     } catch (e) { setError(loanErrorMessage(e, t('Unable to change whether this company offers the benefit.'))); }
     finally { setBusy(false); }
   };
-  if (!open) return <button type="button" className="mt-1 block text-[11px] font-normal text-sapphire underline" onClick={() => setOpen(true)}>
+  if (!open) return <button type="button" className="mt-1 block text-caption font-normal text-sapphire underline" onClick={() => setOpen(true)}>
     {t(stop ? 'Skip for this company' : 'Offer again in this company')}
   </button>;
   return <div className="mt-2 space-y-2 rounded-lg border border-slate-200 p-2 text-xs font-normal dark:border-white/10">

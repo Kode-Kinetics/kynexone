@@ -267,12 +267,12 @@ export function reasonFields(reason: string | null | undefined): string[] | null
  * or existing settings reused as they are — are folded away in both modes.
  */
 export function isPlanChange(action: PlanAction, _mode: WizardMode): boolean {
-  return action === 'create' || action === 'update' || action === 'conflict';
+  return action === 'create' || action === 'update' || action === 'conflict' || action === 'remove';
 }
 
-export interface PlanCounts { create: number; update: number; unchanged: number; reuse: number; conflict: number }
+export interface PlanCounts { create: number; update: number; unchanged: number; reuse: number; conflict: number; remove: number }
 export function planCounts(plan: CompanySetupPlan | null): PlanCounts {
-  const out: PlanCounts = { create: 0, update: 0, unchanged: 0, reuse: 0, conflict: 0 };
+  const out: PlanCounts = { create: 0, update: 0, unchanged: 0, reuse: 0, conflict: 0, remove: 0 };
   for (const item of plan?.items ?? []) if (item.action in out) out[item.action] += 1;
   return out;
 }
@@ -281,7 +281,7 @@ export function planCounts(plan: CompanySetupPlan | null): PlanCounts {
 export function planIsNoChange(plan: CompanySetupPlan | null): boolean {
   if (!plan) return false;
   const c = planCounts(plan);
-  return c.create === 0 && c.update === 0 && c.conflict === 0;
+  return c.create === 0 && c.update === 0 && c.conflict === 0 && c.remove === 0;
 }
 
 /** Which wizard step each planned area belongs to, so the review groups the plan the way it was entered. */
@@ -833,7 +833,7 @@ const ORG_FIELDS: Record<OrgSection, readonly string[]> = {
 export const orgFields = (section: OrgSection) => ORG_FIELDS[section];
 
 /** Rows the section would add and change compared with what the company has (existing mode). */
-export function sectionChanges(body: CompanySetupDraftBody, baseline: CompanySetupDraftBody | null | undefined, section: OrgSection): { added: number; changed: number } {
+export function sectionChanges(body: CompanySetupDraftBody, baseline: CompanySetupDraftBody | null | undefined, section: OrgSection): { added: number; changed: number; removed: number } {
   const rows = body[section] as unknown as OrgRow[];
   const before = (baseline?.[section] ?? []) as unknown as OrgRow[];
   const fields = ORG_FIELDS[section] as (keyof OrgRow)[];
@@ -842,7 +842,7 @@ export function sectionChanges(body: CompanySetupDraftBody, baseline: CompanySet
     if (!row.existingId) added += 1;
     else if (rowChanged(row, before, fields)) changed += 1;
   }
-  return { added, changed };
+  return { added, changed, removed: body.removals?.[section]?.length ?? 0 };
 }
 
 const STOP_WORDS = new Set(['and', 'of', 'the', 'for', 'to', 'in', '&']);

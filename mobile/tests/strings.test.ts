@@ -5,6 +5,7 @@ import { homeStrings } from '../src/config/strings/homeStrings.ts';
 import { leavePayStrings } from '../src/config/strings/leavePayStrings.ts';
 import { managerStrings } from '../src/config/strings/managerStrings.ts';
 import { accountStrings } from '../src/config/strings/accountStrings.ts';
+import { safetyStrings } from '../src/config/strings/safetyStrings.ts';
 
 type Tree = { [key: string]: string | Tree };
 
@@ -18,7 +19,7 @@ function leaves(tree: Tree, prefix = ''): Map<string, string> {
   return out;
 }
 
-const modules = { shellStrings, homeStrings, leavePayStrings, managerStrings, accountStrings } as Record<string, { en: Tree; ar: Tree }>;
+const modules = { shellStrings, homeStrings, leavePayStrings, managerStrings, accountStrings, safetyStrings } as Record<string, { en: Tree; ar: Tree }>;
 
 for (const [name, mod] of Object.entries(modules)) {
   test(`${name}: English and Arabic have the same keys, none empty`, () => {

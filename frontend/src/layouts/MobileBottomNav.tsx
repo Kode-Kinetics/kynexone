@@ -33,7 +33,7 @@ export function MobileBottomNav({ onOpenMore }: { onOpenMore: () => void }) {
   );
 
   const itemCls = (active: boolean) =>
-    `wg-press flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1.5 text-[11px] font-semibold outline-none focus-visible:ring-2 focus-visible:ring-sapphire ${
+    `wg-press flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1.5 text-caption font-semibold outline-none focus-visible:ring-2 focus-visible:ring-sapphire ${
       active ? 'text-sapphire dark:text-blue-300' : 'text-slate-600 dark:text-slate-300'
     }`;
 

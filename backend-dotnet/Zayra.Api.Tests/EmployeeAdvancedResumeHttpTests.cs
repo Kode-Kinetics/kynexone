@@ -42,9 +42,16 @@ public class EmployeeAdvancedResumeHttpTests : IClassFixture<EmployeeDraftCreate
             payrollProfile = new { salaryCurrency = "SAR", paymentMethod = "Cash", payrollGroup = "Old", molId = "OLD" },
         });
         response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        body.GetProperty("salaryBreakdown").GetProperty("housingAllowance").GetDecimal().Should().Be(1000m);
-        return body.GetProperty("id").GetInt32();
+        var id = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        // HR made the first package; a different Finance login approves it before it is the employee's current salary.
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            (await db.EmployeeSalaryStructures.CountAsync(s => s.EmployeeId == id)).Should().Be(0, "nothing reaches payroll before Finance decides");
+            await SalaryApprovalKit.ApprovePendingAsync(db, _fx.TenantId);
+            (await db.EmployeeSalaryStructures.SingleAsync(s => s.EmployeeId == id && s.IsActive)).HousingAllowance.Should().Be(1000m);
+        }
+        return id;
     }
 
     [Fact]

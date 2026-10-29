@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
@@ -283,6 +283,7 @@ public sealed class TimesheetService : ITimesheetService
         var q = _db.Timesheets.AsNoTracking().Where(t => t.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(query.Status)) q = q.Where(t => t.Status == query.Status);
         if (query.EmployeeId is { } eid) q = q.Where(t => t.EmployeeId == eid);
+        if (query.AllowedEmployeeIds is { } allowed) q = q.Where(t => allowed.Contains(t.EmployeeId));
         if (query.From is { } from) q = q.Where(t => t.PeriodEnd >= from);
         if (query.To is { } to) q = q.Where(t => t.PeriodStart <= to);
         if (!string.IsNullOrWhiteSpace(query.Search))

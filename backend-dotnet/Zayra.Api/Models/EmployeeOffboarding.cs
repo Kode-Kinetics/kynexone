@@ -6,10 +6,12 @@ namespace Zayra.Api.Models;
 /// → final working day → Archived. Captures notice period, exit interview and an offboarding
 /// checklist. One open record per employee at a time.
 /// </summary>
-public class EmployeeOffboarding : ITenantOwned
+public class EmployeeOffboarding : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>The employee's company, stamped when the separation is opened; reads and writes are scoped by it centrally.</summary>
+    public Guid? CompanyId { get; set; }
     public int EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string EmployeeCode { get; set; } = string.Empty;

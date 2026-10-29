@@ -60,6 +60,9 @@ public sealed record EmployeeReadinessSnapshot
     public string BankRoutingCode { get; init; } = string.Empty;
     public string SocialInsuranceReference { get; init; } = string.Empty;
     public bool HasSalary { get; init; }
+    /// <summary>A new hire's first salary package (from the hire form or the employee import) is staged and waits for a Finance
+    /// approver. Activation is held until it is decided: nobody becomes Active on a package only one person has seen.</summary>
+    public bool SalaryPackagePendingApproval { get; init; }
     /// <summary>Honours the exit-cascade flag (EmployeeManagementService sets false on separation).
     /// A false value is a hard pay blocker regardless of any other data.</summary>
     public bool WpsEligible { get; init; } = true;

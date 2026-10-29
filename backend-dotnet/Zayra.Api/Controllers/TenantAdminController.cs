@@ -3,6 +3,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Setup;
+using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 using Zayra.Api.Infrastructure.Payroll;
@@ -368,22 +371,54 @@ public class TenantAdminController : ControllerBase
         };
 
         _db.CountryPayrollRules.Add(rule);
+        this.RecordChange(_db, tenantId.Value, null, "CountryPayrollRule", rule.Id.ToString(), "Created", null, RuleAudit(rule));
         await _db.SaveChangesAsync(ct);
         return Created($"/api/tenant-admin/country-rules/{rule.Id}", rule);
     }
 
     [HttpDelete("country-rules/{id:guid}")]
-    public async Task<IActionResult> DeleteCountryRule(Guid id, CancellationToken ct)
+    public Task<IActionResult> DeleteCountryRule(Guid id, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, this.GetTenantId() ?? Guid.Empty, () => DeleteCountryRuleCore(id, ct), ct);
+
+    private async Task<IActionResult> DeleteCountryRuleCore(Guid id, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var rule = await _db.CountryPayrollRules.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (rule is null) return NotFound();
+        if (rule.RuleKey == WeekendDaysKey && await OpenPayrollRunAsync(tenantId.Value, ct) is { } open)
+            return InUse(open);
         _db.CountryPayrollRules.Remove(rule);
+        this.RecordChange(_db, tenantId.Value, null, "CountryPayrollRule", rule.Id.ToString(), "Deleted", RuleAudit(rule), null);
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }
+
+    // weekend_days is the one country key payroll reads (WorkWeekService → proration, attendance days).
+    private const string WeekendDaysKey = "weekend_days";
+    private static readonly string[] OpenRunStatuses = { "Draft", "Processed", "PendingFinanceReview" };
+
+    /// <summary>The "YYYY-MM" of an unfinalized payroll run in this tenant, or null.</summary>
+    private async Task<string?> OpenPayrollRunAsync(Guid tenantId, CancellationToken ct)
+    {
+        var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tenantId, "In-use check for a removal: must see every company's rows in this tenant, not only the caller's.").AsNoTracking()
+            .Where(r => r.TenantId == tenantId && OpenRunStatuses.Contains(r.Status))
+            .OrderByDescending(r => r.Year).ThenByDescending(r => r.Month)
+            .Select(r => new { r.Year, r.Month }).FirstOrDefaultAsync(ct);
+        return run is null ? null : $"{run.Year:D4}-{run.Month:D2}";
+    }
+
+    private IActionResult InUse(string period) => Conflict(new
+    {
+        code = "COUNTRY_RULE_IN_USE",
+        message = $"Weekend days set the work week that payroll uses, and the {period} payroll run is still open. Finalize or void it first, then remove this key.",
+    });
+
+    private static object RuleAudit(CountryPayrollRule r) => new
+    {
+        r.CountryCode, r.RuleKey, r.RuleValue, r.DataType, r.IsOverride, r.EffectiveFrom, r.EffectiveTo,
+    };
 
     // ── Usage Stats ──────────────────────────────────────────────────────────
 
@@ -415,7 +450,10 @@ public class TenantAdminController : ControllerBase
 
     /// <summary>Delete an entire country pack (all rules for a country). Defaults are deletable.</summary>
     [HttpDelete("country-rules/country/{countryCode}")]
-    public async Task<IActionResult> DeleteCountryPack(string countryCode, CancellationToken ct)
+    public Task<IActionResult> DeleteCountryPack(string countryCode, CancellationToken ct)
+        => SetupTenantLock.InLockedTransactionAsync(_db, this.GetTenantId() ?? Guid.Empty, () => DeleteCountryPackCore(countryCode, ct), ct);
+
+    private async Task<IActionResult> DeleteCountryPackCore(string countryCode, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
@@ -423,7 +461,11 @@ public class TenantAdminController : ControllerBase
         var code = countryCode.ToUpperInvariant();
         var rules = await _db.CountryPayrollRules.Where(r => r.TenantId == tenantId && r.CountryCode == code).ToListAsync(ct);
         if (rules.Count == 0) return NotFound();
+        if (rules.Any(r => r.RuleKey == WeekendDaysKey) && await OpenPayrollRunAsync(tenantId.Value, ct) is { } open)
+            return InUse(open);
         _db.CountryPayrollRules.RemoveRange(rules);
+        this.RecordChange(_db, tenantId.Value, null, "CountryPayrollRule", code, "PackDeleted",
+            rules.Select(RuleAudit).ToList(), null);
         await _db.SaveChangesAsync(ct);
         return Ok(new { deleted = rules.Count, countryCode = code });
     }

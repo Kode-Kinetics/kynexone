@@ -81,20 +81,20 @@ export function EmployeeWorkspaceShell({
 
   return (
     <main className="employee-workspace min-h-full bg-slate-50/80 dark:bg-slate-950/30" aria-labelledby="employee-workspace-heading">
-      <div className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/95 px-4 py-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-slate-950/95 lg:px-6">
+      <div className="sticky top-0 z-20 border-b border-line bg-surface px-4 py-3 shadow-e1 lg:px-6">
         <Link href={returnTo} className="mb-3 inline-flex min-h-9 items-center text-sm font-semibold text-sapphire hover:underline">
           <span aria-hidden="true" className="me-2 rtl:rotate-180">←</span> {t('Back to People')}
         </Link>
         <div className="flex flex-wrap items-center gap-4">
-          <div className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-gradient-to-br from-amber-500 to-orange-700 text-lg font-bold text-white shadow-sm">
+          <div className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-warning-soft text-lg font-semibold text-warning-fg">
             {initials(employee.fullName)}
           </div>
           <div className="min-w-[12rem] flex-1">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" title={employee.fullName} className="line-clamp-2 min-w-0 break-words text-2xl font-extrabold text-slate-950 outline-none dark:text-white">
+              <h1 id="employee-workspace-heading" tabIndex={-1} dir="auto" title={employee.fullName} className="line-clamp-2 min-w-0 break-words text-2xl font-semibold text-slate-950 outline-none dark:text-white">
                 {employee.fullName}
               </h1>
-              <span className="rounded-md bg-amber-100 px-2.5 py-1 text-xs font-bold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" data-testid="employee-status-badge">{statusLabel(employee.status)}</span>
+              <span className="rounded-lg bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" data-testid="employee-status-badge">{statusLabel(employee.status)}</span>
             </div>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
               {employee.employeeCode} <span aria-hidden="true">·</span> {employee.department || 'Department not set'} <span aria-hidden="true">·</span> {employee.designation || employee.jobTitle || 'Designation not set'}
@@ -110,7 +110,7 @@ export function EmployeeWorkspaceShell({
               </div>
             ) : (
               <>
-                <p className="text-sm font-bold text-slate-900 dark:text-white">{t('{complete} of {total} complete', { complete: completed, total: required })}</p>
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('{complete} of {total} complete', { complete: completed, total: required })}</p>
                 <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-white/10" aria-label="Employee readiness progress" role="progressbar" aria-valuenow={completed} aria-valuemin={0} aria-valuemax={Math.max(required, 1)}>
                   <div className="h-full rounded-full bg-blue-600 transition-[width] motion-reduce:transition-none" style={{ width: `${progress}%` }} />
                 </div>

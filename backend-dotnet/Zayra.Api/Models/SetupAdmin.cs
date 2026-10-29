@@ -100,6 +100,8 @@ public class GCCComplianceSetting : ITenantOwned, ICompanyScoped
     public decimal EosbYears1To5Rate { get; set; }           // days per year
     public decimal EosbYearsAbove5Rate { get; set; }
     public int EosbMinYears { get; set; } = 1;
+    /// <summary>Acknowledgements of end-of-service rates set BELOW the Art. 84 floor (owner decision 2026-10-25): who, when, rate, statutory rate, citation, note. JSON of <c>StoredFloorAck</c>; null when none.</summary>
+    public string? EosbBelowFloorAcksJson { get; set; }
     // Weekend / Work Week
     public string WorkWeek { get; set; } = "Sun-Thu";        // Sun-Thu, Mon-Fri, Mon-Sat
     public string WeekendDays { get; set; } = "Fri,Sat";
@@ -114,6 +116,11 @@ public class GCCComplianceSetting : ITenantOwned, ICompanyScoped
     public int RamadanReducedHoursPerDay { get; set; } = 2;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UpdatedBy { get; set; }
+    // Setup's Remove turns the rule off (it is never erased: payroll and end-of-service history refer to it).
+    // Readers ignore a turned-off row; Restore turns it back on.
+    public bool IsActive { get; set; } = true;
+    public DateTime? TurnedOffAtUtc { get; set; }
+    public Guid? TurnedOffBy { get; set; }
 }
 
 // ── Location / Site ───────────────────────────────────────────────────────────

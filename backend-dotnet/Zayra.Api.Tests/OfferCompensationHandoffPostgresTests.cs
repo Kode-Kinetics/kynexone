@@ -217,7 +217,9 @@ public sealed class OfferCompensationHandoffPostgresTests(PostgresFixture fixtur
         try
         {
             await FluentActions.Awaiting(async () => { await EmployeeDraftLifecyclePostgresTests.Employees(db, seed.Actor.TenantId, seed.Actor.UserId)
-                .PutDraftOfferCompensation(id, new(1, OfferCompensationHandoffTests.Dispositions(), true), default); }).Should().ThrowAsync<DbUpdateException>();
+                .PutDraftOfferCompensation(id, new(1, OfferCompensationHandoffTests.Dispositions(), true), default); })
+                .Should().ThrowAsync<Zayra.Api.Data.AuditSealFailedException>("a failed audit write surfaces as the audit-seal failure, wrapping the database error")
+                .Where(e => e.InnerException is DbUpdateException);
         }
         finally { await db.Database.ExecuteSqlRawAsync("DROP TRIGGER handoff_test_fail_audit ON audit_logs; DROP FUNCTION handoff_test_fail_audit();"); }
         db.ChangeTracker.Clear(); var draft = await db.EmployeeDrafts.SingleAsync(d => d.Id == id);

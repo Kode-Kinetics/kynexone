@@ -264,7 +264,16 @@ test('CMP journey: set up → plan → return → revise → approve → apply �
   // ── 10. Payroll for the effective month pays the new basic once ──
   const run = await api('POST', '/api/payroll/runs', hrToken, { companyId: world.companyId, year: effectiveDate.getUTCFullYear(), month: effectiveDate.getUTCMonth() + 1, runType: 'Regular' });
   const runId = run.json?.id ?? run.json?.Id;
+  // Queued (202): the computation runs on the API's background job queue, so wait for its job to finish.
   const processed = await api('POST', `/api/payroll/runs/${runId}/process`, hrToken);
+  expect(processed.status).toBe(202);
+  for (let attempt = 0, state = ''; state !== 'Succeeded'; attempt++) {
+    const poll = await api('GET', `/api/payroll/runs/${runId}/processing`, hrToken);
+    state = String(poll.json?.status);
+    expect(state, `processing failed: ${poll.json?.errorCode} ${poll.json?.errorMessage}`).not.toBe('Failed');
+    expect(attempt, 'payroll processing did not finish in time').toBeLessThan(180);
+    if (state !== 'Succeeded') await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
   const slips = await api('GET', `/api/payroll/runs/${runId}/slips`, hrToken);
   const slipList: any[] = slips.json?.items ?? slips.json ?? [];
   const aliSlip = slipList.find((s) => s.employeeId === ali || s.EmployeeId === ali);

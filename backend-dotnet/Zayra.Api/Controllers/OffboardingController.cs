@@ -218,7 +218,7 @@ public class OffboardingController : ControllerBase
 
         var off = new EmployeeOffboarding
         {
-            TenantId = tenantId,
+            TenantId = tenantId, CompanyId = emp.CompanyId,
             EmployeeId = emp.Id, EmployeeName = emp.FullName, EmployeeCode = emp.EmployeeCode,
             Department = emp.Department ?? string.Empty, Designation = emp.Designation ?? string.Empty,
             SeparationType = separationType, Reason = req.Reason ?? string.Empty,

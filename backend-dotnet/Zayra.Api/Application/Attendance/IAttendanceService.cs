@@ -15,7 +15,12 @@ public interface IAttendanceService
     Task<AttendanceDeviceSyncLog?> SyncDeviceAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct);
     Task<IReadOnlyCollection<AttendanceDeviceSyncLog>> GetSyncLogsAsync(Guid tenantId, Guid deviceId, CancellationToken ct, bool revealSecrets = true);
     Task<DeviceKeyResult?> GenerateDeviceKeyAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct);
-    Task<DeviceIngestResult?> IngestByDeviceKeyAsync(string deviceKey, DeviceIngestRequest request, string? ip, CancellationToken ct);
+    Task<DeviceIngestResult?> IngestByDeviceKeyAsync(string deviceKey, DeviceIngestRequest request, string? ip, CancellationToken ct,
+        Zayra.Api.Infrastructure.Attendance.DeviceRequestEnvelope? envelope = null);
+    Task<DeviceHeartbeatResult?> HeartbeatByDeviceKeyAsync(string deviceKey, DeviceHeartbeatRequest request, string? ip, CancellationToken ct,
+        Zayra.Api.Infrastructure.Attendance.DeviceRequestEnvelope? envelope = null);
+    Task<DeviceSigningSecretResult?> RotateDeviceSigningSecretAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken ct);
+    Task<bool?> SetDeviceSignatureRequiredAsync(Guid tenantId, Guid id, bool required, RequestContext context, CancellationToken ct);
 
     Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct);
     Task<AttendanceImportBatch> ImportCsvAsync(Guid tenantId, ImportAttendanceRequest request, RequestContext context, CancellationToken ct);

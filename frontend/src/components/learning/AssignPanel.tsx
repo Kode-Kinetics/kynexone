@@ -1,5 +1,6 @@
 'use client';
 
+import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { learningApi, type BulkResult, type LearningPath, type Rule, type TargetKind } from '../../api/learning';
@@ -35,9 +36,9 @@ export function AssignPanel({ canAssign, canManageRules }: { canAssign: boolean;
       ]);
       setTargets({
         Company: companies.map((c) => ({ id: c.id, label: locale === 'ar' && c.legalNameAr ? c.legalNameAr : c.legalNameEn })),
-        Department: departments.map((d) => ({ id: d.id, label: locale === 'ar' && d.nameAr ? d.nameAr : d.nameEn })),
-        Designation: designations.map((d) => ({ id: d.id, label: locale === 'ar' && d.titleAr ? d.titleAr : d.titleEn })),
-        Grade: grades.map((g) => ({ id: g.id, label: g.name })),
+        Department: pickable(departments).map((d) => ({ id: d.id, label: locale === 'ar' && d.nameAr ? d.nameAr : d.nameEn })),
+        Designation: pickable(designations).map((d) => ({ id: d.id, label: locale === 'ar' && d.titleAr ? d.titleAr : d.titleEn })),
+        Grade: pickable(grades).map((g) => ({ id: g.id, label: g.name })),
       });
     } catch (e) {
       setError(learningError(e, t));
@@ -100,7 +101,7 @@ function AssignForm({ paths, targets }: { paths: LearningPath[]; targets: Record
 
   return (
     <section className="wg-card space-y-4 rounded-2xl p-4" aria-labelledby="assign-title" data-testid="assign-form">
-      <h2 id="assign-title" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Assign a learning path')}</h2>
+      <h2 id="assign-title" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Assign a learning path')}</h2>
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); void submit(); }} noValidate>
         <Field id="as-path" label={t('Learning path')} error={errors.path}>
           <select id="as-path" className="input w-full max-w-md" value={pathId} onChange={(e) => setPathId(e.target.value)}>
@@ -214,7 +215,7 @@ function RulesSection({ paths, targets }: { paths: LearningPath[]; targets: Reco
 
   return (
     <section className="wg-card space-y-3 rounded-2xl p-4" aria-labelledby="rules-title" data-testid="rules-section">
-      <h2 id="rules-title" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Standing rules')}</h2>
+      <h2 id="rules-title" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Standing rules')}</h2>
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('A rule assigns a path to everyone in a group now, and to anyone who joins the group later (checked every hour).')}</p>
       <div className="flex flex-wrap items-end gap-2">
         <Field id="rl-path" label={t('Learning path')}>

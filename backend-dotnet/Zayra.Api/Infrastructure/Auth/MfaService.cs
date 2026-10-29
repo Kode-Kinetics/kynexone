@@ -1301,8 +1301,8 @@ public class MfaService : IMfaService
         if (_email is null || to is not { } r || string.IsNullOrWhiteSpace(r.Email)) return;
         try
         {
-            var result = await _email.DeliverAsync(r.TenantId, r.Email, r.Name,
-                "Two-step sign-in was turned on for your KynexOne account", FactorEnrolledHtml(r.Name, atUtc), cancellationToken: ct);
+            var result = await _email.DeliverResilientAsync(r.TenantId, r.Email, r.Name,
+                "Two-step sign-in was turned on for your KynexOne account", FactorEnrolledHtml(r.Name, atUtc), cancellationToken: ct, kind: "mfa-enrolled");
             _log?.LogInformation("MFA enrolment notice for a tenant user in tenant {TenantId}: {Outcome}.", r.TenantId, result.Status);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1328,7 +1328,7 @@ public class MfaService : IMfaService
         if (_email is null || to is not { } r || string.IsNullOrWhiteSpace(r.Email)) return;
         try
         {
-            var result = await _email.DeliverPlatformAsync(r.Email, r.Name, subject, html, cancellationToken: ct);
+            var result = await _email.DeliverPlatformResilientAsync(r.Email, r.Name, subject, html, cancellationToken: ct, kind: $"mfa-{kind}");
             _log?.LogInformation("MFA {Kind} notice for a platform operator: {Outcome}.", kind, result.Status);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

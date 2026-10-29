@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
@@ -14,10 +14,12 @@ namespace Zayra.Api.Controllers;
 public class ApprovalRequestsController : ControllerBase
 {
     private readonly IApprovalWorkflowService _approvals;
+    private readonly IDataScopeService _scopeService;
 
-    public ApprovalRequestsController(IApprovalWorkflowService approvals)
+    public ApprovalRequestsController(IApprovalWorkflowService approvals, IDataScopeService scopeService)
     {
         _approvals = approvals;
+        _scopeService = scopeService;
     }
 
     [HttpGet]
@@ -62,6 +64,11 @@ public class ApprovalRequestsController : ControllerBase
         {
             var tenantId = this.GetTenantId();
             if (tenantId is null) return Unauthorized();
+            // A request can only be raised inside the caller's own company and employee scope: the company and subject are
+            // named by the client, and the engine routes by them, so an out-of-scope value would route another company's decision.
+            if (request.CompanyId is Guid companyId && !this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
+            if (request.RequestedForEmployeeId is int forEmployee
+                && !(await _scopeService.ResolveAsync(User, tenantId.Value, cancellationToken)).CanAccessEmployee(forEmployee)) return Forbid();
             var approval = await _approvals.CreateRequestAsync(tenantId.Value, request, Context(), cancellationToken);
             return CreatedAtAction(nameof(Get), new { id = approval.Id }, approval);
         }

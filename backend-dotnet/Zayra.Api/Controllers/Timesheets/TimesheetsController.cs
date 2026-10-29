@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Auth;
@@ -32,11 +32,13 @@ public class TimesheetsController : ControllerBase
 {
     private readonly ITimesheetService _service;
     private readonly IApprovalWorkflowService _approvals;
+    private readonly IDataScopeService _scopeService;
 
-    public TimesheetsController(ITimesheetService service, IApprovalWorkflowService approvals)
+    public TimesheetsController(ITimesheetService service, IApprovalWorkflowService approvals, IDataScopeService scopeService)
     {
         _service = service;
         _approvals = approvals;
+        _scopeService = scopeService;
     }
 
     /// <summary>The timesheet register. Company scope is applied by the DbContext's global filter.</summary>
@@ -50,8 +52,11 @@ public class TimesheetsController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
+        // A line manager (manager.read) sees their team's timesheets, not the whole company's.
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var (single, set) = scope.Constrain(employeeId);
         return Ok(await _service.ListAsync(tenantId.Value,
-            new TimesheetQuery(status, employeeId, from, to, search, page, pageSize), ct));
+            new TimesheetQuery(status, single, from, to, search, page, pageSize, set), ct));
     }
 
     [HttpGet("{id:guid}")]
@@ -62,6 +67,7 @@ public class TimesheetsController : ControllerBase
         if (tenantId is null) return Unauthorized();
 
         var timesheet = await _service.GetAsync(tenantId.Value, id, ct);
+        if (timesheet is not null && !(await _scopeService.ResolveAsync(User, tenantId.Value, ct)).CanAccessEmployee(timesheet.EmployeeId)) timesheet = null;
         return timesheet is null ? NotFound(new { code = "not_found", message = "Timesheet not found." }) : Ok(timesheet);
     }
 

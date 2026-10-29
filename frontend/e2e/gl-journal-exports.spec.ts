@@ -319,8 +319,9 @@ test('a double-clicked Lock sends one request, shows no error, and each run name
   // Found live: double-clicking Lock fired two requests. The server posted the journal once and refused the
   // second (409), and that refusal then showed as an error under a run that had just locked. At group scope the
   // run cards also gave no company, so four "Sep 2026 Draft" cards were indistinguishable.
+  // Mutable like the server: once locked, the run list (which the page reloads after Lock) reads Locked too.
   const run = {
-    id: 'run-oct', companyId: 'co-b', year: 2026, month: 10, status: 'Approved', runType: 'Regular', totalGrossSalary: 25730.21,
+    id: 'run-oct', companyId: 'co-b', year: 2026, month: 10, status: 'Approved' as string, runType: 'Regular', totalGrossSalary: 25730.21,
     totalDeductions: 3119.43, totalNetSalary: 22610.78, totalEmployerStatutoryCost: 2820, employeeCount: 3,
     createdAtUtc: '2026-10-10T00:00:00Z', processedAtUtc: '2026-10-10T00:00:00Z', lockedAtUtc: null,
   };
@@ -345,8 +346,13 @@ test('a double-clicked Lock sends one request, shows no error, and each run name
       lockCalls.push(request.method());
       await new Promise(r => setTimeout(r, 400));
       if (lockCalls.length > 1) return reply({ error: 'run_already_locked', message: 'This payroll run is already locked and its journal is already posted. Nothing was posted again.' }, 409);
-      return reply({ ...run, status: 'Locked', lockedAtUtc: '2026-10-10T01:00:00Z' });
+      Object.assign(run, { status: 'Locked', lockedAtUtc: '2026-10-10T01:00:00Z' });
+      return reply({ ...run });
     }
+    // What the lock summary reads before it opens (hooks/useLockWithSummary).
+    if (path === '/api/payroll/runs/run-oct/validate') return reply([]);
+    if (path === '/api/payroll/runs/run-oct/validation-overrides') return reply({ runId: 'run-oct', overrides: [], overridableCodes: [], nonOverridableCodes: [] });
+    if (path === '/api/payroll/runs/run-oct/population') return reply({ runId: 'run-oct', includedCount: 3, excludedCount: 0, notEligibleCount: 0, included: [], excluded: [], notEligible: [] });
     if (path.startsWith('/api/payroll/')) return reply({ message: 'Not part of this fixture.' }, 404);
     return reply({ items: [], total: 0, page: 1, pageSize: 100 });
   });
@@ -354,7 +360,11 @@ test('a double-clicked Lock sends one request, shows no error, and each run name
   await page.getByRole('tab', { name: 'Payroll Runs', exact: true }).click();
   const card = page.locator('main [role="button"]').filter({ hasText: 'Oct 2026' }).first();
   await expect(card).toContainText('Beta Services');
+  // Lock opens the summary in the app's confirm dialog; a double-click on either button must still send ONE request.
   await card.getByRole('button', { name: 'Lock' }).dblclick();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('lock-summary')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Lock run' }).dblclick();
   await expect(card).toContainText('Locked');
   expect(lockCalls).toEqual(['POST']);
   await expect(page.getByText(/already locked/)).toHaveCount(0);
@@ -391,7 +401,7 @@ test('AM-5: the GL Journal tab says when its runs or its journal could not be lo
     totalDeductions: 0, totalNetSalary: 1000, totalEmployerStatutoryCost: 0, employeeCount: 1,
     createdAtUtc: '2026-09-10T00:00:00Z', processedAtUtc: '2026-09-10T00:00:00Z', lockedAtUtc: null,
   };
-  const calls = { runs: 0, journal: 0 };
+  const calls = { runs: 0, journal: 0, runsRecovered: false };
   await page.addInitScript(() => {
     localStorage.setItem('zayra_access_token', 'gl-export-browser-fixture');
     localStorage.setItem('kynexone-locale-choice-v2', 'en');
@@ -409,7 +419,8 @@ test('AM-5: the GL Journal tab says when its runs or its journal could not be lo
     if (path === '/api/payroll/companies') return reply([companyA]);
     if (path === '/api/payroll/runs') {
       calls.runs += 1;
-      return calls.runs === 1 ? reply({ code: 'internal_error', message: 'boom', traceId: 't1' }, 500) : reply({ items: [run], total: 1, page: 1, pageSize: 100 });
+      // The page's run pipeline lists runs too, so fail every list call until the GL tab's Retry, not just the first.
+      return !calls.runsRecovered ? reply({ code: 'internal_error', message: 'boom', traceId: 't1' }, 500) : reply({ items: [run], total: 1, page: 1, pageSize: 100 });
     }
     if (path === '/api/payroll/runs/run-sep/gl-journal') {
       calls.journal += 1;
@@ -425,6 +436,7 @@ test('AM-5: the GL Journal tab says when its runs or its journal could not be lo
   await page.getByRole('tab', { name: /GL Journal/ }).click();
   const runsError = page.getByRole('alert').filter({ hasText: 'This could not be loaded.' });
   await expect(runsError).toBeVisible();
+  calls.runsRecovered = true;
   await runsError.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(runsError).toHaveCount(0);
   await page.getByLabel('Select payroll run for GL journal').selectOption('run-sep');
