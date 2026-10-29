@@ -58,7 +58,10 @@ export async function requestJson(url, init, opts = {}) {
       // must never be forwarded to another host.
       const headers = typeof init.headers === 'function' ? init.headers(attempt) : init.headers;
       const res = await fetchImpl(url, { ...init, headers, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
-      if (res.ok) return await res.json().catch(() => ({}));
+      if (res.ok) {
+        try { return await res.json(); }
+        catch { throw new Error('successful response was not valid JSON'); }
+      }
       const text = await res.text().catch(() => '');
       const retryable = isRetryableStatus(res.status);
       lastErr = new HttpError(res.status, text.slice(0, 500), retryable);

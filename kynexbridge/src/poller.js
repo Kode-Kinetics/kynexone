@@ -34,6 +34,7 @@ export function appendRejected(file, entry) {
 // Server answers that refuse the WHOLE batch for a reason that is not a bad punch. Bisecting these would drain the entire
 // backlog into the dead-letter file while the cursor advances: silent attendance loss. They stop the poll and alert instead.
 const BATCH_LEVEL_CODES = new Set(['batch_too_large', 'verification_label_reserved']);
+const ROW_LEVEL_REFUSAL_STATUSES = new Set([400, 422]);
 export class BatchRefusedError extends Error {
   constructor(message) { super(message); this.name = 'BatchRefusedError'; }
 }
@@ -43,13 +44,26 @@ function isBatchLevelRefusal(e) {
 }
 const MAX_CONSECUTIVE_SINGLE_REFUSALS = 5;
 
+function validateIngestAcknowledgement(result, expectedReceived) {
+  const counts = ['received', 'accepted', 'duplicates', 'unmatched', 'processed', 'rejected'];
+  const valid = result && typeof result === 'object' && !Array.isArray(result)
+    && counts.every((field) => Number.isInteger(result[field]) && result[field] >= 0)
+    && result.received === expectedReceived
+    && typeof result.syncLogId === 'string' && result.syncLogId.length > 0
+    && Array.isArray(result.rejections);
+  if (!valid)
+    throw new Error('server returned an invalid ingest acknowledgement; nothing was marked delivered and the cursor did not move.');
+  return result;
+}
+
 // Forwards one chunk. A chunk the server refuses for a reason that points at a PUNCH (HTTP 400/422 without a batch-level code) is
 // bisected until the offending punch is isolated, written to the rejected file and skipped: one poison punch must never wedge a
 // backlog. A batch-level refusal (413, batch_too_large, verification_label_reserved) or a run of consecutive single-punch
 // refusals stops the poll without advancing the cursor, and surfaces through the heartbeat error.
 export async function forwardChunk(cfg, device, punches, http = {}, log = console, guard = { singles: 0 }) {
   try {
-    const result = await post(cfg, device, '/api/attendance/ingest', { punches, autoProcess: true }, http);
+    const result = validateIngestAcknowledgement(
+      await post(cfg, device, '/api/attendance/ingest', { punches, autoProcess: true }, http), punches.length);
     guard.singles = 0;
     // Server per-row rejections carry the punch itself so they can be persisted (indexes are relative to this request).
     const rejections = (result.rejections ?? []).map((r) => ({ ...r, punch: punches[r.index] }));
@@ -60,6 +74,8 @@ export async function forwardChunk(cfg, device, punches, http = {}, log = consol
     if (!permanent) throw e;
     if (isBatchLevelRefusal(e))
       throw new BatchRefusedError(`server refused the whole batch (HTTP ${e.status}): ${String(e.body).slice(0, 200)}. Nothing was skipped; the cursor did not move.`);
+    if (!ROW_LEVEL_REFUSAL_STATUSES.has(e.status))
+      throw new BatchRefusedError(`attendance ingest endpoint failed (HTTP ${e.status}): ${String(e.body).slice(0, 200)}. Nothing was skipped; the cursor did not move.`);
     if (punches.length === 1) {
       appendRejected(cfg.rejectedFile, { device: device.name, status: e.status, error: e.body, punch: punches[0] });
       log.error(`[${device.name}] server refused one punch (HTTP ${e.status}); written to ${cfg.rejectedFile} and skipped.`);

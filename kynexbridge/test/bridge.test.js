@@ -27,6 +27,10 @@ function server(handler) {
   });
 }
 const json = (res, status, obj, headers = {}) => { res.writeHead(status, { 'content-type': 'application/json', ...headers }); res.end(JSON.stringify(obj)); };
+const ingestAck = (received, over = {}) => ({
+  received, accepted: received, duplicates: 0, unmatched: 0, processed: 0,
+  syncLogId: '00000000-0000-0000-0000-000000000001', rejected: 0, rejections: [], ...over,
+});
 
 function cfgFor(url, over = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'kb-'));
@@ -165,7 +169,7 @@ function await_stat(f) { return statSync(f).mode & 0o777; }
 // ── poller ──────────────────────────────────────────────────────────────────────────────────────
 test('a big backlog is sent in bounded chunks, cursor advances per chunk, heartbeat reports', async () => {
   const { s, url, calls } = await server((c, res) => (c.url.endsWith('/ingest')
-    ? json(res, 200, { accepted: c.body.punches.length, duplicates: 0, unmatched: 0, processed: 0, rejected: 0 }) : json(res, 200, {})));
+    ? json(res, 200, ingestAck(c.body.punches.length)) : json(res, 200, {})));
   const cfg = cfgFor(url, { chunkSize: 3 });
   fakePunches = [1, 2, 3, 4, 5, 6, 7].map(punch);
   const cursors = {};
@@ -185,7 +189,7 @@ test('resume: a failure mid-backlog keeps the cursor at the last good chunk, the
   const { s, url, calls } = await server((c, res) => {
     if (c.url.endsWith('/heartbeat')) return json(res, 200, {});
     if (fail && c.body.punches[0].punchTimestampUtc === punch(4).punchTimestampUtc) return json(res, 503, {});
-    json(res, 200, { accepted: c.body.punches.length });
+    json(res, 200, ingestAck(c.body.punches.length));
   });
   const cfg = cfgFor(url, { chunkSize: 3, maxRetries: 1 });
   fakePunches = [1, 2, 3, 4, 5, 6].map(punch);
@@ -203,7 +207,7 @@ test('resume: a failure mid-backlog keeps the cursor at the last good chunk, the
 });
 
 test('maxChunksPerPoll bounds one poll and reports the remaining backlog', async () => {
-  const { s, url, calls } = await server((c, res) => json(res, 200, { accepted: c.body?.punches?.length ?? 0 }));
+  const { s, url, calls } = await server((c, res) => json(res, 200, c.url.endsWith('/ingest') ? ingestAck(c.body.punches.length) : {}));
   const cfg = cfgFor(url, { chunkSize: 2, maxChunksPerPoll: 2 });
   fakePunches = [1, 2, 3, 4, 5, 6, 7].map(punch);
   const cursors = {};
@@ -216,7 +220,7 @@ test('maxChunksPerPoll bounds one poll and reports the remaining backlog', async
 });
 
 test('a file connector backlog keeps its full progress until every deferred row is forwarded', async () => {
-  const { s, url, calls } = await server((c, res) => json(res, 200, { accepted: c.body?.punches?.length ?? 0 }));
+  const { s, url, calls } = await server((c, res) => json(res, 200, c.url.endsWith('/ingest') ? ingestAck(c.body.punches.length) : {}));
   const cfg = cfgFor(url, { chunkSize: 2, maxChunksPerPoll: 1, overlapSeconds: 300 });
   const hourly = (hour) => ({
     employeeCode: 'E1',
@@ -242,7 +246,7 @@ test('a poison punch is isolated by bisection, dead-lettered and skipped — the
   const { s, url } = await server((c, res) => {
     if (c.url.endsWith('/heartbeat')) return json(res, 200, {});
     if (c.body.punches.some((p) => p.punchTimestampUtc === bad)) return json(res, 400, { message: 'bad punch' });
-    json(res, 200, { accepted: c.body.punches.length });
+    json(res, 200, ingestAck(c.body.punches.length));
   });
   const cfg = cfgFor(url, { chunkSize: 4 });
   fakePunches = [1, 2, 3, 4].map(punch);
@@ -266,6 +270,51 @@ test('a batch-level refusal stops the poll: nothing is bisected, skipped or dead
   s.close();
 });
 
+for (const status of [404, 405]) {
+  test(`HTTP ${status} is an endpoint failure, not a poison punch: no cursor or dead-letter progress`, async (t) => {
+    const { s, url, calls } = await server((_c, res) => json(res, status, { message: 'wrong attendance route' }));
+    t.after(() => { s.closeAllConnections(); s.close(); });
+    const cfg = cfgFor(url, { chunkSize: 2, maxRetries: 0 });
+    fakePunches = [1, 2].map(punch);
+    const cursors = {};
+
+    await assert.rejects(pollDevice(cfg, cursors, dev(), noSleep, quiet), new RegExp(String(status)));
+
+    assert.equal(calls.length, 1, 'the whole batch is not bisected');
+    assert.equal(cursorOf(cursors, 'D1'), null);
+    assert.equal(existsSync(cfg.rejectedFile), false);
+  });
+}
+
+test('malformed JSON in a successful ingest response does not advance the cursor', async (t) => {
+  const { s, url } = await server((_c, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<html>maintenance</html>');
+  });
+  t.after(() => { s.closeAllConnections(); s.close(); });
+  const cfg = cfgFor(url, { chunkSize: 2, maxRetries: 0 });
+  fakePunches = [1, 2].map(punch);
+  const cursors = {};
+
+  await assert.rejects(pollDevice(cfg, cursors, dev(), noSleep, quiet), /valid JSON/);
+
+  assert.equal(cursorOf(cursors, 'D1'), null);
+  assert.equal(existsSync(cfg.rejectedFile), false);
+});
+
+test('an incomplete ingest acknowledgement does not advance the cursor', async (t) => {
+  const { s, url } = await server((_c, res) => json(res, 200, {}));
+  t.after(() => { s.closeAllConnections(); s.close(); });
+  const cfg = cfgFor(url, { chunkSize: 2, maxRetries: 0 });
+  fakePunches = [1, 2].map(punch);
+  const cursors = {};
+
+  await assert.rejects(pollDevice(cfg, cursors, dev(), noSleep, quiet), /ingest acknowledgement/);
+
+  assert.equal(cursorOf(cursors, 'D1'), null);
+  assert.equal(existsSync(cfg.rejectedFile), false);
+});
+
 test('a run of single-punch refusals stops instead of draining the backlog', async () => {
   const { s, url } = await server((c, res) => (c.url.endsWith('/heartbeat') ? json(res, 200, {}) : json(res, 400, { message: 'nope' })));
   const cfg = cfgFor(url, { chunkSize: 8 });
@@ -276,7 +325,7 @@ test('a run of single-punch refusals stops instead of draining the backlog', asy
 
 test('server per-row rejections are persisted to the dead-letter file (0600)', async () => {
   const { s, url } = await server((c, res) => (c.url.endsWith('/heartbeat') ? json(res, 200, {})
-    : json(res, 200, { accepted: 1, rejected: 1, rejections: [{ index: 1, reason: 'timestamp_in_future' }] })));
+    : json(res, 200, ingestAck(2, { accepted: 1, rejected: 1, rejections: [{ index: 1, reason: 'timestamp_in_future' }] }))));
   const cfg = cfgFor(url, { chunkSize: 2 });
   fakePunches = [1, 2].map(punch);
   await pollDevice(cfg, {}, dev(), noSleep, quiet);
@@ -297,7 +346,7 @@ test('401 is not retried or bisected: it surfaces so the operator fixes the key'
 });
 
 test('already-sent punches inside the overlap window are not re-sent on the next poll', async () => {
-  const { s, url, calls } = await server((c, res) => json(res, 200, { accepted: c.body?.punches?.length ?? 0 }));
+  const { s, url, calls } = await server((c, res) => json(res, 200, c.url.endsWith('/ingest') ? ingestAck(c.body.punches.length) : {}));
   const cfg = cfgFor(url, { chunkSize: 10 });
   fakePunches = [1, 2, 3].map(punch);
   const cursors = {};
@@ -312,7 +361,7 @@ test('already-sent punches inside the overlap window are not re-sent on the next
 });
 
 test('signing headers are sent when the device has a secret', async () => {
-  const { s, url, calls } = await server((c, res) => json(res, 200, { accepted: 1 }));
+  const { s, url, calls } = await server((c, res) => json(res, 200, c.url.endsWith('/ingest') ? ingestAck(1) : {}));
   const cfg = cfgFor(url);
   fakePunches = [punch(1)];
   await pollDevice(cfg, {}, dev({ signingSecret: 'sec' }), noSleep, quiet);
