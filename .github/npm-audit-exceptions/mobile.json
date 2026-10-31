@@ -1,12 +1,6 @@
 {
   "exceptions": [
     {
-      "ghsa": "GHSA-86w9-cpqp-85rv",
-      "package": "node-forge",
-      "expires": "2026-11-03",
-      "reason": "No patched release exists (1.4.0 is latest). Reached only via @expo/cli and @expo/code-signing-certificates, build tooling that is not in the device bundle. npm's suggested fix downgrades expo to 44."
-    },
-    {
       "ghsa": "GHSA-mrhx-c7xc-m3w5",
       "package": "zod",
       "expires": "2026-11-06",
