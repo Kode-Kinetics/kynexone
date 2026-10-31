@@ -32,6 +32,7 @@ import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
 import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
 import { ResetPasswordDialog } from '../components/access/ResetPasswordDialog';
+import { PayApprovalSetupCard } from '../components/access/PayApprovalSetupCard';
 import { UserRowActions, type UserRowAction } from '../components/access/UserRowActions';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppToast } from '../components/ui/AppToast';
@@ -214,6 +215,7 @@ export function UsersTab() {
   };
 
   const pageSize = 20;
+  const { selectedCompanyId } = useCompany();
 
   const atUserLimit = usage !== null && usage.maxUsers > 0 && usage.activeUsers >= usage.maxUsers;
 
@@ -307,6 +309,7 @@ export function UsersTab() {
 
   return (
     <div className="space-y-4">
+      {canManageUsers && <PayApprovalSetupCard companyId={searchParams?.get('companyId') || selectedCompanyId} revision={users} onCreate={() => setShowCreate(true)} />}
       {/* Subscription inactive banner */}
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">

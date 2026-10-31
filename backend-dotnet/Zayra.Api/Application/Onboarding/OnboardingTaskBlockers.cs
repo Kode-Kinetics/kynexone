@@ -32,13 +32,21 @@ public static class OnboardingTaskBlockers
     public static async Task<EmployeeReadiness> EnsureNoneOpenAsync(
         ZayraDbContext db, Guid tenantId, int employeeId, EmployeeReadiness readiness, ResolvedReadinessPolicy policy, CancellationToken ct)
     {
+        var merged = await MergeBlockersAsync(db, tenantId, employeeId, readiness, ct);
+        if (merged.Blocking.Count > readiness.Blocking.Count)
+            throw new EmployeeActivationBlockedException(employeeId, merged, policy);
+        return merged;
+    }
+
+    public static async Task<EmployeeReadiness> MergeBlockersAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId, EmployeeReadiness readiness, CancellationToken ct)
+    {
         var publicId = await db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == employeeId)
             .Select(e => (Guid?)e.PublicId).FirstOrDefaultAsync(ct);
         if (publicId is not Guid pid) return readiness;
         var open = await OpenForAsync(db, tenantId, pid, ct);
         if (open.Count == 0) return readiness;
-        throw new EmployeeActivationBlockedException(employeeId,
-            readiness with { State = "Blocked", Blocking = readiness.Blocking.Concat(ToItems(open)).ToList() }, policy);
+        return readiness with { State = "Blocked", Blocking = readiness.Blocking.Concat(ToItems(open)).ToList() };
     }
 
     /// <summary>Adds the open blocking tasks to an activation refusal that other blockers already raised, so HR sees everything at once.</summary>

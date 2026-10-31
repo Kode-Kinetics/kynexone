@@ -12,6 +12,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Employees.Onboarding;
 using Zayra.Api.Infrastructure.Http;
 using Zayra.Api.Models;
@@ -63,11 +64,12 @@ public sealed class PayApprovalsController : ControllerBase
             .AsNoTracking().Where(e => ids.Contains(e.Id) && !e.IsDeleted).OrderBy(e => e.Id).ToListAsync(ct);
         var items = new List<object>();
         var hasMore = false;
+        var requiresOtherReviewerCount = 0;
         foreach (var e in employees)
         {
             if (!scope.CanAccessCompany(e.CompanyId) || IsInPost(e)) continue;
-            if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, e, caller.Value, ct)) continue;
-            if (items.Count >= MaxListed) { hasMore = true; break; }
+            if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, e, caller.Value, ct)) { requiresOtherReviewerCount++; continue; }
+            if (items.Count >= MaxListed) { hasMore = true; continue; }
             var view = await BuildAsync(tenantId, e, ct);
             items.Add(new
             {
@@ -85,7 +87,47 @@ public sealed class PayApprovalsController : ControllerBase
                 status = view.Rejection is null ? "pending" : "rejected",
             });
         }
-        return Ok(new { items, count = items.Count, hasMore });
+        return Ok(new { items, count = items.Count, hasMore, requiresOtherReviewerCount });
+    }
+
+    [HttpGet("setup")]
+    [HasPermission("security.manage")]
+    [TenantUserRateLimit("pay-approval-read")]
+    public async Task<IActionResult> Setup([FromQuery] Guid companyId, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var caller = GetUserId();
+        if (caller is null || !this.GetEntityScope().CanAccessCompany(companyId)) return NotFound();
+        if (!await ScopedBypass.TenantWide(_db.Companies, tenantId, "Pay approval setup: validate the already scope-checked company.")
+                .AnyAsync(c => c.Id == companyId && c.IsActive && !c.IsDeleted, ct)) return NotFound();
+        var operators = await PayApprovalRouting.UsableOperatorsAsync(_db, tenantId, companyId, ct,
+            HttpContext.RequestServices.GetService<IConfiguration>());
+        var reviewers = operators.Where(o => o.CanApprovePay).ToArray();
+        var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Pay approval setup: pending employees for the explicitly scope-checked company.").AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.CompanyId == companyId && !e.IsDeleted
+                && _db.EmployeeImportGaps.Any(g => g.TenantId == tenantId && g.EmployeeId == e.Id
+                    && g.GapType == CompensationApprovalGate.GapType && g.ResolvedAtUtc == null))
+            .OrderBy(e => e.Id).ToListAsync(ct);
+        var pending = employees.Where(e => !IsInPost(e)).ToArray();
+        var items = new List<object>();
+        var strandedCount = 0;
+        // Bounded diagnostic: ordinary queues remain usable for larger imports.
+        foreach (var employee in pending.Take(MaxListed))
+        {
+            var eligible = new List<object>();
+            foreach (var reviewer in reviewers)
+                if (!await CompensationApprovalGate.IsBarredAsync(_db, tenantId, employee, reviewer.Id, ct))
+                    eligible.Add(new { reviewer.Id, reviewer.Name });
+            if (eligible.Count == 0) strandedCount++;
+            items.Add(new { employeeId = employee.Id, name = DisplayName(employee), eligibleReviewers = eligible });
+        }
+        return Ok(new {
+            independentReviewerCount = reviewers.Count(r => r.Id != caller.Value),
+            readyForNewHires = operators.Any(w => w.CanEnterPay && reviewers.Any(r => r.Id != w.Id)),
+            pendingCount = pending.Length, checkedCount = items.Count, strandedCount,
+            hasMore = pending.Length > MaxListed, items
+        });
     }
 
     // ── One package ──────────────────────────────────────────────────────────────────────────────
@@ -166,6 +208,7 @@ public sealed class PayApprovalsController : ControllerBase
                 });
             await _db.SaveChangesAsync(ct);
             await _audit.WriteAsync(RejectedAction, "Employee", employee.Id.ToString(CultureInfo.InvariantCulture), context, JsonSerializer.Serialize(meta), ct);
+            await RefreshReadinessAsync(tenantId, employee.Id, ct);
             return Ok(new { decision = "rejected" });
         }
 
@@ -187,7 +230,32 @@ public sealed class PayApprovalsController : ControllerBase
         }
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync(CompensationApprovalGate.ApprovedAction, "Employee", employee.Id.ToString(CultureInfo.InvariantCulture), context, JsonSerializer.Serialize(meta), ct);
+        await RefreshReadinessAsync(tenantId, employee.Id, ct);
         return Ok(new { decision = "approved" });
+    }
+
+    private async Task RefreshReadinessAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var evaluation = await new EmployeeActivationGuard(_db).EvaluateEmployeeAsync(tenantId, employeeId, ct);
+        if (evaluation is null) return;
+        var (readiness, policy) = evaluation.Value;
+        var gaps = await ScopedBypass.TenantWide(_db.EmployeeImportGaps, tenantId,
+                "Pay decision readiness: preserve unresolved advisory gaps for the already scope-checked employee.")
+            .AsNoTracking().Where(g => g.EmployeeId == employeeId && g.ResolvedAtUtc == null)
+            .Select(g => new { g.GapType, g.GapCategory }).ToListAsync(ct);
+        readiness = EmployeeReadinessEvaluator.MergeAdvisoryGaps(readiness,
+            gaps.Select(g => EmployeeReadinessEvaluator.ImportGapToItem(g.GapType, g.GapCategory)).ToList());
+        // Derived display fields only: a pay decision must NOT change the employee's last-editor
+        // attribution. SaveChanges' editing audit hook would otherwise bar a rejecting reviewer
+        // from reopening the package they just sent back.
+        await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Pay decision: update only the already scope-checked employee's derived readiness badge.")
+            .Where(e => e.Id == employeeId && !e.IsDeleted)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(e => e.ReadinessState, readiness.State)
+                .SetProperty(e => e.ActivationBlockersCount, readiness.Blocking.Count)
+                .SetProperty(e => e.ReadinessEvaluatedAtUtc, DateTime.UtcNow)
+                .SetProperty(e => e.ProfileCompletenessScore, e => policy.Items.Count > 0 ? readiness.Score : e.ProfileCompletenessScore), ct);
     }
 
     // ── view model ───────────────────────────────────────────────────────────────────────────────
