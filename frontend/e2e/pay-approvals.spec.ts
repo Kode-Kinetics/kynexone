@@ -86,6 +86,30 @@ test.describe('Pay approvals queue', () => {
     await expect(section.getByRole('alert')).toContainText('Could not check');
     await expect(section.getByText('Separate pay entry and approval users are ready.')).not.toBeVisible();
   });
+  test('a malformed reviewer response fails closed without taking down Users and can be reloaded', async ({ page }) => {
+    await boot(page, '/setup?tab=users&companyId=c1', { permissions: ['security.manage', 'payroll.approve', 'dashboard.read'] });
+    const section = page.getByRole('region', { name: 'Independent pay approval' });
+    const ready = section.getByText('Separate pay entry and approval users are ready.');
+    await expect(ready).toBeVisible();
+    for (const malformed of [
+      [],
+      { readyForNewHires: 'false', items: [] },
+      { independentReviewerCount: 1, readyForNewHires: true, pendingCount: 1, checkedCount: 1, strandedCount: 0, hasMore: false,
+        items: [{ employeeId: 41, name: 'Layla Al-Harbi', eligibleReviewers: null }] },
+    ]) {
+      await page.route('**/api/pay-approvals/setup?*', route => route.fulfill({ json: malformed }));
+      const response = page.waitForResponse(reply => new URL(reply.url()).pathname === '/api/pay-approvals/setup');
+      await section.getByRole('button', { name: 'Reload' }).click();
+      await response;
+      await expect(section.getByRole('button', { name: 'Reload' })).toBeEnabled();
+      await expect(section.getByRole('alert')).toContainText('Could not check');
+      await expect(ready).not.toBeVisible();
+      await expect(page.getByRole('button', { name: 'Invite employee', exact: true })).toBeVisible();
+    }
+    await page.unroute('**/api/pay-approvals/setup?*');
+    await section.getByRole('button', { name: 'Reload' }).click();
+    await expect(ready).toBeVisible();
+  });
   test('explains all 46 hidden packages and links the administrator to reviewer setup', async ({ page }) => {
     await boot(page, '/pay-approvals', { empty: true, requiresOtherReviewerCount: 46, permissions: ['payroll.approve', 'security.manage', 'dashboard.read'] });
     await expect(page.getByText('46 packages need another reviewer because you are not independent of them.')).toBeVisible();
