@@ -177,16 +177,22 @@ public static class CompensationApprovalGate
         ZayraDbContext db, Guid tenantId, IEmployeeReadinessEvaluator evaluator, EmployeeReadinessSnapshot snapshot,
         ResolvedReadinessPolicy policy, CancellationToken ct)
     {
-        var readiness = evaluator.Evaluate(snapshot, policy);
-        if (await IsOpenAsync(db, tenantId, snapshot.EmployeeId, ct) || await HasDriftedFromApprovalAsync(db, tenantId, snapshot.EmployeeId, ct)
-            || await CarriesUnapprovedPayAsync(db, tenantId, snapshot.EmployeeId, ct))
+        var readiness = await MergeBlockersAsync(db, tenantId, snapshot.EmployeeId, evaluator.Evaluate(snapshot, policy), ct);
+        if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
+        return readiness;
+    }
+
+    public static async Task<EmployeeReadiness> MergeBlockersAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId, EmployeeReadiness readiness, CancellationToken ct)
+    {
+        if (await IsOpenAsync(db, tenantId, employeeId, ct) || await HasDriftedFromApprovalAsync(db, tenantId, employeeId, ct)
+            || await CarriesUnapprovedPayAsync(db, tenantId, employeeId, ct))
         {
             var blocker = new ReadinessItem(
                 Key: GapType, Label: "Pay package awaiting Finance approval", Category: "pay", Reason: "statutory",
                 Jurisdiction: null, Gate: "activate", FixKind: "pay", FixTarget: null, DocumentType: null);
             readiness = readiness with { State = "Blocked", Blocking = readiness.Blocking.Concat([blocker]).ToList() };
         }
-        if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
         return readiness;
     }
 

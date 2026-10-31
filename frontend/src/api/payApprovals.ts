@@ -22,7 +22,16 @@ export interface PayApprovalListItem {
   status: 'pending' | 'rejected';
 }
 
-export interface PayApprovalList { items: PayApprovalListItem[]; count: number; hasMore: boolean }
+export interface PayApprovalList { items: PayApprovalListItem[]; count: number; hasMore: boolean; requiresOtherReviewerCount?: number }
+export interface PayApprovalSetup {
+  independentReviewerCount: number;
+  readyForNewHires: boolean;
+  pendingCount: number;
+  checkedCount: number;
+  strandedCount: number;
+  hasMore: boolean;
+  items: { employeeId: number; name: string; eligibleReviewers: { id: string; name: string }[] }[];
+}
 
 export interface PayApprovalDetail {
   employee: { id: number; code: string; name: string; companyId: string | null; companyName: string; designation: string | null };
@@ -38,6 +47,7 @@ export interface PayApprovalDetail {
 export type PayApprovalDecision = 'approve' | 'reject';
 
 export const payApprovalsApi = {
+  setup: (companyId: string) => client.get<PayApprovalSetup>('/api/pay-approvals/setup', { params: { companyId } }).then(r => r.data),
   list: () => client.get<PayApprovalList>('/api/pay-approvals').then(r => r.data),
   detail: (employeeId: number) => client.get<PayApprovalDetail>(`/api/pay-approvals/${employeeId}`).then(r => r.data),
   decide: (employeeId: number, body: { fingerprint: string; decision: PayApprovalDecision; reason: string }) =>

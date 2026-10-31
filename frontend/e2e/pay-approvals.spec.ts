@@ -25,7 +25,7 @@ test.beforeEach(async ({ page }) => {
 });
 test.afterEach(async ({ page }) => { expect(errorsByPage.get(page), 'No application runtime errors').toEqual([]); });
 
-interface Boot { arabic?: boolean; permissions?: string[]; detail?: typeof DETAIL; decideStatus?: number; decideCode?: string; empty?: boolean }
+interface Boot { arabic?: boolean; permissions?: string[]; detail?: typeof DETAIL; decideStatus?: number; decideCode?: string; empty?: boolean; requiresOtherReviewerCount?: number }
 
 async function boot(page: Page, url: string, options: Boot = {}) {
   const decisions: Array<Record<string, unknown>> = [];
@@ -43,7 +43,7 @@ async function boot(page: Page, url: string, options: Boot = {}) {
       permissions: options.permissions ?? ['payroll.approve', 'payroll.read', 'dashboard.read'], accountType: 'Company', isGroupScope: false,
       companies: [{ id: 'c1', name: 'Workspace Fixture LLC', code: 'c1', countryCode: 'SA', isActive: true }],
     });
-    if (path === '/api/pay-approvals' && request.method() === 'GET') return reply({ items: options.empty ? [] : [ITEM, { ...ITEM, employeeId: 42, employeeCode: 'EMP-0042', name: 'Omar Al-Qahtani', status: 'rejected', ibanLast4: '1234' }], count: options.empty ? 0 : 2, hasMore: false });
+    if (path === '/api/pay-approvals' && request.method() === 'GET') return reply({ items: options.empty ? [] : [ITEM, { ...ITEM, employeeId: 42, employeeCode: 'EMP-0042', name: 'Omar Al-Qahtani', status: 'rejected', ibanLast4: '1234' }], count: options.empty ? 0 : 2, hasMore: false, requiresOtherReviewerCount: options.requiresOtherReviewerCount ?? 0 });
     if (path === '/api/pay-approvals/41' && request.method() === 'GET') return reply(options.detail ?? DETAIL);
     if (path === '/api/pay-approvals/41/decision') {
       decisions.push(request.postDataJSON());
@@ -51,6 +51,14 @@ async function boot(page: Page, url: string, options: Boot = {}) {
       return reply({ decision: request.postDataJSON().decision === 'approve' ? 'approved' : 'rejected' });
     }
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
+    if (path === '/api/access/roles' || path === '/api/access/permissions') return reply([]);
+    if (path === '/api/pay-approvals/setup') return reply({
+      independentReviewerCount: 1, readyForNewHires: true, pendingCount: 46, checkedCount: 46, strandedCount: 1, hasMore: false,
+      items: [
+        { employeeId: 41, name: 'Layla Al-Harbi', eligibleReviewers: [{ id: 'reviewer', name: 'Fatima Finance Approver' }] },
+        { employeeId: 42, name: 'Omar Al-Qahtani', eligibleReviewers: [] },
+      ],
+    });
     if (path.startsWith('/api/features')) return reply([]);
     return reply({ items: [], total: 0, page: 1, pageSize: 25 });
   });
@@ -61,6 +69,29 @@ async function boot(page: Page, url: string, options: Boot = {}) {
 async function shot(page: Page, name: string) { if (SHOTS) await page.screenshot({ path: `${SHOTS}/od4-${name}.png`, fullPage: true }); }
 
 test.describe('Pay approvals queue', () => {
+  test('Users shows the company recovery route and identifies a package with no independent reviewer', async ({ page }) => {
+    await boot(page, '/setup?tab=users&companyId=c1', { permissions: ['security.manage', 'payroll.approve', 'dashboard.read'] });
+    const section = page.getByRole('region', { name: 'Independent pay approval' });
+    await expect(section).toBeVisible({ timeout: 30_000 });
+    await expect(section.getByText('Pending pay packages: 46')).toBeVisible();
+    await expect(section.getByText('No eligible reviewer for 1 checked packages.')).toBeVisible();
+    await section.getByText('See who can review each pending package').click();
+    await expect(section.getByText('Another independent reviewer is needed')).toBeVisible();
+    await expect(section.getByText('Fatima Finance Approver', { exact: false })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    const result = await new AxeBuilder({ page }).include('section[aria-labelledby="pay-reviewer-setup"]').withTags(['wcag2a', 'wcag2aa']).analyze();
+    expect(result.violations).toEqual([]);
+    await page.route('**/api/pay-approvals/setup?*', route => route.fulfill({ status: 503, json: { message: 'unavailable' } }));
+    await section.getByRole('button', { name: 'Reload' }).click();
+    await expect(section.getByRole('alert')).toContainText('Could not check');
+    await expect(section.getByText('Separate pay entry and approval users are ready.')).not.toBeVisible();
+  });
+  test('explains all 46 hidden packages and links the administrator to reviewer setup', async ({ page }) => {
+    await boot(page, '/pay-approvals', { empty: true, requiresOtherReviewerCount: 46, permissions: ['payroll.approve', 'security.manage', 'dashboard.read'] });
+    await expect(page.getByText('46 packages need another reviewer because you are not independent of them.')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Check reviewer setup' })).toHaveAttribute('href', '/setup?tab=users');
+    expect(await page.locator('main').innerText()).not.toContain('10,500');
+  });
   test('lists the packages with the masked account only, and opens one', async ({ page }, info) => {
     await boot(page, '/pay-approvals');
     await expect(page.getByRole('heading', { level: 1, name: 'Pay approvals' })).toBeVisible({ timeout: 30_000 });

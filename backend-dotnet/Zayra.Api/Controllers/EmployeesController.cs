@@ -5117,14 +5117,7 @@ public class EmployeesController : ControllerBase
         {
             var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
             if (employee is null) return;
-            var snapshot = await _activationGuard.BuildSnapshotAsync(tenantId, id, ct);
-            if (snapshot is null) return;
-            var policy = await _activationGuard.ResolvePolicyAsync(tenantId, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
-            var readiness = _activationGuard.Evaluate(snapshot, policy);
-            readiness = await ImportGapHealer.HealAndMergeAsync(_db, employee, readiness, ct);
-            employee.ReadinessState = readiness.State;
-            employee.ActivationBlockersCount = readiness.Blocking.Count;
-            employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
+            await _activationGuard.StampReadinessAsync(employee, ct);
             await _db.SaveChangesAsync(ct);
         }
         catch { /* best-effort badge refresh */ }
