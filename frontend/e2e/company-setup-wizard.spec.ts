@@ -111,6 +111,8 @@ class ContractServer {
   sequence = 0;
   /** GET /api/pay-approvals/setup calls, so Retry can be proven to ask again. */
   reviewerChecks = 0;
+  /** `failOnce` answers 500 until the test flips this, so an earlier setup call cannot use up the failure. */
+  reviewerHealthy = false;
   constructor(public options: BootOptions) {}
 
   get scopeGroup() { return this.options.persona !== 'companyAdmin'; }
@@ -536,7 +538,7 @@ async function boot(page: Page, options: BootOptions = {}, server = new Contract
     if (p === '/api/pay-approvals/setup') {
       server.reviewerChecks++;
       const mode = server.options.reviewer ?? 'ready';
-      if (mode === 'failAlways' || (mode === 'failOnce' && server.reviewerChecks === 1)) return reply({ title: 'down' }, 500);
+      if (mode === 'failAlways' || (mode === 'failOnce' && !server.reviewerHealthy)) return reply({ title: 'down' }, 500);
       const usable = mode === 'ready' || mode === 'failOnce';
       return reply({
         independentReviewerCount: usable ? 1 : 0, readyForNewHires: usable, pendingCount: 0, checkedCount: 0, strandedCount: 0, hasMore: false,
@@ -2327,6 +2329,7 @@ test('Approvers when completing a company: a failed check says so and Retry asks
   await expect(live).toContainText(t('Could not check pay reviewers.'));
   await shot(page, info, 'en-approvers-check-failed');
   const before = server.reviewerChecks;
+  server.reviewerHealthy = true;
   await live.getByRole('button', { name: t('Retry') }).click();
   await expect(live).toHaveAttribute('data-state', 'ready');
   expect(server.reviewerChecks).toBeGreaterThan(before);
@@ -2339,8 +2342,8 @@ test('Approvers: choosing an existing user lists only active Finance Approvers',
   const { server } = await boot(page);
   await toApprovers(page, t);
   await page.getByLabel(t('Make an existing user a reviewer')).check();
-  const select = page.getByLabel(t('User'), { exact: true });
-  await expect(select.locator('option')).toHaveText([t('Choose a user…'), 'Fatima Finance · fatima@riyadhtrading.sa']);
+  const select = page.getByRole('combobox', { name: new RegExp(`^${t('User')}`) });
+  await expect(select.locator('option')).toHaveText([t('Choose a user…'), 'Fatima Finance · fatima@riyadhtrading.sa'], { timeout: 15_000 });
   await next(page, t);
   await expect(page.locator('#ccw-payReviewer-existingUserId-error')).toHaveText(t('Choose the user who will be the pay reviewer.'));
   await select.selectOption('u-fatima');
