@@ -51,9 +51,9 @@ test('statuses: Not started, x of y, Done', () => {
 
 test('payroll and compliance map their Guided setup items to their destinations', () => {
   const items = readinessItems();
-  expect(areaProgressItems('payroll', ['glMapping', 'fiscalYears', 'payroll', 'payslipTemplates'], items, {})).toEqual([
+  expect(areaProgressItems('payroll', ['glMapping', 'fiscalYears', 'bankWps', 'payslipTemplates'], items, {})).toEqual([
     { destinationId: 'glMapping', done: true, source: 'guided' },
-    { destinationId: 'payroll', done: false, source: 'guided' },
+    { destinationId: 'bankWps', done: false, source: 'guided' },
   ]);
   expect(areaProgressItems('compliance', ['gccSettings', 'statutoryRules', 'saudiCompliance', 'saudiComplianceDashboard', 'gosiFiling'], items, { gccSettings: 0 })).toEqual([
     { destinationId: 'gccSettings', done: false, source: 'guided' },
