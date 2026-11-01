@@ -575,6 +575,7 @@ public sealed class CompanySetupPlanner
                 }
                 if (l.Latitude is < -90 or > 90) c.Problem(3, $"{lf}.latitude", "latitude_invalid", "Latitude must be between -90 and 90.");
                 if (l.Longitude is < -180 or > 180) c.Problem(3, $"{lf}.longitude", "longitude_invalid", "Longitude must be between -180 and 180.");
+                if (l.Address is { Length: > 200 }) c.Problem(3, $"{lf}.address", "address_too_long", "The address must be 200 characters or fewer.");
                 if (l.RadiusMeters is <= 0 or > 100_000) c.Problem(3, $"{lf}.radiusMeters", "radius_invalid", "The geofence radius must be between 1 and 100,000 metres.");
                 if ((l.Latitude is null) != (l.Longitude is null)) c.Problem(3, $"{lf}.latitude", "coordinates_incomplete", "Enter both latitude and longitude, or neither.");
                 var lname = (l.NameEn ?? string.Empty).Trim();
@@ -594,6 +595,7 @@ public sealed class CompanySetupPlanner
                     if (Differs(l.NameAr, lrow.NameAr)) changes.Add("name (Arabic)");
                     if ((l.Latitude, l.Longitude) != CompanySetupDataEntry.Coordinates(lrow.Latitude, lrow.Longitude)) changes.Add("coordinates");
                     if (l.RadiusMeters != lrow.GeofenceRadiusMeters) changes.Add("geofence radius");
+                    if (Differs(l.Address, lrow.AddressLine1)) changes.Add("address");
                     locationChanged = changes.Count > 0;
                     c.Item(Areas.Location, lcode, lname, locationChanged ? V.ActionUpdate : V.ActionUnchanged,
                         locationChanged ? $"Changes: {string.Join(", ", changes)}." : null, l.NameAr);
@@ -1333,6 +1335,7 @@ public sealed class CompanySetupPlanner
                     Latitude = t.Contains("latitude") ? lrow.Latitude : l.Latitude,
                     Longitude = t.Contains("longitude") ? lrow.Longitude : l.Longitude,
                     RadiusMeters = t.Contains("radiusMeters") ? lrow.GeofenceRadiusMeters : l.RadiusMeters,
+                    Address = t.Contains("address") ? lrow.AddressLine1 : l.Address,
                 };
             }).ToList();
             return merged with { Locations = locations };

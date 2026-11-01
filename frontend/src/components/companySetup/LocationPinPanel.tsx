@@ -22,6 +22,7 @@ type Feedback = { tone: 'success' | 'error'; text: string } | null;
 
 /** What a new location, or a first pin on a location without one, starts with: visible and saved, never implied. */
 const DEFAULT_RADIUS = 150;
+const ADDRESS_MAX = 200;
 
 /**
  * "Pin this location", replacing bare latitude / longitude / radius inputs: paste a Google Maps link or coordinates
@@ -80,6 +81,7 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
 
   const choose = (item: AddressSuggestion) => {
     pin(item.latitude, item.longitude, t('Pin placed at the address you chose. Drag it to fine-tune.'));
+    onChange({ address: item.label.slice(0, ADDRESS_MAX) });
     setSuggestions(null);
   };
 
@@ -179,6 +181,11 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
         {feedback && <p className={`text-sm ${feedback.tone === 'error' ? 'font-medium text-rose-700 dark:text-rose-300' : 'text-emerald-800 dark:text-emerald-300'}`}>{feedback.text}</p>}
       </div>
 
+      <WizardField field={`${path}.address`} label={t('Address')} help={t('Saved with the location. Searching an address fills it in; you can edit it.')}>
+        {control => <input {...control} className="input w-full" dir="auto" maxLength={ADDRESS_MAX} readOnly={readOnly} value={location.address ?? ''}
+          onChange={e => onChange({ address: e.target.value })} data-testid="pin-address" />}
+      </WizardField>
+
       {suggestions && (
         <div className="space-y-2 rounded-lg border border-sapphire/30 bg-sapphire/5 p-3 dark:border-cyanAccent/30 dark:bg-cyanAccent/5" data-testid="pin-suggestions">
           {suggestions.items.length > 0 ? (
@@ -196,7 +203,7 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
           ) : (
             <p className="text-sm text-slate-700 dark:text-slate-300">{t('No place matched "{query}". Add the city or district, paste a Google Maps link, or click the map.', { query: suggestions.query })}</p>
           )}
-          <button type="button" className="btn-secondary" onClick={() => setSuggestions(null)} data-testid="pin-keep">{t('Keep what I typed')}</button>
+          <button type="button" className="btn-secondary" onClick={() => { onChange({ address: suggestions.query.slice(0, ADDRESS_MAX) }); setSuggestions(null); setFeedback({ tone: 'success', text: t('Kept your address as typed. The pin was not moved.') }); }} data-testid="pin-keep">{t('Keep what I typed')}</button>
         </div>
       )}
 

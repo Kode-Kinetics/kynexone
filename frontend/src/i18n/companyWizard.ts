@@ -42,6 +42,8 @@ const ar: Record<string, string> = {
   "Not pinned yet.": "لم يُثبَّت بعد.",
   "Paste a Google Maps link or coordinates": "الصق رابط خرائط Google أو الإحداثيات",
   "For example 24.7136, 46.6753, or the link from Share in Google Maps.": "مثل ⁦24.7136, 46.6753⁩، أو الرابط من زر المشاركة في خرائط Google.",
+  "Saved with the location. Searching an address fills it in; you can edit it.": "يُحفظ مع الموقع. يؤدي البحث عن عنوان إلى تعبئته، ويمكنك تعديله.",
+  "Kept your address as typed. The pin was not moved.": "أُبقي العنوان كما كتبته. لم يُنقل الدبوس.",
   "Find place": "بحث عن الموقع",
   "Searching…": "جارٍ البحث…",
   "Search an address, or paste a Google Maps link or coordinates": "ابحث عن عنوان، أو الصق رابط خرائط Google أو الإحداثيات",

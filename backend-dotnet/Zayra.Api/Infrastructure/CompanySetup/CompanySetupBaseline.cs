@@ -79,10 +79,10 @@ public static class CompanySetupBaseline
             ["isHeadOffice"] = Flag(head),
         };
 
-    public static Dictionary<string, string?> Location(Location l) => LocationFields(l.NameEn, l.NameAr, l.Latitude, l.Longitude, l.GeofenceRadiusMeters);
-    public static Dictionary<string, string?> Location(CompanySetupLocation l) => LocationFields(l.NameEn, l.NameAr, l.Latitude, l.Longitude, l.RadiusMeters);
+    public static Dictionary<string, string?> Location(Location l) => LocationFields(l.NameEn, l.NameAr, l.Latitude, l.Longitude, l.GeofenceRadiusMeters, l.AddressLine1);
+    public static Dictionary<string, string?> Location(CompanySetupLocation l) => LocationFields(l.NameEn, l.NameAr, l.Latitude, l.Longitude, l.RadiusMeters, l.Address);
 
-    private static Dictionary<string, string?> LocationFields(string? nameEn, string? nameAr, decimal? lat, decimal? lng, decimal? radius) =>
+    private static Dictionary<string, string?> LocationFields(string? nameEn, string? nameAr, decimal? lat, decimal? lng, decimal? radius, string? address) =>
         new(StringComparer.Ordinal)
         {
             ["nameEn"] = Text(nameEn),
@@ -90,6 +90,7 @@ public static class CompanySetupBaseline
             ["latitude"] = Number(lat),
             ["longitude"] = Number(lng),
             ["radiusMeters"] = Number(radius),
+            ["address"] = Text(address),
         };
 
     public static Dictionary<string, string?> CostCentre(CostCenter c) => new(StringComparer.Ordinal) { ["nameEn"] = Text(c.Name), ["nameAr"] = Text(c.NameAr) };
