@@ -152,7 +152,8 @@ public class CompanySetupController : ControllerBase
         // Making someone an Admin — inviting a company super admin, or giving an existing user the role — needs
         // "Confirm it's you" here too, exactly as on Setup → Users (StepUpService; fails closed).
         var adminGrant = request is null ? null : await _setup.AdminGrantAsync(caller.TenantId, request.DraftId, ct);
-        if (adminGrant is not null
+        var reviewerGrant = request is not null && await _setup.GrantsPayReviewerAsync(caller.TenantId, request.DraftId, ct);
+        if ((adminGrant is not null || reviewerGrant)
             && !(_stepUp is not null && await _stepUp.IsConfirmedAsync(caller.UserId, caller.TenantId, Request.Headers[StepUpService.HeaderName].ToString(), ct)))
             return StatusCode(StatusCodes.Status403Forbidden, new
             {

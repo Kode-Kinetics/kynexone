@@ -113,6 +113,8 @@ public static class CompanySetupReadiness
                 wanted ? V.ReadinessTodo : V.ReadinessRecommended, V.ScopeCompany, adminHref));
         }
 
+        await AddPayReviewerItemAsync(db, items, tenantId, id, ct, config);
+
         // ── Workspace-wide: listed only while unconfigured ───────────────────────────────────────────────────
         void Workspace(string key, string label, string labelAr, bool configured)
         {
@@ -129,9 +131,64 @@ public static class CompanySetupReadiness
         return items;
     }
 
+    /// <summary>
+    /// The independent pay reviewer: a usable login (not an administrator) that can approve pay for this company. Missing,
+    /// created but not yet usable (with the reason when it can be read), or done. This item only reports; the
+    /// <c>independentPayReview</c> item above stays the verification, derived from PayApprovalRouting.UsableOperatorsAsync.
+    /// </summary>
+    private static async Task AddPayReviewerItemAsync(ZayraDbContext db, List<ReadinessItem> items, Guid tenantId, Guid id, CancellationToken ct, IConfiguration? config)
+    {
+        var href = SetupHref("users", id);
+        var reviewers = (await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalRouting.CandidatesAsync(db, tenantId, id, ct, config))
+            .Where(c => c.CanApprovePay && !c.HoldsAdminRole).ToList();
+        if (reviewers.Any(r => r.Reason is null))
+        {
+            items.Add(new ReadinessItem("payReviewer", "Independent pay reviewer", "مراجع الأجور المستقل", V.ReadinessDone, V.ScopeCompany, href));
+            return;
+        }
+        if (reviewers.Count > 0)
+        {
+            var pending = reviewers.OrderByDescending(r => r.CreatedAtUtc).ThenBy(r => r.UserId).First();
+            var (en, ar) = pending.Reason switch
+            {
+                Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalRouting.Reasons.PasswordNotSet =>
+                    ($"{pending.Name} has not set a password yet, so cannot review pay. Send their sign-in link",
+                     $"لم يعيّن {pending.Name} كلمة مرور بعد، لذا لا يمكنه مراجعة الأجور. أرسل رابط تسجيل الدخول"),
+                Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalRouting.Reasons.TwoFactorNotCompleted =>
+                    ($"{pending.Name} has not completed two-step sign-in setup yet, so cannot review pay",
+                     $"لم يكمل {pending.Name} إعداد التحقق بخطوتين بعد، لذا لا يمكنه مراجعة الأجور"),
+                Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalRouting.Reasons.EmployeeNotActive =>
+                    ($"{pending.Name} is linked to an employee record that is not active yet, so cannot review pay",
+                     $"{pending.Name} مرتبط بسجل موظف غير نشط بعد، لذا لا يمكنه مراجعة الأجور"),
+                _ => ($"{pending.Name} cannot sign in yet, so cannot review pay. Check their login in Users",
+                      $"لا يستطيع {pending.Name} تسجيل الدخول بعد، لذا لا يمكنه مراجعة الأجور. راجع حسابه في المستخدمين"),
+            };
+            var sendLink = pending.Reason == Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalRouting.Reasons.PasswordNotSet;
+            items.Add(new ReadinessItem("payReviewer", en, ar, V.ReadinessTodo, V.ScopeCompany, href, sendLink ? pending.UserId : null));
+            return;
+        }
+        var wanted = await RequestedAdminModeAsync(db, tenantId, id, ct, reviewer: true) is V.AdminInvite or V.AdminExisting;
+        var code = wanted ? await LastAdminFailureCodeAsync(db, tenantId, id, ct, CompanySetupService.ReviewerFailedAction) : null;
+        var (label, labelAr) = code switch
+        {
+            var c when c == UserSeatLimit.Refusal.Code =>
+                ("Independent pay reviewer not set up: your plan's user limit is reached. Free a seat or upgrade, then add them in Users",
+                 "لم يُعَدّ مراجع الأجور: بلغت حد المستخدمين في اشتراكك. حرّر مقعدًا أو قم بالترقية، ثم أضفه من المستخدمين"),
+            "pay_reviewer_role_missing" =>
+                ("Independent pay reviewer not set up: this workspace has no active Finance Approver role with pay approval. Restore it in Roles, then add the reviewer in Users",
+                 "لم يُعَدّ مراجع الأجور: لا يوجد دور معتمد مالي فعال بصلاحية اعتماد الأجور. أعده من الأدوار ثم أضف المراجع من المستخدمين"),
+            _ when wanted =>
+                ("Independent pay reviewer could not be set up. Add a different person with Finance Approver access in Users",
+                 "تعذر إعداد مراجع الأجور المستقل. أضف شخصاً آخر بصلاحية معتمد مالي من المستخدمين"),
+            _ => ("Add an independent pay reviewer: a different person from the administrator, with Finance Approver access",
+                  "أضف مراجع أجور مستقلاً: شخصاً مختلفاً عن المسؤول بصلاحية معتمد مالي"),
+        };
+        items.Add(new ReadinessItem("payReviewer", label, labelAr, V.ReadinessTodo, V.ScopeCompany, href));
+    }
+
     /// <summary>The company-admin mode the latest wizard draft submitted for this company asked for (the one that created
     /// it, or a later existing-company completion), if any.</summary>
-    private static async Task<string?> RequestedAdminModeAsync(ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct)
+    private static async Task<string?> RequestedAdminModeAsync(ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct, bool reviewer = false)
     {
         var body = await db.CompanySetupDrafts.AsNoTracking()
             .Where(d => d.TenantId == tenantId && d.ResultCompanyId == companyId && d.Status == CompanySetupDraftStatuses.Submitted)
@@ -139,16 +196,18 @@ public static class CompanySetupReadiness
             .Select(d => d.Body).FirstOrDefaultAsync(ct);
         if (body is null) return null;
         var row = new CompanySetupDraftRecord { Body = body };
-        return CompanySetupService.ReadBody(row)?.CompanyAdmin?.Mode;
+        var parsed = CompanySetupService.ReadBody(row);
+        return reviewer ? parsed?.PayReviewer?.Mode : parsed?.CompanyAdmin?.Mode;
     }
 
     /// <summary>The refusal code the wizard recorded the last time it could not write this company's super admin.</summary>
-    private static async Task<string?> LastAdminFailureCodeAsync(ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct)
+    private static async Task<string?> LastAdminFailureCodeAsync(ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct,
+        string action = CompanySetupService.AdminFailedAction)
     {
         var metadata = await ScopedBypass.NullableTenantWide(db.AuditLogs, tenantId,
                 "Create-company readiness: why the wizard could not write this company's super admin (its own failure audit).")
             .AsNoTracking()
-            .Where(a => a.Action == CompanySetupService.AdminFailedAction && a.EntityId == companyId.ToString())
+            .Where(a => a.Action == action && a.EntityId == companyId.ToString())
             .OrderByDescending(a => a.CreatedAtUtc).Select(a => a.Metadata).FirstOrDefaultAsync(ct);
         if (string.IsNullOrEmpty(metadata)) return null;
         try
